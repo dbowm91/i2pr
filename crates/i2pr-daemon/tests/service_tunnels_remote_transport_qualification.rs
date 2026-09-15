@@ -73,7 +73,9 @@ use i2pr_daemon::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryRequest, Ssu2DaemonService, daemon_dial_target,
     generate_controlled_identity, verify_reference_router_info,
 };
-use i2pr_daemon::service_delivery::{RoutingDecision, ServiceDestinationDelivery};
+use i2pr_daemon::service_delivery::{
+    RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
+};
 use i2pr_daemon::service_tunnels::{
     ServiceTunnelManager, ServiceTunnelManagerConfig, install_router_delivery_handle,
 };
@@ -349,25 +351,36 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         .expect("32-byte encryption key");
     append_evidence(&evidence_dir, "reference-routerinfo-verified", "true");
 
-    let mut dest = DestinationTunnelCoordinator::new(
+    let coordinator = Arc::new(tokio::sync::Mutex::new(DestinationTunnelCoordinator::new(
         LookupPolicy::default(),
         RouterInfoStoreConfig::default(),
-    );
-    dest.advance_time(wall_ms());
-    let now = Date::from_millis(wall_ms());
-    let bootstrapped = dest
-        .bootstrap_reference_router_info(&i2pd_ri_bytes, now)
-        .expect("bootstrap reference");
+    )));
+    let bootstrapped;
+    {
+        let mut dest_guard = coordinator.lock().await;
+        dest_guard.advance_time(wall_ms());
+        let now = Date::from_millis(wall_ms());
+        bootstrapped = dest_guard
+            .bootstrap_reference_router_info(&i2pd_ri_bytes, now)
+            .expect("bootstrap reference");
+    }
     assert_eq!(bootstrapped, RouterHash::from_bytes(*i2pd_hash.as_bytes()));
+    let store_stats = {
+        let dest_guard = coordinator.lock().await;
+        dest_guard.store_stats().record_count
+    };
     append_evidence(
         &evidence_dir,
         "reference-bootstrap-store",
-        &dest.store_stats().record_count.to_string(),
+        &store_stats.to_string(),
     );
-    assert!(
-        dest.is_floodfill(&bootstrapped),
-        "reference must advertise floodfill for the controlled lane"
-    );
+    {
+        let dest_guard = coordinator.lock().await;
+        assert!(
+            dest_guard.is_floodfill(&bootstrapped),
+            "reference must advertise floodfill for the controlled lane"
+        );
+    }
     append_evidence(&evidence_dir, "reference-floodfill-capable", "true");
 
     let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("identity");
@@ -498,7 +511,11 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         "without the router backend, the manager must report RemoteUnresolved for the reference"
     );
     append_evidence(&evidence_dir, "decision-before-install", "RemoteUnresolved");
-    let capability = ServiceDestinationDelivery::new();
+    let backend = Arc::new(RemoteDestinationBackend::new(
+        Arc::clone(&coordinator),
+        handle.delivery().clone(),
+    ));
+    let capability = ServiceDestinationDelivery::with_backend(backend);
     capability.record_observation("remote_lookup_started").await;
     install_router_delivery_handle(&manager, capability.clone());
     let decision_after = manager.routing_decision_for(reference_hash.as_bytes());
@@ -508,6 +525,10 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         "with the router backend installed, the reference destination routes as RemoteRouter"
     );
     append_evidence(&evidence_dir, "decision-after-install", "RemoteRouter");
+    assert!(
+        capability.has_backend(),
+        "Plan 206 §5: the installed capability must carry an executable backend"
+    );
     let co_owned = manager.co_owned_destination_hashes();
     append_evidence(
         &evidence_dir,
@@ -652,21 +673,27 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
     let local_receive_for_lookup = receive_ids[0];
     let reply_path = reply_path_for_inbound_route(coord.registry(), local_receive_for_lookup)
         .expect("typed inbound gateway route");
-    let (lookup_id, action) = dest
-        .begin_lease_lookup(reference_hash, &routing_key, reply_path)
-        .expect("lease lookup send");
+    let (lookup_id, action) = {
+        let mut coord_guard = coordinator.lock().await;
+        coord_guard
+            .begin_lease_lookup(reference_hash, &routing_key, reply_path)
+            .expect("lease lookup send")
+    };
     let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
-    let (dispatch, proof) = dest
-        .compose_lookup_via_tunnel(
-            &action,
-            destination_outbound.role(),
-            0x51A7_6001,
-            wall_ms() + 60_000,
-            Deadline::new(Duration::from_secs(60)).expect("deadline"),
-            &mut tunnel_rng,
-            0,
-        )
-        .expect("compose lease lookup");
+    let (dispatch, proof) = {
+        let coord_guard = coordinator.lock().await;
+        coord_guard
+            .compose_lookup_via_tunnel(
+                &action,
+                destination_outbound.role(),
+                0x51A7_6001,
+                wall_ms() + 60_000,
+                Deadline::new(Duration::from_secs(60)).expect("deadline"),
+                &mut tunnel_rng,
+                0,
+            )
+            .expect("compose lease lookup")
+    };
     assert!(proof.via_tunnel);
     for cell_delivery in &dispatch.deliveries {
         let request = RouterDeliveryRequest::new(
@@ -715,10 +742,11 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         let envelope =
             I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode store");
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
-        match dest
-            .ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
-            .expect("ingest lease store")
-        {
+        let ingest_result = {
+            let mut coord_guard = coordinator.lock().await;
+            coord_guard.ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
+        };
+        match ingest_result.expect("ingest lease store") {
             LeaseStoreIngestOutcome::Completed { summary, .. } => {
                 lease_summary = Some(summary);
             }
@@ -771,21 +799,28 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         reply_gateway: None,
         data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(local_ls2.clone())),
     };
-    let publication_id = dest
-        .begin_ls2_publication(store_message, RouterHash::from_bytes(*i2pd_hash.as_bytes()))
-        .expect("begin publication");
-    let (pub_dispatch, pub_proof) = dest
-        .compose_ls2_publication_via_tunnel(
-            publication_id,
-            Hash::from_bytes(*i2pd_hash.as_bytes()),
-            destination_outbound.role(),
-            0x51A7_6101,
-            wall_ms() + 60_000,
-            Deadline::new(Duration::from_secs(60)).expect("deadline"),
-            &mut tunnel_rng,
-            0,
-        )
-        .expect("compose publication");
+    let publication_id = {
+        let mut coord_guard = coordinator.lock().await;
+        coord_guard
+            .begin_ls2_publication(store_message, RouterHash::from_bytes(*i2pd_hash.as_bytes()))
+            .expect("begin publication")
+    };
+    let (pub_dispatch, pub_proof) = {
+        let mut coord_guard = coordinator.lock().await;
+        coord_guard
+            .compose_ls2_publication_via_tunnel(
+                publication_id,
+                Hash::from_bytes(*i2pd_hash.as_bytes()),
+                destination_outbound.role(),
+                0x51A7_6101,
+                wall_ms() + 60_000,
+                Deadline::new(Duration::from_secs(60)).expect("deadline"),
+                &mut tunnel_rng,
+                0,
+            )
+            .expect("compose publication")
+    };
+    assert!(pub_proof.via_tunnel);
     assert!(pub_proof.via_tunnel);
     for cell_delivery in &pub_dispatch.deliveries {
         let request = RouterDeliveryRequest::new(
@@ -812,11 +847,14 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
     // the static checker can verify the typed capability is wired
     // end-to-end.
     let mut routing = DestinationRouting::new(DestinationRoutingConfig::balanced());
-    let cached = dest
-        .lease_store()
-        .get(&reference_hash)
-        .expect("cached reference ls2")
-        .clone();
+    let cached = {
+        let coord_guard = coordinator.lock().await;
+        coord_guard
+            .lease_store()
+            .get(&reference_hash)
+            .expect("cached reference ls2")
+            .clone()
+    };
     let remote = routing
         .install_remote_lease_set2(cached)
         .expect("install remote ls2");
@@ -901,9 +939,12 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
         };
-        let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
+        let bytes = {
+            let mut coord_guard = coordinator.lock().await;
+            match coord_guard.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            }
         };
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
         dispatcher.dispatch_garlic_envelope(

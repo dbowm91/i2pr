@@ -223,7 +223,38 @@ to `passed` through `record_guarded` when the dedicated M6 interop
 lane provisions the environment and the driver emits
 `lease-lookup-completed=` + `remote-stream-established=true`. The
 runtime-neutral `i2pr-service-tunnels` crate remains transport-agnostic;
-the capability lives in the daemon.
+the capability lives in the daemon. Plan 206 (M10 production
+remote delivery composition corrective — `service_delivery.rs` +
+`service_tunnels.rs::plan206_remote_composition_tests`,
+Plan 206 §5/§7/§9/§13) promoted the Plan 202 marker/counter
+capability into an executable backend: `ServiceDestinationDelivery::with_backend(Arc<RemoteDestinationBackend>)`
+attaches a shared `RemoteDestinationBackend` that owns the
+`DestinationTunnelCoordinator` (for LeaseSet2 lookup /
+publication through `resolve_remote_lease_set2`) and the
+authenticated router delivery service (Plan 184 SSU2). The
+manager gained typed `route_outbound_remote_request` /
+`dispatch_inbound_to_owned_destination` /
+`register_inbound_destination_owner` /
+`inbound_destination_owner` seams; inbound owner registration
+is atomic with a fail-closed duplicate guard. Three new
+operation-boundary counter fields (`remote_lookup_cache_hit`,
+`remote_outbound_composed`, `remote_inbound_dispatched`) advance
+only through typed backend seams; the external `record_observation`
+helper silently ignores those labels so a positive observation
+cannot be manufactured without the production operation. Seven
+new `plan206_*` manager-level unit rows lock the typed path. The
+`scripts/check-service-tunnel-acceptance-evidence.sh` static
+checker extended with the Plan 206 §13 source-level invariants
+(executable `RemoteDestinationBackend` struct,
+`with_backend` constructor, `has_backend` accessor, three typed
+`note_*` seams, three typed operation-boundary counter fields,
+the `plan206_remote_composition_tests` module, the manager-level
+typed methods, the `ServiceTunnelManager::inbound_owners` field,
+and the Plan 202 driver's `has_backend` assertion). Plan 202 is
+reclassified to `partial-m10-remote-routing-capability-surface-
+superseded-by-plan206`; the underlying `RoutingDecision`,
+`RemoteDeliveryCounters`, and manager installation seams remain
+valid.
 
 Plan 203 closed the positive M10 remote HTTP + IRC application
 interop (`crates/i2pr-daemon/tests/service_tunnels_application_remote_qualification.rs`,
@@ -562,7 +593,7 @@ filesystem):
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
 | `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss), extended by Plan 190 with `reply_path_for_inbound_route` (typed `InboundGatewayRoute` → `i2pr_netdb::ReplyPath` adapter) and `ReplyPathDerivationError`. Plan 188 lands consumed-reference installs both directions; Plan 190 isolates and corrects the inbound NetDB reply-path metadata defect. Plan 201 §G adds the Branch G (store-acked-remote-lookup-fails) diagnostic observation surface: eleven new sanitized `DestinationTunnelCounters` (lookup_key_matches / _mismatches, floodfill_candidates_present / _absent, reply_paths_derived / _unresolved, ls2_records_decoded / _decode_rejected / _signature_rejected, inbound_cells_garlic_completed / _incomplete) plus the public `note_lookup_boundary(label, value)` typed observation surface. | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
-| `src/service_delivery.rs` | Plan 202 daemon-owned M10 production remote Destination/Streaming delivery capability. The capability is shared across every service the manager owns (Plan 202 §5); it carries the typed `RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` / `RemoteUnresolved`), the bounded `RemoteDeliveryCounters` (`remote_lookup_started` / `remote_lookup_succeeded` / `remote_lookup_failed` / `remote_stream_connect_started` / `remote_stream_established` / `remote_outbound_requests` / `remote_inbound_payloads` / `remote_route_retries` / `remote_route_timeouts` / `remote_tunnel_loss` / `local_coowned_deliveries` / `unknown_peer`), the in-flight resolution table (`MAX_CONCURRENT_REMOTE_RESOLUTIONS = 32`), the pure `classify_destination` helper, and the canonical hash conversion helpers. Plan 203 inherits the counters surface for the positive remote HTTP + IRC application interop lane. | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
+| `src/service_delivery.rs` | Plan 202 daemon-owned M10 production remote Destination/Streaming delivery capability (typed `RoutingDecision` enum + bounded `RemoteDeliveryCounters`); Plan 206 promoted the marker/counter shape into an executable backend (`RemoteDestinationBackend` owns the shared `DestinationTunnelCoordinator` + authenticated router delivery service). The capability is shared across every service the manager owns (Plan 202 §5 / Plan 206 §5); it carries the typed `RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` / `RemoteUnresolved`), the bounded `RemoteDeliveryCounters` (`remote_lookup_started` / `remote_lookup_succeeded` / `remote_lookup_failed` / `remote_stream_connect_started` / `remote_stream_established` / `remote_outbound_requests` / `remote_inbound_payloads` / `remote_route_retries` / `remote_route_timeouts` / `remote_tunnel_loss` / `local_coowned_deliveries` / `unknown_peer` / `remote_lookup_cache_hit` / `remote_outbound_composed` / `remote_inbound_dispatched` — the three operation-boundary counters advance only through typed backend seams), the in-flight resolution table (`MAX_CONCURRENT_REMOTE_RESOLUTIONS = 32`), the pure `classify_destination` helper, and the canonical hash conversion helpers. Plan 203 inherits the counters surface for the positive remote HTTP + IRC application interop lane. | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `RemoteDestinationBackend`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
 | `tests/integration/m6-interop/run-m6-mixed-router.sh` | Plan 189 §8 cross-family M6 mixed-router evidence aggregator (reuses the four per-layer harnesses, binds every Plan 189 §8 guarded row to a family + a per-layer command exit code) | `cross_family_row`, `record`, `run_per_layer` |
 | `src/sam.rs` | Plans 137–149 supervised SAM 3.1 listener and composition root | `SamServiceState`, `execute_session_create` (self-composes bridge + driver), `execute_stream_connect`, `execute_stream_accept`, byte-exact `STREAM STATUS RESULT=OK`/`DESTINATION=<peer-pub-b64>` raw transition, `STREAM FORWARD` ownership/bridge, local `NAMING LOOKUP` |
 | `src/i2cp.rs` | Plan 167 supervised loopback I2CP v0.9.67 listener and composition root extended by Plan 168 with the bounded per-session message/data-plane surface, by Plan 169 with the reconfigure transaction handler, the atomic reconfigure baseline in `I2cpSessionState::last_options`, and the synchronous `handle_destroy_session` data-plane drain, by Plan 171 with the explicit `stream.shutdown()` on the common per-connection terminal path, and by Plan 170 with the `ReplyAndFollowup` `RequestVariableLeaseSet` after `CreateSession` | `I2cpServiceState`, `I2cpSessionState`, `bind`, `serve`, `handle_connection`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `I2cpServiceSnapshot` |

@@ -388,12 +388,80 @@ if ! grep -q -F 'routing_decision_for' "${PLAN202_DRIVER}"; then
   echo "evidence check failed: Plan 202 driver lost its routing_decision_for assertions" >&2
   failures=$((failures + 1))
 fi
+if ! grep -q -F 'has_backend' "${PLAN202_DRIVER}"; then
+  echo "evidence check failed: Plan 202 driver lost its has_backend assertion (Plan 206 §5)" >&2
+  failures=$((failures + 1))
+fi
 if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN202_DRIVER}"; then
   echo "evidence check failed: Plan 202 driver lost its RemoteRouter classification assertion" >&2
   failures=$((failures + 1))
 fi
 if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN202_DRIVER}"; then
   echo "evidence check failed: Plan 202 driver may log peer key material" >&2
+  failures=$((failures + 1))
+fi
+# Plan 206 §13 — the manager must expose the typed
+# `RemoteDestinationBackend` shape and the typed seam that routes a
+# non-co-owned peer through it. Counters advance at operation
+# boundaries, not via external record_observation calls.
+if ! grep -q -F 'RemoteDestinationBackend' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 backend struct missing from service_delivery.rs" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'with_backend' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 ServiceDestinationDelivery::with_backend constructor missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'has_backend' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 ServiceDestinationDelivery::has_backend accessor missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'note_lookup_cache_hit' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed lookup-cache-hit seam missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'note_outbound_composed' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed outbound-composed seam missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'note_inbound_dispatched' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed inbound-dispatched seam missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'remote_lookup_cache_hit' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed lookup-cache-hit counter missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'remote_outbound_composed' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed outbound-composed counter missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'remote_inbound_dispatched' "${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"; then
+  echo "evidence check failed: Plan 206 typed inbound-dispatched counter missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'plan206_remote_composition_tests' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 manager-level test module missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'route_outbound_remote_request' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 manager route_outbound_remote_request method missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'dispatch_inbound_to_owned_destination' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 manager dispatch_inbound_to_owned_destination method missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'register_inbound_destination_owner' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 inbound owner registration method missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'resolve_remote_lease_set2' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 manager resolve_remote_lease_set2 method missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'inbound_owners' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 206 inbound_owners field missing from ServiceTunnelManager" >&2
   failures=$((failures + 1))
 fi
 

@@ -85,18 +85,36 @@ single shared `ServiceDestinationDelivery` capability (Plan 202
 the manager owns; the typed `RoutingDecision` enum distinguishes
 the explicit local co-owned path (`LocalCoOwned`) from the
 remote-router path (`RemoteRouter`) and the typed failure
-(`RemoteUnresolved`). Local co-owned delivery remains the
-explicit path for destinations the manager owns and is now
-retained as a bounded optimization, not the only path; the
-remote-router path drives the Plan 184–193 one-hop SSU2/tunnel/
-NetDB/LeaseSet2/ECIES/Garlic/Streaming stack with no second
-SSU2/tunnel stack. Plans 180-and-182 jointly close the M10 local
-product + round-trip layer (reconcile model + local-delivery
-driver); Plans 202-and-203 jointly close the M10 production remote
-Destination/Streaming composition + positive remote HTTP/IRC
-application interop. Plans 195 and 204 own the M10 final closure
-authority normalization; Plan 204 landed the docs/CI normalization
-pass on top of Plans 200/202/203 and remains blocked on Plan 201's
+(`RemoteUnresolved`). Plan 206 (M10 production remote delivery
+composition corrective) promoted the marker-shape capability into
+an executable backend: `RemoteDestinationBackend` owns the shared
+`DestinationTunnelCoordinator` (for LeaseSet2 lookup /
+publication through `resolve_remote_lease_set2`) and the
+authenticated router delivery service (Plan 184 SSU2); the
+manager gained typed `route_outbound_remote_request` /
+`dispatch_inbound_to_owned_destination` /
+`register_inbound_destination_owner` /
+`resolve_remote_lease_set2` seams that route queued Streaming
+requests through the production Plan 184–193 stack without a
+parallel test-owned backend. Three operation-boundary counter
+fields (`remote_lookup_cache_hit`, `remote_outbound_composed`,
+`remote_inbound_dispatched`) advance only through typed backend
+seams; the external `record_observation` helper silently ignores
+those labels so a positive observation cannot be manufactured
+without the production operation. The legacy marker shape keeps
+`RemoteUnresolved` so a silent local fallback for a remote peer
+cannot regress. Local co-owned delivery remains the explicit path
+for destinations the manager owns and is now retained as a
+bounded optimization, not the only path; the remote-router path
+drives the Plan 184–193 one-hop SSU2/tunnel/NetDB/LeaseSet2/
+ECIES/Garlic/Streaming stack with no second SSU2/tunnel stack.
+Plans 180-and-182 jointly close the M10 local product + round-trip
+layer (reconcile model + local-delivery driver); Plans 202, 203,
+and 206 jointly close the M10 production remote Destination/
+Streaming composition + positive remote HTTP/IRC application
+interop. Plans 195 and 204 own the M10 final closure authority
+normalization; Plan 204 landed the docs/CI normalization pass
+on top of Plans 200/202/203 and remains blocked on Plan 201's
 Java branch corrective.
 
 ## Module layout
@@ -113,7 +131,7 @@ Java branch corrective.
 | `socks5` | `crates/i2pr-service-tunnels/src/socks5/` | Plan 177 runtime-neutral RFC 1928 no-auth greeting + CONNECT request parser, `.i2p`/DOMAINNAME-only target policy, deterministic reply generator | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `RequestParser`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_socks5_reply` |
 | `irc` | `crates/i2pr-service-tunnels/src/irc/` | Plan 178 runtime-neutral IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, USER/PING/QUIT/PART rewrites, CTCP/DCC policy; plus the Plan 179 server registration interceptor, authenticated peer Destination hash projection, and the typed `RegistrationOutcome` handoff contract | `IrcLimits`, `IrcClientOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerOptions`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname` |
 | `service_destination` | `crates/i2pr-storage/src/service_destination.rs` | Versioned, atomic, secret-safe persistent service destination storage | `ServiceDestinationStore`, `ServiceDestinationRecord`, `ServiceDestinationStorageError` |
-| `service_tunnels` | `crates/i2pr-daemon/src/service_tunnels.rs` | Generic client/server tunnel composition root + Plan 180 generation/reconcile/draining + Plan 202 router-delivery capability surface + Plan 203 remote application observation surface | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceRuntime`, `ServiceTunnelSnapshot`, `ClientTarget`, `DestinationFailure`, `ReconcileOutcome`, `ReapReport`, `GenerationSnapshot`, `StagedRuntime`, `install_router_delivery`, `uninstall_router_delivery`, `has_router_delivery`, `router_delivery`, `routing_decision_for`, `co_owned_destination_hashes`, `resolve_client_destination_with_decision`, `record_remote_application_observation`, `REMOTE_APPLICATION_DOCUMENTED_LABELS` |
+| `service_tunnels` | `crates/i2pr-daemon/src/service_tunnels.rs` | Generic client/server tunnel composition root + Plan 180 generation/reconcile/draining + Plan 202 router-delivery capability surface + Plan 203 remote application observation surface + Plan 206 executable remote backend seams | `ServiceTunnelManager`, `ServiceTunnelManagerConfig`, `ServiceRuntime`, `ServiceTunnelSnapshot`, `ClientTarget`, `DestinationFailure`, `ReconcileOutcome`, `ReapReport`, `GenerationSnapshot`, `StagedRuntime`, `install_router_delivery`, `uninstall_router_delivery`, `has_router_delivery`, `router_delivery`, `routing_decision_for`, `co_owned_destination_hashes`, `resolve_client_destination_with_decision`, `resolve_remote_lease_set2`, `route_outbound_remote_request`, `dispatch_inbound_to_owned_destination`, `register_inbound_destination_owner`, `unregister_inbound_destination_owner`, `inbound_destination_owner`, `inbound_owned_destination_hashes`, `record_remote_application_observation`, `REMOTE_APPLICATION_DOCUMENTED_LABELS` |
 | `service_generation` | `crates/i2pr-daemon/src/service_generation.rs` | Plan 180 committed-generation bookkeeping | `ServiceTunnelGeneration`, `DrainingGeneration`, `GenerationCounters`, `GenerationIdAllocator`, `DestinationResolution` |
 | `service_tunnels_http` | `crates/i2pr-daemon/src/service_tunnels_http.rs` | Plan 176 HTTP client tunnel executor (supervisor + per-connection handler) | `HttpConnectionOutcome`, `run_http_connection`, `run_http_client_loop` |
 | `service_tunnels_socks5` | `crates/i2pr-daemon/src/service_tunnels_socks5.rs` | Plan 177 SOCKS5 client tunnel executor (supervisor + per-connection handler) | `Socks5ConnectionOutcome`, `run_socks5_connection`, `run_socks5_client_loop` |

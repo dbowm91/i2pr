@@ -267,7 +267,7 @@ pub fn router_hash_from_destination(destination: crate::DestinationHash) -> Rout
 /// this trait. The seam will only consult a provider that is
 /// actually injected; without an injection, the seam continues to
 /// report the Plan 106 blocked status.
-pub trait ReplyPathProvider {
+pub trait ReplyPathProvider: Send + Sync {
     /// Returns `true` when at least one inbound exploratory tunnel is
     /// currently registered and unexpired.
     fn has_inbound_tunnel(&self) -> bool;

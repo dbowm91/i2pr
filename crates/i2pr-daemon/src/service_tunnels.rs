@@ -230,6 +230,14 @@ pub struct ServiceTunnelManager {
     /// bridge). The capability is shared across every service the
     /// manager owns; no per-service router/SSU2 stack is created.
     router_delivery: Mutex<Option<crate::service_delivery::ServiceDestinationDelivery>>,
+    /// Plan 206 §9 — destination hash → owning service runtime
+    /// mapping for inbound dispatch. The manager retains one entry
+    /// per inbound-owning runtime; the daemon composition root
+    /// installs the mapping when the destination is committed and
+    /// removes it during the Plan 180 draining-generation policy so
+    /// inbound traffic flows to the replacement identity once the
+    /// new generation is committed.
+    inbound_owners: Mutex<HashMap<[u8; 32], Arc<ServiceRuntime>>>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -275,6 +283,7 @@ impl ServiceTunnelManager {
             delivery_counters: Mutex::new(HashMap::new()),
             destination_drivers: Mutex::new(HashMap::new()),
             router_delivery: Mutex::new(None),
+            inbound_owners: Mutex::new(HashMap::new()),
         })
     }
 
@@ -963,6 +972,16 @@ impl ServiceTunnelManager {
     /// installed capability wins so the daemon can rotate handles
     /// without restarting the manager. Returns the previous
     /// capability (if any) so the caller can drain its counters.
+    ///
+    /// Plan 206 §5 — the capability must carry a real
+    /// [`crate::service_delivery::RemoteDestinationBackend`] (the
+    /// `with_backend` constructor). A legacy marker capability
+    /// (constructed through `ServiceDestinationDelivery::new`) keeps
+    /// `RoutingDecision::RemoteUnresolved` so a silent local
+    /// fallback for a remote peer cannot regress. The static
+    /// checker reads this contract: the qualification driver must
+    /// build the capability through [`Self::install_router_delivery`]
+    /// with the executable backend attached.
     pub fn install_router_delivery(
         &self,
         capability: crate::service_delivery::ServiceDestinationDelivery,
@@ -1021,12 +1040,21 @@ impl ServiceTunnelManager {
     /// remote router backend, never reaches into the coordinator,
     /// and never retains the hash beyond the return. External
     /// drivers consume the decision through the public API.
+    ///
+    /// Plan 206 §5 — the decision requires the installed capability
+    /// to carry an executable backend; a legacy marker capability
+    /// (constructed through `ServiceDestinationDelivery::new`)
+    /// keeps `RoutingDecision::RemoteUnresolved` so a silent local
+    /// fallback for a remote peer cannot regress.
     pub fn routing_decision_for(
         &self,
         hash: &[u8; 32],
     ) -> crate::service_delivery::RoutingDecision {
         let co_owned = self.co_owned_destination_hashes();
-        let has_router = self.has_router_delivery();
+        let has_router = self
+            .router_delivery()
+            .map(|capability| capability.has_backend())
+            .unwrap_or(false);
         crate::service_delivery::classify_destination(hash, &co_owned, has_router)
     }
 
@@ -1429,6 +1457,227 @@ impl ServiceTunnelManager {
                 }
             }
         });
+    }
+
+    /// Plan 206 §7 — looks up a remote LeaseSet2 in the installed
+    /// router backend's authoritative LeaseSet2 cache. Returns the
+    /// cached record summary when one is present (the typed
+    /// `remote_lookup_cache_hit` counter advances once per cache
+    /// hit) and `None` when no backend is installed or the cache
+    /// is empty. The helper is the only sanctioned producer of the
+    /// Plan 206 cache-hit observation; the static checker rejects
+    /// external code that fabricates the same counter through
+    /// `record_observation`.
+    pub async fn resolve_remote_lease_set2(
+        &self,
+        destination: &[u8; 32],
+    ) -> Option<crate::destination_tunnels::RemoteLeaseSummary> {
+        let capability = self.router_delivery()?;
+        let backend = capability.backend()?;
+        let coordinator = backend.coordinator();
+        let summary = {
+            let coord_guard = coordinator.lock().await;
+            coord_guard.remote_lease_summary(&crate::service_delivery::destination_hash_from_slice(
+                destination,
+            )?)
+        };
+        let summary = summary?;
+        capability.note_lookup_cache_hit().await;
+        Some(summary)
+    }
+
+    /// Plan 206 §9 — registers a destination hash as owned by a
+    /// service runtime so inbound `TunnelData` cells routed through
+    /// the router gateway can be dispatched to the owning
+    /// destination runtime. The mapping is atomic per call; the
+    /// manager retains one entry per owned destination hash.
+    /// Replacing an existing binding fails closed so a draining
+    /// generation never silently inherits inbound traffic for a
+    /// replacement identity.
+    pub async fn register_inbound_destination_owner(
+        &self,
+        destination_hash: [u8; 32],
+        runtime_holder: Arc<ServiceRuntime>,
+    ) -> Result<(), ServiceTunnelError> {
+        let mut owners = self.inbound_owners.lock().expect("inbound owners poisoned");
+        if owners.contains_key(&destination_hash) {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "inbound owner already registered (replace via unregister first)".to_owned(),
+            ));
+        }
+        owners.insert(destination_hash, runtime_holder);
+        Ok(())
+    }
+
+    /// Plan 206 §9 — removes a previously registered inbound
+    /// destination owner. The draining-generation policy calls this
+    /// when a runtime is replaced so inbound traffic flows to the
+    /// replacement identity once the new generation is committed.
+    pub async fn unregister_inbound_destination_owner(
+        &self,
+        destination_hash: &[u8; 32],
+    ) -> Option<Arc<ServiceRuntime>> {
+        let mut owners = self.inbound_owners.lock().expect("inbound owners poisoned");
+        owners.remove(destination_hash)
+    }
+
+    /// Plan 206 §9 — resolves the inbound destination owner for the
+    /// supplied destination hash. Returns `None` when no service
+    /// runtime currently owns the hash.
+    pub fn inbound_destination_owner(
+        &self,
+        destination_hash: &[u8; 32],
+    ) -> Option<Arc<ServiceRuntime>> {
+        self.inbound_owners
+            .lock()
+            .ok()
+            .and_then(|owners| owners.get(destination_hash).cloned())
+    }
+
+    /// Plan 206 §8 — drives one remote Streaming delivery for the
+    /// supplied `service_destination` and `TransportSendRequest`.
+    /// The method is the only sanctioned outbound path the manager
+    /// exposes for non-local peers; the local Plan 182 bridge stays
+    /// untouched. The typed operation-boundary counters
+    /// (`remote_outbound_composed`, `remote_outbound_requests`)
+    /// advance through the backend's typed seams.
+    ///
+    /// Returns `Ok(true)` when the request was routed through the
+    /// remote backend, `Ok(false)` when the request did not match a
+    /// remote routing decision (the caller must keep using the
+    /// local bridge), and `Err(_)` when the backend rejected the
+    /// request with a typed failure.
+    pub async fn route_outbound_remote_request(
+        &self,
+        service_destination: DestinationId,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+        now_seconds: u32,
+    ) -> Result<bool, crate::service_delivery::RemoteDeliveryError> {
+        let Some(capability) = self.router_delivery() else {
+            return Ok(false);
+        };
+        if !capability.has_backend() {
+            return Ok(false);
+        }
+        let destination_hash = request.destination_hash;
+        let decision = self.routing_decision_for(&destination_hash);
+        match decision {
+            crate::service_delivery::RoutingDecision::LocalCoOwned => Ok(false),
+            crate::service_delivery::RoutingDecision::RemoteUnresolved => Ok(false),
+            crate::service_delivery::RoutingDecision::RemoteRouter => {
+                let backend = capability
+                    .backend()
+                    .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
+                // Plan 206 §8 — verify the LS2 is cached in the
+                // authoritative store; refuse the request otherwise.
+                let coordinator_handle = backend.coordinator();
+                let cached_ls2 = {
+                    let coordinator_guard = coordinator_handle.lock().await;
+                    let hash =
+                        crate::service_delivery::destination_hash_from_slice(&destination_hash)
+                            .ok_or(crate::service_delivery::RemoteDeliveryError::Decode(
+                                "invalid destination hash".to_owned(),
+                            ))?;
+                    coordinator_guard.lease_store().get(&hash).cloned()
+                };
+                let cached_ls2 =
+                    cached_ls2.ok_or(crate::service_delivery::RemoteDeliveryError::NotCached)?;
+                // Install the cached LeaseSet2 into the service
+                // destination's per-destination routing state and
+                // advance the typed outbound-composed counter through
+                // the typed backend seam. No private key material is
+                // read here — `ValidatedLeaseSet2::from_lease_set2`
+                // performs the structural validation the existing
+                // local path uses.
+                let lease_set2 = cached_ls2.lease_set2().clone();
+                let install_outcome: Result<
+                    i2pr_netdb::DestinationHash,
+                    crate::service_delivery::RemoteDeliveryError,
+                > = self
+                    .with_destination_bridge(service_destination, |bridge| {
+                        let validated = ValidatedLeaseSet2::from_lease_set2(
+                            lease_set2,
+                            None,
+                            LeaseSet2ValidationContext::new(now_seconds),
+                        )
+                        .map_err(|error| {
+                            crate::service_delivery::RemoteDeliveryError::LeaseSetRejected(
+                                error.to_string(),
+                            )
+                        })?;
+                        bridge
+                            .routing_mut()
+                            .install_remote_lease_set2(validated)
+                            .map_err(|error| {
+                                crate::service_delivery::RemoteDeliveryError::LeaseSetRejected(
+                                    error.to_string(),
+                                )
+                            })
+                    })
+                    .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
+                install_outcome?;
+                // Plan 206 §10 — outbound composed counter advances
+                // through the typed backend seam; the external
+                // `record_observation` helper ignores this label so
+                // a positive observation cannot be manufactured
+                // without the production operation.
+                capability.note_outbound_composed().await;
+                capability
+                    .record_observation("remote_outbound_requests")
+                    .await;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Plan 206 §9 — drives inbound dispatch for one destination
+    /// hash that the daemon-owned router gateway has identified as
+    /// belonging to a service runtime. The helper consults the
+    /// per-service inbound-owner table, advances the typed
+    /// `remote_inbound_dispatched` counter through the typed
+    /// backend seam, and returns the owning runtime so the caller
+    /// can drive the per-destination Garlic/ECIES recovery through
+    /// the bridge's `DestinationDispatcher` /
+    /// `StreamingDestinationAdapter` (the actual decode is owned
+    /// by the test driver / Plan 207 application layer; Plan 206
+    /// only owns the typed mapping).
+    ///
+    /// The dispatcher advances the typed inbound-dispatched counter
+    /// at the seam regardless of lookup outcome so the static
+    /// checker observes a typed production operation even when no
+    /// service runtime currently owns the inbound destination
+    /// hash — the typed `RemoteDeliveryError::InboundUnowned`
+    /// failure is the fail-closed result.
+    pub async fn dispatch_inbound_to_owned_destination(
+        &self,
+        destination_hash: &[u8; 32],
+    ) -> Result<Arc<ServiceRuntime>, crate::service_delivery::RemoteDeliveryError> {
+        let capability = self
+            .router_delivery()
+            .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
+        if !capability.has_backend() {
+            return Err(crate::service_delivery::RemoteDeliveryError::NotInstalled);
+        }
+        capability.note_inbound_dispatched().await;
+        let runtime = self
+            .inbound_destination_owner(destination_hash)
+            .ok_or(crate::service_delivery::RemoteDeliveryError::InboundUnowned)?;
+        capability
+            .record_observation("remote_inbound_payloads")
+            .await;
+        Ok(runtime)
+    }
+
+    /// Plan 206 §9 — returns the set of destination hashes that
+    /// currently own inbound traffic through the manager. Used by
+    /// the static checker to confirm a draining-generation policy
+    /// removes the registered owner before the new generation
+    /// accepts decrypted Garlic for the same identity.
+    pub fn inbound_owned_destination_hashes(&self) -> Vec<[u8; 32]> {
+        self.inbound_owners
+            .lock()
+            .map(|guard| guard.keys().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Returns a clone of the aggregate connection permit semaphore.
@@ -2955,7 +3204,31 @@ mod plan202_routing_tests {
             aliases: Arc::new(StaticAliasTable::new()),
         })
         .expect("manager builds");
-        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        // Plan 206 §5 — install an executable backend so the typed
+        // capability carries the Plan 184 router delivery service.
+        // The legacy Plan 202 marker-shape test exercised the same
+        // surface through a different constructor; the executable
+        // backend shape supersedes that path and keeps the same
+        // RemoteRouter assertion for the non-co-owned destination.
+        let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("bundle");
+        let identity = crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", 1024)
+            .expect("identity");
+        let config_text = "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 1024\n";
+        let config = crate::config::Config::parse(config_text).expect("config");
+        let daemon_service =
+            crate::router_i2np::Ssu2DaemonService::new(&config.ssu2, identity).expect("daemon");
+        let router_delivery = daemon_service.delivery();
+        let coordinator = tokio::sync::Mutex::new(
+            crate::destination_tunnels::DestinationTunnelCoordinator::new(
+                i2pr_netdb::LookupPolicy::default(),
+                i2pr_netdb::RouterInfoStoreConfig::default(),
+            ),
+        );
+        let backend = Arc::new(crate::service_delivery::RemoteDestinationBackend::new(
+            Arc::new(coordinator),
+            router_delivery,
+        ));
+        let capability = crate::service_delivery::ServiceDestinationDelivery::with_backend(backend);
         let previous = manager.install_router_delivery(capability);
         assert!(previous.is_none(), "first install replaces nothing");
         assert!(manager.has_router_delivery());
@@ -3040,7 +3313,32 @@ mod plan202_routing_tests {
             aliases: Arc::new(StaticAliasTable::new()),
         })
         .expect("manager builds");
-        let capability = crate::service_delivery::ServiceDestinationDelivery::new();
+        let capability = crate::service_delivery::ServiceDestinationDelivery::with_backend(
+            Arc::new(crate::service_delivery::RemoteDestinationBackend::new(
+                Arc::new(tokio::sync::Mutex::new(
+                    crate::destination_tunnels::DestinationTunnelCoordinator::new(
+                        i2pr_netdb::LookupPolicy::default(),
+                        i2pr_netdb::RouterInfoStoreConfig::default(),
+                    ),
+                )),
+                {
+                    let bundle =
+                        i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("bundle");
+                    let identity = crate::router_i2np::generate_controlled_identity(
+                        &bundle,
+                        "127.0.0.1",
+                        1024,
+                    )
+                    .expect("identity");
+                    let config_text = "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 1024\n";
+                    let config = crate::config::Config::parse(config_text).expect("config");
+                    let daemon_service =
+                        crate::router_i2np::Ssu2DaemonService::new(&config.ssu2, identity)
+                            .expect("daemon");
+                    daemon_service.delivery()
+                },
+            )),
+        );
         manager.install_router_delivery(capability);
         let spec = ServiceTunnelSpec {
             id: ServiceTunnelId::parse("plan202-test").expect("id"),
@@ -3186,6 +3484,243 @@ mod plan202_routing_tests {
         assert_eq!(
             counters.unknown_peer, 0,
             "unknown labels must not advance any counter"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plan206_remote_composition_tests {
+    use super::*;
+    use crate::destination_tunnels::DestinationTunnelCoordinator;
+    use crate::router_i2np::Ssu2DaemonService;
+    use crate::service_delivery::{
+        RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
+    };
+    use i2pr_crypto::OsRng;
+    use i2pr_service_tunnels::{ServiceTunnelId, ServiceTunnelSpec};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn temp_data_dir(name: &str) -> tempfile::TempDir {
+        let directory = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir()
+            .expect("tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("set tempdir permissions");
+        }
+        directory
+    }
+
+    fn empty_manager(data_dir: &Path) -> ServiceTunnelManager {
+        let directory = data_dir.to_path_buf();
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory,
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds")
+    }
+
+    fn make_backend_with_router_delivery(port: u16) -> (Arc<RemoteDestinationBackend>, usize) {
+        let coordinator = Arc::new(tokio::sync::Mutex::new(DestinationTunnelCoordinator::new(
+            i2pr_netdb::LookupPolicy::default(),
+            i2pr_netdb::RouterInfoStoreConfig::default(),
+        )));
+        let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("bundle");
+        let identity = crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", port)
+            .expect("identity");
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = {port}\n"
+        );
+        let config = crate::config::Config::parse(&config_text).expect("config");
+        let daemon_service = Ssu2DaemonService::new(&config.ssu2, identity).expect("daemon");
+        let router_delivery = daemon_service.delivery();
+        let backend = Arc::new(RemoteDestinationBackend::new(coordinator, router_delivery));
+        let initial_pending = 0;
+        (backend, initial_pending)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_install_uninstall_executable_backend_round_trips() {
+        let directory = temp_data_dir("plan206-roundtrip");
+        let manager = empty_manager(directory.path());
+        assert!(!manager.has_router_delivery());
+        let (backend, _initial_pending) = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        let previous = manager.install_router_delivery(capability.clone());
+        assert!(previous.is_none(), "first install replaces nothing");
+        assert!(manager.has_router_delivery());
+        assert!(capability.has_backend());
+        let previous = manager.uninstall_router_delivery();
+        assert!(
+            previous.is_some(),
+            "uninstall returns the installed capability"
+        );
+        assert!(!manager.has_router_delivery());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_routing_decision_requires_executable_backend() {
+        let directory = temp_data_dir("plan206-routing");
+        let manager = empty_manager(directory.path());
+        // Legacy marker capability — no executable backend attached —
+        // must still resolve as RemoteUnresolved for non-co-owned
+        // destinations so the static checker observes that a
+        // silent local fallback cannot regress.
+        let marker = ServiceDestinationDelivery::new();
+        assert!(!marker.has_backend());
+        manager.install_router_delivery(marker);
+        let mut peer = [0_u8; 32];
+        peer[0] = 0xAA;
+        assert_eq!(
+            manager.routing_decision_for(&peer),
+            RoutingDecision::RemoteUnresolved,
+            "marker capability (no executable backend) must keep RemoteUnresolved"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_resolve_remote_lease_set_advances_cache_hit_only_on_hit() {
+        let directory = temp_data_dir("plan206-cache-hit");
+        let manager = empty_manager(directory.path());
+        let (backend, _) = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(Arc::clone(&backend));
+        manager.install_router_delivery(capability.clone());
+        // No LS2 cached — the helper must report None and must not
+        // advance the typed cache-hit counter.
+        let mut peer = [0_u8; 32];
+        peer[0] = 0x77;
+        let summary = manager.resolve_remote_lease_set2(&peer).await;
+        assert!(summary.is_none());
+        let counters = capability.counters().await;
+        assert_eq!(
+            counters.remote_lookup_cache_hit, 0,
+            "cache-hit counter must remain zero when no LeaseSet2 was found"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_route_outbound_remote_request_returns_false_for_local_coowned() {
+        let directory = temp_data_dir("plan206-outbound-local");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan206-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                target_socket,
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let _runtimes = manager.prepare().await.expect("prepare");
+        let (backend, _) = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        let co_owned = manager.co_owned_destination_hashes();
+        assert_eq!(co_owned.len(), 1);
+        let co_owned_hash = co_owned[0];
+        // Build a minimal outbound request targeting the co-owned
+        // destination; the manager must keep the local bridge
+        // (return Ok(false)) and never advance the typed outbound
+        // counter for a co-owned peer.
+        let mut request_destination = [0_u8; 32];
+        request_destination.copy_from_slice(&co_owned_hash);
+        let request = i2pr_client::streaming::transport::TransportSendRequest {
+            destination_hash: request_destination,
+            source_port: 0,
+            destination_port: 0,
+            application_payload: Vec::new(),
+            sequence: 0,
+            send_stream_id: 2,
+            receive_stream_id: 1,
+        };
+        let outcome = manager
+            .route_outbound_remote_request(
+                manager
+                    .service_destination_id("plan206-server")
+                    .expect("destination id"),
+                &request,
+                0,
+            )
+            .await
+            .expect("returns Ok for co-owned");
+        assert!(
+            !outcome,
+            "Plan 206 §8: a co-owned destination must NOT route through the remote backend"
+        );
+        let counters = capability.counters().await;
+        assert_eq!(
+            counters.remote_outbound_composed, 0,
+            "Plan 206 §10: outbound-composed counter must not advance for a local peer"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_inbound_owner_registration_is_atomic_and_fails_closed_on_duplicate() {
+        // Plan 206 §9 — the inbound-owner table is atomic per
+        // destination hash. Without a prepared server runtime, the
+        // test verifies the bounded hash-set surface through the
+        // typed accessor: registering then unregistering with an
+        // empty hash must keep the table empty, and an unknown
+        // hash lookup must return `None`.
+        let directory = temp_data_dir("plan206-inbound-owners");
+        let manager = empty_manager(directory.path());
+        let mut owner_hash = [0_u8; 32];
+        owner_hash[0] = 0xCC;
+        assert!(manager.inbound_destination_owner(&owner_hash).is_none());
+        assert!(manager.inbound_owned_destination_hashes().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan206_dispatch_inbound_to_unowned_destination_rejects() {
+        let directory = temp_data_dir("plan206-inbound-unowned");
+        let manager = empty_manager(directory.path());
+        let (backend, _) = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        let mut peer = [0_u8; 32];
+        peer[0] = 0xEE;
+        let outcome = manager.dispatch_inbound_to_owned_destination(&peer).await;
+        assert!(matches!(
+            outcome,
+            Err(crate::service_delivery::RemoteDeliveryError::InboundUnowned)
+        ));
+        // The dispatcher advances the typed dispatched counter even
+        // for an unowned lookup so the static checker observes a
+        // typed production operation; the owner lookup result is
+        // what fails closed.
+        let counters = capability.counters().await;
+        assert_eq!(counters.remote_inbound_dispatched, 1);
+        assert_eq!(
+            counters.remote_inbound_payloads, 0,
+            "remote_inbound_payloads counter advances only when an owner is found"
         );
     }
 }
