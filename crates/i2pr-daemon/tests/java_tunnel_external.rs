@@ -275,6 +275,36 @@ fn record_stop(dir: &Path, detail: &str) {
     append_evidence(dir, "plan199-java-stop", detail);
 }
 
+/// Plan 201 §A — inbound I2NP message decoder that tries the standard
+/// 16-byte header first, then falls back to the 9-byte short-transport
+/// header. The first-family i2pd external driver only had to handle
+/// the short-transport form because Plan 161 i2pd sends reply bodies
+/// in that form. Java I2P 2.13.0 sends `DatabaseStore` responses to
+/// `DatabaseLookup` in the standard 16-byte form regardless of the
+/// inbound payload size, so a probe that only tries
+/// `decode_short_transport` misinterprets Java's reply header as the
+/// first 9 bytes of the body and shifts every subsequent field, which
+/// in turn produces the
+/// `Truncated { offset: 387, needed: 49858, remaining: 59 }` shape the
+/// first counted Plan 200 §B run surfaced.
+///
+/// This helper mirrors the production inbound decoder at
+/// `crates/i2pr-daemon/src/router_i2np.rs::dispatch_router_i2np`
+/// (standard first, short-transport fallback) and is the single
+/// place the Plan 201 Branch A corrective repairs the inbound decode
+/// gap for the second-family lane.
+fn decode_inbound_i2np(bytes: &[u8]) -> Result<I2npMessage, i2pr_proto::CodecError> {
+    match I2npMessage::decode_standard(bytes, MAX_I2NP_PAYLOAD_SIZE) {
+        Ok(message) => Ok(message),
+        Err(standard_err) => {
+            match I2npMessage::decode_short_transport(bytes, MAX_I2NP_PAYLOAD_SIZE) {
+                Ok(message) => Ok(message),
+                Err(_) => Err(standard_err),
+            }
+        }
+    }
+}
+
 fn gzip_member(bytes: &[u8]) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(bytes).expect("gzip RouterInfo");
@@ -385,14 +415,13 @@ async fn probe_routerinfo_lookup(
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => {
-                    pump_errors += 1;
-                    continue;
-                }
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                pump_errors += 1;
+                continue;
+            }
+        };
         let store = match message.body() {
             I2npBody::DatabaseStore(store) => store,
             _ => {
@@ -412,17 +441,26 @@ async fn probe_routerinfo_lookup(
             }
         };
         let payload_bytes = compressed.as_bytes();
+        // Plan 201 §A — Java I2P 2.13.0 stores the RouterInfo in the
+        // gzipped `RouterInfoCompressed` form exactly the same way i2pd
+        // 2.61.0 does. `RouterInfo::decode` expects uncompressed bytes,
+        // so the probe must gunzip the payload before parsing. The
+        // i2pd first-family driver worked because it went through the
+        // Plan 184 inbound dispatcher, which decompresses on the way in;
+        // this probe is a lower-level black-box read that has to do the
+        // decompression itself.
+        let mut decoder = flate2::read::GzDecoder::new(payload_bytes);
+        let mut decompressed = Vec::with_capacity(payload_bytes.len() * 4);
+        if std::io::Read::read_to_end(&mut decoder, &mut decompressed).is_err() {
+            pump_errors += 1;
+            continue;
+        }
         let decoded = match RouterInfo::decode(
-            payload_bytes,
+            &decompressed,
             i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
         ) {
             Ok(router_info) => router_info,
-            Err(error) => {
-                append_evidence(
-                    evidence_dir,
-                    &format!("p200-routerinfo-lookup-{probe_label}-decode-error"),
-                    &format!("{error:?}"),
-                );
+            Err(_) => {
                 pump_errors += 1;
                 continue;
             }
@@ -723,7 +761,7 @@ async fn pump_one_streaming_inbound(
     let Ok(Some(inbound)) = next else {
         return false;
     };
-    let message = match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
+    let message = match decode_inbound_i2np(&inbound.bytes) {
         Ok(message) => message,
         Err(_) => {
             *errors += 1;
@@ -1576,14 +1614,13 @@ async fn destination_message_plane_against_java() {
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => {
-                    lookup_pump_error += 1;
-                    continue;
-                }
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                lookup_pump_error += 1;
+                continue;
+            }
+        };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
@@ -1820,14 +1857,13 @@ async fn destination_message_plane_against_java() {
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => {
-                    lookup_pump_error += 1;
-                    continue;
-                }
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                lookup_pump_error += 1;
+                continue;
+            }
+        };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
@@ -2136,14 +2172,13 @@ async fn destination_message_plane_against_java() {
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => {
-                    reply_pump_error += 1;
-                    continue;
-                }
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                reply_pump_error += 1;
+                continue;
+            }
+        };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
@@ -2168,9 +2203,7 @@ async fn destination_message_plane_against_java() {
             // Plan 192: parse both the 9-byte short-transport Data
             // envelope and the I2CP-style Data body Java writes
             // inside its Garlic clove.
-            let decoded =
-                I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                    .expect("decode queued");
+            let decoded = decode_inbound_i2np(queued.bytes()).expect("decode queued");
             if let I2npBody::Data(body) = decoded.body() {
                 let i2cp_body = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
                     .expect("decode I2CP Data body");
@@ -2666,11 +2699,10 @@ async fn streaming_through_java() {
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => continue,
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => continue,
+        };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
@@ -2850,14 +2882,13 @@ async fn streaming_through_java() {
         let Ok(Some(inbound)) = next else {
             continue;
         };
-        let message =
-            match I2npMessage::decode_short_transport(&inbound.bytes, MAX_I2NP_PAYLOAD_SIZE) {
-                Ok(message) => message,
-                Err(_) => {
-                    pump_error += 1;
-                    continue;
-                }
-            };
+        let message = match decode_inbound_i2np(&inbound.bytes) {
+            Ok(message) => message,
+            Err(_) => {
+                pump_error += 1;
+                continue;
+            }
+        };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
