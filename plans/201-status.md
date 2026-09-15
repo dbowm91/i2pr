@@ -1,6 +1,6 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring-branch-a-landed-router-c-retained-zero-hop-helpers-reverted`**.
+Status: **`in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring`** (Plan 205 SAM-bridge helper pivot registered as the next executable plan; the Java-side LeaseSet2 publication boundary cannot close inside Plan 198 / Plan 201 §4 constraints without breaking no-public-I2P / no-Java-patching / no-i2pr-production-wire-change).
 
 Plan of record: [`201-m6-java-public-client-publication-corrective-and-second-family-closure.md`](201-m6-java-public-client-publication-corrective-and-second-family-closure.md).
 

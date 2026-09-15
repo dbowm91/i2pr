@@ -1,6 +1,6 @@
 # Plan 204 status — M10 final closure documentation and authority normalization
 
-Status: **`in-progress-docs-and-authority-normalization-blocked-on-plan201-external-run`**.
+Status: **`in-progress-docs-and-authority-normalization-blocked-on-plan205-sam-bridge-pivot`**.
 
 Plan of record: [`204-m10-final-closure-evidence-authority-and-documentation-normalization.md`](204-m10-final-closure-evidence-authority-and-documentation-normalization.md).
 
@@ -11,10 +11,17 @@ touches status references, stale prose, evidence/checker wiring,
 workflow names, and trivial exact-head plumbing. It does **not**
 claim `milestone6_interoperable = passed-via-plan193-and-plan201`
 or `milestone10_final_acceptance = closed-via-plan204` because
-**Plan 201 has not yet been passed** — its Branch G corrective
-framework is landed but the seven §11 stop rows are still blocked
-pending the Plan 200 exact-head external run that records the
-terminal `P200-{A..H}` classification. Per Plan 204 §1:
+**Plan 201 has not yet been passed** — its Branch A corrective
+landed (one-direction proof + symmetric b-knows-a fix via the
+i2pr test-driver decode gap; commit `2dc926f`), Branch G
+observation framework landed (commit `9bce8a7`), Branch C/D
+three-router topology + 1-hop helper profile attempted and proved
+bounded by Java's `ProfileOrganizer._thresholdSpeedValue` under
+controlled loopback topology (commit `d0fe596`), and the M10
+remote-row wiring landed (commit `06769fa`). The seven §11 stop
+rows are still blocked pending Plan 205's SAM-bridge helper pivot
+that closes the Java-side LeaseSet2 publication gap. Per Plan 204
+§1:
 
 > If any prerequisite is blocked/failed/missing, Plan 204 must
 > remain blocked. Do not weaken a checker or document around the
@@ -29,11 +36,12 @@ terminal `P200-{A..H}` classification. Per Plan 204 §1:
 | Plan 198 | `superseded-execution-decomposed-and-closed-via-plans200-204` | superseded umbrella; original final-closure interpretation remains fail-closed |
 | Plan 199 | `superseded-execution-decomposed-and-closed-via-plans200-204` | retained historical umbrella; decomposed into the convergent Plans 200–204 |
 | Plan 200 | `passed-m6-java-public-client-publication-observability-and-verified-bootstrap` | already passed; status records the diagnostic/evidence side |
-| Plan 201 | `in-progress-branch-g-framework-landed-blocked-on-exact-head-external-run` | framework landed; exact-head external run consumes the `P200-*` classification |
+| Plan 201 | `in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring` | Branch A decode-gap corrective + Branch G observation framework + Branch C/D three-router topology + 1-hop helper profile attempt; remaining work pivots to Plan 205 SAM-bridge helper rewrite |
 | Plan 202 | `passed-m10-production-remote-destination-and-streaming-composition` | already passed; transport layer |
 | Plan 203 | `passed-m10-positive-remote-http-and-irc-application-interop` | already passed; positive application layer |
+| Plan 205 | `in-progress-registered-blocked-on-plan198-publication-boundary` | next executable plan; rewrites the Java helpers onto the public SAM bridge path |
 | Plan 195 | `evidence-passed-m10-remote-independent-service-final-closure-pending-plan204-normalization` | reactivated from `registered-blocked-by-plan199` |
-| Plan 181 | `passed-m10-independent-application-and-service-interop-final-closure-evidence` | local rows were already passed; remote rows are now flipped via Plan 203 |
+| Plan 181 | `passed-m10-independent-application-and-service-interop-final-closure-evidence` | local rows were already passed; remote rows are now flipped via Plan 203 (wired in commit `06769fa`) |
 
 ### Documentation normalization
 
