@@ -223,9 +223,16 @@ fn sam_param(line: &str, key: &str) -> Option<String> {
 }
 
 /// Allocates a fresh destination through i2pd's public SAM surface
-/// (`DEST GENERATE`). Returns the public destination b64 material
-/// the M10 service-tunnel client must use.
-async fn generate_i2pd_destination(sam_endpoint: SocketAddr) -> String {
+/// (`DEST GENERATE`) and opens a STREAM session so i2pd publishes
+/// the destination's LeaseSet2 to the local NetDB before the i2pr
+/// side runs its lease lookup. Returns the public destination b64
+/// material the M10 service-tunnel client must use plus the
+/// connected SAM client whose socket must remain open for the
+/// lifetime of the destination's tunnel pool.
+async fn generate_i2pd_destination(
+    sam_endpoint: SocketAddr,
+    session_id: &str,
+) -> (String, SamClient) {
     let mut sam = SamClient::connect(sam_endpoint).await;
     let hello = sam
         .transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
@@ -240,7 +247,19 @@ async fn generate_i2pd_destination(sam_endpoint: SocketAddr) -> String {
         generated.starts_with("DEST REPLY") && generated.contains(" PUB="),
         "SAM DEST GENERATE failed: {generated}"
     );
-    sam_param(&generated, "PUB").expect("generated PUB")
+    let pub_b64 = sam_param(&generated, "PUB").expect("generated PUB");
+    let priv_b64 = sam_param(&generated, "PRIV").expect("generated PRIV");
+    let create = sam
+        .transact(&format!(
+            "SESSION CREATE STYLE=STREAM ID={session_id} DESTINATION={priv_b64} SIGNATURE_TYPE=7 inbound.length=0 outbound.length=0\n"
+        ))
+        .await
+        .expect("SAM session create read");
+    assert!(
+        create.contains("RESULT=OK"),
+        "SAM STREAM session failed: {create}"
+    );
+    (pub_b64, sam)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -397,8 +416,8 @@ async fn m10_positive_remote_http_and_irc_application_interop() {
         }
     }
 
-    let http_pub = generate_i2pd_destination(sam_endpoint).await;
-    let irc_pub = generate_i2pd_destination(sam_endpoint).await;
+    let (http_pub, _http_sam) = generate_i2pd_destination(sam_endpoint, "i2pr-plan203-http").await;
+    let (irc_pub, _irc_sam) = generate_i2pd_destination(sam_endpoint, "i2pr-plan203-irc").await;
     append_evidence(
         &evidence_dir,
         "i2pd-server-tunnels-provisioned",

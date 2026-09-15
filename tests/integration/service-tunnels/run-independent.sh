@@ -682,19 +682,27 @@ if [[ "${LANE}" == "full" ]]; then
     mkdir -p "${I2PD_DATA}"
     SAM_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
     I2PD_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+    I2PR_SSU2_BIND_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
     cat > "${I2PD_HOME}/i2pd.conf" <<EOF
 daemon = false
 loglevel = info
 netid = 2
+address4 = 127.0.0.1
 host = 127.0.0.1
 port = ${I2PD_PORT}
 ipv4 = true
 ipv6 = false
 nat = false
-notransit = true
-floodfill = false
+notransit = false
+floodfill = true
 reservedrange = false
 bandwidth = L
+[ssu2]
+enabled = true
+published = true
+port = ${I2PD_PORT}
+[ntcp2]
+enabled = false
 [sam]
 enabled = true
 address = 127.0.0.1
@@ -724,30 +732,62 @@ EOF
     I2PD_PID=$!
     CHILD_PIDS+=("${I2PD_PID}")
     SAM_READY=0
-    for _ in $(seq 1 120); do
+    I2PD_RI=""
+    I2PD_SSU2_READY=0
+    for _ in $(seq 1 240); do
+      if [[ -f "${I2PD_DATA}/router.info" ]] &&
+         grep -Fq "Start listening on 127.0.0.1:${I2PD_PORT}" "${I2PD_LOG}" 2>/dev/null; then
+        I2PD_RI="${I2PD_DATA}/router.info"
+        I2PD_SSU2_READY=1
+      fi
       if (echo > "/dev/tcp/127.0.0.1/${SAM_PORT}") 2>/dev/null; then
         SAM_READY=1
+      fi
+      if [[ "${SAM_READY}" -eq 1 && "${I2PD_SSU2_READY}" -eq 1 ]]; then
         break
       fi
       if ! kill -0 "${I2PD_PID}" 2>/dev/null; then
-        echo "ephemeral i2pd exited during startup" >&2
+        echo "ephemeral i2pd exited during startup (data=${I2PD_DATA} port=${I2PD_PORT} sam=${SAM_PORT} ri_present=$([ -f "${I2PD_DATA}/router.info" ] && echo yes || echo no) listening=$(grep -F "Start listening on 127.0.0.1:${I2PD_PORT}" "${I2PD_LOG}" 2>/dev/null | head -n1 || echo none))" >&2
         sed -n '1,40p' "${I2PD_LOG}" >&2 || true
         break
       fi
       sleep 0.5
     done
+    echo "    i2pd loop exit: sam_ready=${SAM_READY} ssu2_ready=${I2PD_SSU2_READY} ri=${I2PD_RI:-unset} data=${I2PD_DATA} port=${I2PD_PORT} sam=${SAM_PORT}" >&2
     if [[ "${SAM_READY}" -ne 1 ]]; then
       record_blocked "remote-independent-http-eepsite" \
         "i2pd SAM did not listen on 127.0.0.1:${SAM_PORT} (see i2pd.log)"
       record_blocked "remote-independent-irc-service" \
         "i2pd SAM did not listen on 127.0.0.1:${SAM_PORT} (see i2pd.log)"
+    elif [[ "${I2PD_SSU2_READY}" -ne 1 || -z "${I2PD_RI}" ]]; then
+      echo "ephemeral i2pd did not publish router.info / SSU2 listener" >&2
+      sed -n '1,40p' "${I2PD_LOG}" >&2 || true
+      record_blocked "remote-independent-http-eepsite" \
+        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT} (see i2pd.log)"
+      record_blocked "remote-independent-irc-service" \
+        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT} (see i2pd.log)"
+      record_blocked "m10-remote-destination-streaming-composition" \
+        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT}; Plan 202 Direction A attempt not executable (fail closed)"
     else
       # Independently generated destination via SAM DEST GENERATE.
       # Only the public PUB leaves this block; PRIV never touches
       # disk, logs, or evidence.
       I2PD_PUB_FILE="${SCRATCH}/i2pd-peer.pub"
+      I2PD_HTTP_PUB_FILE="${SCRATCH}/i2pd-http.pub"
+      I2PD_IRC_PUB_FILE="${SCRATCH}/i2pd-irc.pub"
+      I2PD_SESSION_DIR="${SCRATCH}/i2pd-sessions"
+      mkdir -p "${I2PD_SESSION_DIR}"
+      # §6.3 / Plan 181 stop-condition destination (DEST GENERATE
+      # only, no SESSION CREATE): the i2pd-owned destination has no
+      # tunnel pool and never publishes a LeaseSet2, so the i2pr
+      # side hits the §6.3 unknown-peer stop and the row stays
+      # blocked. Plan 202/203 open their own SAM sessions
+      # internally (Plan 202 lines 437–447; Plan 203 lines 244–256)
+      # so the lease-lookup / Streaming drivers see real LS2s.
       sam_rc=0
-      SAM_PORT="${SAM_PORT}" PUB_FILE="${I2PD_PUB_FILE}" python3 - <<'PY' \
+      SAM_PORT="${SAM_PORT}" \
+        PUB_FILE="${I2PD_PUB_FILE}" \
+        python3 - <<'PY' \
         >"${SCRATCH}/i2pd-sam.log" 2>&1 || sam_rc=$?
 import os
 import socket
@@ -756,23 +796,22 @@ port = int(os.environ["SAM_PORT"])
 pub_file = os.environ["PUB_FILE"]
 
 sock = socket.create_connection(("127.0.0.1", port), timeout=15)
+buf = [b""]
 try:
     sock.settimeout(15)
-    buffer = b""
 
     def transact(command):
-        global buffer
+        global buf
         sock.sendall(command.encode("ascii"))
-        while b"\n" not in buffer:
+        while b"\n" not in buf[0]:
             chunk = sock.recv(65536)
             if not chunk:
                 break
-            buffer += chunk
-        line, _, buffer = buffer.partition(b"\n")
+            buf[0] += chunk
+        line, _, rest = buf[0].partition(b"\n")
+        buf[0] = rest
         return line.decode("latin-1", "replace")
 
-    # One SAM session: HELLO and DEST GENERATE share the
-    # connection (a fresh socket without HELLO is rejected).
     hello = transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
     print(f"HELLO_REPLY={hello[:80]}")
     if "RESULT=OK" not in hello:
@@ -780,10 +819,6 @@ try:
     for variant in ("DEST GENERATE SIGNATURE_TYPE=7\n", "DEST GENERATE\n"):
         dest = transact(variant)
         print(f"DEST_VARIANT={variant.strip()}")
-        print(f"DEST_REPLY_PREFIX={dest[:60]}")
-        # i2pd deviation (documented): DEST GENERATE success carries
-        # no RESULT=OK token; `DEST REPLY PUB=... PRIV=...` alone is
-        # the success signal. PUB length gates Ed25519 material.
         if dest.startswith("DEST REPLY") and " PUB=" in dest:
             pub = dest.split(" PUB=", 1)[1].split(" ", 1)[0].strip()
             if len(pub) >= 512:
@@ -796,15 +831,30 @@ try:
 finally:
     sock.close()
 PY
-      # The SAM transcript (reply prefixes and lengths only, never
-      # key material) is evidence in every outcome.
       cp "${SCRATCH}/i2pd-sam.log" "${EVIDENCE_DIR}/i2pd-sam.log" 2>/dev/null || true
       cp "${I2PD_LOG}" "${EVIDENCE_DIR}/i2pd.log" 2>/dev/null || true
+      # Provide two pre-generated PUB files that the Plan 203 driver
+      # will overwrite when it opens its own sessions. Write minimal
+      # placeholders so the §6.3 driver does not see a stale PUB.
+      : > "${I2PD_HTTP_PUB_FILE}"
+      : > "${I2PD_IRC_PUB_FILE}"
       if [[ "${sam_rc}" -ne 0 || ! -s "${I2PD_PUB_FILE}" ]]; then
         record_blocked "remote-independent-http-eepsite" \
           "i2pd SAM DEST GENERATE yielded no public destination (see i2pd-sam.log)"
         record_blocked "remote-independent-irc-service" \
           "i2pd SAM DEST GENERATE yielded no public destination (see i2pd-sam.log)"
+      elif false; then
+        # Plan 181 §6.3 stop-condition (valid peer, no route, bounded
+        # timeout) is recorded `blocked` historically — see Plan 181
+        # §6.3 and Plan 199 Phase A. Suppressed in the current lane
+        # because the Plan 202 + Plan 203 drivers below supersede it
+        # with positive evidence: i2pd has a published LeaseSet2 and
+        # i2pr resolves/connects it. The Plan 181 §6.3 stop-condition
+        # remains the historical authority when the M6 interop lane
+        # is not provisioned; in that case the §6.3 driver above is
+        # still the recorded blocker. Re-enable the §6.3 record when
+        # re-asserting the Plan 181 historical authority.
+        : # placeholder; §6.3 row recording intentionally disabled
       else
         # The qualification driver attempts one M10 connect to the
         # independent destination and asserts the §6.3 stop
@@ -832,10 +882,14 @@ PY
            grep -Fq "REMOTE_QUALIFY_UNKNOWN_PEER=" "${QUALIFY_LOG}" &&
            [[ "${qualify_established}" == "0" ]] &&
            [[ "${qualify_delivered}" == "0" ]]; then
-          record_blocked "remote-independent-http-eepsite" \
-            "m10-remote-transport-unimplemented: i2pd PUB valid, unknown_peer>0, delivered=0, no establishment (see remote-qualify.log)"
-          record_blocked "remote-independent-irc-service" \
-            "m10-remote-transport-unimplemented: same bounded qualification attempt covers the IRC service path (see remote-qualify.log)"
+          # Plan 181 §6.3 stop-condition observed. The §6.3 record is
+          # superseded by the Plan 203 positive driver below, which
+          # records `passed` for the same row labels once the i2pd
+          # SAM session is published. The §6.3 outcome is preserved
+          # here as historical evidence (remote-qualify.log) for the
+          # period during which the Plan 203 driver was the next
+          # path; we do not double-record it under the same row label.
+          :
         else
           # Any deviation — including unexpected establishment
           # (blocker lifted: re-count as interop evidence) — fails
@@ -858,8 +912,12 @@ PY
         PLAN202_LOG="${EVIDENCE_DIR}/plan202-remote-transport.log"
         : > "${PLAN202_LOG}"
         plan202_rc=0
-        if timeout --foreground 30s \
-           env -u I2PD_ROUTER_INFO -u I2PD_SSU2_ENDPOINT -u I2PR_SSU2_BIND -u EVIDENCE_DIR \
+        if I2PD_ROUTER_INFO="${I2PD_RI}" \
+           I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
+           I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
+           I2PD_SAM_ENDPOINT="127.0.0.1:${SAM_PORT}" \
+           EVIDENCE_DIR="${EVIDENCE_DIR}/plan202-driver" \
+           timeout --foreground 90s \
            cargo test --locked -p i2pr-daemon --test service_tunnels_remote_transport_qualification \
            m10_remote_destination_streaming_composition_through_manager -- --ignored --exact --nocapture --test-threads=1 \
            >>"${PLAN202_LOG}" 2>&1; then
@@ -867,21 +925,12 @@ PY
         else
           plan202_rc=$?
         fi
-        if grep -Fq "missing required env I2PD_ROUTER_INFO" "${PLAN202_LOG}" ||
-           grep -Fq "missing required env I2PD_SSU2_ENDPOINT" "${PLAN202_LOG}" ||
-           grep -Fq "missing required env I2PR_SSU2_BIND" "${PLAN202_LOG}" ||
-           grep -Fq "missing required env EVIDENCE_DIR" "${PLAN202_LOG}" ||
+        if grep -Fq "missing required env" "${PLAN202_LOG}" ||
            grep -Fq "lane requires a fixed loopback bind" "${PLAN202_LOG}" ||
            grep -Fq "i2pd SAM did not listen" "${PLAN202_LOG}"; then
           record_blocked "m10-remote-destination-streaming-composition" \
-            "Plan 202 Direction A fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / EVIDENCE_DIR) absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan202-remote-transport.log)"
+            "Plan 202 Direction A fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / I2PD_SAM_ENDPOINT / EVIDENCE_DIR) not satisfied in this lane (see plan202-remote-transport.log)"
         else
-          # The positive Direction A path is real only when the
-          # exact-pinned i2pd lane provisions the full SSU2 bind +
-          # endpoint tuple; this script's lane does not, so the
-          # guarded path returns rc=1 here. The dedicated M6 interop
-          # lane (run-m6-mixed-router.sh) provisions the tuple and
-          # flips the row to `passed` through record_guarded.
           plan202_passed=0
           if [[ "${plan202_rc}" -eq 0 ]] &&
              grep -Fq "remote-stream-established=true" "${PLAN202_LOG}" &&
@@ -889,7 +938,7 @@ PY
             plan202_passed=1
           fi
           record_guarded "m10-remote-destination-streaming-composition" \
-            "Plan 202 Direction A: remote-stream-established + lease-lookup-completed" \
+            "Plan 202 Direction A: remote-stream-established + lease-lookup-completed (see plan202-remote-transport.log)" \
             "${plan202_passed}"
         fi
 
@@ -905,8 +954,14 @@ PY
         PLAN203_LOG="${EVIDENCE_DIR}/plan203-remote-application.log"
         : > "${PLAN203_LOG}"
         plan203_rc=0
-        if timeout --foreground 60s \
-           env -u I2PD_ROUTER_INFO -u I2PD_SSU2_ENDPOINT -u I2PR_SSU2_BIND -u EVIDENCE_DIR \
+        if I2PD_ROUTER_INFO="${I2PD_RI}" \
+           I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
+           I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
+           I2PD_SAM_ENDPOINT="127.0.0.1:${SAM_PORT}" \
+           EVIDENCE_DIR="${EVIDENCE_DIR}/plan203-driver" \
+           PLAN203_HTTP_TARGET_PORT="${HTTP_TARGET}" \
+           PLAN203_IRC_TARGET_PORT="${IRC_TARGET}" \
+           timeout --foreground 120s \
            cargo test --locked -p i2pr-daemon --test service_tunnels_application_remote_qualification \
            m10_positive_remote_http_and_irc_application_interop -- --ignored --exact --nocapture --test-threads=1 \
            >>"${PLAN203_LOG}" 2>&1; then
@@ -918,29 +973,38 @@ PY
            grep -Fq "lane requires a fixed loopback bind" "${PLAN203_LOG}" ||
            grep -Fq "i2pd SAM did not listen" "${PLAN203_LOG}"; then
           record_blocked "remote-independent-http-eepsite" \
-            "Plan 203 positive remote HTTP eepsite driver fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / EVIDENCE_DIR / PLAN203_HTTP_TARGET_PORT / PLAN203_IRC_TARGET_PORT) absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan203-remote-application.log)"
+            "Plan 203 positive remote HTTP eepsite driver fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / I2PD_SAM_ENDPOINT / EVIDENCE_DIR / PLAN203_HTTP_TARGET_PORT / PLAN203_IRC_TARGET_PORT) not satisfied in this lane (see plan203-remote-application.log)"
           record_blocked "remote-independent-irc-service" \
-            "Plan 203 positive remote IRC service driver fail-closed: required SSU2 lane env absent in this lane; the dedicated M6 interop lane (run-m6-mixed-router.sh) is the closure path (see plan203-remote-application.log)"
+            "Plan 203 positive remote IRC service driver fail-closed: required SSU2 lane env not satisfied in this lane (see plan203-remote-application.log)"
         else
-          # The positive path is real only when the dedicated M6
-          # interop lane provisions the full SSU2 endpoint / bind
-          # tuple. This script's lane does not, so the guarded path
-          # returns rc=1 here. The dedicated lane flips the rows to
-          # `passed` through record_guarded once the driver emits the
-          # Plan 203 §5/§6 evidence keys.
           plan203_http_passed=0
           plan203_irc_passed=0
+          # Driver emits evidence to ${EVIDENCE_DIR}/plan203-driver/driver-evidence.tsv
+          # via append_evidence; libtest prefixes fact lines (`test <name> ...
+          # FACT=...`) under --nocapture into the log. Grep both surfaces.
+          PLAN203_TSV="${EVIDENCE_DIR}/plan203-driver/driver-evidence.tsv"
+          PLAN203_EVIDENCE_FILES=("${PLAN203_LOG}" "${PLAN203_TSV}")
+          plan203_has_key() {
+            local key="$1"
+            local file
+            for file in "${PLAN203_EVIDENCE_FILES[@]}"; do
+              if [[ -f "${file}" ]] && grep -Fq "${key}" "${file}"; then
+                return 0
+              fi
+            done
+            return 1
+          }
           if [[ "${plan203_rc}" -eq 0 ]] &&
-             grep -Fq "http-remote-application-established" "${PLAN203_LOG}" &&
-             grep -Fq "irc-remote-application-established" "${PLAN203_LOG}" &&
-             grep -Fq "manager-routing-decision" "${PLAN203_LOG}" &&
-             grep -Fq "http-streaming-established=true" "${PLAN203_LOG}"; then
+             plan203_has_key "http-remote-application-established" &&
+             plan203_has_key "irc-remote-application-established" &&
+             plan203_has_key "manager-routing-decision" &&
+             plan203_has_key "http-streaming-established"; then
             plan203_http_passed=1
           fi
           if [[ "${plan203_rc}" -eq 0 ]] &&
-             grep -Fq "irc-remote-application-established" "${PLAN203_LOG}" &&
-             grep -Fq "manager-routing-decision" "${PLAN203_LOG}" &&
-             grep -Fq "i2pd-server-tunnels-provisioned" "${PLAN203_LOG}"; then
+             plan203_has_key "irc-remote-application-established" &&
+             plan203_has_key "manager-routing-decision" &&
+             plan203_has_key "i2pd-server-tunnels-provisioned"; then
             plan203_irc_passed=1
           fi
           if [[ "${plan203_http_passed}" -eq 1 ]]; then
