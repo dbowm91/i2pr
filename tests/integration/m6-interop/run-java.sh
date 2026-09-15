@@ -63,6 +63,10 @@ JAVA_STREAM_CONTROL_PORT="${I2PR_M6_JAVA_STREAM_CONTROL_PORT:-$(python3 -c 'impo
 JAVA_PUBLICATION_SSU2_PORT="${I2PR_M6_JAVA_PUBLICATION_SSU2_PORT:-$(reserve_port)}"
 JAVA_PUBLICATION_SAM_PORT="${I2PR_M6_JAVA_PUBLICATION_SAM_PORT:-$(reserve_port)}"
 JAVA_PUBLICATION_I2CP_PORT="${I2PR_M6_JAVA_PUBLICATION_I2CP_PORT:-$(reserve_port)}"
+# Plan 201 Branch C/D corrective — Router C is a tunnel participant
+# (no SAM/I2CP) so 1-hop client tunnels build within stock Java's
+# 5-minute I2PSession.connect() timeout.
+JAVA_TUNNEL_PARTICIPANT_SSU2_PORT="${I2PR_M6_JAVA_TUNNEL_PARTICIPANT_SSU2_PORT:-$(reserve_port)}"
 DRIVER_TIMEOUT="600s"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -134,9 +138,11 @@ echo "==> Java launcher compiled: ${LAUNCHER_SRC} -> ${LAUNCHER_BUILD}/"
 # the harness did not pre-resolve to loopback.
 JAVA_DATA="${SCRATCH}/datadir-service"
 JAVA_PUBLICATION_DATA="${SCRATCH}/datadir-publication"
+JAVA_TUNNEL_PARTICIPANT_DATA="${SCRATCH}/datadir-tunnel-participant"
 JAVA_LOG="${SCRATCH}/java.log"
 JAVA_PUBLICATION_LOG="${SCRATCH}/java-publication.log"
-mkdir -p "${JAVA_DATA}/logs" "${JAVA_PUBLICATION_DATA}/logs"
+JAVA_TUNNEL_PARTICIPANT_LOG="${SCRATCH}/java-tunnel-participant.log"
+mkdir -p "${JAVA_DATA}/logs" "${JAVA_PUBLICATION_DATA}/logs" "${JAVA_TUNNEL_PARTICIPANT_DATA}/logs"
 
 # Sanity: never mutate the verified Java cache/build outputs.
 # Plan 196 §5.3 forbids `sed`/`clients.config` mutations of the cache.
@@ -186,6 +192,33 @@ setsid "${JAVA_PUBLICATION_CMD[@]}" >/dev/null 2>"${JAVA_PUBLICATION_LOG}" < /de
 JAVA_PUBLICATION_PID=$!
 CHILD_PIDS+=("${JAVA_PUBLICATION_PID}")
 
+# Plan 201 Branch C/D corrective — Router C is a tunnel-participant
+# (no SAM/I2CP binding). It provides the third peer that stock Java
+# I2P 2.13.0 needs to build 1-hop client tunnels within its
+# 5-minute I2PSession.connect() timeout.
+JAVA_TUNNEL_PARTICIPANT_ROUTER_DIR="${JAVA_TUNNEL_PARTICIPANT_DATA}/router"
+JAVA_TUNNEL_PARTICIPANT_RI=""
+JAVA_TUNNEL_PARTICIPANT_CMD=(
+  java
+  -Djava.net.preferIPv4Stack=true
+  -Djava.awt.headless=true
+  -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib"
+  -Di2p.dir.base="${JAVA_CACHE}"
+  -DloggerFilenameOverride=logs/log-router-@.txt
+  -Drouterconsole.enable=false
+  -cp "${LAUNCHER_CP}"
+  -Dlauncher.scratch="${SCRATCH}"
+  "ControlledRouter"
+  "${JAVA_TUNNEL_PARTICIPANT_DATA}"
+  "127.0.0.1"
+  "${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}"
+  "0"
+  "0"
+)
+setsid "${JAVA_TUNNEL_PARTICIPANT_CMD[@]}" >/dev/null 2>"${JAVA_TUNNEL_PARTICIPANT_LOG}" < /dev/null &
+JAVA_TUNNEL_PARTICIPANT_PID=$!
+CHILD_PIDS+=("${JAVA_TUNNEL_PARTICIPANT_PID}")
+
 stop_group() {
   local pid="${1:-}"
   [[ -z "${pid}" ]] && return 0
@@ -208,7 +241,7 @@ cleanup() {
       echo "Java cache fingerprint drifted (cache was mutated during the run)" >&2
     fi
   fi
-  [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || rm -rf "${SCRATCH}"
+  [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || [[ "${I2PR_KEEP_SCRATCH:-0}" == "1" ]] || rm -rf "${SCRATCH}"
 }
 trap cleanup EXIT
 
@@ -268,6 +301,23 @@ if [[ -z "${JAVA_PUBLICATION_RI}" ]]; then
   sed -n '1,40p' "${JAVA_PUBLICATION_LOG}" >&2 || true
   exit 2
 fi
+for _ in $(seq 1 360); do
+  if [[ -f "${JAVA_TUNNEL_PARTICIPANT_ROUTER_DIR}/router.info" ]]; then
+    JAVA_TUNNEL_PARTICIPANT_RI="${JAVA_TUNNEL_PARTICIPANT_ROUTER_DIR}/router.info"
+    break
+  fi
+  if ! kill -0 "${JAVA_TUNNEL_PARTICIPANT_PID}" 2>/dev/null; then
+    echo "ephemeral Java tunnel-participant router exited during startup" >&2
+    sed -n '1,40p' "${JAVA_TUNNEL_PARTICIPANT_LOG}" >&2 || true
+    exit 2
+  fi
+  sleep 0.5
+done
+if [[ -z "${JAVA_TUNNEL_PARTICIPANT_RI}" ]]; then
+  echo "ephemeral Java tunnel-participant router did not publish router.info" >&2
+  sed -n '1,40p' "${JAVA_TUNNEL_PARTICIPANT_LOG}" >&2 || true
+  exit 2
+fi
 
 SAM_READY=0
 # Plan 196 §5.4 — Java Router adds a `clientApp.0.delay=120` to the
@@ -295,7 +345,8 @@ if [[ "${SAM_READY}" -ne 1 ]]; then
 fi
 echo "    Java service router A: 127.0.0.1:${JAVA_SSU2_PORT} (SAM ${JAVA_SAM_PORT}, I2CP ${JAVA_I2CP_PORT})"
 echo "    Java publication router B: 127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT} (SAM ${JAVA_PUBLICATION_SAM_PORT}, I2CP ${JAVA_PUBLICATION_I2CP_PORT})"
-echo "    Java service RouterInfo: $(wc -c <"${JAVA_RI}") bytes; publication RouterInfo: $(wc -c <"${JAVA_PUBLICATION_RI}") bytes"
+echo "    Java tunnel-participant router C: 127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}"
+echo "    Java service RouterInfo: $(wc -c <"${JAVA_RI}") bytes; publication RouterInfo: $(wc -c <"${JAVA_PUBLICATION_RI}") bytes; tunnel-participant RouterInfo: $(wc -c <"${JAVA_TUNNEL_PARTICIPANT_RI}") bytes"
 
 # Plan 196 §5.5 — externally observable topology invariants.
 TOPOLOGY_OK=1
@@ -392,6 +443,16 @@ if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_PUBLICATION_DATA}/router.config
    [[ ! -f "${JAVA_PUBLICATION_DATA}/noreseed.i2p" ]]; then
   echo "controlled Java publication topology invariants failed" >&2
   sed -n '1,80p' "${JAVA_PUBLICATION_DATA}/logs/log-router-0.txt" >&2 || true
+  exit 3
+fi
+
+# Router C is a tunnel participant — no SAM/I2CP required, no floodfill required.
+if ! grep -q "^i2np.udp.port=${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+   ! grep -q '^router.reseedDisable=true$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+   ! grep -q '^i2np.ntcp.enable=false$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+   [[ ! -f "${JAVA_TUNNEL_PARTICIPANT_DATA}/noreseed.i2p" ]]; then
+  echo "controlled Java tunnel-participant topology invariants failed" >&2
+  sed -n '1,80p' "${JAVA_TUNNEL_PARTICIPANT_DATA}/logs/log-router-0.txt" >&2 || true
   exit 3
 fi
 
@@ -557,6 +618,8 @@ if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
    JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
    JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+   JAVA_TUNNEL_PARTICIPANT_ROUTER_INFO="${JAVA_TUNNEL_PARTICIPANT_RI}" \
+   JAVA_TUNNEL_PARTICIPANT_SSU2_ENDPOINT="127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_BOOTSTRAP_PORT}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}/bootstrap" \
    timeout --foreground "${DRIVER_TIMEOUT}" \

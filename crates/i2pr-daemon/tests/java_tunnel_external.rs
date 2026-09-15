@@ -554,26 +554,41 @@ async fn bootstrap_java_router_peers() {
         .expect("read publication RouterInfo");
     let service_ri =
         std::fs::read(env_path("JAVA_SERVICE_ROUTER_INFO")).expect("read service RouterInfo");
+    // Plan 201 Branch C/D corrective — Router C is the tunnel participant
+    // that stock Java needs to build 1-hop client tunnels.
+    let tunnel_participant_ri = std::fs::read(env_path("JAVA_TUNNEL_PARTICIPANT_ROUTER_INFO"))
+        .expect("read tunnel-participant RouterInfo");
     let publication_endpoint: SocketAddr = env_value("JAVA_PUBLICATION_SSU2_ENDPOINT")
         .parse()
         .expect("publication endpoint");
     let service_endpoint: SocketAddr = env_value("JAVA_SERVICE_SSU2_ENDPOINT")
         .parse()
         .expect("service endpoint");
+    let tunnel_participant_endpoint: SocketAddr =
+        env_value("JAVA_TUNNEL_PARTICIPANT_SSU2_ENDPOINT")
+            .parse()
+            .expect("tunnel-participant endpoint");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
     assert!(bind.ip().is_loopback());
     assert!(publication_endpoint.ip().is_loopback());
     assert!(service_endpoint.ip().is_loopback());
+    assert!(tunnel_participant_endpoint.ip().is_loopback());
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
     let (publication_hash, publication_ssu2) =
         verify_reference_router_info(&publication_ri).expect("verify publication RouterInfo");
     let (service_hash, service_ssu2) =
         verify_reference_router_info(&service_ri).expect("verify service RouterInfo");
+    let (tunnel_participant_hash, tunnel_participant_ssu2) =
+        verify_reference_router_info(&tunnel_participant_ri)
+            .expect("verify tunnel-participant RouterInfo");
     let publication_material = publication_ssu2
         .address_material()
         .expect("publication keys");
     let service_material = service_ssu2.address_material().expect("service keys");
+    let tunnel_participant_material = tunnel_participant_ssu2
+        .address_material()
+        .expect("tunnel-participant keys");
     let publication_target = daemon_dial_target(
         publication_hash,
         publication_endpoint,
@@ -590,6 +605,16 @@ async fn bootstrap_java_router_peers() {
         i2pr_runtime::IntroKey::new(*service_material.intro_key().as_bytes()),
     )
     .expect("service target");
+    let tunnel_participant_target = daemon_dial_target(
+        tunnel_participant_hash,
+        tunnel_participant_endpoint,
+        i2pr_runtime::Ssu2PublicKey::new(
+            *tunnel_participant_material.static_public_key().as_bytes(),
+        )
+        .expect("tunnel-participant static key"),
+        i2pr_runtime::IntroKey::new(*tunnel_participant_material.intro_key().as_bytes()),
+    )
+    .expect("tunnel-participant target");
     let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rand_core::OsRng)
         .expect("bootstrap identity");
     let identity = generate_controlled_identity(&bundle, "127.0.0.1", bind.port())
@@ -614,6 +639,15 @@ async fn bootstrap_java_router_peers() {
         .dial(service_target, DIAL_TIMEOUT, &CancellationToken::new())
         .await
         .expect("bootstrap service session");
+    // Plan 201 Branch C/D corrective — also dial Router C.
+    handle
+        .dial(
+            tunnel_participant_target,
+            DIAL_TIMEOUT,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("bootstrap tunnel-participant session");
     let publication_wire = database_store_router_info_wire(
         Hash::from_bytes(*service_hash.as_bytes()),
         &service_ri,
@@ -624,9 +658,36 @@ async fn bootstrap_java_router_peers() {
         &publication_ri,
         0x51A7_1202,
     );
+    // Plan 201 Branch C/D corrective — send A's and B's RouterInfo to C,
+    // and C's RouterInfo to A and B. Router C is a tunnel participant
+    // (not floodfill) but still needs to know A and B for tunnel builds.
+    let c_to_a_wire = database_store_router_info_wire(
+        Hash::from_bytes(*publication_hash.as_bytes()),
+        &publication_ri,
+        0x51A7_1203,
+    );
+    let c_to_b_wire = database_store_router_info_wire(
+        Hash::from_bytes(*service_hash.as_bytes()),
+        &service_ri,
+        0x51A7_1204,
+    );
+    let a_to_c_wire = database_store_router_info_wire(
+        Hash::from_bytes(*tunnel_participant_hash.as_bytes()),
+        &tunnel_participant_ri,
+        0x51A7_1205,
+    );
+    let b_to_c_wire = database_store_router_info_wire(
+        Hash::from_bytes(*tunnel_participant_hash.as_bytes()),
+        &tunnel_participant_ri,
+        0x51A7_1206,
+    );
     for (peer, wire) in [
         (PeerId::from_hash(publication_hash), publication_wire),
         (PeerId::from_hash(service_hash), service_wire),
+        (PeerId::from_hash(tunnel_participant_hash), c_to_a_wire),
+        (PeerId::from_hash(tunnel_participant_hash), c_to_b_wire),
+        (PeerId::from_hash(publication_hash), a_to_c_wire),
+        (PeerId::from_hash(service_hash), b_to_c_wire),
     ] {
         let request = RouterDeliveryRequest::new(peer, wire, DELIVERY_TIMEOUT)
             .expect("bootstrap delivery request");
@@ -640,13 +701,13 @@ async fn bootstrap_java_router_peers() {
     append_evidence(
         &evidence_dir,
         "java-router-peer-bootstrap-completed",
-        "ordinary-authenticated-i2np-databasestore-both-directions",
+        "ordinary-authenticated-i2np-databasestore-three-routers",
     );
 
-    // Plan 200 §B — post-bootstrap positive lookup proof in both
-    // directions. We use the i2pr-side RouterHash as the lookup
-    // requester (`from`) so the responder knows where to send the
-    // reply. Direct delivery (`reply_tunnel_id = None`) keeps the
+    // Plan 200 §B + Plan 201 Branch C/D — post-bootstrap positive lookup
+    // proof in all directions. We use the i2pr-side RouterHash as the
+    // lookup requester (`from`) so the responder knows where to send
+    // the reply. Direct delivery (`reply_tunnel_id = None`) keeps the
     // probe on the existing authenticated session.
     let i2pr_router_hash = bundle.identity().hash().expect("i2pr router hash");
     let a_knows_b = probe_routerinfo_lookup(
@@ -671,9 +732,31 @@ async fn bootstrap_java_router_peers() {
         "b-knows-a",
     )
     .await;
+    let c_knows_a = probe_routerinfo_lookup(
+        &mut handle,
+        PeerId::from_hash(tunnel_participant_hash),
+        publication_hash,
+        &publication_ri,
+        0x51A7_1303,
+        i2pr_router_hash,
+        &evidence_dir,
+        "c-knows-a",
+    )
+    .await;
+    let c_knows_b = probe_routerinfo_lookup(
+        &mut handle,
+        PeerId::from_hash(tunnel_participant_hash),
+        service_hash,
+        &service_ri,
+        0x51A7_1304,
+        i2pr_router_hash,
+        &evidence_dir,
+        "c-knows-b",
+    )
+    .await;
 
     // Plan 200 §11 — terminal classification. The bootstrap probe
-    // itself only reaches the A/B main-NetDB bootstrap boundary; the
+    // itself only reaches the A/B/C main-NetDB bootstrap boundary; the
     // C..H phases are recorded as blocked until Plan 201 (or this
     // run's destination/Streaming driver) proves them.
     record_p200_classification(
@@ -681,6 +764,8 @@ async fn bootstrap_java_router_peers() {
         &[
             ("java-main-netdb-a-knows-b", a_knows_b),
             ("java-main-netdb-b-knows-a", b_knows_a),
+            ("java-main-netdb-c-knows-a", c_knows_a),
+            ("java-main-netdb-c-knows-b", c_knows_b),
             ("java-client-ls2-not-created", false),
             ("java-client-tunnel-publication-path", false),
             ("java-floodfill-candidate", false),

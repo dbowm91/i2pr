@@ -163,10 +163,14 @@ public final class ControlledRouter {
         props.setProperty("i2np.upnp.enable", "false");
 
         // I2CP server binds loopback only on the harness-selected port.
-        props.setProperty("i2cp.tcp.bindAllInterfaces", "false");
-        props.setProperty("i2cp.tcp.host", "127.0.0.1");
-        props.setProperty("i2cp.tcp.port", i2cpPort);
-        props.setProperty("i2cp.port", i2cpPort);
+        // Plan 201 Branch C/D corrective — when i2cpPort is "0", skip
+        // the I2CP server properties so Java does not bind the port.
+        if (!"0".equals(i2cpPort)) {
+            props.setProperty("i2cp.tcp.bindAllInterfaces", "false");
+            props.setProperty("i2cp.tcp.host", "127.0.0.1");
+            props.setProperty("i2cp.tcp.port", i2cpPort);
+            props.setProperty("i2cp.port", i2cpPort);
+        }
 
         // Plan 196 §5.5 — belt-and-braces: even though router.reseedDisable
         // is true, also override any URL the Router might persist.
@@ -244,13 +248,21 @@ public final class ControlledRouter {
     private static void writeClientsConfig(File target, String samPort, String i2cpPort) throws IOException {
         try (FileWriter w = new FileWriter(target)) {
             w.write("# ControlledRouter disposable clients.config (Plan 196 §5.3)\n");
-            w.write("# Only the SAM bridge is started. No router console,\n");
-            w.write("# browser launcher, eepsite, or i2ptunnel is loaded.\n");
-            w.write("clientApp.0.main=net.i2p.sam.SAMBridge\n");
-            w.write("clientApp.0.name=SAM application bridge\n");
-            w.write("clientApp.0.args=sam.keys 127.0.0.1 " + samPort
-                + " i2cp.tcp.host=127.0.0.1 i2cp.tcp.port=" + i2cpPort + "\n");
-            w.write("clientApp.0.startOnLoad=true\n");
+            // Plan 201 Branch C/D corrective — when samPort is "0", the
+            // tunnel-participant router does not bind the SAM bridge or
+            // I2CP server. Skipping the client app entry means Java's
+            // Router never starts SAMBridge/I2cpServer threads on port 0.
+            if ("0".equals(samPort) && "0".equals(i2cpPort)) {
+                w.write("// Tunnel-participant: no SAM bridge or I2CP server started.\n");
+            } else {
+                w.write("# Only the SAM bridge is started. No router console,\n");
+                w.write("# browser launcher, eepsite, or i2ptunnel is loaded.\n");
+                w.write("clientApp.0.main=net.i2p.sam.SAMBridge\n");
+                w.write("clientApp.0.name=SAM application bridge\n");
+                w.write("clientApp.0.args=sam.keys 127.0.0.1 " + samPort
+                    + " i2cp.tcp.host=127.0.0.1 i2cp.tcp.port=" + i2cpPort + "\n");
+                w.write("clientApp.0.startOnLoad=true\n");
+            }
         }
     }
 }

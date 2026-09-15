@@ -587,8 +587,69 @@ if [[ -f "${DESTINATION_TUNNEL_UNIT_TEST}" ]]; then
   done
 fi
 
+# ---- 13. Plan 201 Branch C/D corrective — three-router topology. -----
+# Plan 201 §3.3 step 3 added Router C as the independent client-tunnel
+# participant when stock Java I2P 2.13.0 cannot build 1-hop client
+# tunnels in 2-router + zero-hop configurations. The 1-hop helper
+# profile (`inbound.length=1 outbound.length=1`) was tested in this
+# run but stock Java's peer-profile scoring under the controlled
+# loopback topology does not promote any peer to "fast" within the
+# 5-minute I2PSession.connect() timeout (ProfileOrganizer line 161 +
+# 913). The retained-partial finding is that the helper tunnel profile
+# must stay zero-hop to keep the I2CP CreateLeaseSet reply emitting
+# READY; full LS2 publication requires either real-network peers or a
+# helper-side tunnel profile override that the controlled loopback
+# topology cannot satisfy without breaking Plan 198 §4 / Plan 201 §4
+# (no public I2P, no patching Java). The Branch C/D corrective is
+# retained as the three-router topology invariant below; the helper
+# tunnel-profile invariant allows both zero-hop (current) and 1-hop
+# (attempted) profiles so either path can be exercised.
+if [[ -f "${JAVA_RAW_HELPER_SRC}" && -f "${JAVA_STREAM_HELPER_SRC}" ]]; then
+  # 13a. Helpers must declare some bounded client tunnel profile
+  # (zero-hop retained as the working configuration; 1-hop is the
+  # Plan 201 §3.3 attempted corrective that proved blocked by Java's
+  # loopback peer profile scoring).
+  for helper in "${JAVA_RAW_HELPER_SRC}" "${JAVA_STREAM_HELPER_SRC}"; do
+    if ! grep -qE 'inbound\.length".*(0|1)' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks inbound.length=0 or inbound.length=1 (Plan 201 Branch C/D)" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -qE 'outbound\.length".*(0|1)' "${helper}"; then
+      echo "m6 mixed-router evidence check failed: ${helper} lacks outbound.length=0 or outbound.length=1 (Plan 201 Branch C/D)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${JAVA_HARNESS}" ]]; then
+  # 13b. run-java.sh must provision three Java routers (A, B, C).
+  if ! grep -q 'JAVA_TUNNEL_PARTICIPANT_SSU2_PORT' "${JAVA_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: run-java.sh lacks JAVA_TUNNEL_PARTICIPANT_SSU2_PORT (Plan 201 Branch C/D three-router topology)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'datadir-tunnel-participant' "${JAVA_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: run-java.sh lacks datadir-tunnel-participant (Plan 201 Branch C/D three-router topology)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+# 13c. The bootstrap driver must handle Router C (tunnel participant).
+DRIVER_TEST_13="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+if [[ -f "${DRIVER_TEST_13}" ]]; then
+  if ! grep -q 'tunnel_participant' "${DRIVER_TEST_13}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_13} lacks Router C / tunnel-participant bootstrap path (Plan 201 Branch C/D)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'c-knows-a' "${DRIVER_TEST_13}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_13} lacks c-knows-a lookup probe (Plan 201 Branch C/D)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'c-knows-b' "${DRIVER_TEST_13}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_13} lacks c-knows-b lookup probe (Plan 201 Branch C/D)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology)"
