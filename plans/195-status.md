@@ -1,41 +1,41 @@
 # Plan 195 status — M10 remote independent service interoperability and final closure
 
-Status: **`blocked-m10-remote-independent-service-pending-plan208-and-plan209`**.
+Status: **`blocked-m10-remote-independent-service-pending-plan210-and-plan211`**.
 
 Plan of record: [`195-m10-remote-independent-service-final-closure.md`](195-m10-remote-independent-service-final-closure.md).
 
-Plan 195's positive remote-service criterion is still open after the post-Plan-207 audit.
+Plan 195's positive remote-service criterion remains open after the post-Plan-209 audit.
 
 Retained facts:
 
 - Plan 181's 29 local rows remain passed.
 - Plan 193 proves the lower exact-pinned i2pd mixed-router Streaming stack.
-- Plan 206 landed useful executable remote-backend primitives.
-- Plan 207 landed useful real curl/jaraco application-client and fixture evidence scaffolding.
+- Plan 208 landed the useful production local-miss -> remote-backend call graph.
+- Plan 209 landed the useful `ServiceProduct` black-box composition boundary plus real curl/jaraco client scaffolding.
 
-Remaining defects:
+Remaining work is now precisely split:
 
-- the normal Plan 182 service delivery driver does not yet invoke the Plan 206 remote route for a non-local queued request;
-- the Plan 207 counted application driver still constructs/drives a parallel lower i2pr Streaming/router stack and manually advances legacy transport counters.
+```text
+plan210 = real service-Destination tunnel material + destination-aware lookup + complete inbound Garlic -> canonical Streaming + bidirectional generic remote product proof
+plan211 = real enabled HTTP/IRC service specs + actual i2pd public Destinations + causal curl/jaraco evidence + exact-head M10 closure
+```
 
 Current authority:
 
 ```text
-plan_195 = blocked-m10-remote-independent-service-pending-plan208-and-plan209
-plan_206 = retained-partial-executable-backend-seams-superseded-by-plan208
-plan_207 = retained-partial-real-application-client-harness-superseded-by-plan209
-plan_208 = registered-executable-m10-production-delivery-driver-remote-route-integration
-plan_209 = registered-blocked-by-plan208
+plan_195 = blocked-m10-remote-independent-service-pending-plan210-and-plan211
+plan_208 = retained-partial-production-call-graph-corrective-superseded-by-plan210
+plan_209 = retained-partial-black-box-composition-harness-superseded-by-plan211
+plan_210 = registered-executable
+plan_211 = registered-blocked-by-plan210
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 ```
 
-Plan 195 requires no separate implementation pass while Plans 208/209 execute. They are the narrow corrective realization of its remaining remote-service requirement.
-
-On Plan 209 success, Plan 195 may transition to:
+Plan 195 requires no separate implementation branch while Plans 210/211 execute. On Plan 211 success it may transition to:
 
 ```text
-plan_195 = evidence-passed-m10-remote-independent-service-via-plan208-and-plan209-pending-plan204
+plan_195 = passed-m10-remote-independent-service-via-plan210-and-plan211
 ```
 
-Only Plan 204 may perform final cross-milestone authority closure, and only after the independent Java branch has also closed.
+M10 may close via Plan 211 independently of the Java M6 second-family branch. Plan 204 remains a later cross-milestone convergence/normalization pass and must preserve the already-proven M10 result.
