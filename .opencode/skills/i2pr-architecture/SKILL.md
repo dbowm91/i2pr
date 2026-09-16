@@ -381,12 +381,16 @@ record is not `superseded-by-*`. Currently:
   round-trip). See [`plans/175-status.md`](../../plans/175-status.md)
   through [`plans/180-status.md`](../../plans/180-status.md) and
   [`plans/182-status.md`](../../plans/182-status.md).
-- **Milestone 10 independent acceptance (blocked)**: Plan 181
-  (`blocked-by-m6-mixed-router-streaming-blocker`, see
-  [`plans/181-status.md`](../../plans/181-status.md)): 29 local
-  rows passed, 2 remote rows blocked with i2pd-2.61.0
-  qualification provenance. Plan 183 registers the M6
-  mixed-router program (see
+- **Milestone 10 independent acceptance (passed-via-plan209)**:
+  Plan 181 (`passed-m10-independent-application-and-service-interop-via-plan209`,
+  see [`plans/181-status.md`](../../plans/181-status.md)): the
+  retained local 29-row matrix stays green; the two §6.3 remote
+  application rows now flip `blocked → passed-on-env` through
+  the Plan 209 product-only external driver when the dedicated
+  M6 interop lane provisions the SSU2 endpoint + bind tuple
+  and the driver emits every documented Plan 209 §11 subfact
+  row in the same evidence directory/run id. Plan 183 registers
+  the M6 mixed-router program (see
   [`plans/183-status.md`](../../plans/183-status.md)); Plan 184
   passed the authenticated I2NP preflight with no
   tunnel/NetDB/Streaming claim (see

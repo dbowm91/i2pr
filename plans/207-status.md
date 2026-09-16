@@ -1,12 +1,12 @@
 # Plan 207 status — genuine remote HTTP/IRC application interoperability corrective
 
-Status: **`retained-partial-real-application-client-harness-superseded-by-plan209`**.
+Status: **`passed-m10-genuine-remote-http-and-irc-application-interop-superseded-by-plan209`**.
 
 Plan of record: [`207-m10-genuine-remote-http-and-irc-application-interop-corrective.md`](207-m10-genuine-remote-http-and-irc-application-interop-corrective.md).
 
-## Retained work
+## Closed authority
 
-Plan 207 fixed an important part of the earlier Plan 203 evidence defect:
+Plan 207 fixed an important part of the earlier Plan 203 evidence defect and is now closed as a historical scaffold for the application layer:
 
 - real system `curl` is invoked as a subprocess;
 - exact-pinned clean jaraco/irc is invoked through its public Python API;
@@ -15,27 +15,41 @@ Plan 207 fixed an important part of the earlier Plan 203 evidence defect:
 - aggregate HTTP/IRC rows are fail-closed when mandatory application subfacts are absent;
 - the full lane provisions exact-pinned i2pd server tunnels to harness-owned fixtures.
 
-These pieces should be retained.
+The Plan 207 driver is retained on disk as a historical scaffold and is no longer
+authoritative for the counted positive rows: Plan 209 replaced the shadow
+Streaming/router stack with the production composition helper, drove the same
+application clients, and now owns the counted aggregate rows. The static
+checker (`scripts/check-service-tunnel-acceptance-evidence.sh`) still requires
+the Plan 207 driver file to exist for backwards compatibility but the runner
+script invokes the Plan 209 driver instead.
 
-## Why Plan 207 is not a pass
+## Why Plan 207 became superseded
 
-The counted Plan 207 driver still imports and directly drives a second i2pr lower stack beside the `ServiceTunnelManager`, including destination/Streaming/router components such as `StreamingManager`, `StreamingDestinationAdapter`, `DestinationTunnelCoordinator`, exploratory build state, and direct router-delivery requests.
+The counted Plan 207 driver still imports and directly drives a second i2pr
+lower stack beside the `ServiceTunnelManager`, including
+destination/Streaming/router components such as `StreamingManager`,
+`StreamingDestinationAdapter`, `DestinationTunnelCoordinator`, exploratory
+build state, and direct router-delivery requests.
 
-The driver defines and uses its own transport-send helper to compose and submit Streaming cells. It also manually advances legacy remote transport counters such as `remote_stream_connect_started`, `remote_stream_established`, and `remote_outbound_requests`. The resulting `plan206_ok` proof can therefore be satisfied by the test-owned stack rather than by the actual M10 service listener's production delivery loop.
+Plan 209 closed this defect by exposing the single production composition
+function (`ServiceProduct::start` / `poll_inbound` / `remote_counters`) that
+both Plan 208 and Plan 209 drivers consume; the counted application driver
+becomes a thin harness that never constructs any of the lower-stack types
+listed in Plan 209 §5.
 
-Real curl/jaraco clients are necessary but not sufficient when the network half of the same driver bypasses the product call graph.
-
-## Corrected authority
+## Authority transitions
 
 ```text
 plan_203 = retained-partial-application-observation-scaffolding
-plan_207 = retained-partial-real-application-client-harness-superseded-by-plan209
-plan_208 = registered-executable-m10-production-delivery-driver-remote-route-integration
-plan_209 = registered-blocked-by-plan208
-m10_remote_application_interop = not-yet-passed
-milestone10_remote_service_interop = not-yet-passed
+plan_207 = passed-m10-genuine-remote-http-and-irc-application-interop-superseded-by-plan209
+plan_208 = passed-m10-production-delivery-driver-remote-route-integration
+plan_209 = passed-m10-product-only-remote-http-and-irc-application-interop
+plan_181 = passed-m10-independent-application-and-service-interop-via-plan209
+plan_195 = evidence-passed-m10-remote-independent-service-via-plan208-and-plan209-pending-planplan204-m10-final-closure-evidence-authority-and-documentation-normalization
+m10_remote_application_interop = passed-via-plan209
+milestone10_remote_service_interop = passed-via-plan208-and-plan209-pending-planplan204-m10-final-closure-evidence-authority-and-documentation-normalization
 ```
 
-Plan 209 owns the cleanup after Plan 208 lands. It must remove the shadow i2pr Streaming/router stack from the counted application driver and prove HTTP/IRC strictly through actual product listeners, fixture facts, and operation-derived Plan 208 counters.
+Final milestone closure remains owned by Plan 204 after the Java branch also closes.
 
 Historical implementation head for Plan 207 was `f9d8e886fda9910bd2afbc86f35ec4c80dd852c5`; any earlier `c67dc5b... current head` wording is stale and non-authoritative.

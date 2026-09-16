@@ -62,6 +62,7 @@ REMOTE_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_qual
 PLAN202_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs"
 PLAN207_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_genuine_remote_qualification.rs"
 PLAN208_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs"
+PLAN209_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_product_only_remote_qualification.rs"
 
 GUARDED=(
   m10-prerequisite-plans
@@ -659,6 +660,134 @@ fi
 # Plan 203 §11 typed observation surface is retained as a
 # backwards-compatible manager API; new code must not depend on it
 # for counted evidence.
+#
+# Plan 209 — product-only remote HTTP + IRC application
+# corrective. The counted driver is a black-box product harness:
+# it starts the production composition through the single
+# `ServiceProduct` helper, reads listener addresses, runs
+# unmodified application clients, reads operation-derived
+# Plan 208 counters through the helper's typed accessor, and
+# stops the product. The driver must not construct or drive any
+# of the shadow-stack types listed in Plan 209 §5; the static
+# checker rejects direct imports/calls of those types in the
+# counted Plan 209 driver. The aggregate pass rows derive purely
+# from the documented Plan 209 §11 subfact rows the driver
+# writes to its evidence file.
+if [[ ! -f "${PLAN209_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 209 product-only driver missing: ${PLAN209_DRIVER}" >&2
+  failures=$((failures + 1))
+else
+  if ! grep -q -F '#[ignore = "Plan 209' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver lost its #[ignore] gate" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'm10_product_only_remote_http_and_irc_application_interop' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver lost its test name" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 209 §5 — anti-shadow rule. The counted driver must not
+  # construct or directly drive `StreamingManager`,
+  # `StreamingDestinationAdapter`, `DestinationRouting`,
+  # `EciesSessionManager`, `DestinationTunnelCoordinator`,
+  # `ExploratoryBuildCoordinator`, `Ssu2DaemonService`,
+  # `RouterDeliveryService`, `RouterDeliveryRequest`, or any
+  # `record_observation` / `.record_observation(` helper. The
+  # grep is scoped to non-comment / non-doc lines so a documented
+  # reference in module docs is allowed.
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'StreamingManager::new\|StreamingManager\b' ; then
+    echo "evidence check failed: Plan 209 driver must not construct or directly drive StreamingManager (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'StreamingDestinationAdapter'; then
+    echo "evidence check failed: Plan 209 driver must not construct or directly drive StreamingDestinationAdapter (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'DestinationRouting::new\|EciesSessionManager::new'; then
+    echo "evidence check failed: Plan 209 driver must not construct or directly drive DestinationRouting / EciesSessionManager (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'DestinationTunnelCoordinator'; then
+    echo "evidence check failed: Plan 209 driver must not construct DestinationTunnelCoordinator (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'ExploratoryBuildCoordinator'; then
+    echo "evidence check failed: Plan 209 driver must not construct ExploratoryBuildCoordinator (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'Ssu2DaemonService'; then
+    echo "evidence check failed: Plan 209 driver must not construct Ssu2DaemonService (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q 'RouterDeliveryService\|RouterDeliveryRequest'; then
+    echo "evidence check failed: Plan 209 driver must not construct RouterDeliveryService / RouterDeliveryRequest (Plan 209 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN209_DRIVER}" |
+     grep -q '\.record_observation(\|record_remote_application_observation'; then
+    echo "evidence check failed: Plan 209 driver must not call record_observation / record_remote_application_observation (Plan 209 §5 / §7)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 209 §3 / §7 — the driver must use the production
+  # composition helper. The only sanctioned path is the
+  # `ServiceProduct::start` / `ServiceProduct::poll_inbound` /
+  # `ServiceProduct::remote_counters` typed accessor surface.
+  if ! grep -q -F 'ServiceProduct::start' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver must use ServiceProduct::start (Plan 209 §3)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'poll_inbound' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver must use ServiceProduct::poll_inbound (Plan 209 §7)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'remote_counters' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver must read remote_counters through the typed accessor (Plan 209 §8)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 209 §C — real curl subprocess invocation only.
+  if ! grep -q -E 'Command::new\(\s*curl_bin\(\s*\)\s*\)|Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl_bin\(\s*\)\s*\)|std::process::Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl\s*\)' "${PLAN209_DRIVER}" &&
+     ! grep -q -E 'Command::new\("curl"\)|std::process::Command::new\("curl"\)' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver does not spawn the system curl binary as a subprocess" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 209 §D — exact-pinned jaraco/irc subprocess only.
+  if ! grep -q -F 'irc.client' "${PLAN209_DRIVER}" &&
+     ! grep -q -F 'irc_driver.py' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver does not invoke the jaraco/irc public API subprocess" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 209 §11 — the driver must write the documented subfact
+  # rows to the TSV evidence file.
+  for label in http-command-exit http-status http-body-digest \
+http-multipacket-digest http-fixture-observed \
+http-no-clearnet-fallback http-policy-retained \
+http-production-remote-outbound http-production-remote-inbound \
+http-local-coowned-not-used http-clean-resource-baseline \
+http-no-unknown-peer \
+irc-driver-exit irc-registration-welcome irc-ping-pong-roundtrip \
+irc-privmsg-outbound-observed irc-privmsg-inbound-observed \
+irc-ctcp-action-allowed irc-dcc-blocked irc-privacy-hostname-rewrite \
+irc-production-remote-outbound irc-production-remote-inbound \
+irc-local-coowned-not-used irc-clean-resource-baseline \
+irc-no-unknown-peer; do
+    if ! grep -q -F "${label}" "${PLAN209_DRIVER}"; then
+      echo "evidence check failed: Plan 209 driver omits documented §11 subfact row '${label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Plan 209 §13 — the counted driver must never log peer key
+  # material.
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN209_DRIVER}"; then
+    echo "evidence check failed: Plan 209 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
+fi
 if [[ ! -f "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs" ]]; then
   echo "evidence check failed: service_tunnels.rs source missing" >&2
   failures=$((failures + 1))
