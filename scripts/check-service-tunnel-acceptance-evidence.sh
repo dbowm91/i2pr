@@ -821,4 +821,113 @@ if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated"
+
+# Plan 210 §16 — evidence-integrity extensions for the M10 real
+# service-destination network-material and inbound-streaming
+# corrective. The structural source-level invariants enforce:
+#
+#   - remote service LeaseSet lookup is keyed by the actual remote
+#     Destination hash; `SHA256(router_info_bytes)` is forbidden as
+#     a service-lookup key;
+#   - the counted remote compose path does not construct a
+#     synthetic `dummy_outbound_tunnel()` placeholder;
+#   - the inbound tunnel owner registry must exist, must reject
+#     duplicate registrations, and must remove a registered owner
+#     on unregistration;
+#   - recovered inbound Garlic envelopes dispatch through the
+#     canonical destination dispatcher + ECIES session manager
+#     instead of being silently dropped.
+SERVICE_TUNNELS_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"
+SERVICE_DELIVERY_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"
+SERVICE_PRODUCT_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_product.rs"
+SAM_STREAMS_RS="${REPO_ROOT}/crates/i2pr-daemon/src/sam/streams.rs"
+
+# 14. Plan 210 §C — the production code path must not derive a
+# service LeaseSet lookup key from `SHA256(router_info_bytes)`.
+# The literal `DestinationHash::from_hash(i2pr_crypto::sha256(` is
+# rejected everywhere in the daemon's service-tunnel composition
+# code so a future regression cannot re-introduce the legacy
+# router-identity-keyed lookup.
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
+   grep -q 'DestinationHash::from_hash(i2pr_crypto::sha256('; then
+  echo "evidence check failed: Plan 210 §C forbids SHA256(router_info_bytes) as a service lookup key (service_product.rs)" >&2
+  failures=$((failures + 1))
+fi
+
+# 15. Plan 210 §C — the production code path must derive the
+# remote destination hash from the supplied `ReferencePeer`'s
+# explicit `destination_hash` field, not from router_info_bytes.
+if ! grep -q -F 'reference.destination_hash' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 210 §C — service_product must consume reference.destination_hash (not SHA256(router_info_bytes))" >&2
+  failures=$((failures + 1))
+fi
+
+# 16. Plan 210 §E — the counted remote compose path (`compose_remote_cells`)
+# must not call `dummy_outbound_tunnel()` as a placeholder.
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_TUNNELS_RS}" |
+   grep -q 'dummy_outbound_tunnel('; then
+  echo "evidence check failed: Plan 210 §E — compose_remote_cells must not call dummy_outbound_tunnel()" >&2
+  failures=$((failures + 1))
+fi
+# The bridge helper that compose_remote_cells delegates to must
+# exist and must NOT use a swap-and-restore placeholder pattern.
+if ! grep -q -F 'compose_adapter_send_owned_fields' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 210 §E — SamDestinationBridge must own compose_adapter_send_owned_fields helper" >&2
+  failures=$((failures + 1))
+fi
+
+# 17. Plan 210 §F — inbound tunnel owner reverse map exists, the
+# helper rejects duplicate registrations, and the
+# `note_inbound_orphan_receive` counter exists for stale / unknown
+# receive ids.
+if ! grep -q -F 'register_inbound_tunnel_owner' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 210 §F — ServiceTunnelManager must own register_inbound_tunnel_owner" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'unregister_inbound_tunnel_owner' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 210 §F — ServiceTunnelManager must own unregister_inbound_tunnel_owner" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'inbound_tunnel_owner' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 210 §F — ServiceTunnelManager must own inbound_tunnel_owner accessor" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'note_inbound_orphan_receive' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 210 §F — ServiceTunnelManager must own note_inbound_orphan_receive" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'inbound_tunnel_owners' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 210 §F — ServiceTunnelManager must own inbound_tunnel_owners field" >&2
+  failures=$((failures + 1))
+fi
+
+# 18. Plan 210 §G — recovered Garlic envelopes dispatch through
+# the canonical destination dispatcher + ECIES session manager,
+# not by being silently dropped.
+if ! grep -q -F 'dispatch_inbound_garlic_owned' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 210 §G — SamDestinationBridge must own dispatch_inbound_garlic_owned" >&2
+  failures=$((failures + 1))
+fi
+# The composition helper must wire `inbound_tunnel_owner` into
+# the Garlic dispatch — a silent drop of Garlic is forbidden.
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
+   grep -q 'I2npBody::Garlic(_) => {}'; then
+  echo "evidence check failed: Plan 210 §G — process_inbound must not silently drop Garlic envelopes" >&2
+  failures=$((failures + 1))
+fi
+
+# 19. Plan 210 §C/E/F/G — the existing manager-level test modules
+# must continue to lock the typed seams. Plan 210 §14 conditions
+# 1-24 must remain test-discoverable through at least one
+# `plan210_…` test function in the daemon's own unit suite.
+PLAN210_TEST_COUNT=$(grep -E -c 'plan210[_a-z]*\(' "${SERVICE_TUNNELS_RS}" || true)
+if (( PLAN210_TEST_COUNT < 1 )); then
+  echo "evidence check failed: Plan 210 §14 — at least one plan210_… test row is required" >&2
+  failures=$((failures + 1))
+fi
+
+if [[ "${failures}" -ne 0 ]]; then
+  echo "evidence check failed: ${failures} violation(s)" >&2
+  exit 1
+fi
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green"

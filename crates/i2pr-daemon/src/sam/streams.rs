@@ -36,11 +36,12 @@ use i2pr_client::{
     LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver,
     LocalDeliverySender, deliver,
 };
+use i2pr_crypto::OsRng;
 use i2pr_netdb::LeaseSet2Store;
 use i2pr_proto::Hash;
 use i2pr_proto::LeaseSet2;
 use i2pr_tunnel::{EstablishedTunnel, TunnelId};
-use rand_core::{CryptoRng, RngCore};
+use rand_core::{CryptoRng, RngCore, UnwrapMut};
 
 use crate::sam::SamServiceError;
 
@@ -318,6 +319,138 @@ impl SamDestinationBridge {
 
     pub fn identity_netdb_key(&self) -> i2pr_netdb::DestinationHash {
         self.identity.id().as_netdb_key()
+    }
+
+    /// Plan 210 §E — runs the canonical
+    /// [`i2pr_client::StreamingDestinationAdapter::send`] against the
+    /// bridge's **real** mutable state without swapping in any
+    /// placeholder routing / session / outbound role. The borrow
+    /// checker can split-borrow the three disjoint private fields
+    /// here, inside the impl block, because the access patterns
+    /// resolve to direct field reads/writes that the compiler can
+    /// prove are disjoint. The pre-Plan-210 swap-and-restore
+    /// pattern used `dummy_outbound_tunnel()` as a counted
+    /// placeholder for `outbound_role`; that path is gone, so
+    /// counted remote compose runs against the same
+    /// `DestinationRouting` / `EciesSessionManager` /
+    /// `DestinationOutboundRole` the service-owned
+    /// `StreamingManager` already drives.
+    ///
+    /// Returns the adapter's `OutboundDeliveryPlan` on success and
+    /// a typed error string on failure; the caller decides how to
+    /// convert the string into the manager's typed
+    /// `RemoteDeliveryError` so this module stays free of
+    /// `service_delivery` dependencies.
+    pub(crate) fn compose_adapter_send_owned_fields(
+        &mut self,
+        request: &TransportSendRequest,
+        now_seconds: u32,
+        now_ms: u64,
+    ) -> Result<i2pr_client::OutboundDeliveryPlan, String> {
+        let local_id = self.identity.id();
+        let local_static_secret = *self.identity.static_secret_bytes();
+        let local_lease_set2 = self.lease_set2.clone();
+        let mut os_rng = OsRng;
+        let mut rng = UnwrapMut(&mut os_rng);
+        let routing = &self.routing;
+        let session = &mut self.session_manager;
+        let outbound = &self.outbound_role;
+        i2pr_client::StreamingDestinationAdapter::send(
+            request,
+            routing,
+            session,
+            outbound,
+            local_id,
+            &local_static_secret,
+            &local_lease_set2,
+            now_seconds,
+            now_ms,
+            &mut rng,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Plan 210 §G — decodes one recovered standard I2NP envelope
+    /// recovered from a remote `TunnelData` cell, runs the bridge's
+    /// canonical `DestinationDispatcher::dispatch_garlic_envelope`
+    /// against the canonical `EciesSessionManager` + identity +
+    /// `LeaseSet2Store`, and records the typed outcome on the
+    /// bridge's diagnostic surface so the static checker observes
+    /// the production operation rather than the legacy
+    /// "consumes internally" silent drop.
+    ///
+    /// Returns:
+    /// - `Ok(true)` when the dispatcher authenticated an inbound
+    ///   session / accepted payloads for the canonical local
+    ///   destination;
+    /// - `Ok(false)` when the dispatcher rejected the envelope
+    ///   (typed failure already recorded);
+    /// - `Err(_)` when the supplied bytes were not a standard
+    ///   I2NP `Garlic` envelope.
+    ///
+    /// The bridge observes the canonical streaming / outbound role
+    /// / dispatcher surface rather than the receiver mirror; this
+    /// is the path Plan 210 §G §7-§9 requires for remote-traffic
+    /// dispatch. The `LeaseSet2Store` is held on the canonical side
+    /// so any validated remote LeaseSet install follows the
+    /// canonical outbound routing decision.
+    pub(crate) fn dispatch_inbound_garlic_owned(
+        &mut self,
+        bytes: &[u8],
+        now_seconds: u32,
+    ) -> Result<bool, String> {
+        let envelope =
+            i2pr_proto::I2npMessage::decode_standard(bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .map_err(|error| format!("decode_standard failed: {error:?}"))?;
+        if !matches!(envelope.body(), i2pr_proto::I2npBody::Garlic(_)) {
+            return Err("envelope is not a standard I2NP Garlic body".to_owned());
+        }
+        // Dispatch the envelope through the bridge's canonical
+        // dispatcher using the canonical session_manager + identity
+        // + lease_set2_store. The dispatcher authenticates the
+        // ECIES session, classifies the inbound payload blocks
+        // (Plan 127 order), and binds any validated remote
+        // LeaseSet2 to the canonical outbound routing pipeline.
+        let local_id = self.identity.id();
+        let local_static_secret = *self.identity.static_secret_bytes();
+        let outcome = self.dispatcher.dispatch_garlic_envelope(
+            &mut self.session_manager,
+            local_id,
+            &local_static_secret,
+            &self.identity.static_public_bytes(),
+            now_seconds,
+            &envelope,
+            &mut self.lease_set2_store,
+        );
+        match outcome {
+            i2pr_client::InboundDispatchOutcome::Rejected(_error) => {
+                self.diagnostics.record_inbound_observation();
+                Ok(false)
+            }
+            i2pr_client::InboundDispatchOutcome::NewSessionProcessed {
+                validated_remote_lease_set2,
+                ..
+            } => {
+                let _ = self
+                    .routing
+                    .install_remote_lease_set2(*validated_remote_lease_set2);
+                self.diagnostics.record_inbound_dispatch();
+                Ok(true)
+            }
+            i2pr_client::InboundDispatchOutcome::ExistingSessionProcessed { .. }
+            | i2pr_client::InboundDispatchOutcome::NewSessionReplyProcessed { .. } => {
+                self.diagnostics.record_inbound_dispatch();
+                Ok(true)
+            }
+        }
+    }
+
+    /// Plan 210 §G — read-only accessor for the bridge's diagnostic
+    /// surface. The production composition reads this value before
+    /// and after a Garlic dispatch so the Plan 210 §14 tests can
+    /// observe a typed counter delta.
+    pub fn diagnostics_snapshot(&self) -> &BridgeDiagnostics {
+        &self.diagnostics
     }
 }
 

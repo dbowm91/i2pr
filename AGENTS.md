@@ -341,10 +341,11 @@ Plan 202 = passed-m10-production-remote-destination-and-streaming-composition
    Plan 206 = retained-partial-executable-backend-seams-superseded-by-plan208 (the executable `ServiceDestinationDelivery` backend attaches a shared `RemoteDestinationBackend` (coordinator + router delivery); the manager exposes typed `route_outbound_remote_request` / `dispatch_inbound_to_owned_destination` / `register_inbound_destination_owner` / `resolve_remote_lease_set2` seams; inbound owner registration is atomic with a fail-closed duplicate guard; the three operation-boundary counters — `remote_lookup_cache_hit`, `remote_outbound_composed`, `remote_inbound_dispatched` — advance only through typed backend seams and reject the external `record_observation` helper so a positive observation cannot be manufactured without the production operation; seven new `plan206_*` manager-level unit rows in `service_tunnels.rs::plan206_remote_composition_tests` lock the typed path; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh` extended with the Plan 206 §13 source-level invariants; Plan 208 promotes the typed backend into the production `deliver_outbound` sweep)
   Plan 208 = passed-m10-production-delivery-driver-remote-route-integration (`crates/i2pr-daemon/src/service_tunnels.rs::deliver_outbound` invokes the typed `route_outbound_remote_request` seam on the local-miss branch; `route_outbound_remote_request` performs a real send through `StreamingDestinationAdapter` + `deliver_outbound_cells` + `RouterDeliveryService`; the inbound-owner registry wires inbound data to the actual owning service runtime; seven new `plan208_*` manager-level unit rows in `service_tunnels.rs::plan208_remote_route_integration_tests`; the new `m10_remote_route_integration_through_deliver_outbound` external driver is `#[ignore]`-gated and exercises the production sweep against the exact-pinned i2pd 2.61.0 cache; `scripts/check-service-tunnel-acceptance-evidence.sh` extended with Plan 208 §15 source-level invariants)
   Plan 207 = passed-m10-genuine-remote-http-and-irc-application-interop-superseded-by-plan209 (introduced real system `curl` + exact-pinned jaraco/irc subprocess invocations and the documented Plan 207 §9 subfact rows; the counted driver was subsequently superseded by Plan 209 because it still constructed a parallel `StreamingManager` / `StreamingDestinationAdapter` / `DestinationTunnelCoordinator` / `ExploratoryBuildCoordinator` / `Ssu2DaemonService` / `RouterDeliveryService` shadow stack beside the production `ServiceTunnelManager`; the driver file is retained on disk as a historical scaffold; the static checker still requires the file to exist for backwards compatibility but the harness invokes the Plan 209 driver instead)
-  Plan 209 = passed-m10-product-only-remote-http-and-irc-application-interop (the new `crates/i2pr-daemon/src/service_product.rs` module exposes the single production composition function `ServiceProduct::start` that wires the daemon-owned SSU2 service, dials the reference peer, bootstraps the reference RouterInfo, builds the outbound + inbound tunnel pair, resolves the reference LeaseSet2, and installs the executable `RemoteDestinationBackend` onto the `ServiceTunnelManager`; the new `crates/i2pr-daemon/tests/service_tunnels_application_product_only_remote_qualification.rs` driver is `#[ignore]`-gated and is a black-box product harness — it never constructs or drives `StreamingManager`, `StreamingDestinationAdapter`, `DestinationRouting`, `EciesSessionManager`, `DestinationTunnelCoordinator`, `ExploratoryBuildCoordinator`, `Ssu2DaemonService`, `RouterDeliveryService`, `RouterDeliveryRequest`, or any `record_observation` / `record_remote_application_observation` helper; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh` extended with the Plan 209 §5/§13 anti-shadow rules; the two `remote-independent-*` rows flip from `blocked` to `passed` when the dedicated M6 interop lane provisions the SSU2 endpoint + bind tuple and the driver emits every documented Plan 209 §11 subfact row in the same evidence directory/run id; the runner `tests/integration/service-tunnels/run-independent.sh` invokes the Plan 209 driver)
-  m10_remote_transport_core = passed-via-plan208
-  m10_remote_application_interop = passed-via-plan209
-  next_m10_application_plan = 209-passed (Plan 209 closed the product-only remote HTTP + IRC application interop corrective; Plan 204 owns the docs/CI/evidence-authority normalization pass on top of Plans 200/202/206/207/208/209)
+Plan 209 = passed-m10-product-only-remote-http-and-irc-application-interop (the new `crates/i2pr-daemon/src/service_product.rs` module exposes the single production composition function `ServiceProduct::start` that wires the daemon-owned SSU2 service, dials the reference peer, bootstraps the reference RouterInfo, builds the outbound + inbound tunnel pair, resolves the reference LeaseSet2, and installs the executable `RemoteDestinationBackend` onto the `ServiceTunnelManager`; the new `crates/i2pr-daemon/tests/service_tunnels_application_product_only_remote_qualification.rs` driver is `#[ignore]`-gated and is a black-box product harness — it never constructs or drives `StreamingManager`, `StreamingDestinationAdapter`, `DestinationRouting`, `EciesSessionManager`, `DestinationTunnelCoordinator`, `ExploratoryBuildCoordinator`, `Ssu2DaemonService`, `RouterDeliveryService`, `RouterDeliveryRequest`, or any `record_observation` / `record_remote_application_observation` helper; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh` extended with the Plan 209 §5/§13 anti-shadow rules; the two `remote-independent-*` rows flip from `blocked` to `passed` when the dedicated M6 interop lane provisions the SSU2 endpoint + bind tuple and the driver emits every documented Plan 209 §11 subfact row in the same evidence directory/run id; the runner `tests/integration/service-tunnels/run-independent.sh` invokes the Plan 209 driver)
+   Plan 210 = passed-m10-real-service-destination-network-material-and-inbound-streaming (Phases A–I of the M10 real service-Destination tunnel material and inbound Streaming corrective landed as product code: Phase F added the inbound tunnel owner reverse map keyed by receive tunnel id (`register_inbound_tunnel_owner` / `unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` / `inbound_tunnel_owner_pairs` / `note_inbound_orphan_receive` / `inbound_orphan_receives`) so the owning service runtime is selected before ECIES decryption; Phase E replaced the pre-Plan-210 `dummy_outbound_tunnel()` swap placeholder with the bridge's real `DestinationOutboundRole` through the new `SamDestinationBridge::compose_adapter_send_owned_fields` helper; Phase C removed `SHA256(reference.router_info_bytes)` as a service LeaseSet lookup target and added an explicit `ReferencePeer::destination_hash` field that fails closed when missing; Phase G wired the recovered inbound Garlic envelope through the canonical `DestinationDispatcher::dispatch_garlic_envelope` via the new `SamDestinationBridge::dispatch_inbound_garlic_owned` helper and advances the typed `remote_inbound_dispatched` counter through the backend seam; the static checker extended with Plan 210 §16 source-level invariants; eight new `plan210_*` unit rows in `service_tunnels.rs::plan210_real_service_destination_material_tests` lock the §14 conditions 1, 2, 3, 4, 5, 6, 7, 8 — the remaining §14 conditions are enforced by the static checker and the Plan 209 driver carry-over; the bidirectional external product qualification against exact-pinned i2pd 2.61.0 is owned by Plan 211)
+   m10_remote_transport_core = passed-via-plan210
+   m10_remote_application_interop = passed-via-plan209
+   next_m10_application_plan = 211-pending-bidirectional-external-product-qualification (Plan 210 closed the real per-service destination tunnel material + inbound Streaming corrective; Plan 204 owns the docs/CI/evidence-authority normalization pass on top of Plans 200/202/206/207/208/209/210; Plan 211 owns the bidirectional external product qualification lane against exact-pinned i2pd 2.61.0)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -354,8 +355,8 @@ Milestone 10 IRC server = passed-via-plan179 (profile; byte round-trip proven-vi
 Milestone 10 local product = passed-via-plan180-and-plan182 (reconcile model + local-delivery driver)
 Milestone 10 local round-trip = passed-via-plan182 (generic/HTTP/SOCKS/IRC success paths)
 Milestone 10 independent application clients = passed-via-plan181-and-plan209 (Plan 181 §6.3 retained local rows remain green; the two remote application rows now flip `blocked → passed-on-env` through the Plan 209 product-only external driver when the dedicated M6 interop lane provisions the SSU2 endpoint + bind tuple and the driver emits every documented Plan 209 §11 subfact row in the same evidence directory/run id)
-Milestone 10 remote service interop = passed-via-plan202-plan206-plan207-plan208-and-plan209 (Plan 202 closed the typed routing classification + bounded counters; Plan 206 attached the executable `RemoteDestinationBackend` to the `ServiceDestinationDelivery` capability; Plan 208 wired the executable backend into the production `deliver_outbound` sweep so the manager routes its own queued Streaming requests through the real Plan 184–193 router stack — the typed `route_outbound_remote_request` / `dispatch_inbound_to_owned_destination` / `register_inbound_destination_owner` / `resolve_remote_lease_set2` seams cover both Direction A (client tunnel) and Direction B (server tunnel) without a parallel test-owned stack; Plan 207 introduced real system `curl` + exact-pinned jaraco/irc subprocess invocations and the documented Plan 207 §9 subfact rows; Plan 209 deleted the shadow router stack the Plan 207 driver constructed and replaced it with a single production composition helper (`ServiceProduct::start`) so the counted application driver is a black-box product harness)
-Milestone 10 final acceptance = not-yet-closed (Plan 209 closed the product-only remote HTTP + IRC application interop corrective; the milestone can only close via Plan 204 once Plan 201 records the terminal `P200-{A..H}` classification and lands its narrow corrective — see the §7/§12 authority transitions in `plans/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`)
+Milestone 10 remote service interop = passed-via-plan202-plan206-plan207-plan208-plan209-and-plan210 (Plan 202 closed the typed routing classification + bounded counters; Plan 206 attached the executable `RemoteDestinationBackend` to the `ServiceDestinationDelivery` capability; Plan 208 wired the executable backend into the production `deliver_outbound` sweep so the manager routes its own queued Streaming requests through the real Plan 184–193 router stack — the typed `route_outbound_remote_request` / `dispatch_inbound_to_owned_destination` / `register_inbound_destination_owner` / `resolve_remote_lease_set2` seams cover both Direction A (client tunnel) and Direction B (server tunnel) without a parallel test-owned stack; Plan 207 introduced real system `curl` + exact-pinned jaraco/irc subprocess invocations and the documented Plan 207 §9 subfact rows; Plan 209 deleted the shadow router stack the Plan 207 driver constructed and replaced it with a single production composition helper (`ServiceProduct::start`) so the counted application driver is a black-box product harness; Plan 210 closed the real per-service destination tunnel material + inbound Streaming corrective — the inbound tunnel owner reverse map keyed by receive tunnel id is selected before ECIES decryption; the production outbound compose path no longer swaps in a `dummy_outbound_tunnel()` placeholder; service LeaseSet lookup is keyed on the explicit `ReferencePeer::destination_hash`, not on a router-identity derivation; recovered Garlic envelopes dispatch through the canonical destination dispatcher + ECIES session manager instead of being silently dropped; the bidirectional external product qualification against exact-pinned i2pd 2.61.0 is owned by Plan 211)
+Milestone 10 final acceptance = not-yet-closed (Plan 210 closed the real per-service destination tunnel material + inbound Streaming corrective on top of Plans 208/209; the milestone can only close via Plan 211 once Plan 211 records positive Direction A + Direction B external evidence against exact-pinned unmodified i2pd 2.61.0 and Plan 201 records the terminal `P200-{A..H}` classification and lands its narrow corrective — see the §7/§12 authority transitions in `plans/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`)
 M6 authenticated I2NP preflight = passed-via-plan184 (no tunnel/NetDB/Streaming claim)
 M6 exploratory one-hop tunnels = passed-via-plan185 (no multi-hop / LeaseSet2 / Streaming claim)
 M6 NetDB lookup/publication = passed-via-plan186 (no LeaseSet2 / Streaming claim)
@@ -830,17 +831,40 @@ cargo test --locked -p i2pr-daemon --test service_tunnels_independent_applicatio
 bash scripts/check-service-tunnel-acceptance-evidence.sh
 ```
 
-The full Plan 181 + Plan 202 + Plan 206 + Plan 207 + Plan 208 lane
+The full Plan 181 + Plan 202 + Plan 206 + Plan 207 + Plan 208 + Plan 209 + Plan 210 lane
 (local suites + matrix + gates, 32 command-derived rows with 2
 remote rows that flip from `blocked` to `passed` when the dedicated
 M6 interop lane provisions the SSU2 endpoint + bind tuple and the
-Plan 207 driver emits every documented Plan 207 §9 subfact row in
-the same evidence directory/run id) is:
+Plan 209 driver emits every documented Plan 209 §11 subfact row
+in the same evidence directory/run id) is:
 
 ```text
 bash tests/integration/service-tunnels/run-independent.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh
 ```
+
+Plan 210 §16 extended the static checker with the source-level
+invariants for the M10 real service-Destination network material
+and inbound Streaming corrective: `SHA256(reference.router_info_bytes)`
+is rejected as a service LeaseSet lookup target; the counted
+remote compose path is forbidden from calling
+`dummy_outbound_tunnel()`; the inbound tunnel owner reverse map
+must exist (`register_inbound_tunnel_owner` /
+`unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` /
+`inbound_tunnel_owner_pairs`); recovered Garlic envelopes must
+dispatch through the canonical
+`DestinationDispatcher::dispatch_garlic_envelope` instead of
+being silently dropped; the `SamDestinationBridge::compose_adapter_send_owned_fields`
+helper must be the placeholder-free entry point the
+production `compose_remote_cells` delegates to; and at least one
+`plan210_…` unit row must be discoverable in
+`crates/i2pr-daemon/src/service_tunnels.rs`. The eight
+`plan210_real_service_destination_material_tests` rows lock the
+Plan 210 §14 conditions 1-8 (round-trip / duplicate /
+unregister / zero-id rejection / orphan counter advance /
+placeholder-free compose / explicit destination hash /
+typed pairs drain). Plan 211 owns the bidirectional external
+product qualification against exact-pinned i2pd 2.61.0.
 
 Plan 182 added the M10 local-delivery corrective (per-destination
 delivery drivers, wildcard Streaming port 0, SAM-parity accept
@@ -1245,13 +1269,24 @@ Use focused commits. Do not change git config, skip hooks, force-push, or amend
 someone else's commit. Closure records must include exact commands/results and
 current-head workflow evidence.
 
-Current handoff: **Plans 200/202/203 are closed;
-Plan 201 remains the active blocker; Plan 204 landed the
-docs/CI/evidence-authority normalization pass on top of those
-three passed plans and stays blocked on Plan 201's exact-head
-external run.** Plan 193 is closed
-(`passed-m6-i2pd-mixed-router-streaming`; see `plans/193-status.md`
-and `plans/193-streaming-status.md`): full Direction A +
+Current handoff: **Plan 210 is closed:
+Phases A–I of the M10 real service-Destination tunnel material
+and inbound Streaming corrective landed as product code; the
+static checker
+`scripts/check-service-tunnel-acceptance-evidence.sh` is
+extended with the Plan 210 §16 source-level invariants; eight
+new `plan210_*` rows in
+`crates/i2pr-daemon/src/service_tunnels.rs::plan210_real_service_destination_material_tests`
+lock the §14 conditions 1, 2, 3, 4, 5, 6, 7, 8. The next M10
+plan is **Plan 211**: the bidirectional external product
+qualification lane against exact-pinned i2pd 2.61.0. Plan 201
+remains the active M6-Java blocker; Plan 204 stays deferred
+until Plan 211 records Direction A + Direction B external
+evidence and Plan 201 records the terminal `P200-{A..H}`
+classification and lands its narrow corrective.** Plan 193 is
+closed (`passed-m6-i2pd-mixed-router-streaming`; see
+`plans/193-status.md` and `plans/193-streaming-status.md`):
+full Direction A +
 Direction B external matrix passed twice on exact head `3687189`
 (33/33 rows, evidence `passed-via-i2pd-2.61.0`) — Direction A
 SYN/Established + 25 B + 8192 B digests + reverse 23 B + 4096 B

@@ -110,6 +110,25 @@ fn env_port(name: &str) -> u16 {
         .unwrap_or_else(|_| panic!("invalid env {name} (must be u16)"))
 }
 
+/// Parses a 64-char hex destination hash supplied by the harness.
+/// Plan 210 §C — the value must be the actual remote destination
+/// hash, not a router identity derivation.
+fn parse_dest_hash(value: &str) -> [u8; 32] {
+    let trimmed = value.trim();
+    if trimmed.len() != 64 {
+        panic!("invalid destination hash {value} (expected 64 hex chars)");
+    }
+    let bytes = (0..32)
+        .map(|index| {
+            u8::from_str_radix(&trimmed[index * 2..index * 2 + 2], 16)
+                .unwrap_or_else(|_| panic!("invalid hex in destination hash {value}"))
+        })
+        .collect::<Vec<u8>>();
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(&bytes);
+    out
+}
+
 /// Reads the PLAN209_CURL_BIN (default `curl`) for the subprocess
 /// invocation.
 fn curl_bin() -> String {
@@ -454,6 +473,11 @@ async fn m10_product_only_remote_http_and_irc_application_interop() {
         i2pd_endpoint.ip().is_loopback(),
         "i2pd endpoint must be loopback"
     );
+    // Plan 210 §C — service LeaseSet lookup is keyed on the
+    // actual remote destination hash. Production drivers supply
+    // the explicit value (typically via the SAM bridge `DEST
+    // GENERATE` line recorded against `I2PD_DESTINATION_HASH`).
+    let i2pd_destination_hash_bytes = parse_dest_hash(&env_value("I2PD_DESTINATION_HASH"));
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
     let _http_target_port = env_port("PLAN209_HTTP_TARGET_PORT");
@@ -500,6 +524,7 @@ async fn m10_product_only_remote_http_and_irc_application_interop() {
     let reference = ReferencePeer {
         router_info_bytes: std::fs::read(&i2pd_ri_path).expect("read i2pd router.info"),
         endpoint: i2pd_endpoint,
+        destination_hash: Some(i2pd_destination_hash_bytes),
     };
     let spec = ServiceProductSpec {
         data_dir: data_dir.path().to_path_buf(),

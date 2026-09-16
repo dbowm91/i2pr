@@ -172,6 +172,18 @@ pub struct ReferencePeer {
     pub router_info_bytes: Vec<u8>,
     /// Loopback UDP endpoint for the dial.
     pub endpoint: SocketAddr,
+    /// Plan 210 §C — destination hash for the reference's
+    /// **destination** (not router identity). Production service
+    /// LeaseSet lookup is keyed on this value. Plan 210 §C forbids
+    /// deriving a service-destination lookup key from
+    /// `router_info_bytes` (RouterInfo hash is the router identity
+    /// key, not the destination identity key), so the explicit
+    /// value is mandatory in production drivers. The field is
+    /// `Option` only so test-only reference peer configurations
+    /// can construct a stub; the production helper fails closed
+    /// when the field is `None` and the lookup state machine
+    /// refuses to proceed.
+    pub destination_hash: Option<[u8; 32]>,
 }
 
 /// Typed failure for the production composition helper.
@@ -480,6 +492,10 @@ impl ServiceProduct {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => return,
         };
+        // Plan 210 §F — preserve the receive tunnel id so the
+        // inbound tunnel owner registry can resolve the owning
+        // service runtime before ECIES decryption runs.
+        let receive_tunnel_id = cell.tunnel_id;
         let now_ms = wall_ms();
         // Run the cell through the production inbound dispatcher.
         // The exploratory coordinator owns the data plane registry
@@ -501,7 +517,8 @@ impl ServiceProduct {
             | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
             | InboundDispatchOutcome::DeliveryStatusComplete { bytes }
             | InboundDispatchOutcome::GarlicComplete { bytes } => {
-                self.handle_recovered_envelope(bytes).await;
+                self.handle_recovered_envelope(receive_tunnel_id, bytes)
+                    .await;
             }
         }
     }
@@ -512,7 +529,17 @@ impl ServiceProduct {
     /// payloads route to the owning service runtime through the
     /// bridge's per-destination pipeline; DeliveryStatus is
     /// silently consumed.
-    async fn handle_recovered_envelope(&self, bytes: Vec<u8>) {
+    ///
+    /// Plan 210 §G — when a Garlic envelope is recovered the
+    /// helper resolves the owning service runtime from the
+    /// supplied receive tunnel id and runs the bridge's
+    /// `dispatch_inbound_garlic_owned` so the canonical
+    /// destination dispatcher + ECIES session manager +
+    /// `LeaseSet2Store` actually authenticate and process the
+    /// envelope. Unknown / stale receive ids fail closed and
+    /// advance the manager's typed `note_inbound_orphan_receive`
+    /// counter (Plan 210 §F §3).
+    async fn handle_recovered_envelope(&self, receive_tunnel_id: u32, bytes: Vec<u8>) {
         let Ok(envelope) = I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) else {
             return;
         };
@@ -530,19 +557,52 @@ impl ServiceProduct {
                 let mut coord_guard = self.inner.destination_tunnels.lock().await;
                 coord_guard.advance_time(now_secs as u64 * 1000);
             }
-            I2npBody::DeliveryStatus(_) | I2npBody::Garlic(_) => {
-                // Plan 188 §6.3 — delivery status / Garlic payloads
-                // do not advance the lookup state machine. The
-                // bridge's per-service runtime owns the
-                // ECIES-decryption / streaming dispatch pipeline
-                // and consumes the envelope internally; the counted
-                // driver never sees this path. The composition
-                // helper drains the SSU2 socket so the SSU2
-                // runtime sees no inbound backpressure; the
-                // bridge's runtime reads from its own inbound
-                // tunnel registry via the production `bridge_to_peer`
-                // helper when a remote peer responds with
-                // application traffic.
+            I2npBody::Garlic(_) => {
+                // Plan 210 §G — resolve the owning service runtime
+                // from the inbound tunnel owner registry. Without
+                // a registered owner the inbound tunnel id is
+                // stale / orphaned and we fail closed by advancing
+                // the manager's typed rejection counter.
+                let runtime = self.manager.inbound_tunnel_owner(receive_tunnel_id);
+                let Some(runtime) = runtime else {
+                    self.manager.note_inbound_orphan_receive();
+                    return;
+                };
+                let destination_id = runtime.destination_id;
+                // Hand the recovered envelope to the bridge's
+                // canonical Garlic dispatch surface through the
+                // manager-level `with_destination_bridge` accessor
+                // so the per-destination bridge handle is borrowed
+                // via the manager's lock and no parallel stack is
+                // reachable from the counted driver.
+                let dispatch_outcome = self
+                    .manager
+                    .with_destination_bridge(destination_id, |bridge| {
+                        bridge.dispatch_inbound_garlic_owned(&bytes, now_secs)
+                    });
+                match dispatch_outcome {
+                    Some(Ok(true)) => {
+                        // Plan 210 §G §9 — advance the typed
+                        // `remote_inbound_dispatched` counter
+                        // through the backend's typed seam so the
+                        // static checker observes the production
+                        // operation rather than a manual label
+                        // injection.
+                        if let Some(capability) = self.manager.router_delivery() {
+                            capability.note_inbound_dispatched().await;
+                        }
+                    }
+                    Some(Ok(false)) | Some(Err(_)) | None => {
+                        // Rejection already recorded on the bridge
+                        // diagnostics; production composition never
+                        // silently drops a Garlic envelope.
+                    }
+                }
+            }
+            I2npBody::DeliveryStatus(_) => {
+                // Plan 188 §6.3 — DeliveryStatus cells are silently
+                // consumed by the local M2 data plane; the inbound
+                // dispatch is a no-op for this body kind.
             }
             _ => {}
         }
@@ -741,8 +801,20 @@ async fn dial_and_bootstrap(
     // never sees the lookup state machine. The lookup is bounded
     // by `tunnel_deadline`; the production outcome is the cached
     // LeaseSet2 in the authoritative store.
-    let destination_hash =
-        DestinationHash::from_hash(i2pr_crypto::sha256(&reference.router_info_bytes));
+    //
+    // Plan 210 §C — service LeaseSet lookup is keyed on the
+    // actual remote **destination** hash. Deriving a lookup key
+    // from `router_info_bytes` (which is the router identity
+    // hash, not the destination identity hash) is forbidden; the
+    // caller must supply the explicit destination hash through
+    // `reference.destination_hash`. The helper fails closed when
+    // the explicit value is absent.
+    let destination_hash = match reference.destination_hash {
+        Some(hash) => DestinationHash::from_hash(Hash::from_bytes(hash)),
+        None => {
+            return Err(ServiceProductError::LookupTimeout);
+        }
+    };
     let routing_key = i2pr_netdb::router_hash_from_destination(destination_hash);
     let local_receive_for_lookup = receive_ids[0];
     let reply_path =

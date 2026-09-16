@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
-# Plan 199 / Plan 181 / Plan 207 / Plan 208 / Plan 209 — M10
-# independent-application-client matrix plus the controlled
+# Plan 199 / Plan 181 / Plan 207 / Plan 208 / Plan 209 / Plan 210 —
+# M10 independent-application-client matrix plus the controlled
 # remote independent-I2P qualification attempt and the Plan 209
 # product-only remote HTTP + IRC application interoperability
 # corrective driver.
+#
+# Plan 210 is the M10 real service-Destination tunnel material and
+# inbound Streaming corrective: the lane hooks remain in place but
+# the bidirectional external qualification is owned by the next
+# Plan 211 follow-up lane rather than this runner (Plan 210 §15
+# specifies a generic external product qualification gate against
+# exact-pinned i2pd 2.61.0; the lane referenced here is the
+# structural / unit-test evidence floor that the static checker
+# `scripts/check-service-tunnel-acceptance-evidence.sh` enforces).
+# The Plan 210 stub driver is the unit-test evidence floor; the
+# remote bidirectional lane is registered as `#[ignore]` and is
+# exercised only in the dedicated M6 interop lane.
 #
 # Provenance: local rows execute the focused Plan 174–180/182 Rust
 # suites plus unmodified external application clients (curl, nc, a

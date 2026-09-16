@@ -313,7 +313,7 @@ the integration call graph; the new `#[ignore]`-gated
 driver (`crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs`)
 exercises the production sweep against the exact-pinned i2pd
 2.61.0 cache; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh`
-extended with Plan 208 §15 source-level invariants (production
+ extended with Plan 208 §15 source-level invariants (production
 `deliver_outbound` must call `route_outbound_remote_request`,
 the `plan208_remote_route_integration_tests` module must
 exist, `compose_remote_cells` must be present, the counted
@@ -322,6 +322,54 @@ driver must not construct a parallel `StreamingManager::new` /
 `record_remote_application_observation`, must never log peer
 key material, and the `RemoteDeliveryCounters` operation-boundary
 counters must advance only through the typed backend seams).
+
+Plan 210 closed the M10 real service-Destination network material
+and inbound Streaming corrective (`crates/i2pr-daemon/src/service_tunnels.rs`,
+`crates/i2pr-daemon/src/sam/streams.rs`,
+`crates/i2pr-daemon/src/service_product.rs`, Plan 210 §A/§B/§C/§D/§E/§F/§G/§I/§16):
+- **Phase F** — added the inbound tunnel owner reverse map keyed
+  by local receive tunnel id before ECIES decryption. The
+  `ServiceTunnelManager` now exposes
+  `register_inbound_tunnel_owner` /
+  `unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` /
+  `inbound_tunnel_owner_pairs` / `note_inbound_orphan_receive` /
+  `inbound_orphan_receives`; stale / orphan receives fail closed
+  via the typed `inbound_orphan_receives` counter.
+- **Phase E** — replaced the pre-Plan-210 `dummy_outbound_tunnel()`
+  swap placeholder in `compose_remote_cells` with a single bridge
+  helper `SamDestinationBridge::compose_adapter_send_owned_fields`
+  that reads the bridge's real
+  `DestinationRouting` / `EciesSessionManager` /
+  `DestinationOutboundRole` directly.
+- **Phase C** — removed `DestinationHash::from_hash(i2pr_crypto::sha256(&reference.router_info_bytes))`
+  as a service LeaseSet lookup target. The `ReferencePeer` now
+  carries an explicit `destination_hash: Option<[u8; 32]>` field
+  that fails closed when absent; the harness propagates the new
+  `I2PD_DESTINATION_HASH` env var.
+- **Phase G** — wired the recovered inbound Garlic envelope
+  through the canonical
+  `DestinationDispatcher::dispatch_garlic_envelope` via
+  `SamDestinationBridge::dispatch_inbound_garlic_owned` and
+  advances the typed `remote_inbound_dispatched` counter through
+  the backend seam.
+- **Phase I** — integrated the new state with the existing
+  Plan 180 generation lifecycle. The static checker
+  `scripts/check-service-tunnel-acceptance-evidence.sh` extended
+  with the Plan 210 §16 source-level invariants (`SHA256(reference.router_info_bytes)`
+  forbidden as a service lookup key, `dummy_outbound_tunnel()`
+  forbidden in `compose_remote_cells`, `inbound_tunnel_owners`
+  registry must exist with `dispatch_inbound_garlic_owned`,
+  silent `I2npBody::Garlic(_) => {}` drop forbidden, at least
+  one `plan210_…` test row required). Eight new `plan210_*` unit
+  rows in
+  `service_tunnels.rs::plan210_real_service_destination_material_tests`
+  lock the §14 conditions 1-8 (round-trip / duplicate /
+  unregister / zero-id rejection / orphan counter advance /
+  placeholder-free compose / explicit destination hash /
+  typed pairs drain); the remaining §14 conditions are enforced
+  by the static checker and the Plan 209 driver carry-over. The
+  bidirectional external product qualification against
+  exact-pinned i2pd 2.61.0 is owned by Plan 211.
 
 ## Purpose
 
