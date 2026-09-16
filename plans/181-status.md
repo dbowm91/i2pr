@@ -1,37 +1,35 @@
 # Plan 181 status — M10 independent application/service interoperability
 
-Status: **`passed-local-matrix-remote-rows-blocked-pending-plan212-and-plan211-requalification`**.
+Status: **`passed-local-matrix-remote-rows-blocked-pending-plan213-and-plan214`**.
 
 Plan of record: [`181-m10-independent-application-and-service-interop-final-closure.md`](181-m10-independent-application-and-service-interop-final-closure.md).
 
-The retained Plan 181 local/independent-client matrix remains valid: the 29 local rows continue to represent command-derived evidence for generic, HTTP, SOCKS5, IRC, restart, policy, and cleanup behavior on the local/co-owned M10 product path.
+The retained Plan 181 local/independent-client matrix remains valid: 29 local rows continue to represent command-derived evidence for generic, HTTP, SOCKS5, IRC, restart, policy, and cleanup behavior on the local/co-owned M10 product path.
 
-The remote rows remain non-authoritative.
+Do not rerun or weaken those local rows merely to execute the remote qualification work.
 
-Current row authority:
+## Current remote row authority
 
 ```text
 m10_local_rows = passed (29/29 retained)
-m10-remote-destination-streaming-composition = blocked pending Plan 212
-remote-independent-http-eepsite = blocked pending Plan 212 -> Plan 211 requalification
-remote-independent-irc-service = blocked pending Plan 212 -> Plan 211 requalification
+m10-remote-destination-streaming-composition = blocked pending Plan 213
+remote-independent-http-eepsite = blocked pending Plan 213 -> Plan 214
+remote-independent-irc-service = blocked pending Plan 213 -> Plan 214
 ```
 
-Reason:
+## Why qualification remains open
 
-- Plan 210 added useful owner/dispatch structure but the counted service bridge still receives synthetic localhost-only network material from `SamLocalProductFabric`.
-- the real exploratory tunnel pair is not yet installed as per-service Destination network state;
-- real inbound receive ids are not yet production-registered to the owning service runtime;
-- inbound Garlic authentication is not yet followed by `pop_payload` -> `StreamingDestinationAdapter::receive` into the canonical service Streaming manager;
-- Plan 211's application harness is retained and ready for requalification only after Plan 212 closes that product seam.
+Plan 212 corrected the product architecture, but its generic external driver is still a scaffold and has not yet produced a real Direction A/B external proof. Plan 213 owns that generic qualification correction and exact-head evidence.
 
-Current execution graph:
+The retained Plan 211 HTTP/IRC harness also needs evidence hardening before it can become final authority. Plan 214 owns that application-profile requalification after Plan 213 passes.
+
+## Current execution graph
 
 ```text
-Plan 212
-  -> generic router-backed Direction A + Direction B
-  -> rerun retained Plan 211 HTTP/IRC lane
-  -> M10 closure only if remote rows pass
+Plan 212 source closure (retained)
+  -> Plan 213 generic router-backed external qualification
+  -> Plan 214 HTTP/IRC product-only external requalification
+  -> M10 closure only if all remote rows pass
 ```
 
-Do not delete, weaken, or rerun the retained 29 local rows merely to execute the remote corrective path.
+The remote rows must remain non-authoritative until command-, target-, and production-counter-derived evidence is green on the required exact-head hosted runs.

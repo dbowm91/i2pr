@@ -1,59 +1,63 @@
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-independent-java-m6-branch-and-m10-plan212-plus-plan211-requalification`**.
+Status: **`blocked-on-independent-java-m6-branch-and-m10-plan213-plan214-qualification`**.
 
 Plan of record: [`204-m10-final-closure-evidence-authority-and-documentation-normalization.md`](204-m10-final-closure-evidence-authority-and-documentation-normalization.md).
 
 Plan 204 remains a later cross-milestone convergence/normalization pass. It must not hide product/evidence defects, and it must not force the independently testable M10 product to remain open solely because the Java M6 second-family branch is unresolved.
 
-## Corrected execution graph
+## Current execution graph
 
 ```text
 Java / M6 branch:
-  independent Plan 205 / evidence-driven successor -> M6 Java second-family closure
+  independent Plan 205 / evidence-driven successor
+    -> M6 Java second-family closure
 
 M10 branch:
-  Plan 212
-    -> real router-backed per-service Destination network material
-    -> production inbound receive-id ownership
-    -> per-service actual target LeaseSet2 lookup
-    -> real server LS2 publication where required
-    -> Garlic -> pop_payload -> StreamingDestinationAdapter::receive
-    -> generic Direction A + Direction B external proof
+  Plan 212 source closure (retained)
+    -> router-backed per-service Destination state
+    -> real per-service outbound/inbound tunnel material
+    -> real local LS2 from real inbound lease metadata
+    -> production receive-id ownership
+    -> per-service target LS2 lookup
+    -> server LS2 publication
+    -> Garlic -> pop_payload -> canonical Streaming receive
 
-  then retained Plan 211
-    -> product-only curl HTTP remote row
-    -> exact-pinned jaraco IRC remote row
-    -> exact-head repeatability
+  Plan 213 qualification
+    -> replace immutable-false generic A/B scaffold with real application I/O
+    -> independent exact-pinned i2pd SAM STREAM service + initiator
+    -> command/state-derived evidence only
+    -> generic Direction A + Direction B hosted exact-head proof twice
+
+  Plan 214 final application qualification
+    -> harden retained Plan 211 HTTP/IRC evidence path
+    -> system curl HTTP row with target fixture + production counters
+    -> exact-pinned jaraco IRC row with target fixture/privacy/DCC + counters
+    -> hosted full-lane repeatability twice
     -> M10 closure
 
 parallel outcomes:
-  Plan 211 may close Milestone 10 independently after Plan 212
+  Plan 214 may close Milestone 10 independently
   Java branch may close Milestone 6 independently
 
 later convergence:
   closed Java M6 branch + already-closed M10 -> Plan 204 authority/docs convergence
 ```
 
-## Why Plan 212 supersedes the prior Plan 210/211 closure interpretation
+## Why Plans 213/214 were required after Plan 212 source closure
 
-The post-Plan-211 audit found:
+Plan 212 fixed the product seam, but its external generic driver is not yet executable proof: Direction A/B success booleans are immutable `false`, no counted application byte exchange occurs, the default M10 runner skips generic destination provisioning, and several mandatory qualification facts are unconditional literals.
 
-- `ServiceTunnelManager::create_bridge_for_spec` still constructs every service bridge through `SamLocalProductFabric`, which explicitly generates synthetic localhost-only tunnel material;
-- Plan 210 removed an explicit placeholder swap but did not replace the underlying synthetic bridge outbound role/local LS2 with router-backed service-Destination material;
-- the real exploratory pair created by `ServiceProduct` is not installed into service runtimes;
-- real inbound receive tunnel ids are not production-bound to those service runtimes;
-- `dispatch_inbound_garlic_owned` stops after `DestinationDispatcher::dispatch_garlic_envelope` and does not drain destination payloads into the canonical service Streaming manager;
-- router bootstrap still carries one application Destination hash while Plan 211 may configure multiple independent remote targets.
+The retained Plan 211 application driver also needs final evidence hardening: it directly constructs a placeholder manager, stamps pin/privacy facts, uses insufficient target-side/DCC derivation, and does not guarantee continuous `ServiceProduct::poll_inbound()` progress while blocking external clients execute.
 
-Therefore the Plan 211 full-lane failure cannot be classified as environment-only yet.
+Those are qualification defects. They do not invalidate the retained Plan 212 source architecture, but they prevent M10 closure until corrected and executed.
 
 ## Current authority
 
 ```text
 plan_200 = retained diagnostic/evidence pass
 plan_201 = retained/in-progress Java corrective history
-plan_204 = blocked-on-independent-java-m6-branch-and-m10-plan212-plus-plan211-requalification
+plan_204 = blocked-on-independent-java-m6-branch-and-m10-plan213-plan214-qualification
 plan_205 = registered/in-progress Java second-family branch
 
 plan_202 = retained-partial-routing-capability-surface
@@ -63,39 +67,44 @@ plan_207 = retained-partial-real-application-client-harness
 plan_208 = retained-partial-production-call-graph-corrective
 plan_209 = retained-partial-black-box-composition-harness
 plan_210 = retained-partial-structural-corrective-superseded-by-plan212
-plan_211 = retained-source-harness-blocked-by-plan212
-plan_212 = registered-executable
+plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
+plan_212 = source-closure-landed-qualification-owned-by-plan213
+plan_213 = registered-executable-after-plan212-source-closure
+plan_214 = registered-blocked-by-plan213
 
 milestone6_java_mixed_router_interop = not-yet-passed
 milestone6_interoperable = not-yet-claimed
 m10_remote_transport_core = not-yet-passed
+m10_generic_remote_product = not-yet-passed
 m10_remote_application_interop = not-yet-passed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 ```
 
-The retained M10 local matrix stays passed. The remote rows remain non-authoritative until Plan 212 product proof and subsequent Plan 211 application proof are green.
+The retained M10 local matrix stays passed. Remote rows remain non-authoritative until Plan 213 and Plan 214 pass.
 
 ## M10 closure authority
 
-After Plan 212 generic Direction A + Direction B pass, authority may advance only to:
+After Plan 213 passes:
 
 ```text
-plan_212 = passed-m10-router-backed-service-destination-and-canonical-inbound-streaming
-m10_remote_transport_core = passed-via-plan212
-plan_211 = retained-source-harness-ready-for-requalification
+plan_212 = passed-source-and-generic-external-qualification-via-plan213
+plan_213 = passed-m10-router-backed-generic-external-qualification
+m10_remote_transport_core = passed-via-plan212-and-plan213
+m10_generic_remote_product = passed-via-plan213
+plan_214 = executable
 ```
 
-After the subsequent exact-head Plan 211 HTTP + IRC lane passes, Plan 211 may independently record:
+After Plan 214 then passes its two consecutive hosted full-lane runs on one exact source SHA:
 
 ```text
-plan_211 = passed-m10-product-only-remote-http-and-irc-application-closure
-m10_remote_application_interop = passed-via-plan211-after-plan212
-milestone10_remote_service_interop = passed-via-plan212-and-plan211
-milestone10_final_acceptance = closed-via-plan211-after-plan212
+plan_214 = passed-m10-http-irc-product-only-external-requalification-and-final-closure
+m10_remote_application_interop = passed-via-plan214
+milestone10_remote_service_interop = passed-via-plan213-and-plan214
+milestone10_final_acceptance = closed-via-plan214
 next_product_layer = milestone11-planning
 ```
 
-That transition does **not** require Java M6 second-family closure.
+This M10 transition does **not** require Java M6 second-family closure.
 
-Plan 204 later consumes the already-closed M10 authority plus independently closed Java M6 authority and normalizes cross-milestone documentation. It must not downgrade or rerun a valid M10 closure merely because Java closure lands later.
+Plan 204 later consumes independently closed M10 authority plus independently closed Java M6 authority and normalizes cross-milestone documentation. It must not rerun or downgrade valid M10 closure merely because Java closure lands later.
