@@ -136,30 +136,36 @@ interop. Plans 195 and 204 own the M10 final closure authority
 normalization; Plan 204 landed the docs/CI normalization pass
 on top of Plans 200/202/203 and remains blocked on Plan 201's
 Java branch corrective. Plan 210 (M10 real service-Destination
-network material and inbound Streaming corrective) closed the
-remaining product defect: the inbound tunnel owner reverse map
-keyed by the local receive tunnel id
-(`register_inbound_tunnel_owner` /
+network material and inbound Streaming corrective) landed the
+structural work as retained-partial-superseded-by-plan212: the
+inbound tunnel owner reverse map keyed by the local receive
+tunnel id (`register_inbound_tunnel_owner` /
 `unregister_inbound_tunnel_owner` / `inbound_tunnel_owner` /
 `inbound_tunnel_owner_pairs` / `note_inbound_orphan_receive`)
 selects the owning service runtime before ECIES decryption; the
 production `compose_remote_cells` no longer swaps in a
-`dummy_outbound_tunnel()` placeholder — `ServiceProduct::start`
-+ the bridge's `compose_adapter_send_owned_fields` helper consume
-the bridge's real `DestinationRouting` / `EciesSessionManager` /
-`DestinationOutboundRole` directly; service LeaseSet lookup is
-keyed on the explicit `ReferencePeer::destination_hash` rather
-than `SHA256(reference.router_info_bytes)`; recovered inbound
-Garlic envelopes dispatch through the canonical
-`DestinationDispatcher::dispatch_garlic_envelope` via
-`SamDestinationBridge::dispatch_inbound_garlic_owned` instead of
-being silently dropped. Plan 210's bidirectional external
-qualification against exact-pinned i2pd 2.61.0 is owned by Plan
-211; the structural invariants (Plan 210 §16) are enforced by
-the static checker, and the unit-test floor (eight `plan210_*`
-rows in
-`service_tunnels.rs::plan210_real_service_destination_material_tests`)
-locks the §14 conditions 1-8.
+`dummy_outbound_tunnel()` placeholder; service LeaseSet lookup
+stopped deriving from `SHA256(reference.router_info_bytes)`;
+recovered inbound Garlic envelopes dispatch through the canonical
+`DestinationDispatcher::dispatch_garlic_envelope` instead of
+being silently dropped. Plan 212 completes the split (see
+`plans/212-status.md`): `RouterDestinationNetworkState` +
+`compose_router_send` (explicit router-backed compose, never
+fabric) + `dispatch_router_garlic_to_canonical_streaming`
+(`pop_payload` drain + `StreamingDestinationAdapter::receive`
+into the SAME canonical service `StreamingManager`);
+`ServiceProduct::start` reorder with per-service real
+provisioning; router-only `ReferencePeer` with per-service
+`DestinationRef` resolution (HTTP and IRC resolve
+independently). The generic external qualification against
+exact-pinned i2pd 2.61.0 is owned by Plan 212; Plan 211
+requalifies after it. The structural invariants (Plan 210 §16 +
+Plan 212 §20–§26) are enforced by the static checker, and the
+unit-test floor (eight `plan210_*` rows in
+`service_tunnels.rs::plan210_real_service_destination_material_tests`
+plus 25 `plan212_*` rows in
+`service_tunnels.rs::plan212_router_backed_service_destination_tests`)
+locks the typed path.
 
 ## Module layout
 

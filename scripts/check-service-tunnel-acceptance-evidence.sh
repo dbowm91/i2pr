@@ -893,11 +893,24 @@ if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
   failures=$((failures + 1))
 fi
 
-# 15. Plan 210 §C — the production code path must derive the
-# remote destination hash from the supplied `ReferencePeer`'s
-# explicit `destination_hash` field, not from router_info_bytes.
-if ! grep -q -F 'reference.destination_hash' "${SERVICE_PRODUCT_RS}"; then
-  echo "evidence check failed: Plan 210 §C — service_product must consume reference.destination_hash (not SHA256(router_info_bytes))" >&2
+# 15. Plan 212 §8 (supersedes Plan 210 §C single-hash shape) —
+# `ReferencePeer` is router transport/bootstrap metadata only and
+# must NOT carry an application `destination_hash`. Per-service
+# remote target hashes derive from the service specs'
+# `DestinationRef` via `remote_target_hash_for_reference` +
+# `resolve_remote_destination_for_service` (HTTP and IRC resolve
+# independently; no single hash applies to all services).
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
+   grep -q 'destination_hash: Option<\[u8; 32\]>\|reference\.destination_hash'; then
+  echo "evidence check failed: Plan 212 §8 — ReferencePeer must not carry an application destination_hash (per-service DestinationRef resolution only)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'remote_target_hash_for_reference' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §8 — ServiceTunnelManager must own remote_target_hash_for_reference" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'resolve_remote_destination_for_service' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §8 — service_product must own resolve_remote_destination_for_service" >&2
   failures=$((failures + 1))
 fi
 
@@ -965,8 +978,193 @@ if (( PLAN210_TEST_COUNT < 1 )); then
   failures=$((failures + 1))
 fi
 
+# 20. Plan 212 §4/§6 — router-backed network state type/field
+# exists on the service bridge/runtime (distinct from the local
+# `SamLocalProductFabric` seam; no silent relabel of localhost
+# material as router-backed material).
+if ! grep -q -F 'RouterDestinationNetworkState' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §4 — RouterDestinationNetworkState type missing from sam/streams.rs" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'router_network:' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §4 — SamDestinationBridge must own the router_network field" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'install_router_network_state' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §6 — SamDestinationBridge must own install_router_network_state" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'has_router_network_state' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §6 — SamDestinationBridge must own has_router_network_state" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'router_network_summary' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §6 — SamDestinationBridge must own router_network_summary" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'install_service_router_material' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §6 — ServiceTunnelManager must own install_service_router_material" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'clear_service_router_material' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §6 — ServiceTunnelManager must own clear_service_router_material" >&2
+  failures=$((failures + 1))
+fi
+
+# 21. Plan 212 §7/§9 — production provisioning builds real
+# per-service tunnel material through the shared coordinator and
+# registers inbound ownership (no second SSU2/NetDB/tunnel stack
+# per service).
+if ! grep -q -F 'provision_all_service_router_material' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §7 — service_product must own provision_all_service_router_material" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'Plan212TunnelIdAllocator' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §9 — service_product must own the Plan212TunnelIdAllocator" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'register_inbound_tunnel_owner' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §7 — production provisioning must call register_inbound_tunnel_owner" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'ExploratoryBuildCoordinator' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §9 — production provisioning must build through the shared ExploratoryBuildCoordinator" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'build_signed_lease_set2' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §9 — production provisioning must derive the service LS2 via build_signed_lease_set2" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'InboundLeaseSource::from_parts' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §9 — production provisioning must build InboundLeaseSource::from_parts from installed route metadata" >&2
+  failures=$((failures + 1))
+fi
+
+# 22. Plan 212 §11 — remote compose runs explicitly against
+# router-backed state (never `SamLocalProductFabric` fields).
+if ! grep -q -F 'compose_router_send' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §11 — SamDestinationBridge must own compose_router_send" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'compose_router_send' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §11 — remote compose must call the router-backed compose_router_send method" >&2
+  failures=$((failures + 1))
+fi
+# Scoped negative: the router-backed compose seam must not read
+# fabric material or placeholder tunnels. The grep is scoped to
+# the compose_router_send function body so local-path helpers
+# elsewhere in the file do not trip the rule.
+COMPOSE_ROUTER_BODY=$(awk '/fn compose_router_send/,/^    \}/' "${SAM_STREAMS_RS}")
+if echo "${COMPOSE_ROUTER_BODY}" | grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' | grep -q 'SamLocalProductFabric'; then
+  echo "evidence check failed: Plan 212 §11 — compose_router_send must not call SamLocalProductFabric" >&2
+  failures=$((failures + 1))
+fi
+if echo "${COMPOSE_ROUTER_BODY}" | grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' | grep -q 'dummy_outbound_tunnel('; then
+  echo "evidence check failed: Plan 212 §11 — compose_router_send must not call dummy_outbound_tunnel" >&2
+  failures=$((failures + 1))
+fi
+if echo "${COMPOSE_ROUTER_BODY}" | grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' | grep -q 'random_outbound_tunnel'; then
+  echo "evidence check failed: Plan 212 §11 — compose_router_send must not use random_outbound_tunnel" >&2
+  failures=$((failures + 1))
+fi
+
+# 23. Plan 212 §14 — inbound router dispatch drains `pop_payload`
+# into `StreamingDestinationAdapter::receive` against the SAME
+# canonical service StreamingManager; the inbound counter
+# advances only after adapter receive (never immediately after
+# `dispatch_garlic_envelope`).
+if ! grep -q -F 'dispatch_router_garlic_to_canonical_streaming' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §14 — SamDestinationBridge must own dispatch_router_garlic_to_canonical_streaming" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'pop_payload' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §14 — inbound router dispatch must contain pop_payload" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'StreamingDestinationAdapter::receive' "${SAM_STREAMS_RS}"; then
+  echo "evidence check failed: Plan 212 §14 — inbound router dispatch must contain StreamingDestinationAdapter::receive" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'dispatch_router_inbound_to_canonical_streaming' "${SERVICE_TUNNELS_RS}"; then
+  echo "evidence check failed: Plan 212 §14 — ServiceTunnelManager must own dispatch_router_inbound_to_canonical_streaming" >&2
+  failures=$((failures + 1))
+fi
+# The production inbound seam must gate `note_inbound_dispatched`
+# on `streaming_packets_accepted` (Plan 212 §14 step 8), not on
+# bare Garlic authentication.
+if ! grep -q -F 'streaming_packets_accepted' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §14 — production inbound must gate note_inbound_dispatched on streaming_packets_accepted" >&2
+  failures=$((failures + 1))
+fi
+
+# 24. Plan 212 §15 — I2NP decode parity: the outer SSU2 decode
+# mirrors standard-first / short-fallback (no third decoder).
+if ! grep -q -F 'decode_inbound_ssu2_i2np' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: Plan 212 §15 — service_product must own the decode_inbound_ssu2_i2np parity helper" >&2
+  failures=$((failures + 1))
+fi
+
+# 25. Plan 212 §17 — manager-level unit rows lock the typed path.
+PLAN212_TEST_COUNT=$(grep -E -c 'plan212[_a-z0-9]*\(' "${SERVICE_TUNNELS_RS}" || true)
+if (( PLAN212_TEST_COUNT < 25 )); then
+  echo "evidence check failed: Plan 212 §17 — at least 25 plan212_… test rows are required (found ${PLAN212_TEST_COUNT})" >&2
+  failures=$((failures + 1))
+fi
+
+# 26. Plan 212 §L — the ignored generic Direction A/B driver
+# exists, is `#[ignore]`-gated, consumes the production
+# composition API, and never constructs the forbidden lower
+# stack.
+PLAN212_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_plan212_router_backed_product.rs"
+if [[ ! -f "${PLAN212_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 212 generic driver missing: ${PLAN212_DRIVER}" >&2
+  failures=$((failures + 1))
+else
+  if ! grep -q -F '#[ignore = "Plan 212' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver lost its #[ignore] gate" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'plan212_router_backed_generic_directions' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver lost its test name" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'ServiceProduct::start' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver must use ServiceProduct::start (Plan 212 §L)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'poll_inbound' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver must use ServiceProduct::poll_inbound (Plan 212 §L)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'remote_counters' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver must read remote_counters (Plan 212 §L)" >&2
+    failures=$((failures + 1))
+  fi
+  for forbidden in 'StreamingManager::new' 'StreamingManager\b' 'StreamingDestinationAdapter' 'DestinationTunnelCoordinator' 'ExploratoryBuildCoordinator' 'Ssu2DaemonService' 'RouterDeliveryService' 'RouterDeliveryRequest'; do
+    if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" | grep -q "${forbidden}"; then
+      echo "evidence check failed: Plan 212 driver must not construct ${forbidden} (Plan 212 §L anti-shadow rule)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" |
+     grep -q '\.record_observation(\|record_remote_application_observation'; then
+    echo "evidence check failed: Plan 212 driver must not call record_observation / record_remote_application_observation (Plan 212 §L)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 212 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
+  for label in plan212-i2pd-pin-ok plan212-router-bootstrap-ok plan212-service-destination-hash plan212-real-outbound-installed plan212-real-inbound-installed plan212-local-ls2-real-lease-count plan212-inbound-owner-registered plan212-remote-ls2-lookup-started plan212-remote-ls2-lookup-succeeded plan212-direction-a-stream-established plan212-direction-a-small-digest-match plan212-direction-a-large-digest-match plan212-direction-a-inbound-streaming-accepted plan212-direction-b-local-ls2-published plan212-direction-b-inbound-owner-hit plan212-direction-b-stream-established plan212-direction-b-small-digest-match plan212-direction-b-large-digest-match plan212-orphan-receive-delta-zero plan212-local-coowned-delta-zero plan212-unknown-peer-delta-zero plan212-resource-baseline-clean; do
+    if ! grep -q -F "${label}" "${PLAN212_DRIVER}"; then
+      echo "evidence check failed: Plan 212 driver omits documented §21 evidence key '${label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green"
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green"

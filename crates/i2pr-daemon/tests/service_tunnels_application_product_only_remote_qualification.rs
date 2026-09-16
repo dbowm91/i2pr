@@ -649,12 +649,15 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v211() {
         i2pd_endpoint.ip().is_loopback(),
         "i2pd endpoint must be loopback"
     );
-    // Plan 210 §C — service LeaseSet lookup is keyed on the
-    // actual remote destination hash. Production drivers supply
-    // the explicit value (typically via the i2pd SAM bridge or
-    // the i2pd-generated .dat file's identity hash, whichever
-    // the harness can compute without parsing private material).
-    let i2pd_destination_hash_bytes = parse_dest_hash(&env_value("I2PD_DESTINATION_HASH"));
+    // Plan 212 §8 — router bootstrap is independent of
+    // application Destination lookup. The reference peer carries
+    // only router transport/bootstrap metadata (router.info +
+    // endpoint); per-service remote target hashes derive from the
+    // service specs' `DestinationRef` (Base32Hash /
+    // ConfiguredDestination / StaticAlias) inside the production
+    // composition (`resolve_remote_destination_for_service`).
+    // HTTP and IRC resolve independently; no single
+    // `I2PD_DESTINATION_HASH` applies to all services.
     let http_dest_b64 = env_value("PLAN211_HTTP_DEST_B64");
     let http_dest_b32 = env_value("PLAN211_HTTP_DEST_B32");
     let http_dest_hash = parse_dest_hash(&env_value("PLAN211_HTTP_DEST_HASH"));
@@ -786,10 +789,12 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v211() {
     })
     .expect("manager placeholder builds");
 
+    // Plan 212 §8 — router-only reference peer (no application
+    // destination hash). Per-service lookup keys derive from the
+    // HttpClient/IrcClient spec destinations above.
     let reference = ReferencePeer {
         router_info_bytes: std::fs::read(&i2pd_ri_path).expect("read i2pd router.info"),
         endpoint: i2pd_endpoint,
-        destination_hash: Some(i2pd_destination_hash_bytes),
     };
     let spec = ServiceProductSpec {
         data_dir: data_dir.path().to_path_buf(),

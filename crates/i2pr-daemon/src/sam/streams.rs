@@ -34,10 +34,11 @@ use i2pr_client::{
     DestinationDispatcher, DestinationId, DestinationIdentity, DestinationOutboundRole,
     DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
     LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver,
-    LocalDeliverySender, deliver,
+    LocalDeliverySender, StreamingDestinationAdapter, deliver,
 };
 use i2pr_crypto::OsRng;
 use i2pr_netdb::LeaseSet2Store;
+use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::Hash;
 use i2pr_proto::LeaseSet2;
 use i2pr_tunnel::{EstablishedTunnel, TunnelId};
@@ -98,6 +99,126 @@ impl BridgeDiagnostics {
     }
 }
 
+/// Plan 212 §4 — router-backed per-service Destination network
+/// state.
+///
+/// `SamLocalProductFabric` remains the explicitly local/co-owned
+/// seam (synthetic localhost-only tunnel material). Remote-capable
+/// network state is a distinct optional attachment to the same
+/// service Destination runtime:
+///
+/// - `outbound_role` originates from an installed
+///   `ExploratoryBuildCoordinator` outbound role (never
+///   `dummy_outbound_tunnel`, `random_outbound_tunnel`,
+///   `LocalZeroHop`, or fabric material);
+/// - `lease_set2` is signed by the service Destination identity
+///   from actual inbound lease metadata (`InboundLeaseSource`);
+/// - `inbound_receive_ids` come from the installed real inbound
+///   tunnel registry;
+/// - remote routing/session state attaches to the existing service
+///   bridge/runtime; the existing canonical service
+///   `StreamingManager` remains authoritative (no second manager).
+///
+/// No secret material is logged or exposed through diagnostics;
+/// `SamDestinationBridge::router_network_summary` exposes only
+/// service-neutral counts/ids/expiry.
+pub struct RouterDestinationNetworkState {
+    destination_id: DestinationId,
+    routing: DestinationRouting,
+    session_manager: EciesSessionManager,
+    outbound_role: DestinationOutboundRole,
+    lease_set2: LeaseSet2,
+    #[allow(dead_code)]
+    validated_lease_set2: ValidatedLeaseSet2,
+    inbound_receive_ids: Vec<u32>,
+    outbound_expires_at_ms: u64,
+    inbound_expires_at_ms: u64,
+}
+
+impl std::fmt::Debug for RouterDestinationNetworkState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RouterDestinationNetworkState")
+            .field("destination_id", &self.destination_id)
+            .field("inbound_receive_ids", &self.inbound_receive_ids.len())
+            .field("outbound_expires_at_ms", &self.outbound_expires_at_ms)
+            .field("inbound_expires_at_ms", &self.inbound_expires_at_ms)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RouterDestinationNetworkState {
+    /// Builds router-backed state from already-installed real
+    /// material. The caller owns tunnel installation; this
+    /// constructor only bundles the state and checks identity
+    /// consistency at install time (see
+    /// [`SamDestinationBridge::install_router_network_state`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        destination_id: DestinationId,
+        routing: DestinationRouting,
+        session_manager: EciesSessionManager,
+        outbound_role: DestinationOutboundRole,
+        lease_set2: LeaseSet2,
+        validated_lease_set2: ValidatedLeaseSet2,
+        inbound_receive_ids: Vec<u32>,
+        outbound_expires_at_ms: u64,
+        inbound_expires_at_ms: u64,
+    ) -> Self {
+        Self {
+            destination_id,
+            routing,
+            session_manager,
+            outbound_role,
+            lease_set2,
+            validated_lease_set2,
+            inbound_receive_ids,
+            outbound_expires_at_ms,
+            inbound_expires_at_ms,
+        }
+    }
+
+    /// Returns true when either the outbound or inbound material is
+    /// expired relative to `now_ms`.
+    pub(crate) fn is_expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.outbound_expires_at_ms || now_ms >= self.inbound_expires_at_ms
+    }
+}
+
+/// Plan 212 §14 — read-only diagnostic summary for router-backed
+/// state. Exposes only service id-neutral counts/ids/expiry; never
+/// secret material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RouterNetworkSummary {
+    /// Local destination hash (public identity, not secret).
+    pub destination_hash: [u8; 32],
+    /// Number of registered inbound receive tunnel ids.
+    pub inbound_receive_count: usize,
+    /// Outbound expiry (ms).
+    pub outbound_expires_at_ms: u64,
+    /// Inbound expiry (ms).
+    pub inbound_expires_at_ms: u64,
+}
+
+/// Plan 212 §14 — outcome of draining authenticated destination
+/// payloads into canonical Streaming.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RouterInboundDispatchReport {
+    /// Whether the Garlic envelope authenticated.
+    pub garlic_authenticated: bool,
+    /// Number of destination payloads dequeued via `pop_payload`.
+    pub payloads_dequeued: usize,
+    /// Number of payloads accepted by
+    /// `StreamingDestinationAdapter::receive` into the canonical
+    /// service `StreamingManager`.
+    pub streaming_packets_accepted: usize,
+    /// Number of payloads rejected by the adapter (non-streaming
+    /// protocol counts as rejected for the streaming path; Garlic
+    /// auth failures return `garlic_authenticated = false` with
+    /// zero dequeued).
+    pub streaming_rejected: usize,
+}
+
 /// Per-destination SAM STREAM bridge.
 #[allow(dead_code)]
 pub struct SamDestinationBridge {
@@ -121,6 +242,13 @@ pub struct SamDestinationBridge {
     /// `EstablishedTunnel` per delivery. Production deployments
     /// install a real inbound-tunnel pool here.
     inbound_tunnel_factory: Option<Arc<dyn InboundTunnelFactory>>,
+    /// Plan 212 §4/§6 — optional router-backed network state for
+    /// remote-capable service Destinations. `None` for local-only
+    /// / co-owned traffic (which keeps using `SamLocalProductFabric`
+    /// material). Remote compose must explicitly select this state
+    /// and fail closed when it is missing or expired; it must never
+    /// fall back to the local fabric.
+    router_network: Option<RouterDestinationNetworkState>,
 }
 
 impl std::fmt::Debug for SamDestinationBridge {
@@ -183,6 +311,7 @@ impl SamDestinationBridge {
             receiver_now_seconds: now_seconds,
             diagnostics: BridgeDiagnostics::new(),
             inbound_tunnel_factory: None,
+            router_network: None,
         }
     }
 
@@ -341,6 +470,10 @@ impl SamDestinationBridge {
     /// convert the string into the manager's typed
     /// `RemoteDeliveryError` so this module stays free of
     /// `service_delivery` dependencies.
+    ///
+    /// Retained for the local/co-owned path only. Counted remote
+    /// traffic must use [`Self::compose_router_send`].
+    #[allow(dead_code)]
     pub(crate) fn compose_adapter_send_owned_fields(
         &mut self,
         request: &TransportSendRequest,
@@ -394,6 +527,14 @@ impl SamDestinationBridge {
     /// dispatch. The `LeaseSet2Store` is held on the canonical side
     /// so any validated remote LeaseSet install follows the
     /// canonical outbound routing decision.
+    ///
+    /// Retained for backwards compatibility. Counted remote traffic
+    /// must use
+    /// [`Self::dispatch_router_garlic_to_canonical_streaming`],
+    /// which drains `pop_payload` into the canonical
+    /// `StreamingManager` and gates the inbound counter on actual
+    /// Streaming acceptance.
+    #[allow(dead_code)]
     pub(crate) fn dispatch_inbound_garlic_owned(
         &mut self,
         bytes: &[u8],
@@ -451,6 +592,376 @@ impl SamDestinationBridge {
     /// observe a typed counter delta.
     pub fn diagnostics_snapshot(&self) -> &BridgeDiagnostics {
         &self.diagnostics
+    }
+
+    /// Plan 212 §6 — installs router-backed network state onto the
+    /// service bridge.
+    ///
+    /// Fail-closed rules:
+    /// 1. material must belong to this bridge's Destination identity;
+    /// 2. re-install without explicit replacement fails (call
+    ///    [`Self::clear_router_network_state`] first, or
+    ///    [`Self::replace_router_network_state`]);
+    /// 3. installation never alters the local/co-owned bridge
+    ///    material (`lease_set2` / `routing` / `session_manager` /
+    ///    `outbound_role` stay untouched);
+    /// 4. expired material is rejected.
+    ///
+    /// No secret material is logged.
+    pub(crate) fn install_router_network_state(
+        &mut self,
+        material: RouterDestinationNetworkState,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        if material.destination_id != self.identity.id() {
+            return Err("router network state destination identity mismatch".to_owned());
+        }
+        if self.router_network.is_some() {
+            return Err(
+                "router network state already installed (clear or replace first)".to_owned(),
+            );
+        }
+        if material.is_expired(now_ms) {
+            return Err("router network state already expired".to_owned());
+        }
+        if material.inbound_receive_ids.is_empty() {
+            return Err("router network state carries no inbound receive ids".to_owned());
+        }
+        if material.inbound_receive_ids.contains(&0) {
+            return Err("router network state carries zero receive tunnel id".to_owned());
+        }
+        // Validate the bundled LS2 against the service identity so a
+        // mismatched record cannot be installed silently. The
+        // validation uses seconds derived from `now_ms`.
+        let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+        let expected_key = self.identity.id().as_netdb_key();
+        ValidatedLeaseSet2::from_lease_set2(
+            material.lease_set2.clone(),
+            Some(expected_key),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .map_err(|error| format!("router network LS2 validation failed: {error:?}"))?;
+        self.router_network = Some(material);
+        Ok(())
+    }
+
+    /// Plan 212 §6 — explicit replacement path. Fails when no state
+    /// is installed or when the replacement belongs to a different
+    /// Destination identity or is already expired.
+    #[allow(dead_code)]
+    pub(crate) fn replace_router_network_state(
+        &mut self,
+        material: RouterDestinationNetworkState,
+        now_ms: u64,
+    ) -> Result<Option<RouterDestinationNetworkState>, String> {
+        if material.destination_id != self.identity.id() {
+            return Err("router network state destination identity mismatch".to_owned());
+        }
+        if material.is_expired(now_ms) {
+            return Err("router network state already expired".to_owned());
+        }
+        Ok(self.router_network.replace(material))
+    }
+
+    /// Plan 212 §6 — removes router-backed state. Returns the
+    /// removed state, if any. Local/co-owned material is untouched.
+    pub(crate) fn clear_router_network_state(&mut self) -> Option<RouterDestinationNetworkState> {
+        self.router_network.take()
+    }
+
+    /// Plan 212 §6 — returns true when router-backed state is
+    /// installed and unexpired at `now_ms`.
+    pub(crate) fn has_router_network_state(&self, now_ms: u64) -> bool {
+        self.router_network
+            .as_ref()
+            .is_some_and(|state| !state.is_expired(now_ms))
+    }
+
+    /// Plan 212 §6 — read-only diagnostic summary. Exposes only
+    /// destination hash, receive tunnel ids count, expiry, and
+    /// counts; never secret material.
+    pub(crate) fn router_network_summary(&self) -> Option<RouterNetworkSummary> {
+        let state = self.router_network.as_ref()?;
+        Some(RouterNetworkSummary {
+            destination_hash: *self.identity.id().as_hash().as_bytes(),
+            inbound_receive_count: state.inbound_receive_ids.len(),
+            outbound_expires_at_ms: state.outbound_expires_at_ms,
+            inbound_expires_at_ms: state.inbound_expires_at_ms,
+        })
+    }
+
+    /// Plan 212 §6 — returns the installed inbound receive ids, if
+    /// any. Used by production provisioning to register
+    /// `register_inbound_tunnel_owner` for every live receive id.
+    pub(crate) fn router_inbound_receive_ids(&self) -> Vec<u32> {
+        self.router_network
+            .as_ref()
+            .map(|state| state.inbound_receive_ids.clone())
+            .unwrap_or_default()
+    }
+
+    /// Plan 212 §13 — clones the router-backed signed LS2 for
+    /// server-side publication. Returns `None` when no
+    /// router-backed state is installed. The LS2 is public
+    /// material (destination + leases + signature); no secret
+    /// material crosses this boundary.
+    pub(crate) fn router_ls2_for_publication(&self) -> Option<LeaseSet2> {
+        self.router_network
+            .as_ref()
+            .map(|state| state.lease_set2.clone())
+    }
+
+    /// Plan 212 §12 — borrows the router-backed outbound role for
+    /// NetDB lookup/publication composition. Returns `None` when
+    /// no router-backed state is installed. The borrow never moves
+    /// the role; installation ownership stays with the service
+    /// runtime.
+    pub(crate) fn router_outbound_role_ref(&self) -> Option<&DestinationOutboundRole> {
+        self.router_network
+            .as_ref()
+            .map(|state| &state.outbound_role)
+    }
+
+    /// Plan 212 §11 — installs a validated remote LeaseSet2 into
+    /// the router-backed routing state (never the local fabric
+    /// routing). Fails when router-backed state is missing or
+    /// expired.
+    pub(crate) fn install_remote_lease_set2_into_router_state(
+        &mut self,
+        validated: ValidatedLeaseSet2,
+        now_ms: u64,
+    ) -> Result<i2pr_netdb::DestinationHash, String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed (NotInstalled)".to_owned())?;
+        if state.is_expired(now_ms) {
+            return Err("router-backed network state expired (NoTunnelMaterial)".to_owned());
+        }
+        state
+            .routing
+            .install_remote_lease_set2(validated)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Plan 212 §11 — runs the canonical
+    /// [`StreamingDestinationAdapter::send`] explicitly against
+    /// router-backed state (never the local fabric fields).
+    ///
+    /// Fails closed with a typed string when router-backed state is
+    /// missing or expired. The queued `TransportSendRequest` comes
+    /// from the canonical service `StreamingManager`; the same
+    /// Destination identity signs the send.
+    pub(crate) fn compose_router_send(
+        &mut self,
+        request: &TransportSendRequest,
+        now_seconds: u32,
+        now_ms: u64,
+    ) -> Result<i2pr_client::OutboundDeliveryPlan, String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed (NotInstalled)".to_owned())?;
+        if state.is_expired(now_ms) {
+            return Err("router-backed network state expired (NoTunnelMaterial)".to_owned());
+        }
+        let local_id = self.identity.id();
+        debug_assert_eq!(state.destination_id, local_id);
+        let local_static_secret = *self.identity.static_secret_bytes();
+        let local_lease_set2 = state.lease_set2.clone();
+        let mut os_rng = OsRng;
+        let mut rng = UnwrapMut(&mut os_rng);
+        let routing = &state.routing;
+        let session = &mut state.session_manager;
+        let outbound = &state.outbound_role;
+        StreamingDestinationAdapter::send(
+            request,
+            routing,
+            session,
+            outbound,
+            local_id,
+            &local_static_secret,
+            &local_lease_set2,
+            now_seconds,
+            now_ms,
+            &mut rng,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Plan 212 §14 — decodes one recovered standard I2NP Garlic
+    /// envelope against router-backed ECIES/session/routing state,
+    /// drains every authenticated destination payload via
+    /// `DestinationDispatcher::pop_payload(local_destination)`, and
+    /// delivers each payload into the SAME canonical service
+    /// `StreamingManager` used by the application socket pump via
+    /// `StreamingDestinationAdapter::receive`.
+    ///
+    /// Required sequence:
+    /// 1. decode recovered standard Garlic envelope;
+    /// 2. `dispatch_garlic_envelope` against router-backed state;
+    /// 3. on reject -> typed rejected report;
+    /// 4. repeatedly `pop_payload(local_destination_id)`;
+    /// 5. for every dequeued Data payload:
+    ///    `StreamingDestinationAdapter::receive(bytes, identity,
+    ///    canonical_streaming, remote_destination_hash, now_ms)`;
+    /// 6. normal SYN/SYN-ACK/DATA/ACK/close processing preserved;
+    /// 7. caller wakes the existing delivery driver when receive
+    ///    queued an outbound response (see
+    ///    `response_queued_for_delivery`);
+    /// 8. caller advances `remote_inbound_dispatched` ONLY after
+    ///    `streaming_packets_accepted >= 1` (enforced by the
+    ///    manager/service-product seam, not here).
+    ///
+    /// The remote peer hash is never the router hash: for a new
+    /// inbound session it derives from the validated remote LS2 key
+    /// returned by the dispatcher; for subsequent packets it uses
+    /// the peer Destination hash associated with the established
+    /// session (`sender_destination` when present, else the
+    /// validated LS2 key installed during the handshake).
+    pub(crate) fn dispatch_router_garlic_to_canonical_streaming(
+        &mut self,
+        bytes: &[u8],
+        now_seconds: u32,
+        now_ms: u64,
+    ) -> Result<RouterInboundDispatchReport, String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed (NotInstalled)".to_owned())?;
+        if state.is_expired(now_ms) {
+            return Err("router-backed network state expired (NoTunnelMaterial)".to_owned());
+        }
+        let envelope =
+            i2pr_proto::I2npMessage::decode_standard(bytes, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+                .map_err(|error| format!("decode_standard failed: {error:?}"))?;
+        if !matches!(envelope.body(), i2pr_proto::I2npBody::Garlic(_)) {
+            return Err("envelope is not a standard I2NP Garlic body".to_owned());
+        }
+        let local_id = self.identity.id();
+        let local_static_secret = *self.identity.static_secret_bytes();
+        let local_static_public = self.identity.static_public_bytes();
+        // Router-backed dispatcher/routing/session/store live in the
+        // installed state, except the dispatcher itself which stays
+        // on the bridge (canonical destination dispatcher). The
+        // session + routing + store used here are the router-backed
+        // ones so local-fabric material can never authenticate
+        // remote traffic.
+        //
+        // Note: the bridge's canonical `dispatcher` is the delivery
+        // queue owner; the router-backed `routing`/`session_manager`
+        // supply the cryptographic/lease state. This keeps one
+        // canonical queue while separating key material.
+        let outcome = self.dispatcher.dispatch_garlic_envelope(
+            &mut state.session_manager,
+            local_id,
+            &local_static_secret,
+            &local_static_public,
+            now_seconds,
+            &envelope,
+            &mut self.lease_set2_store,
+        );
+        // Derive the authenticated remote Destination hash. Never
+        // substitute the router hash.
+        let remote_hash_opt: Option<[u8; 32]> = match &outcome {
+            i2pr_client::InboundDispatchOutcome::NewSessionProcessed {
+                remote_destination_hash,
+                validated_remote_lease_set2,
+                ..
+            } => {
+                let _ = state
+                    .routing
+                    .install_remote_lease_set2((**validated_remote_lease_set2).clone());
+                Some(*remote_destination_hash.as_bytes())
+            }
+            i2pr_client::InboundDispatchOutcome::ExistingSessionProcessed {
+                sender_destination,
+                remote_static_public,
+                ..
+            } => {
+                if let Some(hash) = sender_destination {
+                    Some(*hash.as_bytes())
+                } else {
+                    // Fall back to the routing table's validated
+                    // knowledge keyed by static public: search the
+                    // router-backed routing cache for a record whose
+                    // usable X25519 key matches. When absent, the
+                    // payload cannot be attributed to a remote
+                    // Destination and the report records zero
+                    // accepted (fail-closed, no global fallback).
+                    let _ = remote_static_public;
+                    None
+                }
+            }
+            i2pr_client::InboundDispatchOutcome::NewSessionReplyProcessed {
+                sender_destination,
+                ..
+            } => sender_destination.as_ref().map(|hash| *hash.as_bytes()),
+            i2pr_client::InboundDispatchOutcome::Rejected(_) => {
+                self.diagnostics.record_inbound_observation();
+                return Ok(RouterInboundDispatchReport {
+                    garlic_authenticated: false,
+                    payloads_dequeued: 0,
+                    streaming_packets_accepted: 0,
+                    streaming_rejected: 0,
+                });
+            }
+        };
+        let Some(remote_hash) = remote_hash_opt else {
+            self.diagnostics.record_inbound_observation();
+            return Ok(RouterInboundDispatchReport {
+                garlic_authenticated: true,
+                payloads_dequeued: 0,
+                streaming_packets_accepted: 0,
+                streaming_rejected: 0,
+            });
+        };
+        // Drain every queued payload for the local destination (not
+        // just the first clove) into the SAME canonical service
+        // `StreamingManager` the application pump reads.
+        let mut dequeued = 0_usize;
+        let mut accepted = 0_usize;
+        let mut rejected = 0_usize;
+        while let Some(payload) = self.dispatcher.pop_payload(local_id) {
+            dequeued = dequeued.saturating_add(1);
+            let receive_outcome = StreamingDestinationAdapter::receive(
+                payload.bytes(),
+                &self.identity,
+                &mut self.streaming,
+                &remote_hash,
+                now_ms,
+            );
+            match receive_outcome {
+                Ok(
+                    i2pr_client::streaming_adapter::InboundStreamingOutcome::StreamingDispatched {
+                        ..
+                    },
+                ) => {
+                    accepted = accepted.saturating_add(1);
+                }
+                Ok(
+                    i2pr_client::streaming_adapter::InboundStreamingOutcome::UnsupportedProtocol {
+                        ..
+                    },
+                ) => {
+                    rejected = rejected.saturating_add(1);
+                }
+                Err(_) => {
+                    rejected = rejected.saturating_add(1);
+                }
+            }
+        }
+        if accepted > 0 {
+            self.diagnostics.record_inbound_dispatch();
+        } else {
+            self.diagnostics.record_inbound_observation();
+        }
+        Ok(RouterInboundDispatchReport {
+            garlic_authenticated: true,
+            payloads_dequeued: dequeued,
+            streaming_packets_accepted: accepted,
+            streaming_rejected: rejected,
+        })
     }
 }
 

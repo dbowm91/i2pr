@@ -1067,15 +1067,46 @@ PY
           record_blocked "remote-independent-irc-service" \
             "Plan 211 harness failed to parse i2pd server tunnel .dat files into public destinations (see ${PLAN211_LOG})"
         else
-          # Plan 210 §C — the i2pr reference peer needs the
-          # destination hash for the LeaseSet2 lookup. The HTTP and
-          # IRC destinations are siblings hosted by the same i2pd
-          # router; the lookup path is identical.
-          I2PD_DESTINATION_HASH="${HTTP_DEST_HASH}"
-          export I2PD_DESTINATION_HASH
+          # Plan 212 §8 — router bootstrap is independent of
+          # application Destination lookup. The reference peer
+          # carries only router transport metadata; per-service
+          # target hashes derive from the HttpClient/IrcClient spec
+          # destinations inside the production composition. No
+          # single I2PD_DESTINATION_HASH applies to all services.
           # Record only the b32 lengths and the hash equality in
           # evidence. The full PUB base64 never touches evidence.
           mkdir -p "${EVIDENCE_DIR}/plan211-driver"
+          # Plan 212 §L prerequisite: the generic router-backed
+          # Direction A + Direction B driver runs in the dedicated
+          # lane when PLAN212_GENERIC_* env is provisioned. The M10
+          # lane does not provision a generic STREAM destination,
+          # so the prerequisite logs a skip here (honest, not a
+          # pass). The remote rows stay gated on the Plan 211
+          # application lane below.
+          mkdir -p "${EVIDENCE_DIR}/plan212-driver"
+          if [[ -z "${PLAN212_GENERIC_DEST_B64:-}" || -z "${PLAN212_GENERIC_DEST_HASH:-}" || -z "${PLAN212_GENERIC_DEST_B32:-}" ]]; then
+            printf 'plan212-prerequisite\tskip-generic-destination-not-provisioned-in-m10-lane\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
+          else
+            PLAN212_LOG="${EVIDENCE_DIR}/plan212-driver/plan212-generic.log"
+            : > "${PLAN212_LOG}"
+            if I2PD_ROUTER_INFO="${I2PD_RI}" \
+               I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
+               I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
+               EVIDENCE_DIR="${EVIDENCE_DIR}/plan212-driver" \
+               PLAN212_GENERIC_DEST_B64="${PLAN212_GENERIC_DEST_B64}" \
+               PLAN212_GENERIC_DEST_HASH="${PLAN212_GENERIC_DEST_HASH}" \
+               PLAN212_GENERIC_DEST_B32="${PLAN212_GENERIC_DEST_B32}" \
+               PLAN212_GENERIC_TARGET_PORT="${PLAN212_GENERIC_TARGET_PORT:-${HTTP_TARGET}}" \
+               PLAN212_SERVER_TARGET_PORT="${PLAN212_SERVER_TARGET_PORT:-${HTTP_TARGET}}" \
+               timeout --foreground 240s \
+               cargo test --locked -p i2pr-daemon --test service_tunnels_plan212_router_backed_product \
+               plan212_router_backed_generic_directions -- --ignored --exact --nocapture --test-threads=1 \
+               >>"${PLAN212_LOG}" 2>&1; then
+              printf 'plan212-prerequisite\tgeneric-directions-passed\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
+            else
+              printf 'plan212-prerequisite\tgeneric-directions-blocked-see-plan212-generic.log\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
+            fi
+          fi
           printf 'http_dest_b32=%s\nhttp_dest_b32_len=%s\nhttp_dest_hash=%s\nirc_dest_b32=%s\nirc_dest_b32_len=%s\nirc_dest_hash=%s\n' \
             "${HTTP_DEST_B32}" "${#HTTP_DEST_B32}" "${HTTP_DEST_HASH}" \
             "${IRC_DEST_B32}" "${#IRC_DEST_B32}" "${IRC_DEST_HASH}" \
@@ -1102,7 +1133,6 @@ PY
           else
             plan211_rc=$?
           fi
-          unset I2PD_DESTINATION_HASH
         fi
         # Plan 211 §13 fail-closed shape: missing required env (or
         # a missing SAM/listener) blocks both remote rows. The

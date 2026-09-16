@@ -323,10 +323,13 @@ driver must not construct a parallel `StreamingManager::new` /
 key material, and the `RemoteDeliveryCounters` operation-boundary
 counters must advance only through the typed backend seams).
 
-Plan 210 closed the M10 real service-Destination network material
-and inbound Streaming corrective (`crates/i2pr-daemon/src/service_tunnels.rs`,
+Plan 210 landed the M10 real service-Destination network material
+and inbound Streaming structural corrective as
+retained-partial-superseded-by-plan212
+(`crates/i2pr-daemon/src/service_tunnels.rs`,
 `crates/i2pr-daemon/src/sam/streams.rs`,
-`crates/i2pr-daemon/src/service_product.rs`, Plan 210 §A/§B/§C/§D/§E/§F/§G/§I/§16):
+`crates/i2pr-daemon/src/service_product.rs`, Plan 210 §A/§B/§C/§D/§E/§F/§G/§I/§16;
+see `plans/212-status.md` for the superseding corrective):
 - **Phase F** — added the inbound tunnel owner reverse map keyed
   by local receive tunnel id before ECIES decryption. The
   `ServiceTunnelManager` now exposes
@@ -341,11 +344,14 @@ and inbound Streaming corrective (`crates/i2pr-daemon/src/service_tunnels.rs`,
   that reads the bridge's real
   `DestinationRouting` / `EciesSessionManager` /
   `DestinationOutboundRole` directly.
-- **Phase C** — removed `DestinationHash::from_hash(i2pr_crypto::sha256(&reference.router_info_bytes))`
-  as a service LeaseSet lookup target. The `ReferencePeer` now
-  carries an explicit `destination_hash: Option<[u8; 32]>` field
-  that fails closed when absent; the harness propagates the new
-  `I2PD_DESTINATION_HASH` env var.
+- **Phase C** (superseded by Plan 212 §8) — removed `DestinationHash::from_hash(i2pr_crypto::sha256(&reference.router_info_bytes))`
+  as a service LeaseSet lookup target. Plan 210 added an explicit
+  `ReferencePeer::destination_hash` field; Plan 212 removes that
+  single-hash shape — `ReferencePeer` is now router-only and
+  per-service targets resolve from the specs' `DestinationRef` via
+  `remote_target_hash_for_reference` +
+  `resolve_remote_destination_for_service` (HTTP and IRC resolve
+  independently).
 - **Phase G** — wired the recovered inbound Garlic envelope
   through the canonical
   `DestinationDispatcher::dispatch_garlic_envelope` via
@@ -367,9 +373,23 @@ and inbound Streaming corrective (`crates/i2pr-daemon/src/service_tunnels.rs`,
   unregister / zero-id rejection / orphan counter advance /
   placeholder-free compose / explicit destination hash /
   typed pairs drain); the remaining §14 conditions are enforced
-  by the static checker and the Plan 209 driver carry-over. The
-  bidirectional external product qualification against
-  exact-pinned i2pd 2.61.0 is owned by Plan 211.
+  by the static checker and the Plan 209 driver carry-over.
+
+  Plan 212 (in-progress, see `plans/212-status.md`) completes the
+  split on top: `RouterDestinationNetworkState` + bridge
+  `install/clear/has/summary` + `compose_router_send` (explicit
+  router-backed compose, never fabric) +
+  `dispatch_router_garlic_to_canonical_streaming` (`dispatch` +
+  `pop_payload` drain + `StreamingDestinationAdapter::receive`
+  into the SAME canonical service `StreamingManager`);
+  `ServiceProduct::start` reorder (router-only bootstrap, then
+  `prepare()`, then per-service real provisioning with disjoint
+  tunnel ids, then supervisors; atomic failure); per-service
+  lookup/publication; standard-first/short-fallback decode parity;
+  25 `plan212_*` unit rows; §20–§26 checker invariants; the
+  `#[ignore]`-gated generic Direction A/B driver. The generic
+  external product qualification against exact-pinned i2pd 2.61.0
+  is owned by Plan 212; Plan 211 requalifies after it.
 
 ## Purpose
 
