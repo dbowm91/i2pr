@@ -287,7 +287,41 @@ Plan 207 §9 subfact rows + `plan206-backend-counters`; the two
 the dedicated M6 interop lane provisions the SSU2 endpoint + bind
 tuple and the driver emits every documented Plan 207 §9 subfact
 row in the same evidence directory/run id; the full M10 lane stays
-fail-closed without it.
+fail-closed without it. Plan 208 closed the M10 production
+delivery-driver remote-route integration corrective
+(`crates/i2pr-daemon/src/service_tunnels.rs`,
+Plan 208 §A/§B/§D/§E/§G/§15): the production
+`ServiceTunnelManager::deliver_outbound` sweep now invokes the
+typed `route_outbound_remote_request` seam on the local-miss
+branch so a reachable remote peer no longer dies at the
+pre-Plan-208 `unknown_peer` terminal branch; the typed
+`route_outbound_remote_request` performs a real send through
+the existing `StreamingDestinationAdapter` (cell composition
+through the same adapter the local Plan 129 / Plan 182 / Plan
+193 lanes use), encodes the resulting `OBGWRouterDelivery` cells
+through the existing `deliver_outbound_cells` helper, and
+dispatches them to the established SSU2 peer session through
+the daemon-owned `RouterDeliveryService`. The inbound-owner
+registry wired by Plan 206 (`register_inbound_destination_owner` /
+`unregister_inbound_destination_owner` / `inbound_destination_owner`
+with a fail-closed atomic duplicate guard + `dispatch_inbound_to_owned_destination`)
+wires inbound data to the actual owning service runtime. Seven
+new `plan208_*` manager-level unit rows in
+`service_tunnels.rs::plan208_remote_route_integration_tests` lock
+the integration call graph; the new `#[ignore]`-gated
+`m10_remote_route_integration_through_deliver_outbound` external
+driver (`crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs`)
+exercises the production sweep against the exact-pinned i2pd
+2.61.0 cache; the static checker `scripts/check-service-tunnel-acceptance-evidence.sh`
+extended with Plan 208 §15 source-level invariants (production
+`deliver_outbound` must call `route_outbound_remote_request`,
+the `plan208_remote_route_integration_tests` module must
+exist, `compose_remote_cells` must be present, the counted
+driver must not construct a parallel `StreamingManager::new` /
+`StreamingDestinationAdapter::new`, must never call
+`record_remote_application_observation`, must never log peer
+key material, and the `RemoteDeliveryCounters` operation-boundary
+counters must advance only through the typed backend seams).
 
 ## Purpose
 

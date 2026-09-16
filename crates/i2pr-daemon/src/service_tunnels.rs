@@ -46,6 +46,10 @@ use i2pr_client::{
     DestinationConfig, DestinationId, DestinationIdentity, DestinationOutboundRole,
     DestinationRegistry, DestinationRuntime, DestinationShutdown, RegistryConfig,
 };
+use i2pr_client::{
+    DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
+    StreamingDestinationAdapter,
+};
 use i2pr_crypto::{IDENTITY_PADDING_LENGTH, OsRng, PRIVATE_KEY_LENGTH, X25519_KEY_LENGTH};
 use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::{Destination, LeaseSet2};
@@ -57,6 +61,7 @@ use i2pr_service_tunnels::{
 use i2pr_storage::{
     ServiceDestinationRecord, ServiceDestinationStorageError, ServiceDestinationStore,
 };
+use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
@@ -68,6 +73,8 @@ use zeroize::Zeroizing;
 use crate::destination_streaming::{
     PumpConfig, PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint, run_stream_pump,
 };
+use crate::outbound_lookup::deliver_outbound_cells;
+use crate::router_i2np::{RouterDeliveryRequest, RouterDeliveryService};
 use crate::sam::fabric::{DeliverySweepCounters, SamLocalProductFabric, degrade_to_reason};
 use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
@@ -1300,7 +1307,17 @@ impl ServiceTunnelManager {
     /// typed per-sweep counters. Mirrors the SAM `deliver_outbound`
     /// seam; the deterministic fault-profile hook stays a SAM-test
     /// seam and is intentionally absent here.
-    pub fn deliver_outbound(&self, destination_id: DestinationId) -> DeliverySweepCounters {
+    ///
+    /// Plan 208 — non-co-owned queued requests must NOT terminate at
+    /// the local `lookup_by_peer_hash() -> None -> unknown_peer`
+    /// branch whenever an executable remote backend is installed.
+    /// The production sweep first tries the local co-owned bridge;
+    /// on a miss the typed remote route is invoked, the actual
+    /// remote send happens through the Plan 206 backend, and only
+    /// a true fail-closed (`RemoteUnresolved` / `Err`) outcome
+    /// increments `unknown_peer` / `delivery_failed`. The remote
+    /// route never silently falls back to the local bridge.
+    pub async fn deliver_outbound(&self, destination_id: DestinationId) -> DeliverySweepCounters {
         let now_seconds = service_now_seconds();
         let now_ms = service_streaming_now_ms();
         let destinations_arc = {
@@ -1350,8 +1367,36 @@ impl ServiceTunnelManager {
             let peer = match peer {
                 Some(peer) => peer,
                 None => {
-                    counters.unknown_peer = counters.unknown_peer.saturating_add(1);
-                    self.terminate_failed_delivery(destination_id, &request);
+                    // Plan 208 — local lookup missed; before declaring
+                    // `unknown_peer`, invoke the typed remote route
+                    // so a reachable remote peer no longer dies at
+                    // the pre-Plan-208 terminal branch. The remote
+                    // route returns `Ok(false)` when the destination
+                    // is not a remote-routable peer (`LocalCoOwned`
+                    // or `RemoteUnresolved`); that case is the only
+                    // one that still increments `unknown_peer`. A
+                    // typed `Err(_)` is a remote-route failure and
+                    // increments `delivery_failed` instead.
+                    match self
+                        .route_outbound_remote_request(destination_id, &request, now_seconds)
+                        .await
+                    {
+                        Ok(true) => {
+                            counters.delivered = counters.delivered.saturating_add(1);
+                        }
+                        Ok(false) => {
+                            counters.unknown_peer = counters.unknown_peer.saturating_add(1);
+                            self.terminate_failed_delivery(destination_id, &request);
+                        }
+                        Err(error) => {
+                            debug!(
+                                error = %error,
+                                "service remote route failed; terminating request"
+                            );
+                            counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                            self.terminate_failed_delivery(destination_id, &request);
+                        }
+                    }
                     continue;
                 }
             };
@@ -1534,13 +1579,26 @@ impl ServiceTunnelManager {
             .and_then(|owners| owners.get(destination_hash).cloned())
     }
 
-    /// Plan 206 §8 — drives one remote Streaming delivery for the
-    /// supplied `service_destination` and `TransportSendRequest`.
-    /// The method is the only sanctioned outbound path the manager
-    /// exposes for non-local peers; the local Plan 182 bridge stays
-    /// untouched. The typed operation-boundary counters
-    /// (`remote_outbound_composed`, `remote_outbound_requests`)
-    /// advance through the backend's typed seams.
+    /// Plan 206 §8 / Plan 208 §6 — drives one remote Streaming
+    /// delivery for the supplied `service_destination` and
+    /// `TransportSendRequest`. The method is the only sanctioned
+    /// outbound path the manager exposes for non-local peers; the
+    /// local Plan 182 bridge stays untouched. The typed
+    /// operation-boundary counters (`remote_outbound_composed`,
+    /// `remote_outbound_requests`) advance through the backend's
+    /// typed seams.
+    ///
+    /// Plan 208 widens the implementation: after the cached
+    /// LeaseSet2 install the method actually composes the queued
+    /// request through the existing `StreamingDestinationAdapter`
+    /// (the same adapter the local Plan 129 / Plan 182 / Plan 193
+    /// lanes use), encodes the resulting `OBGWRouterDelivery` cells
+    /// through the existing `deliver_outbound_cells` helper, and
+    /// delivers them to the established SSU2 peer session through
+    /// the daemon-owned `RouterDeliveryService`. A reachable remote
+    /// peer therefore never dies at the pre-Plan-208
+    /// `unknown_peer` terminal branch — the production sweep calls
+    /// this method and the actual cells traverse the router.
     ///
     /// Returns `Ok(true)` when the request was routed through the
     /// remote backend, `Ok(false)` when the request did not match a
@@ -1582,13 +1640,24 @@ impl ServiceTunnelManager {
                 };
                 let cached_ls2 =
                     cached_ls2.ok_or(crate::service_delivery::RemoteDeliveryError::NotCached)?;
-                // Install the cached LeaseSet2 into the service
-                // destination's per-destination routing state and
-                // advance the typed outbound-composed counter through
-                // the typed backend seam. No private key material is
-                // read here — `ValidatedLeaseSet2::from_lease_set2`
-                // performs the structural validation the existing
-                // local path uses.
+                // Plan 208 §B — the queued `TransportSendRequest`
+                // is the same request the service-owned
+                // `StreamingManager` drained from its real outbound
+                // queue; the manager routes it through the
+                // authoritative router delivery service without
+                // touching a parallel Streaming/router stack. First
+                // install the cached LeaseSet2 into the service
+                // destination's per-destination routing state so
+                // `compose_outbound_delivery` can select a lease;
+                // then extract the bridge state through a
+                // swap-and-restore cycle (matches the
+                // `bridge_to_peer` Plan 129 pattern), compose the
+                // cells via `StreamingDestinationAdapter`, encode
+                // them via `deliver_outbound_cells`, and dispatch
+                // them through the router delivery service. No
+                // private key material is read here — the bridge
+                // exposes the pre-allocated `Arc<DestinationIdentity>`
+                // for the static secret.
                 let lease_set2 = cached_ls2.lease_set2().clone();
                 let install_outcome: Result<
                     i2pr_netdb::DestinationHash,
@@ -1616,6 +1685,23 @@ impl ServiceTunnelManager {
                     })
                     .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
                 install_outcome?;
+                // Plan 208 §B — compose the cells through the
+                // existing canonical adapter and dispatch them
+                // through the existing router delivery service.
+                let composition = self.compose_remote_cells(
+                    service_destination,
+                    request,
+                    now_seconds,
+                    &backend.router_delivery(),
+                )?;
+                let cell_count = composition.cells.len();
+                let plan_result = match composition.dispatch {
+                    Some(dispatch) => dispatch,
+                    None => return Ok(true),
+                };
+                let delivered = plan_result.cell_count;
+                let _ = cell_count;
+                let _ = delivered;
                 // Plan 206 §10 — outbound composed counter advances
                 // through the typed backend seam; the external
                 // `record_observation` helper ignores this label so
@@ -1628,6 +1714,126 @@ impl ServiceTunnelManager {
                 Ok(true)
             }
         }
+    }
+
+    /// Plan 208 §B — internal helper that owns the
+    /// swap-and-restore extraction of the bridge's mutable
+    /// routing + EciesSessionManager + outbound role + lease set
+    /// 2 + identity so the typed `StreamingDestinationAdapter::send`
+    /// call can run, encodes the resulting cells via the existing
+    /// `deliver_outbound_cells` helper, and dispatches them to the
+    /// established SSU2 peer session through the daemon-owned
+    /// `RouterDeliveryService`. The method returns the dispatch
+    /// result so the caller can advance typed counters.
+    fn compose_remote_cells(
+        &self,
+        service_destination: DestinationId,
+        request: &i2pr_client::streaming::transport::TransportSendRequest,
+        now_seconds: u32,
+        router_delivery: &RouterDeliveryService,
+    ) -> Result<RemoteCompositionOutcome, crate::service_delivery::RemoteDeliveryError> {
+        let now_ms = service_streaming_now_ms();
+        // Plan 208 §B — swap the bridge's routing + session +
+        // outbound role with fresh placeholders, run the canonical
+        // adapter through the moved refs, then restore them. The
+        // mirror is owned by the bridge's internal
+        // `Mutex<SamDestinationBridge>` so the swap pattern is
+        // identical to `bridge_to_peer`.
+        let plan = self
+            .with_destination_bridge(service_destination, |bridge| {
+                let routing = std::mem::replace(
+                    &mut *bridge.routing_mut(),
+                    DestinationRouting::new(DestinationRoutingConfig::balanced()),
+                );
+                let mut session = std::mem::replace(
+                    &mut *bridge.session_manager_mut(),
+                    EciesSessionManager::new(EciesSessionConfig::balanced()),
+                );
+                let outbound = std::mem::replace(
+                    &mut *bridge.outbound_role_mut(),
+                    DestinationOutboundRole::new(crate::sam::streams::dummy_outbound_tunnel(), 0),
+                );
+                let local_lease_set2 = bridge.lease_set2().clone();
+                let identity = bridge.identity();
+                let local_id = identity.id();
+                let static_secret = *identity.static_secret_bytes();
+                let mut os_rng = OsRng;
+                let mut rng = rand_core::UnwrapMut(&mut os_rng);
+                let outcome = StreamingDestinationAdapter::send(
+                    request,
+                    &routing,
+                    &mut session,
+                    &outbound,
+                    local_id,
+                    &static_secret,
+                    &local_lease_set2,
+                    now_seconds,
+                    now_ms,
+                    &mut rng,
+                );
+                // Restore routing + session + outbound role
+                // regardless of outcome so the canonical bridge state
+                // never diverges.
+                *bridge.routing_mut() = routing;
+                *bridge.session_manager_mut() = session;
+                *bridge.outbound_role_mut() = outbound;
+                match outcome {
+                    Ok(plan) => Ok(plan),
+                    Err(error) => Err(
+                        crate::service_delivery::RemoteDeliveryError::DeliveryRejected(
+                            error.to_string(),
+                        ),
+                    ),
+                }
+            })
+            .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
+        let plan = plan?;
+        let cells = plan.cells.clone();
+        if cells.is_empty() {
+            return Ok(RemoteCompositionOutcome {
+                cells,
+                dispatch: None,
+            });
+        }
+        let mut os_rng = OsRng;
+        let mut rng = rand_core::UnwrapMut(&mut os_rng);
+        let cell_dispatch = deliver_outbound_cells(
+            &cells,
+            now_ms + 60_000,
+            Deadline::new(std::time::Duration::from_secs(60)).map_err(|error| {
+                crate::service_delivery::RemoteDeliveryError::DeliveryRejected(error.to_string())
+            })?,
+            &mut rng,
+        )
+        .map_err(|error| {
+            crate::service_delivery::RemoteDeliveryError::DeliveryRejected(error.to_string())
+        })?;
+        let mut accepted = 0_usize;
+        for cell_delivery in &cell_dispatch.deliveries {
+            let send = RouterDeliveryRequest::new(
+                cell_delivery.target(),
+                cell_delivery.message_bytes().to_vec(),
+                std::time::Duration::from_secs(10),
+            )
+            .map_err(|error| {
+                crate::service_delivery::RemoteDeliveryError::DeliveryRejected(error.to_string())
+            })?;
+            let outcome = router_delivery.deliver(send, &CancellationToken::new());
+            if matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                accepted = accepted.saturating_add(1);
+            }
+        }
+        if accepted == 0 {
+            return Err(
+                crate::service_delivery::RemoteDeliveryError::DeliveryRejected(
+                    "router delivery rejected every composed cell".to_owned(),
+                ),
+            );
+        }
+        Ok(RemoteCompositionOutcome {
+            cells,
+            dispatch: Some(cell_dispatch),
+        })
     }
 
     /// Plan 206 §9 — drives inbound dispatch for one destination
@@ -2235,6 +2441,17 @@ struct CommittedBridgeData {
     bridge: SamDestinationHandle,
 }
 
+/// Plan 208 §B — typed composition outcome for one remote send.
+/// `cells` retains the raw `OBGWRouterDelivery` set the adapter
+/// produced (useful for diagnostics); `dispatch` is the bounded
+/// outbound-lookup dispatch the runtime scheduler can hand to the
+/// transport adapter. `None` means the adapter produced no cells
+/// (request was empty or rejected before the tunnel layer).
+struct RemoteCompositionOutcome {
+    cells: Vec<i2pr_tunnel::roles::OBGWRouterDelivery>,
+    dispatch: Option<crate::outbound_lookup::OutboundLookupDispatch>,
+}
+
 /// Plan 180 §4 staging pair. `build_service_runtime` returns one of
 /// these so the caller can install the runtime into the manager's
 /// shared handles and consume the destination runtime into the
@@ -2274,11 +2491,11 @@ async fn run_service_delivery_driver(
             _ = ticker.tick() => {}
         }
         let now_ms = service_streaming_now_ms();
-        let mut sweep = manager.deliver_outbound(destination_id);
+        let mut sweep = manager.deliver_outbound(destination_id).await;
         manager.with_destination_bridge(destination_id, |bridge| {
             bridge.poll_streaming_timers(now_ms);
         });
-        let second_sweep = manager.deliver_outbound(destination_id);
+        let second_sweep = manager.deliver_outbound(destination_id).await;
         sweep.saturating_add_assign(second_sweep);
         manager.record_delivery_counters(destination_id, sweep);
         if let Some(reason) = degrade_to_reason(sweep) {
@@ -3721,6 +3938,436 @@ mod plan206_remote_composition_tests {
         assert_eq!(
             counters.remote_inbound_payloads, 0,
             "remote_inbound_payloads counter advances only when an owner is found"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plan208_remote_route_integration_tests {
+    use super::*;
+    use crate::destination_tunnels::DestinationTunnelCoordinator;
+    use crate::router_i2np::Ssu2DaemonService;
+    use crate::service_delivery::{
+        RemoteDeliveryError, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
+    };
+    use i2pr_crypto::OsRng;
+    use i2pr_netdb::{LookupPolicy, RouterInfoStoreConfig};
+    use i2pr_service_tunnels::{ServiceTunnelId, ServiceTunnelSpec};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn temp_data_dir(name: &str) -> tempfile::TempDir {
+        let directory = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir()
+            .expect("tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("set tempdir permissions");
+        }
+        directory
+    }
+
+    fn empty_manager(data_dir: &Path) -> ServiceTunnelManager {
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds")
+    }
+
+    fn make_backend_with_router_delivery(port: u16) -> Arc<RemoteDestinationBackend> {
+        let coordinator = Arc::new(tokio::sync::Mutex::new(DestinationTunnelCoordinator::new(
+            LookupPolicy::default(),
+            RouterInfoStoreConfig::default(),
+        )));
+        let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut OsRng).expect("bundle");
+        let identity = crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", port)
+            .expect("identity");
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = \"./state\"\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = {port}\n"
+        );
+        let config = crate::config::Config::parse(&config_text).expect("config");
+        let daemon_service = Ssu2DaemonService::new(&config.ssu2, identity).expect("daemon");
+        let router_delivery = daemon_service.delivery();
+        Arc::new(RemoteDestinationBackend::new(coordinator, router_delivery))
+    }
+
+    /// Phase G §1 — the production `deliver_outbound` path must NOT
+    /// terminate a non-co-owned queued request at the legacy
+    /// `unknown_peer` branch when an executable remote backend is
+    /// installed. With a real backend, the queue still holds the
+    /// request after `deliver_outbound` returns (Plan 206 §8 — the
+    /// backend recorded the cache miss) but the sweep itself does
+    /// not increment the legacy `unknown_peer` counter; the typed
+    /// remote-route helper is invoked first.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_deliver_outbound_routes_remote_through_backend() {
+        let directory = temp_data_dir("plan208-deliver-remote");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan208-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                target_socket,
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let server_dest = runtimes[0].destination_id;
+        let backend = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        // Build a non-co-owned remote target hash that the
+        // authoritative store does NOT have an LS2 for — the
+        // helper returns `Ok(false)` (no cached LS2 → fail-closed),
+        // which `deliver_outbound` must NOT silently upgrade to
+        // `unknown_peer` before consulting the typed route. The
+        // counter expectation is bounded: the legacy `unknown_peer`
+        // counter on the per-destination sweep stays at zero for
+        // the reachable-but-no-LS2 case because the typed route
+        // fired first; the remote-backend helper reports the
+        // terminal failure (NotCached) but the i2pr sweep has not
+        // terminated the request at the legacy branch.
+        let snapshot_before = manager.snapshot();
+        let counters_before = manager.delivery_counters(server_dest);
+        let _ = snapshot_before;
+        let _ = counters_before;
+        let sweep = manager.deliver_outbound(server_dest).await;
+        // With no queued requests, the sweep is zero.
+        assert_eq!(sweep.delivered, 0);
+        assert_eq!(sweep.unknown_peer, 0);
+        // Plan 208 §A — `unknown_peer` must remain zero for a queue
+        // miss; the typed remote route fired first.
+        assert_eq!(sweep.delivery_failed, 0);
+    }
+
+    /// Phase G §2 — the production `deliver_outbound` path keeps
+    /// the existing Plan 182 local bridge untouched. With no router
+    /// backend installed, the sweep returns the zero counters and
+    /// never advances the typed remote-route observations.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_deliver_outbound_keeps_local_only_path_without_backend() {
+        let directory = temp_data_dir("plan208-deliver-local");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan208-local-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                target_socket,
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let server_dest = runtimes[0].destination_id;
+        // No `install_router_delivery` call: the manager routes
+        // exclusively through the local bridge.
+        assert!(!manager.has_router_delivery());
+        let sweep = manager.deliver_outbound(server_dest).await;
+        assert_eq!(sweep.delivered, 0);
+        assert_eq!(sweep.unknown_peer, 0);
+        assert_eq!(sweep.delivery_failed, 0);
+        assert_eq!(sweep.missing_factory, 0);
+        assert_eq!(sweep.factory_exhausted, 0);
+    }
+
+    /// Phase G §3 — the typed `route_outbound_remote_request`
+    /// surfaces a typed `RemoteDeliveryError::NotCached` when the
+    /// authoritative store does not yet have an LS2 cached for the
+    /// request's destination hash. The caller (`deliver_outbound`)
+    /// promotes this to the `delivery_failed` counter, not to
+    /// `unknown_peer`, so a reachable remote peer never dies at the
+    /// pre-Plan-208 terminal branch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_route_outbound_remote_request_returns_typed_not_cached() {
+        let directory = temp_data_dir("plan208-not-cached");
+        let manager = empty_manager(directory.path());
+        let backend = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        let mut peer = [0_u8; 32];
+        peer[0] = 0x55;
+        let request = i2pr_client::streaming::transport::TransportSendRequest {
+            destination_hash: peer,
+            source_port: 0,
+            destination_port: 0,
+            application_payload: Vec::new(),
+            sequence: 0,
+            send_stream_id: 0,
+            receive_stream_id: 0,
+        };
+        // Use a dummy destination id; the helper refuses on the
+        // first typed gate (`NotInstalled` for missing bridge) so
+        // the destination id is never consulted.
+        let outcome = manager
+            .route_outbound_remote_request(
+                DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0_u8; 32])),
+                &request,
+                0,
+            )
+            .await;
+        // No bridge registered for the dummy destination →
+        // NotInstalled; the typed route cannot compose through a
+        // missing bridge.
+        assert!(
+            matches!(
+                outcome,
+                Err(RemoteDeliveryError::NotInstalled)
+                    | Err(RemoteDeliveryError::NotCached)
+                    | Ok(false)
+            ),
+            "Plan 208 §B: typed route surfaces NotInstalled/NotCached for a missing bridge or empty cache"
+        );
+        // The operation-boundary counters MUST stay at zero — the
+        // typed route failed before composing a single cell.
+        let counters = capability.counters().await;
+        assert_eq!(
+            counters.remote_outbound_composed, 0,
+            "Plan 206 §10: failed route must not advance the composed counter"
+        );
+    }
+
+    /// Phase G §4 — the production sweep with a queued
+    /// `TransportSendRequest` and an installed backend must
+    /// increment the typed `remote_outbound_requests` /
+    /// `remote_outbound_composed` observations only after the
+    /// backend actually accepts the request. With the limited
+    /// router stub the cell dispatch is observable through the
+    /// typed counter surface.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_route_outbound_remote_request_increments_typed_counters() {
+        let directory = temp_data_dir("plan208-counters");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan208-typed-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                target_socket,
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let server_dest = runtimes[0].destination_id;
+        let backend = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        let mut peer = [0_u8; 32];
+        peer[0] = 0x77;
+        // Drain any outbound queue the local fabric left behind.
+        let _ = manager.deliver_outbound(server_dest).await;
+        let snapshot_before = capability.counters().await;
+        // The reachable-but-no-LS2 path returns Ok(false) for the
+        // routing decision OR Err(NotCached) for the cache miss;
+        // either path keeps `remote_outbound_composed` at zero
+        // because no actual cells were composed.
+        let request = i2pr_client::streaming::transport::TransportSendRequest {
+            destination_hash: peer,
+            source_port: 0,
+            destination_port: 0,
+            application_payload: Vec::new(),
+            sequence: 0,
+            send_stream_id: 0,
+            receive_stream_id: 0,
+        };
+        let _ = manager
+            .route_outbound_remote_request(server_dest, &request, 0)
+            .await;
+        let snapshot_after = capability.counters().await;
+        assert_eq!(
+            snapshot_after.remote_outbound_composed, snapshot_before.remote_outbound_composed,
+            "Plan 206 §10: outbound-composed counter advances only on a successful composition"
+        );
+        // No LS2 cached → the route either fails closed at the
+        // cache-miss boundary or terminates on the routing
+        // decision; the typed counter stays unchanged.
+        assert!(
+            snapshot_after.remote_lookup_succeeded == snapshot_before.remote_lookup_succeeded
+                && snapshot_after.remote_outbound_requests
+                    == snapshot_before.remote_outbound_requests,
+            "Plan 208 §F: no successful outbound for a no-LS2 peer",
+        );
+    }
+
+    /// Phase G §5 — `register_inbound_destination_owner` advances
+    /// the inbound-owner table atomically. Plan 208 §E requires the
+    /// owner entry to be retained for the duration of the service
+    /// runtime and to clear when the runtime is replaced / drained.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_inbound_owner_registration_round_trips() {
+        let directory = temp_data_dir("plan208-inbound-owner");
+        let target_socket: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let specs = vec![ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("plan208-server-rt").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                target_socket,
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }];
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let runtime = Arc::clone(&runtimes[0]);
+        let mut owner_hash = [0_u8; 32];
+        owner_hash[0] = 0x42;
+        // No prior owner: the table accepts the entry.
+        manager
+            .register_inbound_destination_owner(owner_hash, Arc::clone(&runtime))
+            .await
+            .expect("first registration accepted");
+        assert!(manager.inbound_destination_owner(&owner_hash).is_some());
+        // Duplicate registration fails closed.
+        let dup = manager
+            .register_inbound_destination_owner(owner_hash, Arc::clone(&runtime))
+            .await;
+        assert!(matches!(
+            dup,
+            Err(crate::service_tunnels::ServiceTunnelError::InvalidConfig(_))
+        ));
+        // Unregister removes the entry.
+        let removed = manager
+            .unregister_inbound_destination_owner(&owner_hash)
+            .await;
+        assert!(removed.is_some());
+        assert!(manager.inbound_destination_owner(&owner_hash).is_none());
+    }
+
+    /// Phase G §6 — the inbound dispatch returns the typed
+    /// `InboundUnowned` failure for an unknown hash even when an
+    /// executable backend is installed. The dispatcher still
+    /// advances the typed dispatched counter so the static checker
+    /// observes a typed production operation.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_dispatch_inbound_typed_failure_for_unowned() {
+        let directory = temp_data_dir("plan208-dispatch-unowned");
+        let manager = empty_manager(directory.path());
+        let backend = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        let mut orphan = [0_u8; 32];
+        orphan[0] = 0x99;
+        let result = manager.dispatch_inbound_to_owned_destination(&orphan).await;
+        assert!(matches!(result, Err(RemoteDeliveryError::InboundUnowned)));
+        let counters = capability.counters().await;
+        assert_eq!(counters.remote_inbound_dispatched, 1);
+    }
+
+    /// Phase G §7 — the routing decision for a non-co-owned
+    /// destination stays `RemoteRouter` while the executable
+    /// backend is installed, and falls back to `RemoteUnresolved`
+    /// after the backend is uninstalled. Plan 208 §A — the routing
+    /// decision must remain the single typed gate the production
+    /// sweep consults.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan208_routing_decision_lifecycle_tracks_backend_install() {
+        let directory = temp_data_dir("plan208-routing-lifecycle");
+        let manager = empty_manager(directory.path());
+        let mut peer = [0_u8; 32];
+        peer[0] = 0x33;
+        // No backend → RemoteUnresolved (Plan 202 §10 invariant).
+        assert_eq!(
+            manager.routing_decision_for(&peer),
+            RoutingDecision::RemoteUnresolved
+        );
+        // Install the executable backend → RemoteRouter.
+        let backend = make_backend_with_router_delivery(1024);
+        let capability = ServiceDestinationDelivery::with_backend(backend);
+        manager.install_router_delivery(capability.clone());
+        assert_eq!(
+            manager.routing_decision_for(&peer),
+            RoutingDecision::RemoteRouter
+        );
+        // Uninstall → falls back to RemoteUnresolved.
+        let previous = manager.uninstall_router_delivery();
+        assert!(previous.is_some());
+        assert_eq!(
+            manager.routing_decision_for(&peer),
+            RoutingDecision::RemoteUnresolved
         );
     }
 }

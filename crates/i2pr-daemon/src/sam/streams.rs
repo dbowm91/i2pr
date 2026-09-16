@@ -201,6 +201,15 @@ impl SamDestinationBridge {
         &self.outbound_role
     }
 
+    /// Plan 208 — mutable accessor for the per-destination outbound
+    /// role. Production compose paths (`bridge_to_peer` and the
+    /// Plan 208 remote-route helper) own the swap-and-restore cycle
+    /// that consumes the role by move; the accessor is only used
+    /// inside the daemon, never exposed over the public API.
+    pub fn outbound_role_mut(&mut self) -> &mut DestinationOutboundRole {
+        &mut self.outbound_role
+    }
+
     pub fn identity_destination_hash(&self) -> [u8; 32] {
         *self.identity.id().as_hash().as_bytes()
     }
@@ -756,7 +765,7 @@ fn empty_dispatcher() -> DestinationDispatcher {
     DestinationDispatcher::new()
 }
 
-fn dummy_outbound_tunnel() -> EstablishedTunnel {
+pub(crate) fn dummy_outbound_tunnel() -> EstablishedTunnel {
     use i2pr_tunnel::{
         EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection,
     };

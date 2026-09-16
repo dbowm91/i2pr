@@ -61,6 +61,7 @@ I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"
 REMOTE_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs"
 PLAN202_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs"
 PLAN207_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_application_genuine_remote_qualification.rs"
+PLAN208_DRIVER="${REPO_ROOT}/crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs"
 
 GUARDED=(
   m10-prerequisite-plans
@@ -476,7 +477,80 @@ if ! grep -q -F 'inbound_owners' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tu
   failures=$((failures + 1))
 fi
 
-# 13. Plan 207 — M10 genuine remote HTTP + IRC application interop
+# 13. Plan 208 — M10 production delivery-driver remote-route integration
+# corrective. The production service delivery sweep
+# (`ServiceTunnelManager::deliver_outbound`) must invoke the typed
+# remote-routing seam (`route_outbound_remote_request`) so a
+# reachable remote peer no longer dies at the legacy pre-Plan-208
+# `unknown_peer` branch. The integration lives in production code,
+# not only in unit tests; a real second-row sweep with an installed
+# backend must advance `remote_outbound_composed` (or, when no LS2
+# is cached, surface a typed `RemoteDeliveryError`) without
+# incrementing the per-destination `unknown_peer` counter. The
+# counted Plan 208 driver is `#[ignore]`-gated and exercises the
+# production sweep against the exact-pinned i2pd 2.61.0 cache.
+if [[ ! -f "${PLAN208_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 208 remote-route integration driver missing: ${PLAN208_DRIVER}" >&2
+  failures=$((failures + 1))
+else
+  if ! grep -q -F '#[ignore = "Plan 208' "${PLAN208_DRIVER}"; then
+    echo "evidence check failed: Plan 208 driver lost its #[ignore] gate" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'm10_remote_route_integration_through_deliver_outbound' "${PLAN208_DRIVER}"; then
+    echo "evidence check failed: Plan 208 driver lost its Direction A test name" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'RemoteDestinationBackend' "${PLAN208_DRIVER}"; then
+    echo "evidence check failed: Plan 208 driver lost its RemoteDestinationBackend wiring" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'RoutingDecision::RemoteRouter' "${PLAN208_DRIVER}"; then
+    echo "evidence check failed: Plan 208 driver lost its RemoteRouter classification assertion" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 208 §15 — the counted driver must not construct a parallel
+  # StreamingManager / StreamingDestinationAdapter shadow stack. The
+  # only sanctioned path is to drive the production sweep and let
+  # the manager compose through the shared backend.
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN208_DRIVER}" |
+     grep -q 'StreamingManager::new'; then
+    echo "evidence check failed: Plan 208 driver must not construct a parallel StreamingManager (Plan 208 §14 anti-shadow rule)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN208_DRIVER}" |
+     grep -q 'StreamingDestinationAdapter::new'; then
+    echo "evidence check failed: Plan 208 driver must not construct a parallel StreamingDestinationAdapter (Plan 208 §14 anti-shadow rule)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN208_DRIVER}" |
+     grep -q 'record_remote_application_observation'; then
+    echo "evidence check failed: Plan 208 driver must not call record_remote_application_observation" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN208_DRIVER}"; then
+    echo "evidence check failed: Plan 208 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
+fi
+# Plan 208 §5 source-level invariants — the production service
+# delivery driver must call the remote-routing seam. The grep is
+# scoped to `service_tunnels.rs` and matches a call site inside
+# `deliver_outbound`. A pure method-definition grep would
+# silently satisfy the rule; the static checker requires the call
+# site to appear in the production code path.
+if ! grep -q -F 'route_outbound_remote_request(' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: production deliver_outbound does not call route_outbound_remote_request (Plan 208 §5)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'plan208_remote_route_integration_tests' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: plan208_remote_route_integration_tests module missing" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'compose_remote_cells' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 208 compose_remote_cells helper missing" >&2
+  failures=$((failures + 1))
+fi
 # corrective driver exists, is `#[ignore]`-gated, declares the
 # `m10_genuine_remote_http_and_irc_application_interop` Direction
 # A test name, exercises `RemoteDestinationBackend` +
