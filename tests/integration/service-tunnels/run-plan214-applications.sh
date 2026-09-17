@@ -287,6 +287,171 @@ if [[ "${fixture_rc}" -ne 0 ]]; then
 fi
 echo "    http fixture: 127.0.0.1:${HTTP_TARGET}  irc: 127.0.0.1:${IRC_TARGET}  large: len=${LARGE_LEN} sha=${LARGE_SHA:0:16}..."
 
+# Plan 215 §4 — deterministic, shell-inert writer for the Plan 214
+# i2pd tunnels.conf. The previous unquoted heredoc containing
+# Markdown backticks inside explanatory comments was interpreted by
+# the shell as command substitution while generating the config; the
+# hosted lane therefore stripped `type = server` from the IRC server
+# tunnel and i2pd never produced the destination .dat files.
+#
+# The shell is never asked to interpret template prose: every line
+# of generated config is emitted either as a literal argument to
+# printf or as a single %s interpolation of an explicitly-passed
+# port number. No backtick, $(), or ${} expansion can reach the
+# file body.
+#
+# Plan 214 local investigation established why the external transport
+# endpoint uses an i2pd transparent server tunnel rather than i2pd's
+# IRC-transforming tunnel type: i2pd's `type = irc`
+# (I2PTunnelConnectionIRC::Write) re-emits every received chunk
+# line-by-line with bare `\n` and drops trailing partials, which
+# corrupts any chunked byte stream at the tunnel layer (proven by
+# packet-tap A/B: identical i2pr bytes arrive byte-exact through
+# `type = server` and mangled with stray `\n` + duplicated QUIT
+# through `type = irc`). i2pd is the encrypted-transport endpoint
+# here, not the IRC application counterpart (that is the harness
+# fixture); the IRC application semantics under test — registration,
+# neutral USER privacy rewrite, PING/PONG, token PRIVMSG echo,
+# ACTION pass, DCC block — are all enforced by the i2pr IRC client
+# profile and observed at the fixture either way.
+write_plan214_tunnels_conf() {
+  local path="$1"
+  local http_port="$2"
+  local irc_port="$3"
+
+  {
+    printf '%s\n' \
+      '[HTTP-Server]' \
+      'type = http' \
+      'host = 127.0.0.1'
+    printf 'port = %s\n' "${http_port}"
+    printf '%s\n' \
+      'keys = plan214-http-server.dat' \
+      'inbound.length = 0' \
+      'outbound.length = 0' \
+      '' \
+      '[IRC-Server]' \
+      'type = server' \
+      'host = 127.0.0.1'
+    printf 'port = %s\n' "${irc_port}"
+    printf '%s\n' \
+      'keys = plan214-irc-server.dat' \
+      'inbound.length = 0' \
+      'outbound.length = 0'
+  } > "${path}"
+}
+
+# Plan 215 §5 — pre-launch generated-config sanity gate. Fail closed
+# unless all 12 invariants from Plan 215 §5 hold. Reports only bounded
+# public facts (section count, profile names, configured port equality,
+# key filenames). No private key bytes or raw application payloads.
+# The helper is a pure file/argument inspection — it does not launch
+# i2pd and it does not read the raw i2pd log.
+plan215_section_body() {
+  # Emit the body of `[<section>]` from `<path>`, stopping at the next
+  # `[…]` header or EOF. Comment and blank lines are preserved so a
+  # future regression that inserts prose inside the section is still
+  # caught by the typed-key checks below.
+  local section="$1"
+  local path="$2"
+  awk -v sec="[${section}]" '
+    $0 == sec { flag = 1; next }
+    /^\[/     { flag = 0; next }
+    flag      { print }
+  ' "${path}"
+}
+
+validate_plan214_tunnels_conf() {
+  local path="$1"
+  local http_port="$2"
+  local irc_port="$3"
+  local rc=0
+  local http_sections irc_sections total_sections
+  local http_body irc_body
+
+  # 1. file exists and is non-empty
+  if [[ ! -s "${path}" ]]; then
+    echo "tunnels.conf is missing or empty: ${path}" >&2
+    rc=1
+  fi
+
+  if [[ "${rc}" -eq 0 ]]; then
+    http_sections="$(grep -cE '^\[HTTP-Server\]$' "${path}" 2>/dev/null || true)"
+    irc_sections="$(grep -cE '^\[IRC-Server\]$' "${path}" 2>/dev/null || true)"
+    total_sections="$(grep -cE '^\[' "${path}" 2>/dev/null || true)"
+
+    # 2. exactly one [HTTP-Server] section
+    if [[ "${http_sections}" != "1" ]]; then
+      echo "tunnels.conf [HTTP-Server] section count is ${http_sections:-0}, expected 1" >&2
+      rc=1
+    fi
+    # 3. exactly one [IRC-Server] section
+    if [[ "${irc_sections}" != "1" ]]; then
+      echo "tunnels.conf [IRC-Server] section count is ${irc_sections:-0}, expected 1" >&2
+      rc=1
+    fi
+    # 11. no unintended third tunnel section exists
+    if [[ "${total_sections:-0}" -ne 2 ]]; then
+      echo "tunnels.conf total section count is ${total_sections:-0}, expected 2" >&2
+      rc=1
+    fi
+  fi
+
+  if [[ "${rc}" -eq 0 ]]; then
+    http_body="$(plan215_section_body 'HTTP-Server' "${path}")"
+    irc_body="$(plan215_section_body 'IRC-Server' "${path}")"
+
+    # 4. HTTP section contains `type = http`
+    if ! grep -qxF 'type = http' <<<"${http_body}"; then
+      echo "tunnels.conf [HTTP-Server] section missing 'type = http'" >&2
+      rc=1
+    fi
+    # 5. IRC section contains `type = server`
+    if ! grep -qxF 'type = server' <<<"${irc_body}"; then
+      echo "tunnels.conf [IRC-Server] section missing 'type = server'" >&2
+      rc=1
+    fi
+    # 6. configured HTTP port equals ${HTTP_TARGET}
+    if ! grep -qxF "port = ${http_port}" <<<"${http_body}"; then
+      echo "tunnels.conf [HTTP-Server] port does not match expected ${http_port}" >&2
+      rc=1
+    fi
+    # 7. configured IRC port equals ${IRC_TARGET}
+    if ! grep -qxF "port = ${irc_port}" <<<"${irc_body}"; then
+      echo "tunnels.conf [IRC-Server] port does not match expected ${irc_port}" >&2
+      rc=1
+    fi
+    # 8. HTTP key file is `plan214-http-server.dat`
+    if ! grep -qxF 'keys = plan214-http-server.dat' <<<"${http_body}"; then
+      echo "tunnels.conf [HTTP-Server] keys file is not plan214-http-server.dat" >&2
+      rc=1
+    fi
+    # 9. IRC key file is `plan214-irc-server.dat`
+    if ! grep -qxF 'keys = plan214-irc-server.dat' <<<"${irc_body}"; then
+      echo "tunnels.conf [IRC-Server] keys file is not plan214-irc-server.dat" >&2
+      rc=1
+    fi
+    # 10. both profiles retain zero-hop inbound/outbound lengths
+    if ! grep -qxF 'inbound.length = 0' <<<"${http_body}" ||
+       ! grep -qxF 'outbound.length = 0' <<<"${http_body}"; then
+      echo "tunnels.conf [HTTP-Server] zero-hop inbound/outbound length missing" >&2
+      rc=1
+    fi
+    if ! grep -qxF 'inbound.length = 0' <<<"${irc_body}" ||
+       ! grep -qxF 'outbound.length = 0' <<<"${irc_body}"; then
+      echo "tunnels.conf [IRC-Server] zero-hop inbound/outbound length missing" >&2
+      rc=1
+    fi
+    # 12. no unresolved template token/place-holder in the generated file
+    if grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*\(`|\$\{[A-Za-z_][A-Za-z0-9_]*(:[^}]*)?\}`|\{\{[A-Za-z_][A-Za-z0-9_]*\}\}|<%[A-Za-z_][A-Za-z0-9_]*%>|__[A-Za-z_][A-Za-z0-9_]*__' "${path}" >/dev/null 2>&1; then
+      echo "tunnels.conf contains unresolved template placeholders" >&2
+      rc=1
+    fi
+  fi
+
+  return "${rc}"
+}
+
 # ---- 6/7. ephemeral i2pd with HTTP + IRC server tunnels --------------------
 I2PD_HOME="${SCRATCH}/i2pd"
 I2PD_DATA="${I2PD_HOME}/data"
@@ -332,36 +497,29 @@ verify = true
 urls =
 threshold = 0
 EOF
-cat > "${I2PD_HOME}/tunnels.conf" <<EOF
-[HTTP-Server]
-type = http
-host = 127.0.0.1
-port = ${HTTP_TARGET}
-keys = plan214-http-server.dat
-inbound.length = 0
-outbound.length = 0
-
-[IRC-Server]
-# Plan 214 — the IRC server tunnel forwards stream bytes
-# transparently (`type = server`). i2pd's `type = irc`
-# (I2PTunnelConnectionIRC::Write) re-emits every received chunk
-# line-by-line with bare `\n` and drops trailing partials, which
-# corrupts any chunked byte stream at the tunnel layer (proven by
-# packet-tap A/B: identical i2pr bytes arrive byte-exact through
-# `type = server` and mangled with stray `\n` + duplicated QUIT
-# through `type = irc`). i2pd is the encrypted-transport endpoint
-# here, not the IRC application counterpart (that is the harness
-# fixture); the IRC application semantics under test — registration,
-# neutral USER privacy rewrite, PING/PONG, token PRIVMSG echo,
-# ACTION pass, DCC block — are all enforced by the i2pr IRC client
-# profile and observed at the fixture either way.
-type = server
-host = 127.0.0.1
-port = ${IRC_TARGET}
-keys = plan214-irc-server.dat
-inbound.length = 0
-outbound.length = 0
-EOF
+# Plan 215 §4 — the i2pd tunnel configuration is generated through a
+# deterministic, shell-inert printf writer (see write_plan214_tunnels_conf
+# above). It MUST NOT be written via an unquoted heredoc: command
+# substitution inside the heredoc body would strip literal text and
+# silently break the tunnels i2pd is supposed to provision.
+write_plan214_tunnels_conf "${I2PD_HOME}/tunnels.conf" "${HTTP_TARGET}" "${IRC_TARGET}"
+# Plan 215 §5 — pre-launch sanity gate. Fail closed before launching
+# i2pd if the generated tunnels.conf drifts from the documented
+# contract (section count, profile names, configured port equality,
+# key filenames, zero-hop lengths, no unresolved placeholders).
+tunnels_conf_rc=0
+validate_plan214_tunnels_conf "${I2PD_HOME}/tunnels.conf" "${HTTP_TARGET}" "${IRC_TARGET}" \
+  || tunnels_conf_rc=$?
+record_guarded "plan214-reference-tunnel-config-sanity" \
+  "tunnels.conf sections, profile names, ports, keys, lengths, placeholders all match Plan 215 §5 contract" \
+  "${tunnels_conf_rc}"
+if [[ "${tunnels_conf_rc}" -ne 0 ]]; then
+  cp "${I2PD_HOME}/tunnels.conf" "${EVIDENCE_DIR}/tunnels.conf" 2>/dev/null || true
+  record "plan214-terminal-classification" failed "P214-B-reference-startup-or-pin"
+  cp "${RESULTS_FILE}" "${EVIDENCE_DIR}/results.tsv"
+  exit 1
+fi
+cp "${I2PD_HOME}/tunnels.conf" "${EVIDENCE_DIR}/tunnels.conf"
 : > "${I2PD_LOG}"
 setsid "${I2PD_BIN}" "--conf=${I2PD_HOME}/i2pd.conf" "--tunconf=${I2PD_HOME}/tunnels.conf" "--datadir=${I2PD_DATA}" \
   --log=file "--logfile=${I2PD_LOG}" >/dev/null 2>&1 < /dev/null &
@@ -929,7 +1087,8 @@ terminal="P214-N-passed"
 if row_failed "plan214-prerequisite-plan213"; then terminal="P214-A-prerequisite-plan213-not-green";
 elif row_failed "plan214-i2pd-pin-sha" || row_failed "plan214-i2pd-version" ||
      row_failed "plan214-i2pd-cache-clean" || row_failed "plan214-jaraco-pin-sha" ||
-     row_failed "plan214-jaraco-cache-clean" || row_failed "plan214-reference-router-ready"; then terminal="P214-B-reference-startup-or-pin";
+     row_failed "plan214-jaraco-cache-clean" || row_failed "plan214-reference-tunnel-config-sanity" ||
+     row_failed "plan214-reference-router-ready"; then terminal="P214-B-reference-startup-or-pin";
 elif row_failed "plan214-public-destination-extraction" || row_failed "plan214-server-ls2-published"; then terminal="P214-C-public-destination-extraction";
 elif row_failed "plan214-remote-http-eepsite" && row_failed "plan214-remote-irc-service"; then
   if grep -q "remote-stop" "${DRIVER_TSV}" 2>/dev/null &&

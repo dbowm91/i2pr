@@ -182,7 +182,36 @@ aggregates plus exactly one `P214-*` terminal classification;
 `run-independent.sh` delegates remote qualification to it; the
 static checker enforces the Plan 214 §28 invariants (including a
 synthetic-key extraction-boundary self-test for
-`parse_i2pd_destination.py`).
+`parse_i2pd_destination.py`). Plan 215 (see `plans/215-status.md`)
+owns the narrow hosted Plan 214 tunnel-config generation corrective:
+the original runner used an unquoted heredoc containing Markdown
+backticks inside explanatory comments and the shell interpreted those
+backticks as command substitution while generating i2pd's
+`tunnels.conf`, stripping `type = server` from the IRC server tunnel
+and breaking the destination `.dat` file generation; the corrected
+runner ships a deterministic `printf`-based `write_plan214_tunnels_conf`
+helper plus a `validate_plan214_tunnels_conf` pre-launch sanity gate
+that fails closed on any of the 12 Plan 215 §5 contract violations
+(file presence, exactly two sections, `type = http` + `type = server`,
+configured HTTP/IRC port equality, expected key filenames, zero-hop
+lengths, no unresolved template placeholders); the sanity result is
+recorded through a `plan214-reference-tunnel-config-sanity` row that
+maps to the existing `P214-B-reference-startup-or-pin` terminal class.
+The static checker §29 enforces twelve structural invariants:
+reject the unquoted `<<EOF` heredoc shape for `tunnels.conf`; require
+`write_plan214_tunnels_conf` and the literal `[HTTP-Server]` /
+`[IRC-Server]` headers; require `validate_plan214_tunnels_conf` to
+run before the i2pd `setsid` launch; require the literal
+`'type = server'` token; require `HTTP_TARGET` / `IRC_TARGET` as
+dynamic inputs; require the documented `plan214-http-server.dat` /
+`plan214-irc-server.dat` key filenames; require the
+`plan214-reference-tunnel-config-sanity` row through `record_guarded`;
+reject any `eval` call; require the `P214-B` mapping; reject
+`envsubst` / `jinja2` / `mustache` template layers; reject `echo … >
+tunnels.conf` regressions; and require the focused
+`tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
+contract test to stay on disk and cover all nine documented contract
+cases.
 
 ## Module layout
 

@@ -1,12 +1,12 @@
 # Plan 215 status — hosted Plan 214 tunnel-config generation corrective and exact-head re-verification
 
-Status: **`registered-executable-hosted-plan214-config-generation-corrective`**.
+Status: **`source-side-corrective-landed-hosted-double-pass-pending`**.
 
 Plan of record: [`215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md`](215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md).
 
 ## Source floor / failure provenance
 
-Audited source head:
+Audited source head before the corrective:
 
 ```text
 b08d4977dbd43605f47bdea01ef8bd142f8b1c7f
@@ -19,17 +19,102 @@ Hosted `full` workflow attempts on that exact SHA:
 35245869000 = failure
 ```
 
-Both runs passed the Plan 213 generic router-backed qualification first, then stopped in the delegated Plan 214 lane before either counted HTTP or IRC application operation. The Plan 214 runner's i2pd `tunnels.conf` generation uses an unquoted heredoc containing Markdown backticks in explanatory comments. Those backticks are active shell command substitution, so the hosted runner interprets prose while constructing the config. i2pd consequently never produces the expected HTTP/IRC destination `.dat` files and Plan 214 fails closed at `P214-C-public-destination-extraction`.
+Both runs passed the Plan 213 generic router-backed qualification first, then stopped in the delegated Plan 214 lane before either counted HTTP or IRC application operation. The Plan 214 runner's i2pd `tunnels.conf` generation used an unquoted heredoc containing Markdown backticks in explanatory comments. Those backticks are active shell command substitution, so the hosted runner interpreted prose while constructing the config. i2pd consequently never produced the expected HTTP/IRC destination `.dat` files and Plan 214 failed closed at `P214-C-public-destination-extraction`.
 
 This is classified as a qualification-runner/config-generation defect. It is not evidence of a router/product regression because the application driver was never reached.
+
+## Source-side corrective landed
+
+The corrective is intentionally narrow and stays within the Plan 215 §3 scope lock:
+
+- `tests/integration/service-tunnels/run-plan214-applications.sh`
+  - new `write_plan214_tunnels_conf` helper: deterministic, shell-inert
+    `printf`-based writer for the i2pd `tunnels.conf`. The shell is
+    never asked to interpret template prose; every line is either a
+    literal argument to `printf` or a single `%s` interpolation of an
+    explicit port number.
+  - new `plan215_section_body` helper: extracts a section body from a
+    key=value INI-style file without depending on the next section
+    header to terminate.
+  - new `validate_plan214_tunnels_conf` helper: pre-launch sanity gate
+    that fails closed on any of the 12 Plan 215 §5 contract violations
+    (file presence, exactly two sections, `type = http` + `type = server`,
+    configured HTTP/IRC port equality, expected key filenames, zero-hop
+    lengths, no unresolved template placeholders).
+  - the vulnerable `cat > "${I2PD_HOME}/tunnels.conf" <<EOF … EOF` block
+    is replaced by a single `write_plan214_tunnels_conf` invocation +
+    an immediate `validate_plan214_tunnels_conf` pre-launch gate. The
+    rationale for the transparent IRC `type = server` tunnel is moved
+    to a shell comment block immediately above the helper, where it is
+    no longer interpreted while the config is generated.
+  - new sanitized `plan214-reference-tunnel-config-sanity` evidence
+    row recorded through `record_guarded`; the failure maps to the
+    existing `P214-B-reference-startup-or-pin` terminal class.
+  - the i2pd `tunnels.conf` is now also copied into the evidence
+    directory after the sanity gate passes, so a future regression is
+    debuggable from the uploaded artifact alone.
+- `tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
+  - new focused shell test that exercises the writer and validator
+    contract independently of the expensive external lane (writer
+    happy path, alternate-port happy path, missing file, wrong HTTP
+    port, wrong IRC port, `type = irc` instead of `type = server`,
+    missing HTTP section, extra section, unresolved `${}` placeholder).
+- `scripts/check-service-tunnel-acceptance-evidence.sh`
+  - new §29 source-level invariants:
+    1. reject the unquoted `<<EOF` heredoc shape for `tunnels.conf`;
+    2. require `write_plan214_tunnels_conf` + literal `[HTTP-Server]`
+       and `[IRC-Server]` section headers;
+    3. require `validate_plan214_tunnels_conf` pre-launch (the source
+       ordering relative to the `setsid "${I2PD_BIN}"` launch is also
+       enforced);
+    4. require the literal `'type = server'` token;
+    5. require `HTTP_TARGET` / `IRC_TARGET` as dynamic inputs;
+    6. require `plan214-http-server.dat` / `plan214-irc-server.dat`
+       key filenames;
+    7. require the `plan214-reference-tunnel-config-sanity` evidence
+       row through `record_guarded`;
+    8. reject any `eval` call;
+    9. require `plan214-reference-tunnel-config-sanity` to map to
+       `P214-B-reference-startup-or-pin`;
+    10. reject `envsubst` / `jinja2` / `mustache` template layers;
+    11. reject `echo … > tunnels.conf` regressions;
+    12. require the focused `test-plan215-tunnels-conf.sh` contract
+        test to stay on disk and cover all nine documented contract
+        cases.
+
+The runner i2pd.conf heredoc (lines 464–499) is unchanged — it never
+contained shell-active prose and stays out of scope for the §6.1
+rejection rule (which is scoped to `tunnels.conf`).
+
+## Source-side validation
+
+The focused Plan 215 validation sequence is fully green on the source
+side:
+
+```text
+bash -n tests/integration/service-tunnels/run-plan214-applications.sh
+bash -n scripts/check-service-tunnel-acceptance-evidence.sh
+bash -n tests/integration/service-tunnels/test-plan215-tunnels-conf.sh
+bash scripts/check-service-tunnel-acceptance-evidence.sh
+bash tests/integration/service-tunnels/test-plan215-tunnels-conf.sh
+```
+
+The full workspace floor (`cargo fmt --all --check`,
+`cargo check --locked --workspace --all-targets`,
+`cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`,
+`cargo test --locked --workspace --all-targets -- --test-threads=1`,
+`RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`,
+every static boundary / acceptance evidence / vector / interop
+checker, and `cargo deny check advisories bans sources`) is green on
+the source-side corrective tree.
 
 ## Current authority
 
 ```text
 plan_212 = passed-source-and-generic-external-qualification-via-plan213
 plan_213 = passed-m10-router-backed-generic-external-qualification
-plan_214 = local-pass-proven-hosted-requalification-blocked-by-plan215
-plan_215 = registered-executable-hosted-plan214-config-generation-corrective
+plan_214 = local-pass-proven-hosted-requalification-blocked-on-plan215-corrective-source-landed
+plan_215 = source-side-corrective-landed-hosted-double-pass-pending
 
 m10_local_rows = passed (29/29 retained)
 m10_remote_transport_core = passed-via-plan212-and-plan213
@@ -39,17 +124,24 @@ milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 ```
 
-## Required execution
+## Required hosted re-verification (Plan 215 §15)
 
-1. Replace the vulnerable Plan 214 unquoted `tunnels.conf` heredoc with deterministic shell-inert generation, preferably a small `printf`-based writer.
-2. Move the transparent-IRC rationale out of generated config text while retaining `type = server`.
-3. Add a pre-i2pd generated-config sanity gate and bounded evidence row.
-4. Extend `check-service-tunnel-acceptance-evidence.sh` to reject reintroduction of the vulnerable heredoc shape and require the sanity gate.
-5. Run focused shell/checker/unit validation and the normal source floor.
-6. Re-run the local exact-head full lane and require `P214-N-passed`.
-7. Designate the resulting executable SHA as `corrective_verification_sha`.
-8. Run hosted `full` sequentially twice on that identical SHA. Each run must finish successfully with Plan 213 `P213-N-passed`, Plan 214 `P214-N-passed`, both remote application aggregates passed, and non-empty Plan 213/Plan 214/service-tunnel evidence artifacts.
-9. Only after both hosted passes, land an evidence-only authority update closing Plan 215 and Plan 214/M10.
+After the source-side corrective is pushed and the routine CI floor
+remains green on the resulting SHA:
+
+1. dispatch the existing hosted `full` workflow lane once on the
+   exact corrective SHA and require `P213-N-passed` + `P214-N-passed` +
+   non-empty `plan213-generic-evidence-<run-id>` and
+   `plan214-applications-evidence-<run-id>` artifacts;
+2. only after run #1 finishes successfully, dispatch the same lane a
+   second time on the identical SHA and require the same outcome;
+3. only after both runs finish with `success`, update
+   `plans/214-status.md`, `plans/215-status.md`, and the current
+   authority documentation to the Plan 215 §18 transition.
+
+No executable qualification source may change between the two hosted
+passes; the evidence-only authority transition is allowed afterwards
+and stays on top of the same SHA.
 
 ## Verification ledger
 
@@ -60,4 +152,7 @@ hosted_pass_1 = pending
 hosted_pass_2 = pending
 ```
 
-Do not promote this status from registered/pending until the exact evidence above exists. If executable qualification source changes after the first hosted pass, the consecutive-pass count resets to zero.
+Do not promote this status from `source-side-corrective-landed` until
+both hosted passes record `P214-N-passed` on one immutable source
+SHA. If executable qualification source changes after the first hosted
+pass, the consecutive-pass count resets to zero.

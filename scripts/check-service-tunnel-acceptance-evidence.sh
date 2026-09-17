@@ -1709,8 +1709,158 @@ if [[ "${SYNTH_OUT}" != "boundary-ok" ]]; then
 fi
 rm -f "${SYNTH_DAT}"
 
+# 29. Plan 215 — hosted Plan 214 tunnel-config generation corrective.
+# The first two hosted `full` runs on the Plan 214 source head
+# (`b08d4977dbd43605f47bdea01ef8bd142f8b1c7f`) failed before the
+# counted HTTP or IRC application row because the runner's i2pd
+# `tunnels.conf` writer used an unquoted heredoc containing Markdown
+# backticks in explanatory comments. The shell interpreted those
+# backticks as command substitution and stripped `type = server` from
+# the IRC server tunnel; i2pd therefore never generated the
+# destination `.dat` files. The Plan 215 source-side correction is
+# intentionally narrow: a deterministic, shell-inert writer + a
+# pre-launch sanity gate + a sanitized evidence row. This section
+# rejects any reintroduction of the vulnerable heredoc shape and
+# requires the corrective surface to stay present.
+#
+# 29.1 — reject the unquoted `<<EOF` heredoc shape for tunnels.conf.
+# A quoted heredoc (`<<'EOF'`, `<<"EOF"`) is allowed; only the
+# unquoted form is rejected. The grep scopes to `tunnels.conf` writes
+# so the unrelated `i2pd.conf` heredoc (which never contained
+# backticks) is not affected.
+if grep -nE 'cat[[:space:]]+>[^<]*<<EOF\b|>>[^<]*<<-EOF\b' "${PLAN214_RUNNER}" |
+   grep -E 'tunnels\.conf' >/dev/null 2>&1; then
+  echo "evidence check failed: Plan 215 §6.1 — Plan 214 runner reintroduced an unquoted tunnels.conf heredoc (shell will interpret backticks / \$\() while generating the config)" >&2
+  failures=$((failures + 1))
+fi
+# 29.2 — require the deterministic writer. We accept either the
+# named helper (`write_plan214_tunnels_conf`) or an equivalently
+# shell-inert printf block keyed on the documented
+# `[HTTP-Server]` / `[IRC-Server]` sections.
+if ! grep -qE 'write_plan214_tunnels_conf' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.2 — Plan 214 runner has no write_plan214_tunnels_conf helper (deterministic shell-inert writer)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -qF '[HTTP-Server]' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.2 — Plan 214 writer does not emit the documented [HTTP-Server] section header" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -qF '[IRC-Server]' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.2 — Plan 214 writer does not emit the documented [IRC-Server] section header" >&2
+  failures=$((failures + 1))
+fi
+# 29.3 — require the pre-launch sanity gate.
+if ! grep -qE 'validate_plan214_tunnels_conf' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.3 — Plan 214 runner has no validate_plan214_tunnels_conf pre-launch sanity gate" >&2
+  failures=$((failures + 1))
+fi
+# The sanity gate must run BEFORE the i2pd `setsid` launch — a
+# post-launch validation would already have started the reference
+# process. The grep checks source ordering.
+SANITY_LINE=$(grep -nE 'validate_plan214_tunnels_conf' "${PLAN214_RUNNER}" | head -n1 | cut -d: -f1 || true)
+LAUNCH_LINE=$(grep -nE 'setsid[[:space:]]+"\$\{I2PD_BIN\}"' "${PLAN214_RUNNER}" | head -n1 | cut -d: -f1 || true)
+if [[ -n "${SANITY_LINE}" && -n "${LAUNCH_LINE}" && "${SANITY_LINE}" -ge "${LAUNCH_LINE}" ]]; then
+  echo "evidence check failed: Plan 215 §6.3 — validate_plan214_tunnels_conf must run before the i2pd setsid launch (sanity line ${SANITY_LINE}, launch line ${LAUNCH_LINE})" >&2
+  failures=$((failures + 1))
+fi
+# 29.4 — IRC profile remains transparent `type = server`. The
+# writer must emit the literal token; the surrounding rationale
+# comment does not satisfy this invariant.
+if ! grep -qE "'type = server'" "${PLAN214_RUNNER}" &&
+   ! grep -qE '"type = server"' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.4 — Plan 214 writer no longer emits the documented IRC 'type = server' literal" >&2
+  failures=$((failures + 1))
+fi
+# 29.5 — HTTP and IRC ports remain dynamic, distinct inputs from the
+# fixture contract. A regression that hard-codes a port must not
+# pass.
+for port_var in HTTP_TARGET IRC_TARGET; do
+  if ! grep -qF "${port_var}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 215 §6.5 — Plan 214 runner lost its dynamic ${port_var} port input" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 29.6 — expected key filenames.
+for key_file in 'plan214-http-server.dat' 'plan214-irc-server.dat'; do
+  if ! grep -qF "${key_file}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 215 §6.6 — Plan 214 runner lost the ${key_file} key filename" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 29.7 — runner records the sanitized config-sanity evidence row.
+if ! grep -qF 'plan214-reference-tunnel-config-sanity' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.7 — Plan 214 runner does not record the plan214-reference-tunnel-config-sanity evidence row" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -qE 'record_guarded "plan214-reference-tunnel-config-sanity"' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §6.7 — plan214-reference-tunnel-config-sanity must flow through record_guarded (no literal pass)" >&2
+  failures=$((failures + 1))
+fi
+# 29.8 — no `eval` introduced into the runner. The grep is scoped to
+# non-comment, non-string-literal lines so the word may still
+# appear in the rationale prose.
+if grep -nE '^[[:space:]]*eval[[:space:]]' "${PLAN214_RUNNER}" | grep -v -E '^\s*[0-9]+:\s*#' >/dev/null 2>&1; then
+  echo "evidence check failed: Plan 215 §6.8 — Plan 214 runner introduced an 'eval' call (forbidden)" >&2
+  failures=$((failures + 1))
+fi
+# 29.9 — Plan 215 §5 row must be classified as a reference-startup
+# boundary failure (P214-B), not silently absorbed by another class.
+# The OR-chain may span multiple lines, so the grep keeps the
+# `plan214-reference-tunnel-config-sanity` and `P214-B-reference-
+# startup-or-pin` tokens independent.
+if ! awk '
+  /plan214-reference-tunnel-config-sanity/ { in_or = 1; next }
+  in_or && /P214-B-reference-startup-or-pin/ { found = 1; exit }
+' "${PLAN214_RUNNER}" >/dev/null 2>&1; then
+  echo "evidence check failed: Plan 215 §6.9 — plan214-reference-tunnel-config-sanity must map to P214-B-reference-startup-or-pin (Plan 215 §5)" >&2
+  failures=$((failures + 1))
+fi
+# 29.10 — no envsubst / template language sneaking in via Plan 215.
+# The grep looks for `envsubst`, the Jina/Mustache `{{ }}` shape, and
+# the EJS `<% %>` shape. A future regression that tries to revive a
+# templating layer to "simplify" the writer must not pass.
+if grep -nE '\benvsubst\b|jinja2|mustache' "${PLAN214_RUNNER}" >/dev/null 2>&1; then
+  echo "evidence check failed: Plan 215 §6.10 — Plan 214 runner must not introduce a templating dependency (envsubst / jinja / mustache)" >&2
+  failures=$((failures + 1))
+fi
+# 29.11 — writer must use printf, not echo / cat <<EOF, so the
+# generated config is byte-stable across shells. A regression to
+# `echo … > file` with expansion active is rejected.
+if grep -nE '^[[:space:]]*echo[[:space:]]+.{0,40}>>?\s*"?\$\{I2PD_HOME\}/tunnels\.conf' "${PLAN214_RUNNER}" >/dev/null 2>&1; then
+  echo "evidence check failed: Plan 215 §6.11 — Plan 214 runner must use printf, not echo, to write tunnels.conf" >&2
+  failures=$((failures + 1))
+fi
+# 29.12 — the focused Plan 215 writer/validator contract test must
+# stay on disk so a regression in the writer or validator surfaces
+# before the expensive hosted lane runs.
+PLAN215_CONF_TEST="${REPO_ROOT}/tests/integration/service-tunnels/test-plan215-tunnels-conf.sh"
+if [[ ! -f "${PLAN215_CONF_TEST}" ]]; then
+  echo "evidence check failed: Plan 215 §11 — focused writer/validator contract test missing: ${PLAN215_CONF_TEST}" >&2
+  failures=$((failures + 1))
+else
+  # 29.12a — the focused test must exercise every Plan 215 §11
+  # contract: writer happy path, alternate-port happy path, missing
+  # file, wrong HTTP port, wrong IRC port, type=irc, missing HTTP
+  # section, extra section, unresolved placeholder.
+  for label in \
+      'expect_pass "validator accepts writer output"' \
+      'expect_pass "validator accepts writer output (alternate ports)"' \
+      'expect_fail "validator rejects missing file"' \
+      'expect_fail "validator rejects wrong HTTP port"' \
+      'expect_fail "validator rejects wrong IRC port"' \
+      'expect_fail "validator rejects IRC type=irc"' \
+      'expect_fail "validator rejects missing HTTP section"' \
+      'expect_fail "validator rejects extra section"' \
+      'expect_fail "validator rejects \${} placeholder"'; do
+    if ! grep -qF "${label}" "${PLAN215_CONF_TEST}"; then
+      echo "evidence check failed: Plan 215 §11 — focused test missing contract case: ${label}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green, Plan 214 application requalification invariants green"
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green, Plan 214 application requalification invariants green, Plan 215 tunnel-config generation invariants green"

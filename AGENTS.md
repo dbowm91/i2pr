@@ -348,8 +348,9 @@ Plan 209 = retained-partial-black-box-composition-harness-superseded-by-plan211 
    m10_remote_application_interop = locally-passed-once (Plan 214 P214-N on the Commit E tree: typed remote-mirror resolution seam, transparent i2pd server tunnel with tap attribution, neutral-shape privacy proof; hosted double-pass pending)
    Plan 212 = passed-source-and-generic-external-qualification-via-plan213 (router-backed state + per-service provisioning + canonical inbound Streaming source landed; 25 plan212 unit rows + §20–§26 checker + ignored generic A/B driver; external i2pd qualification closed via Plan 213)
    Plan 213 = passed-m10-router-backed-generic-external-qualification (see plans/213-status.md)
-   Plan 214 = local-pass-proven-hosted-double-pass-pending (see plans/214-status.md)
-   next_m10_application_plan = plan214-hosted-double-pass (Plan 213 passed; Plan 214 local pass proven on the Commit E tree; Commit F owns the hosted double-pass with `P214-N-passed` twice on one exact SHA)
+    Plan 214 = local-pass-proven-hosted-requalification-blocked-on-plan215-corrective-source-landed (see plans/214-status.md; the Plan 214 local pass is preserved; the hosted double-pass is the only remaining acceptance gate and stays blocked on the Plan 215 hosted re-verification sequence — Plan 215 §15 requires two consecutive successful hosted `full` runs on one immutable source SHA)
+    Plan 215 = source-side-corrective-landed-hosted-double-pass-pending (see plans/215-status.md; the hosted Plan 214 failure on `b08d4977dbd43605f47bdea01ef8bd142f8b1c7f` (runs `35245848091` + `35245869000`) is classified as a qualification-runner/config-generation defect: the runner's i2pd `tunnels.conf` writer used an unquoted heredoc containing Markdown backticks in explanatory comments and the shell interpreted those backticks as command substitution while generating the config, so i2pd never produced the expected HTTP/IRC destination `.dat` files and Plan 214 failed closed at `P214-C-public-destination-extraction`; the corrective is intentionally narrow — `write_plan214_tunnels_conf` (deterministic `printf`-based shell-inert writer) + `validate_plan214_tunnels_conf` (12-invariant pre-launch sanity gate) + the sanitized `plan214-reference-tunnel-config-sanity` evidence row (classified `P214-B-reference-startup-or-pin` on failure) + `tests/integration/service-tunnels/test-plan215-tunnels-conf.sh` focused contract test (9 cases) — and `scripts/check-service-tunnel-acceptance-evidence.sh` §29 enforces twelve structural invariants: reject the unquoted `<<EOF` heredoc shape, require `write_plan214_tunnels_conf` + the literal `[HTTP-Server]` / `[IRC-Server]` headers, require `validate_plan214_tunnels_conf` to run before the i2pd `setsid` launch, require the literal `'type = server'` token, require `HTTP_TARGET` / `IRC_TARGET` as dynamic inputs, require the documented key filenames, require the `plan214-reference-tunnel-config-sanity` row through `record_guarded`, reject `eval`, require the `P214-B` mapping, reject `envsubst` / `jinja2` / `mustache` template layers, reject `echo … > tunnels.conf` regressions, and require the focused contract test to stay on disk; no product code change)
+    next_m10_application_plan = plan215-hosted-double-pass (Plan 215 source-side corrective landed: deterministic writer + pre-launch sanity gate + focused contract test + §29 static checker; the next action is to dispatch the hosted `full` lane twice sequentially on one immutable source SHA and require `P213-N-passed` + `P214-N-passed` + non-empty `plan213-generic-evidence-<run-id>` and `plan214-applications-evidence-<run-id>` artifacts on both runs; only after those two hosted passes may Plan 214 advance to `passed-m10-product-only-remote-http-and-irc-application-closure` and the final Plan 215 §18 authority transition fire)
 Milestone 10 foundation = passed-via-plan174 (no listener yet)
 Milestone 10 generic tunnels = passed-via-plan175 (profile; byte round-trip proven-via-plan182)
 Milestone 10 HTTP proxy = passed-via-plan176 (profile; byte round-trip proven-via-plan182)
@@ -826,6 +827,14 @@ cargo test --locked -p i2pr-daemon --test service_tunnels_final_acceptance -- --
 cargo test --locked -p i2pr-daemon --test service_tunnels_adversarial_matrix -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_local_roundtrip -- --test-threads=1
 cargo test --locked -p i2pr-daemon --test service_tunnels_independent_application_clients -- --test-threads=1
+# Plan 215 — focused shell test for the deterministic tunnel-config
+# writer and the pre-launch sanity gate (see plans/215-status.md):
+# the test exercises the writer/validator contract independently of
+# the expensive external lane (writer happy path, alternate-port
+# happy path, missing file, wrong HTTP port, wrong IRC port, `type =
+# irc` instead of `type = server`, missing HTTP section, extra
+# section, unresolved `${}` placeholder).
+bash tests/integration/service-tunnels/test-plan215-tunnels-conf.sh
 # Plan 214 — external driver for the product-only remote HTTP/IRC
 # application requalification is `#[ignore]`-gated; the lane invokes it
 # only with the exact-pinned i2pd environment provisioned (standalone
