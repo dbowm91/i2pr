@@ -165,7 +165,24 @@ unit-test floor (eight `plan210_*` rows in
 `service_tunnels.rs::plan210_real_service_destination_material_tests`
 plus 25 `plan212_*` rows in
 `service_tunnels.rs::plan212_router_backed_service_destination_tests`)
-locks the typed path.
+locks the typed path. Plan 213 closed the generic router-backed
+Direction A+B external proof twice on one exact SHA. Plan 214
+(see `plans/214-status.md`) owns the M10 HTTP/IRC application
+requalification source: the counted v214 driver stays inside the
+black-box `ServiceProduct` boundary (runtime-neutral
+`ServiceTunnelSet::validate` preflight, no placeholder manager),
+pumps `poll_inbound` concurrently around every `curl`/jaraco
+subprocess, binds HTTP facts to fresh fixture `seq` records plus
+the actual curl `%{http_code}` frame, proves IRC registration /
+privacy / PING-PONG / token PRIVMSG / ACTION / DCC-policy from
+fresh streamed fixture records, and snapshots independent
+per-application counter windows with orphan deltas; the
+standalone `run-plan214-applications.sh` runner owns the §16/§17
+aggregates plus exactly one `P214-*` terminal classification;
+`run-independent.sh` delegates remote qualification to it; the
+static checker enforces the Plan 214 §28 invariants (including a
+synthetic-key extraction-boundary self-test for
+`parse_i2pd_destination.py`).
 
 ## Module layout
 

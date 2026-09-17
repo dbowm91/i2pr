@@ -132,12 +132,30 @@ def main() -> int:
     parser.add_argument("--facts", required=True)
     parser.add_argument("--max-connections", type=int, default=16)
     args = parser.parse_args()
+    # Plan 214 §D4 — the deterministic large-response contract is
+    # published on stdout at startup so the harness captures the
+    # independently known expected length/digest and the counted
+    # driver gates equality against it (digest shape alone is
+    # insufficient).
+    expected_large = large_body()
+    print(
+        f"LARGE_LEN={len(expected_large)} "
+        f"LARGE_SHA256={hashlib.sha256(expected_large).hexdigest()}",
+        flush=True,
+    )
     # Facts append per request (flushed) so the harness can read
     # them mid-run; a SIGTERM shutdown must not lose served rows.
     facts_log = open(args.facts, "w", encoding="utf-8")
     facts = []
+    # Plan 214 §D2 — every record carries a monotonically
+    # increasing sequence number so the counted driver proves a
+    # *fresh* target observation after its per-case baseline
+    # instead of inferring observation from response bytes.
+    sequence = [0]
 
     def record(fact) -> None:
+        sequence[0] += 1
+        fact["seq"] = sequence[0]
         facts.append(fact)
         facts_log.write(json.dumps(fact, sort_keys=True) + "\n")
         facts_log.flush()
@@ -146,7 +164,11 @@ def main() -> int:
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", args.port))
     listener.listen(4)
-    listener.settimeout(90)
+    # Plan 214 remote lane: the first connection arrives only after
+    # i2pd boot + product provisioning (minutes, not seconds). The
+    # bounded 600 s per-accept window covers that lane with margin;
+    # the local lane connects immediately.
+    listener.settimeout(600)
     print(f"PORT={listener.getsockname()[1]}", flush=True)
     served = 0
     try:

@@ -47,7 +47,7 @@ use tracing::{debug, warn};
 
 use crate::destination_streaming::{PumpConfig, StreamPumpEndpoint, run_stream_pump};
 use crate::service_tunnels::{
-    ClientTarget, ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager,
+    ClientTarget, DestinationFailure, ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager,
     service_streaming_now_ms,
 };
 
@@ -219,6 +219,7 @@ where
 /// service destination (Base32) or an entry in the alias table.
 fn resolve_target_for_service(
     manager: &ServiceTunnelManager,
+    service_destination: i2pr_client::DestinationId,
     destination: &ConnectDestination,
 ) -> Result<ClientTarget, Socks5Error> {
     let reference =
@@ -228,13 +229,24 @@ fn resolve_target_for_service(
                 "destination not resolvable by SOCKS5 proxy",
             )
         })?;
-    manager.resolve_reference(&reference).map_err(|error| {
-        let _ = error;
-        Socks5Error::new(
+    match manager.resolve_reference(&reference) {
+        Ok(client) => Ok(client),
+        // Plan 214 — non-local references resolve through the
+        // requesting runtime's installed router-backed remote
+        // LeaseSet2 mirror. No local fallback.
+        Err(DestinationFailure::LookupRequired { hash, .. }) => manager
+            .resolve_remote_client_target(service_destination, &hash)
+            .ok_or_else(|| {
+                Socks5Error::new(
+                    Socks5ErrorKind::NonI2pTarget,
+                    "destination not resolvable by SOCKS5 proxy",
+                )
+            }),
+        Err(_) => Err(Socks5Error::new(
             Socks5ErrorKind::NonI2pTarget,
             "destination not resolvable by SOCKS5 proxy",
-        )
-    })
+        )),
+    }
 }
 
 /// Opens a Streaming connection to the supplied remote destination
@@ -432,7 +444,7 @@ pub async fn run_socks5_connection(
         let _ = stream.shutdown().await;
         return Socks5ConnectionOutcome::Forbidden;
     }
-    let target = match resolve_target_for_service(&manager, &destination) {
+    let target = match resolve_target_for_service(&manager, runtime.destination_id, &destination) {
         Ok(value) => value,
         Err(_error) => {
             let reply = build_socks5_reply(i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable);

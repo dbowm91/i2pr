@@ -25,10 +25,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--nick", default="alice")
     parser.add_argument("--channel", default="#chan")
+    # Plan 214 §F3 — deterministic session token carried in the
+    # outbound PRIVMSG text so the target echo proves the same
+    # session's bytes returned (not merely any echo).
+    parser.add_argument("--token", default="plan181")
     args = parser.parse_args()
 
     facts = {}
     events = {"welcome": threading.Event(), "echo": threading.Event()}
+    echo_texts = []
 
     def on_welcome(connection, event):
         facts["WELCOME"] = "1"
@@ -38,6 +43,7 @@ def main() -> int:
         text = event.arguments[0] if event.arguments else ""
         if "echo-hello" in text:
             facts["ECHO_RECEIVED"] = "1"
+            echo_texts.append(text)
             events["echo"].set()
 
     def on_ping(connection, event):
@@ -85,17 +91,27 @@ def main() -> int:
         connection.join(args.channel)
         facts["JOIN_SENT"] = "1"
         time.sleep(0.5)
-        connection.privmsg(args.channel, "hello world")
+        connection.privmsg(args.channel, f"hello {args.token}")
         facts["PRIVMSG_SENT"] = "1"
         if not events["echo"].wait(timeout=15):
             facts["ECHO_RECEIVED"] = facts.get("ECHO_RECEIVED", "0")
+        # Plan 214 §F3 — the echo must carry this session's token.
+        facts["ECHO_TOKEN_MATCH"] = (
+            "1"
+            if any(args.token in text for text in echo_texts)
+            else "0"
+        )
         # CTCP ACTION must pass the privacy filter; DCC must be
         # dropped by it. Both go through the public ctcp API.
+        # Plan 214 §F5 — the DCC attempt is explicit and recorded
+        # as attempted; whether it was blocked is proved by the
+        # target fixture's non-observation, never by this flag.
         connection.action(args.channel, "waves hello")
         facts["ACTION_SENT"] = "1"
         time.sleep(0.5)
         connection.privmsg(args.channel, "\x01DCC SEND file 127.0.0.1 0 1024\x01")
         facts["DCC_SENT"] = "1"
+        facts["DCC_ATTEMPTED"] = "1"
         time.sleep(1.0)
         connection.quit("done")
         facts["QUIT_SENT"] = "1"
@@ -113,9 +129,11 @@ def main() -> int:
         "JOIN_SENT",
         "PRIVMSG_SENT",
         "ECHO_RECEIVED",
+        "ECHO_TOKEN_MATCH",
         "PONG_SENT",
         "ACTION_SENT",
         "DCC_SENT",
+        "DCC_ATTEMPTED",
         "QUIT_SENT",
     ):
         print(f"{key}={facts.get(key, '0')}")

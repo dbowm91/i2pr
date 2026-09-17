@@ -1250,98 +1250,237 @@ async fn resolve_remote_destination_for_service_inner(
     // placeholder) and dispatch the cells through the shared
     // router delivery service. The borrow stays inside the bridge
     // closure so installation ownership never moves.
+    //
+    // Bounded NetDB-level re-query: a floodfill that has not yet
+    // settled the reply tunnel's inbound side answers into a
+    // black hole (observed against exact-pinned i2pd 2.61.0 in an
+    // isolated lane: the reply is gatewayed toward transit that
+    // never completes instead of the reply tunnel). Re-sending
+    // the same composed query after a bounded settle delay lets a
+    // later copy land once the reference side has settled; this
+    // is ordinary floodfill-churn tolerance, not a wire change.
+    // At most MAX_LOOKUP_ATTEMPTS transmissions per service, each
+    // with a bounded pump window; pump accounting is cumulative
+    // across attempts for the timeout attribution below.
+    const MAX_LOOKUP_ATTEMPTS: u64 = 3;
+    const LOOKUP_ATTEMPT_WINDOW: Duration = Duration::from_secs(25);
+    const LOOKUP_SETTLE_DELAY: Duration = Duration::from_secs(5);
+    let mut resolved = false;
+    let mut attempts: u64 = 0;
+    let mut inbound_seen: u64 = 0;
+    let mut decode_ok: u64 = 0;
+    let mut tunnel_data: u64 = 0;
+    let mut dispatch_ok: u64 = 0;
+    let mut envelope_ok: u64 = 0;
+    let mut ingest_completed: u64 = 0;
+    let mut ingest_continued: u64 = 0;
+    // Direct (non-tunneled) body census: Gw-self peers may answer
+    // outside the reply tunnel, which this loop intentionally
+    // skips; the census tells a no-tunneldata timeout apart from
+    // a silent transport.
+    let mut direct_garlic: u64 = 0;
+    let mut direct_store: u64 = 0;
+    let mut direct_search_reply: u64 = 0;
+    let mut direct_delivery_status: u64 = 0;
+    let mut direct_other: u64 = 0;
+    // I2NP type-number census for non-tunneled traffic (type
+    // numbers only, no payload). Bounded: at most one entry per
+    // observed type number.
+    let mut direct_types: Vec<(u8, u64)> = Vec::new();
     let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
-    {
-        let coord_guard = destination_tunnels.lock().await;
-        let delivery = ssu2_handle.delivery().clone();
-        // Compose inside the bridge borrow: the bridge exposes
-        // the router-backed outbound role by reference; the
-        // coordinator composes the DatabaseLookup cells; the
-        // delivery service carries them to the first hop.
-        let deadline = Deadline::new(options.tunnel_deadline)
-            .map_err(|_| ServiceProductError::LookupTimeout)?;
-        let dispatch = manager
-            .with_destination_bridge(service_destination, |bridge| {
-                let role = bridge.router_outbound_role_ref()?;
-                if !bridge.has_router_network_state(wall_ms()) {
-                    return None;
+    while !resolved && attempts < MAX_LOOKUP_ATTEMPTS {
+        attempts += 1;
+        {
+            let coord_guard = destination_tunnels.lock().await;
+            let delivery = ssu2_handle.delivery().clone();
+            // Compose inside the bridge borrow: the bridge exposes
+            // the router-backed outbound role by reference; the
+            // coordinator composes the DatabaseLookup cells; the
+            // delivery service carries them to the first hop.
+            let deadline = Deadline::new(options.tunnel_deadline)
+                .map_err(|_| ServiceProductError::LookupTimeout)?;
+            let dispatch = manager
+                .with_destination_bridge(service_destination, |bridge| {
+                    let role = bridge.router_outbound_role_ref()?;
+                    if !bridge.has_router_network_state(wall_ms()) {
+                        return None;
+                    }
+                    let (dispatch, _proof) = coord_guard
+                        .compose_lookup_via_tunnel(
+                            &action,
+                            role.role(),
+                            0x51A7_9201,
+                            wall_ms() + 60_000,
+                            deadline,
+                            &mut tunnel_rng,
+                            0,
+                        )
+                        .ok()?;
+                    Some(dispatch)
+                })
+                .flatten()
+                .ok_or(ServiceProductError::LookupTimeout)?;
+            for cell_delivery in &dispatch.deliveries {
+                let request = crate::router_i2np::RouterDeliveryRequest::new(
+                    cell_delivery.target(),
+                    cell_delivery.message_bytes().to_vec(),
+                    options.delivery_timeout,
+                )
+                .map_err(|_| ServiceProductError::LookupTimeout)?;
+                let outcome = delivery.deliver(request, &CancellationToken::new());
+                if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                    return Err(ServiceProductError::LookupTimeout);
                 }
-                let (dispatch, _proof) = coord_guard
-                    .compose_lookup_via_tunnel(
-                        &action,
-                        role.role(),
-                        0x51A7_9201,
-                        wall_ms() + 60_000,
-                        deadline,
-                        &mut tunnel_rng,
-                        0,
-                    )
-                    .ok()?;
-                Some(dispatch)
-            })
-            .flatten()
-            .ok_or(ServiceProductError::LookupTimeout)?;
-        for cell_delivery in &dispatch.deliveries {
-            let request = crate::router_i2np::RouterDeliveryRequest::new(
-                cell_delivery.target(),
-                cell_delivery.message_bytes().to_vec(),
-                options.delivery_timeout,
-            )
-            .map_err(|_| ServiceProductError::LookupTimeout)?;
-            let outcome = delivery.deliver(request, &CancellationToken::new());
-            if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
-                return Err(ServiceProductError::LookupTimeout);
+            }
+        };
+        // Pump returned TunnelData through the existing inbound_dispatch
+        // path and ingest DatabaseStore / SearchReply until the
+        // validated LS2 for exactly the target hash is cached.
+        // Bounded outcome accounting attributes a timeout to the
+        // exact stage (transport / decode / dispatch / envelope /
+        // ingest) without logging key material or payload bytes.
+        let attempt_deadline = tokio::time::Instant::now() + LOOKUP_ATTEMPT_WINDOW;
+        while tokio::time::Instant::now() < attempt_deadline && !resolved {
+            let next =
+                tokio::time::timeout(options.poll_interval, ssu2_handle.next_inbound()).await;
+            let Ok(Some(inbound)) = next else {
+                continue;
+            };
+            inbound_seen += 1;
+            let message = match decode_inbound_ssu2_i2np(&inbound.bytes) {
+                Ok(message) => message,
+                Err(_) => continue,
+            };
+            decode_ok += 1;
+            let cell = match message.body() {
+                I2npBody::TunnelData(cell) => cell.clone(),
+                I2npBody::Garlic(_) => {
+                    direct_garlic += 1;
+                    continue;
+                }
+                I2npBody::DatabaseStore(_) => {
+                    direct_store += 1;
+                    continue;
+                }
+                I2npBody::DatabaseSearchReply(_) => {
+                    direct_search_reply += 1;
+                    continue;
+                }
+                I2npBody::DeliveryStatus(_) => {
+                    direct_delivery_status += 1;
+                    continue;
+                }
+                _ => {
+                    direct_other += 1;
+                    let number = message.body().message_type().code();
+                    if let Some(slot) = direct_types.iter_mut().find(|slot| slot.0 == number) {
+                        slot.1 = slot.1.saturating_add(1);
+                    } else if direct_types.len() < 16 {
+                        direct_types.push((number, 1));
+                    }
+                    continue;
+                }
+            };
+            tunnel_data += 1;
+            let outcome = match inbound_dispatch::dispatch_inbound_tunnel_data(
+                coordinator.registry_mut(),
+                &cell,
+                wall_ms(),
+            ) {
+                Ok(outcome) => outcome,
+                Err(_) => continue,
+            };
+            dispatch_ok += 1;
+            let bytes = match outcome {
+                InboundDispatchOutcome::DatabaseStoreComplete { bytes }
+                | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
+                | InboundDispatchOutcome::DeliveryStatusComplete { bytes }
+                | InboundDispatchOutcome::GarlicComplete { bytes } => bytes,
+                _ => continue,
+            };
+            let envelope = match I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) {
+                Ok(envelope) => envelope,
+                Err(_) => continue,
+            };
+            envelope_ok += 1;
+            let now_secs = wall_secs() as u32;
+            let outcome = {
+                let mut coord_guard = destination_tunnels.lock().await;
+                coord_guard.ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
+            };
+            if matches!(outcome, Ok(LeaseStoreIngestOutcome::Completed { .. })) {
+                ingest_completed += 1;
+                resolved = true;
+            } else {
+                ingest_continued += 1;
             }
         }
-    };
-    // Pump returned TunnelData through the existing inbound_dispatch
-    // path and ingest DatabaseStore / SearchReply until the
-    // validated LS2 for exactly the target hash is cached.
-    let lookup_deadline = tokio::time::Instant::now() + options.tunnel_deadline;
-    let mut resolved = false;
-    while tokio::time::Instant::now() < lookup_deadline && !resolved {
-        let next = tokio::time::timeout(options.poll_interval, ssu2_handle.next_inbound()).await;
-        let Ok(Some(inbound)) = next else {
-            continue;
-        };
-        let message = match decode_inbound_ssu2_i2np(&inbound.bytes) {
-            Ok(message) => message,
-            Err(_) => continue,
-        };
-        let cell = match message.body() {
-            I2npBody::TunnelData(cell) => cell.clone(),
-            _ => continue,
-        };
-        let outcome = match inbound_dispatch::dispatch_inbound_tunnel_data(
-            coordinator.registry_mut(),
-            &cell,
-            wall_ms(),
-        ) {
-            Ok(outcome) => outcome,
-            Err(_) => continue,
-        };
-        let bytes = match outcome {
-            InboundDispatchOutcome::DatabaseStoreComplete { bytes }
-            | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
-            | InboundDispatchOutcome::DeliveryStatusComplete { bytes }
-            | InboundDispatchOutcome::GarlicComplete { bytes } => bytes,
-            _ => continue,
-        };
-        let envelope = match I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) {
-            Ok(envelope) => envelope,
-            Err(_) => continue,
-        };
-        let now_secs = wall_secs() as u32;
-        let outcome = {
-            let mut coord_guard = destination_tunnels.lock().await;
-            coord_guard.ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
-        };
-        if matches!(outcome, Ok(LeaseStoreIngestOutcome::Completed { .. })) {
-            resolved = true;
+        if !resolved && attempts < MAX_LOOKUP_ATTEMPTS {
+            tokio::time::sleep(LOOKUP_SETTLE_DELAY).await;
         }
     }
     if !resolved {
-        return Err(ServiceProductError::LookupTimeout);
+        // Bounded attribution for the qualification lane: report
+        // the Plan 201 §G counter classes so a timeout
+        // distinguishes replies-never-recovered (all zero) from
+        // key-mismatch, decode, and signature rejection outcomes.
+        // Hashes and ephemeral tunnel ids only; no key material
+        // or payload bytes.
+        let counters = destination_tunnels.lock().await.counters();
+        let mut target_hex = String::with_capacity(64);
+        for byte in destination_hash.as_bytes().iter() {
+            target_hex.push_str(&format!("{byte:02x}"));
+        }
+        let registry_ids: Vec<u32> = coordinator
+            .registry()
+            .inbound_receive_ids()
+            .iter()
+            .map(|id| id.get())
+            .collect();
+        let mut gateway_hex = String::with_capacity(16);
+        for byte in reply_path.gateway().as_bytes().iter().take(8) {
+            gateway_hex.push_str(&format!("{byte:02x}"));
+        }
+        let encoded_reply_tunnel = reply_path.tunnel_id();
+        return Err(ServiceProductError::Provisioning(format!(
+            "lease lookup unresolved target={target_hex} attempts={} decoded={} decode_rejected={} signature_rejected={} key_match={} key_mismatch={} mismatched={} malformed={} started={} succeeded={} pump_inbound={} pump_decode={} pump_tunneldata={} pump_dispatch={} pump_envelope={} pump_ingested={} pump_continued={} direct_garlic={} direct_store={} direct_searchreply={} direct_deliverystatus={} direct_other={} direct_types=[{}] reply_tunnel={} encoded_gateway={} encoded_reply_tunnel={} registry_receive_count={} registry_receive_ids=[{}]",
+            attempts,
+            counters.ls2_records_decoded,
+            counters.ls2_records_decode_rejected,
+            counters.ls2_records_signature_rejected,
+            counters.lookup_key_matches,
+            counters.lookup_key_mismatches,
+            counters.mismatched_rejected,
+            counters.malformed_rejected,
+            counters.lookups_started,
+            counters.lookups_succeeded,
+            inbound_seen,
+            decode_ok,
+            tunnel_data,
+            dispatch_ok,
+            envelope_ok,
+            ingest_completed,
+            ingest_continued,
+            direct_garlic,
+            direct_store,
+            direct_search_reply,
+            direct_delivery_status,
+            direct_other,
+            direct_types
+                .iter()
+                .map(|(number, count)| format!("{number}:{count}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            local_receive_for_lookup,
+            gateway_hex,
+            encoded_reply_tunnel,
+            registry_ids.len(),
+            registry_ids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        )));
     }
     // Require the validated cached LS2 for exactly the target hash
     // and install it into that service's router-backed routing.

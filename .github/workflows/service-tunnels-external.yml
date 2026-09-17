@@ -1,10 +1,10 @@
-name: Service-tunnels external interoperability (Plans 211/213)
+name: Service-tunnels external interoperability (Plans 213/214)
 
 on:
   workflow_dispatch:
     inputs:
       lane:
-        description: "Evidence lane: 'local-only' (retained local matrix), 'router-generic' (Plan 213 generic qualification only), or 'full' (default, Plan 213 qualification then the M10 application matrix)"
+        description: "Evidence lane: 'local-only' (retained local matrix), 'router-generic' (Plan 213 generic qualification only), or 'full' (default, Plan 213 generic qualification then the Plan 214 HTTP/IRC application requalification through the M10 matrix)"
         required: false
         default: "full"
 
@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   service-tunnels-external:
-    name: M10 remote generic + application interop (Plans 211/213, Ubuntu)
+    name: M10 remote generic + application interop (Plans 213/214, Ubuntu)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -57,17 +57,29 @@ jobs:
         env:
           I2PR_M10_EXECUTION_ID: github-${{ github.run_id }}
 
-      - name: Run M10 independent application/service matrix
+      - name: Run M10 independent application/service matrix (delegates Plan 214 remote qualification)
         if: github.event.inputs.lane != 'router-generic'
         run: |
           set -euo pipefail
           if [[ "${{ github.event.inputs.lane }}" == "local-only" ]]; then
             bash tests/integration/service-tunnels/run-independent.sh --local-only
           else
+            # Plan 214 §21 hosted gate order: Plan 213 generic
+            # qualification (previous step) -> Plan 214 HTTP
+            # qualification -> Plan 214 IRC qualification ->
+            # final evidence-integrity check. The M10 matrix
+            # delegates its remote rows to
+            # run-plan214-applications.sh, which enforces that
+            # order and records exactly one P214-* terminal
+            # classification.
             bash tests/integration/service-tunnels/run-independent.sh
           fi
         env:
           I2PR_M10_EXECUTION_ID: github-${{ github.run_id }}
+
+      - name: Final service-tunnel evidence-integrity check (Plan 214 §21 gate)
+        if: github.event.inputs.lane == 'full'
+        run: bash scripts/check-service-tunnel-acceptance-evidence.sh
 
       - name: Upload sanitized M10 evidence
         if: always()
@@ -83,4 +95,12 @@ jobs:
         with:
           name: plan213-generic-evidence-${{ github.run_id }}
           path: target/interop/plan213-generic-evidence
+          if-no-files-found: warn
+
+      - name: Upload sanitized Plan 214 application evidence (standalone path)
+        if: always() && github.event.inputs.lane == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan214-applications-evidence-${{ github.run_id }}
+          path: target/interop/plan214-applications-evidence
           if-no-files-found: warn

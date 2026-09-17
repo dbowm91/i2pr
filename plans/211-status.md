@@ -43,9 +43,9 @@ These are qualification defects, not grounds to reopen the Plan 212 router archi
 
 ```text
 plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
-plan_212 = source-closure-landed-qualification-owned-by-plan213
-plan_213 = registered-executable
-plan_214 = registered-blocked-by-plan213
+plan_212 = passed-source-and-generic-external-qualification-via-plan213
+plan_213 = passed-m10-router-backed-generic-external-qualification
+plan_214 = source-landed-hosted-double-pass-pending
 
 m10_remote_application_interop = not-yet-passed
 milestone10_remote_service_interop = not-yet-passed
@@ -54,8 +54,8 @@ milestone10_final_acceptance = not-yet-closed
 
 ## Execution rule
 
-1. Execute Plan 213 first and require generic router-backed Direction A + Direction B to pass twice on one exact hosted SHA.
-2. Then execute Plan 214 to harden this retained harness and run HTTP/IRC on the same product architecture.
+1. Plan 213 passed its generic router-backed Direction A + Direction B hosted qualification twice on one exact SHA.
+2. Plan 214 landed its source hardening (black-box v214 driver + pumped subprocesses + target-derived HTTP/IRC facts + standalone runner + §28 checker) and awaits the hosted double-pass.
 3. Only command + target-fixture + product-counter evidence may pass the two remote application aggregate rows.
 4. Only two consecutive hosted full-lane passes on one exact SHA may close M10.
 

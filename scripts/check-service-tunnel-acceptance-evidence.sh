@@ -307,25 +307,37 @@ if grep -n -E 'GET |POST |CONNECT |NICK|USER |PRIVMSG|SOCKS|220 |EHLO' \
   failures=$((failures + 1))
 fi
 
-# 8. The remote qualification must run the ignored driver through
+# 8. The remote qualification runs its ignored drivers through
 # explicit selection with digest/establishment gating, against the
 # exact i2pd pin, with fail-closed missing-environment behavior.
-if ! grep -q -F -- '--ignored --exact' "${HARNESS}"; then
-  echo "evidence check failed: harness lost the explicit --ignored --exact remote selection" >&2
+# Plan 214 §14 owns the single counted remote application path:
+# the explicit `--ignored --exact` selection lives in the Plan 214
+# runner (run-independent.sh delegates to it and maps its
+# aggregate rows).
+PLAN214_RUNNER="${REPO_ROOT}/tests/integration/service-tunnels/run-plan214-applications.sh"
+if ! grep -q -F -- '--ignored --exact' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner lost the explicit --ignored --exact remote selection" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'run-plan214-applications.sh' "${HARNESS}"; then
+  echo "evidence check failed: harness does not delegate remote qualification to the Plan 214 runner (Plan 214 §14 forbids duplicate qualification)" >&2
   failures=$((failures + 1))
 fi
 if ! grep -q -F "${I2PD_PIN}" "${HARNESS}"; then
   echo "evidence check failed: harness lost the exact i2pd pin ${I2PD_PIN}" >&2
   failures=$((failures + 1))
 fi
-if ! grep -q -F 'DEST GENERATE' "${HARNESS}"; then
-  echo "evidence check failed: harness lost its independent-destination SAM provenance" >&2
+if ! grep -q -F "${I2PD_PIN}" "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner lost the exact i2pd pin ${I2PD_PIN}" >&2
   failures=$((failures + 1))
 fi
-if ! grep -q -F 'REMOTE_QUALIFY_UNKNOWN_PEER=' "${HARNESS}"; then
-  echo "evidence check failed: harness lost its unknown-peer evidence gate" >&2
-  failures=$((failures + 1))
-fi
+# The historical §6.3 blocker probe (SAM DEST GENERATE +
+# REMOTE_QUALIFY_UNKNOWN_PEER) is superseded by the Plan 213
+# generic proof and the Plan 214 application proof (Plan 214
+# §14): the delegated lane provisions real i2pd server tunnels
+# with published LeaseSet2s instead of an unpublished DEST
+# GENERATE identity, so neither marker is required in the
+# delegating harness anymore.
 if ! grep -q -F 'I2PD_PEER_PUB_B64 is absent' "${REMOTE_DRIVER}"; then
   echo "evidence check failed: remote driver lost its fail-closed missing-environment guard" >&2
   failures=$((failures + 1))
@@ -663,35 +675,38 @@ fi
 # backwards-compatible manager API; new code must not depend on it
 # for counted evidence.
 #
-# Plan 211 — product-only remote HTTP + IRC application
-# final-acceptance corrective. The counted driver is a black-box
-# product harness: it starts the production composition through
-# the single `ServiceProduct` helper, builds real enabled
-# HttpClient + IrcClient specs whose destinations are the i2pd
-# server destinations extracted from the per-tunnel .dat files,
-# reads listener addresses, runs unmodified application clients,
-# reads operation-derived Plan 208 counters through the helper's
-# typed accessor, and stops the product. The driver must not
-# construct or drive any of the shadow-stack types listed in
-# Plan 211 §5 / Plan 209 §5; the static checker rejects direct
-# imports/calls of those types in the counted Plan 211 driver.
-# The aggregate pass rows derive purely from the documented
-# Plan 211 §10 subfact rows the driver writes to its evidence
-# file.
-if [[ ! -f "${PLAN211_DRIVER}" ]]; then
-  echo "evidence check failed: Plan 211 product-only driver missing: ${PLAN211_DRIVER}" >&2
+# Plan 214 — product-only remote HTTP + IRC application
+# requalification driver (evidence hardening over the retained
+# Plan 211 harness, final M10 application closure authority). The
+# counted driver is a black-box product harness: it validates the
+# bounded config surface (no second manager), starts the
+# production composition through the single `ServiceProduct`
+# helper, builds real enabled HttpClient + IrcClient specs whose
+# destinations are the i2pd server destinations extracted from
+# the per-tunnel .dat files, pumps inbound concurrently around
+# every external subprocess, proves target observations from
+# fresh fixture records, reads operation-derived Plan 208
+# counters through the helper's typed accessor, and stops the
+# product. Pin facts are runner-derived preconditions, never
+# driver literals. The aggregate pass rows and the terminal
+# P214-* classification are runner-owned; the driver never writes
+# them.
+PLAN214_DRIVER="${PLAN211_DRIVER}"
+if [[ ! -f "${PLAN214_DRIVER}" ]]; then
+  echo "evidence check failed: Plan 214 product-only driver missing: ${PLAN214_DRIVER}" >&2
   failures=$((failures + 1))
 else
-  if ! grep -q -F '#[ignore = "Plan 211' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver lost its #[ignore] gate" >&2
+  if ! grep -q -F '#[ignore = "Plan 214' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its #[ignore] gate" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'm10_product_only_remote_http_and_irc_application_interop_v211' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver lost its v211 test name" >&2
+  if ! grep -q -F 'm10_product_only_remote_http_and_irc_application_interop_v214' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its v214 test name" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §5 — anti-shadow rule. The counted driver must not
-  # construct or directly drive `StreamingManager`,
+  # Plan 214 §5 — anti-shadow rule (carried from Plan 211 §5 /
+  # Plan 209 §5). The counted driver must not construct or
+  # directly drive `StreamingManager`,
   # `StreamingDestinationAdapter`, `DestinationRouting`,
   # `EciesSessionManager`, `DestinationTunnelCoordinator`,
   # `ExploratoryBuildCoordinator`, `Ssu2DaemonService`,
@@ -699,131 +714,254 @@ else
   # `record_observation` / `.record_observation(` helper. The
   # grep is scoped to non-comment / non-doc lines so a documented
   # reference in module docs is allowed.
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'StreamingManager::new\|StreamingManager\b' ; then
-    echo "evidence check failed: Plan 211 driver must not construct or directly drive StreamingManager (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct or directly drive StreamingManager (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'StreamingDestinationAdapter'; then
-    echo "evidence check failed: Plan 211 driver must not construct or directly drive StreamingDestinationAdapter (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct or directly drive StreamingDestinationAdapter (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'DestinationRouting::new\|EciesSessionManager::new'; then
-    echo "evidence check failed: Plan 211 driver must not construct or directly drive DestinationRouting / EciesSessionManager (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct or directly drive DestinationRouting / EciesSessionManager (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'DestinationTunnelCoordinator'; then
-    echo "evidence check failed: Plan 211 driver must not construct DestinationTunnelCoordinator (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct DestinationTunnelCoordinator (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'ExploratoryBuildCoordinator'; then
-    echo "evidence check failed: Plan 211 driver must not construct ExploratoryBuildCoordinator (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct ExploratoryBuildCoordinator (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'Ssu2DaemonService'; then
-    echo "evidence check failed: Plan 211 driver must not construct Ssu2DaemonService (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct Ssu2DaemonService (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q 'RouterDeliveryService\|RouterDeliveryRequest'; then
-    echo "evidence check failed: Plan 211 driver must not construct RouterDeliveryService / RouterDeliveryRequest (Plan 211 §5 / Plan 209 §5)" >&2
+    echo "evidence check failed: Plan 214 driver must not construct RouterDeliveryService / RouterDeliveryRequest (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN211_DRIVER}" |
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
      grep -q '\.record_observation(\|record_remote_application_observation'; then
-    echo "evidence check failed: Plan 211 driver must not call record_observation / record_remote_application_observation (Plan 211 §5 / Plan 209 §5 / §7)" >&2
+    echo "evidence check failed: Plan 214 driver must not call record_observation / record_remote_application_observation (Plan 214 §5)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §3 / §7 — the driver must use the production
+  # Plan 214 §5 — the counted driver must not construct a second
+  # daemon manager as a placeholder; the runtime-neutral
+  # configuration validator is the only sanctioned preflight.
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
+     grep -q 'ServiceTunnelManager::new'; then
+    echo "evidence check failed: Plan 214 driver must not construct ServiceTunnelManager (black-box rule, Plan 214 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F '.validate()' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its runtime-neutral config validation preflight (Plan 214 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §3 / §7 — the driver must use the production
   # composition helper. The only sanctioned path is the
   # `ServiceProduct::start` / `ServiceProduct::poll_inbound` /
   # `ServiceProduct::remote_counters` typed accessor surface.
-  if ! grep -q -F 'ServiceProduct::start' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver must use ServiceProduct::start (Plan 211 §3)" >&2
+  if ! grep -q -F 'ServiceProduct::start' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must use ServiceProduct::start (Plan 214 §3)" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'poll_inbound' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver must use ServiceProduct::poll_inbound (Plan 211 §7)" >&2
+  if ! grep -q -F 'poll_inbound' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must use ServiceProduct::poll_inbound (Plan 214 §7)" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'remote_counters' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver must read remote_counters through the typed accessor (Plan 211 §8)" >&2
+  if ! grep -q -F 'remote_counters' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must read remote_counters through the typed accessor (Plan 214 §9)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §7 — real curl subprocess invocation only.
-  if ! grep -q -E 'Command::new\(\s*curl_bin\(\s*\)\s*\)|Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl_bin\(\s*\)\s*\)|std::process::Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl\s*\)' "${PLAN211_DRIVER}" &&
-     ! grep -q -E 'Command::new\("curl"\)|std::process::Command::new\("curl"\)' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not spawn the system curl binary as a subprocess" >&2
+  # Plan 214 §6 — pin facts are runner-derived. The driver must
+  # consume the runner-verified booleans only as preconditions
+  # and must never stamp literal pin success rows.
+  if grep -q -F 'http-i2pd-pin-ok' "${PLAN214_DRIVER}" ||
+     grep -q -F 'irc-i2pd-pin-ok' "${PLAN214_DRIVER}" ||
+     grep -q -F 'irc-jaraco-pin-ok' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must not stamp literal pin success rows (Plan 214 §6)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §8 — exact-pinned jaraco/irc subprocess only.
-  if ! grep -q -F 'irc.client' "${PLAN211_DRIVER}" &&
-     ! grep -q -F 'irc_driver.py' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not invoke the jaraco/irc public API subprocess" >&2
+  if ! grep -q -F 'PLAN214_I2PD_PIN_OK' "${PLAN214_DRIVER}" ||
+     ! grep -q -F 'PLAN214_JARACO_PIN_OK' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must consume the runner-verified pin preconditions (Plan 214 §6)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §5 / §10 — the driver must build real enabled
-  # HttpClient and IrcClient specs, not an empty ServiceTunnelSet.
-  if ! grep -q -F 'HttpClient' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not build a real HttpClient spec (Plan 211 §5)" >&2
+  # Plan 214 §7 — real curl subprocess invocation only, with
+  # concurrent inbound pumping around every external operation.
+  if ! grep -q -E 'Command::new\(\s*curl_bin\(\s*\)\s*\)|Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl_bin\(\s*\)\s*\)|std::process::Command::new\(\s*curl_bin\s*\)|std::process::Command::new\(\s*curl\s*\)' "${PLAN214_DRIVER}" &&
+     ! grep -q -E 'Command::new\("curl"\)|std::process::Command::new\("curl"\)' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not spawn the system curl binary as a subprocess" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'IrcClient' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not build a real IrcClient spec (Plan 211 §5)" >&2
+  if ! grep -q -F 'try_wait' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver has no non-blocking child wait (Plan 214 §7 concurrent pump)" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'PLAN211_HTTP_SPEC_ID' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not declare PLAN211_HTTP_SPEC_ID" >&2
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
+     grep -q 'wait_with_output' && ! grep -q -F 'try_wait' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver blocks on subprocess output without pumping inbound (Plan 214 §7)" >&2
     failures=$((failures + 1))
   fi
-  if ! grep -q -F 'PLAN211_IRC_SPEC_ID' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver does not declare PLAN211_IRC_SPEC_ID" >&2
+  # Plan 214 §8 — HTTP status must be captured from curl's actual
+  # status frame, never approximated from body length.
+  if ! grep -q -F 'parse_curl_status_code' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its actual-status parser (Plan 214 §8)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §10 — the driver must write the documented subfact
-  # rows to the TSV evidence file.
-  for label in http-curl-version http-i2pd-pin-ok \
-http-public-destination-loaded http-product-listener-bound \
-http-command-exit http-status http-response-digest \
-http-fixture-method-path http-post-request-digest \
-http-large-response-digest http-ordinary-ls2-lookup-proven \
-http-remote-outbound-composed-delta http-remote-inbound-dispatched-delta \
-http-router-delivery-delta http-local-coowned-delta-zero \
-http-unknown-peer-delta-zero http-clearnet-rejected \
-http-ip-literal-rejected http-clean-resource-baseline \
-irc-jaraco-pin-ok irc-i2pd-pin-ok \
-irc-public-destination-loaded irc-product-listener-bound \
-irc-command-exit irc-registration-observed \
-irc-ping-pong-observed irc-outbound-privmsg-observed \
-irc-inbound-privmsg-observed \
-irc-action-observed-or-retained-policy-reference \
-irc-dcc-blocked-derived irc-privacy-rewrite-derived \
-irc-ordinary-ls2-lookup-proven-or-cache-proven-after-same-target-resolution \
-irc-remote-outbound-composed-delta irc-remote-inbound-dispatched-delta \
-irc-router-delivery-delta irc-local-coowned-delta-zero \
-irc-unknown-peer-delta-zero irc-clean-resource-baseline; do
-    if ! grep -q -F "${label}" "${PLAN211_DRIVER}"; then
-      echo "evidence check failed: Plan 211 driver omits documented §10 subfact row '${label}'" >&2
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
+     grep -q 'get_body_len == 22'; then
+    echo "evidence check failed: Plan 214 driver approximates HTTP status from body length (Plan 214 §8)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §8 — exact-pinned jaraco/irc subprocess only.
+  if ! grep -q -F 'irc_driver.py' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not invoke the jaraco/irc public API subprocess" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §5 — the driver must build real enabled HttpClient
+  # and IrcClient specs, not an empty ServiceTunnelSet.
+  if ! grep -q -F 'HttpClient' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not build a real HttpClient spec (Plan 214 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'IrcClient' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not build a real IrcClient spec (Plan 214 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'PLAN214_HTTP_SPEC_ID' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not declare PLAN214_HTTP_SPEC_ID" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'PLAN214_IRC_SPEC_ID' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver does not declare PLAN214_IRC_SPEC_ID" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §13 — harness-owned fixture-facts paths are the only
+  # sanctioned target inputs; the discarded target-port env reads
+  # must not come back.
+  if ! grep -q -F 'PLAN214_HTTP_FIXTURE_FACTS' "${PLAN214_DRIVER}" ||
+     ! grep -q -F 'PLAN214_IRC_FIXTURE_FACTS' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must consume harness-owned fixture-facts paths (Plan 214 §13)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'PLAN211_HTTP_TARGET_PORT' "${PLAN214_DRIVER}" ||
+     grep -q -F 'PLAN211_IRC_TARGET_PORT' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must not read unused target-port inputs (Plan 214 §15.9)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §9/§11 — independent per-application counter windows
+  # with orphan deltas (HTTP and IRC never share one window).
+  for window in http_before irc_before http_orphans_before irc_orphans_before; do
+    if ! grep -q -F "${window}" "${PLAN214_DRIVER}"; then
+      echo "evidence check failed: Plan 214 driver lost its independent counter window ${window} (Plan 214 §9/§11)" >&2
       failures=$((failures + 1))
     fi
   done
-  # Plan 211 §13 — the counted driver must never log peer key
-  # material.
-  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver may log peer key material" >&2
+  # Plan 214 §10 — privacy rewrite and DCC blocking must be
+  # fixture-derived, never literal success rows or absence-only
+  # inference.
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
+     grep -q '"irc-privacy-rewrite-derived", "1"'; then
+    echo "evidence check failed: Plan 214 driver stamps a literal privacy-rewrite success row (Plan 214 §10)" >&2
     failures=$((failures + 1))
   fi
-  # Plan 211 §9 — aggregate row derivation must not be a literal
-  # assignment. The driver must not contain a literal
-  # `record "... passed"` row or similar success literal for
-  # either aggregate row.
-  if grep -n -E 'record\s+"remote-independent-(http-eepsite|irc-service)"\s+passed' "${PLAN211_DRIVER}"; then
-    echo "evidence check failed: Plan 211 driver must not contain literal aggregate-row pass assignments (Plan 211 §9)" >&2
+  if ! grep -q -F 'irc-privacy-rewrite-derived-from-target' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its target-derived privacy row (Plan 214 §10)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN214_DRIVER}" |
+     grep -q 'if dcc_sent'; then
+    echo "evidence check failed: Plan 214 driver derives DCC blocking from DCC_SENT absence (Plan 214 §10)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'irc-dcc-attempted' "${PLAN214_DRIVER}" ||
+     ! grep -q -F 'irc-dcc-target-observation-delta-zero' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver lost its explicit DCC attempt + target-non-observation rows (Plan 214 §10)" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §16 — the driver must write the documented HTTP fact
+  # rows to the TSV evidence file.
+  for label in http-public-destination-hash http-product-listener-bound \
+http-get-command-exit http-get-status http-get-response-len \
+http-get-response-sha256 http-get-fixture-method http-get-fixture-path \
+http-post-request-len http-post-request-sha256 http-post-command-exit \
+http-post-fixture-body-len http-post-fixture-body-sha256 \
+http-large-command-exit http-large-response-len http-large-response-sha256 \
+http-large-expected-len http-large-expected-sha256 \
+http-clearnet-rejected http-clearnet-target-observation-delta-zero \
+http-ip-literal-rejected http-ip-target-observation-delta-zero \
+http-remote-outbound-composed-delta http-router-delivery-delta \
+http-remote-inbound-dispatched-delta http-local-coowned-delta-zero \
+http-unknown-peer-delta-zero http-orphan-receive-delta-zero \
+http-clean-resource-baseline; do
+    if ! grep -q -F "${label}" "${PLAN214_DRIVER}"; then
+      echo "evidence check failed: Plan 214 driver omits documented §16 HTTP fact row '${label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Startup LeaseSet2/installation rows are emitted per service
+  # through one typed helper (`{http,irc}-startup-*`); the source
+  # proves the row shape once and the runner gates both prefixed
+  # keys in the TSV (see the plan214-http-startup-* /
+  # plan214-irc-startup-* runner rows).
+  for suffix in -startup-destination-hash-match -startup-lease-count -startup-inbound-owner-registered -startup-remote-lookup-started; do
+    if ! grep -q -F -- "${suffix}" "${PLAN214_DRIVER}"; then
+      echo "evidence check failed: Plan 214 driver omits startup row shape '*${suffix}' (Plan 214 §9)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Plan 214 §17 — the driver must write the documented IRC fact
+  # rows to the TSV evidence file.
+  for label in irc-public-destination-hash irc-product-listener-bound \
+irc-command-exit irc-registration-client-welcome \
+irc-registration-target-nick-observed irc-registration-target-user-observed \
+irc-privacy-rewrite-derived-from-target irc-ping-issued-by-target \
+irc-pong-observed-by-target irc-outbound-privmsg-target-observed \
+irc-inbound-privmsg-client-observed irc-privmsg-token-match \
+irc-action-result irc-dcc-attempted irc-dcc-policy-result \
+irc-dcc-target-observation-delta-zero irc-destination-distinct-from-http \
+irc-remote-outbound-composed-delta irc-router-delivery-delta \
+irc-remote-inbound-dispatched-delta irc-local-coowned-delta-zero \
+irc-unknown-peer-delta-zero irc-orphan-receive-delta-zero \
+irc-clean-resource-baseline; do
+    if ! grep -q -F "${label}" "${PLAN214_DRIVER}"; then
+      echo "evidence check failed: Plan 214 driver omits documented §17 IRC fact row '${label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Plan 214 §13 — the counted driver must never log peer key
+  # material.
+  if grep -n -E '(println!|print!|eprintln!)[^;]*(peer_pub_b64|PUB_B64|PUB=)' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver may log peer key material" >&2
+    failures=$((failures + 1))
+  fi
+  # Aggregate rows and the terminal classification are
+  # runner-owned: the driver must never write them.
+  if grep -q -F 'plan214-remote-http-eepsite' "${PLAN214_DRIVER}" ||
+     grep -q -F 'plan214-remote-irc-service' "${PLAN214_DRIVER}" ||
+     grep -q -F 'plan214-terminal-classification' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must not write aggregate rows or the terminal classification (runner-owned, Plan 214 §13)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E 'record\s+"remote-independent-(http-eepsite|irc-service)"\s+passed' "${PLAN214_DRIVER}"; then
+    echo "evidence check failed: Plan 214 driver must not contain literal aggregate-row pass assignments" >&2
+    failures=$((failures + 1))
+  fi
+  # Plan 214 §19 — the counted driver's evidence helpers must stay
+  # locked by focused unit rows in routine CI.
+  PLAN214_UNIT_COUNT=$(grep -E -c 'fn plan214_' "${PLAN214_DRIVER}" || true)
+  if (( PLAN214_UNIT_COUNT < 20 )); then
+    echo "evidence check failed: Plan 214 §19 — at least 20 plan214_… unit rows are required (found ${PLAN214_UNIT_COUNT})" >&2
     failures=$((failures + 1))
   fi
 fi
@@ -853,6 +991,28 @@ if ! grep -q -F 'routing_decision_for' "${REPO_ROOT}/crates/i2pr-daemon/src/serv
 fi
 if ! grep -q -F 'co_owned_destination_hashes' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
   echo "evidence check failed: ServiceTunnelManager lost co_owned_destination_hashes" >&2
+  failures=$((failures + 1))
+fi
+
+# Plan 214 §C — non-local client targets resolve through the
+# requesting runtime's router-backed remote LeaseSet2 mirror (no
+# second lookup, no local fallback). The typed seam must exist on
+# the manager, all three client executors (HTTP/SOCKS/IRC) must
+# fall through to it on `LookupRequired`, and the daemon's own
+# unit suite must lock the miss/hit/unknown-service rows.
+if ! grep -q -F 'resolve_remote_client_target' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"; then
+  echo "evidence check failed: Plan 214 §C — ServiceTunnelManager lost resolve_remote_client_target" >&2
+  failures=$((failures + 1))
+fi
+for executor in service_tunnels_http.rs service_tunnels_socks5.rs service_tunnels_irc_client.rs; do
+  if ! grep -q -F 'resolve_remote_client_target' "${REPO_ROOT}/crates/i2pr-daemon/src/${executor}"; then
+    echo "evidence check failed: Plan 214 §C — ${executor} must fall through to resolve_remote_client_target on LookupRequired" >&2
+    failures=$((failures + 1))
+  fi
+done
+PLAN214_RESOLVE_COUNT=$(grep -E -c 'fn plan214_resolve_remote_client_target_' "${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs" || true)
+if (( PLAN214_RESOLVE_COUNT < 3 )); then
+  echo "evidence check failed: Plan 214 §C — at least 3 plan214_resolve_remote_client_target_… unit rows are required (found ${PLAN214_RESOLVE_COUNT})" >&2
   failures=$((failures + 1))
 fi
 
@@ -1357,8 +1517,200 @@ if ! grep -q -F 'accept_trigger' "${PLAN213_FIXTURE}"; then
   failures=$((failures + 1))
 fi
 
+# 28. Plan 214 §15 — HTTP/IRC product-only external
+# requalification, evidence hardening, and final closure. The
+# standalone runner owns the single counted remote application
+# path; the delegating harness maps its aggregate rows; the
+# hosted workflow orders Plan 213 before Plan 214.
+if [[ ! -f "${PLAN214_RUNNER}" ]]; then
+  echo "evidence check failed: Plan 214 standalone runner missing: ${PLAN214_RUNNER}" >&2
+  failures=$((failures + 1))
+fi
+# 28.1 — exact pins verified by command in the runner (source
+# revision file + checkout HEAD + clean tree + --version), plus
+# curl/python presence.
+for required in 'source-revision.txt' 'rev-parse HEAD' '--version' 'status --porcelain'; do
+  if ! grep -q -F -- "${required}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 214 runner lost its exact-pin command verification (${required}; Plan 214 §6)" >&2
+    failures=$((failures + 1))
+  fi
+done
+if ! grep -q -F 'JARACO_PIN=' "${PLAN214_RUNNER}" &&
+   ! grep -q -F "${JARACO_PIN}" "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner lost the exact jaraco/irc pin (Plan 214 §6)" >&2
+  failures=$((failures + 1))
+fi
+# 28.2 — Plan 213 prerequisite gate (P214-A): no application
+# qualification without the generic proof.
+if ! grep -q -F 'plan214-prerequisite-plan213' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner has no Plan 213 prerequisite gate (Plan 214 §18 P214-A)" >&2
+  failures=$((failures + 1))
+fi
+# 28.3 — stale evidence cleared at runner start (Plan 214
+# §19.18): the same directory must never carry a previous run's
+# rows into aggregation.
+if ! grep -q -F 'rm -rf "${EVIDENCE_DIR}"' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner does not clear stale evidence at start (Plan 214 §19.18)" >&2
+  failures=$((failures + 1))
+fi
+# 28.4 — fixture contract: the HTTP fixture publishes its
+# deterministic large-response length/digest at startup and the
+# runner captures it for equality gating (Plan 214 §8 D.4).
+# The i2pd server tunnels are zero-hop (no peer hops exist in
+# the isolated lane, so one-hop pools could never publish;
+# zero-hop pools publish verifiable LS2s locally).
+if ! grep -q -F 'LARGE_SHA256' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner does not capture the fixture large-response contract (Plan 214 §8)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'inbound.length = 0' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner lost its zero-hop server-tunnel provisioning (isolated lane has no peers for hop selection)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'LARGE_LEN=' "${REPO_ROOT}/tests/integration/service-tunnels/fixtures/http_fixture.py" ||
+   ! grep -q -F 'LARGE_SHA256=' "${REPO_ROOT}/tests/integration/service-tunnels/fixtures/http_fixture.py"; then
+  echo "evidence check failed: HTTP fixture does not publish its large-response contract (Plan 214 §8 D.4)" >&2
+  failures=$((failures + 1))
+fi
+# 28.5 — fresh-seq target observation: the HTTP fixture emits a
+# monotonic seq per record and the IRC fixture streams facts
+# mid-run (Plan 214 §8 D.2 / §10).
+if ! grep -q -F '"seq"' "${REPO_ROOT}/tests/integration/service-tunnels/fixtures/http_fixture.py"; then
+  echo "evidence check failed: HTTP fixture lost its per-record sequence numbers (Plan 214 §8 D.2)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'flush()' "${REPO_ROOT}/tests/integration/service-tunnels/fixtures/irc_fixture.py"; then
+  echo "evidence check failed: IRC fixture does not stream facts mid-run (Plan 214 §10)" >&2
+  failures=$((failures + 1))
+fi
+# 28.6 — the IRC client driver carries the deterministic session
+# token and records the explicit DCC attempt (Plan 214 §10 F.3/F.5).
+if ! grep -q -F -- '--token' "${REPO_ROOT}/tests/integration/service-tunnels/clients/irc_driver.py"; then
+  echo "evidence check failed: IRC driver lost its deterministic session token (Plan 214 §10 F.3)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'DCC_ATTEMPTED' "${REPO_ROOT}/tests/integration/service-tunnels/clients/irc_driver.py"; then
+  echo "evidence check failed: IRC driver lost its explicit DCC attempt fact (Plan 214 §10 F.5)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'ECHO_TOKEN_MATCH' "${REPO_ROOT}/tests/integration/service-tunnels/clients/irc_driver.py"; then
+  echo "evidence check failed: IRC driver lost its echo token-match fact (Plan 214 §10 F.3)" >&2
+  failures=$((failures + 1))
+fi
+# 28.7 — per-application fixture-facts plumbing: the runner owns
+# the facts paths and passes them to the driver; the driver never
+# reads the discarded target-port inputs (Plan 214 §13/§15.9).
+for required in 'PLAN214_HTTP_FIXTURE_FACTS' 'PLAN214_IRC_FIXTURE_FACTS'; do
+  if ! grep -q -F "${required}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 214 runner does not plumb ${required} (Plan 214 §13)" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 28.8 — the runner validates every §16/§17 aggregate input and
+# writes exactly the two aggregate rows plus one terminal
+# classification (Plan 214 §16/§17/§18). The runner also gates
+# both server-tunnel LS2 publications before invoking the driver
+# (a `.dat` file proves key generation, not reachability).
+for label in plan214-remote-http-eepsite plan214-remote-irc-service plan214-terminal-classification plan214-server-ls2-published; do
+  if ! grep -q -F "${label}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 214 runner omits aggregate row '${label}' (Plan 214 §16/§17/§18)" >&2
+    failures=$((failures + 1))
+  fi
+done
+if ! grep -q -F 'P214-N-passed' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner does not gate on P214-N-passed (Plan 214 §18)" >&2
+  failures=$((failures + 1))
+fi
+for class in P214-A-prerequisite-plan213-not-green P214-B-reference-startup-or-pin P214-C-public-destination-extraction P214-D-service-product-start P214-E-http-target-resolution P214-F-http-request-outbound P214-G-http-return-path P214-H-http-policy-or-fixture-integrity P214-I-irc-target-resolution P214-J-irc-registration P214-K-irc-return-path P214-L-irc-privacy-policy P214-M-resource-or-evidence-integrity; do
+  if ! grep -q -F "${class}" "${PLAN214_RUNNER}"; then
+    echo "evidence check failed: Plan 214 runner omits terminal class ${class} (Plan 214 §18)" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 28.9 — duplicate evidence keys fail aggregation in the runner
+# (Plan 214 §19.17), not just in driver unit tests.
+if ! grep -q -F 'duplicate' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner has no duplicate-key aggregation guard (Plan 214 §19.17)" >&2
+  failures=$((failures + 1))
+fi
+# 28.10 — private .dat files never enter evidence (Plan 214
+# §12): the runner audits for them.
+if ! grep -q -F "*.dat" "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 214 runner has no .dat exclusion audit (Plan 214 §12)" >&2
+  failures=$((failures + 1))
+fi
+# 28.11 — the counted driver file keeps no stale v211 test name
+# or placeholder-manager construction beside the v214 path.
+if grep -q -F 'm10_product_only_remote_http_and_irc_application_interop_v211' "${PLAN214_DRIVER}"; then
+  echo "evidence check failed: counted driver retains the superseded v211 test name (Plan 214 §5)" >&2
+  failures=$((failures + 1))
+fi
+# 28.12 — hosted workflow orders the Plan 213 generic gate before
+# the M10 application matrix that now delegates to Plan 214, and
+# uploads the Plan 214 evidence (Plan 214 §21).
+WORKFLOW="${REPO_ROOT}/.github/workflows/service-tunnels-external.yml"
+if ! grep -q -F 'run-plan213-generic.sh' "${WORKFLOW}"; then
+  echo "evidence check failed: hosted workflow lost its Plan 213 generic gate (Plan 214 §21)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'plan214' "${WORKFLOW}"; then
+  echo "evidence check failed: hosted workflow has no Plan 214 evidence path (Plan 214 §21)" >&2
+  failures=$((failures + 1))
+fi
+# 28.13 — extraction-boundary self-test: a synthetic i2pd
+# PrivateKeys shape proves the helper output stops exactly at
+# the public Destination boundary and never emits private
+# suffix bytes (Plan 214 §12).
+SYNTH_DAT="$(mktemp -t plan214-parse-boundary.XXXXXX)"
+SYNTH_OUT="$(REPO_ROOT="${REPO_ROOT}" python3 - "${SYNTH_DAT}" <<'PY' 2>/dev/null || true
+import base64 as stdlib_b64
+import hashlib
+import importlib.util
+import os
+import sys
+helper = os.path.join(
+    os.environ.get("REPO_ROOT", "."),
+    "tests/integration/service-tunnels/clients/parse_i2pd_destination.py",
+)
+spec = importlib.util.spec_from_file_location("plan214_parse", helper)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+# Synthetic shape mirroring the helper's documented layout:
+# 387-byte standard identity (with a 4-byte extended cert, the
+# ECIES_X25519_AEAD + Ed25519 shape i2pd 2.61.0 writes) followed
+# by 64 fake private suffix bytes that must never be emitted.
+pub = bytearray(387 + 4)
+for index in range(len(pub)):
+    pub[index] = index % 251
+pub[385:387] = (4).to_bytes(2, "big")
+pub = bytes(pub)
+pub_len = 387 + 4
+secret = bytes([0xA5]) * 64
+with open(sys.argv[1], "wb") as handle:
+    handle.write(pub + secret)
+info = module.parse(sys.argv[1])
+# The helper must stop exactly at the public boundary: hash over
+# the public prefix only, base64 decodes back to pub_len bytes
+# (no private suffix byte survives the round trip), and the b32
+# label matches the hash.
+decoded = stdlib_b64.b64decode(
+    info["dest_b64"].replace("-", "+").replace("~", "/")
+)
+assert len(decoded) == pub_len, (len(decoded), pub_len)
+assert decoded == pub
+assert info["dest_hash"] == hashlib.sha256(pub).hexdigest()
+assert info["pub_len"] == pub_len
+print("boundary-ok")
+PY
+)"
+if [[ "${SYNTH_OUT}" != "boundary-ok" ]]; then
+  echo "evidence check failed: parse helper leaks past the public Destination boundary (Plan 214 §12)" >&2
+  failures=$((failures + 1))
+fi
+rm -f "${SYNTH_DAT}"
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green"
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green, Plan 214 application requalification invariants green"

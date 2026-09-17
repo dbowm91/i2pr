@@ -43,7 +43,8 @@ use tracing::{debug, warn};
 
 use crate::destination_streaming::{PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint};
 use crate::service_tunnels::{
-    ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager, service_streaming_now_ms,
+    DestinationFailure, ServicePumpEndpoint, ServiceRuntime, ServiceTunnelManager,
+    service_streaming_now_ms,
 };
 
 /// Default ceiling for the per-direction partial-line read. The
@@ -90,6 +91,18 @@ pub async fn run_irc_connection(
 ) -> IrcConnectionOutcome {
     let target = match manager.resolve_client_destination(spec) {
         Ok(target) => target,
+        // Plan 214 — non-local destinations resolve through the
+        // requesting runtime's installed router-backed remote
+        // LeaseSet2 mirror. No local fallback.
+        Err(DestinationFailure::LookupRequired { hash, .. }) => {
+            match manager.resolve_remote_client_target(runtime.destination_id, &hash) {
+                Some(target) => target,
+                None => {
+                    debug!(service = %runtime.spec_id, "irc remote mirror miss");
+                    return IrcConnectionOutcome::BadGateway;
+                }
+            }
+        }
         Err(error) => {
             debug!(service = %runtime.spec_id, error = %error, "irc resolve failed");
             return IrcConnectionOutcome::BadGateway;

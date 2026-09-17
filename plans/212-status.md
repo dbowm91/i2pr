@@ -55,12 +55,12 @@ plan_209 = retained-partial-black-box-composition-harness
 plan_210 = retained-partial-structural-corrective-superseded-by-plan212
 plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
 plan_212 = passed-source-and-generic-external-qualification-via-plan213
-plan_213 = registered-executable-after-plan212-source-closure
-plan_214 = registered-blocked-by-plan213
+plan_213 = passed-m10-router-backed-generic-external-qualification
+plan_214 = source-landed-hosted-double-pass-pending
 
 m10_local_rows = passed (29/29 retained)
-m10_remote_transport_core = not-yet-passed
-m10_generic_remote_product = not-yet-passed
+m10_remote_transport_core = passed-via-plan212-and-plan213
+m10_generic_remote_product = passed-via-plan213
 m10_remote_application_interop = not-yet-passed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed

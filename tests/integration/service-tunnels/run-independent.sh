@@ -1,65 +1,49 @@
 #!/usr/bin/env bash
-# Plan 199 / Plan 181 / Plan 207 / Plan 208 / Plan 209 / Plan 210 —
+# Plan 199 / Plan 181 / Plan 213 / Plan 214 —
 # M10 independent-application-client matrix plus the controlled
-# remote independent-I2P qualification attempt and the Plan 209
-# product-only remote HTTP + IRC application interoperability
-# corrective driver.
+# remote independent-I2P qualification through the Plan 213
+# generic runner and the Plan 214 product-only remote HTTP + IRC
+# application requalification runner.
 #
-# Plan 210 is the M10 real service-Destination tunnel material and
-# inbound Streaming corrective: the lane hooks remain in place but
-# the bidirectional external qualification is owned by the next
-# Plan 211 follow-up lane rather than this runner (Plan 210 §15
-# specifies a generic external product qualification gate against
-# exact-pinned i2pd 2.61.0; the lane referenced here is the
-# structural / unit-test evidence floor that the static checker
-# `scripts/check-service-tunnel-acceptance-evidence.sh` enforces).
-# The Plan 210 stub driver is the unit-test evidence floor; the
-# remote bidirectional lane is registered as `#[ignore]` and is
-# exercised only in the dedicated M6 interop lane.
+# Remote qualification lives in exactly one runner per proof
+# (Plan 214 §14): this script keeps the retained 29-row local
+# matrix and delegates the remote application proof to
+# run-plan214-applications.sh, mapping its aggregate rows onto
+# the `remote-independent-*` rows. The historical §6.3 blocker
+# probe plus the Plan 202 / Plan 207 / Plan 208 / Plan 211 /
+# Plan 212 inline invocations are superseded (see Plan 214 §14);
+# the driver files stay on disk as historical scaffolds.
+#
+# Historical note: Plans 202/207/208/209/210/211/212 scaffolds and
+# the Plan 181 §6.3 blocker probe are superseded for counted
+# evidence (see Plan 214 §14); their driver files stay on disk as
+# historical scaffolds and the static checker pins their retained
+# structural invariants.
 #
 # Provenance: local rows execute the focused Plan 174–180/182 Rust
 # suites plus unmodified external application clients (curl, nc, a
 # stdlib generic driver, exact-pinned jaraco/irc) against the real
 # i2pr M10 service-tunnel manager booted from
-# `service_tunnels_loopback_listener`. Remote rows provision one
-# ephemeral exact-pinned i2pd 2.61.0 process on loopback with one
-# HTTP server tunnel and one IRC server tunnel that point at the
-# harness-owned loopback fixtures, obtain independent SAM STREAM
-# destinations, and run the fail-closed qualification drivers:
-# - crates/i2pr-daemon/tests/service_tunnels_remote_qualification.rs
-#   (Plan 181 §6.3 stop condition: valid peer, no route, no
-#   establishment, bounded timeout — recorded `blocked` while the
-#   manager has no remote transport path);
-# - crates/i2pr-daemon/tests/service_tunnels_remote_transport_qualification.rs
-#   (Plan 202 Direction A: positive M10 remote destination/Streaming
-#   composition through the manager-level routing-decision and
-#   router-delivery seams — recorded `blocked` while the external
-#   i2pd cache is absent and `passed` when the exact-pinned lane
-#   succeeds);
-# - crates/i2pr-daemon/tests/service_tunnels_application_genuine_remote_qualification.rs
-#   (Plan 207: retained as historical evidence that real application
-#   clients (system curl + exact-pinned jaraco/irc) and
-#   command-derived subfact rows were introduced; the synthetic
-#   `record_remote_application_observation` label-injection
-#   pattern is no longer accepted as counted evidence);
-# - crates/i2pr-daemon/tests/service_tunnels_remote_route_integration_qualification.rs
-#   (Plan 208: production delivery-driver remote-route integration
-#   through `route_outbound_remote_request`; the typed
-#   `RemoteDeliveryCounters` advance through the production code
-#   path, not via `record_observation`);
-# - crates/i2pr-daemon/tests/service_tunnels_application_product_only_remote_qualification.rs
-#   (Plan 209: product-only black-box harness — starts the
-#   production composition through the single `ServiceProduct`
-#   helper, runs real system curl + exact-pinned jaraco/irc
-#   subprocess invocations against the production M10 listeners,
-#   and reads operation-derived Plan 208 counters through the
-#   helper's typed accessor — no shadow router stack is reachable
-#   from the counted driver).
+# `service_tunnels_loopback_listener`. Remote rows delegate to the
+# Plan 214 runner, which provisions one ephemeral exact-pinned
+# i2pd 2.61.0 process on loopback with one HTTP server tunnel and
+# one IRC server tunnel pointing at harness-owned loopback
+# fixtures, extracts only public destination material, and runs
+# the fail-closed counted driver
+# (crates/i2pr-daemon/tests/service_tunnels_application_product_only_remote_qualification.rs,
+# Plan 214 `m10_product_only_remote_http_and_irc_application_interop_v214`):
+# a product-only black-box harness that starts the production
+# composition through the single `ServiceProduct` helper, runs
+# real system curl + exact-pinned jaraco/irc subprocesses with
+# concurrent inbound pumping, and reads operation-derived Plan
+# 208 counters through the helper's typed accessor — no shadow
+# router stack is reachable from the counted driver.
 #
 # No required row is recorded `passed` except by the exit status of
 # its associated command (plus the row's own evidence keys where
-# applicable); remote rows are recorded `blocked` (never `passed`)
-# with command/log provenance. See
+# applicable); local-only remote rows are recorded `blocked` (never
+# `passed`) with command/log provenance, and full-lane remote rows
+# map the delegated Plan 214 aggregate outcomes. See
 # scripts/check-service-tunnel-acceptance-evidence.sh.
 #
 # The lane is unprivileged and loopback-only (no root, no Docker, no
@@ -679,631 +663,73 @@ record_guarded "server-identity-restart-stable" \
 HTTP_PORT="$(python3 -c "import json; print(json.load(open('${SCRATCH}/listener-restart.json'))['services']['alpha-http-client']['port'])")"
 SOCKS_PORT="$(python3 -c "import json; print(json.load(open('${SCRATCH}/listener-restart.json'))['services']['alpha-socks5-client']['port'])")"
 
-# ---- remote independent-I2P qualification (§6.1 attempt, §6.3 verdict) ---------
+# ---- remote independent-I2P qualification (Plan 214 delegation) ---------------
+# Plan 214 §14: the retained local matrix above stays in this script;
+# the final remote application qualification lives in exactly one
+# narrow runner (run-plan214-applications.sh) so the same
+# qualification is never duplicated in two runners. The full lane
+# delegates and maps the Plan 214 aggregate rows onto the M10
+# remote rows below. The historical §6.3 blocker probe plus the
+# Plan 202 / Plan 207 / Plan 208 / Plan 211 / Plan 212 inline
+# invocations are superseded: Plan 213 owns the generic
+# router-backed proof (standalone runner) and Plan 214 owns the
+# HTTP/IRC application proof (standalone runner invoked here).
 if [[ "${LANE}" == "full" ]]; then
-  echo "==> remote qualification attempt against exact-pinned i2pd"
-  if [[ ! -x "${I2PD_BIN}" ]]; then
-    echo "i2pd binary missing: ${I2PD_BIN}" >&2
-    echo "run scripts/interop/fetch-ssu2-reference.sh --rebuild first" >&2
-    record_blocked "remote-independent-http-eepsite" \
-      "i2pd reference cache absent; attempt not executable (fail closed)"
-    record_blocked "remote-independent-irc-service" \
-      "i2pd reference cache absent; attempt not executable (fail closed)"
-    record_blocked "m10-remote-destination-streaming-composition" \
-      "i2pd reference cache absent; Plan 202 Direction A attempt not executable (fail closed; run the dedicated M6 interop lane for the positive path)"
-  elif [[ ! -f "${I2PD_CACHE}/source-revision.txt" ]] ||
-       [[ "$(<"${I2PD_CACHE}/source-revision.txt")" != "${I2PD_PIN}" ]]; then
-    echo "i2pd cache has no verified Plan 161 source revision" >&2
-    record_blocked "remote-independent-http-eepsite" \
-      "i2pd pin unverified; attempt not executable (fail closed)"
-    record_blocked "remote-independent-irc-service" \
-      "i2pd pin unverified; attempt not executable (fail closed)"
-    record_blocked "m10-remote-destination-streaming-composition" \
-      "i2pd pin unverified; Plan 202 Direction A attempt not executable (fail closed)"
-  elif ! "${I2PD_BIN}" --version 2>&1 | grep -Fq "${I2PD_VERSION}"; then
-    echo "i2pd binary does not report ${I2PD_VERSION}" >&2
-    record_blocked "remote-independent-http-eepsite" \
-      "i2pd version mismatch; attempt not executable (fail closed)"
-    record_blocked "remote-independent-irc-service" \
-      "i2pd version mismatch; attempt not executable (fail closed)"
-    record_blocked "m10-remote-destination-streaming-composition" \
-      "i2pd version mismatch; Plan 202 Direction A attempt not executable (fail closed)"
-  else
-    I2PD_HOME="${SCRATCH}/i2pd"
-    I2PD_DATA="${I2PD_HOME}/data"
-    I2PD_LOG="${EVIDENCE_DIR}/i2pd.log"
-    I2PD_TUNNELS_LOG="${EVIDENCE_DIR}/i2pd-tunnels.log"
-    mkdir -p "${I2PD_DATA}"
-    SAM_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-    I2PD_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-    I2PR_SSU2_BIND_PORT="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-    cat > "${I2PD_HOME}/i2pd.conf" <<EOF
-daemon = false
-loglevel = info
-netid = 2
-address4 = 127.0.0.1
-host = 127.0.0.1
-port = ${I2PD_PORT}
-ipv4 = true
-ipv6 = false
-nat = false
-notransit = false
-floodfill = true
-reservedrange = false
-bandwidth = L
-[ssu2]
-enabled = true
-published = true
-port = ${I2PD_PORT}
-[ntcp2]
-enabled = false
-[sam]
-enabled = true
-address = 127.0.0.1
-port = ${SAM_PORT}
-[i2cp]
-enabled = false
-[bob]
-enabled = false
-[http]
-enabled = false
-[httpproxy]
-enabled = false
-[socksproxy]
-enabled = false
-[i2pcontrol]
-enabled = false
-[upnp]
-enabled = false
-[reseed]
-verify = true
-urls =
-threshold = 0
-EOF
-    # Plan 211 §6 — i2pd provisions one HTTP server tunnel and one
-    # IRC server tunnel that point at the harness-owned loopback
-    # fixtures. The HTTP and IRC destination key files are
-    # generated by the i2pd process on first start; the Plan 211
-    # driver consumes those destinations through the public
-    # identity material that i2pd publishes in its data dir.
-    # The harness parses the .dat file headers to extract the
-    # public destination hash + b32 + base64 — the private key
-    # material never crosses the trust boundary into i2pr.
-    cat > "${I2PD_HOME}/tunnels.conf" <<EOF
-[HTTP-Server]
-type = http
-host = 127.0.0.1
-port = ${HTTP_TARGET}
-keys = plan211-http-server.dat
-inbound.length = 1
-outbound.length = 1
-
-[IRC-Server]
-type = irc
-host = 127.0.0.1
-port = ${IRC_TARGET}
-keys = plan211-irc-server.dat
-inbound.length = 1
-outbound.length = 1
-EOF
-    : > "${I2PD_LOG}"
-    : > "${I2PD_TUNNELS_LOG}"
-    setsid "${I2PD_BIN}" "--conf=${I2PD_HOME}/i2pd.conf" "--tunconf=${I2PD_HOME}/tunnels.conf" "--datadir=${I2PD_DATA}" \
-      --log=file "--logfile=${I2PD_LOG}" >/dev/null 2>&1 < /dev/null &
-    I2PD_PID=$!
-    CHILD_PIDS+=("${I2PD_PID}")
-    SAM_READY=0
-    I2PD_RI=""
-    I2PD_SSU2_READY=0
-    for _ in $(seq 1 240); do
-      if [[ -f "${I2PD_DATA}/router.info" ]] &&
-         grep -Fq "Start listening on 127.0.0.1:${I2PD_PORT}" "${I2PD_LOG}" 2>/dev/null; then
-        I2PD_RI="${I2PD_DATA}/router.info"
-        I2PD_SSU2_READY=1
-      fi
-      if (echo > "/dev/tcp/127.0.0.1/${SAM_PORT}") 2>/dev/null; then
-        SAM_READY=1
-      fi
-      if [[ "${SAM_READY}" -eq 1 && "${I2PD_SSU2_READY}" -eq 1 ]]; then
-        break
-      fi
-      if ! kill -0 "${I2PD_PID}" 2>/dev/null; then
-        echo "ephemeral i2pd exited during startup (data=${I2PD_DATA} port=${I2PD_PORT} sam=${SAM_PORT} ri_present=$([ -f "${I2PD_DATA}/router.info" ] && echo yes || echo no) listening=$(grep -F "Start listening on 127.0.0.1:${I2PD_PORT}" "${I2PD_LOG}" 2>/dev/null | head -n1 || echo none))" >&2
-        sed -n '1,40p' "${I2PD_LOG}" >&2 || true
-        break
-      fi
-      sleep 0.5
-    done
-    echo "    i2pd loop exit: sam_ready=${SAM_READY} ssu2_ready=${I2PD_SSU2_READY} ri=${I2PD_RI:-unset} data=${I2PD_DATA} port=${I2PD_PORT} sam=${SAM_PORT}" >&2
-    # Plan 211 §3 / §6 — once i2pd's server tunnel bootstrap
-    # finishes it writes the per-tunnel `.dat` files containing
-    # the i2pd PrivateKeys for that server destination. The
-    # harness parses the public part of those files to derive the
-    # canonical destination hash + b32 + base64; the private key
-    # material never crosses the trust boundary into i2pr.
-    HTTP_DEST_DAT="${I2PD_DATA}/plan211-http-server.dat"
-    IRC_DEST_DAT="${I2PD_DATA}/plan211-irc-server.dat"
-    HTTP_DEST_READY=0
-    IRC_DEST_READY=0
-    if [[ "${SAM_READY}" -eq 1 && "${I2PD_SSU2_READY}" -eq 1 ]]; then
-      for _ in $(seq 1 120); do
-        if [[ -s "${HTTP_DEST_DAT}" ]] && [[ -s "${IRC_DEST_DAT}" ]]; then
-          HTTP_DEST_READY=1
-          IRC_DEST_READY=1
-          break
-        fi
-        if ! kill -0 "${I2PD_PID}" 2>/dev/null; then
-          break
-        fi
-        sleep 0.5
-      done
+  echo "==> Plan 214 remote application qualification (delegated)"
+  export I2PR_PLAN214_EVIDENCE_DIR="${EVIDENCE_DIR}/plan214"
+  plan214_rc=0
+  bash "${LANE_DIR}/run-plan214-applications.sh" \
+    >"${EVIDENCE_DIR}/plan214-runner.log" 2>&1 || plan214_rc=$?
+  PLAN214_RESULTS="${EVIDENCE_DIR}/plan214/results.tsv"
+  plan214_row() {
+    local label="$1"
+    if [[ -f "${PLAN214_RESULTS}" ]]; then
+      awk -F'\t' -v want="${label}" '$1 == want {print $2; exit}' "${PLAN214_RESULTS}" 2>/dev/null || true
     fi
-    if [[ "${SAM_READY}" -ne 1 ]]; then
-      record_blocked "remote-independent-http-eepsite" \
-        "i2pd SAM did not listen on 127.0.0.1:${SAM_PORT} (see i2pd.log)"
-      record_blocked "remote-independent-irc-service" \
-        "i2pd SAM did not listen on 127.0.0.1:${SAM_PORT} (see i2pd.log)"
-    elif [[ "${I2PD_SSU2_READY}" -ne 1 || -z "${I2PD_RI}" ]]; then
-      echo "ephemeral i2pd did not publish router.info / SSU2 listener" >&2
-      sed -n '1,40p' "${I2PD_LOG}" >&2 || true
-      record_blocked "remote-independent-http-eepsite" \
-        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT} (see i2pd.log)"
-      record_blocked "remote-independent-irc-service" \
-        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT} (see i2pd.log)"
-      record_blocked "m10-remote-destination-streaming-composition" \
-        "i2pd SSU2 listener / router.info did not become ready on 127.0.0.1:${I2PD_PORT}; Plan 202 Direction A attempt not executable (fail closed)"
+    return 0
+  }
+  if [[ ! -f "${PLAN214_RESULTS}" ]]; then
+    record "remote-independent-http-eepsite" failed \
+      "Plan 214 runner produced no results.tsv (rc=${plan214_rc}; see plan214-runner.log)"
+    record "remote-independent-irc-service" failed \
+      "Plan 214 runner produced no results.tsv (rc=${plan214_rc}; see plan214-runner.log)"
+    record "m10-remote-destination-streaming-composition" failed \
+      "Plan 214 runner produced no results.tsv (rc=${plan214_rc}; see plan214-runner.log)"
+  else
+    if [[ "$(plan214_row plan214-remote-http-eepsite)" == "passed" ]]; then
+      record_guarded "remote-independent-http-eepsite" \
+        "Plan 214 aggregate HTTP eepsite passed (see plan214/results.tsv + evidence.json)" 0
     else
-      # Independently generated destination via SAM DEST GENERATE.
-      # Only the public PUB leaves this block; PRIV never touches
-      # disk, logs, or evidence.
-      I2PD_PUB_FILE="${SCRATCH}/i2pd-peer.pub"
-      I2PD_HTTP_PUB_FILE="${SCRATCH}/i2pd-http.pub"
-      I2PD_IRC_PUB_FILE="${SCRATCH}/i2pd-irc.pub"
-      I2PD_SESSION_DIR="${SCRATCH}/i2pd-sessions"
-      mkdir -p "${I2PD_SESSION_DIR}"
-      # §6.3 / Plan 181 stop-condition destination (DEST GENERATE
-      # only, no SESSION CREATE): the i2pd-owned destination has no
-      # tunnel pool and never publishes a LeaseSet2, so the i2pr
-      # side hits the §6.3 unknown-peer stop and the row stays
-      # blocked. Plan 202/203 open their own SAM sessions
-      # internally (Plan 202 lines 437–447; Plan 203 lines 244–256)
-      # so the lease-lookup / Streaming drivers see real LS2s.
-      sam_rc=0
-      SAM_PORT="${SAM_PORT}" \
-        PUB_FILE="${I2PD_PUB_FILE}" \
-        python3 - <<'PY' \
-        >"${SCRATCH}/i2pd-sam.log" 2>&1 || sam_rc=$?
-import os
-import socket
-
-port = int(os.environ["SAM_PORT"])
-pub_file = os.environ["PUB_FILE"]
-
-sock = socket.create_connection(("127.0.0.1", port), timeout=15)
-buf = [b""]
-try:
-    sock.settimeout(15)
-
-    def transact(command):
-        global buf
-        sock.sendall(command.encode("ascii"))
-        while b"\n" not in buf[0]:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf[0] += chunk
-        line, _, rest = buf[0].partition(b"\n")
-        buf[0] = rest
-        return line.decode("latin-1", "replace")
-
-    hello = transact("HELLO VERSION MIN=3.1 MAX=3.1\n")
-    print(f"HELLO_REPLY={hello[:80]}")
-    if "RESULT=OK" not in hello:
-        raise SystemExit(f"SAM hello failed: {hello[:120]}")
-    for variant in ("DEST GENERATE SIGNATURE_TYPE=7\n", "DEST GENERATE\n"):
-        dest = transact(variant)
-        print(f"DEST_VARIANT={variant.strip()}")
-        if dest.startswith("DEST REPLY") and " PUB=" in dest:
-            pub = dest.split(" PUB=", 1)[1].split(" ", 1)[0].strip()
-            if len(pub) >= 512:
-                with open(pub_file, "w", encoding="ascii") as handle:
-                    handle.write(pub + "\n")
-                print(f"PUB_LEN={len(pub)}")
-                break
-    else:
-        raise SystemExit("SAM DEST GENERATE yielded no usable PUB")
-finally:
-    sock.close()
-PY
-      cp "${SCRATCH}/i2pd-sam.log" "${EVIDENCE_DIR}/i2pd-sam.log" 2>/dev/null || true
-      cp "${I2PD_LOG}" "${EVIDENCE_DIR}/i2pd.log" 2>/dev/null || true
-      # Provide two pre-generated PUB files that the Plan 203 driver
-      # will overwrite when it opens its own sessions. Write minimal
-      # placeholders so the §6.3 driver does not see a stale PUB.
-      : > "${I2PD_HTTP_PUB_FILE}"
-      : > "${I2PD_IRC_PUB_FILE}"
-      if [[ "${sam_rc}" -ne 0 || ! -s "${I2PD_PUB_FILE}" ]]; then
-        record_blocked "remote-independent-http-eepsite" \
-          "i2pd SAM DEST GENERATE yielded no public destination (see i2pd-sam.log)"
-        record_blocked "remote-independent-irc-service" \
-          "i2pd SAM DEST GENERATE yielded no public destination (see i2pd-sam.log)"
-      elif false; then
-        # Plan 181 §6.3 stop-condition (valid peer, no route, bounded
-        # timeout) is recorded `blocked` historically — see Plan 181
-        # §6.3 and Plan 199 Phase A. Suppressed in the current lane
-        # because the Plan 202 + Plan 203 drivers below supersede it
-        # with positive evidence: i2pd has a published LeaseSet2 and
-        # i2pr resolves/connects it. The Plan 181 §6.3 stop-condition
-        # remains the historical authority when the M6 interop lane
-        # is not provisioned; in that case the §6.3 driver above is
-        # still the recorded blocker. Re-enable the §6.3 record when
-        # re-asserting the Plan 181 historical authority.
-        : # placeholder; §6.3 row recording intentionally disabled
-      else
-        # The qualification driver attempts one M10 connect to the
-        # independent destination and asserts the §6.3 stop
-        # condition (valid peer, no route, bounded timeout). The
-        # driver exits 0 with REMOTE_QUALIFY_* facts when the
-        # blocker is demonstrated; any establishment flips it red
-        # on purpose (blocker lifted -> re-count as interop).
-        QUALIFY_LOG="${EVIDENCE_DIR}/remote-qualify.log"
-        : > "${QUALIFY_LOG}"
-        qualify_rc=0
-        if I2PD_PEER_PUB_B64="$(cat "${I2PD_PUB_FILE}")" \
-           timeout --foreground 120s \
-           cargo test --locked -p i2pr-daemon --test service_tunnels_remote_qualification \
-           m10_remote_independent_router_unreachable_blocker -- --ignored --exact --nocapture --test-threads=1 \
-           >>"${QUALIFY_LOG}" 2>&1; then
-          qualify_rc=0
-        else
-          qualify_rc=$?
-        fi
-        # libtest prefixes fact lines (`test <name> ... FACT=...`)
-        # under --nocapture, so extract with unanchored matches.
-        qualify_established="$(grep -o 'REMOTE_QUALIFY_ESTABLISHED=[01]' "${QUALIFY_LOG}" 2>/dev/null | head -n1 | cut -d= -f2 || true)"
-        qualify_delivered="$(grep -o 'REMOTE_QUALIFY_DELIVERED=[0-9]*' "${QUALIFY_LOG}" 2>/dev/null | head -n1 | cut -d= -f2 || true)"
-        if [[ "${qualify_rc}" -eq 0 ]] &&
-           grep -Fq "REMOTE_QUALIFY_UNKNOWN_PEER=" "${QUALIFY_LOG}" &&
-           [[ "${qualify_established}" == "0" ]] &&
-           [[ "${qualify_delivered}" == "0" ]]; then
-          # Plan 181 §6.3 stop-condition observed. The §6.3 record is
-          # superseded by the Plan 203 positive driver below, which
-          # records `passed` for the same row labels once the i2pd
-          # SAM session is published. The §6.3 outcome is preserved
-          # here as historical evidence (remote-qualify.log) for the
-          # period during which the Plan 203 driver was the next
-          # path; we do not double-record it under the same row label.
-          :
-        else
-          # Any deviation — including unexpected establishment
-          # (blocker lifted: re-count as interop evidence) — fails
-          # closed here. Remote rows never pass through this lane.
-          record "remote-independent-http-eepsite" failed \
-            "qualification diverged rc=${qualify_rc} established=${qualify_established:-?} delivered=${qualify_delivered:-?} (see remote-qualify.log)"
-          record "remote-independent-irc-service" failed \
-            "qualification diverged rc=${qualify_rc} established=${qualify_established:-?} delivered=${qualify_delivered:-?} (see remote-qualify.log)"
-        fi
-
-        # Plan 202 §11 — positive Direction A driver. The lane
-        # requires the strict SSU2 endpoint + bind tuple that the
-        # standard M10 listener does not provision; the row is
-        # therefore recorded `blocked` with command/log provenance
-        # in this lane. A dedicated M6 interop lane
-        # (run-m6-mixed-router.sh) wires the full SSU2 environment
-        # and flips the row to `passed` once the manager's
-        # router-delivery composition runs through the real
-        # tunnel/Streaming path.
-        PLAN202_LOG="${EVIDENCE_DIR}/plan202-remote-transport.log"
-        : > "${PLAN202_LOG}"
-        plan202_rc=0
-        if I2PD_ROUTER_INFO="${I2PD_RI}" \
-           I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
-           I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
-           I2PD_SAM_ENDPOINT="127.0.0.1:${SAM_PORT}" \
-           EVIDENCE_DIR="${EVIDENCE_DIR}/plan202-driver" \
-           timeout --foreground 90s \
-           cargo test --locked -p i2pr-daemon --test service_tunnels_remote_transport_qualification \
-           m10_remote_destination_streaming_composition_through_manager -- --ignored --exact --nocapture --test-threads=1 \
-           >>"${PLAN202_LOG}" 2>&1; then
-          plan202_rc=0
-        else
-          plan202_rc=$?
-        fi
-        if grep -Fq "missing required env" "${PLAN202_LOG}" ||
-           grep -Fq "lane requires a fixed loopback bind" "${PLAN202_LOG}" ||
-           grep -Fq "i2pd SAM did not listen" "${PLAN202_LOG}"; then
-          record_blocked "m10-remote-destination-streaming-composition" \
-            "Plan 202 Direction A fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / I2PD_SAM_ENDPOINT / EVIDENCE_DIR) not satisfied in this lane (see plan202-remote-transport.log)"
-        else
-          plan202_rc_combined=1
-          if [[ "${plan202_rc}" -eq 0 ]] &&
-             grep -Fq "remote-stream-established=true" "${PLAN202_LOG}" &&
-             grep -Fq "lease-lookup-completed=" "${PLAN202_LOG}"; then
-            plan202_rc_combined=0
-          fi
-          record_guarded "m10-remote-destination-streaming-composition" \
-            "Plan 202 Direction A: remote-stream-established + lease-lookup-completed (see plan202-remote-transport.log)" \
-            "${plan202_rc_combined}"
-        fi
-
-        # Plan 209 — product-only remote HTTP + IRC application
-        # interoperability corrective. Plan 207 introduced real
-        # application clients + command-derived subfact rows but
-        # its counted driver constructed a parallel shadow router
-        # stack. Plan 209 deletes the shadow path: the counted
-        # driver starts the production composition through the
-# single `ServiceProduct` helper, reads listener addresses,
-        # runs real `curl` / jaraco/irc subprocesses against the
-        # manager listeners, reads operation-derived Plan 208
-        # counters through the typed accessor, and stops the
-        # product. It never constructs any of the shadow-stack
-        # types listed in Plan 209 §5. The aggregate pass row is
-        # derived purely from the documented Plan 211 §10 subfact
-        # rows the driver writes to
-        # `${EVIDENCE_DIR}/plan211-driver/driver-evidence.tsv`;
-        # a missing subfact or a synthetic `record "... passed"`
-        # literal fails this lane closed. Plan 211 corrects the
-        # Plan 209 empty ServiceTunnelSet by passing real enabled
-        # HttpClient + IrcClient specs whose destinations are the
-        # i2pd server destinations from the per-tunnel `.dat` files
-        # in the i2pd data directory.
-        PLAN211_LOG="${EVIDENCE_DIR}/plan211-remote-application.log"
-        : > "${PLAN211_LOG}"
-        plan211_rc=0
-        if [[ "${HTTP_DEST_READY}" -ne 1 || "${IRC_DEST_READY}" -ne 1 ]]; then
-          echo "Plan 211 destination extraction failed: i2pd server tunnel .dat files missing (http=${HTTP_DEST_DAT} ready=${HTTP_DEST_READY} irc=${IRC_DEST_DAT} ready=${IRC_DEST_READY})" >&2
-          record_blocked "remote-independent-http-eepsite" \
-            "i2pd server tunnel .dat files were not produced within the bounded wait; Plan 211 destination extraction failed"
-          record_blocked "remote-independent-irc-service" \
-            "i2pd server tunnel .dat files were not produced within the bounded wait; Plan 211 destination extraction failed"
-        elif ! HTTP_DEST_B64="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${HTTP_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_b64" {print $2; exit}')" ||
-             ! HTTP_DEST_HASH="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${HTTP_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_hash" {print $2; exit}')" ||
-             ! HTTP_DEST_B32="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${HTTP_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_b32" {print $2; exit}')" ||
-             ! IRC_DEST_B64="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${IRC_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_b64" {print $2; exit}')" ||
-             ! IRC_DEST_HASH="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${IRC_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_hash" {print $2; exit}')" ||
-             ! IRC_DEST_B32="$(python3 "${CLIENTS_DIR}/parse_i2pd_destination.py" "${IRC_DEST_DAT}" 2>>"${PLAN211_LOG}" | awk -F: '$1 == "dest_b32" {print $2; exit}')"; then
-          record_blocked "remote-independent-http-eepsite" \
-            "Plan 211 harness failed to parse i2pd server tunnel .dat files into public destinations (see ${PLAN211_LOG})"
-          record_blocked "remote-independent-irc-service" \
-            "Plan 211 harness failed to parse i2pd server tunnel .dat files into public destinations (see ${PLAN211_LOG})"
-        else
-          # Plan 212 §8 — router bootstrap is independent of
-          # application Destination lookup. The reference peer
-          # carries only router transport metadata; per-service
-          # target hashes derive from the HttpClient/IrcClient spec
-          # destinations inside the production composition. No
-          # single I2PD_DESTINATION_HASH applies to all services.
-          # Record only the b32 lengths and the hash equality in
-          # evidence. The full PUB base64 never touches evidence.
-          mkdir -p "${EVIDENCE_DIR}/plan211-driver"
-          # Plan 212 §L prerequisite: the generic router-backed
-          # Direction A + Direction B driver runs in the dedicated
-          # lane when PLAN212_GENERIC_* env is provisioned. The M10
-          # lane does not provision a generic STREAM destination,
-          # so the prerequisite logs a skip here (honest, not a
-          # pass). The remote rows stay gated on the Plan 211
-          # application lane below.
-          mkdir -p "${EVIDENCE_DIR}/plan212-driver"
-          if [[ -z "${PLAN212_GENERIC_DEST_B64:-}" || -z "${PLAN212_GENERIC_DEST_HASH:-}" || -z "${PLAN212_GENERIC_DEST_B32:-}" ]]; then
-            printf 'plan212-prerequisite\tskip-generic-destination-not-provisioned-in-m10-lane\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
-          else
-            PLAN212_LOG="${EVIDENCE_DIR}/plan212-driver/plan212-generic.log"
-            : > "${PLAN212_LOG}"
-            if I2PD_ROUTER_INFO="${I2PD_RI}" \
-               I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
-               I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
-               EVIDENCE_DIR="${EVIDENCE_DIR}/plan212-driver" \
-               PLAN212_GENERIC_DEST_B64="${PLAN212_GENERIC_DEST_B64}" \
-               PLAN212_GENERIC_DEST_HASH="${PLAN212_GENERIC_DEST_HASH}" \
-               PLAN212_GENERIC_DEST_B32="${PLAN212_GENERIC_DEST_B32}" \
-               PLAN212_GENERIC_TARGET_PORT="${PLAN212_GENERIC_TARGET_PORT:-${HTTP_TARGET}}" \
-               PLAN212_SERVER_TARGET_PORT="${PLAN212_SERVER_TARGET_PORT:-${HTTP_TARGET}}" \
-               timeout --foreground 240s \
-               cargo test --locked -p i2pr-daemon --test service_tunnels_plan212_router_backed_product \
-               plan212_router_backed_generic_directions -- --ignored --exact --nocapture --test-threads=1 \
-               >>"${PLAN212_LOG}" 2>&1; then
-              printf 'plan212-prerequisite\tgeneric-directions-passed\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
-            else
-              printf 'plan212-prerequisite\tgeneric-directions-blocked-see-plan212-generic.log\n' >"${EVIDENCE_DIR}/plan212-driver/prerequisite.txt"
-            fi
-          fi
-          printf 'http_dest_b32=%s\nhttp_dest_b32_len=%s\nhttp_dest_hash=%s\nirc_dest_b32=%s\nirc_dest_b32_len=%s\nirc_dest_hash=%s\n' \
-            "${HTTP_DEST_B32}" "${#HTTP_DEST_B32}" "${HTTP_DEST_HASH}" \
-            "${IRC_DEST_B32}" "${#IRC_DEST_B32}" "${IRC_DEST_HASH}" \
-            >"${EVIDENCE_DIR}/plan211-driver/destinations.txt"
-          if I2PD_ROUTER_INFO="${I2PD_RI}" \
-             I2PD_SSU2_ENDPOINT="127.0.0.1:${I2PD_PORT}" \
-             I2PR_SSU2_BIND="127.0.0.1:${I2PR_SSU2_BIND_PORT}" \
-             EVIDENCE_DIR="${EVIDENCE_DIR}/plan211-driver" \
-             PLAN211_HTTP_TARGET_PORT="${HTTP_TARGET}" \
-             PLAN211_IRC_TARGET_PORT="${IRC_TARGET}" \
-             PLAN211_JARACO_SRC="${JARACO_SRC}" \
-             PLAN211_HARNESS_DIR="${LANE_DIR}" \
-             PLAN211_HTTP_DEST_B64="${HTTP_DEST_B64}" \
-             PLAN211_HTTP_DEST_HASH="${HTTP_DEST_HASH}" \
-             PLAN211_HTTP_DEST_B32="${HTTP_DEST_B32}" \
-             PLAN211_IRC_DEST_B64="${IRC_DEST_B64}" \
-             PLAN211_IRC_DEST_HASH="${IRC_DEST_HASH}" \
-             PLAN211_IRC_DEST_B32="${IRC_DEST_B32}" \
-             timeout --foreground 180s \
-             cargo test --locked -p i2pr-daemon --test service_tunnels_application_product_only_remote_qualification \
-             m10_product_only_remote_http_and_irc_application_interop_v211 -- --ignored --exact --nocapture --test-threads=1 \
-             >>"${PLAN211_LOG}" 2>&1; then
-            plan211_rc=0
-          else
-            plan211_rc=$?
-          fi
-        fi
-        # Plan 211 §13 fail-closed shape: missing required env (or
-        # a missing SAM/listener) blocks both remote rows. The
-        # presence of "missing required env" in the driver log
-        # proves the lane was attempted with the right env shape;
-        # the runner must not retry.
-        if grep -Fq "missing required env" "${PLAN211_LOG}" ||
-           grep -Fq "lane requires a fixed loopback bind" "${PLAN211_LOG}" ||
-           grep -Fq "i2pd SAM did not listen" "${PLAN211_LOG}" ||
-           grep -Fq "destination-hash-mismatch" "${PLAN211_LOG}"; then
-          record_blocked "remote-independent-http-eepsite" \
-            "Plan 211 product-only remote HTTP eepsite driver fail-closed: required SSU2 lane env (I2PD_ROUTER_INFO / I2PD_SSU2_ENDPOINT / I2PR_SSU2_BIND / EVIDENCE_DIR / PLAN211_HTTP_TARGET_PORT / PLAN211_IRC_TARGET_PORT / PLAN211_JARACO_SRC / PLAN211_HARNESS_DIR / PLAN211_*_DEST_*) not satisfied in this lane (see plan211-remote-application.log)"
-          record_blocked "remote-independent-irc-service" \
-            "Plan 211 product-only remote IRC service driver fail-closed: required SSU2 lane env not satisfied in this lane (see plan211-remote-application.log)"
-        else
-          PLAN211_TSV="${EVIDENCE_DIR}/plan211-driver/driver-evidence.tsv"
-          PLAN211_EVIDENCE_FILES=("${PLAN211_LOG}" "${PLAN211_TSV}")
-          # Read the actual listener ports the driver discovered
-          # out of the driver evidence file so the subfact rows
-          # can be matched against the exact bound port. The
-          # harness never reads the bound port from the
-          # environment because Plan 211 §5 forbids environment
-          # placeholders.
-          http_port=""
-          irc_port=""
-          if [[ -f "${PLAN211_TSV}" ]]; then
-            http_port="$(awk -F'\t' '$1 == "http-product-listener-bound" {print $2; exit}' "${PLAN211_TSV}" 2>/dev/null || true)"
-            irc_port="$(awk -F'\t' '$1 == "irc-product-listener-bound" {print $2; exit}' "${PLAN211_TSV}" 2>/dev/null || true)"
-          fi
-          plan211_has_subfact() {
-            local key="$1"
-            local expected="$2"
-            local file value
-            for file in "${PLAN211_EVIDENCE_FILES[@]}"; do
-              if [[ ! -f "${file}" ]]; then
-                continue
-              fi
-              value=$(awk -F'\t' -v want="${key}" '$1 == want {print $2; exit}' "${file}" 2>/dev/null || true)
-              if [[ "${value}" == "${expected}" ]]; then
-                return 0
-              fi
-            done
-            return 1
-          }
-          # Plan 211 §10 — required HTTP subfacts.
-          http_pass=true
-          # Required exact-value rows (must equal specific strings).
-          if ! plan211_has_subfact "http-command-exit" "0"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-status" "200"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-fixture-method-path-observed" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-clearnet-rejected" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-ip-literal-rejected" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-local-coowned-delta-zero" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-unknown-peer-delta-zero" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-clean-resource-baseline" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-ordinary-ls2-lookup-proven" "1"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-public-destination-loaded" "${HTTP_DEST_B32}"; then
-            http_pass=false
-          fi
-          if ! plan211_has_subfact "http-product-listener-bound" "${http_port:-0}"; then
-            http_pass=false
-          fi
-          # Numeric counter deltas must be present and > 0.
-          for label in http-remote-outbound-composed-delta http-remote-inbound-dispatched-delta http-router-delivery-delta; do
-            value=""
-            for f in "${PLAN211_EVIDENCE_FILES[@]}"; do
-              if [[ -f "${f}" ]]; then
-                value=$(awk -F'\t' -v want="${label}" '$1 == want {print $2; exit}' "${f}" 2>/dev/null || true)
-                if [[ -n "${value}" ]]; then
-                  break
-                fi
-              fi
-            done
-            if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
-              http_pass=false
-              break
-            fi
-          done
-          # Required HTTP digest rows must be present and 64-char hex.
-          for label in http-response-digest http-post-request-digest http-large-response-digest; do
-            file=""
-            for f in "${PLAN211_EVIDENCE_FILES[@]}"; do
-              if [[ -f "${f}" ]]; then
-                value=$(awk -F'\t' -v want="${label}" '$1 == want {print $2; exit}' "${f}" 2>/dev/null || true)
-                if [[ "${#value}" -eq 64 && "${value}" =~ ^[0-9a-f]+$ ]]; then
-                  file="${f}"
-                  break
-                fi
-              fi
-            done
-            if [[ -z "${file}" ]]; then
-              http_pass=false
-              break
-            fi
-          done
-          # Plan 211 §10 — required IRC subfacts.
-          irc_pass=true
-          if ! plan211_has_subfact "irc-command-exit" "0"; then
-            irc_pass=false
-          fi
-          for label in irc-registration-observed irc-ping-pong-observed \
-                       irc-outbound-privmsg-observed irc-inbound-privmsg-observed \
-                       irc-dcc-blocked-derived irc-privacy-rewrite-derived; do
-            if ! plan211_has_subfact "${label}" "1"; then
-              irc_pass=false
-              break
-            fi
-          done
-          if ! plan211_has_subfact "irc-public-destination-loaded" "${IRC_DEST_B32}"; then
-            irc_pass=false
-          fi
-          if ! plan211_has_subfact "irc-product-listener-bound" "${irc_port:-0}"; then
-            irc_pass=false
-          fi
-          for label in irc-remote-outbound-composed-delta irc-remote-inbound-dispatched-delta irc-router-delivery-delta; do
-            value=""
-            for f in "${PLAN211_EVIDENCE_FILES[@]}"; do
-              if [[ -f "${f}" ]]; then
-                value=$(awk -F'\t' -v want="${label}" '$1 == want {print $2; exit}' "${f}" 2>/dev/null || true)
-                if [[ -n "${value}" ]]; then
-                  break
-                fi
-              fi
-            done
-            if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
-              irc_pass=false
-              break
-            fi
-          done
-          if [[ "${http_pass}" != true || "${irc_pass}" != true ]]; then
-            record "remote-independent-http-eepsite" failed \
-              "Plan 211 product-only remote HTTP eepsite guard returned rc=${plan211_rc} without the documented Plan 211 §10 subfacts (http_pass=${http_pass} irc_pass=${irc_pass}; see plan211-remote-application.log + driver-evidence.tsv)"
-            record "remote-independent-irc-service" failed \
-              "Plan 211 product-only remote IRC service guard returned rc=${plan211_rc} without the documented Plan 211 §10 subfacts (http_pass=${http_pass} irc_pass=${irc_pass}; see plan211-remote-application.log + driver-evidence.tsv)"
-          else
-            record_guarded "remote-independent-http-eepsite" \
-              "Plan 211 product-only remote HTTP eepsite: real system curl exit=0 + status=200 + body digest matches the loopback HTTP fixture, with Plan 208 operation-derived counters observed (see plan211-remote-application.log + driver-evidence.tsv)" \
-              0
-            record_guarded "remote-independent-irc-service" \
-              "Plan 211 product-only remote IRC service: real exact-pinned jaraco/irc public API exit=0 + welcome + ping/pong + PRIVMSG round-trip + CTCP/DCC policy + privacy rewrite, with Plan 208 operation-derived counters observed (see plan211-remote-application.log + driver-evidence.tsv)" \
-              0
-          fi
-        fi
-      fi
+      record "remote-independent-http-eepsite" failed \
+        "Plan 214 aggregate HTTP eepsite did not pass (see plan214/results.tsv + plan214-terminal-classification)"
+    fi
+    if [[ "$(plan214_row plan214-remote-irc-service)" == "passed" ]]; then
+      record_guarded "remote-independent-irc-service" \
+        "Plan 214 aggregate IRC service passed (see plan214/results.tsv + evidence.json)" 0
+    else
+      record "remote-independent-irc-service" failed \
+        "Plan 214 aggregate IRC service did not pass (see plan214/results.tsv + plan214-terminal-classification)"
+    fi
+    # The Plan 202 transitional composition row is proven by the
+    # Plan 213 generic router-backed qualification that gates Plan
+    # 214 (plan214-prerequisite-plan213): Direction A+B byte proof
+    # through the production composition supersedes the Plan 202
+    # scaffold driver.
+    if [[ "$(plan214_row plan214-prerequisite-plan213)" == "passed" ]]; then
+      record_guarded "m10-remote-destination-streaming-composition" \
+        "Plan 213 generic router-backed Direction A+B passed (see plan214 prerequisite + plan213-generic evidence)" 0
+    else
+      record "m10-remote-destination-streaming-composition" failed \
+        "Plan 213 generic prerequisite not green (see plan214/results.tsv)"
     fi
   fi
 else
   record_blocked "remote-independent-http-eepsite" \
-    "not attempted in the local-only lane; run the full lane for the §6 + Plan 211 qualification"
+    "not attempted in the local-only lane; run the full lane for the Plan 214 qualification"
   record_blocked "remote-independent-irc-service" \
-    "not attempted in the local-only lane; run the full lane for the §6 + Plan 211 qualification"
+    "not attempted in the local-only lane; run the full lane for the Plan 214 qualification"
   record_blocked "m10-remote-destination-streaming-composition" \
-    "not attempted in the local-only lane; run the full lane for the §6 + Plan 202 + Plan 211 qualification"
+    "not attempted in the local-only lane; run the full lane for the Plan 213 + Plan 214 qualification"
 fi
 
 # ---- resource baseline -------------------------------------------------------
@@ -1474,17 +900,17 @@ evidence = {
     "results": rows,
     "known_limitations": [
         "M10 local product plus independent-application-client evidence only; no public I2P participation",
-        "remote independent-I2P service rows are recorded blocked under the Plan 199 stop condition (m10-remote-transport-unimplemented) with command/log provenance",
+        "remote independent-I2P service rows derive from the delegated Plan 214 runner (command + target-fixture + counter evidence); the local-only lane records them blocked by design",
         "self-composed i2pr rows are never substituted for the remote rows",
         "no external client/router source is patched; no private keys or raw payloads in evidence",
-        "Plan 203 positive remote HTTP/IRC application interop driver is `#[ignore]`-gated and fails closed when the exact-pinned i2pd environment is absent; the typed manager-level routing decision classifies the i2pd-owned destinations as RemoteRouter and the local-co-owned bridge never claims them",
+        "Plan 214 product-only remote HTTP/IRC application driver is `#[ignore]`-gated and fails closed when the exact-pinned i2pd environment is absent; the typed manager-level routing decision classifies the i2pd-owned destinations as RemoteRouter and the local-co-owned bridge never claims them",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 199 / Plan 202 M10 independent application/service + Plan 202 remote composition evidence\n\n")
+    stream.write("# Plan 214 M10 independent application/service + remote application evidence\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- lane: `{lane}`\n")
     stream.write(f"- verdict: `{verdict}`\n")

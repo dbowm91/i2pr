@@ -1573,6 +1573,49 @@ impl ServiceTunnelManager {
         Some(summary)
     }
 
+    /// Plan 214 — resolves a non-local destination hash into a
+    /// [`ClientTarget`] through the requesting service runtime's
+    /// installed router-backed remote LeaseSet2 mirror.
+    ///
+    /// The mirror is populated at provisioning
+    /// (`install_remote_lease_set2_into_router_state`) and on the
+    /// authenticated inbound path, so a destination the production
+    /// composition already resolved needs no second lookup here.
+    /// Keys come exclusively from the validated cached record
+    /// (signing key from the record Destination, static key from
+    /// its usable X25519 encryption key); nothing is synthesized
+    /// and no private material is touched. Returns `None` when the
+    /// requesting runtime has no installed mirror entry for the
+    /// hash (fail-closed: callers surface a typed failure rather
+    /// than a local fallback).
+    pub fn resolve_remote_client_target(
+        &self,
+        service_destination: DestinationId,
+        hash: &[u8; 32],
+    ) -> Option<ClientTarget> {
+        let key = i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(*hash));
+        let validated = self.with_destination_bridge(service_destination, |bridge| {
+            bridge.cached_router_remote_lease_set2(&key)
+        })??;
+        let record = validated.lease_set2();
+        let destination = record.destination().clone();
+        let signing_public_key = destination.signing_key().clone();
+        let static_bytes = record.usable_x25519_key().ok()?.as_bytes();
+        if static_bytes.len() != X25519_KEY_LENGTH {
+            return None;
+        }
+        let mut static_public_key = [0_u8; X25519_KEY_LENGTH];
+        static_public_key.copy_from_slice(static_bytes);
+        Some(ClientTarget {
+            destination,
+            remote: RemoteDestination {
+                destination_hash: *hash,
+                signing_public_key,
+                static_public_key,
+            },
+        })
+    }
+
     /// Plan 206 §9 — registers a destination hash as owned by a
     /// service runtime so inbound `TunnelData` cells routed through
     /// the router gateway can be dispatched to the owning
@@ -6189,5 +6232,125 @@ mod plan212_router_backed_service_destination_tests {
             .flatten()
             .expect("installed hash must hit the bridge mirror");
         assert_eq!(hit.key(), key, "mirror must return the installed record");
+    }
+
+    /// Plan 214 §C — the typed remote-mirror resolution seam starts
+    /// empty: a hash the bridge mirror never installed resolves to
+    /// `None` so the HTTP/SOCKS/IRC executors surface a typed
+    /// failure instead of a local fallback.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan214_resolve_remote_client_target_miss_is_none() {
+        let directory = temp_data_dir("plan214-resolve-miss");
+        let manager = make_manager_with_one_server(directory.path(), "plan214-miss");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material(&manager, destination_id, 0x6111, 0x9621, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("matching identity installs");
+        let unknown_hash = [0x5B; 32];
+        let hit = manager.resolve_remote_client_target(destination_id, &unknown_hash);
+        assert!(
+            hit.is_none(),
+            "uninstalled hash must miss the remote-mirror seam"
+        );
+    }
+
+    /// Plan 214 §C — a validated remote LeaseSet2 installed through
+    /// the router-backed inbound seam resolves through the typed
+    /// seam with keys taken exclusively from the validated record
+    /// (signing key from the record Destination, static key from
+    /// its usable X25519 encryption key); nothing is synthesized.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan214_resolve_remote_client_target_hit_returns_validated_keys() {
+        use i2pr_client::DestinationIdentity;
+        let directory = temp_data_dir("plan214-resolve-hit");
+        let manager = make_manager_with_one_server(directory.path(), "plan214-hit");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let now_seconds = 1_700_000_000_u32;
+        let material = test_router_material(&manager, destination_id, 0x6112, 0x9622, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("matching identity installs");
+        let mut rng = OsRng;
+        let remote_identity =
+            DestinationIdentity::generate(&mut rng).expect("remote identity generates");
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+        let lease_source = InboundLeaseSource::from_parts(
+            slot,
+            i2pr_proto::Hash::from_bytes([0xD3; 32]),
+            0x9731,
+            u64::from(now_seconds).saturating_add(600),
+            u64::from(now_seconds).saturating_add(540),
+        );
+        let remote_lease_set2 = build_signed_lease_set2(
+            &remote_identity,
+            std::slice::from_ref(&lease_source),
+            now_seconds,
+        )
+        .expect("remote LS2 builds");
+        let validated = ValidatedLeaseSet2::from_lease_set2(
+            remote_lease_set2,
+            Some(remote_identity.id().as_netdb_key()),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .expect("remote LS2 validates");
+        let expected_hash = *validated.key().as_bytes();
+        let expected_signing = validated.lease_set2().destination().signing_key().clone();
+        let expected_static = validated
+            .lease_set2()
+            .usable_x25519_key()
+            .expect("generated identity has a usable X25519 key")
+            .as_bytes()
+            .to_vec();
+        assert_eq!(expected_static.len(), 32, "static key stays 32 bytes");
+        manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge
+                    .install_remote_lease_set2_into_router_state(validated, now_ms)
+                    .expect("router-backed remote install succeeds")
+            })
+            .expect("bridge must exist");
+        let resolved = manager
+            .resolve_remote_client_target(destination_id, &expected_hash)
+            .expect("installed hash must resolve through the typed seam");
+        assert_eq!(
+            resolved.remote.destination_hash, expected_hash,
+            "resolved hash must equal the installed record key"
+        );
+        assert_eq!(
+            resolved.remote.signing_public_key, expected_signing,
+            "signing key must come from the validated record"
+        );
+        assert_eq!(
+            resolved.remote.static_public_key.as_slice(),
+            expected_static.as_slice(),
+            "static key must come from the validated record"
+        );
+    }
+
+    /// Plan 214 §C — resolving for a service destination the
+    /// manager never provisioned returns `None` (fail-closed: no
+    /// cross-service mirror read, no local fallback).
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan214_resolve_remote_client_target_unknown_service_is_none() {
+        let directory = temp_data_dir("plan214-resolve-unknown");
+        let manager = make_manager_with_one_server(directory.path(), "plan214-unknown");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material(&manager, destination_id, 0x6113, 0x9623, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("matching identity installs");
+        let foreign_id = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xFE; 32]));
+        let hit = manager.resolve_remote_client_target(foreign_id, &[0x5C; 32]);
+        assert!(
+            hit.is_none(),
+            "unknown service destination must miss the remote-mirror seam"
+        );
     }
 }
