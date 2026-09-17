@@ -1,10 +1,18 @@
 # Plan 212 status — M10 router-backed service-Destination material and canonical inbound Streaming
 
-Status: **`source-closure-landed-qualification-owned-by-plan213`**.
+Status: **`passed-source-and-generic-external-qualification-via-plan213`**.
 
 Plan of record: [`212-m10-router-backed-service-destination-material-and-canonical-inbound-streaming-corrective.md`](212-m10-router-backed-service-destination-material-and-canonical-inbound-streaming-corrective.md).
 
 Source-closure head: `232be0f87469175a1f01152a7488ecf026b27eeb`.
+
+External qualification: Plan 213 closed on commit
+`ef59fb3848060f4fcf5ab5a73019e967aaf6ad4c` (hosted
+`router-generic` runs `35169304975` + `35169987455`, both
+`P213-N-passed`; routine CI run `35169271477` green on the same
+SHA). Authority: `m10_remote_transport_core =
+passed-via-plan212-and-plan213`, `m10_generic_remote_product =
+passed-via-plan213` (see `plans/213-status.md`).
 
 ## Retained source closure
 
@@ -46,7 +54,7 @@ plan_208 = retained-partial-production-call-graph-corrective
 plan_209 = retained-partial-black-box-composition-harness
 plan_210 = retained-partial-structural-corrective-superseded-by-plan212
 plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
-plan_212 = source-closure-landed-qualification-owned-by-plan213
+plan_212 = passed-source-and-generic-external-qualification-via-plan213
 plan_213 = registered-executable-after-plan212-source-closure
 plan_214 = registered-blocked-by-plan213
 

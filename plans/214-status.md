@@ -1,6 +1,6 @@
 # Plan 214 status — M10 HTTP/IRC product-only external requalification and final closure
 
-Status: **`registered-blocked-by-plan213`**.
+Status: **`executable-registered-unblocked-by-plan213`**.
 
 Plan of record: [`214-m10-http-irc-product-only-external-requalification-evidence-hardening-and-final-closure.md`](214-m10-http-irc-product-only-external-requalification-evidence-hardening-and-final-closure.md).
 
@@ -25,13 +25,13 @@ Plan 212 source closure
 
 ```text
 plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
-plan_212 = source-closure-landed-qualification-owned-by-plan213
-plan_213 = registered-executable
-plan_214 = registered-blocked-by-plan213
+plan_212 = passed-source-and-generic-external-qualification-via-plan213
+plan_213 = passed-m10-router-backed-generic-external-qualification
+plan_214 = executable-registered-unblocked-by-plan213
 
 m10_local_rows = passed (29/29 retained)
-m10_remote_transport_core = not-yet-passed
-m10_generic_remote_product = not-yet-passed
+m10_remote_transport_core = passed-via-plan212-and-plan213
+m10_generic_remote_product = passed-via-plan213
 m10_remote_application_interop = not-yet-passed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed

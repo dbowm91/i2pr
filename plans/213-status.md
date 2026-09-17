@@ -1,8 +1,28 @@
 # Plan 213 status — M10 router-backed generic external qualification
 
-Status: **`in-progress-commit-e-local-double-pass-hosted-double-run-pending`**.
+Status: **`passed-m10-router-backed-generic-external-qualification`**.
 
 Plan of record: [`213-m10-router-backed-generic-external-qualification-and-evidence-corrective.md`](213-m10-router-backed-generic-external-qualification-and-evidence-corrective.md).
+
+## Closure (§19: 36/36)
+
+Two consecutive hosted `router-generic` runs on exact commit SHA
+`ef59fb3848060f4fcf5ab5a73019e967aaf6ad4c`:
+
+- run `35169304975` → success, artifact
+  `plan213-generic-evidence-35169304975`, exactly one terminal
+  class `P213-N-passed`;
+- run `35169987455` → success, artifact
+  `plan213-generic-evidence-35169987455`, exactly one terminal
+  class `P213-N-passed`.
+
+Routine CI (`ci.yml` run `35169271477`) is green on the same SHA;
+the retained 29-row local M10 matrix is green
+(`run-independent.sh --local-only`: 29 passed, 3 remote rows
+blocked by design); all static evidence/boundary floors green.
+Plan 212 advances to
+`passed-source-and-generic-external-qualification-via-plan213`
+(see `plans/212-status.md`); Plan 214 is executable.
 
 ## Why this plan exists
 
@@ -78,12 +98,12 @@ twice on the pushed SHA.
 
 ```text
 plan_212 = source-closure-landed-qualification-owned-by-plan213
-plan_213 = in-progress-commit-e-local-double-pass-hosted-double-run-pending
-plan_214 = registered-blocked-by-plan213
+plan_213 = passed-m10-router-backed-generic-external-qualification
+plan_214 = executable-registered-unblocked-by-plan213
 
 m10_local_rows = passed (29/29 retained)
-m10_remote_transport_core = not-yet-passed
-m10_generic_remote_product = not-yet-passed
+m10_remote_transport_core = passed-via-plan212-and-plan213
+m10_generic_remote_product = passed-via-plan213
 m10_remote_application_interop = not-yet-passed
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
