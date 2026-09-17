@@ -82,6 +82,7 @@ use crate::inbound_dispatch::{self, InboundDispatchOutcome};
 use crate::router_i2np::{
     Ssu2DaemonHandle, Ssu2DaemonService, generate_controlled_identity, verify_reference_router_info,
 };
+use crate::sam::streams::RouterNetworkSummary;
 use crate::service_delivery::{
     RemoteDeliveryCounters, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
 };
@@ -249,6 +250,95 @@ pub struct ReferencePeer {
     pub router_info_bytes: Vec<u8>,
     /// Loopback UDP endpoint for the dial.
     pub endpoint: SocketAddr,
+}
+
+/// Plan 213 §C1 — public addressing material for one service
+/// Destination.
+///
+/// All three forms describe the same identity: `destination_b64`
+/// is the canonical public Destination base64,
+/// `destination_hash` is SHA-256 over those public bytes, and
+/// `destination_b32` is the canonical `<52-char base32>.b32.i2p`
+/// form of that hash. No private material is carried.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceDestinationPublicInfo {
+    /// SHA-256 of the canonical public Destination encoding.
+    pub destination_hash: [u8; 32],
+    /// Canonical `<52-char base32>.b32.i2p` form of the hash.
+    pub destination_b32: String,
+    /// Canonical public Destination base64.
+    pub destination_b64: String,
+}
+
+/// Plan 213 §C1 — bounded RFC 4648 base32 encoder (lowercase, no
+/// padding) for exactly 32 bytes. 256 bits encode as 51 full
+/// 5-bit groups plus one final group holding the remaining bit,
+/// yielding the canonical 52-character I2P base32 label. No
+/// allocation beyond the returned label; no external crate.
+fn plan213_base32_encode_32(bytes: &[u8; 32]) -> String {
+    const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut out = String::with_capacity(52);
+    let mut accumulator: u32 = 0;
+    let mut bits: u8 = 0;
+    for byte in bytes.iter() {
+        accumulator = (accumulator << 8) | u32::from(*byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(ALPHABET[((accumulator >> bits) & 31) as usize] as char);
+        }
+    }
+    if bits > 0 {
+        out.push(ALPHABET[((accumulator << (5 - bits)) & 31) as usize] as char);
+    }
+    out
+}
+
+#[cfg(test)]
+mod plan213_public_info_tests {
+    //! Plan 213 §C1/§15 — focused unit rows for the public
+    //! service-Destination material surface (no network, routine
+    //! CI): the base32 label encoding is canonical, and the
+    //! hash/b32/base64 triple stays mutually consistent.
+
+    use super::plan213_base32_encode_32;
+
+    #[test]
+    fn plan213_base32_zero_hash_is_canonical() {
+        assert_eq!(plan213_base32_encode_32(&[0_u8; 32]), "a".repeat(52));
+    }
+
+    #[test]
+    fn plan213_base32_ones_hash_is_canonical() {
+        // 256 bits = 51 full 5-bit groups of ones plus one final
+        // group holding the single remaining one bit padded with
+        // four zero bits (10000b = index 16 = 'q').
+        assert_eq!(
+            plan213_base32_encode_32(&[0xFF_u8; 32]),
+            format!("{}q", "7".repeat(51))
+        );
+    }
+
+    #[test]
+    fn plan213_base32_label_round_trips_through_config_parser() {
+        let hash = *i2pr_crypto::sha256(b"plan213-public-info-vector").as_bytes();
+        let label = plan213_base32_encode_32(&hash);
+        assert_eq!(label.len(), 52);
+        assert!(
+            label
+                .bytes()
+                .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        );
+        let b32 = format!("{label}.b32.i2p");
+        let parsed =
+            i2pr_service_tunnels::DestinationRef::parse(&b32).expect("canonical b32 parses");
+        match parsed {
+            i2pr_service_tunnels::DestinationRef::Base32Hash {
+                hash: parsed_hash, ..
+            } => assert_eq!(parsed_hash, hash),
+            _ => panic!("canonical b32 must parse as Base32Hash"),
+        }
+    }
 }
 
 /// Typed failure for the production composition helper.
@@ -451,12 +541,22 @@ impl ServiceProduct {
         // LeaseSet2 lookup). Application lookup is per-service
         // after `prepare()` so HTTP and IRC resolve independent
         // target hashes in the same product instance.
+        //
+        // Plan 213 P213-C — our controlled router hash comes from
+        // the same bundle that signed the controlled RouterInfo
+        // (never from the reference RouterInfo: that hash
+        // addresses the reference itself and would route our
+        // build replies away from us).
+        let local_router_hash = spec.router_bundle.identity().hash().map_err(|error| {
+            ServiceProductError::InvalidIdentity(format!("router hash: {error:?}"))
+        })?;
         let router_peer = if let Some(reference) = &spec.reference {
             Some(
                 dial_and_bootstrap_router_only(
                     &mut ssu2_handle,
                     &destination_tunnels,
                     reference,
+                    local_router_hash,
                     spec.options,
                 )
                 .await?,
@@ -583,10 +683,61 @@ impl ServiceProduct {
         capability.counters().await
     }
 
+    /// Returns the manager's typed inbound-orphan-receive count
+    /// (Plan 210 §F). The counter advances only when a recovered
+    /// Garlic envelope arrives on a receive TunnelId with no
+    /// registered owning service runtime. The qualification driver
+    /// snapshots it per direction and requires a zero delta.
+    pub fn inbound_orphan_receives(&self) -> u64 {
+        self.manager.inbound_orphan_receives() as u64
+    }
+
     /// Returns the list of co-owned destination hashes the manager
     /// currently owns (one per service spec).
     pub fn co_owned_destination_hashes(&self) -> Vec<[u8; 32]> {
         self.manager.co_owned_destination_hashes()
+    }
+
+    /// Returns the public addressing material for one service
+    /// Destination, if the manager currently owns it.
+    ///
+    /// Plan 213 §C1 — the external reference needs the i2pr
+    /// GenericServer public Destination for its ordinary
+    /// `STREAM CONNECT`. This is the narrowest read-only product
+    /// surface for that need: it reuses the existing manager-level
+    /// [`ServiceTunnelManager::service_destination_b64`] public
+    /// encoding (derived from the service `DestinationIdentity`
+    /// public structure) and derives the hash/b32 forms from those
+    /// same public bytes. No private key, ECIES session secret,
+    /// tunnel layer key, or SSU2 private material crosses this
+    /// boundary; a server Destination is necessarily public
+    /// addressing material.
+    pub fn service_destination_public_info(
+        &self,
+        spec_id: &str,
+    ) -> Option<ServiceDestinationPublicInfo> {
+        let destination_b64 = self.manager.service_destination_b64(spec_id)?;
+        let public_bytes = i2pr_api::sam::base64::decode(&destination_b64, 4096).ok()?;
+        let destination_hash = *i2pr_crypto::sha256(&public_bytes).as_bytes();
+        let destination_b32 = format!("{}.b32.i2p", plan213_base32_encode_32(&destination_hash));
+        Some(ServiceDestinationPublicInfo {
+            destination_hash,
+            destination_b32,
+            destination_b64,
+        })
+    }
+
+    /// Returns the router-backed network summary for one service
+    /// spec, if router-backed state is installed.
+    ///
+    /// Plan 213 §E2 — the qualification driver derives
+    /// real-outbound/inbound installed, inbound receive count, and
+    /// expiry facts from this typed product summary instead of
+    /// asserting literal success. Read-only; never exposes secret
+    /// material.
+    pub fn service_router_network_summary(&self, spec_id: &str) -> Option<RouterNetworkSummary> {
+        let destination_id = self.manager.service_destination_id(spec_id)?;
+        self.manager.service_router_network_summary(destination_id)
     }
 
     /// Pumps the production inbound pipeline once. The driver calls
@@ -646,6 +797,10 @@ impl ServiceProduct {
         };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
+            I2npBody::Garlic(_) => {
+                self.handle_direct_garlic(&message, &bytes).await;
+                return;
+            }
             _ => return,
         };
         // Plan 210 §F — preserve the receive tunnel id so the
@@ -676,6 +831,79 @@ impl ServiceProduct {
                 self.handle_recovered_envelope(receive_tunnel_id, bytes)
                     .await;
             }
+        }
+    }
+
+    /// Handles one direct (non-tunneled) Garlic message from the
+    /// SSU2 session. Gw-self peers (like the controlled reference)
+    /// send Garlic replies directly instead of via tunnels when
+    /// their outbound tunnel pool is not ready; dropping them would
+    /// stall every fast-lane handshake. The message is normalized
+    /// to the standard encoding the canonical dispatcher requires,
+    /// then attributed by bounded try-each over the committed
+    /// service set: ECIES authentication rejects cross-service
+    /// misattribution without state effects, and per-service
+    /// dispatch fails closed without router state.
+    async fn handle_direct_garlic(&mut self, message: &I2npMessage, raw_bytes: &[u8]) {
+        use i2pr_proto::I2npHeader;
+        let standard_bytes: Vec<u8> = match message.header() {
+            I2npHeader::Standard { .. } => raw_bytes.to_vec(),
+            I2npHeader::ShortTransport { .. } => {
+                // Re-frame the short header as standard (same body,
+                // same message id, seconds-to-millis expiration).
+                // ShortSsu never arrives here (decode rejects it).
+                let (message_id, expiration_secs) = match message.header() {
+                    I2npHeader::ShortTransport {
+                        message_id,
+                        expiration_seconds,
+                        ..
+                    } => (message_id, expiration_seconds),
+                    _ => return,
+                };
+                let rebuilt = match I2npMessage::new_standard(
+                    message_id,
+                    Date::from_millis(u64::from(expiration_secs).saturating_mul(1_000)),
+                    match message.body() {
+                        I2npBody::Garlic(body) => I2npBody::Garlic(body.clone()),
+                        _ => return,
+                    },
+                ) {
+                    Ok(rebuilt) => rebuilt,
+                    Err(_) => return,
+                };
+                match rebuilt.encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE) {
+                    Ok(bytes) => bytes,
+                    Err(_) => return,
+                }
+            }
+            _ => return,
+        };
+        let now_secs = wall_secs() as u32;
+        let now_ms = wall_ms();
+        // Bounded try-each over the committed service set (client
+        // and server). The first ECIES-authenticated dispatch wins;
+        // unauthenticated candidates fail closed with no state
+        // effects, so attribution is exact.
+        for (destination_id, is_server) in self.manager.router_service_candidates() {
+            let report = match self.manager.dispatch_router_inbound_to_canonical_streaming(
+                destination_id,
+                &standard_bytes,
+                now_secs,
+                now_ms,
+                is_server,
+            ) {
+                Ok(report) => report,
+                Err(_) => continue,
+            };
+            if !report.garlic_authenticated {
+                continue;
+            }
+            if report.streaming_packets_accepted > 0
+                && let Some(capability) = self.manager.router_delivery()
+            {
+                capability.note_inbound_dispatched().await;
+            }
+            return;
         }
     }
 
@@ -729,6 +957,10 @@ impl ServiceProduct {
                     return;
                 };
                 let destination_id = runtime.destination_id;
+                // Plan 213: server profiles feed the receiver mirror
+                // (the polled server loop accepts there); clients feed
+                // the canonical manager that owns the outbound state.
+                let is_server = self.manager.spec_is_server(&runtime.spec_id);
                 // Plan 212 §14 — authenticate + drain + receive
                 // into the canonical service StreamingManager via
                 // the manager wrapper (which also wakes the
@@ -739,9 +971,12 @@ impl ServiceProduct {
                     &bytes,
                     now_secs,
                     now_ms,
+                    is_server,
                 ) {
                     Ok(report) => report,
-                    Err(_) => return,
+                    Err(_) => {
+                        return;
+                    }
                 };
                 // Plan 212 §14 step 8 — advance the typed
                 // `remote_inbound_dispatched` counter ONLY after
@@ -804,10 +1039,21 @@ struct RouterPeerMaterial {
 /// preparation for real tunnel builds. It must NOT perform an
 /// application LeaseSet2 lookup; per-service lookup is
 /// `resolve_remote_destination_for_service`.
+///
+/// `local_router_hash` is OUR controlled router hash (the caller
+/// derives it from the router bundle that signed the controlled
+/// RouterInfo). It feeds `outbound_reply_router` /
+/// `originator_hash` on every build request so the reference
+/// routes build replies back to us. Deriving it from the
+/// reference RouterInfo instead would address our replies to the
+/// reference itself (Plan 213 P213-C corrective: the transcript
+/// showed the reference creating our endpoint while no install
+/// ever arrived).
 async fn dial_and_bootstrap_router_only(
     ssu2_handle: &mut Ssu2DaemonHandle,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     reference: &ReferencePeer,
+    local_router_hash: Hash,
     options: ServiceProductOptions,
 ) -> Result<RouterPeerMaterial, ServiceProductError> {
     let (peer_hash, peer_ssu2) = verify_reference_router_info(&reference.router_info_bytes)
@@ -839,7 +1085,6 @@ async fn dial_and_bootstrap_router_only(
         .as_bytes()
         .try_into()
         .map_err(|_| ServiceProductError::EncryptionKey)?;
-    let local_hash = router_info.router_identity().hash().unwrap_or(peer_hash);
 
     // Establish the authenticated session.
     let _ = Box::pin(ssu2_handle.dial(target, options.dial_timeout, &CancellationToken::new()))
@@ -878,7 +1123,7 @@ async fn dial_and_bootstrap_router_only(
     Ok(RouterPeerMaterial {
         peer_hash,
         encryption_key,
-        local_hash,
+        local_hash: local_router_hash,
     })
 }
 
@@ -903,8 +1148,73 @@ async fn dial_and_bootstrap_router_only(
 /// per-service routing installation is still required because each
 /// service owns independent ECIES/Streaming state. Never pre-seed
 /// the counted target LS2 directly in the service routing table.
+///
+/// Plan 213 P213-E — the lookup brackets the typed resolution
+/// accounting surface: `begin_resolution` advances
+/// `remote_lookup_started` through the typed seam before any
+/// network I/O, and the outcome reports `remote_lookup_succeeded`
+/// / `remote_lookup_failed` through the documented observation
+/// surface once the validated record is (or is not) installed.
+/// Without this bracket the real provision-time lookup ran
+/// silently and the qualification's lookup rows could only be
+/// asserted, never observed.
 #[allow(clippy::too_many_arguments)]
 async fn resolve_remote_destination_for_service(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &mut Ssu2DaemonHandle,
+    service_destination: i2pr_client::DestinationId,
+    destination_hash: DestinationHash,
+    options: ServiceProductOptions,
+) -> Result<(), ServiceProductError> {
+    let capability = manager.router_delivery();
+    let target_bytes = *destination_hash.as_bytes();
+    let now_ms = wall_ms();
+    let deadline_ms = now_ms.saturating_add(
+        options
+            .tunnel_deadline
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64,
+    );
+    let resolution = match &capability {
+        Some(capability) => Some(
+            capability
+                .begin_resolution(target_bytes, now_ms, deadline_ms)
+                .await
+                .map_err(|error| {
+                    ServiceProductError::Provisioning(format!("lookup resolution: {error:?}"))
+                })?,
+        ),
+        None => None,
+    };
+    let outcome = resolve_remote_destination_for_service_inner(
+        manager,
+        coordinator,
+        destination_tunnels,
+        ssu2_handle,
+        service_destination,
+        destination_hash,
+        options,
+    )
+    .await;
+    if let Some(capability) = &capability {
+        if let Some(resolution) = resolution {
+            capability.complete_resolution(resolution.id).await;
+        }
+        capability
+            .record_observation(if outcome.is_ok() {
+                "remote_lookup_succeeded"
+            } else {
+                "remote_lookup_failed"
+            })
+            .await;
+    }
+    outcome
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resolve_remote_destination_for_service_inner(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
@@ -1123,7 +1433,11 @@ async fn provision_all_service_router_material(
         let bridge = ShortBuildI2npBridge::new();
         let mut rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(u64::from(ob_creator)));
         let delivery = ssu2_handle.delivery().clone();
-        let message_base: u32 = ob_creator ^ 0x51A7_0000;
+        // Plan 213 — mask the low two bits before OR-ing the
+        // direction bit so outbound (`| 0x01`) and inbound
+        // (`| 0x02`) message ids stay distinct for every service
+        // (later allocator ids already carry low bits).
+        let message_base: u32 = (ob_creator ^ 0x51A7_0000) & !0x03;
         let outbound = BuildRequest {
             direction: BuildDirection::Outbound,
             peer: PeerBuildMaterial {
@@ -1340,8 +1654,29 @@ async fn provision_all_service_router_material(
     // LS2 publication. Resolved after ALL services hold real
     // material so multi-service targets coexist. Failures here
     // fail the provisioning pass atomically (caller tears down).
+    //
+    // Plan 213 §C/§7 — server profiles publish their real local
+    // LS2 unconditionally so independent routers can initiate
+    // toward them through ordinary LeaseSet lookup (Direction B).
+    // A server spec carries no configured destination reference
+    // (`spec_reference_for_service` returns `None`), so gating
+    // publication on that lookup would skip every real server.
     for runtime in runtimes {
         let spec_id = runtime.spec_id.clone();
+        if manager.spec_is_server(&spec_id) {
+            publish_service_ls2_for_service(
+                manager,
+                destination_tunnels,
+                ssu2_handle,
+                runtime.destination_id,
+                options,
+            )
+            .await
+            .map_err(|error| {
+                ServiceProductError::Provisioning(format!("{spec_id} publication: {error:?}"))
+            })?;
+            continue;
+        }
         // Look up the spec's configured destination reference from
         // the manager's committed specs.
         let Some(reference) = manager.spec_reference_for_service(&spec_id) else {
@@ -1352,31 +1687,16 @@ async fn provision_all_service_router_material(
             // remote path.
             continue;
         };
-        let is_server = manager.spec_is_server(&spec_id);
-        if !is_server {
-            resolve_remote_destination_for_service(
-                manager,
-                coordinator,
-                destination_tunnels,
-                ssu2_handle,
-                runtime.destination_id,
-                DestinationHash::from_hash(Hash::from_bytes(target_hash)),
-                options,
-            )
-            .await?;
-        } else {
-            publish_service_ls2_for_service(
-                manager,
-                coordinator,
-                destination_tunnels,
-                runtime.destination_id,
-                options,
-            )
-            .await
-            .map_err(|error| {
-                ServiceProductError::Provisioning(format!("{spec_id} publication: {error:?}"))
-            })?;
-        }
+        resolve_remote_destination_for_service(
+            manager,
+            coordinator,
+            destination_tunnels,
+            ssu2_handle,
+            runtime.destination_id,
+            DestinationHash::from_hash(Hash::from_bytes(target_hash)),
+            options,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1393,10 +1713,18 @@ async fn provision_all_service_router_material(
 /// publication implementation exists in service tunnels.
 /// Client-only Destinations never call this path merely to receive
 /// replies (their real LS2 rides in Streaming establishment).
+///
+/// Plan 213 §C — the recorded intent alone never stores bytes at
+/// the floodfill, so the dispatch below composes the publication
+/// cells through the service's real router-backed outbound role
+/// (mirroring `resolve_remote_destination_for_service`) and hands
+/// every cell to the shared router delivery service. Transport
+/// admission (`Accepted`) is the bounded success signal, matching
+/// the proven destination external lane.
 async fn publish_service_ls2_for_service(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
-    _coordinator: &mut ExploratoryBuildCoordinator,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &mut Ssu2DaemonHandle,
     service_destination: i2pr_client::DestinationId,
     options: ServiceProductOptions,
 ) -> Result<(), ServiceProductError> {
@@ -1451,28 +1779,58 @@ async fn publish_service_ls2_for_service(
     };
     // Compose the DatabaseStore through the service's real
     // router-backed outbound tunnel (borrow stays inside the bridge
-    // closure). ACK/persistence follows the coordinator's bounded
-    // policy; transport admission alone is never success. The
-    // dispatch is handed to the shared router delivery service;
+    // closure, mirroring `resolve_remote_destination_for_service`).
+    // The dispatch is handed to the shared router delivery service;
     // no second publication implementation exists.
-    let mut rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(u64::from(request_id as u32)));
-    // Borrow the coordinator mutably for composition requires the
-    // destination_tunnels lock + bridge lock nesting. Compose the
-    // publication cells inside the bridge borrow, then send them
-    // outside the locks through the delivery service snapshot.
-    // For the controlled lane the publication dispatch targets the
-    // floodfill first hop; reuse the manager's router delivery
-    // handle snapshot taken before composition.
-    let _ = &mut rng;
-    let _ = options;
-    // NOTE: full cell-level publication dispatch (compose +
-    // deliver + ACK wait) executes in the external lane through
-    // the same `compose_ls2_publication_via_tunnel` seam the
-    // destination external driver proves. The provisioning pass
-    // records the publication intent (`begin_ls2_publication`)
-    // and returns success; the ACK wait is driven by the
-    // production inbound pump (`poll_inbound`) in the live lane.
-    // This keeps provisioning bounded and avoids holding async
-    // locks across the ACK deadline in unit-test contexts.
+    let floodfill_hash = Hash::from_bytes(*floodfill.as_bytes());
+    let mut publication_rng = ChaCha8Rng::seed_from_u64(
+        wall_secs()
+            .wrapping_add(u64::from(request_id as u32))
+            .wrapping_add(0x2130),
+    );
+    let dispatch = {
+        let mut coord_guard = destination_tunnels.lock().await;
+        let deadline = Deadline::new(options.tunnel_deadline)
+            .map_err(|_| ServiceProductError::Provisioning("publication deadline".to_owned()))?;
+        manager
+            .with_destination_bridge(service_destination, |bridge| {
+                let role = bridge.router_outbound_role_ref()?;
+                if !bridge.has_router_network_state(wall_ms()) {
+                    return None;
+                }
+                let (dispatch, _proof) = coord_guard
+                    .compose_ls2_publication_via_tunnel(
+                        request_id,
+                        floodfill_hash,
+                        role.role(),
+                        0x51A7_9301,
+                        wall_ms().saturating_add(60_000),
+                        deadline,
+                        &mut publication_rng,
+                        wall_ms(),
+                    )
+                    .ok()?;
+                Some(dispatch)
+            })
+            .flatten()
+            .ok_or_else(|| {
+                ServiceProductError::Provisioning("publication compose failed".to_owned())
+            })?
+    };
+    let delivery = ssu2_handle.delivery().clone();
+    for cell_delivery in &dispatch.deliveries {
+        let request = crate::router_i2np::RouterDeliveryRequest::new(
+            cell_delivery.target(),
+            cell_delivery.message_bytes().to_vec(),
+            options.delivery_timeout,
+        )
+        .map_err(|_| ServiceProductError::Provisioning("publication delivery".to_owned()))?;
+        let outcome = delivery.deliver(request, &CancellationToken::new());
+        if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+            return Err(ServiceProductError::Provisioning(
+                "publication transport rejected".to_owned(),
+            ));
+        }
+    }
     Ok(())
 }

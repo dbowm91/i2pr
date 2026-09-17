@@ -1155,7 +1155,7 @@ else
     echo "evidence check failed: Plan 212 driver may log peer key material" >&2
     failures=$((failures + 1))
   fi
-  for label in plan212-i2pd-pin-ok plan212-router-bootstrap-ok plan212-service-destination-hash plan212-real-outbound-installed plan212-real-inbound-installed plan212-local-ls2-real-lease-count plan212-inbound-owner-registered plan212-remote-ls2-lookup-started plan212-remote-ls2-lookup-succeeded plan212-direction-a-stream-established plan212-direction-a-small-digest-match plan212-direction-a-large-digest-match plan212-direction-a-inbound-streaming-accepted plan212-direction-b-local-ls2-published plan212-direction-b-inbound-owner-hit plan212-direction-b-stream-established plan212-direction-b-small-digest-match plan212-direction-b-large-digest-match plan212-orphan-receive-delta-zero plan212-local-coowned-delta-zero plan212-unknown-peer-delta-zero plan212-resource-baseline-clean; do
+  for label in plan212-router-bootstrap-ok plan212-service-destination-hash plan212-real-outbound-installed plan212-real-inbound-installed plan212-local-ls2-real-lease-count plan212-inbound-owner-registered plan212-remote-ls2-lookup-started plan212-remote-ls2-lookup-succeeded plan212-direction-a-stream-established plan212-direction-a-small-digest-match plan212-direction-a-large-digest-match plan212-direction-a-inbound-streaming-accepted plan212-direction-b-local-ls2-published plan212-direction-b-inbound-owner-hit plan212-direction-b-stream-established plan212-direction-b-small-digest-match plan212-direction-b-large-digest-match plan212-orphan-receive-delta-zero plan212-local-coowned-delta-zero plan212-unknown-peer-delta-zero plan212-resource-baseline-clean; do
     if ! grep -q -F "${label}" "${PLAN212_DRIVER}"; then
       echo "evidence check failed: Plan 212 driver omits documented §21 evidence key '${label}'" >&2
       failures=$((failures + 1))
@@ -1163,8 +1163,202 @@ else
   done
 fi
 
+# 27. Plan 213 §12 — generic external qualification harness
+# completion and evidence corrective. The counted driver must be
+# a real application-level proof (local TCP I/O both directions
+# with concurrent production inbound pumping), mandatory facts
+# must derive from executed I/O / typed summaries / counter
+# deltas / subprocess exit codes, and the standalone runner must
+# verify the exact pin by command and validate every mandatory
+# row including exactly one terminal P213-* classification.
+PLAN213_RUNNER="${REPO_ROOT}/tests/integration/service-tunnels/run-plan213-generic.sh"
+PLAN213_FIXTURE="${REPO_ROOT}/tests/integration/service-tunnels/clients/sam_stream_fixture.py"
+PLAN213_ECHO_FIXTURE="${REPO_ROOT}/tests/integration/service-tunnels/fixtures/echo_fixture.py"
+if [[ ! -f "${PLAN213_RUNNER}" ]]; then
+  echo "evidence check failed: Plan 213 standalone runner missing: ${PLAN213_RUNNER}" >&2
+  failures=$((failures + 1))
+fi
+if [[ ! -f "${PLAN213_FIXTURE}" ]]; then
+  echo "evidence check failed: Plan 213 SAM STREAM fixture missing: ${PLAN213_FIXTURE}" >&2
+  failures=$((failures + 1))
+fi
+# 27.1 — the immutable-false Direction A/B scaffold is gone from
+# the counted driver (a loop that only polls inbound and sleeps
+# is not a qualification proof).
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" |
+   grep -q -F 'direction_a_established = false'; then
+  echo "evidence check failed: Plan 213 driver retains the immutable direction_a_established scaffold (Plan 213 §5)" >&2
+  failures=$((failures + 1))
+fi
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" |
+   grep -q -F 'direction_b_established = false'; then
+  echo "evidence check failed: Plan 213 driver retains the immutable direction_b_established scaffold (Plan 213 §5)" >&2
+  failures=$((failures + 1))
+fi
+# 27.2 — no mandatory success row is a same-line literal pass.
+# Conditioned `if cond { "1" } else { "0" }` rows are allowed;
+# bare `, "1")` value literals are not.
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" |
+   grep -q -E '(write_subfact|append_evidence)\(&evidence_dir, "plan2[12][^"]*", "1"\)'; then
+  echo "evidence check failed: Plan 213 driver writes a literal success row (Plan 213 §9 forbids synthetic evidence)" >&2
+  failures=$((failures + 1))
+fi
+# 27.3 — pin verification belongs in the shell runner; the Rust
+# driver must not manufacture a pin-ok row.
+if grep -q -F 'plan212-i2pd-pin-ok' "${PLAN212_DRIVER}" ||
+   grep -q -F 'plan213-i2pd-pin-ok' "${PLAN212_DRIVER}"; then
+  echo "evidence check failed: Plan 213 driver must not manufacture a pin-ok row (Plan 213 §E1)" >&2
+  failures=$((failures + 1))
+fi
+# 27.4 — extended anti-shadow rule: the counted driver must not
+# construct routing/session/fabric objects either (comment and
+# doc lines excluded so the documented prohibition may be named).
+for forbidden in 'DestinationRouting::new' 'EciesSessionManager::new' 'SamLocalProductFabric::' 'SamLocalProductFabric {'; do
+  if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" | grep -q -F "${forbidden}"; then
+    echo "evidence check failed: Plan 213 driver must not construct ${forbidden} (Plan 213 §3)" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 27.5 — Direction A must perform real local TCP application I/O
+# through the GenericClient listener. (`grep -c`, not `grep -q`,
+# after the pipe: under `pipefail` an early-exiting `grep -q`
+# consumer would SIGPIPE the producer and flip the test.)
+for required in 'TcpStream' 'write_all' 'read_exact'; do
+  if [[ $(grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${PLAN212_DRIVER}" | grep -c -F "${required}") -eq 0 ]]; then
+    echo "evidence check failed: Plan 213 driver has no real local TCP application I/O (${required} missing; Plan 213 §A1)" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 27.6 — Direction B must initiate through the independent i2pd
+# SAM STREAM fixture as a subprocess, never an in-tree client.
+if ! grep -q -F 'sam_stream_fixture' "${PLAN212_DRIVER}"; then
+  echo "evidence check failed: Plan 213 driver does not drive the independent SAM STREAM fixture (Plan 213 §C2)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'Command::new' "${PLAN212_DRIVER}"; then
+  echo "evidence check failed: Plan 213 driver does not spawn the fixture as a subprocess (Plan 213 §C2)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'STREAM CONNECT' "${PLAN213_FIXTURE}"; then
+  echo "evidence check failed: SAM STREAM fixture has no STREAM CONNECT initiator path (Plan 213 §C2)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'STREAM ACCEPT' "${PLAN213_FIXTURE}"; then
+  echo "evidence check failed: SAM STREAM fixture has no STREAM ACCEPT server path (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'expected-connections' "${PLAN213_FIXTURE}"; then
+  echo "evidence check failed: SAM STREAM fixture lost its bounded connection count (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+# 27.7 — target-side fixture digest validation for Direction B
+# (the pass must not rely only on the initiator echo).
+if ! grep -q -F 'target-observed' "${PLAN212_DRIVER}"; then
+  echo "evidence check failed: Plan 213 driver has no target-observed rows (Plan 213 §D)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F -- '--facts' "${PLAN213_ECHO_FIXTURE}"; then
+  echo "evidence check failed: echo fixture lost its Plan 213 §D target-digest facts surface" >&2
+  failures=$((failures + 1))
+fi
+# 27.8 — Direction A and B must have separate counter baseline
+# windows (no single aggregate snapshot attributed to both).
+for window in 'before_a' 'after_a' 'after_b'; do
+  if ! grep -q -F "${window}" "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 213 driver lost its per-direction counter window ${window} (Plan 213 §E3)" >&2
+    failures=$((failures + 1))
+  fi
+done
+COUNTER_SNAPSHOTS=$(grep -E -c 'remote_counters\(\)\.await' "${PLAN212_DRIVER}" || true)
+if (( COUNTER_SNAPSHOTS < 3 )); then
+  echo "evidence check failed: Plan 213 driver needs at least 3 counter snapshots for two independent windows (found ${COUNTER_SNAPSHOTS})" >&2
+  failures=$((failures + 1))
+fi
+# 27.9 — exact-pin command verification lives in the runner.
+for required in 'source-revision.txt' 'rev-parse HEAD' '--version' 'status --porcelain'; do
+  if ! grep -q -F -- "${required}" "${PLAN213_RUNNER}"; then
+    echo "evidence check failed: Plan 213 runner lost its exact-pin command verification (${required}; Plan 213 §E1)" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 27.10 — a skip outcome is never success in the Plan 213 lane.
+if grep -q -F 'skip-generic-destination-not-provisioned' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner treats a skipped generic gate as an outcome (Plan 213 §12 item 10)" >&2
+  failures=$((failures + 1))
+fi
+# 27.11 — no private destination material enters uploaded
+# evidence: the raw i2pd log stays in scratch and the runner
+# audits evidence for private markers / overlong tokens.
+if ! grep -q -F 'I2PD_LOG="${SCRATCH}' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner must keep the raw i2pd log in scratch (Plan 213 §E1/§13)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'plan213-no-secret-leak' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner lost its no-secret evidence audit (Plan 213 §12 item 11)" >&2
+  failures=$((failures + 1))
+fi
+# 27.12 — the runner validates exactly one terminal P213-*
+# classification per run.
+if ! grep -q -F 'plan213-terminal-classification' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner does not validate the terminal classification (Plan 213 §14)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'P213-N-passed' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner does not gate on P213-N-passed (Plan 213 §14)" >&2
+  failures=$((failures + 1))
+fi
+# 27.13 — the driver emits the documented Plan 213 §13 rows.
+for label in plan213-direction-a-client-exit plan213-direction-a-target-observed-small plan213-direction-a-target-observed-large plan213-direction-b-reference-connect-exit plan213-direction-b-target-observed-small plan213-direction-b-target-observed-large plan213-direction-a-remote-outbound-delta plan213-direction-a-remote-inbound-delta plan213-direction-b-remote-outbound-delta plan213-direction-b-remote-inbound-delta plan213-terminal-classification plan213-product-listener-bound; do
+  if ! grep -q -F "${label}" "${PLAN212_DRIVER}"; then
+    echo "evidence check failed: Plan 213 driver omits documented §13 row '${label}'" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 27.14 — the runner owns the command-derived pin/source rows.
+for label in plan213-source-head plan213-i2pd-pin-sha plan213-i2pd-version plan213-i2pd-cache-clean plan213-reference-router-ready plan213-reference-sam-ready; do
+  if ! grep -q -F "${label}" "${PLAN213_RUNNER}"; then
+    echo "evidence check failed: Plan 213 runner omits command-derived row '${label}'" >&2
+    failures=$((failures + 1))
+  fi
+done
+# 27.15 — Plan 213 P213-C corrective lock: the production
+# composition must address build replies to OUR controlled router
+# hash (derived from the signing bundle), never to a hash derived
+# from the reference RouterInfo (that addresses the reference
+# itself, so installs never arrive while the reference still
+# creates the endpoint).
+if grep -E -v '^\s*(//|/\*|/\*!|/\*\*|\*)' "${SERVICE_PRODUCT_RS}" |
+   grep -q -F 'router_info.router_identity().hash()'; then
+  echo "evidence check failed: service_product must not derive the local router hash from the reference RouterInfo (Plan 213 P213-C)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'local_router_hash' "${SERVICE_PRODUCT_RS}"; then
+  echo "evidence check failed: service_product lost its bundle-derived local_router_hash (Plan 213 P213-C)" >&2
+  failures=$((failures + 1))
+fi
+# 27.16 — accept ordering: the driver paces fixture ACCEPTs with
+# trigger files (the proven Plan 193 accept-after-initiation
+# ordering, never a minute-stale pending ACCEPT), and the runner
+# wires the trigger prefix into both sides.
+if ! grep -q -F 'accept_trigger' "${PLAN212_DRIVER}"; then
+  echo "evidence check failed: Plan 213 driver lost its ACCEPT trigger pacing (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F -- '--accept-trigger' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner does not wire --accept-trigger into the fixture (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'PLAN213_A_TRIGGER' "${PLAN213_RUNNER}"; then
+  echo "evidence check failed: Plan 213 runner does not export PLAN213_A_TRIGGER to the driver (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -F 'accept_trigger' "${PLAN213_FIXTURE}"; then
+  echo "evidence check failed: SAM STREAM fixture lost its trigger-paced ACCEPT path (Plan 213 §B1)" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green"
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green"

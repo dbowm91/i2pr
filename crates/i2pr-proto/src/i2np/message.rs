@@ -231,15 +231,27 @@ impl I2npMessage {
 
     /// Decodes a complete NTCP2/SSU2 nine-byte short-header message.
     ///
-    /// Plan 193: opaque `Data` / `Garlic` bodies travel **raw** in this
-    /// form (no `u32` length framing). Exact-pinned i2pd 2.61.0 parses
-    /// the 9-byte header inside ECIES cloves and then hands the
-    /// remaining bytes directly to the content parser
-    /// (`Garlic.cpp:1016-1028` ->
-    /// `Destination.cpp:1192-1236`): an extra `u32` shifts the I2CP
-    /// Data body by four bytes, so i2pd reads the source-port low
-    /// byte as the protocol and drops the message with
-    /// `Destination: Data: Unexpected protocol`. The `u32` framing in
+    /// Plan 193: opaque `Data` bodies travel **raw** in this form (no
+    /// `u32` length framing). Exact-pinned i2pd 2.61.0 parses the
+    /// 9-byte header inside ECIES cloves and then hands the remaining
+    /// bytes directly to the content parser (`Garlic.cpp:1016-1028`
+    /// -> `Destination.cpp:1192-1236`): an extra `u32` shifts the
+    /// I2CP Data body by four bytes, so i2pd reads the source-port
+    /// low byte as the protocol and drops the message with
+    /// `Destination: Data: Unexpected protocol`.
+    ///
+    /// Plan 213 corrective: `Garlic` bodies keep the `u32` length
+    /// framing in **both** transport forms. Exact-pinned i2pd 2.61.0
+    /// always frames a direct ECIES garlic as `[u32 BE length][ECIES
+    /// message]` (`ECIESX25519AEADRatchetSession::WrapSingleMessage`
+    /// ends with `htobe32buf (m->GetPayload (), len)`) and always
+    /// strips it on receipt (`GarlicDestination::HandleGarlicMessage`
+    /// reads `bufbe32toh (buf)` then `buf += 4`), independent of the
+    /// I2NP header form. A short-form direct garlic whose `u32` is
+    /// left in place misparses downstream: the length reads as an
+    /// 8-byte session tag, tag lookup misses, and the message falls
+    /// into the New Session arm with a 4-byte-shifted representative
+    /// (`AuthenticationFailed`). The `u32` framing in
     /// `I2npBody::encode_into` stays correct for the
     /// standard-transport form only.
     pub fn decode_short_transport(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
@@ -253,9 +265,13 @@ impl I2npMessage {
             MessageType::Data => I2npBody::Data(OpaqueMessageBody {
                 payload: DeferredPayload::new(payload.to_vec(), maximum)?,
             }),
-            MessageType::Garlic => I2npBody::Garlic(OpaqueMessageBody {
-                payload: DeferredPayload::new(payload.to_vec(), maximum)?,
-            }),
+            MessageType::Garlic => {
+                let body_maximum = maximum.min(MAX_I2NP_PAYLOAD_SIZE);
+                let garlic = decode_exact(payload, body_maximum, |cursor| {
+                    decode_length_prefixed_u32(cursor, body_maximum, "Garlic payload")
+                })?;
+                I2npBody::Garlic(OpaqueMessageBody { payload: garlic })
+            }
             _ => decode_body(message_type, payload, maximum)?,
         };
         Ok(Self {
@@ -1087,6 +1103,46 @@ mod tests {
             I2npMessage::decode_short_transport(&transport_bytes, MAX).unwrap(),
             transport
         );
+    }
+
+    #[test]
+    fn short_transport_garlic_strips_u32_length_framing() {
+        // Plan 213 corrective: exact-pinned i2pd 2.61.0 frames a
+        // direct ECIES garlic as `[u32 BE length][ECIES message]` in
+        // both I2NP header forms
+        // (`ECIESX25519AEADRatchetSession::WrapSingleMessage` ends
+        // with `htobe32buf (m->GetPayload (), len)`). The short-form
+        // decoder must strip the framing exactly like the standard
+        // form; otherwise the length reads as a session tag and the
+        // message falls into the New Session arm shifted by 4 bytes.
+        let inner = vec![0x9d; 48];
+        let mut wire = vec![MessageType::Garlic.code()];
+        wire.extend_from_slice(&7u32.to_be_bytes());
+        wire.extend_from_slice(&0x0506_0708u32.to_be_bytes());
+        wire.extend_from_slice(&(inner.len() as u32).to_be_bytes());
+        wire.extend_from_slice(&inner);
+        let decoded = I2npMessage::decode_short_transport(&wire, MAX).unwrap();
+        match decoded.body() {
+            I2npBody::Garlic(body) => assert_eq!(body.payload.as_bytes(), inner.as_slice()),
+            other => panic!("short garlic must strip u32 framing, got {other:?}"),
+        }
+        // `Data` bodies stay raw in the short form (no `u32`
+        // framing in either form; see the Plan 193 comment above).
+        let mut data_wire = vec![MessageType::Data.code()];
+        data_wire.extend_from_slice(&7u32.to_be_bytes());
+        data_wire.extend_from_slice(&0x0506_0708u32.to_be_bytes());
+        data_wire.extend_from_slice(&inner);
+        let decoded = I2npMessage::decode_short_transport(&data_wire, MAX).unwrap();
+        match decoded.body() {
+            I2npBody::Data(body) => assert_eq!(body.payload.as_bytes(), inner.as_slice()),
+            other => panic!("short data must stay raw, got {other:?}"),
+        }
+        // A truncated garlic length prefix fails closed.
+        let mut truncated = vec![MessageType::Garlic.code()];
+        truncated.extend_from_slice(&7u32.to_be_bytes());
+        truncated.extend_from_slice(&0x0506_0708u32.to_be_bytes());
+        truncated.extend_from_slice(&[0, 0, 0]);
+        assert!(I2npMessage::decode_short_transport(&truncated, MAX).is_err());
     }
 
     #[test]

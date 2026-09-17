@@ -74,6 +74,16 @@ pub const BLOCK_TYPE_OPTIONS: u8 = 5;
 /// specification. Plan 121 does not implement it; the codec rejects
 /// any received block.
 pub const BLOCK_TYPE_TERMINATION: u8 = 4;
+/// The `Ack Request` ECIES payload block type (`9`, per
+/// exact-pinned i2pd 2.61.0
+/// `ECIESX25519AEADRatchetSession::CreatePayload`: `[9][len=1
+/// u16][flags u8]`). i2pd attaches it to Garlic messages carrying
+/// payload when it wants ECIES-level delivery confirmation. The
+/// codec parses and skips the block (Plan 213 corrective): the
+/// Streaming protocol above carries its own ACKs, so dropping the
+/// ECIES-level request is safe for short transfers; emitting
+/// reciprocal `Ack` blocks is deferred.
+pub const BLOCK_TYPE_ACK_REQUEST: u8 = 9;
 /// The `Padding` ECIES payload block type.
 pub const BLOCK_TYPE_PADDING: u8 = 254;
 /// The `MessageNumbers` block type optionally required by the I2P
@@ -94,6 +104,10 @@ pub enum EciesPayloadBlock {
     /// body until Plan 121 §4 explicitly opts in to a specific
     /// options subset.
     Options,
+    /// I2P ECIES Ack Request block; parsed and skipped (Plan 213
+    /// corrective). The body is intentionally not retained: delivery
+    /// confirmation stays the Streaming layer's job.
+    AckRequest,
 }
 
 /// A typed Garlic Clove block: 1-byte delivery-flag, 1-byte
@@ -181,6 +195,7 @@ impl EciesPayloadBlock {
             Self::GarlicClove(_) => BLOCK_TYPE_GARLIC_CLOVE,
             Self::Padding(_) => BLOCK_TYPE_PADDING,
             Self::Options => BLOCK_TYPE_OPTIONS,
+            Self::AckRequest => BLOCK_TYPE_ACK_REQUEST,
         }
     }
 
@@ -191,6 +206,7 @@ impl EciesPayloadBlock {
             Self::GarlicClove(value) => 1 + value.delivery.body_len() + value.message.len(),
             Self::Padding(bytes) => bytes.len(),
             Self::Options => 0,
+            Self::AckRequest => 0,
         }
     }
 
@@ -242,6 +258,7 @@ impl EciesPayloadBlock {
             }
             BLOCK_TYPE_PADDING => Ok(Self::Padding(body.to_vec())),
             BLOCK_TYPE_OPTIONS => Ok(Self::Options),
+            BLOCK_TYPE_ACK_REQUEST => Ok(Self::AckRequest),
             BLOCK_TYPE_TERMINATION | BLOCK_TYPE_MESSAGE_NUMBERS => Err(CodecError::Unsupported {
                 offset: 0,
                 context: "ECIES payload block type",
@@ -270,6 +287,7 @@ impl fmt::Display for EciesPayloadBlock {
             ),
             Self::Padding(bytes) => write!(formatter, "Padding({} bytes)", bytes.len()),
             Self::Options => formatter.write_str("Options"),
+            Self::AckRequest => formatter.write_str("AckRequest"),
         }
     }
 }
@@ -428,6 +446,10 @@ impl EciesPayloadSequence {
                     EciesPayloadBlock::Options => {
                         // No body.
                     }
+                    EciesPayloadBlock::AckRequest => {
+                        // No body on emit; the parsed flags byte is
+                        // intentionally not retained (Plan 213).
+                    }
                 }
             }
             Ok(())
@@ -516,6 +538,55 @@ mod tests {
         assert_eq!(cloves.len(), 1);
         assert_eq!(cloves[0].delivery, GarlicDelivery::Destination(dest));
         assert_eq!(cloves[0].message, vec![0xCD; 7]);
+    }
+
+    #[test]
+    fn ack_request_block_is_skipped_and_clove_survives() {
+        // Plan 213 corrective: exact-pinned i2pd 2.61.0 attaches
+        // `[9][len=1][flags]` Ack Request blocks to Garlic messages
+        // carrying payload. The codec must skip the block and still
+        // surface the Garlic Clove (previously the whole payload was
+        // rejected with `Unsupported`).
+        let wire: Vec<u8> = vec![
+            BLOCK_TYPE_DATETIME,
+            0x00,
+            0x04,
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+            BLOCK_TYPE_ACK_REQUEST,
+            0x00,
+            0x01,
+            0x00,
+            BLOCK_TYPE_GARLIC_CLOVE,
+            0x00,
+            0x06,
+            0x00,
+            0xAB,
+            0xCD,
+            0xCD,
+            0xCD,
+            0xCD,
+        ];
+        let decoded =
+            EciesPayloadSequence::decode(&wire, wire.len(), true).expect("decode skips ackreq");
+        let cloves: Vec<_> = decoded
+            .blocks()
+            .iter()
+            .filter_map(|b| match b {
+                EciesPayloadBlock::GarlicClove(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cloves.len(), 1);
+        assert_eq!(cloves[0].delivery, GarlicDelivery::Local);
+        assert!(
+            decoded
+                .blocks()
+                .iter()
+                .any(|b| matches!(b, EciesPayloadBlock::AckRequest))
+        );
     }
 
     #[test]

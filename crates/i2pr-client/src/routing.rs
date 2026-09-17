@@ -965,6 +965,12 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
         "session manager must seal the pre-queried destination ECIES form"
     );
     let encrypted = encode_encrypted_outbound(&mut outbound_message);
+    // Plan 213 corrective: every I2NP Date on the wire (outer
+    // Garlic envelope, TunnelData cells) is a wall-clock Date the
+    // reference checks (`HandleI2NPMsg` drops expired messages).
+    // Derive them from the wall-clock `now_seconds`; `now_ms`
+    // stays the caller-domain clock for role-lifetime checks only.
+    let wire_expiration_ms = u64::from(now_seconds).saturating_mul(1_000);
     // Plan 124 owns the following invariant: the bytes the tunnel
     // data plane carries are the standard-encoded I2NP `Garlic`
     // message that wraps the ECIES-encrypted envelope, never the
@@ -973,7 +979,8 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
     let garlic_envelope = build_garlic_envelope(
         encrypted.message_bytes(),
         outbound_message_message_id(now_seconds, rng),
-        now_ms,
+        // Plan 213 corrective: wall-clock Date (see above).
+        wire_expiration_ms,
     )?;
     let garlic_i2np_bytes = garlic_envelope
         .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
@@ -994,7 +1001,7 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
             gateway: selected.gateway_router_hash,
         },
         message_id: tunnel_message_id,
-        expiration_ms: now_ms,
+        expiration_ms: wire_expiration_ms,
     };
     let cells = outbound
         .role

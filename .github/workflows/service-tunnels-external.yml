@@ -1,10 +1,10 @@
-name: Service-tunnels external interoperability (Plan 203)
+name: Service-tunnels external interoperability (Plans 211/213)
 
 on:
   workflow_dispatch:
     inputs:
       lane:
-        description: "Evidence lane: 'full' (default, includes the i2pd remote qualification) or 'local-only'"
+        description: "Evidence lane: 'local-only' (retained local matrix), 'router-generic' (Plan 213 generic qualification only), or 'full' (default, Plan 213 qualification then the M10 application matrix)"
         required: false
         default: "full"
 
@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   service-tunnels-external:
-    name: M10 positive remote HTTP + IRC application interop (Plan 203, Ubuntu)
+    name: M10 remote generic + application interop (Plans 211/213, Ubuntu)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -51,7 +51,14 @@ jobs:
       - name: Check service-tunnel acceptance evidence integrity
         run: bash scripts/check-service-tunnel-acceptance-evidence.sh
 
+      - name: Run Plan 213 router-backed generic qualification
+        if: github.event.inputs.lane == 'router-generic' || github.event.inputs.lane == 'full'
+        run: bash tests/integration/service-tunnels/run-plan213-generic.sh
+        env:
+          I2PR_M10_EXECUTION_ID: github-${{ github.run_id }}
+
       - name: Run M10 independent application/service matrix
+        if: github.event.inputs.lane != 'router-generic'
         run: |
           set -euo pipefail
           if [[ "${{ github.event.inputs.lane }}" == "local-only" ]]; then
@@ -62,10 +69,18 @@ jobs:
         env:
           I2PR_M10_EXECUTION_ID: github-${{ github.run_id }}
 
-      - name: Upload sanitized evidence
+      - name: Upload sanitized M10 evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: service-tunnels-external-evidence-${{ github.run_id }}
           path: target/interop/service-tunnels-evidence
+          if-no-files-found: warn
+
+      - name: Upload sanitized Plan 213 generic evidence
+        if: always() && (github.event.inputs.lane == 'router-generic' || github.event.inputs.lane == 'full')
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan213-generic-evidence-${{ github.run_id }}
+          path: target/interop/plan213-generic-evidence
           if-no-files-found: warn

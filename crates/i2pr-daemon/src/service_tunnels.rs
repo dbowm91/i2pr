@@ -988,6 +988,30 @@ impl ServiceTunnelManager {
         runtimes.get(service_id).map(|r| r.destination_id)
     }
 
+    /// Plan 213 — direct-Garlic attribution candidates: every
+    /// prepared service runtime with its server profile flag.
+    /// Bounded by the committed spec set; per-service dispatch
+    /// fails closed without router state, and ECIES authentication
+    /// rejects cross-service misattribution without state effects.
+    pub fn router_service_candidates(&self) -> Vec<(DestinationId, bool)> {
+        let runtimes: Vec<(DestinationId, String)> = self
+            .runtimes
+            .lock()
+            .map(|map| {
+                map.values()
+                    .map(|runtime| (runtime.destination_id, runtime.spec_id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        runtimes
+            .into_iter()
+            .map(|(destination_id, spec_id)| {
+                let is_server = self.spec_is_server(&spec_id);
+                (destination_id, is_server)
+            })
+            .collect()
+    }
+
     /// Plan 202 §5 — installs the shared router-owned remote
     /// delivery capability. The capability is wired once per
     /// daemon-wide owner (never per service) so every service the
@@ -1760,14 +1784,32 @@ impl ServiceTunnelManager {
     /// Plan 212 §6 — read-only diagnostic summary (destination
     /// hash, receive ids, expiry, counts). Never exposes secret
     /// material.
+    ///
+    /// Plan 213 §E2 — the manager additionally fills
+    /// `inbound_owner_registered` from the inbound tunnel owner
+    /// registry (receive TunnelId -> owning service runtime), which
+    /// the bridge cannot observe. The flag is true only when at
+    /// least one receive id is installed and every installed id
+    /// currently resolves to a registered owner.
     pub fn service_router_network_summary(
         &self,
         service_destination: DestinationId,
     ) -> Option<RouterNetworkSummary> {
-        self.with_destination_bridge(service_destination, |bridge| {
-            bridge.router_network_summary()
-        })
-        .flatten()
+        let mut summary = self
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_network_summary()
+            })
+            .flatten()?;
+        let receive_ids = self
+            .with_destination_bridge(service_destination, |bridge| {
+                bridge.router_inbound_receive_ids()
+            })
+            .unwrap_or_default();
+        summary.inbound_owner_registered = !receive_ids.is_empty()
+            && receive_ids
+                .iter()
+                .all(|id| self.inbound_tunnel_owner(*id).is_some());
+        Some(summary)
     }
 
     /// Plan 212 §14 — drives one recovered Garlic envelope through
@@ -1790,10 +1832,16 @@ impl ServiceTunnelManager {
         bytes: &[u8],
         now_seconds: u32,
         now_ms: u64,
+        is_server: bool,
     ) -> Result<RouterInboundDispatchReport, ServiceTunnelError> {
         let report = self
             .with_destination_bridge(service_destination, |bridge| {
-                bridge.dispatch_router_garlic_to_canonical_streaming(bytes, now_seconds, now_ms)
+                bridge.dispatch_router_garlic_to_canonical_streaming(
+                    bytes,
+                    now_seconds,
+                    now_ms,
+                    is_server,
+                )
             })
             .ok_or_else(|| {
                 ServiceTunnelError::InvalidConfig("service destination not installed".to_owned())
@@ -1952,6 +2000,15 @@ impl ServiceTunnelManager {
                     .ok_or(crate::service_delivery::RemoteDeliveryError::NotInstalled)?;
                 // Plan 206 §8 — verify the LS2 is cached in the
                 // authoritative store; refuse the request otherwise.
+                // Plan 213 — when the backend coordinator cache
+                // misses, fall back to the bridge-level mirror the
+                // authenticated inbound handshake installs
+                // (`install_remote_lease_set2_into_router_state`
+                // mirrors every validated inbound LS2 there). A
+                // just-authenticated peer can therefore answer
+                // without a second lookup round-trip; an absent
+                // record in both stores still fails closed with
+                // `NotCached`.
                 let coordinator_handle = backend.coordinator();
                 let cached_ls2 = {
                     let coordinator_guard = coordinator_handle.lock().await;
@@ -1960,7 +2017,16 @@ impl ServiceTunnelManager {
                             .ok_or(crate::service_delivery::RemoteDeliveryError::Decode(
                                 "invalid destination hash".to_owned(),
                             ))?;
-                    coordinator_guard.lease_store().get(&hash).cloned()
+                    coordinator_guard
+                        .lease_store()
+                        .get(&hash)
+                        .cloned()
+                        .or_else(|| {
+                            self.with_destination_bridge(service_destination, |bridge| {
+                                bridge.cached_router_remote_lease_set2(&hash)
+                            })
+                            .flatten()
+                        })
                 };
                 let cached_ls2 =
                     cached_ls2.ok_or(crate::service_delivery::RemoteDeliveryError::NotCached)?;
@@ -2087,9 +2153,19 @@ impl ServiceTunnelManager {
         }
         let mut os_rng = OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
+        // Plan 213 corrective: the I2NP cell expiration is a wall-clock
+        // Date the reference checks (`SSU2Session::HandleI2NPMsg`
+        // drops expired messages). `now_ms` is the process-local
+        // monotonic streaming clock and must never feed the wire
+        // Date; derive the expiration from the wall-clock
+        // `now_seconds` instead (monotonic-scale expirations read as
+        // 1970 dates and the reference drops every cell).
+        let wire_expiration_ms = u64::from(now_seconds)
+            .saturating_mul(1_000)
+            .saturating_add(60_000);
         let cell_dispatch = deliver_outbound_cells(
             &cells,
-            now_ms + 60_000,
+            wire_expiration_ms,
             Deadline::new(std::time::Duration::from_secs(60)).map_err(|error| {
                 crate::service_delivery::RemoteDeliveryError::DeliveryRejected(error.to_string())
             })?,
@@ -2250,6 +2326,12 @@ impl ServiceTunnelManager {
         // handshake with `NoMatchingListener`. Do not revert to a
         // non-zero port without a passing round-trip test behind
         // the revert.
+        //
+        // Plan 213: the listen binds the receiver mirror, which is
+        // also the manager the router-backed server inbound path
+        // feeds (server SYNs dispatch into `receiver_streaming`
+        // so the polled server loop below observes them through
+        // the same tested accept path as local traffic).
         let server_streaming_port = if is_server { Some(0_u16) } else { None };
         if let Some(port) = server_streaming_port {
             let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
@@ -5774,6 +5856,7 @@ mod plan212_router_backed_service_destination_tests {
                 &[0x00; 16],
                 1_700_000_000,
                 test_now_ms(),
+                false,
             )
         });
         assert!(
@@ -5856,6 +5939,7 @@ mod plan212_router_backed_service_destination_tests {
             &[0x00; 16],
             1_700_000_000,
             test_now_ms(),
+            false,
         );
         assert!(outcome.is_err(), "missing state fails before wake");
     }
@@ -5915,5 +5999,195 @@ mod plan212_router_backed_service_destination_tests {
         let runtimes = manager.prepare().await.expect("prepare");
         assert_eq!(runtimes.len(), 1);
         assert!(manager.inbound_tunnel_owner_pairs().is_empty());
+    }
+
+    /// Plan 213 §C1 — the public service-Destination accessor
+    /// returns hash/b32/base64 of the same identity. The base64
+    /// decodes to the canonical public encoding whose SHA-256 is
+    /// the returned hash, and the b32 label re-parses to that same
+    /// hash. No network, no external peer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan213_server_public_destination_is_mutually_consistent() {
+        let directory = temp_data_dir("plan213-pubinfo");
+        let manager = make_manager_with_one_server(directory.path(), "plan213-srv");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let public_b64 = manager
+            .service_destination_b64("plan213-srv")
+            .expect("public destination resolves");
+        let public_bytes =
+            i2pr_api::sam::base64::decode(&public_b64, 4096).expect("public base64 decodes");
+        let computed_hash = *i2pr_crypto::sha256(&public_bytes).as_bytes();
+        let identity_hash = manager
+            .with_destination_bridge(destination_id, |bridge| bridge.identity_destination_hash())
+            .expect("bridge resolves");
+        assert_eq!(computed_hash, identity_hash);
+        // The canonical public encoding round-trips through the
+        // bounded destination parser (structural proof the
+        // accessor carries addressing material, not secrets).
+        let reparsed = i2pr_proto::Destination::decode(&public_bytes, 4096)
+            .expect("public bytes decode as Destination");
+        assert_eq!(*reparsed.hash().expect("hash").as_bytes(), identity_hash);
+    }
+
+    /// Plan 213 §C1 — the accessor never exposes private material.
+    /// The decoded public encoding is bounded to the public
+    /// identity size (a private export would carry the signing
+    /// seed + static secret on top), and the stored private seed
+    /// bytes never appear inside the public encoding.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan213_server_public_destination_exposes_no_secrets() {
+        let directory = temp_data_dir("plan213-nosecret");
+        let manager = make_manager_with_one_server(directory.path(), "plan213-srv2");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let public_b64 = manager
+            .service_destination_b64("plan213-srv2")
+            .expect("public destination resolves");
+        let public_bytes =
+            i2pr_api::sam::base64::decode(&public_b64, 4096).expect("public base64 decodes");
+        // Ed25519 + ECIES_X25519_AEAD canonical public encoding is
+        // 391 bytes; any private export is strictly larger.
+        assert!(
+            public_bytes.len() < 600,
+            "public encoding must stay at public size, got {}",
+            public_bytes.len()
+        );
+        let (seed, secret) = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                let identity = bridge.identity();
+                (
+                    *identity.signing_seed_bytes(),
+                    *identity.static_secret_bytes(),
+                )
+            })
+            .expect("bridge resolves");
+        assert!(!contains_subslice(&public_bytes, &seed));
+        assert!(!contains_subslice(&public_bytes, &secret));
+    }
+
+    /// Bounded subslice probe for the no-secrets test above.
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        if needle.is_empty() || needle.len() > haystack.len() {
+            return false;
+        }
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// Plan 213 §A — the qualification driver addresses the
+    /// GenericClient spec with full configured destination
+    /// material (not a bare b32 hash): only the
+    /// `ConfiguredDestination` shape resolves to a
+    /// remote-capable target at supervisor start, while a
+    /// non-co-owned `Base32Hash` stops at `LookupRequired` and
+    /// the service never serves. This row locks that an
+    /// ECIES-shaped canonical encoding (the i2pd 391-byte
+    /// `IdentityEx` layout class) parses as configured
+    /// material.
+    #[test]
+    fn plan213_configured_destination_accepts_ecies_shaped_material() {
+        use i2pr_client::DestinationIdentity;
+        let mut rng = OsRng;
+        let identity =
+            DestinationIdentity::generate(&mut rng).expect("destination identity generates");
+        let bytes = identity
+            .destination()
+            .encode_to_vec(4096)
+            .expect("destination encodes");
+        assert!(bytes.len() < 600, "public encoding stays at public size");
+        let b64 = i2pr_api::sam::base64::encode(&bytes);
+        let parsed = DestinationRef::parse(&b64).expect("configured material parses");
+        assert!(
+            matches!(parsed, DestinationRef::ConfiguredDestination(_)),
+            "canonical public encoding must parse as ConfiguredDestination"
+        );
+    }
+
+    /// Plan 213 §C — the bridge-level sender mirror starts empty: a
+    /// hash the authenticated inbound path never installed resolves
+    /// to `None` so the production remote route still fails closed
+    /// with `NotCached`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan213_bridge_mirror_miss_is_none() {
+        let directory = temp_data_dir("plan213-mirror-miss");
+        let manager = make_manager_with_one_server(directory.path(), "plan213-miss");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material(&manager, destination_id, 0x6103, 0x9613, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("matching identity installs");
+        let unknown =
+            i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes([0x5A; 32]));
+        let hit = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.cached_router_remote_lease_set2(&unknown)
+            })
+            .flatten();
+        assert!(
+            hit.is_none(),
+            "uninstalled hash must miss the bridge mirror"
+        );
+    }
+
+    /// Plan 213 §C — a validated remote LeaseSet2 installed through
+    /// the router-backed inbound seam is visible through the
+    /// bridge-level mirror, so the production remote route answers
+    /// a just-authenticated peer without a second lookup
+    /// round-trip.
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan213_bridge_mirror_hit_after_router_install() {
+        use i2pr_client::DestinationIdentity;
+        let directory = temp_data_dir("plan213-mirror-hit");
+        let manager = make_manager_with_one_server(directory.path(), "plan213-hit");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let now_seconds = 1_700_000_000_u32;
+        let material = test_router_material(&manager, destination_id, 0x6104, 0x9614, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("matching identity installs");
+        let mut rng = OsRng;
+        let remote_identity =
+            DestinationIdentity::generate(&mut rng).expect("remote identity generates");
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(9);
+        let lease_source = InboundLeaseSource::from_parts(
+            slot,
+            i2pr_proto::Hash::from_bytes([0xD2; 32]),
+            0x9721,
+            u64::from(now_seconds).saturating_add(600),
+            u64::from(now_seconds).saturating_add(540),
+        );
+        let remote_lease_set2 = build_signed_lease_set2(
+            &remote_identity,
+            std::slice::from_ref(&lease_source),
+            now_seconds,
+        )
+        .expect("remote LS2 builds");
+        let validated = ValidatedLeaseSet2::from_lease_set2(
+            remote_lease_set2,
+            Some(remote_identity.id().as_netdb_key()),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .expect("remote LS2 validates");
+        let key = validated.key();
+        manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge
+                    .install_remote_lease_set2_into_router_state(validated, now_ms)
+                    .expect("router-backed remote install succeeds")
+            })
+            .expect("bridge must exist");
+        let hit = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.cached_router_remote_lease_set2(&key)
+            })
+            .flatten()
+            .expect("installed hash must hit the bridge mirror");
+        assert_eq!(hit.key(), key, "mirror must return the installed record");
     }
 }

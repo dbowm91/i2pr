@@ -231,7 +231,12 @@ impl StreamingDestinationAdapter {
             streaming_envelope.source_port,
             streaming_envelope.destination_port,
             &streaming_envelope.payload,
-            now_ms,
+            // Plan 213 corrective: the request's inner-envelope
+            // expiration is a wall-clock Date the reference checks.
+            // `now_ms` is the caller-domain clock (monotonic on the
+            // service path) and must never feed the wire Date;
+            // derive it from the wall-clock `now_seconds` instead.
+            u64::from(now_seconds).saturating_mul(1_000),
             Some(local_lease_set2.clone()),
         )
         .map_err(StreamingAdapterError::Send)?;

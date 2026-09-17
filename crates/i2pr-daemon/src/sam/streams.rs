@@ -198,6 +198,20 @@ pub struct RouterNetworkSummary {
     pub outbound_expires_at_ms: u64,
     /// Inbound expiry (ms).
     pub inbound_expires_at_ms: u64,
+    /// Number of leases in the installed real local LS2.
+    ///
+    /// Plan 213 §E2 — the qualification driver derives the
+    /// real-lease-count fact from this typed field instead of
+    /// asserting a literal success.
+    pub lease_count: usize,
+    /// Whether every installed inbound receive id currently
+    /// resolves to a registered inbound tunnel owner.
+    ///
+    /// Plan 213 §E2 — filled by the manager (which owns the
+    /// inbound-owner registry), not by the bridge. The bridge
+    /// leaves the default `false`; see
+    /// `ServiceTunnelManager::service_router_network_summary`.
+    pub inbound_owner_registered: bool,
 }
 
 /// Plan 212 §14 — outcome of draining authenticated destination
@@ -294,6 +308,20 @@ impl SamDestinationBridge {
         receiver_dispatcher
             .bind_destination_hash(identity.id(), identity.id().as_netdb_key())
             .expect("destination hash bind");
+        // Plan 213 corrective: the canonical dispatcher serves the
+        // router-backed inbound path
+        // (`dispatch_router_garlic_to_canonical_streaming` drains
+        // `pop_payload` from it). It needs the same local
+        // registration, otherwise every decrypted clove fails
+        // closed with `UnknownDestination` at delivery routing even
+        // though authentication succeeded.
+        let mut dispatcher = DestinationDispatcher::new();
+        dispatcher
+            .register_destination(identity.id())
+            .expect("destination register");
+        dispatcher
+            .bind_destination_hash(identity.id(), identity.id().as_netdb_key())
+            .expect("destination hash bind");
         Self {
             identity,
             lease_set2,
@@ -301,7 +329,7 @@ impl SamDestinationBridge {
             routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
             session_manager: EciesSessionManager::new(EciesSessionConfig::balanced()),
             outbound_role,
-            dispatcher: DestinationDispatcher::new(),
+            dispatcher,
             lease_set2_store: LeaseSet2Store::default(),
             receiver_dispatcher,
             receiver_session: EciesSessionManager::new(EciesSessionConfig::balanced()),
@@ -687,6 +715,10 @@ impl SamDestinationBridge {
             inbound_receive_count: state.inbound_receive_ids.len(),
             outbound_expires_at_ms: state.outbound_expires_at_ms,
             inbound_expires_at_ms: state.inbound_expires_at_ms,
+            lease_count: state.lease_set2.leases().len(),
+            // The manager fills owner registration (it owns the
+            // inbound-owner registry); the bridge cannot observe it.
+            inbound_owner_registered: false,
         })
     }
 
@@ -738,10 +770,33 @@ impl SamDestinationBridge {
         if state.is_expired(now_ms) {
             return Err("router-backed network state expired (NoTunnelMaterial)".to_owned());
         }
+        // Plan 213 corrective: mirror the validated reference LS2
+        // into the bridge-level sender-resolution directory. The
+        // router-state routing store drives outbound composition,
+        // but `dispatch_router_garlic_to_canonical_streaming` resolves
+        // the reply sender through `self.lease_set2_store`; without
+        // the mirror a decryptable SYN-ACK fails closed with
+        // `UnknownDestination` and the stream never establishes.
+        let _ = self.lease_set2_store.insert(validated.clone());
         state
             .routing
             .install_remote_lease_set2(validated)
             .map_err(|error| error.to_string())
+    }
+
+    /// Plan 213 — returns the validated remote LeaseSet2 the
+    /// authenticated inbound path mirrored into the bridge-level
+    /// sender-resolution directory (`install_remote_lease_set2_into_router_state`),
+    /// keyed by NetDB destination hash. The production remote route
+    /// consults this mirror when the backend coordinator cache
+    /// misses so a just-authenticated inbound handshake can answer
+    /// without a second lookup round-trip. Returns `None` when no
+    /// validated record exists for the hash (fail-closed).
+    pub(crate) fn cached_router_remote_lease_set2(
+        &self,
+        key: &i2pr_netdb::DestinationHash,
+    ) -> Option<ValidatedLeaseSet2> {
+        self.lease_set2_store.get(key).cloned()
     }
 
     /// Plan 212 §11 — runs the canonical
@@ -804,7 +859,11 @@ impl SamDestinationBridge {
     /// 4. repeatedly `pop_payload(local_destination_id)`;
     /// 5. for every dequeued Data payload:
     ///    `StreamingDestinationAdapter::receive(bytes, identity,
-    ///    canonical_streaming, remote_destination_hash, now_ms)`;
+    ///    target_streaming, remote_destination_hash, now_ms)`, where
+    ///    the target is the canonical service `StreamingManager` for
+    ///    client profiles and the receiver mirror for server profiles
+    ///    (Plan 213: the polled server loop accepts from the mirror
+    ///    through the same tested path as local traffic);
     /// 6. normal SYN/SYN-ACK/DATA/ACK/close processing preserved;
     /// 7. caller wakes the existing delivery driver when receive
     ///    queued an outbound response (see
@@ -824,6 +883,7 @@ impl SamDestinationBridge {
         bytes: &[u8],
         now_seconds: u32,
         now_ms: u64,
+        is_server: bool,
     ) -> Result<RouterInboundDispatchReport, String> {
         let state = self
             .router_network
@@ -924,13 +984,27 @@ impl SamDestinationBridge {
         let mut rejected = 0_usize;
         while let Some(payload) = self.dispatcher.pop_payload(local_id) {
             dequeued = dequeued.saturating_add(1);
-            let receive_outcome = StreamingDestinationAdapter::receive(
-                payload.bytes(),
-                &self.identity,
-                &mut self.streaming,
-                &remote_hash,
-                now_ms,
-            );
+            // Plan 213: server profiles feed the receiver mirror so
+            // the polled server loop observes inbound SYNs; client
+            // profiles feed the canonical manager that owns the
+            // outbound SYN state.
+            let receive_outcome = if is_server {
+                StreamingDestinationAdapter::receive(
+                    payload.bytes(),
+                    &self.identity,
+                    &mut self.receiver_streaming,
+                    &remote_hash,
+                    now_ms,
+                )
+            } else {
+                StreamingDestinationAdapter::receive(
+                    payload.bytes(),
+                    &self.identity,
+                    &mut self.streaming,
+                    &remote_hash,
+                    now_ms,
+                )
+            };
             match receive_outcome {
                 Ok(
                     i2pr_client::streaming_adapter::InboundStreamingOutcome::StreamingDispatched {
@@ -941,7 +1015,7 @@ impl SamDestinationBridge {
                 }
                 Ok(
                     i2pr_client::streaming_adapter::InboundStreamingOutcome::UnsupportedProtocol {
-                        ..
+                        protocol: _,
                     },
                 ) => {
                     rejected = rejected.saturating_add(1);

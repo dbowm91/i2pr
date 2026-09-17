@@ -391,6 +391,32 @@ see `plans/212-status.md` for the superseding corrective):
   external product qualification against exact-pinned i2pd 2.61.0
   is owned by Plan 212; Plan 211 requalifies after it.
 
+  Plan 213 (in-progress, see `plans/213-status.md`) completes the
+  qualification harness without changing the router architecture:
+  the generic driver performs real local TCP application I/O
+  (small + 8192 B payloads, exact reads, digest equality) with
+  concurrent `ServiceProduct::poll_inbound()` pumping, Direction B
+  initiates through the harness-only `sam_stream_fixture.py`
+  (`STREAM CONNECT` over a fresh SAM socket) while inbound keeps
+  pumping, and every row derives from executed I/O, typed
+  summaries (`service_router_network_summary` with
+  `lease_count`/`inbound_owner_registered`), per-direction
+  counter windows, or subprocess exit codes — exactly one
+  `P213-{A..N}` terminal classification per run. Two narrow
+  read-only product surfaces (`service_destination_public_info`,
+  `service_router_network_summary`) reuse existing manager
+  accessors; the server-publication branch now runs
+  unconditionally for server specs and dispatches real
+  DatabaseStore cells   through `compose_ls2_publication_via_tunnel`.
+  The standalone `run-plan213-generic.sh` runner owns pin
+  verification, fixture orchestration, row validation, and the
+  no-secret audit; the checker carries the Plan 213 §27
+  invariants. The lane additionally proved narrow product
+  correctives (short-transport Garlic u32 framing, AckRequest
+  tolerance, inbound LS2 mirror, wall-clock wire Dates, and the
+  server SYN-ACK bridge-mirror fallback in
+  `route_outbound_remote_request`).
+
 ## Purpose
 
 `i2pr-daemon` is the top of the dependency graph — it sees every
