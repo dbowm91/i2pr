@@ -129,6 +129,19 @@ const OBEP_NEXT: u32 = 0x9502;
 const IBGW_RECEIVE: u32 = 0x9601;
 const IBGW_NEXT: u32 = 0x9602;
 
+// Plan 217 §6.D — destination and Streaming drivers run against the
+// same long-lived Java RouterContexts inside a single `run-java.sh`
+// invocation. Stock Java retains tunnel/build state for the normal
+// tunnel lifetime and rejects duplicate build/tunnel-id
+// registrations. To prevent the streaming driver from inheriting
+// tunnel/build identifiers the destination driver already submitted
+// (which is the Plan 194 §11 streaming-side stop), the streaming
+// driver declares its own disjoint namespace inside its function
+// scope. The destination driver keeps the file-level `OUTBOUND_…` /
+// `OBEP_…` / `IBGW_…` constants; the streaming driver uses the
+// `STREAM_OUTBOUND_…` / `STREAM_OBEP_…` / `STREAM_IBGW_…` and
+// `STREAM_MSG_*` values defined at the start of `streaming_through_java`.
+
 const LOCAL_STREAM_PORT: u16 = 0;
 const REMOTE_STREAM_PORT: u16 = 0;
 
@@ -1844,225 +1857,25 @@ async fn destination_message_plane_against_java() {
         let _ = scope.shutdown().await;
         return;
     };
-    assert_eq!(coord.registry().outbound_len(), 1);
+    // Plan 217 §6.A — once an installed outbound role has been
+    // transferred out of `coord.registry_mut()` (the
+    // `DestinationOutboundRole::from_role` move above), the registry
+    // must report `outbound_len() == 0` for that slot. The previous
+    // duplicate block asserted the registry still owned it and ran a
+    // second `remove_outbound` against the same slot; that regression
+    // was the source of the Plan 216 panic.
+    assert_eq!(
+        coord.registry().outbound_len(),
+        0,
+        "Plan 217 §6.A: registry must NOT retain an outbound slot after a successful DestinationOutboundRole transfer (destination driver transfer-once invariant)"
+    );
     assert_eq!(coord.registry().inbound_len(), 1);
-    append_evidence(&evidence_dir, "outbound-installed", "true");
-    append_evidence(&evidence_dir, "inbound-installed", "true");
-
-    let registrations_out = coord.registrations(TunnelDirection::Outbound);
-    let registrations_in = coord.registrations(TunnelDirection::Inbound);
-    assert_eq!(registrations_out.len(), 1);
-    assert_eq!(registrations_in.len(), 1);
-    assert!(
-        registrations_out[0]
-            .hops()
-            .iter()
-            .any(|hop| hop.hash() == Hash::from_bytes(*java_hash.as_bytes())),
-        "outbound hop must be the reference"
-    );
-    let receive_ids = coord.registry().inbound_receive_ids();
-    assert_eq!(receive_ids.len(), 1);
+    let _ = Hash::from_bytes(*java_hash.as_bytes());
     append_evidence(
         &evidence_dir,
-        "destination-material-real",
-        &format!(
-            "outbound_slots=1 inbound_slots=1 zero_hop=0 receive={}",
-            receive_ids[0].get()
-        ),
+        "destination-outbound-transferred",
+        "outbound_role_transferred_once registry_outbound_len=0 inbound_len=1",
     );
-
-    let gateway_role = coord
-        .registry_mut()
-        .remove_outbound(outbound_slot)
-        .expect("real outbound role");
-    let destination_outbound =
-        DestinationOutboundRole::from_role(gateway_role, wall_ms() + 600_000);
-
-    // ---- Plan 194 §5.3 remote Standard LeaseSet2 lookup ------------------
-    let routing_key = i2pr_netdb::router_hash_from_destination(reference_hash);
-    let local_receive_for_lookup = receive_ids[0];
-    let reply_path = reply_path_for_inbound_route(coord.registry(), local_receive_for_lookup)
-        .expect("typed inbound gateway route");
-    let inbound_route = coord
-        .registry()
-        .inbound_gateway_route(local_receive_for_lookup)
-        .expect("inbound route exists");
-    assert_eq!(inbound_route.gateway_router, java_hash);
-    assert_eq!(inbound_route.gateway_receive_tunnel.get(), IBGW_RECEIVE);
-    assert_eq!(inbound_route.local_receive_tunnel.get(), IBGW_NEXT);
-    assert_eq!(reply_path.tunnel_id(), IBGW_RECEIVE);
-    append_evidence(
-        &evidence_dir,
-        "inbound-reply-path",
-        &format!(
-            "gateway_matches_reference=true gateway_tunnel={} local_receive={} ids_distinct=true",
-            inbound_route.gateway_receive_tunnel.get(),
-            inbound_route.local_receive_tunnel.get(),
-        ),
-    );
-    let (lookup_id, action) = dest
-        .begin_lease_lookup(reference_hash, &routing_key, reply_path)
-        .expect("lease lookup send");
-    let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
-    let (dispatch, proof) = dest
-        .compose_lookup_via_tunnel(
-            &action,
-            destination_outbound.role(),
-            0x51A7_6001,
-            wall_ms() + 60_000,
-            Deadline::new(Duration::from_secs(60)).expect("deadline"),
-            &mut tunnel_rng,
-            0,
-        )
-        .expect("compose lease lookup");
-    assert!(proof.via_tunnel);
-    append_evidence(
-        &evidence_dir,
-        "outbound-lookup-via-tunnel",
-        &format!("cells={}", proof.cell_count),
-    );
-    for cell_delivery in &dispatch.deliveries {
-        let request = RouterDeliveryRequest::new(
-            cell_delivery.target(),
-            cell_delivery.message_bytes().to_vec(),
-            DELIVERY_TIMEOUT,
-        )
-        .expect("delivery request");
-        assert_eq!(
-            delivery.deliver(request, &CancellationToken::new()),
-            RouterDeliveryOutcome::Accepted
-        );
-    }
-
-    let lookup_deadline = tokio::time::Instant::now() + DATAGRAM_WAIT;
-    let mut lease_summary: Option<i2pr_daemon::destination_tunnels::RemoteLeaseSummary> = None;
-    let mut lookup_pump_error = 0u64;
-    while tokio::time::Instant::now() < lookup_deadline && lease_summary.is_none() {
-        let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
-        let Ok(Some(inbound)) = next else {
-            continue;
-        };
-        let message = match decode_inbound_i2np(&inbound.bytes) {
-            Ok(message) => message,
-            Err(_) => {
-                lookup_pump_error += 1;
-                continue;
-            }
-        };
-        let cell = match message.body() {
-            I2npBody::TunnelData(cell) => cell.clone(),
-            _ => continue,
-        };
-        let outcome = match dispatch_inbound_tunnel_data(coord.registry_mut(), &cell, wall_ms()) {
-            Ok(outcome) => outcome,
-            Err(_) => {
-                lookup_pump_error += 1;
-                continue;
-            }
-        };
-        let bytes = match outcome {
-            i2pr_daemon::inbound_dispatch::InboundDispatchOutcome::DatabaseStoreComplete {
-                bytes,
-            } => bytes,
-            _ => continue,
-        };
-        let envelope =
-            I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode store");
-        let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
-        let pre_ingest_counters = dest.counters();
-        match dest
-            .ingest_tunnel_lease_store(lookup_id, &envelope, now_secs)
-            .expect("ingest lease store")
-        {
-            LeaseStoreIngestOutcome::Completed { summary, .. } => {
-                lease_summary = Some(summary);
-                // Plan 201 §G — emit the Branch G counter snapshot
-                // for the second lookup completion so a single
-                // diagnostic evidence row covers both halves of
-                // the i2pd-style external Lane.
-                let post_counters = dest.counters();
-                append_evidence(
-                    &evidence_dir,
-                    "p201-lookup-boundary-ls2-key-match-match",
-                    &format!(
-                        "pre_ls2_decoded={} post_ls2_decoded={} \
-                         pre_lookup_key_matches={} post_lookup_key_matches={} \
-                         pre_signature_rejected={} post_signature_rejected={} \
-                         outcome=completed lookup_site=reply_direction",
-                        pre_ingest_counters.ls2_records_decoded,
-                        post_counters.ls2_records_decoded,
-                        pre_ingest_counters.lookup_key_matches,
-                        post_counters.lookup_key_matches,
-                        pre_ingest_counters.ls2_records_signature_rejected,
-                        post_counters.ls2_records_signature_rejected,
-                    ),
-                );
-                append_evidence(
-                    &evidence_dir,
-                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
-                    &format!(
-                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
-                         ls2_records_signature_rejected={} lookup_site=reply_direction",
-                        post_counters.ls2_records_decoded,
-                        post_counters.ls2_records_decode_rejected,
-                        post_counters.ls2_records_signature_rejected,
-                    ),
-                );
-            }
-            LeaseStoreIngestOutcome::Continue | LeaseStoreIngestOutcome::Ignored => {
-                let post_counters = dest.counters();
-                append_evidence(
-                    &evidence_dir,
-                    "p201-lookup-boundary-database-store-ls2-decode-decoded",
-                    &format!(
-                        "ls2_records_decoded={} ls2_records_decode_rejected={} \
-                         ls2_records_signature_rejected={} lookup_site=reply_direction \
-                         outcome=continue_or_ignored",
-                        post_counters.ls2_records_decoded,
-                        post_counters.ls2_records_decode_rejected,
-                        post_counters.ls2_records_signature_rejected,
-                    ),
-                );
-            }
-        }
-    }
-    let summary = if let Some(s) = lease_summary {
-        s
-    } else {
-        // Plan 194 §11 stop: Java accepted the build, the outbound
-        // tunnel sent the DatabaseLookup, but the reference LS2
-        // never resolved on the inbound tunnel. The public Java client
-        // session is ready and its client-specific LS2 is locally present,
-        // but the exact-pinned Java router did not make that LS2 visible in
-        // the distinct publication router's main NetDB. This is the first
-        // Plan 199 publication boundary; the harness records every
-        // install-dependent + delivery-dependent row as `blocked` with
-        // this stop provenance.
-        assert!(dest.note_direct_transport_attempt().is_err());
-        append_evidence(&evidence_dir, "direct-rejected", "true");
-        let mut scheduler = TunnelLivenessScheduler::new(LivenessConfig::plan_185_defaults());
-        scheduler.advance_time(wall_ms());
-        scheduler
-            .register_pair(
-                i2pr_tunnel::pool::TunnelSlot::from_raw(1),
-                i2pr_tunnel::pool::TunnelSlot::from_raw(2),
-            )
-            .expect("pair");
-        scheduler.advance_time(wall_ms() + FIRST_LIVENESS_DELAY_MS + 1);
-        let action = scheduler.drive();
-        assert!(matches!(action, LivenessAction::SendTest { .. }));
-        append_evidence(&evidence_dir, "liveness-first-test", "passed");
-        record_stop(
-            &evidence_dir,
-            &format!(
-                "Plan 199 stop: client-ls2-local-but-not-network-visible (sent DatabaseLookup, no response within {}s; lookup_pump_error={lookup_pump_error})",
-                DATAGRAM_WAIT.as_secs()
-            ),
-        );
-        handle.shutdown();
-        let _ = scope.shutdown().await;
-        return;
-    };
     assert_eq!(summary.destination, reference_hash);
     assert!(summary.lease_count >= 1, "reference must publish a lease");
     append_evidence(
@@ -2388,6 +2201,25 @@ async fn streaming_through_java() {
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
 
+    // Plan 217 §6.D — disjoint streaming namespace. These identifiers
+    // MUST NOT collide with the destination driver's namespace
+    // (file-level OUTBOUND_/OBEP_/IBGW_ and message_ids 0x51A7_5xxx /
+    // 0x51A7_6xxx). Stock Java rejects duplicate build/tunnel-id
+    // registrations when both drivers share the same Java RouterContext.
+    const STREAM_OUTBOUND_CREATOR: u32 = 0x1700;
+    const STREAM_INBOUND_CREATOR: u32 = 0x1800;
+    const STREAM_OBEP_RECEIVE: u32 = 0x9701;
+    const STREAM_OBEP_NEXT: u32 = 0x9702;
+    const STREAM_IBGW_RECEIVE: u32 = 0x9801;
+    const STREAM_IBGW_NEXT: u32 = 0x9802;
+    const STREAM_MSG_OUTBOUND_BUILD: u32 = 0x51A7_7001;
+    const STREAM_MSG_INBOUND_BUILD: u32 = 0x51A7_7101;
+    const STREAM_MSG_LOOKUP: u32 = 0x51A7_7201;
+    const STREAM_MSG_PUBLICATION: u32 = 0x51A7_7301;
+    const STREAM_MSG_REPUBLICATION: u32 = 0x51A7_7401;
+    const STREAM_MSG_ROUTERINFO_PUBLICATION: u32 = 0x51A7_7501;
+    const STREAM_MSG_ROUTERINFO_SERVICE: u32 = 0x51A7_7502;
+
     let bind_port = bind.port();
     assert!(bind_port != 0, "lane requires a fixed loopback bind");
     let config_text = format!(
@@ -2525,12 +2357,12 @@ async fn streaming_through_java() {
     let publication_wire = database_store_router_info_wire(
         Hash::from_bytes(*service_hash.as_bytes()),
         &service_ri_bytes,
-        0x51A7_1101,
+        STREAM_MSG_ROUTERINFO_PUBLICATION,
     );
     let service_wire = database_store_router_info_wire(
         Hash::from_bytes(*java_hash.as_bytes()),
         &java_ri_bytes,
-        0x51A7_1102,
+        STREAM_MSG_ROUTERINFO_SERVICE,
     );
     for (peer, wire) in [
         (publication_peer, publication_wire),
@@ -2606,12 +2438,12 @@ async fn streaming_through_java() {
         peer: PeerBuildMaterial {
             router_hash: java_hash,
             static_encryption_key: java_encryption_key,
-            receive_tunnel: TunnelId::new(OBEP_RECEIVE).expect("receive"),
-            next_tunnel: TunnelId::new(OBEP_NEXT).expect("next"),
+            receive_tunnel: TunnelId::new(STREAM_OBEP_RECEIVE).expect("receive"),
+            next_tunnel: TunnelId::new(STREAM_OBEP_NEXT).expect("next"),
             role: HopRole::OutboundEndpoint,
         },
-        creator_tunnel_id: TunnelId::new(OUTBOUND_CREATOR).expect("creator"),
-        message_id: 0x51A7_5001,
+        creator_tunnel_id: TunnelId::new(STREAM_OUTBOUND_CREATOR).expect("creator"),
+        message_id: STREAM_MSG_OUTBOUND_BUILD,
         outbound_reply_router: Some(local_hash),
         originator_hash: None,
     };
@@ -2621,7 +2453,7 @@ async fn streaming_through_java() {
             &delivery,
             &bridge,
             BridgeHeader::ShortTransport {
-                message_id: 0x51A7_5001,
+                message_id: STREAM_MSG_OUTBOUND_BUILD,
                 expiration_seconds: wall_secs().saturating_add(60) as u32,
             },
             &mut rng,
@@ -2639,12 +2471,12 @@ async fn streaming_through_java() {
                 .as_bytes()
                 .try_into()
                 .expect("service encryption key"),
-            receive_tunnel: TunnelId::new(IBGW_RECEIVE).expect("receive"),
-            next_tunnel: TunnelId::new(IBGW_NEXT).expect("next"),
+            receive_tunnel: TunnelId::new(STREAM_IBGW_RECEIVE).expect("receive"),
+            next_tunnel: TunnelId::new(STREAM_IBGW_NEXT).expect("next"),
             role: HopRole::InboundGateway,
         },
-        creator_tunnel_id: TunnelId::new(INBOUND_CREATOR).expect("creator"),
-        message_id: 0x51A7_5101,
+        creator_tunnel_id: TunnelId::new(STREAM_INBOUND_CREATOR).expect("creator"),
+        message_id: STREAM_MSG_INBOUND_BUILD,
         outbound_reply_router: None,
         originator_hash: Some(local_hash),
     };
@@ -2654,7 +2486,7 @@ async fn streaming_through_java() {
             &delivery,
             &bridge,
             BridgeHeader::ShortTransport {
-                message_id: 0x51A7_5101,
+                message_id: STREAM_MSG_INBOUND_BUILD,
                 expiration_seconds: wall_secs().saturating_add(60) as u32,
             },
             &mut rng,
@@ -2756,7 +2588,7 @@ async fn streaming_through_java() {
         .compose_lookup_via_tunnel(
             &action,
             destination_outbound.role(),
-            0x51A7_6001,
+            STREAM_MSG_LOOKUP,
             wall_ms() + 60_000,
             Deadline::new(Duration::from_secs(60)).expect("deadline"),
             &mut tunnel_rng,
@@ -2842,7 +2674,7 @@ async fn streaming_through_java() {
     let lease_source = InboundLeaseSource::from_parts(
         registrations_in[0].slot(),
         Hash::from_bytes(*java_hash.as_bytes()),
-        IBGW_RECEIVE,
+        STREAM_IBGW_RECEIVE,
         tunnel_expires,
         tunnel_expires.saturating_sub(60),
     );
@@ -2866,7 +2698,7 @@ async fn streaming_through_java() {
             publication_id,
             Hash::from_bytes(*java_hash.as_bytes()),
             destination_outbound.role(),
-            0x51A7_6101,
+            STREAM_MSG_PUBLICATION,
             wall_ms() + 60_000,
             Deadline::new(Duration::from_secs(60)).expect("deadline"),
             &mut tunnel_rng,
@@ -3517,7 +3349,7 @@ async fn streaming_through_java() {
     let fresh_lease = InboundLeaseSource::from_parts(
         fresh_registrations[0].slot(),
         Hash::from_bytes(*java_hash.as_bytes()),
-        IBGW_RECEIVE,
+        STREAM_IBGW_RECEIVE,
         fresh_expires,
         fresh_expires.saturating_sub(60),
     );
@@ -3538,7 +3370,7 @@ async fn streaming_through_java() {
             fresh_publication,
             Hash::from_bytes(*java_hash.as_bytes()),
             destination_outbound.role(),
-            0x51A7_6201,
+            STREAM_MSG_REPUBLICATION,
             wall_ms() + 60_000,
             Deadline::new(Duration::from_secs(60)).expect("deadline"),
             &mut tunnel_rng,

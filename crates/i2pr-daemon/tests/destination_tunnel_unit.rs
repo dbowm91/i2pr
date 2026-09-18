@@ -1333,3 +1333,79 @@ fn plan201_g_note_lookup_boundary_rejects_unknown_labels() {
     let after = coord.counters();
     assert_eq!(before, after);
 }
+
+// ---------------------------------------------------------------------
+// Plan 217 §6.A — outbound-role transfer-once invariant. The
+// destination driver transfers an installed outbound role out of
+// `DataPlaneRegistry::remove_outbound` exactly once, into a moved
+// `DestinationOutboundRole`. After the transfer the registry must
+// report `outbound_len() == 0` for that slot, and a second
+// `remove_outbound` against the same slot must return `None`. The
+// pre-Plan-217 destination driver ran a duplicate
+// `remove_outbound` + assertion block after the transfer, which
+// panicked at `outbound_len() == 0`. The unit row locks the
+// transfer-once invariant so any future regression is caught
+// locally without an external Java run.
+// ---------------------------------------------------------------------
+
+#[test]
+fn plan217_outbound_role_transfer_once_invariant() {
+    use i2pr_client::DestinationOutboundRole;
+    use i2pr_tunnel::data_plane_registry::DataPlaneRegistry;
+
+    // Build a registry with one activated outbound role.
+    let mut registry = DataPlaneRegistry::new(
+        i2pr_tunnel::data_plane_registry::DataPlaneCapacity::new(8, 8),
+    );
+    let established_tunnel = {
+        let hops = vec![EstablishedHop::terminal(
+            tunnel_peer(hop_hash(0xD217, 1)),
+            EstablishedRole::OutboundEndpoint,
+            TunnelId::new(0x0217).expect("obep-receive"),
+            keys(0x17),
+        )];
+        EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(0x1217).expect("outbound-tunnel-id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound established tunnel")
+    };
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(0x217);
+    registry
+        .activate_outbound(slot, established_tunnel, NOW_MS + 60_000)
+        .expect("activate outbound");
+    assert_eq!(
+        registry.outbound_len(),
+        1,
+        "precondition: registry owns 1 outbound"
+    );
+
+    // First remove_outbound consumes the slot — this is the
+    // ownership transfer the destination driver performs.
+    let removed = registry
+        .remove_outbound(slot)
+        .expect("first transfer must consume the slot");
+    let _destination_outbound = DestinationOutboundRole::from_role(removed, NOW_MS + 60_000);
+    assert_eq!(
+        registry.outbound_len(),
+        0,
+        "Plan 217 §6.A: registry must NOT retain an outbound slot after a successful DestinationOutboundRole transfer"
+    );
+
+    // Second remove_outbound against the same slot must return None —
+    // the slot is gone, not silently retained. This is the regression
+    // the duplicate-block assert hit before Plan 217.
+    assert!(
+        registry.remove_outbound(slot).is_none(),
+        "Plan 217 §6.A: second transfer of the same slot must be a typed None, not a panic or silent duplicate"
+    );
+    assert_eq!(
+        registry.outbound_len(),
+        0,
+        "Plan 217 §6.A: registry length must remain 0 after the second transfer attempt"
+    );
+}

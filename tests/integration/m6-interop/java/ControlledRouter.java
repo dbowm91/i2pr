@@ -120,7 +120,14 @@ public final class ControlledRouter {
         props.setProperty("router.configLocation", routerConfig.getAbsolutePath());
         props.setProperty("router.clientConfigFile", clientsConfig.getAbsolutePath());
         props.setProperty("router.pingFile", new File(dataDir, "router.ping").getAbsolutePath());
-        props.setProperty("router.networkDatabase.dbDir", netDbDir.getAbsolutePath() + "/");
+        // Plan 217 §6.C / §3.5 — `router.networkDatabase.dbDir` MUST be
+        // relative to `i2p.dir.router` (Java's
+        // `PersistentDataStore.java:643` constructs the final NetDB path
+        // as `i2p.dir.router + dbDir`). Supplying an absolute path here
+        // produced the recorded doubled-path bug
+        // (`${dataDir}/router/${dataDir}/netDb/...`). Use a
+        // single-segment relative path so the join is well-formed.
+        props.setProperty("router.networkDatabase.dbDir", "../netDb/");
         props.setProperty("router.keyBackupDir", keyBackupDir.getAbsolutePath() + "/");
         props.setProperty("router.profileDir", peerProfilesDir.getAbsolutePath() + "/");
         props.setProperty("router.tunnelPoolFile", new File(dataDir, "tunnelPool.dat").getAbsolutePath());

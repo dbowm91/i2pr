@@ -1,44 +1,44 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-by-plan217-java-closure-harness-corrective`**.
+Status: **`blocked-by-plan218-fresh-external-classification`**.
 
-## 2026-09-18 authority amendment
+## 2026-09-18 authority amendment (Plan 217 closure superseded)
 
-Plan 216 exposed a test-driver panic, but subsequent source review shows the
-recorded Java-side publication blocker is not trustworthy enough to drive the
-next implementation:
+Plan 216 exposed a test-driver panic, but subsequent source review showed the
+recorded Java-side publication blocker was not trustworthy enough to drive the
+next implementation. Plan 217 (now `passed`) closed the harness/evidence
+corrective: the destination-driver duplicate-block regression was removed and
+replaced with a transfer-once invariant assertion plus a
+`plan217_outbound_role_transfer_once_invariant` unit row; the positive/negative
+Java lifecycle evidence split was enforced; the controlled-launcher
+`router.networkDatabase.dbDir` was switched to a relative path; the streaming
+driver received a disjoint build/tunnel/message-id namespace; and the harness
+gained an `I2PR_M6_JAVA_DRIVER` selector.
 
-- the destination driver explicitly transfers its installed outbound role out
-  of the coordinator registry before the stale `outbound_len() == 1`
-  assertion that Plan 216 classified as a new disappearance;
-- execution can reach that assertion only after
-  `LeaseStoreIngestOutcome::Completed`, so the Plan 216 run strongly indicates
-  the remote Java LS2 lookup crossed the previously claimed visibility
-  boundary;
-- Plan 200/216 Java lifecycle counters include stale/non-matching patterns and
-  positive labels that can count negative diagnostic strings;
-- the previous `_fastPeers` attribution does not account for Java's tier
-  fallback and `TunnelPeerSelector` eligibility filters;
-- destination and Streaming drivers reuse build/tunnel identifiers against the
-  same long-lived Java RouterContexts.
-
-No M6 pass is claimed from this review alone. The correct next executable work
-is Plan 217, which repairs the harness/evidence and reruns the direct-I2CP path.
-Plan 218 then owns final Java-family qualification.
-
-Plan 205 is retained as a conditional SAM fallback only if the corrected Plan
-218 direct-I2CP run demonstrates a genuine stock-Java public-client boundary.
+Plan 217 closure also confirmed that the Plan 216 destination driver reached
+`LeaseStoreIngestOutcome::Completed` before the panic, so the Plan 216
+"no LS2 reply arrives" interpretation is no longer authoritative; the
+remote Java LS2 lookup did return a signature-valid DatabaseStore through a
+real inbound tunnel. The prior Plan 201 Branch C/D three-router topology +
+1-hop / zero-hop profile attempts remain as the documented Plan 201
+narrow-attempt narrative; the corrected harness is the Plan 218 input.
 
 Current authority:
 
 ```text
-plan_201 = blocked-by-plan217-java-closure-harness-corrective
-plan_217 = registered-ready-m6-java-closure-harness-corrective
-plan_218 = registered-blocked-on-plan217-m6-java-final-qualification
+plan_201 = blocked-by-plan218-fresh-external-classification
+plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
+plan_218 = ready-m6-java-second-family-final-qualification
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-milestone6_java_mixed_router_interop = not-yet-passed
+milestone6_java_mixed_router_interop = not-yet-passed (corrected harness ready; fresh exact-head classification pending Plan 218)
 milestone6_interoperable = not-yet-claimed
 ```
+
+Plan 201 stays `blocked` because the corrected harness itself does not yet
+produce a fresh `P200-*` classification on the closing head — Plan 218 owns
+that. Moving Plan 201 to `ready` here would silently advance authority without
+fresh evidence. Plan 205 stays `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`;
+no Plan 217 closure authority authorizes its reactivation.
 
 The prior Plan 201 execution narrative is retained below for traceability; its
 earlier blocker interpretation is superseded by this amendment until Plan 217

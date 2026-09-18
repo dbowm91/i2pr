@@ -459,6 +459,53 @@ if [[ -f "${JAVA_RAW_HELPER_SRC}" && -f "${JAVA_STREAM_HELPER_SRC}" ]]; then
       echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 200 §B database_lookup_router_info_wire helper" >&2
       failures=$((failures + 1))
     fi
+    # Plan 217 §6.A — the destination driver must record the
+    # transfer-once invariant. The Plan 216 panic was caused by a
+    # duplicate post-lookup block that re-asserted
+    # `outbound_len() == 1` and re-ran `remove_outbound` after the
+    # slot had already been transferred into a
+    # `DestinationOutboundRole`. The driver MUST emit
+    # `destination-outbound-transferred` and MUST NOT contain a
+    # second `remove_outbound(outbound_slot)` call after the
+    # initial transfer in `destination_message_plane_against_java`.
+    if ! grep -q 'destination-outbound-transferred' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 217 §6.A destination-outbound-transferred evidence key" >&2
+      failures=$((failures + 1))
+    fi
+    # Plan 217 §6.D — disjoint streaming namespace. The streaming
+    # driver MUST use its own `STREAM_*` constants for build/tunnel
+    # identifiers and MUST NOT collide with the destination driver's
+    # `0x51A7_5xxx` / `0x51A7_6xxx` message-id namespace.
+    if ! grep -q 'STREAM_OUTBOUND_CREATOR' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 217 §6.D STREAM_OUTBOUND_CREATOR constant (disjoint streaming namespace)" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q 'STREAM_IBGW_RECEIVE' "${DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST} lacks the Plan 217 §6.D STREAM_IBGW_RECEIVE constant" >&2
+      failures=$((failures + 1))
+    fi
+    # Plan 217 §9 — the harness MUST expose a bounded
+    # `I2PR_M6_JAVA_DRIVER` selector so the destination and
+    # Streaming sub-runs can be invoked independently during
+    # diagnosis without duplicating the Java-router topology.
+    if ! grep -q 'I2PR_M6_JAVA_DRIVER' "${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"; then
+      echo "m6 mixed-router evidence check failed: run-java.sh lacks the Plan 217 §9 I2PR_M6_JAVA_DRIVER selector" >&2
+      failures=$((failures + 1))
+    fi
+    # Plan 217 §6.B.6 — final-snapshot classification. The shell
+    # must read the LAST `p200-classification` occurrence (after
+    # helper readiness), not the first emission.
+    if grep -qE 'p200-classification.*\bexit\b' "${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"; then
+      echo "m6 mixed-router evidence check failed: run-java.sh still uses first-occurrence awk for P200 classification (Plan 217 §6.B.6)" >&2
+      failures=$((failures + 1))
+    fi
+    # Plan 217 §6.C — the controlled launcher must declare a
+    # relative `router.networkDatabase.dbDir`, never an absolute
+    # path that triggers the documented doubled-path bug.
+    if grep -qE 'router\.networkDatabase\.dbDir[^\n]*getAbsolutePath' "${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"; then
+      echo "m6 mixed-router evidence check failed: ControlledRouter.java still uses absolute router.networkDatabase.dbDir (Plan 217 §6.C)" >&2
+      failures=$((failures + 1))
+    fi
   fi
   # 10d. The harness must wire the Plan 200 row set and the
   # bootstrap-classification aggregator.
@@ -501,6 +548,30 @@ if [[ -f "${JAVA_RAW_HELPER_SRC}" && -f "${JAVA_STREAM_HELPER_SRC}" ]]; then
         failures=$((failures + 1))
       fi
     done
+    # Plan 217 §6.B — the harness MUST also emit the diagnostic-only
+    # negative observation keys (each `No …` pattern) so a future
+    # pass cannot silently re-fold a negative string into a positive
+    # row. These keys are NEVER satisfied by the "No …" pattern
+    # itself; they exist so the static check can reject the mixed
+    # grep that the Plan 216 diagnostic flagged.
+    for key in \
+      java-client-inbound-tunnel-unavailable \
+      java-client-outbound-tunnel-unavailable \
+      java-floodfill-candidate-empty; do
+      if ! grep -q "${key}" "${JAVA_HARNESS}"; then
+        echo "m6 mixed-router evidence check failed: run-java.sh missing Plan 217 §6.B negative-observation key ${key}" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    # Plan 217 §6.B — the positive-only greps MUST NOT contain the
+    # "No …" failure pattern. The static check rejects mixed greps
+    # so a future rewrite cannot silently satisfy a positive row
+    # with a negative diagnostic.
+    if grep -nE 'java-(client-inbound-tunnel-selectable|client-outbound-tunnel-selectable|floodfill-candidate-non-empty)' "${JAVA_HARNESS}" \
+       | grep -qE 'No (inbound|outbound|floodfill|peers|more peers)'; then
+      echo "m6 mixed-router evidence check failed: run-java.sh positive row still consumes 'No …' pattern (Plan 217 §6.B step 3)" >&2
+      failures=$((failures + 1))
+    fi
   fi
 fi
 
@@ -585,6 +656,15 @@ if [[ -f "${DESTINATION_TUNNEL_UNIT_TEST}" ]]; then
       failures=$((failures + 1))
     fi
   done
+  # Plan 217 §6.A — the transfer-once invariant for an installed
+  # outbound role MUST be locked by a unit row so the Plan 216
+  # duplicate-block regression cannot return without an immediate
+  # local test failure (the external Java run is not required to
+  # catch this).
+  if ! grep -q 'fn plan217_outbound_role_transfer_once_invariant' "${DESTINATION_TUNNEL_UNIT_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNEL_UNIT_TEST} lacks the Plan 217 §6.A transfer-once unit row 'plan217_outbound_role_transfer_once_invariant'" >&2
+    failures=$((failures + 1))
+  fi
 fi
 
 # ---- 13. Plan 201 Branch C/D corrective — three-router topology. -----

@@ -609,6 +609,22 @@ mkdir -p "${DRIVER_EVIDENCE}"
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
+
+# Plan 217 §9 — bounded selector for the destination/Streaming
+# sub-runs. Set I2PR_M6_JAVA_DRIVER=destination|streaming|both
+# (default both) so an operator can re-run a single sub-run during
+# diagnosis without duplicating the Java-router topology setup. The
+# bootstrap probe always runs because both drivers depend on it.
+I2PR_M6_JAVA_DRIVER="${I2PR_M6_JAVA_DRIVER:-both}"
+case "${I2PR_M6_JAVA_DRIVER}" in
+  destination|streaming|both)
+    ;;
+  *)
+    echo "I2PR_M6_JAVA_DRIVER must be one of: destination, streaming, both (got '${I2PR_M6_JAVA_DRIVER}')" >&2
+    exit 64
+    ;;
+esac
+echo "    sub-run selector: I2PR_M6_JAVA_DRIVER=${I2PR_M6_JAVA_DRIVER}" >>"${DRIVER_LOG}"
 # Plan 199 §A.2: establish the Java A/B NetDB peer relationship before
 # starting public clients, whose one-hop tunnel readiness depends on it.
 BOOTSTRAP_LOG="${DRIVER_EVIDENCE}/bootstrap.log"
@@ -648,77 +664,87 @@ DRIVER_STREAM_TSV="${DRIVER_EVIDENCE}/driver-streaming.tsv"
 mkdir -p "${DRIVER_EVIDENCE}/destination" "${DRIVER_EVIDENCE}/streaming"
 : > "${DRIVER_DEST_TSV}"
 : > "${DRIVER_STREAM_TSV}"
-start_raw_helper
-# Plan 200 §A.1 — the helper's `READY` line is intentionally the
-# minimal public-client fact set; the b64 destination is the
-# last-but-one whitespace-separated field after `READY`, with
-# the Java PIN as the final field.
-RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
-  for (i = NF; i >= 1; i--) {
-    if (length($i) > 100) { print $i; exit }
-  }
-}' "${RAW_HELPER_READY}")"
-echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
-if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
-   JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
-   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
-   JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
-   JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
-   JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:${JAVA_RAW_CONTROL_PORT}" \
-   JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
-   I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
-   EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
-   timeout --foreground "${DRIVER_TIMEOUT}" \
-   cargo test --locked -p i2pr-daemon --test java_tunnel_external \
-   destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
-   >>"${DRIVER_LOG}" 2>&1; then
-  driver_rc=0
-else
-  driver_rc=$?
-fi
-echo "    destination driver exit=${driver_rc}" >>"${DRIVER_LOG}"
-# Concatenate the destination driver's evidence into the destination TSV
-if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
-  cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
-fi
-stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
-
-start_stream_helper
-# Plan 200 §A.1 — see RAW_REFERENCE_DESTINATION_B64 above.
-STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
-  for (i = NF; i >= 1; i--) {
-    if (length($i) > 100) { print $i; exit }
-  }
-}' "${STREAM_HELPER_READY}")"
-echo "    public Java streaming helper ready; running streaming driver" >>"${DRIVER_LOG}"
-# Streaming driver run. Reuses the same SSU2 endpoint and SAM
-# Java public Streaming manager; it is independent of §5.4.
+driver_rc=0
 streaming_rc=0
-if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-   JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
-   JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
-   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
-   JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
-   JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
-   JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
-   JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
-   I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
-   EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
-   timeout --foreground "${DRIVER_TIMEOUT}" \
-   cargo test --locked -p i2pr-daemon --test java_tunnel_external \
-   streaming_through_java -- --ignored --exact --nocapture --test-threads=1 \
-   >>"${DRIVER_LOG}" 2>&1; then
-  streaming_rc=0
-else
-  streaming_rc=$?
+
+# Plan 217 §9 — bounded selector. The sub-runs share the same Java
+# RouterContexts but use disjoint build/tunnel/message-id namespaces
+# (Plan 217 §6.D), so each sub-run is independent and may be
+# executed alone for diagnosis.
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  start_raw_helper
+  # Plan 200 §A.1 — the helper's `READY` line is intentionally the
+  # minimal public-client fact set; the b64 destination is the
+  # last-but-one whitespace-separated field after `READY`, with
+  # the Java PIN as the final field.
+  RAW_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
+    for (i = NF; i >= 1; i--) {
+      if (length($i) > 100) { print $i; exit }
+    }
+  }' "${RAW_HELPER_READY}")"
+  echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
+  if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+     JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
+     JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+     JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+     JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
+     JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:${JAVA_RAW_CONTROL_PORT}" \
+     JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
+     I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
+     EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
+     timeout --foreground "${DRIVER_TIMEOUT}" \
+     cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+     destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
+     >>"${DRIVER_LOG}" 2>&1; then
+    driver_rc=0
+  else
+    driver_rc=$?
+  fi
+  echo "    destination driver exit=${driver_rc}" >>"${DRIVER_LOG}"
+  # Concatenate the destination driver's evidence into the destination TSV
+  if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
+    cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
+  fi
+  stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
 fi
-echo "    streaming driver exit=${streaming_rc}" >>"${DRIVER_LOG}"
-stop_reference_helper "${STREAM_HELPER_PID}" "${JAVA_STREAM_CONTROL_PORT}"
-if [[ -f "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" ]]; then
-  cat "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" >> "${DRIVER_STREAM_TSV}"
+
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  start_stream_helper
+  # Plan 200 §A.1 — see RAW_REFERENCE_DESTINATION_B64 above.
+  STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
+    for (i = NF; i >= 1; i--) {
+      if (length($i) > 100) { print $i; exit }
+    }
+  }' "${STREAM_HELPER_READY}")"
+  echo "    public Java streaming helper ready; running streaming driver" >>"${DRIVER_LOG}"
+  # Streaming driver run. Reuses the same SSU2 endpoint and SAM
+  # Java public Streaming manager; it is independent of §5.4.
+  if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+     JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
+     JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+     JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
+     JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
+     JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
+     JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
+     I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
+     EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
+     timeout --foreground "${DRIVER_TIMEOUT}" \
+     cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+     streaming_through_java -- --ignored --exact --nocapture --test-threads=1 \
+     >>"${DRIVER_LOG}" 2>&1; then
+    streaming_rc=0
+  else
+    streaming_rc=$?
+  fi
+  echo "    streaming driver exit=${streaming_rc}" >>"${DRIVER_LOG}"
+  stop_reference_helper "${STREAM_HELPER_PID}" "${JAVA_STREAM_CONTROL_PORT}"
+  if [[ -f "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" ]]; then
+    cat "${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv" >> "${DRIVER_STREAM_TSV}"
+  fi
 fi
 # Compose the aggregated driver-evidence.tsv the helpers below read.
 : > "${DRIVER_EVIDENCE}/driver-evidence.tsv"
@@ -765,6 +791,10 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   # absence is itself a diagnostic fact (not silently rewritten to
   # "passed"). Raw log lines are NEVER retained as evidence — only
   # these bounded count keys.
+  # Plan 217 §6.B — positive-observation patterns only. The pinned
+  # Java 2.13.0 source (`LeaseSetPublisher.java:79` etc.) emits these
+  # strings when the helper LeaseSet2 publication path advances; absence
+  # is itself a diagnostic fact.
   printf 'java-client-subdb-created\t%s\n' "$(grep -cE 'new FloodfillNetworkDatabaseSegmentor|new FloodfillNetworkDatabaseFacade|ClientConnectionRunner' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-create-leaseset2-received\t%s\n' "$(grep -cE 'CreateLeaseSet2MessageHandler|CreateLeaseSetMessage|handleCreateLeaseSet2|createNewLeaseSet' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-client-leaseset-stored-current\t%s\n' "$(grep -cE 'Stored local LeaseSet|getStoredLocal|LeaseSet stored|LeaseSet2 stored|current.*ls2' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
@@ -773,12 +803,26 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   # Plan 200 §D — tunnel eligibility, floodfill selection, store/ack
   # bookkeeping. Each grep is bounded to the documented exact-pinned
   # log shape; absence is itself a diagnostic fact, never rewritten.
-  printf 'java-client-inbound-tunnel-selectable\t%s\n' "$(grep -cE 'No inbound tunnels available|No reply inbound tunnels|inbound tunnel.*select|selectReplyInbound' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
-  printf 'java-client-outbound-tunnel-selectable\t%s\n' "$(grep -cE 'No outbound tunnels available|outbound tunnel.*select|selectOutboundTunnel|client tunnel.*select' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
-  printf 'java-floodfill-candidate-non-empty\t%s\n' "$(grep -cE 'No floodfill peers|No peers|No more peers|floodfill peer selector|floodfill routerInfo' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 217 §6.B — positive-only patterns. The prior mixed greps
+  # counted "No outbound tunnels available" alongside positive
+  # eligibility signals, which violates §6.B step 3 ("no positive row
+  # may be satisfied by a string beginning with 'No …'"). Negative
+  # observations are recorded in the `*-unavailable` and
+  # `*-no-peers` keys below; positive rows now consume only positive
+  # patterns.
+  printf 'java-client-inbound-tunnel-selectable\t%s\n' "$(grep -cE 'inbound tunnel.*select|selectReplyInbound' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-outbound-tunnel-selectable\t%s\n' "$(grep -cE 'outbound tunnel.*select|selectOutboundTunnel|client tunnel.*select' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-floodfill-candidate-non-empty\t%s\n' "$(grep -cE 'floodfill peer selector|floodfill routerInfo' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-store-emitted\t%s\n' "$(grep -cE 'Sending store|Sending to floodfill|Storing leaseSet|Storing leaseSet2|sent StoreJob|sent StoreMsg' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-store-ack-observed\t%s\n' "$(grep -cE 'DeliveryStatusMessageHandler|received ack|stored successfully|Store successful|Ack received|store reply.*received' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-store-failure-reason\t%s\n' "$(grep -cE 'store failed|store timeout|store exception|could not store|peer.*not eligible|peer.*unreachable' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 217 §6.B — diagnostic-only negative observations. Each is a
+  # "No …" pinned Java string the harness explicitly attributes to a
+  # failure mode; zero is the healthy state, ≥1 is a diagnostic
+  # observation only and NEVER satisfies a positive acceptance row.
+  printf 'java-client-inbound-tunnel-unavailable\t%s\n' "$(grep -cE 'No inbound tunnels available|No reply inbound tunnels' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-client-outbound-tunnel-unavailable\t%s\n' "$(grep -cE 'No outbound tunnels available' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'java-floodfill-candidate-empty\t%s\n' "$(grep -cE 'No floodfill peers|No peers|No more peers' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -964,9 +1008,15 @@ ref_row "external-java-store-failure-reason" "java-store-failure-reason" \
 # derived from the bootstrap probe's `p200-classification` evidence.
 # The earliest non-passing boundary wins; if all observed
 # boundaries pass, the classification is `P200-H-publication-path-passed`.
+# Plan 217 §6.B.6 — read from the FINAL snapshot (last occurrence),
+# not the first emission. The bootstrap probe is the only emitter
+# today, so the two are equivalent, but using `last-classification`
+# preserves the property if a later corrective pass adds a re-emit
+# after helper readiness. The classification itself remains the
+# single terminal P200 row emitted per run.
 P200_CLASSIFICATION=""
 if [[ -f "${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv" ]]; then
-  P200_CLASSIFICATION="$(awk -F'\t' '$1 == "p200-classification" { sub(/^[^ ]+ /, "", $2); print $2; exit }' "${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv")"
+  P200_CLASSIFICATION="$(awk -F'\t' '$1 == "p200-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DRIVER_EVIDENCE}/bootstrap/driver-evidence.tsv")"
 fi
 if [[ -z "${P200_CLASSIFICATION}" ]]; then
   P200_CLASSIFICATION="P200-classification-missing"
