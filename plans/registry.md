@@ -33,7 +33,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
 | Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on Plan 201 (M6 Java second-family) |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 201 in-progress; Plan 205 next | Java LS2-publication gap; `P200-B-router-b-missing-router-a` |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 217 ready; Plan 218 blocked on 217 | Plan 216 exposed harness/evidence contradictions; direct-I2CP must be requalified before conditional Plan 205 SAM fallback |
 
 ## Current milestone authorities
 
@@ -48,26 +48,28 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 183 registered; executable head is Plan 201 —
-  `plans/closure/mixed-router-interop/201-status.md`.
+- **M6 mixed-router program**: Plan 201 is blocked by the Plan 217 harness corrective; Plan 217 is the executable head and Plan 218 owns final Java-family qualification — `plans/closure/mixed-router-interop/201-status.md`, `217-status.md`, `218-status.md`.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 201 Branch C/D | active | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`, `plans/closure/mixed-router-interop/201-status.md` | Exact-head external run must record the terminal `P200-{A..H}` classification |
-| M6 mixed-router interop | 205 SAM-bridge pivot | ready | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | Documented next executable after Plan 201; blocked on the Plan 198 publication boundary |
-| Service tunnels | 204 convergence | blocked | `plans/closure/service-tunnels/204-status.md` | Docs/CI normalization landed; final closure transitions deferred until Plan 201 closes |
+| M6 mixed-router interop | 217 Java closure harness corrective | ready | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | Correct stale tunnel-ownership assertions, evidence semantics, Java topology/path attribution, and cross-driver identifier collisions; fresh exact-head direct-I2CP classification |
+| M6 mixed-router interop | 218 Java second-family final qualification | blocked | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | Becomes ready only after Plan 217 closes passed |
+| Service tunnels | 204 convergence | blocked | `plans/closure/service-tunnels/204-status.md` | M10 product closure is already retained; final cross-milestone normalization waits for M6 Java second-family closure via Plan 218 |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 Branch C/D | Java loopback peer-profile scoring; three exact-head runs classified `P200-B-router-b-missing-router-a` |
-| M6 mixed-router interop | 205 | Blocked on the Plan 198 publication boundary (runs after Plan 201) |
-| Service tunnels | 204 | Independent Java M6 branch (Plan 201) + M10 convergence |
-| M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap; live work continues at Plan 201 |
-| Service tunnels | `remote-independent-*` rows | Flipped `blocked → passed` only by the hosted lane that provisions i2pd with peers (Plans 213/214) |
+| M6 mixed-router interop | 201 | Authority paused on Plan 217: Plan 216's publication/profile-scoring conclusion is contradicted by the driver ownership/control flow and unreliable lifecycle grep semantics |
+| M6 mixed-router interop | 218 | Hard-blocked on Plan 217 closure |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure (Plan 218 success or a later explicitly registered fallback) |
+| M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
+
+### Retained / conditional work
+
+- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Reactivate only if Plan 217 is closed and Plan 218 proves a genuine stock-Java direct-I2CP public-client boundary.
 
 ## Recently closed work
 
@@ -85,7 +87,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 | 162 external-test lane isolation | closed | `plans/closure/ssu2/162-status.md` |
 | SSU2 | 161 independent IPv4 interop | closed | `plans/closure/ssu2/161-status.md` |
 
-Full per-plan history (000–215) lives in the subsystem roadmaps §7 tables.
+Full per-plan history (000–218) lives in the subsystem roadmaps §7 tables.
 
 ## Superseded remote branches (do not merge)
 
@@ -97,8 +99,8 @@ Full per-plan history (000–215) lives in the subsystem roadmaps §7 tables.
 
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
-- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 205` (201 in-progress).
-- `next_executable_plan = 201-branch-g-finalize`; `next_m10_application_plan` follows Plan 201 via Plan 204.
+- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218` (Plan 205 retained as a conditional fallback branch, not on the critical path).
+- `next_executable_plan = 217-m6-java-closure-harness-corrective`; Plan 218 follows Plan 217; Plan 204 convergence follows successful Java-family closure.
 
 ## Verification policy
 

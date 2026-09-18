@@ -21,7 +21,7 @@ Related ADRs:
 
 Authenticated I2NP preflight, one-hop exploratory tunnels, NetDB lookup/publication, destination/garlic routing, short-build reply + NetDB reply-path + wire-format correctives, i2pd Streaming qualification (33/33), Java second-family qualification (controlled topology, pq tolerance, public-client observability), Branch G corrective framework.
 
-Historic plans: 183–194, 196–198, 200, 201, 205 (global i2pr numbers, preserved).
+Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–218 (global i2pr numbers, preserved).
 
 ## 2. Work classification
 
@@ -36,7 +36,7 @@ Historic plans: 183–194, 196–198, 200, 201, 205 (global i2pr numbers, preser
 
 ## 4. Current state
 
-Plan 201 (in-progress Branch C/D, blocked on Java loopback peer-profile scoring); next executable after 201 is Plan 205.
+Plan 201 authority is blocked by the Plan 217 harness/evidence corrective after Plan 216 exposed contradictions in the prior Java publication diagnosis. Plan 217 is dependency-ready; Plan 218 is registered behind it for final direct-I2CP Java qualification. Plan 205 is retained as a conditional SAM fallback only.
 
 ## 5. Target architecture
 
@@ -46,7 +46,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 205 (see legacy registry `m6_sequence`).
+183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218. Plan 205 is a retained conditional fallback branch after Plan 218, not part of the primary sequence.
 ```
 
 ## 7. Milestones
@@ -72,8 +72,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | active | in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring (this run consumed the first Plan 200 / ... | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
-| 205 | active | in-progress-registered-blocked-on-plan198-publication-boundary (the documented next executable plan after Plan 201; r... | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
+| 201 | blocked | blocked-by-plan217-java-closure-harness-corrective | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
+| 217 | ready | registered-ready-m6-java-closure-harness-corrective | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
+| 218 | blocked | registered-blocked-on-plan217-m6-java-final-qualification | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -90,12 +92,13 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Java-side LeaseSet2 publication gap gates the seven §11 stop rows; three sequential exact-head runs classified `P200-B-router-b-missing-router-a`.
+- Plan 216's Java publication/profile-scoring diagnosis is not closure-quality until Plan 217 repairs the stale outbound-ownership assertion, lifecycle evidence semantics, controlled NetDB path/peer eligibility attribution, and destination/Streaming identifier reuse.
+- Plan 205 SAM work is intentionally off the critical path; reactivate only if corrected direct-I2CP qualification proves a genuine stock-Java boundary.
 
 ## 11. Completion definition
 
-Open: exact-head external run records the terminal `P200-{A..H}` classification and closes Plan 201; then Plan 205 (SAM-bridge pivot).
+Open: Plan 217 first closes the Java harness/evidence corrective. Plan 218 then performs final direct-I2CP Java second-family qualification. On Plan 218 success, M6 closes and Plan 204 becomes dependency-ready. On a genuine stock-Java direct-I2CP boundary, Plan 218 may reactivate retained Plan 205.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 201 (in-progress Branch C/D, blocked on Java loopback peer-profile scoring); next executable after 201 is Plan 205.
+Full row history is §7. Current authority: Plan 201 is blocked by the Plan 217 corrective; Plan 217 is next executable; Plan 218 owns final Java-family qualification; Plan 205 is retained conditional fallback.

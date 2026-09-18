@@ -1,6 +1,50 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring`** (Plan 205 SAM-bridge helper pivot registered as the next executable plan; the Java-side LeaseSet2 publication boundary cannot close inside Plan 198 / Plan 201 §4 constraints without breaking no-public-I2P / no-Java-patching / no-i2pr-production-wire-change).
+Status: **`blocked-by-plan217-java-closure-harness-corrective`**.
+
+## 2026-09-18 authority amendment
+
+Plan 216 exposed a test-driver panic, but subsequent source review shows the
+recorded Java-side publication blocker is not trustworthy enough to drive the
+next implementation:
+
+- the destination driver explicitly transfers its installed outbound role out
+  of the coordinator registry before the stale `outbound_len() == 1`
+  assertion that Plan 216 classified as a new disappearance;
+- execution can reach that assertion only after
+  `LeaseStoreIngestOutcome::Completed`, so the Plan 216 run strongly indicates
+  the remote Java LS2 lookup crossed the previously claimed visibility
+  boundary;
+- Plan 200/216 Java lifecycle counters include stale/non-matching patterns and
+  positive labels that can count negative diagnostic strings;
+- the previous `_fastPeers` attribution does not account for Java's tier
+  fallback and `TunnelPeerSelector` eligibility filters;
+- destination and Streaming drivers reuse build/tunnel identifiers against the
+  same long-lived Java RouterContexts.
+
+No M6 pass is claimed from this review alone. The correct next executable work
+is Plan 217, which repairs the harness/evidence and reruns the direct-I2CP path.
+Plan 218 then owns final Java-family qualification.
+
+Plan 205 is retained as a conditional SAM fallback only if the corrected Plan
+218 direct-I2CP run demonstrates a genuine stock-Java public-client boundary.
+
+Current authority:
+
+```text
+plan_201 = blocked-by-plan217-java-closure-harness-corrective
+plan_217 = registered-ready-m6-java-closure-harness-corrective
+plan_218 = registered-blocked-on-plan217-m6-java-final-qualification
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed
+milestone6_interoperable = not-yet-claimed
+```
+
+The prior Plan 201 execution narrative is retained below for traceability; its
+earlier blocker interpretation is superseded by this amendment until Plan 217
+produces fresh evidence.
+
+## Retained prior execution record
 
 Plan of record: [`201-m6-java-public-client-publication-corrective-and-second-family-closure.md`](201-m6-java-public-client-publication-corrective-and-second-family-closure.md).
 

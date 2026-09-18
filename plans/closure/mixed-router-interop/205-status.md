@@ -1,6 +1,37 @@
 # Plan 205 status — Java I2P SAM/helper publication pivot
 
-Status: **`registered-executable-java-publication-pivot`**.
+Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`**.
+
+## 2026-09-18 disposition amendment
+
+Plan 205 is no longer the immediate executable Java closure path.
+
+Source review after Plan 216 found that Java SAM ultimately rides the same
+Java client/I2CP tunnel and LeaseSet machinery that the existing public helpers
+already exercise. More importantly, the Plan 216 destination run reached a
+stale post-transfer assertion that is reachable only after a completed remote
+LS2 ingest. Rewriting the helpers before correcting that lane would discard a
+path that may already cross the claimed publication boundary.
+
+Plan 205 is therefore retained, not deleted or declared impossible. It may be
+reactivated only if:
+
+1. Plan 217 closes the harness/evidence defects; and
+2. Plan 218 then records a reproducible stock-Java direct-I2CP public-client
+   boundary for which SAM is a justified independent API experiment.
+
+Until then:
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+next_executable_plan = 217-m6-java-closure-harness-corrective
+```
+
+The prior Plan 205 registration narrative is retained below for traceability;
+statements calling it the "next executable" are historical and superseded by
+this amendment.
+
+## Retained prior registration context
 
 Plan of record: [`205-m6-java-sam-bridge-helper-pivot.md`](../../implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md).
 
