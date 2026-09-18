@@ -1,6 +1,35 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-by-plan218-fresh-external-classification-on-corrected-harness`**.
+Status: **`blocked-pending-plan219-root-cause-classification`**.
+
+## 2026-09-18 authority amendment — Plan 219 investigation registered
+
+Plan 218 consumed the corrected Plan 217 harness and proved a reproducible
+Java→i2pr reverse-delivery failure, but its `java-floodfill-candidate=0`
+attribution is not precise enough to select a corrective. Plan 219 is now the
+dependency-ready investigation and must determine the first exact boundary
+among live RouterInfo floodfill advertisement, Router A PeerManager capability
+indexing, FloodfillPeerSelector input/output, client-specific NetDB lookup,
+OutboundClientMessageOneShotJob lease/tunnel selection, Java dispatch, and
+i2pr inbound receive/decrypt.
+
+Current authority:
+
+```text
+plan_201 = blocked-pending-plan219-root-cause-classification
+plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed
+milestone6_interoperable = not-yet-claimed
+```
+
+No Plan 201 stop row may flip until Plan 219 emits one typed J219-A..J
+classification and a later corrective/qualification plan produces the required
+command-derived evidence.
+
+## Retained prior authority narrative
 
 ## 2026-09-18 authority amendment (Plan 217 closure superseded)
 

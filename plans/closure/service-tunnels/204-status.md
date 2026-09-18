@@ -1,6 +1,6 @@
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-plan218-for-final-convergence`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan219-investigation`**.
 
 ## 2026-09-18 dependency amendment
 
@@ -12,8 +12,9 @@ The remaining hard dependency is independent M6 Java second-family closure:
 
 ```text
 Plan 217 — Java closure harness/evidence corrective (closed)
-    -> Plan 218 — direct-I2CP Java final qualification
-        (commit 7762e13: stopped at the inbound-delivery primitive)
+    -> Plan 218 — direct-I2CP Java final qualification (stopped)
+    -> Plan 219 — reverse-delivery root-cause investigation (ready)
+    -> later corrective / Java-family closure
     -> Plan 204 — cross-milestone authority/docs convergence
 ```
 
@@ -44,7 +45,7 @@ plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 milestone6_java_mixed_router_interop = not-yet-passed (Plan 218 consumption of the corrected Plan 217 harness on commit 7762e13 reached the inbound-delivery primitive; the seven §11 stop rows past criteria 10/22/24/25 remain bounded; a fresh plan-of-record is the documented next move)
 
-plan_204 = blocked-on-m6-java-second-family-closure-via-fresh-plan-of-record (Plan 218 inbound-delivery boundary on commit 7762e13; Plan 205 retained; M10 product closure remains independently retained)
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan219-investigation
 ```
 
 The prior Plan 204 narrative is retained below for traceability; its older

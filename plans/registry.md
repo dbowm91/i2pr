@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked only on independent M6 Java second-family closure via a fresh plan-of-record following the Plan 218 inbound-delivery boundary |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 219 ready: reverse-delivery root-cause investigation | Plan 218 consumed the corrected Plan 217 harness and recorded a reproducible stock-Java inbound-delivery boundary on commit `7762e13` (Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the destination direction + `streaming-b-accept STATUS OK but inbound SYN never reached the backlog` on the streaming direction; root cause = `java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel endpoint cannot resolve the i2pr destination's LeaseSet through Java's netDb); Plan 205 stays retained-deferred because its SAM-bridge pivot addresses a different axis; a future plan-of-record (e.g. Plan 219) would own the inbound-delivery primitive |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 219 is investigative and does not itself unblock convergence |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 219 ready: reverse-delivery root-cause investigation | Plan 218 proved reverse delivery is absent but did not yet prove which Java lookup/selection/dispatch layer is first failing; Plan 219 owns typed attribution before any corrective |
 
 ## Current milestone authorities
 
@@ -66,7 +66,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 ### Retained / conditional work
 
-- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 218 consumed the corrected Plan 217 harness and recorded a reproducible inbound-delivery boundary at the helper's outbound tunnel endpoint (`java-floodfill-candidate=0` on Router A), not on the helper's local LeaseSet publication gap. Plan 205's SAM-bridge helper pivot addresses a different axis (helper's local LeaseSet publication lifecycle) and would re-hit the same inbound-delivery boundary; do not reactivate Plan 205 on the current head.
+- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 218 proved a reverse-delivery failure but Plan 219 is still determining the first exact Java-side or i2pr-inbound boundary. Do not reactivate Plan 205 unless the typed Plan 219 classification shows its SAM/public-helper axis is relevant.
 
 ## Recently closed work
 
