@@ -59,7 +59,7 @@ pub use i2pr_core::{
   `MAX_TRANSPORT_RESOURCE_LIMIT`, `MAX_TRANSPORT_QUEUE_CAPACITY`.
 
 ### Crate-root alias
-- `type AddressObservation = ReachabilityObservation;` (`lib.rs:46`).
+- `type AddressObservation = ReachabilityObservation;` (`lib.rs:57`).
 
 ### Per-module highlights
 - `types.rs`: `LinkId`, `DeliveryId`, `Deadline`, `AddressOrigin`,

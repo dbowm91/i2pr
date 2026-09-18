@@ -40,7 +40,8 @@ byte-level, on-disk cache for the Plan 104 NetDB composition owner
 it does not know about RouterInfo, ZIP, SU3, or the NetDB store. The
 composition owner decodes bytes, validates them through `i2pr-netdb`,
 and then asks this seam to atomically write or remove the canonical
-bytes.
+bytes. Persistent per-service destinations live in
+`src/service_destination.rs` (`pub mod service_destination`).
 
 ## Public surface
 
@@ -61,7 +62,8 @@ bytes.
   `UnsafePath`, `AlreadyExists`, `InsecurePermissions`, `TooLarge`,
   `Truncated`, `TrailingBytes`, `Malformed`, `UnsupportedVersion`,
   `UnsupportedAlgorithm`, `Integrity`, `Crypto` (transparent from
-  `CryptoError`), plus `Cache` (transparent from `CacheError`).
+  `CryptoError`). `CacheError` converts via `From` into
+  `StorageError::Io`; there is no `StorageError::Cache` variant.
 
 ### Types
 

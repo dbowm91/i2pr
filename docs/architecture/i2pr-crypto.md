@@ -40,7 +40,8 @@ Scope is intentionally narrow:
   `seal_existing_session` / `open_existing_session` (tag AD,
   `0x00000000 || LE64(index)` nonces). Unbound New Sessions and
   duplicate ephemerals are rejected typed. The wrapper hides
-  `curve25519-elligator2` so `i2pr-client` never sees the
+  `elligator2` (Plan 131 production switch; `curve25519-elligator2`
+  retired) so `i2pr-client` never sees the
   third-party type. The Elligator2 inverse rejects the all-zero
   value, rejects low-order points, and refuses to validate any
   32-byte string whose representative does not encode a valid
@@ -93,7 +94,7 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `IDENTITY_PADDING_LENGTH` | const `usize` (= 320) | `lib.rs` |
 | `X25519_KEY_LENGTH` | const `usize` (= 32) | `lib.rs` |
 | `CryptoError` | enum | `lib.rs` |
-| `EciesError` | enum (13 variants — `ElligatorDecode`, `AllZeroKey`, `InvalidSharedSecret`, `AuthenticationFailed`, `EncryptionFailed`, `CiphertextTooLarge`, `CiphertextTooShort`, `UnboundNewSessionNotSupported`, `TagSetExhausted`, `TagSetIndexBeyondCeiling`, `Hkdf`, `RandomnessUnavailable`, plus the parent `Crypto(#[from] CryptoError)` forwarding variant) | `ecies.rs` |
+| `EciesError` | enum (12 variants — `ElligatorDecode`, `AllZeroKey`, `InvalidSharedSecret`, `AuthenticationFailed`, `EncryptionFailed`, `CiphertextTooLarge`, `CiphertextTooShort`, `UnboundNewSessionNotSupported`, `TagSetExhausted`, `TagSetIndexBeyondCeiling`, `Hkdf`, `RandomnessUnavailable`) | `ecies.rs` |
 | `X25519PrivateKey` | struct | `lib.rs` |
 | `X25519SharedSecret` | struct | `lib.rs` |
 | `TransportStaticKey` | type alias for `X25519PrivateKey` | `lib.rs` |
@@ -300,8 +301,10 @@ NS → NSR → bidirectional ES path.
 
 ## Distinctive design choices
 
-1. **Two-file, narrow scope.** `i2pr-crypto` keeps identity
-   cryptography and the protocol-neutral HKDF helper in the same
+1. **Three-file, narrow scope.** `i2pr-crypto` keeps identity
+   cryptography (`lib.rs`), the protocol-neutral HKDF helper
+   (`hkdf.rs`), and the ECIES-X25519 destination session layer
+   (`ecies.rs`) in the same
    crate so the Milestone 5 ECIES-X25519 tunnel-build primitive can
    consume both directly. AES, ChaCha20-Poly1305, HMAC, and SipHash
    live in `i2pr-transport-ntcp2` (and ChaCha20-Poly1305 also in

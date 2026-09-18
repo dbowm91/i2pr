@@ -282,9 +282,11 @@ on `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, and `i2pr-netdb`.
 
 ## Module layout
 
-The crate ships **22 modules** at the crate root. Previous revisions
+The crate ships **22 modules** at the crate root (plus the crate root
+itself). Previous revisions
 of this doc listed 12; the 9 added through the Plan 112–117 sequence
-plus `garlic_reply` (Plan 188) are noted in the table.
+plus `garlic_reply` (Plan 188) plus `zero_hop` (Plan 172) are noted
+in the table.
 
 | Module | Purpose |
 | --- | --- |
@@ -310,6 +312,7 @@ plus `garlic_reply` (Plan 188) are noted in the table.
 | `fragment` | `BoundedReassembler`, `TunnelFragment`, `ReassemblyKey`, `ReassembledFragment`, `insert_with_delivery`, `expire_due`, `purge` |
 | `layer` | `TunnelLayerTransform` (AES-256 ECB/CBC), `DuplicateWindow`, `DuplicateToken` |
 | `roles` | `OutboundGatewayRole`, `InboundGatewayRole`, `OutboundParticipantRole`, `InboundParticipantRole`, `OutboundEndpointRole`, `LocalInboundEndpointRole`, `RouterDeliveryAction`, `RouterDeliveryKind`, `OBGWRouterDelivery`, `OutboundCell` |
+| `zero_hop` | Plan 172 local zero-hop inbound/outbound types for loopback delivery |
 
 ## Dependency boundary
 

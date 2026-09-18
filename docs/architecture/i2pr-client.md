@@ -344,7 +344,7 @@ crates/i2pr-client/
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
 │   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2
 │   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError
-│   ├── streaming.rs      Plan 125/128/129 StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope, poll_retransmits, drain_delivered
+│   ├── streaming/        Plan 125/128/129 Streaming core (`mod`, `manager`, `connection`, `config`, `send_window`, `recv_window`, `retransmit`, `congestion`, `local_delivery`, `events`, `errors`, `clock`, `transport`, `testing`): StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope, poll_retransmits, drain_delivered
 │   ├── streaming_adapter.rs Plan 129 combined outbound/inbound StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery; recovered I2NP Data -> gzip -> protocol-6 dispatch)
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
@@ -359,7 +359,9 @@ crates/i2pr-client/
     ├── plan128_trajectory.rs   Plan 128 manager handshake stream-id ownership, CLOSE/RESET shapes, negotiation
     ├── plan129_trajectory.rs   Plan 129 integrated destination+Streaming gate (`superseded-by-plan130-final-gate`; persistent inbound chains across ordinary deliveries)
     ├── plan130_trajectory.rs   Plan 130 final wire/runtime corrective closure (frozen simple-ACK byte fixture, reference ACK/NACK table, sequence transition, one-way delayed ACK, piggyback suppression, reorder+NACK convergence, port authority + wildcard fallback, replay-layer separation, production-Elligator establishment; retained as Plan 131 historical evidence)
-    └── plan131_trajectory.rs   Plan 131 final local correctness closure (production Elligator branch randomization, connection-owned I2P port tuple asserted on every established send API, side-effect-free oversized `send_data` rollback, independent three-layer replay separation)
+    ├── plan131_trajectory.rs   Plan 131 final local correctness closure (production Elligator branch randomization, connection-owned I2P port tuple asserted on every established send API, side-effect-free oversized `send_data` rollback, independent three-layer replay separation)
+    ├── plan132_trajectory.rs   Plan 132 artifact-preserving and replay-isolation trajectories
+    └── plan166_trajectory.rs   Plan 166 client-owned destination + LeaseSet2 bridge trajectory
 ```
 
 ## Identity ownership
@@ -701,7 +703,7 @@ NSR-after-acceptance rejection, duplicate bound New Session rejection,
 cross-destination isolation, pending capacity, idle expiry, and
 too-short classification. The manager is exercised against real
 `i2pr-crypto` primitives only; no test reaches private state or the
-third-party `curve25519-elligator2` type directly.
+third-party `elligator2` type directly.
 
 ## Destination routing composition (Plans 122 → 127)
 

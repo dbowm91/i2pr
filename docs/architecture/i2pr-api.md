@@ -162,7 +162,7 @@ crates/i2pr-api/
         ├── line_reader.rs          LineReader, LineEvent (Plan 137)
         ├── server_state.rs         ServerConnectionState, dispatch, stream/naming appliers,
         │                           Require* dispatch outcomes (Plans 138–139),
-        │                           and StreamRawMode (Plan 143)
+        │                           and `DispatchOutcome::StreamRawMode` (Plan 143)
         ├── streams.rs              SamStreamRegistry, SamStreamAttachment,
                                     InboundMode, SamStreamRegistryError,
                                     SamStreamRegistryHandle (Plans 138–139)
@@ -249,7 +249,8 @@ runtimes:
 - **Typed actions.** `I2cpAction::ReserveClientDestination`,
   `ReconfigureClientDestination`, `DestroyClientDestination`,
   `RequestBandwidthSnapshot`, and `RequestDestinationLookup` carry
-  verified typed values only. The Plan 167 daemon is the sole
+  verified typed values only (plus `RequestVariableLeaseSet`, added
+  under Plan 166 — see below). The Plan 167 daemon is the sole
   translator from these actions to runtime state.
 
 ## Plan 166 — I2CP client-owned LeaseSet2 request action

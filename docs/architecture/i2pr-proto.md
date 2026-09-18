@@ -55,8 +55,8 @@ ephemeral key handling stay out of `i2pr-proto` and live in
 ## Module layout
 
 The crate is single-directory with **three** top-level submodules under
-`src/` (`common/`, `i2np/`, `streaming/`) plus two flat files
-(`codec.rs`, `ecies_payload.rs`):
+`src/` (`common/`, `i2np/`, `streaming/`) plus three flat files
+(`codec.rs`, `ecies_payload.rs`, `i2cp_data_body.rs`):
 
 | File | Responsibility | Main public items |
 | --- | --- | --- |
@@ -81,6 +81,7 @@ The crate is single-directory with **three** top-level submodules under
 | `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
 | `src/ecies_payload.rs` | Bounded structural ECIES Garlic payload block codec (Plan 121) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `EciesPayloadError` |
+| `src/i2cp_data_body.rs` | Bounded I2CP-style Data body codec used on the inbound-delivery path (Plan 192) | I2CP-style Data encode/decode helpers |
 | `src/streaming/mod.rs` | Streaming packet + payload module wiring; re-exports the `streaming::Clock` trait and `SystemClock` / `ManualClock` | `Clock`, `SystemClock`, `ManualClock`, payload limits |
 | `src/streaming/packet.rs` | Streaming packet wire codec (Plan 128 normative form) | flag constants, `INITIAL_SYN_FLAGS`/`SYN_RESPONSE_FLAGS`/`CLOSE_FLAGS`/`RESET_FLAGS`, `StreamingFlags`, `StreamingOptions`, `StreamingOptionDecodeContext`, `SignatureLocation`, `StreamingHeaderPeek`, `StreamingPacket`, `StreamingPacketBuilder`, `peek_streaming_header`, `decode_streaming_packet`, `encode_streaming_packet`, `encode_with_placeholder`, `install_packet_signature`, `build_signature_preimage`, replay-binding encode/verify, `validate_initial_syn`/`validate_syn_response`, `validate_signature_policy`, `encode_syn_replay_binding`, `verify_syn_replay_binding`, `StreamingPacketError`, `StreamingReceiveLimit`, `StreamingSendLimit` |
 | `src/streaming/payload.rs` | Protocol-6 RFC 1952 gzip client payload envelope (Plan 125) | `ClientPayload`, `encode_client_payload`, `decode_client_payload`, `ClientPayloadDecodeError`, `ClientPayloadEncodeError`, `STREAMING_PROTOCOL_NUMBER`, `MAX_APPLICATION_PAYLOAD_BYTES`, `MAX_CLIENT_PAYLOAD_BYTES` |
@@ -167,7 +168,7 @@ via `CodecError::kind()`.
 
 ## Dependencies and boundary compliance
 
-- Direct deps: `sha2` (workspace), `zeroize` (workspace).
+- Direct deps: `flate2` (workspace, gzip/deflate for streaming payloads and I2CP Data bodies), `sha2` (workspace), `zeroize` (workspace).
 - `#![forbid(unsafe_code)]` at the crate root (`lib.rs:8`).
 - No `tokio`, no `async`, no `std::net`/`std::fs`, no transport
   imports, no runtime/routing code, no `unbounded_channel`,

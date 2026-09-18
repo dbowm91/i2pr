@@ -170,11 +170,13 @@ errors, caller-visible caps, no I/O. Detail:
 ### 4.2 `i2pr-crypto` — protocol crypto wrappers
 
 Wraps reviewed primitives (Ed25519, X25519, SHA-256, HKDF-SHA256,
-ChaCha20-Poly1305, AES, HMAC, SipHash, Elligator2) in
+Elligator2 representative codec, ECIES-X25519 session helpers) in
 protocol-typed keys with zeroize-on-drop, non-`Clone`,
 non-`Debug` secrets. Used by storage (identity), tunnel short-build
 (ECIES-X25519 Noise-N), destination sessions
-(ECIES-X25519-AEAD-Ratchet), and both transports. No local
+(ECIES-X25519-AEAD-Ratchet), and both transports. Transport data-phase
+ciphers (ChaCha20-Poly1305, AES-CBC, HMAC, SipHash, Noise) live in
+`i2pr-transport-ntcp2`, not here. No local
 primitive implementation. Detail:
 [i2pr-crypto.md](i2pr-crypto.md).
 
@@ -282,8 +284,9 @@ production I2NP bridge (`ShortBuildI2npBridge`, no-double-prefix
 STBM invariant), local data plane (fragmentation, delivery
 instructions, `DeliveryInstruction` retention), build state
 machine, deterministic responder simulator, reply-path provider,
-`DataPlaneRegistry` with `InboundGatewayRoute`, and outbound /
-inbound exploratory NetDB composition. Detail:
+`DataPlaneRegistry` with `InboundGatewayRoute`, outbound /
+inbound exploratory NetDB composition, and local zero-hop types
+(`zero_hop`, Plan 172 loopback delivery). Detail:
 [i2pr-tunnel.md](i2pr-tunnel.md).
 
 ### 4.12 `i2pr-client` — destinations, garlic, Streaming
