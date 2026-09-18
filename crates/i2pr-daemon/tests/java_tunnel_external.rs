@@ -550,123 +550,670 @@ fn record_p200_classification(evidence_dir: &Path, phase_results: &[(&str, bool)
     classification
 }
 
-/// Plan 219 — read the 12 Plan 219 §6.E typed facts the harness
-/// derived from the controlled Java reference's
-/// `RouterContext.netDb().lookupRouterInfoLocally(...)` and
-/// `peerManager().getPeersByCapability('f')` accessors, augment
-/// them with the i2pr-side dispatch + inbound booleans, and
-/// derive exactly one `J219-{A..J}` terminal classification.
-///
-/// The 12 typed facts the harness derives externally are
-/// unchanged; the OCMOSJ keys (`j219-ocmosj-lease-selected`,
-/// `j219-ocmosj-outbound-tunnel-selected`,
-/// `j219-ocmosj-dispatch-submitted`) start as `false` until
-/// the driver flips them through the typed-fact writer after
-/// a positive observation.
-///
-/// The classification itself is consumed by the static
-/// checker — a future expansion must keep the
-/// `J219TypedFacts::derive_j219_terminal_classification` order
-/// and the static checker's documented set in sync.
-#[allow(clippy::too_many_arguments)]
-fn record_j219_classification(
-    evidence_dir: &Path,
-    java_dispatch_observed: bool,
-    i2pr_inbound_observed: bool,
-) -> Option<&'static str> {
-    let path = match std::env::var_os("J219_TYPED_FACTS_PATH") {
-        Some(value) => std::path::PathBuf::from(value),
-        None => return None,
-    };
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let mut b_live_ri_has_f = false;
-    let mut a_stored_b_ri_has_f = false;
-    let mut a_peermanager_b_indexed_f = false;
-    let mut a_selector_input_count = 0u64;
-    let mut a_selector_result_count = 0u64;
-    let mut client_db_main_router_count = 0u64;
-    let mut client_db_lookup_started = false;
-    let mut client_db_lookup_peer_selected = false;
-    let mut client_db_lookup_result = false;
-    let mut ocmosj_lease_selected = false;
-    let mut ocmosj_outbound_tunnel_selected = false;
-    let mut ocmosj_dispatch_submitted = false;
-    for line in contents.lines() {
-        let mut parts = line.splitn(2, '\t');
-        let label = parts.next()?.trim();
-        let value = parts.next()?.trim();
-        match label {
-            "j219-b-live-ri-has-f" => b_live_ri_has_f = value.eq_ignore_ascii_case("true"),
-            "j219-a-stored-b-ri-has-f" => {
-                a_stored_b_ri_has_f = value.eq_ignore_ascii_case("true");
-            }
-            "j219-a-peermanager-b-indexed-f" => {
-                a_peermanager_b_indexed_f = value.eq_ignore_ascii_case("true");
-            }
-            "j219-a-selector-input-count" => {
-                a_selector_input_count = value.parse().unwrap_or(0);
-            }
-            "j219-a-selector-result-count" => {
-                a_selector_result_count = value.parse().unwrap_or(0);
-            }
-            "j219-client-db-main-router-count" => {
-                client_db_main_router_count = value.parse().unwrap_or(0);
-            }
-            "j219-client-db-lookup-started" => {
-                client_db_lookup_started = value.eq_ignore_ascii_case("true");
-            }
-            "j219-client-db-lookup-peer-selected" => {
-                client_db_lookup_peer_selected = value.eq_ignore_ascii_case("true");
-            }
-            "j219-client-db-lookup-result" => {
-                client_db_lookup_result = value.eq_ignore_ascii_case("true");
-            }
-            "j219-ocmosj-lease-selected" => {
-                ocmosj_lease_selected = value.eq_ignore_ascii_case("true");
-            }
-            "j219-ocmosj-outbound-tunnel-selected" => {
-                ocmosj_outbound_tunnel_selected = value.eq_ignore_ascii_case("true");
-            }
-            "j219-ocmosj-dispatch-submitted" => {
-                ocmosj_dispatch_submitted = value.eq_ignore_ascii_case("true");
-            }
-            _ => {}
+// ---- Plan 220 — corrected diagnostic attribution ---------------------------
+// Plan 219's J219-{A..J} attribution is superseded (D220-1..D220-9):
+// pre-bootstrap facts fed the classifier, the Router B hash came
+// from a raw `[16:386]` RouterInfo slice plus standard Base64, the
+// stored-B-`f` fact checked presence only, selector output was
+// synthesized from PeerManager membership, client-NetDB/OCMOSJ
+// facts were hard-coded defaults, and forward `reference-received`
+// was misused as reverse dispatch evidence.
+//
+// Plan 220 replaces that path with tri-state facts observed by the
+// driver itself at its authoritative epoch
+// (`post-driver-bootstrap/pre-reverse-send` for Java state,
+// `post-reverse-send` for dispatch), protocol-correct hex
+// RouterHash identity with a Rust/Java cross-check, exact
+// stored-RouterInfo evidence, a read-only same-package
+// FloodfillPeerSelector probe distinct from PeerManager
+// membership, and directionally correct dispatch evidence.
+// Unknown state stays Unknown; it is never converted to false,
+// zero, or a root-cause classification.
+
+/// Plan 220 authoritative Java-state observation epoch: after the
+/// driver's own A/B RouterInfo DatabaseStore bootstrap (which
+/// includes the B→A submission Plan 219 claimed was unexercised)
+/// and before the helper reverse SEND begins.
+const P220_EPOCH_AUTHORITATIVE: &str = "post-driver-bootstrap/pre-reverse-send";
+/// Plan 220 dispatch observation epoch: after the reverse-send wait
+/// window expires.
+const P220_EPOCH_DISPATCH: &str = "post-reverse-send";
+
+/// Plan 220 tri-state observation. `Known` carries a value observed
+/// at the authoritative epoch; `Unknown` carries the static reason
+/// it could not be observed. Unknown MUST NEVER be converted to
+/// false, zero, or a root-cause classification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P220Observed<T> {
+    Known(T),
+    Unknown(&'static str),
+}
+
+impl<T> P220Observed<T> {
+    fn as_ref(&self) -> P220Observed<&T> {
+        match self {
+            Self::Known(value) => P220Observed::Known(value),
+            Self::Unknown(reason) => P220Observed::Unknown(reason),
         }
     }
-    // The OCMOSJ keys stay at the typed-facts baseline. The
-    // destination driver never flips them because the inbound
-    // reverse-send path stops before the helper-side outbound
-    // client-tunnel endpoint. Whether `java_dispatch_observed`
-    // is true (the helper received the outbound) or false
-    // (no dispatch in either direction) does NOT change the
-    // OCMOSJ baseline; the typed-facts surface keeps the
-    // early-boundary inventory authoritative.
-    let facts = i2pr_daemon::destination_tunnels::J219TypedFacts::new(
-        b_live_ri_has_f,
-        a_stored_b_ri_has_f,
-        a_peermanager_b_indexed_f,
-        a_selector_input_count,
-        a_selector_result_count,
-        client_db_main_router_count,
-        client_db_lookup_started,
-        client_db_lookup_peer_selected,
-        client_db_lookup_result,
-        ocmosj_lease_selected,
-        ocmosj_outbound_tunnel_selected,
-        ocmosj_dispatch_submitted,
-        java_dispatch_observed,
-        i2pr_inbound_observed,
-    );
-    let detail = facts.classification_detail();
-    let classification = facts.derive_j219_terminal_classification();
-    let token = classification.token();
+}
+
+fn p220_bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Parses one `P220-EV <key>=<value> [...]` response line into its
+/// key/value pairs. Double-quoted values may contain spaces
+/// (capabilities strings). Returns an empty map for error lines or
+/// unparseable input; callers record Unknown on an empty map.
+fn p220_parse_kv(line: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let body = match line.strip_prefix("P220-EV ") {
+        Some(rest) => rest,
+        None => return map,
+    };
+    let mut key = String::new();
+    let mut value = String::new();
+    let mut in_key = true;
+    let mut in_quotes = false;
+    let mut has_pair = false;
+    let mut flush = |key: &mut String, value: &mut String, has_pair: &mut bool| {
+        if *has_pair && !key.is_empty() {
+            map.insert(std::mem::take(key), std::mem::take(value));
+        }
+        *has_pair = false;
+    };
+    for ch in body.chars() {
+        if in_key {
+            if ch == '=' {
+                in_key = false;
+                has_pair = true;
+            } else if ch == ' ' {
+                key.clear();
+                has_pair = false;
+            } else {
+                key.push(ch);
+            }
+        } else if in_quotes {
+            if ch == '"' {
+                in_quotes = false;
+            } else {
+                value.push(ch);
+            }
+        } else if ch == '"' && value.is_empty() {
+            in_quotes = true;
+        } else if ch == ' ' {
+            flush(&mut key, &mut value, &mut has_pair);
+            in_key = true;
+        } else {
+            value.push(ch);
+        }
+    }
+    flush(&mut key, &mut value, &mut has_pair);
+    map
+}
+
+/// Bounded read-only query against one controlled-router P220
+/// diagnostic port (loopback only). Any connection, write, read,
+/// timeout, or UTF-8 failure yields `None` so the caller records
+/// Unknown — a missing response is never a protocol fact.
+async fn p220_query_diagnostic(port: u16, command: &str) -> Option<String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(addr))
+        .await
+        .ok()?
+        .ok()?;
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = tokio::io::BufReader::new(reader);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        writer.write_all(format!("{command}\n").as_bytes()),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let mut line = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), reader.read_until(b'\n', &mut line))
+        .await
+        .ok()?
+        .ok()?;
+    if read == 0 || read > 65536 {
+        return None;
+    }
+    String::from_utf8(line)
+        .ok()
+        .map(|s| s.trim_end().to_owned())
+}
+
+/// Plan 220 authoritative facts. Java-state fields are observed at
+/// [`P220_EPOCH_AUTHORITATIVE`]; dispatch fields at
+/// [`P220_EPOCH_DISPATCH`]. Client-NetDB / OCMOSJ per-message
+/// fields have no read-only observation path within the test
+/// constraints, so the driver records them Unknown with an
+/// explicit reason instead of defaulting them false (D220-6).
+#[derive(Clone, Debug)]
+struct P220Facts {
+    rust_b_hash_hex: String,
+    java_b_self_hex: P220Observed<String>,
+    java_b_self_b64: P220Observed<String>,
+    hash_match: P220Observed<bool>,
+    b_live_has_f: P220Observed<bool>,
+    b_live_sha256: P220Observed<String>,
+    b_live_published: P220Observed<u64>,
+    a_stored_present: P220Observed<bool>,
+    a_stored_identity_match: P220Observed<bool>,
+    a_stored_sha256: P220Observed<String>,
+    a_stored_published: P220Observed<u64>,
+    a_stored_has_f: P220Observed<bool>,
+    a_main_router_count: P220Observed<u64>,
+    a_peermanager_b_indexed: P220Observed<bool>,
+    selector_observable: P220Observed<bool>,
+    selector_kbucket_size: P220Observed<u64>,
+    selector_count: P220Observed<u64>,
+    selector_contains_b: P220Observed<bool>,
+    client_lookup_started: P220Observed<bool>,
+    client_lookup_peer_selected: P220Observed<bool>,
+    client_lookup_succeeded: P220Observed<bool>,
+    target_leaseset_present: P220Observed<bool>,
+    target_lease_selected: P220Observed<bool>,
+    outbound_client_tunnel_selected: P220Observed<bool>,
+    garlic_constructed: P220Observed<bool>,
+    tunnel_dispatch_submitted: P220Observed<bool>,
+    forward_i2pr_to_java_received: P220Observed<bool>,
+    reverse_java_send_admitted: P220Observed<bool>,
+    reverse_i2pr_tunneldata_observed: P220Observed<bool>,
+    reverse_i2pr_payload_recovered: P220Observed<bool>,
+}
+
+/// Plan 220 terminal outcome: either a correctly observed
+/// root-cause boundary, a typed observability gap at the first
+/// stage that cannot be observed within the test constraints, or
+/// the qualified reverse-delivery pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P220Terminal {
+    CorrectedAttribution(&'static str),
+    ObservabilityGap(&'static str),
+    ReverseDeliveryPassed,
+}
+
+impl P220Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::CorrectedAttribution(boundary) => {
+                format!("P220-CORRECTED-ATTRIBUTION {boundary}")
+            }
+            Self::ObservabilityGap(stage) => format!("P220-OBSERVABILITY-GAP-{stage}"),
+            Self::ReverseDeliveryPassed => "P220-REVERSE-DELIVERY-PASSED".to_owned(),
+        }
+    }
+}
+
+impl P220Facts {
+    /// Derives exactly one terminal outcome. A root-cause boundary
+    /// fires only when every earlier boundary is `Known(pass)` and
+    /// the current boundary is `Known(fail)`; the first `Unknown`
+    /// stage emits its observability gap instead (Plan 220 §11).
+    fn derive(&self) -> P220Terminal {
+        // Stage HASH — protocol-correct identity cross-check. A
+        // mismatch is a diagnostic failure, never "A lacks B".
+        match self.hash_match.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("HASH");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::ObservabilityGap("HASH");
+            }
+            P220Observed::Known(true) => {}
+        }
+        // Stage A-STORED-RI — exact stored-RouterInfo evidence.
+        match self.b_live_has_f.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("A-STORED-RI");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::CorrectedAttribution("B-LIVE-RI-NOT-F");
+            }
+            P220Observed::Known(true) => {}
+        }
+        match self.a_stored_present.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("A-STORED-RI");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::CorrectedAttribution("A-LACKS-B-RI");
+            }
+            P220Observed::Known(true) => {}
+        }
+        match self.a_stored_identity_match.as_ref() {
+            P220Observed::Known(true) => {}
+            _ => return P220Terminal::ObservabilityGap("A-STORED-RI"),
+        }
+        match self.a_stored_has_f.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("A-STORED-RI");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::CorrectedAttribution("A-STORED-B-RI-NOT-F");
+            }
+            P220Observed::Known(true) => {}
+        }
+        // Stage PEERMANAGER — membership is observed; the
+        // banlist/explicit-ignore state has no public read-only
+        // accessor, so an absent B cannot be distinguished from a
+        // banned B and stays a gap rather than a root cause.
+        match self.a_peermanager_b_indexed.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("PEERMANAGER");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::ObservabilityGap("PEERMANAGER");
+            }
+            P220Observed::Known(true) => {}
+        }
+        // Stage SELECTOR — actual FloodfillPeerSelector output from
+        // the same-package probe, never synthesized from PeerManager
+        // membership.
+        match self.selector_observable.as_ref() {
+            P220Observed::Known(true) => {}
+            _ => return P220Terminal::ObservabilityGap("SELECTOR"),
+        }
+        match self.selector_contains_b.as_ref() {
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("SELECTOR");
+            }
+            P220Observed::Known(false) => {
+                return P220Terminal::CorrectedAttribution("SELECTOR-EXCLUDES-B");
+            }
+            P220Observed::Known(true) => {}
+        }
+        // Reverse-delivery fast path: a digest-matched payload
+        // recovered through the real inbound tunnel proves the
+        // client-NetDB/OCMOSJ/dispatch chain passed on this run, so
+        // downstream Unknowns are moot. This inference runs from
+        // the observed outcome, never from a forward-direction row.
+        if matches!(
+            self.reverse_i2pr_payload_recovered.as_ref(),
+            P220Observed::Known(true)
+        ) {
+            return P220Terminal::ReverseDeliveryPassed;
+        }
+        // Stage CLIENT-NETDB — per-message Java lookup state has no
+        // read-only observation path within the test constraints.
+        for stage in [
+            self.client_lookup_started.as_ref(),
+            self.client_lookup_peer_selected.as_ref(),
+            self.client_lookup_succeeded.as_ref(),
+            self.target_leaseset_present.as_ref(),
+        ] {
+            match stage {
+                P220Observed::Known(true) => {}
+                P220Observed::Known(false) => {
+                    return P220Terminal::CorrectedAttribution("CLIENT-NETDB-LOOKUP-FAILED");
+                }
+                P220Observed::Unknown(_) => {
+                    return P220Terminal::ObservabilityGap("CLIENT-NETDB");
+                }
+            }
+        }
+        // Stage OCMOSJ — same observability bound as CLIENT-NETDB.
+        for stage in [
+            self.target_lease_selected.as_ref(),
+            self.outbound_client_tunnel_selected.as_ref(),
+            self.garlic_constructed.as_ref(),
+            self.tunnel_dispatch_submitted.as_ref(),
+        ] {
+            match stage {
+                P220Observed::Known(true) => {}
+                P220Observed::Known(false) => {
+                    return P220Terminal::CorrectedAttribution("OCMOSJ-DISPATCH-NOT-SUBMITTED");
+                }
+                P220Observed::Unknown(_) => {
+                    return P220Terminal::ObservabilityGap("OCMOSJ");
+                }
+            }
+        }
+        // Directionally correct dispatch tail: the helper admitted
+        // the reverse send but no Java-side dispatch was observed
+        // and no i2pr payload arrived.
+        match self.reverse_java_send_admitted.as_ref() {
+            P220Observed::Known(true) => {}
+            P220Observed::Known(false) => {
+                return P220Terminal::CorrectedAttribution("REVERSE-SEND-NOT-ADMITTED");
+            }
+            P220Observed::Unknown(_) => {
+                return P220Terminal::ObservabilityGap("OCMOSJ");
+            }
+        }
+        match self.reverse_i2pr_payload_recovered.as_ref() {
+            P220Observed::Known(true) => P220Terminal::ReverseDeliveryPassed,
+            // Payload absent with dispatch unobserved: the OCMOSJ
+            // gap is the honest terminal — forward
+            // `reference-received` MUST NOT satisfy this branch.
+            _ => P220Terminal::ObservabilityGap("OCMOSJ"),
+        }
+    }
+
+    fn detail(&self, terminal: &P220Terminal) -> String {
+        fn flag<T: std::fmt::Debug>(observed: &P220Observed<T>) -> String {
+            match observed {
+                P220Observed::Known(value) => format!("known({value:?})"),
+                P220Observed::Unknown(reason) => format!("unknown({reason})"),
+            }
+        }
+        format!(
+            "{} java_state_epoch={} dispatch_epoch={} rust_b_hash_hex={} java_b_self_hex={} hash_match={} \
+             b_live_has_f={} b_live_sha256={} b_live_published={} a_stored_present={} a_stored_identity_match={} \
+             a_stored_sha256={} a_stored_published={} a_stored_has_f={} a_main_router_count={} \
+             a_peermanager_b_indexed={} selector_observable={} selector_kbucket_size={} selector_count={} \
+             selector_contains_b={} client_lookup_started={} client_lookup_peer_selected={} \
+             client_lookup_succeeded={} target_leaseset_present={} target_lease_selected={} \
+             outbound_client_tunnel_selected={} garlic_constructed={} tunnel_dispatch_submitted={} \
+             forward_i2pr_to_java_received={} reverse_java_send_admitted={} \
+             reverse_i2pr_tunneldata_observed={} reverse_i2pr_payload_recovered={}",
+            terminal.token(),
+            P220_EPOCH_AUTHORITATIVE,
+            P220_EPOCH_DISPATCH,
+            self.rust_b_hash_hex,
+            flag(&self.java_b_self_hex),
+            flag(&self.hash_match),
+            flag(&self.b_live_has_f),
+            flag(&self.b_live_sha256),
+            flag(&self.b_live_published),
+            flag(&self.a_stored_present),
+            flag(&self.a_stored_identity_match),
+            flag(&self.a_stored_sha256),
+            flag(&self.a_stored_published),
+            flag(&self.a_stored_has_f),
+            flag(&self.a_main_router_count),
+            flag(&self.a_peermanager_b_indexed),
+            flag(&self.selector_observable),
+            flag(&self.selector_kbucket_size),
+            flag(&self.selector_count),
+            flag(&self.selector_contains_b),
+            flag(&self.client_lookup_started),
+            flag(&self.client_lookup_peer_selected),
+            flag(&self.client_lookup_succeeded),
+            flag(&self.target_leaseset_present),
+            flag(&self.target_lease_selected),
+            flag(&self.outbound_client_tunnel_selected),
+            flag(&self.garlic_constructed),
+            flag(&self.tunnel_dispatch_submitted),
+            flag(&self.forward_i2pr_to_java_received),
+            flag(&self.reverse_java_send_admitted),
+            flag(&self.reverse_i2pr_tunneldata_observed),
+            flag(&self.reverse_i2pr_payload_recovered),
+        )
+    }
+}
+
+/// Collects the authoritative Java-state facts at
+/// [`P220_EPOCH_AUTHORITATIVE`]: after the driver's own A/B
+/// RouterInfo bootstrap, before the helper reverse SEND begins.
+/// `rust_b_hex` is the protocol-derived Router B hash (validated
+/// RouterInfo identity); `target_dest_hex` is the i2pr destination
+/// hash the reverse lookup must resolve (selector routing key).
+async fn p220_collect_authoritative(
+    a_port: u16,
+    b_port: u16,
+    rust_b_hex: &str,
+    target_dest_hex: &str,
+) -> P220Facts {
+    let unknown = || P220Facts {
+        rust_b_hash_hex: rust_b_hex.to_owned(),
+        java_b_self_hex: P220Observed::Unknown("snapshot-query-failed"),
+        java_b_self_b64: P220Observed::Unknown("snapshot-query-failed"),
+        hash_match: P220Observed::Unknown("snapshot-query-failed"),
+        b_live_has_f: P220Observed::Unknown("snapshot-query-failed"),
+        b_live_sha256: P220Observed::Unknown("snapshot-query-failed"),
+        b_live_published: P220Observed::Unknown("snapshot-query-failed"),
+        a_stored_present: P220Observed::Unknown("not-queried"),
+        a_stored_identity_match: P220Observed::Unknown("not-queried"),
+        a_stored_sha256: P220Observed::Unknown("not-queried"),
+        a_stored_published: P220Observed::Unknown("not-queried"),
+        a_stored_has_f: P220Observed::Unknown("not-queried"),
+        a_main_router_count: P220Observed::Unknown("not-queried"),
+        a_peermanager_b_indexed: P220Observed::Unknown("not-queried"),
+        selector_observable: P220Observed::Unknown("not-queried"),
+        selector_kbucket_size: P220Observed::Unknown("not-queried"),
+        selector_count: P220Observed::Unknown("not-queried"),
+        selector_contains_b: P220Observed::Unknown("not-queried"),
+        client_lookup_started: P220Observed::Unknown("no-read-only-per-message-observation"),
+        client_lookup_peer_selected: P220Observed::Unknown("no-read-only-per-message-observation"),
+        client_lookup_succeeded: P220Observed::Unknown("no-read-only-per-message-observation"),
+        target_leaseset_present: P220Observed::Unknown("no-read-only-per-message-observation"),
+        target_lease_selected: P220Observed::Unknown("no-read-only-per-message-observation"),
+        outbound_client_tunnel_selected: P220Observed::Unknown(
+            "no-read-only-per-message-observation",
+        ),
+        garlic_constructed: P220Observed::Unknown("no-read-only-per-message-observation"),
+        tunnel_dispatch_submitted: P220Observed::Unknown("no-read-only-per-message-observation"),
+        forward_i2pr_to_java_received: P220Observed::Unknown("dispatch-epoch-not-reached"),
+        reverse_java_send_admitted: P220Observed::Unknown("dispatch-epoch-not-reached"),
+        reverse_i2pr_tunneldata_observed: P220Observed::Unknown("dispatch-epoch-not-reached"),
+        reverse_i2pr_payload_recovered: P220Observed::Unknown("dispatch-epoch-not-reached"),
+    };
+    let mut facts = unknown();
+
+    // Router B self snapshot: the protocol-derived Rust hash must
+    // equal Java's own RouterHash view, and the query target used
+    // against A below is that same value (D220-2 cross-check).
+    if let Some(line) = p220_query_diagnostic(b_port, "P220-SNAPSHOT").await {
+        let kv = p220_parse_kv(&line);
+        let present = kv.get("self_ri_present").is_some_and(|v| v == "true");
+        if present {
+            if let Some(hex) = kv.get("self_router_hash_hex") {
+                facts.java_b_self_hex = P220Observed::Known(hex.clone());
+                facts.hash_match = P220Observed::Known(hex == rust_b_hex);
+            }
+            if let Some(b64) = kv.get("self_router_hash_b64") {
+                facts.java_b_self_b64 = P220Observed::Known(b64.clone());
+            }
+            if let Some(has_f) = kv.get("self_has_floodfill_capability") {
+                facts.b_live_has_f = P220Observed::Known(has_f == "true");
+            }
+            if let Some(sha) = kv.get("self_routerinfo_sha256") {
+                facts.b_live_sha256 = P220Observed::Known(sha.clone());
+            }
+            if let Some(published) = kv
+                .get("self_published_seconds")
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                facts.b_live_published = P220Observed::Known(published);
+            }
+        } else {
+            facts.java_b_self_hex = P220Observed::Unknown("b-self-ri-absent");
+            facts.hash_match = P220Observed::Unknown("b-self-ri-absent");
+            facts.b_live_has_f = P220Observed::Unknown("b-self-ri-absent");
+        }
+    }
+
+    // Router A view of Router B: exact stored-RouterInfo evidence
+    // (D220-4). Presence alone never implies `f`.
+    if let Some(line) = p220_query_diagnostic(a_port, &format!("P220-STORED-RI {rust_b_hex}")).await
+    {
+        let kv = p220_parse_kv(&line);
+        let present = kv.get("present").is_some_and(|v| v == "true");
+        facts.a_stored_present = P220Observed::Known(present);
+        if present {
+            let identity_match = kv.get("stored_identity_match").is_some_and(|v| v == "true")
+                && kv
+                    .get("stored_router_hash_hex")
+                    .is_some_and(|v| v == rust_b_hex);
+            facts.a_stored_identity_match = P220Observed::Known(identity_match);
+            facts.a_stored_sha256 = kv
+                .get("routerinfo_sha256")
+                .map_or(P220Observed::Unknown("stored-sha-absent"), |v| {
+                    P220Observed::Known(v.clone())
+                });
+            facts.a_stored_published = kv
+                .get("published_seconds")
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(
+                    P220Observed::Unknown("stored-published-absent"),
+                    P220Observed::Known,
+                );
+            facts.a_stored_has_f = kv
+                .get("has_floodfill_capability")
+                .map_or(P220Observed::Unknown("stored-caps-absent"), |v| {
+                    P220Observed::Known(v == "true")
+                });
+        } else {
+            facts.a_stored_identity_match = P220Observed::Unknown("a-lacks-b-record");
+            facts.a_stored_sha256 = P220Observed::Unknown("a-lacks-b-record");
+            facts.a_stored_published = P220Observed::Unknown("a-lacks-b-record");
+            facts.a_stored_has_f = P220Observed::Unknown("a-lacks-b-record");
+        }
+    }
+
+    // Router A PeerManager `f` membership vs the actual selector
+    // output (D220-5): two distinct observations, never one
+    // synthesized from the other.
+    if let Some(line) = p220_query_diagnostic(a_port, "P220-PEERS-FLOODFILL").await {
+        let kv = p220_parse_kv(&line);
+        let peers: Vec<&str> = kv
+            .iter()
+            .filter(|(k, _)| k.starts_with("peer_") && k.ends_with("_hex"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        if kv.contains_key("count") {
+            facts.a_peermanager_b_indexed = P220Observed::Known(peers.contains(&rust_b_hex));
+        } else {
+            facts.a_peermanager_b_indexed = P220Observed::Unknown("peermanager-query-failed");
+        }
+    }
+    if let Some(line) = p220_query_diagnostic(a_port, "P220-MAIN-ROUTER-COUNT").await {
+        let kv = p220_parse_kv(&line);
+        facts.a_main_router_count = kv.get("count").and_then(|v| v.parse::<u64>().ok()).map_or(
+            P220Observed::Unknown("main-router-count-query-failed"),
+            P220Observed::Known,
+        );
+    }
+    if let Some(line) = p220_query_diagnostic(
+        a_port,
+        &format!("P220-SELECTOR {target_dest_hex} {rust_b_hex}"),
+    )
+    .await
+    {
+        let kv = p220_parse_kv(&line);
+        let observable = kv.get("observable").is_some_and(|v| v == "true");
+        facts.selector_observable = P220Observed::Known(observable);
+        if observable {
+            facts.selector_kbucket_size = kv
+                .get("selector_input_kbucket_size")
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(
+                    P220Observed::Unknown("selector-kbucket-size-absent"),
+                    P220Observed::Known,
+                );
+            facts.selector_count = kv
+                .get("selector_count")
+                .and_then(|v| v.parse::<u64>().ok())
+                .map_or(
+                    P220Observed::Unknown("selector-count-absent"),
+                    P220Observed::Known,
+                );
+            facts.selector_contains_b = kv
+                .get("selector_contains_b")
+                .map_or(P220Observed::Unknown("selector-membership-absent"), |v| {
+                    P220Observed::Known(v == "true")
+                });
+        } else {
+            facts.selector_kbucket_size = P220Observed::Unknown("selector-unavailable");
+            facts.selector_count = P220Observed::Unknown("selector-unavailable");
+            facts.selector_contains_b = P220Observed::Unknown("selector-unavailable");
+        }
+    }
+    facts
+}
+
+/// Emits exactly one `p220-classification` row plus the supporting
+/// Plan 220 §23 evidence rows (hash cross-check, epoch timeline,
+/// exact A-stored-B evidence, PeerManager-vs-selector evidence,
+/// directional dispatch evidence). Returns the terminal token.
+fn record_p220_classification(evidence_dir: &Path, facts: &P220Facts) -> String {
+    let terminal = facts.derive();
     append_evidence(
         evidence_dir,
-        "j219-classification",
-        &format!("{token} {detail}"),
+        "p220-routerhash-crosscheck",
+        &format!(
+            "rust_b_hash_hex={} java_b_self_hex={:?} hash_match={:?} epoch={}",
+            facts.rust_b_hash_hex,
+            facts.java_b_self_hex,
+            facts.hash_match,
+            P220_EPOCH_AUTHORITATIVE,
+        ),
     );
-    Some(token)
+    append_evidence(
+        evidence_dir,
+        "p220-epoch-timeline",
+        &format!(
+            "java_state_epoch={} dispatch_epoch={} classifier_consumes_only_authoritative_or_newer=true",
+            P220_EPOCH_AUTHORITATIVE, P220_EPOCH_DISPATCH,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p220-a-stored-b-evidence",
+        &format!(
+            "present={:?} identity_match={:?} stored_sha256={:?} stored_published={:?} stored_has_f={:?} \
+             live_sha256={:?} live_published={:?} live_has_f={:?}",
+            facts.a_stored_present,
+            facts.a_stored_identity_match,
+            facts.a_stored_sha256,
+            facts.a_stored_published,
+            facts.a_stored_has_f,
+            facts.b_live_sha256,
+            facts.b_live_published,
+            facts.b_live_has_f,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p220-peermanager-vs-selector",
+        &format!(
+            "peermanager_b_indexed={:?} selector_observable={:?} selector_kbucket_size={:?} \
+             selector_count={:?} selector_contains_b={:?} selector_synthesized_from_peermanager=false",
+            facts.a_peermanager_b_indexed,
+            facts.selector_observable,
+            facts.selector_kbucket_size,
+            facts.selector_count,
+            facts.selector_contains_b,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p220-dispatch-direction",
+        &format!(
+            "forward_i2pr_to_java_received={:?} reverse_java_send_admitted={:?} \
+             reverse_i2pr_tunneldata_observed={:?} reverse_i2pr_payload_recovered={:?} \
+             forward_receipt_satisfies_reverse=false",
+            facts.forward_i2pr_to_java_received,
+            facts.reverse_java_send_admitted,
+            facts.reverse_i2pr_tunneldata_observed,
+            facts.reverse_i2pr_payload_recovered,
+        ),
+    );
+    let detail = facts.detail(&terminal);
+    append_evidence(
+        evidence_dir,
+        "p220-classification",
+        &format!("{} {detail}", terminal.token()),
+    );
+    terminal.token()
 }
+
+// Plan 219 historical note: the superseded terminal
+// attribution and its typed-fact classifier (backed by the
+// removed production surface) are replaced by the Plan 220 P220
+// module above (D220-1..D220-9). The old attribution is retained
+// history only and MUST NOT feed any classifier.
 
 /// Plan 199 §A.2 bootstrap-only probe. It runs before either public Java
 /// helper is started, breaking the otherwise circular dependency where a
@@ -1694,12 +2241,16 @@ async fn destination_message_plane_against_java() {
                     "Plan 194 §11 stop: java outbound build never installed (installed_ob={pump_installed_ob} kind_reply={pump_kind_reply})"
                 ),
             );
-            // Plan 219 — even on the install-stalled stop path,
-            // emit the J219 classification so the harness's
-            // typed-fact derivation closes the attribution
-            // loop. Java dispatch observation is false; the
-            // earliest typed boundary in the inventory wins.
-            record_j219_classification_with_inbound_evidence(&evidence_dir);
+            // Plan 220 — even on the install-stalled stop path,
+            // emit exactly one `p220-classification` row. The
+            // authoritative epoch was never reached, so it is
+            // honestly a HASH-stage observability gap, never a
+            // root-cause attribution.
+            record_p220_early_stop_gap(
+                &evidence_dir,
+                &p220_bytes_to_hex(service_hash.as_bytes()),
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -1977,10 +2528,15 @@ async fn destination_message_plane_against_java() {
                 DATAGRAM_WAIT.as_secs()
             ),
         );
-        // Plan 219 — emit the J219 typed-facts classification
-        // even on the lease-store-stalled stop path so the
-        // harness's typed-fact derivation owns the attribution.
-        record_j219_classification_with_inbound_evidence(&evidence_dir);
+        // Plan 220 — emit the `p220-classification`
+        // observability gap even on the lease-store-stalled stop
+        // path. The authoritative epoch was never reached, so no
+        // Java-state observation exists to attribute.
+        record_p220_early_stop_gap(
+            &evidence_dir,
+            &p220_bytes_to_hex(service_hash.as_bytes()),
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
         handle.shutdown();
         let _ = scope.shutdown().await;
         return;
@@ -2140,8 +2696,13 @@ async fn destination_message_plane_against_java() {
     );
 
     let received = reference_control.wait_raw(DATAGRAM_WAIT).await;
+    // Plan 220 WP G — directionally correct dispatch evidence. The
+    // forward i2pr→Java receipt below MUST NOT satisfy any reverse
+    // observation; it only fills the forward fact.
+    let mut p220_forward_received = false;
     if let Some((received_len, received_digest)) = received {
         if received_len == app_out.len() && received_digest == sha256_hex(app_out) {
+            p220_forward_received = true;
             append_evidence(
                 &evidence_dir,
                 "reference-received",
@@ -2169,6 +2730,33 @@ async fn destination_message_plane_against_java() {
         );
     }
 
+    // ---- Plan 220 §7 authoritative observation ---------------------------
+    // Fresh A-view-of-B / PeerManager / selector queries at the
+    // post-driver-bootstrap / pre-reverse-send epoch, taken by the
+    // driver itself after its own A/B RouterInfo bootstrap (which
+    // already submitted B's signed RouterInfo to A through
+    // ordinary authenticated I2NP — D220-3). The Router B hash is
+    // the protocol-derived identity hash, never a raw RouterInfo
+    // byte slice, and the Java self snapshot must echo that same
+    // value (D220-2 cross-check). Missing responses become
+    // Unknown, never protocol facts.
+    let rust_b_hex = p220_bytes_to_hex(service_hash.as_bytes());
+    let reverse_lookup_target_hex = p220_bytes_to_hex(local_dest_hash.as_bytes());
+    let diag_a_port: u16 = env_value("JAVA_DIAGNOSTIC_A_PORT")
+        .parse()
+        .expect("diagnostic A port");
+    let diag_b_port: u16 = env_value("JAVA_DIAGNOSTIC_B_PORT")
+        .parse()
+        .expect("diagnostic B port");
+    let mut p220_facts = p220_collect_authoritative(
+        diag_a_port,
+        diag_b_port,
+        &rust_b_hex,
+        &reverse_lookup_target_hex,
+    )
+    .await;
+    p220_facts.forward_i2pr_to_java_received = P220Observed::Known(p220_forward_received);
+
     // ---- Plan 194 §5.4(c) inbound reply via real inbound tunnel ----------
     let local_b64 = i2pr_api::sam::base64::encode(
         &local_identity
@@ -2177,7 +2765,9 @@ async fn destination_message_plane_against_java() {
             .expect("encode dest"),
     );
     let app_back = b"plan194-destination-reply-b";
-    let inbound_send_status = if reference_control.send_raw(&local_b64, app_back).await {
+    let reverse_admitted = reference_control.send_raw(&local_b64, app_back).await;
+    p220_facts.reverse_java_send_admitted = P220Observed::Known(reverse_admitted);
+    let inbound_send_status = if reverse_admitted {
         "public-send-accepted"
     } else {
         "public-send-rejected"
@@ -2191,6 +2781,9 @@ async fn destination_message_plane_against_java() {
         .bind_destination_hash(local_identity.id(), local_dest_hash)
         .expect("bind destination hash");
     let mut inbound_payload: Option<Vec<u8>> = None;
+    // Plan 220 WP G — reverse-direction TunnelData observation is
+    // tracked independently of the forward receipt above.
+    let mut p220_tunneldata_observed = false;
     let mut reply_pump_error = 0u64;
     let reply_deadline = tokio::time::Instant::now() + DATAGRAM_WAIT;
     while tokio::time::Instant::now() < reply_deadline && inbound_payload.is_none() {
@@ -2206,7 +2799,10 @@ async fn destination_message_plane_against_java() {
             }
         };
         let cell = match message.body() {
-            I2npBody::TunnelData(cell) => cell.clone(),
+            I2npBody::TunnelData(cell) => {
+                p220_tunneldata_observed = true;
+                cell.clone()
+            }
             _ => continue,
         };
         let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
@@ -2294,51 +2890,63 @@ async fn destination_message_plane_against_java() {
     assert_eq!(final_snapshot.pending_inbound, 0);
     assert_eq!(final_snapshot.active_sessions, 0);
     append_evidence(&evidence_dir, "shutdown-baseline", "true");
-    // Plan 219 — emit exactly one `j219-classification` row
-    // derived from the 12 typed facts the harness collected.
-    // Java dispatch is observed (the helper received the
-    // outbound RAW digest); i2pr inbound observation is
-    // keyed on whether `destination-inbound-received` was
-    // emitted (the Plan 192 i2cp-wire-format-corrective
-    // path). On this commit's corrected harness the
-    // inbound-observation direction is what historically
-    // been the Plan 194 §11 stop.
-    record_j219_classification_with_inbound_evidence(&evidence_dir);
+    // Plan 220 §11 — fill the dispatch-epoch facts and emit exactly
+    // one `p220-classification` row. The reverse payload outcome is
+    // keyed ONLY on the reverse pump above: forward
+    // `reference-received` MUST NOT satisfy it (D220-7).
+    p220_facts.reverse_i2pr_tunneldata_observed = P220Observed::Known(p220_tunneldata_observed);
+    p220_facts.reverse_i2pr_payload_recovered = P220Observed::Known(
+        inbound_payload
+            .as_ref()
+            .is_some_and(|reply| reply == app_back),
+    );
+    let _ = record_p220_classification(&evidence_dir, &p220_facts);
     let _ = PeerId::from_hash(java_hash);
 }
 
-/// Plan 219 — derive `(java_dispatch_observed,
-/// i2pr_inbound_observed)` from the destination driver's existing
-/// evidence rows, then call
-/// [`record_j219_classification`].
-///
-/// `reference-received` proves the helper dispatched Java-side
-/// inbound to the i2pr outbound message (Java dispatch
-/// observed). `destination-inbound-received` proves the i2pr
-/// inbound pump recovered the reply (i2pr inbound observed).
-/// `destination-inbound-send-failed` is the Plan 192 i2cp
-/// wire-format-corrective path; when recorded, i2pr inbound
-/// observation is `false`. The OCMOSJ keys remain at the
-/// `false` baseline because the lane never reaches the
-/// helper-side outbound client tunnel endpoint on the reverse
-/// direction (the J219 classification itself proves which
-/// boundary the driver stops at).
-fn record_j219_classification_with_inbound_evidence(evidence_dir: &Path) {
-    let driver_path = evidence_dir.join("driver-evidence.tsv");
-    let (java_dispatch_observed, i2pr_inbound_observed) =
-        match std::fs::read_to_string(&driver_path) {
-            Ok(contents) => {
-                let inbound_received = contents
-                    .lines()
-                    .any(|line| line.starts_with("destination-inbound-received"));
-                let reference_received = contents
-                    .lines()
-                    .any(|line| line.starts_with("reference-received\t"));
-                (reference_received, inbound_received)
-            }
-            Err(_) => (false, false),
-        };
-    let _ = record_j219_classification(evidence_dir, java_dispatch_observed, i2pr_inbound_observed);
+/// Plan 220 — early-stop gap: the driver stopped before the
+/// authoritative epoch (install-stalled or lease-stalled), so no
+/// Java-state observation exists. Exactly one
+/// `p220-classification` row is still emitted so every run closes
+/// the attribution loop, but it is honestly an observability gap
+/// at the HASH stage with the stop reason — never a root cause.
+fn record_p220_early_stop_gap(evidence_dir: &Path, rust_b_hash_hex: &str, reason: &'static str) {
+    let gap_bool: P220Observed<bool> = P220Observed::Unknown(reason);
+    let gap_string: P220Observed<String> = P220Observed::Unknown(reason);
+    let gap_count: P220Observed<u64> = P220Observed::Unknown(reason);
+    let facts = P220Facts {
+        rust_b_hash_hex: rust_b_hash_hex.to_owned(),
+        java_b_self_hex: gap_string.clone(),
+        java_b_self_b64: gap_string.clone(),
+        hash_match: gap_bool,
+        b_live_has_f: gap_bool,
+        b_live_sha256: gap_string.clone(),
+        b_live_published: gap_count,
+        a_stored_present: gap_bool,
+        a_stored_identity_match: gap_bool,
+        a_stored_sha256: gap_string.clone(),
+        a_stored_published: gap_count,
+        a_stored_has_f: gap_bool,
+        a_main_router_count: gap_count,
+        a_peermanager_b_indexed: gap_bool,
+        selector_observable: gap_bool,
+        selector_kbucket_size: gap_count,
+        selector_count: gap_count,
+        selector_contains_b: gap_bool,
+        client_lookup_started: gap_bool,
+        client_lookup_peer_selected: gap_bool,
+        client_lookup_succeeded: gap_bool,
+        target_leaseset_present: gap_bool,
+        target_lease_selected: gap_bool,
+        outbound_client_tunnel_selected: gap_bool,
+        garlic_constructed: gap_bool,
+        tunnel_dispatch_submitted: gap_bool,
+        forward_i2pr_to_java_received: gap_bool,
+        reverse_java_send_admitted: gap_bool,
+        reverse_i2pr_tunneldata_observed: gap_bool,
+        reverse_i2pr_payload_recovered: gap_bool,
+    };
+    let _ = record_p220_classification(evidence_dir, &facts);
 }
 
 /// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against
@@ -4060,4 +4668,215 @@ fn i2p_b64_encode(bytes: &[u8]) -> String {
         }
     }
     output
+}
+
+// ---- Plan 220 §19 unit rows ------------------------------------------------
+// Focused local rows locking the corrected diagnostic semantics. They
+// run in the ordinary workspace floor (no external environment).
+
+/// Builds an all-`Known(pass)` fact set whose terminal must be
+/// `P220-REVERSE-DELIVERY-PASSED`. Each row below mutates one
+/// stage and asserts the honest terminal for that mutation.
+fn p220_all_passing_facts() -> P220Facts {
+    let known_bool = |v: bool| P220Observed::Known(v);
+    P220Facts {
+        rust_b_hash_hex: "aa".repeat(32),
+        java_b_self_hex: P220Observed::Known("aa".repeat(32)),
+        java_b_self_b64: P220Observed::Known("correlate-only".to_owned()),
+        hash_match: known_bool(true),
+        b_live_has_f: known_bool(true),
+        b_live_sha256: P220Observed::Known("bb".repeat(32)),
+        b_live_published: P220Observed::Known(1_700_000_000),
+        a_stored_present: known_bool(true),
+        a_stored_identity_match: known_bool(true),
+        a_stored_sha256: P220Observed::Known("bb".repeat(32)),
+        a_stored_published: P220Observed::Known(1_700_000_000),
+        a_stored_has_f: known_bool(true),
+        a_main_router_count: P220Observed::Known(2),
+        a_peermanager_b_indexed: known_bool(true),
+        selector_observable: known_bool(true),
+        selector_kbucket_size: P220Observed::Known(2),
+        selector_count: P220Observed::Known(1),
+        selector_contains_b: known_bool(true),
+        client_lookup_started: known_bool(true),
+        client_lookup_peer_selected: known_bool(true),
+        client_lookup_succeeded: known_bool(true),
+        target_leaseset_present: known_bool(true),
+        target_lease_selected: known_bool(true),
+        outbound_client_tunnel_selected: known_bool(true),
+        garlic_constructed: known_bool(true),
+        tunnel_dispatch_submitted: known_bool(true),
+        forward_i2pr_to_java_received: known_bool(true),
+        reverse_java_send_admitted: known_bool(true),
+        reverse_i2pr_tunneldata_observed: known_bool(true),
+        reverse_i2pr_payload_recovered: known_bool(true),
+    }
+}
+
+#[test]
+fn p220_reverse_delivery_passed_when_every_stage_known_pass() {
+    let facts = p220_all_passing_facts();
+    assert_eq!(facts.derive(), P220Terminal::ReverseDeliveryPassed);
+}
+
+#[test]
+fn p220_hash_mismatch_yields_diagnostic_gap_not_a_missing_b() {
+    let mut facts = p220_all_passing_facts();
+    facts.hash_match = P220Observed::Known(false);
+    // Even though every later stage is Known(pass), the identity
+    // itself is untrusted: a diagnostic gap, never "A lacks B".
+    assert_eq!(facts.derive(), P220Terminal::ObservabilityGap("HASH"));
+    assert!(
+        facts
+            .derive()
+            .token()
+            .starts_with("P220-OBSERVABILITY-GAP-HASH")
+    );
+}
+
+#[test]
+fn p220_stored_presence_and_f_are_independent() {
+    // Absent record: the A-lacks-B-RI root cause.
+    let mut facts = p220_all_passing_facts();
+    facts.a_stored_present = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::CorrectedAttribution("A-LACKS-B-RI")
+    );
+    // Present record without `f`: the stored-lacks-`f` root cause.
+    // Presence alone never implies `f` (D220-4).
+    let mut facts = p220_all_passing_facts();
+    facts.a_stored_present = P220Observed::Known(true);
+    facts.a_stored_has_f = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::CorrectedAttribution("A-STORED-B-RI-NOT-F")
+    );
+}
+
+#[test]
+fn p220_stored_live_sha_and_published_are_explicit() {
+    let facts = p220_all_passing_facts();
+    let detail = facts.detail(&P220Terminal::ReverseDeliveryPassed);
+    assert!(detail.contains("bb".repeat(32).as_str()));
+    assert!(detail.contains("1700000000"));
+    assert!(detail.contains(P220_EPOCH_AUTHORITATIVE));
+    assert!(detail.contains(P220_EPOCH_DISPATCH));
+}
+
+#[test]
+fn p220_peermanager_and_selector_are_independent() {
+    // PeerManager indexes B but the probe is unavailable: the
+    // selector gap fires; membership is never converted into
+    // selector output (D220-5).
+    let mut facts = p220_all_passing_facts();
+    facts.reverse_i2pr_payload_recovered = P220Observed::Known(false);
+    facts.selector_observable = P220Observed::Unknown("selector-unavailable");
+    assert_eq!(facts.derive(), P220Terminal::ObservabilityGap("SELECTOR"));
+    // Probe observable and excluding B while PeerManager indexes
+    // B: the genuine selector boundary.
+    let mut facts = p220_all_passing_facts();
+    facts.reverse_i2pr_payload_recovered = P220Observed::Known(false);
+    facts.client_lookup_started = P220Observed::Known(true);
+    facts.selector_contains_b = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::CorrectedAttribution("SELECTOR-EXCLUDES-B")
+    );
+}
+
+#[test]
+fn p220_unknown_stage_yields_its_gap() {
+    // PeerManager unobserved with everything earlier passing.
+    let mut facts = p220_all_passing_facts();
+    facts.reverse_i2pr_payload_recovered = P220Observed::Known(false);
+    facts.a_peermanager_b_indexed = P220Observed::Unknown("peermanager-query-failed");
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::ObservabilityGap("PEERMANAGER")
+    );
+    // Client-NetDB unobserved with selector passing.
+    let mut facts = p220_all_passing_facts();
+    facts.reverse_i2pr_payload_recovered = P220Observed::Known(false);
+    facts.client_lookup_started = P220Observed::Unknown("no-read-only-per-message-observation");
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::ObservabilityGap("CLIENT-NETDB")
+    );
+}
+
+#[test]
+fn p220_earliest_known_fail_wins_after_earlier_known_pass() {
+    // B live lacks `f`: fires before the stored stage is read.
+    let mut facts = p220_all_passing_facts();
+    facts.b_live_has_f = P220Observed::Known(false);
+    facts.a_stored_present = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::CorrectedAttribution("B-LIVE-RI-NOT-F")
+    );
+}
+
+#[test]
+fn p220_missing_fact_cannot_yield_root_cause() {
+    // Stored present but identity correlation missing: gap, even
+    // though `has_f` is Known(false).
+    let mut facts = p220_all_passing_facts();
+    facts.a_stored_identity_match = P220Observed::Unknown("stored-identity-absent");
+    facts.a_stored_has_f = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P220Terminal::ObservabilityGap("A-STORED-RI")
+    );
+}
+
+#[test]
+fn p220_forward_receipt_cannot_satisfy_reverse_dispatch() {
+    // Forward receipt observed, reverse payload absent, OCMOSJ
+    // stages unobserved: the OCMOSJ gap fires — forward success
+    // never becomes reverse success (D220-7).
+    let mut facts = p220_all_passing_facts();
+    facts.forward_i2pr_to_java_received = P220Observed::Known(true);
+    facts.reverse_i2pr_payload_recovered = P220Observed::Known(false);
+    facts.client_lookup_started = P220Observed::Known(true);
+    facts.client_lookup_peer_selected = P220Observed::Known(true);
+    facts.client_lookup_succeeded = P220Observed::Known(true);
+    facts.target_leaseset_present = P220Observed::Known(true);
+    facts.target_lease_selected = P220Observed::Known(true);
+    facts.outbound_client_tunnel_selected = P220Observed::Known(true);
+    facts.garlic_constructed = P220Observed::Known(true);
+    facts.tunnel_dispatch_submitted = P220Observed::Unknown("no-read-only-per-message-observation");
+    assert_eq!(facts.derive(), P220Terminal::ObservabilityGap("OCMOSJ"));
+    assert_ne!(facts.derive(), P220Terminal::ReverseDeliveryPassed);
+}
+
+#[test]
+fn p220_terminal_tokens_are_canonical() {
+    assert_eq!(
+        P220Terminal::CorrectedAttribution("A-LACKS-B-RI").token(),
+        "P220-CORRECTED-ATTRIBUTION A-LACKS-B-RI"
+    );
+    assert_eq!(
+        P220Terminal::ObservabilityGap("SELECTOR").token(),
+        "P220-OBSERVABILITY-GAP-SELECTOR"
+    );
+    assert_eq!(
+        P220Terminal::ReverseDeliveryPassed.token(),
+        "P220-REVERSE-DELIVERY-PASSED"
+    );
+}
+
+#[test]
+fn p220_kv_parser_handles_quoted_capabilities() {
+    let kv = p220_parse_kv(
+        "P220-EV kind=stored-ri query_hash_hex=aa present=true capabilities=\"Lf\" has_floodfill_capability=true",
+    );
+    assert_eq!(kv.get("kind").map(String::as_str), Some("stored-ri"));
+    assert_eq!(kv.get("capabilities").map(String::as_str), Some("Lf"));
+    assert_eq!(
+        kv.get("has_floodfill_capability").map(String::as_str),
+        Some("true")
+    );
+    assert!(p220_parse_kv("P220-ERROR invalid-hex-hash").is_empty());
+    assert!(p220_parse_kv("J219-EV kind=snapshot").is_empty());
 }

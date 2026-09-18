@@ -1,6 +1,12 @@
 // Plan 196 — M6 Java I2P controlled first-run topology corrective;
 // Plan 219 — M6 Java reverse-delivery root-cause investigation
-// read-only diagnostic surface.
+// read-only diagnostic surface (retained history; superseded attribution).
+// Plan 220 — M6 Java Plan 219 diagnostic-attribution corrective:
+// protocol-correct RouterHash identity (lowercase hex, never raw
+// RouterInfo byte slices, never standard Base64) plus a read-only
+// same-package FloodfillPeerSelector probe. The J219-* commands below
+// are frozen history; the P220-* commands are the authoritative path
+// the destination driver consumes at its post-bootstrap epoch.
 //
 // Test-only launcher. Compiled against the exact-pinned Java I2P 2.13.0
 // staged `lib/` jars into the ephemeral scratch build directory. Never
@@ -43,6 +49,25 @@
 //   - the listener never calls a mutator on `Router`,
 //     `RouterContext`, `NetworkDatabaseFacade`, `PeerManager`,
 //     or `FloodfillPeerSelector`. Read-only accessors only.
+//
+// Plan 220 diagnostic contract (authoritative):
+//   - the same port additionally accepts the `P220-*` read-only
+//     commands (`P220-SNAPSHOT`, `P220-STORED-RI <hex-hash>`,
+//     `P220-CAPABILITIES <hex-hash>`, `P220-PEERS-FLOODFILL`,
+//     `P220-MAIN-ROUTER-COUNT`, `P220-SELECTOR <target-hex> <b-hex>`,
+//     `QUIT`);
+//   - RouterHash values travel as 32-byte lowercase hex. Standard
+//     (RFC 4648) Base64 MUST NOT be used to construct a query
+//     hash; Java `Hash.toBase64()` (I2P Base64) is echoed only for
+//     human correlation alongside the hex form;
+//   - every P220 response is a single-line
+//     `P220-EV <key>=<value> [...]` row;
+//   - `P220-SELECTOR` delegates to the test-only same-package
+//     `P220SelectorProbe`, which calls the package-visible
+//     `FloodfillPeerSelector.selectFloodfillParticipants` on the
+//     live k-buckets read-only and returns sanitized counts plus
+//     target-membership booleans. It MUST NOT patch or replace any
+//     Java I2P class.
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -67,6 +92,7 @@ import net.i2p.router.PeerManagerFacade;
 import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
 import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
+import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
 
 public final class ControlledRouter {
 
@@ -453,6 +479,31 @@ public final class ControlledRouter {
                         return mainRouterCount();
                     case "J219-CLIENT-DB-LOOKUP-PEER-COUNT":
                         return clientDbLookupPeerCount();
+                    // Plan 220 — authoritative hex-hash path. The J219-*
+                    // cases above are frozen history; the P220-* cases
+                    // below are the only inputs the corrected
+                    // classifier consumes.
+                    case "P220-SNAPSHOT":
+                        return p220SnapshotSelf();
+                    case "P220-CAPABILITIES":
+                        if (parts.length < 2) {
+                            return p220Error("missing-hash-argument");
+                        }
+                        return p220LookupCapabilities(parts[1]);
+                    case "P220-STORED-RI":
+                        if (parts.length < 2) {
+                            return p220Error("missing-hash-argument");
+                        }
+                        return p220LookupStored(parts[1]);
+                    case "P220-PEERS-FLOODFILL":
+                        return p220PeersFloodfill();
+                    case "P220-MAIN-ROUTER-COUNT":
+                        return p220MainRouterCount();
+                    case "P220-SELECTOR":
+                        if (parts.length < 3) {
+                            return p220Error("missing-hash-arguments");
+                        }
+                        return p220Selector(parts[1], parts[2]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -575,6 +626,178 @@ public final class ControlledRouter {
             Set<Hash> floodfill = peerManager().getPeersByCapability('f');
             return RESPONSE_PREFIX + "kind=client-db-lookup-peer-count count="
                 + floodfill.size();
+        }
+
+        private String p220Error(String reason) {
+            return "P220-ERROR " + reason;
+        }
+
+        /**
+         * Plan 220 WP B — parses a 32-byte lowercase-hex RouterHash.
+         * Returns null when the argument is not exactly 64 hex
+         * characters. Standard (RFC 4648) Base64 is never accepted
+         * here: I2P {@link Hash#toBase64()} uses I2P Base64
+         * semantics, so a standard-Base64 query hash may address a
+         * different router (Plan 219 D220-2).
+         */
+        private Hash p220ParseHexHash(String hex) {
+            if (hex == null || hex.length() != 64) {
+                return null;
+            }
+            byte[] raw = new byte[32];
+            for (int i = 0; i < 32; i++) {
+                int hi = Character.digit(hex.charAt(2 * i), 16);
+                int lo = Character.digit(hex.charAt(2 * i + 1), 16);
+                if (hi < 0 || lo < 0) {
+                    return null;
+                }
+                raw[i] = (byte) ((hi << 4) | lo);
+            }
+            return new Hash(raw);
+        }
+
+        private static String p220HexLower(byte[] raw) {
+            StringBuilder hex = new StringBuilder(raw.length * 2);
+            for (byte b : raw) {
+                hex.append(String.format("%02x", b & 0xff));
+            }
+            return hex.toString();
+        }
+
+        private String p220SnapshotSelf() {
+            StringBuilder sb = new StringBuilder("P220-EV ");
+            sb.append("kind=snapshot ");
+            sb.append("role=").append(role.get()).append(' ');
+            RouterInfo self = mainNetDb().lookupRouterInfoLocally(context().routerHash());
+            if (self == null) {
+                sb.append("self_ri_present=false");
+                return sb.toString();
+            }
+            Hash selfHash = self.getIdentity().getHash();
+            sb.append("self_ri_present=true ");
+            sb.append("self_router_hash_hex=").append(p220HexLower(selfHash.getData())).append(' ');
+            sb.append("self_router_hash_b64=").append(selfHash.toBase64()).append(' ');
+            sb.append("self_routerinfo_sha256=").append(sha256Hex(self.toByteArray())).append(' ');
+            sb.append("self_published_seconds=").append(self.getPublished() / 1000L).append(' ');
+            sb.append("self_capabilities=").append(self.getCapabilities()).append(' ');
+            sb.append("self_bandwidth_tier=").append(self.getBandwidthTier()).append(' ');
+            sb.append("self_has_floodfill_capability=")
+                .append(self.getCapabilities().indexOf('f') >= 0).append(' ');
+            sb.append("self_ssu2_address_count=").append(countSsu2Addresses(self));
+            return sb.toString();
+        }
+
+        /**
+         * Plan 220 WP C — exact stored-RouterInfo evidence for one
+         * query hash. Presence alone is never enough: the response
+         * echoes the query hash, the stored identity hash, and
+         * whether the two are byte-equal, plus the stored record's
+         * SHA-256, published timestamp, capabilities, and `f`
+         * membership. A "stored B RI lacks f" classification is
+         * allowed only when `stored_identity_match=true` and the
+         * stored record demonstrably lacks `f`.
+         */
+        private String p220LookupStored(String hexHash) {
+            Hash hash = p220ParseHexHash(hexHash);
+            if (hash == null) {
+                return p220Error("invalid-hex-hash");
+            }
+            RouterInfo info = mainNetDb().lookupRouterInfoLocally(hash);
+            if (info == null) {
+                return "P220-EV kind=stored-ri query_hash_hex=" + hexHash
+                    + " query_hash_b64=" + hash.toBase64()
+                    + " present=false";
+            }
+            Hash storedHash = info.getIdentity().getHash();
+            String storedHex = p220HexLower(storedHash.getData());
+            return "P220-EV kind=stored-ri query_hash_hex=" + hexHash
+                + " query_hash_b64=" + hash.toBase64()
+                + " present=true "
+                + "stored_router_hash_hex=" + storedHex
+                + " stored_router_hash_b64=" + storedHash.toBase64()
+                + " stored_identity_match=" + storedHex.equalsIgnoreCase(hexHash)
+                + " routerinfo_sha256=" + sha256Hex(info.toByteArray())
+                + " published_seconds=" + (info.getPublished() / 1000L)
+                + " capabilities=\"" + info.getCapabilities() + "\""
+                + " has_floodfill_capability=" + (info.getCapabilities().indexOf('f') >= 0);
+        }
+
+        private String p220LookupCapabilities(String hexHash) {
+            Hash hash = p220ParseHexHash(hexHash);
+            if (hash == null) {
+                return p220Error("invalid-hex-hash");
+            }
+            RouterInfo info = mainNetDb().lookupRouterInfoLocally(hash);
+            if (info == null) {
+                return "P220-EV kind=capabilities query_hash_hex=" + hexHash
+                    + " stored=false";
+            }
+            return "P220-EV kind=capabilities query_hash_hex=" + hexHash
+                + " stored=true "
+                + "published_seconds=" + (info.getPublished() / 1000L)
+                + " capabilities=\"" + info.getCapabilities() + "\""
+                + " has_floodfill_capability=" + (info.getCapabilities().indexOf('f') >= 0)
+                + " bandwidth_tier=" + info.getBandwidthTier()
+                + " ssu2_address_count=" + countSsu2Addresses(info);
+        }
+
+        private String p220PeersFloodfill() {
+            Set<Hash> floodfill = peerManager().getPeersByCapability('f');
+            StringBuilder sb = new StringBuilder("P220-EV ");
+            sb.append("kind=peers-floodfill ");
+            sb.append("count=").append(floodfill.size()).append(' ');
+            int shown = 0;
+            for (Hash h : floodfill) {
+                if (shown >= 4) {
+                    break;
+                }
+                sb.append("peer_").append(shown).append("_hex=")
+                    .append(p220HexLower(h.getData())).append(' ');
+                shown++;
+            }
+            sb.append("truncated=").append(floodfill.size() > shown);
+            // Plan 220 WP D — the banlist / explicit-ignore state has
+            // no public read-only accessor on PeerManagerFacade, so
+            // the driver records it as Unknown rather than defaulting
+            // it to false.
+            sb.append(" banlist_observable=false");
+            return sb.toString();
+        }
+
+        private String p220MainRouterCount() {
+            Set<RouterInfo> routers = mainNetDb().getRouters();
+            return "P220-EV kind=main-router-count count=" + routers.size();
+        }
+
+        /**
+         * Plan 220 WP D — actual {@code FloodfillPeerSelector}
+         * output for the reverse-lookup routing key, computed
+         * read-only on the live k-buckets by the test-only
+         * same-package probe. This is never synthesized from
+         * PeerManager membership: the selector ranks live
+         * k-bucket contents, while PeerManager reports profile
+         * capability-index membership.
+         */
+        private String p220Selector(String targetHex, String bHex) {
+            Hash target = p220ParseHexHash(targetHex);
+            Hash bHash = p220ParseHexHash(bHex);
+            if (target == null || bHash == null) {
+                return p220Error("invalid-hex-hash");
+            }
+            P220SelectorProbe.Result result =
+                P220SelectorProbe.selectForKey(context(), target, bHash);
+            if (result.error != null) {
+                return "P220-EV kind=selector target_hash_hex=" + targetHex
+                    + " b_hash_hex=" + bHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P220-EV kind=selector target_hash_hex=" + targetHex
+                + " b_hash_hex=" + bHex
+                + " observable=true "
+                + "selector_input_kbucket_size=" + result.kbucketSize
+                + " selector_count=" + result.selected.size()
+                + " selector_contains_b=" + result.selected.contains(bHash)
+                + " probe_inputs=key-target,N-3,exclude-empty,live-kbuckets";
         }
 
         private String sha256Hex(byte[] bytes) {
