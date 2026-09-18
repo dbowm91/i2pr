@@ -1,5 +1,26 @@
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan220-diagnostic-corrective`**.
+
+## 2026-09-18 dependency correction — Plan 219 attribution superseded
+
+M10 product/application closure through Plans 213–215 remains authoritative.
+Plan 204 stays convergence-only and blocked on independent M6 Java-family
+closure.
+
+Plan 219's J219-B attribution is superseded. Plan 220 now owns the diagnostic
+correction, not a bootstrap/topology fix.
+
+```text
+plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
+plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan220-diagnostic-corrective
+```
+
+## Retained prior Plan 204 status narrative
+
+# Plan 204 status — final M6/M10 evidence and authority convergence
+
 Status: **`blocked-on-m6-java-second-family-closure-pending-plan220-j219-b-corrective`**.
 
 ## 2026-09-18 dependency amendment
@@ -162,3 +183,4 @@ next_product_layer = milestone11-planning
 This M10 transition does **not** require Java M6 second-family closure.
 
 Plan 204 later consumes independently closed M10 authority plus independently closed Java M6 authority and normalizes cross-milestone documentation. It must not rerun or downgrade valid M10 closure merely because Java closure lands later.
+
