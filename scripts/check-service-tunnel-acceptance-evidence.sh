@@ -1859,8 +1859,102 @@ else
   done
 fi
 
+# 30. Plan 215 §16 — Plan 214 evidence packaging contract. The
+# hosted `full` lane delegates Plan 214 qualification through
+# `run-independent.sh`, which sets
+# `I2PR_PLAN214_EVIDENCE_DIR="${EVIDENCE_DIR}/plan214"` (i.e.
+# `target/interop/service-tunnels-evidence/plan214/`). The
+# runner's standalone default path (`plan214-applications-evidence`)
+# is only populated when the runner is invoked directly outside
+# the workflow; the hosted `full` lane always delegates through
+# `run-independent.sh`, so the umbrella-retained path is the
+# authenticated retained path the hosted artifact must capture.
+#
+# This section enforces three packaging invariants:
+#
+#   (a) the delegating harness writes the Plan 214 evidence to the
+#       `${EVIDENCE_DIR}/plan214` subdirectory of the umbrella
+#       evidence path;
+#   (b) the Plan 214 runner writes the canonical evidence file
+#       inventory to `${EVIDENCE_DIR}` — without these files the
+#       downstream hosted artifact cannot be inspected and a
+#       regression that drops one of them must not pass;
+#   (c) the runner records exactly one terminal classification row
+#       (`P214-N-passed` / `P214-N-failed` / `P214-N-blocked` /
+#       `P214-M-…`) so the hosted double-pass gate has a single
+#       authoritative classification to consume.
+#
+# A regression that silently lets the runner drop a required file
+# or skip the terminal classification would break the packaging
+# contract; the strict `if-no-files-found: error` on the hosted
+# upload step depends on this section staying green.
+
+# 30.a — delegating harness writes Plan 214 evidence to the
+# umbrella-retained path, not the standalone path.
+if ! grep -q -F 'I2PR_PLAN214_EVIDENCE_DIR="${EVIDENCE_DIR}/plan214"' "${HARNESS}"; then
+  echo "evidence check failed: Plan 215 §16 — harness does not delegate Plan 214 evidence to \${EVIDENCE_DIR}/plan214 (umbrella-retained path required for hosted artifact)" >&2
+  failures=$((failures + 1))
+fi
+if grep -q -F 'I2PR_PLAN214_EVIDENCE_DIR="${REPO_ROOT}/target/interop/plan214-applications-evidence"' "${HARNESS}"; then
+  echo "evidence check failed: Plan 215 §16 — harness pinned the runner to its standalone default path; the hosted lane must use the umbrella-retained path" >&2
+  failures=$((failures + 1))
+fi
+
+# 30.b — the runner writes the canonical evidence file inventory to
+# `${EVIDENCE_DIR}`. Every file in this list is the hosted
+# artifact's required surface; a regression that drops one must
+# not pass.
+PACKAGED_FILES=(
+  source-head.txt
+  pin-facts.txt
+  results.tsv
+  static-checker.log
+  fixture-contract.txt
+  destinations.txt
+  reference-facts.tsv
+  reference-transit-excerpt.log
+  external-driver.log
+  unit-floor.log
+  tunnels.conf
+  plan214-driver/driver-evidence.tsv
+  evidence.json
+  evidence.md
+)
+for artifact in "${PACKAGED_FILES[@]}"; do
+  # Match `> "${EVIDENCE_DIR}/<artifact>"`, `cp ... "${EVIDENCE_DIR}/<artifact>"`,
+  # `} > "${EVIDENCE_DIR}/<artifact>"`, or `(out / "<artifact>").write_text(...)`
+  # in the embedded Python helper. Each pattern is a separate grep
+  # so a single artifact can satisfy multiple writers (e.g.
+  # results.tsv is rewritten many times).
+  case "${artifact}" in
+    evidence.json|evidence.md)
+      if ! grep -q -E "/ \"${artifact}\"|/ '\"'\"'${artifact}'\"'\"'|\\\$\{EVIDENCE_DIR\}/${artifact}|out[[:space:]]*/[[:space:]]*\"${artifact}\"|out[[:space:]]*/[[:space:]]*'${artifact}'" "${PLAN214_RUNNER}" &&
+         ! grep -q -E "\\\$\{EVIDENCE_DIR\}/${artifact}" "${PLAN214_RUNNER}"; then
+        echo "evidence check failed: Plan 215 §16 — Plan 214 runner does not write packaged evidence file '${artifact}'" >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+    *)
+      if ! grep -q -E "\\\${EVIDENCE_DIR}/${artifact}|/ \"${artifact}\"" "${PLAN214_RUNNER}"; then
+        echo "evidence check failed: Plan 215 §16 — Plan 214 runner does not write packaged evidence file '${artifact}'" >&2
+        failures=$((failures + 1))
+      fi
+      ;;
+  esac
+done
+
+# 30.c — runner records exactly one terminal classification row.
+if ! grep -q -E 'plan214-terminal-classification' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §16 — Plan 214 runner does not record a plan214-terminal-classification row" >&2
+  failures=$((failures + 1))
+fi
+if ! grep -q -E 'record_guarded "plan214-terminal-classification"' "${PLAN214_RUNNER}"; then
+  echo "evidence check failed: Plan 215 §16 — plan214-terminal-classification must flow through record_guarded (no literal pass)" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green, Plan 214 application requalification invariants green, Plan 215 tunnel-config generation invariants green"
+echo "service-tunnel acceptance evidence integrity: ${#GUARDED[@]} rows command-derived, ${#BLOCKED[@]} rows blocked, no literal pass records, Plan 202 driver present and gated, Plan 210 structural invariants green, Plan 212 router-backed invariants green, Plan 213 generic qualification invariants green, Plan 214 application requalification invariants green, Plan 215 tunnel-config generation invariants green, Plan 215 §16 evidence packaging contract green"

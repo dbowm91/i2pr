@@ -97,10 +97,24 @@ jobs:
           path: target/interop/plan213-generic-evidence
           if-no-files-found: warn
 
-      - name: Upload sanitized Plan 214 application evidence (standalone path)
+      # Plan 215 §16 — the qualified Plan 214 evidence is the
+      # `plan214/` subdirectory that `run-independent.sh` retains
+      # under the umbrella `service-tunnels-evidence/` directory
+      # (`I2PR_PLAN214_EVIDENCE_DIR="${EVIDENCE_DIR}/plan214"`). The
+      # runner's standalone default path (`plan214-applications-evidence`)
+      # is only populated when the runner is invoked directly outside
+      # the workflow; the hosted `full` lane always delegates through
+      # `run-independent.sh`, so the umbrella-retained path is the
+      # authenticated retained path the hosted artifact must capture.
+      # `if-no-files-found: error` enforces the packaging contract:
+      # a successful `full` lane MUST populate the qualified
+      # evidence directory; silently warning away the failure would
+      # mask a runner-side regression that drops the qualification
+      # evidence.
+      - name: Upload sanitized Plan 214 application evidence (umbrella-retained path)
         if: always() && github.event.inputs.lane == 'full'
         uses: actions/upload-artifact@v4
         with:
           name: plan214-applications-evidence-${{ github.run_id }}
-          path: target/interop/plan214-applications-evidence
-          if-no-files-found: warn
+          path: target/interop/service-tunnels-evidence/plan214
+          if-no-files-found: error
