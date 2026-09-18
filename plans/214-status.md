@@ -1,6 +1,6 @@
 # Plan 214 status — M10 HTTP/IRC product-only external requalification and final closure
 
-Status: **`local-pass-proven-hosted-requalification-blocked-by-plan215`**.
+Status: **`passed-m10-product-only-remote-http-and-irc-application-closure`**.
 
 Plan of record: [`214-m10-http-irc-product-only-external-requalification-evidence-hardening-and-final-closure.md`](214-m10-http-irc-product-only-external-requalification-evidence-hardening-and-final-closure.md).
 
@@ -62,28 +62,44 @@ Plan 212 source closure
 plan_211 = retained-source-harness-superseded-for-final-evidence-by-plan214
 plan_212 = passed-source-and-generic-external-qualification-via-plan213
 plan_213 = passed-m10-router-backed-generic-external-qualification
-plan_214 = local-pass-proven-hosted-requalification-blocked-by-plan215
-plan_215 = registered-executable-hosted-plan214-config-generation-corrective
+plan_214 = passed-m10-product-only-remote-http-and-irc-application-closure
+plan_215 = passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification
 
 m10_local_rows = passed (29/29 retained)
 m10_remote_transport_core = passed-via-plan212-and-plan213
 m10_generic_remote_product = passed-via-plan213
-m10_remote_application_interop = locally-passed-only-hosted-proof-pending
-milestone10_remote_service_interop = not-yet-passed
-milestone10_final_acceptance = not-yet-closed
+m10_remote_application_interop = passed-hosted-double-pass-on-1992d67
+milestone10_remote_service_interop = passed-via-plans-213-214-215
+milestone10_final_acceptance = closed-on-1992d67-pending-plan204-convergence
 ```
 
+## Plan 215 hosted double-pass ledger
+
+Both Plan 215 hosted `full` runs landed on the identical immutable
+SHA `1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`:
+
+```text
+hosted_pass_1 = P214-N-passed (run 35309158441 on 1992d67)
+hosted_pass_2 = P214-N-passed (run 35309655867 on 1992d67)
+```
+
+Each run produced non-empty
+`plan213-generic-evidence-<run-id>` (with `P213-N-passed`) and
+`plan214-applications-evidence-<run-id>` (with `P214-N-passed`)
+artifacts. No executable qualification source changed between the
+two passes. Plan 215 §15 is satisfied and the §18 authority
+transition fires on this documentation-only commit.
+
+## Post-closure scope
+
+Plan 214 final acceptance remains bounded to the i2pd first-family
+qualification: the Plan 201 Java-side LeaseSet2 publication gap is
+still the active M6-Java blocker and is owned by the Plan 204 docs /
+CI normalization pass. The M10 closure transition recorded here does
+not imply `milestone6_interoperable = passed`; that claim stays
+gated on Plan 204 convergence over the Plan 201 terminal
+`P200-{A..H}` classification.
+
 ## What remains
-
-Plan 214 does not need a new product implementation pass at this point. The required sequence is Plan 215:
-
-1. make the `tunnels.conf` generation shell-inert and deterministic;
-2. add pre-launch config validation and a static regression guard;
-3. preserve all existing Plan 214 application/evidence assertions;
-4. produce one local exact-head `P214-N-passed` after the patch;
-5. run the hosted `full` lane twice sequentially on the identical corrective SHA;
-6. require both runs to finish with Plan 213 `P213-N-passed`, Plan 214 `P214-N-passed`, both remote application aggregates passed, final checker green, and all expected artifacts present.
-
-Only after those two hosted passes may Plan 214 become `passed-m10-product-only-remote-http-and-irc-application-closure` and Milestone 10 final acceptance close.
 
 Java M6 second-family interoperability remains a separate authority and is not closed by Plan 214 or Plan 215.

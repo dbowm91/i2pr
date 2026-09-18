@@ -183,35 +183,67 @@ aggregates plus exactly one `P214-*` terminal classification;
 static checker enforces the Plan 214 §28 invariants (including a
 synthetic-key extraction-boundary self-test for
 `parse_i2pd_destination.py`). Plan 215 (see `plans/215-status.md`)
-owns the narrow hosted Plan 214 tunnel-config generation corrective:
-the original runner used an unquoted heredoc containing Markdown
-backticks inside explanatory comments and the shell interpreted those
-backticks as command substitution while generating i2pd's
-`tunnels.conf`, stripping `type = server` from the IRC server tunnel
-and breaking the destination `.dat` file generation; the corrected
-runner ships a deterministic `printf`-based `write_plan214_tunnels_conf`
-helper plus a `validate_plan214_tunnels_conf` pre-launch sanity gate
-that fails closed on any of the 12 Plan 215 §5 contract violations
-(file presence, exactly two sections, `type = http` + `type = server`,
-configured HTTP/IRC port equality, expected key filenames, zero-hop
-lengths, no unresolved template placeholders); the sanity result is
-recorded through a `plan214-reference-tunnel-config-sanity` row that
-maps to the existing `P214-B-reference-startup-or-pin` terminal class.
-The static checker §29 enforces twelve structural invariants:
-reject the unquoted `<<EOF` heredoc shape for `tunnels.conf`; require
-`write_plan214_tunnels_conf` and the literal `[HTTP-Server]` /
-`[IRC-Server]` headers; require `validate_plan214_tunnels_conf` to
-run before the i2pd `setsid` launch; require the literal
-`'type = server'` token; require `HTTP_TARGET` / `IRC_TARGET` as
-dynamic inputs; require the documented `plan214-http-server.dat` /
-`plan214-irc-server.dat` key filenames; require the
-`plan214-reference-tunnel-config-sanity` row through `record_guarded`;
-reject any `eval` call; require the `P214-B` mapping; reject
-`envsubst` / `jinja2` / `mustache` template layers; reject `echo … >
-tunnels.conf` regressions; and require the focused
-`tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
-contract test to stay on disk and cover all nine documented contract
-cases.
+closed the hosted Plan 214 tunnel-config generation corrective on
+the immutable SHA `1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`. The
+source-side corrective (Commit `0fbacc3`) replaced the original
+runner's unquoted heredoc — which contained Markdown backticks in
+explanatory comments that the shell interpreted as command
+substitution while generating i2pd's `tunnels.conf`, stripping
+`type = server` from the IRC server tunnel and breaking the
+destination `.dat` file generation — with a deterministic
+`printf`-based `write_plan214_tunnels_conf` helper plus a
+`validate_plan214_tunnels_conf` pre-launch sanity gate that fails
+closed on any of the 12 Plan 215 §5 contract violations (file
+presence, exactly two sections, `type = http` + `type = server`,
+configured HTTP/IRC port equality, expected key filenames,
+zero-hop lengths, no unresolved template placeholders); the
+sanity result is recorded through a
+`plan214-reference-tunnel-config-sanity` row that maps to the
+existing `P214-B-reference-startup-or-pin` terminal class. The
+static checker §29 enforces twelve structural invariants:
+reject the unquoted `<<EOF` heredoc shape for `tunnels.conf`;
+require `write_plan214_tunnels_conf` and the literal
+`[HTTP-Server]` / `[IRC-Server]` headers; require
+`validate_plan214_tunnels_conf` to run before the i2pd `setsid`
+launch; require the literal `'type = server'` token; require
+`HTTP_TARGET` / `IRC_TARGET` as dynamic inputs; require the
+documented `plan214-http-server.dat` / `plan214-irc-server.dat`
+key filenames; require the `plan214-reference-tunnel-config-sanity`
+row through `record_guarded`; reject any `eval` call; require the
+`P214-B` mapping; reject `envsubst` / `jinja2` / `mustache`
+template layers; reject `echo … > tunnels.conf` regressions; and
+require the focused `tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
+contract test to stay on disk and cover all nine documented
+contract cases.
+
+The Plan 215 §5 runner cleanup hardening (Commit `1992d67`)
+addresses two runner-side races that prevented the §16 cleanup
+from landing deterministically when the runner was invoked via
+delegation from `run-independent.sh --full`: the loopback
+fixtures are started under `setsid` so they run in their own
+process group; `stop_group` now sends SIGKILL (uncatchable)
+instead of SIGTERM, since CPython's accept() auto-restarts on
+EINTR for the default SIGTERM handler; the §16 cleanup replaces
+the indefinite `wait $pid` with a bounded grace window + KILL
+fallback + bounded reap; the §16 process and port checks are now
+scoped to *this run's* fixtures via the unique `--facts
+${HTTP_FACTS}` / `--facts ${IRC_FACTS}` command-line markers and
+the ephemeral `--datadir ${I2PD_DATA}` i2pd directory, so the
+delegated lane no longer races against the harness's local-lane
+fixtures (which are owned by `run-independent.sh` and stopped
+only at its own `CHILD_PIDS` sweep).
+
+The hosted double-pass landed on `1992d67` as runs
+`35309158441` + `35309655867` — both observed
+`P213-N-passed` + `P214-N-passed` with 73/73 rows green (incl.
+the `plan214-clean-resource-baseline` and
+`plan214-cleanup-kills-on-timeout` rows the §5 hardening
+introduced). Plan 215 §18 fired: Plan 214 advanced to
+`passed-m10-product-only-remote-http-and-irc-application-closure`,
+`m10_remote_application_interop` advanced to
+`passed-hosted-double-pass-on-1992d67`, and Milestone 10 final
+acceptance advanced to
+`closed-on-1992d67-pending-plan204-convergence`.
 
 ## Module layout
 

@@ -1,6 +1,6 @@
 # Plan 215 status — hosted Plan 214 tunnel-config generation corrective and exact-head re-verification
 
-Status: **`source-side-corrective-landed-cleanup-hardened-hosted-double-pass-pending`**.
+Status: **`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`**.
 
 Plan of record: [`215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md`](215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md).
 
@@ -178,11 +178,45 @@ and stays on top of the same SHA.
 ## Verification ledger
 
 ```text
-corrective_verification_sha = pending
-local_exact_head_plan214 = pending
-hosted_pass_1 = pending
-hosted_pass_2 = pending
+corrective_verification_sha = 1992d67ffe1d37c1d5c225fff494c5bf02ba00b3
+local_exact_head_plan214 = P214-N-passed (2 consecutive delegated full-lane runs on 0fbacc3, 73/73 rows green)
+hosted_pass_1 = P214-N-passed (run 35309158441 on 1992d67)
+hosted_pass_2 = P214-N-passed (run 35309655867 on 1992d67)
 ```
+
+Both hosted `full` runs landed on the identical immutable SHA
+`1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`. No executable
+qualification source changed between the two passes. Plan 215 §15
+is satisfied: two consecutive successful hosted `full` runs on
+one immutable source SHA with `P213-N-passed` + `P214-N-passed`
+and non-empty `plan213-generic-evidence-<run-id>` /
+`plan214-applications-evidence-<run-id>` artifacts in both runs.
+
+## Plan 215 §18 authority transition fired
+
+Per Plan 215 §18, the following authority transitions fire on top
+of the immutable SHA `1992d67`. This commit is documentation-only;
+no executable qualification source is mutated.
+
+- `plan_215` authority advances from
+  `source-side-corrective-landed-cleanup-hardened-hosted-double-pass-pending`
+  to **`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`**.
+- `plan_214` authority advances from
+  `local-pass-proven-hosted-requalification-blocked-on-plan215-corrective-source-landed`
+  to **`passed-m10-product-only-remote-http-and-irc-application-closure`**
+  (per Plan 214 §18 forward reference and Plan 215 §18 step 1).
+- `milestone10_remote_service_interop` advances from
+  `not-yet-passed` to **`passed-via-plans-213-214-215`**.
+- `m10_remote_application_interop` advances from
+  `locally-passed-only-hosted-proof-pending` to **`passed-hosted-double-pass-on-1992d67`**.
+- `milestone10_final_acceptance` advances from
+  `not-yet-closed` to **`closed-on-1992d67-pending-plan204-convergence`**.
+  The Plan 204 docs/CI normalization pass still owns the final
+  authority/evidence-authority convergence over the M6 Java
+  second-family row (Plan 201 blocker) and remains the
+  authoritative gate for `milestone6_interoperable = passed`; the
+  M10 closure transition does not imply that claim.
+
 
 Do not promote this status from `source-side-corrective-landed` until
 both hosted passes record `P214-N-passed` on one immutable source
