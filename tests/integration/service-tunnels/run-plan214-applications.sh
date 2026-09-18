@@ -73,7 +73,19 @@ CHILD_PIDS=()
 stop_group() {
   local pid="${1:-}"
   [[ -z "${pid}" ]] && return 0
-  kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+  # Plan 215 §5 — KILL the process group so CPython's accept()
+  # auto-restart on EINTR cannot wedge the runner. SIGTERM would
+  # be the polite signal, but the Python default SIGTERM handler
+  # is "exit at the next bytecode boundary", which never comes
+  # inside an accept() syscall. The kernel can interrupt the
+  # syscall but CPython's socket wrapper restarts it, so the
+  # fixture ignores SIGTERM until it returns from accept() —
+  # which never happens in this lane. SIGKILL is the only signal
+  # the kernel will deliver unconditionally; using it here keeps
+  # the §16 cleanup bounded and fail-closed. The SCRATCH data
+  # directory is throwaway; the loss of any in-flight i2pd
+  # bytestream bookkeeping is irrelevant.
+  kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true
 }
 
 cleanup() {
@@ -243,11 +255,18 @@ HTTP_FACTS="${EVIDENCE_DIR}/http-fixture-facts.jsonl"
 IRC_FACTS="${EVIDENCE_DIR}/irc-fixture-facts.jsonl"
 : > "${HTTP_FACTS}"
 : > "${IRC_FACTS}"
-"${PYTHON_BIN}" "${FIXTURES_DIR}/http_fixture.py" --port 0 \
+# Plan 215 §5 — the loopback fixtures run in their own session and
+# process group so the §16 cleanup's `kill -TERM -- -${pid}` only
+# signals the fixture subtree. Without `setsid`, the fixture shares
+# the runner's process group, the cleanup TERM would also signal
+# the runner (and any unrelated siblings that inherited that pgid),
+# and the §16 pgrep / port-baseline checks would race against
+# grandchildren that have not yet reaped.
+setsid "${PYTHON_BIN}" "${FIXTURES_DIR}/http_fixture.py" --port 0 \
   --facts "${HTTP_FACTS}" --max-connections 24 \
   >"${SCRATCH}/http-fixture-port.log" 2>&1 &
 CHILD_PIDS+=($!)
-"${PYTHON_BIN}" "${FIXTURES_DIR}/irc_fixture.py" --port 0 \
+setsid "${PYTHON_BIN}" "${FIXTURES_DIR}/irc_fixture.py" --port 0 \
   --facts "${IRC_FACTS}" \
   >"${SCRATCH}/irc-fixture-port.log" 2>&1 &
 CHILD_PIDS+=($!)
@@ -1003,25 +1022,77 @@ record_guarded "plan214-remote-irc-service" \
 
 # ---- 16. cleanup + resource baseline ----------------------------------------
 echo "==> resource baseline"
+# Plan 215 §5 — every supervised child is signalled exactly once
+# with TERM (process group, falling back to direct PID); the
+# Python fixtures (started under setsid above) and i2pd get a
+# bounded grace window before the KILL fallback. The previous
+# `wait $pid` block was racy because CPython's accept() syscall
+# auto-restarts on EINTR for the default SIGTERM handler, which
+# kept the runner wedged inside wait() long after the fixture
+# ignored the signal. The bounded grace + KILL fallback replaces
+# that indefinite wait with a deterministic, fail-closed reap.
+KILL_GRACE_ITERS=40
+REMAINING_PIDS=()
 for pid in "${CHILD_PIDS[@]:-}"; do
+  [[ -z "${pid}" ]] && continue
   stop_group "${pid}"
-done
-for pid in "${CHILD_PIDS[@]:-}"; do
-  wait "${pid}" 2>/dev/null || true
+  REMAINING_PIDS+=("${pid}")
 done
 CHILD_PIDS=()
-sleep 1
+for pid in "${REMAINING_PIDS[@]:-}"; do
+  alive=1
+  for _ in $(seq 1 "${KILL_GRACE_ITERS}"); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      alive=0
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ "${alive}" -eq 1 ]]; then
+    kill -KILL -- "-${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true
+    # Bounded reap of the KILL'd child; SIGKILL is uncatchable so
+    # the kernel will deliver the exit promptly.
+    for _ in $(seq 1 20); do
+      kill -0 "${pid}" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+done
+# Bounded settle: any session that briefly held the loopback
+# port (TIME_WAIT, SO_REUSEADDR rebind by an unrelated checker)
+# must drain before the port probes.
+for _ in $(seq 1 20); do
+  if ! pgrep -f "http_fixture.*--facts[= ]${HTTP_FACTS}" >/dev/null 2>&1 \
+     && ! pgrep -f "irc_fixture.*--facts[= ]${IRC_FACTS}" >/dev/null 2>&1 \
+     && ! pgrep -f "i2pd.*--datadir=${I2PD_DATA}" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
 resource_rc=0
-if pgrep -f "http_fixture" >/dev/null 2>&1; then
-  echo "http fixture process survived shutdown" >&2
+# Plan 215 §5 — narrow the pgrep patterns to this run's scratch
+# fixtures (matched by `--facts ${HTTP_FACTS}`) and the ephemeral
+# i2pd (matched by `--datadir ${I2PD_DATA}`). A broad `pgrep -f
+# http_fixture` would also match the run-independent.sh's local
+# lane fixtures when this runner is invoked via delegation, since
+# those fixtures are started by the harness without setsid and
+# live until the harness's own CHILD_PIDS sweep.
+if pgrep -f "http_fixture.*--facts[= ]${HTTP_FACTS}" >/dev/null 2>&1; then
+  echo "http fixture process survived shutdown:" >&2
+  pgrep -af "http_fixture.*--facts[= ]${HTTP_FACTS}" >&2 || true
   resource_rc=1
 fi
-if pgrep -f "irc_fixture" >/dev/null 2>&1; then
-  echo "irc fixture process survived shutdown" >&2
+if pgrep -f "irc_fixture.*--facts[= ]${IRC_FACTS}" >/dev/null 2>&1; then
+  echo "irc fixture process survived shutdown:" >&2
+  pgrep -af "irc_fixture.*--facts[= ]${IRC_FACTS}" >&2 || true
   resource_rc=1
 fi
-if pgrep -f "i2pd.*--datadir=${SCRATCH}/i2pd" >/dev/null 2>&1; then
-  echo "ephemeral i2pd process survived shutdown" >&2
+# Plan 215 §5 — i2pd is started with `--datadir=${I2PD_DATA}` (with
+# the trailing `/data` segment) so the pgrep pattern must match the
+# actual command line, not the `${SCRATCH}/i2pd` directory.
+if pgrep -f "i2pd.*--datadir=${I2PD_DATA}" >/dev/null 2>&1; then
+  echo "ephemeral i2pd process survived shutdown:" >&2
+  pgrep -af "i2pd.*--datadir=${I2PD_DATA}" >&2 || true
   resource_rc=1
 fi
 if (echo > "/dev/tcp/127.0.0.1/${HTTP_TARGET}") 2>/dev/null; then

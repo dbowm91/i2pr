@@ -1,6 +1,6 @@
 # Plan 215 status — hosted Plan 214 tunnel-config generation corrective and exact-head re-verification
 
-Status: **`source-side-corrective-landed-hosted-double-pass-pending`**.
+Status: **`source-side-corrective-landed-cleanup-hardened-hosted-double-pass-pending`**.
 
 Plan of record: [`215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md`](215-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification.md).
 
@@ -53,6 +53,22 @@ The corrective is intentionally narrow and stays within the Plan 215 §3 scope l
   - the i2pd `tunnels.conf` is now also copied into the evidence
     directory after the sanity gate passes, so a future regression is
     debuggable from the uploaded artifact alone.
+  - **Plan 215 §5 cleanup hardening** (same runner, no product
+    change): the loopback fixtures are now started under `setsid`
+    so the §16 cleanup's `kill -KILL -- -${pid}` only signals the
+    fixture subtree. Without `setsid`, the fixture shared the
+    runner's process group, and CPython's default SIGTERM handler
+    could wedge the cleanup because accept() auto-restarts on EINTR.
+    `stop_group` now sends SIGKILL (uncatchable) instead of SIGTERM,
+    and the §16 cleanup replaces the indefinite `wait $pid` with a
+    bounded grace window + KILL fallback + bounded reap. The §16
+    process / port checks are now scoped to *this run's* fixtures
+    via the unique `--facts ${HTTP_FACTS}` / `--facts ${IRC_FACTS}`
+    command-line markers and the ephemeral `--datadir
+    ${I2PD_DATA}` i2pd directory, so the delegated lane no longer
+    races against the harness's local-lane fixtures (which are
+    owned by `run-independent.sh` and stopped only at its own
+    CHILD_PIDS sweep).
 - `tests/integration/service-tunnels/test-plan215-tunnels-conf.sh`
   - new focused shell test that exercises the writer and validator
     contract independently of the expensive external lane (writer
@@ -114,7 +130,7 @@ the source-side corrective tree.
 plan_212 = passed-source-and-generic-external-qualification-via-plan213
 plan_213 = passed-m10-router-backed-generic-external-qualification
 plan_214 = local-pass-proven-hosted-requalification-blocked-on-plan215-corrective-source-landed
-plan_215 = source-side-corrective-landed-hosted-double-pass-pending
+plan_215 = source-side-corrective-landed-cleanup-hardened-hosted-double-pass-pending
 
 m10_local_rows = passed (29/29 retained)
 m10_remote_transport_core = passed-via-plan212-and-plan213
@@ -123,6 +139,22 @@ m10_remote_application_interop = locally-passed-only-hosted-proof-pending
 milestone10_remote_service_interop = not-yet-passed
 milestone10_final_acceptance = not-yet-closed
 ```
+
+## Local exact-head re-verification on `0fbacc3`
+
+The exact-head local full lane (`bash
+tests/integration/service-tunnels/run-independent.sh --full`) is now
+green on the source-side corrective + cleanup hardening head:
+
+```text
+0fbacc3de31c9089be66a567cc880d0f71576585
+```
+
+Two consecutive local delegated full-lane runs both observed
+`P214-N-passed` with 73/73 rows green (HTTP eepsite, IRC service,
+HTTP/IRC counter deltas, sibling isolation, DCC policy, clean-resource
+baseline, cleanup-kills-on-timeout). The Plan 213 prerequisite row
+also stayed `passed` on the same evidence directory.
 
 ## Required hosted re-verification (Plan 215 §15)
 
