@@ -2,6 +2,27 @@
 
 Status: **`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`**.
 
+## 2026-09-18 handoff correction — Plan 220 diagnostic corrective
+
+Plan 218 remains the authoritative behavioral stop: criteria 1–9 passed and
+Java → i2pr reverse raw Destination delivery did not arrive.
+
+Plan 219 attempted to attribute that stop but its J219-B result is superseded
+by Plan 220 due to diagnostic defects. Therefore Plan 218's root cause remains
+unknown; only the reverse-delivery boundary itself is retained.
+
+```text
+plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
+plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+next_executable_plan = 220-m6-java-plan219-diagnostic-attribution-corrective
+```
+
+## Retained prior Plan 218 status narrative
+
+# Plan 218 status — M6 Java second-family final qualification
+
+Status: **`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`**.
+
 ## 2026-09-18 handoff amendment — Plan 219 registered
 
 Plan 219 is now the dependency-ready investigation of this stop:
@@ -791,3 +812,4 @@ for the M6 Java second-family closure. Plan 215's hosted Plan 214
 double-pass remains the canonical M10 closure authority; Plan
 213's generic external qualification remains the canonical M10
 generic authority.
+
