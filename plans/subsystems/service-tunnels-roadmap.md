@@ -98,6 +98,9 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 ## 10. Risks and decision points
 
 - Final closure transitions deferred until Plan 201 closes (see `closure/service-tunnels/204-status.md`).
+- Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
+  by the 200–204 decomposition and the 210–215 closures — do not merge (see
+  `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
