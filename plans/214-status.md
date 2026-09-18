@@ -24,6 +24,45 @@ Plan 214 remains the final M10 HTTP/IRC application-profile qualification author
 
 Plan 213 remains passed and is not reopened by the hosted Plan 214 failure.
 
+## Plan 215 hosted double-pass on `1992d67` (initial closure)
+
+Per Plan 215 §15 the hosted `full` gate was satisfied on the
+corrective verification SHA `1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`:
+
+```text
+hosted_pass_1 = P214-N-passed (run 35309158441 on 1992d67)
+hosted_pass_2 = P214-N-passed (run 35309655867 on 1992d67)
+```
+
+Each run produced non-empty `plan213-generic-evidence-<run-id>` (with
+`P213-N-passed`) and `plan214-applications-evidence-<run-id>` (with
+`P214-N-passed`) artifacts.
+
+## Plan 215 hosted double-pass on `a71e0193` (re-closure on dependabot-merged head)
+
+After four safe dependabot PRs (`#18` tokio 1.53.1, `#21` flate2 1.1.10,
+`#22` thiserror 2.0.20, `#23` dtolnay/rust-toolchain 1.120.0) landed on
+top of `1992d67`, the workspace head advanced to
+`a71e0193c420c8d8464fd05ff67d5323515ed4dd`. Plan 215 §15 requires the
+two-consecutive-pass gate to be re-proven on the new immutable SHA:
+
+```text
+hosted_pass_1_reclosure = P214-N-passed (run 35347780246 on a71e0193)
+hosted_pass_2_reclosure = P214-N-passed (run 35349313549 on a71e0193)
+```
+
+Both runs again concluded with `success`, with `P213-N-passed` and
+`P214-N-passed` recorded in the non-empty
+`plan213-generic-evidence-<run-id>` +
+`plan214-applications-evidence-<run-id>` artifacts and
+`source-head.txt = a71e0193c420c8d8464fd05ff67d5323515ed4dd` in both.
+No executable qualification source changed between the two passes.
+
+Plan 214 final-acceptance authority is inherited by the re-closure
+SHA; the §18 transition already fired on `1992d67` and the
+`plan214 = passed-m10-product-only-remote-http-and-irc-application-closure`
+label applies to both SHAs.
+
 ## Hosted requalification attempt on `b08d4977dbd43605f47bdea01ef8bd142f8b1c7f`
 
 Two hosted `full` workflow runs were attempted on the same Plan 214 source head:
@@ -89,6 +128,25 @@ Each run produced non-empty
 artifacts. No executable qualification source changed between the
 two passes. Plan 215 §15 is satisfied and the §18 authority
 transition fires on this documentation-only commit.
+
+### Plan 215 re-closure double-pass ledger on `a71e0193`
+
+After four safe dependabot PRs landed on top of `1992d67`, the
+workspace head advanced to `a71e0193c420c8d8464fd05ff67d5323515ed4dd`.
+Plan 215 §15 requires the two-consecutive-pass gate to be re-proven
+on the new immutable SHA, which it was:
+
+```text
+hosted_pass_1_reclosure = P214-N-passed (run 35347780246 on a71e0193)
+hosted_pass_2_reclosure = P214-N-passed (run 35349313549 on a71e0193)
+```
+
+Both runs recorded `P213-N-passed` + `P214-N-passed` with
+`source-head.txt = a71e0193c420c8d8464fd05ff67d5323515ed4dd` in both.
+No executable qualification source changed between the two passes;
+only the pre-existing dependabot Cargo.lock + Cargo.toml + workflow
+toolchain pin mutations. The re-closure ledger is recorded in
+`plans/215-status.md` under the "Plan 215 re-closure on dependabot-merged head `a71e0193`" section.
 
 ## Post-closure scope
 
