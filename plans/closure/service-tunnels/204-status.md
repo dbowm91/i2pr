@@ -11,13 +11,27 @@ normalization pass and MUST NOT reopen or downgrade those M10 results.
 The remaining hard dependency is independent M6 Java second-family closure:
 
 ```text
-Plan 217 — Java closure harness/evidence corrective
+Plan 217 — Java closure harness/evidence corrective (closed)
     -> Plan 218 — direct-I2CP Java final qualification
+        (commit 7762e13: stopped at the inbound-delivery primitive)
     -> Plan 204 — cross-milestone authority/docs convergence
 ```
 
-Plan 205 is retained as a conditional fallback only if Plan 218, after Plan 217
-closes, proves a genuine stock-Java direct-I2CP public-client boundary.
+Plan 205 was retained as a conditional fallback if Plan 218, after Plan 217
+closed, proved a genuine stock-Java direct-I2CP public-client boundary. Plan
+218 ran the corrected harness and recorded a reproducible inbound-delivery
+boundary at the helper's outbound tunnel endpoint
+(`java-floodfill-candidate=0` on Router A); Plan 205's SAM-bridge helper
+pivot does not address this primitive (Plan 217 §6 disposition; Java SAM
+ultimately routes through the same
+`ClientConnectionRunner → I2PSessionImpl → FloodfillNetworkDatabaseFacade`
+machinery as direct-I2CP). Plan 205 stays
+`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`.
+
+A future plan-of-record (e.g. Plan 219 — M6 Java second-family
+inbound-delivery primitive) is the documented next move and is not
+registered by Plan 218. Plan 204 waits for that fresh plan-of-record
+plus its own dependent normalization pass.
 
 Current authority:
 
@@ -27,11 +41,12 @@ plan_214 = passed-m10-product-only-remote-http-and-irc-application-closure
 plan_215 = passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification
 milestone10_final_acceptance = closed
 
-plan_217 = registered-ready-m6-java-closure-harness-corrective
-plan_218 = registered-blocked-on-plan217-m6-java-final-qualification
-milestone6_java_mixed_router_interop = not-yet-passed
+plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed (Plan 218 consumption of the corrected Plan 217 harness on commit 7762e13 reached the inbound-delivery primitive; the seven §11 stop rows past criteria 10/22/24/25 remain bounded; a fresh plan-of-record is the documented next move)
 
-plan_204 = blocked-on-m6-java-second-family-plan218-for-final-convergence
+plan_204 = blocked-on-m6-java-second-family-closure-via-fresh-plan-of-record (Plan 218 inbound-delivery boundary on commit 7762e13; Plan 205 retained; M10 product closure remains independently retained)
 ```
 
 The prior Plan 204 narrative is retained below for traceability; its older

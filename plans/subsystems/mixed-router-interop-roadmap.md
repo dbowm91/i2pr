@@ -36,7 +36,7 @@ Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–218 (globa
 
 ## 4. Current state
 
-Plan 217 closed the Java closure harness and evidence corrective after Plan 216 exposed contradictions in the prior Java publication diagnosis. Plan 218 is dependency-ready; it owns the fresh exact-head external run on the corrected harness and the terminal `P200-*` classification flip. Plan 201 stays blocked until Plan 218 records that classification. Plan 205 is retained as a conditional SAM fallback only.
+Plan 217 closed the Java closure harness and evidence corrective after Plan 216 exposed contradictions in the prior Java publication diagnosis. Plan 218 ran the corrected destination-only harness once on commit `7762e13` and stopped at the inbound-delivery primitive: criteria 1-9 of Plan 218 §11 pass (authenticated sessions, RouterInfo bootstrap, public helper session, real outbound and inbound installs, LS2 lookup via the owned outbound tunnel, LS2 key/signature/destination validation, local i2pr LS2 publication via the controlled tunnel path, raw i2pr → Java reference payload digest match), but criterion 10 (bidirectional raw Destination payloads match expected digests) fails on the Java → i2pr direction at the helper's outbound tunnel endpoint's peer-selection path; the underlying cause is Java Router A's `java-floodfill-candidate=0` (`reference-facts.tsv`: `java-floodfill-candidate-empty=1`), so the helper cannot resolve the i2pr destination's LeaseSet through Java's netDb and has no real lease to deliver to. Plan 201 stays blocked on Plan 218's fresh external classification (now on the corrected harness); the seven §11 stop rows remain blocked on the inbound-delivery primitive until a fresh plan-of-record opens a path past it. Plan 205 is retained as a conditional fallback only and does not address the inbound-delivery axis that Plan 218 hit.
 
 ## 5. Target architecture
 
@@ -72,10 +72,10 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-by-plan218-fresh-external-classification (Plan 217 closed the harness/evidence corrective; Plan 218 records the corrected `P200-*` classification on the exact-pinned Java 2.13.0 cache) | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
-| 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
+| 201 | blocked | blocked-by-plan218-fresh-external-classification-on-corrected-harness (Plan 217 closed the harness/evidence corrective; Plan 218 ran the corrected harness once on commit `7762e13` and recorded a fresh terminal `P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false` classification; the seven §11 stop rows below stay blocked on the inbound-delivery boundary until a fresh plan-of-record opens a path past that primitive) | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 218 inbound-delivery boundary is on Java's helper-side outbound tunnel endpoint; Plan 205's SAM-bridge pivot addresses the helper's local LeaseSet publication, not the inbound-delivery primitive, and would re-hit the same boundary) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
-| 218 | ready | ready-m6-java-second-family-final-qualification | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
+| 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (ran the corrected destination-only harness on commit `7762e13`; recorded terminal `P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false`; inbound delivery primitive bounded by Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the destination direction and `streaming-b-accept STATUS OK but inbound SYN never reached the backlog` on the streaming direction; root cause = `java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel endpoint cannot resolve the i2pr destination's LeaseSet through Java's netDb; Plan 205 stays retained because its SAM-bridge pivot addresses a different axis) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -103,23 +103,45 @@ Java-router topology.
 - Plan 217 closed the harness/evidence corrective; the prior Plan 216
   "no LS2 reply arrives" interpretation is no longer authoritative
   because the destination driver reached `LeaseStoreIngestOutcome::Completed`
-  before the panic. Plan 218 must record a fresh terminal
-  classification on the corrected harness before any downstream row
-  can flip past blocked.
+  before the panic. Plan 218 ran the corrected harness on commit
+  `7762e13` and recorded a fresh terminal `P200-H … java-floodfill-candidate=false
+  java-network-visible-leaseset=false` classification; the seven §11
+  stop rows past criteria 10/22/24/25 stay bounded on the inbound-delivery
+  primitive. The corrected Plan 218 status names this as a
+  reference-side boundary on Java's helper-side outbound tunnel endpoint
+  (Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the
+  destination direction; the streaming driver would consume the same
+  primitive via `streaming-b-accept STATUS OK but inbound SYN never
+  reached the backlog`). No downstream row can flip past blocked
+  until a fresh plan-of-record opens a path past the inbound-delivery
+  primitive.
 - Plan 205 SAM work is intentionally off the critical path; reactivate
-  only if the corrected Plan 218 direct-I2CP qualification proves a
-  genuine stock-Java boundary.
+  only if a future plan-of-record (e.g. Plan 219 — M6 Java
+  second-family inbound-delivery primitive) records a genuine
+  stock-Java boundary that SAM-bridge helper API can cross.
 
 ## 11. Completion definition
 
-Open: Plan 218 performs final direct-I2CP Java second-family qualification
-on the corrected harness. On Plan 218 success, M6 closes and Plan 204
-becomes dependency-ready. On a genuine stock-Java direct-I2CP boundary,
-Plan 218 may reactivate retained Plan 205.
+Open: Plan 218 stopped at the inbound-delivery boundary on commit
+`7762e13`. The executable next move is a fresh plan-of-record that
+addresses the helper-side outbound tunnel delivery primitive (Plan
+219 — M6 Java second-family inbound-delivery primitive is the
+documented next move; not registered by Plan 218). On its success,
+M6 Java closes and Plan 204 becomes dependency-ready. Plan 205's
+SAM-bridge pivot addresses the helper's local LeaseSet publication,
+not the inbound-delivery primitive, and would re-hit the same Plan
+218 boundary on the corrected harness; do not reactivate Plan 205
+without a new boundary on a different axis.
 
 ## 12. Milestone status summary
 
 Full row history is §7. Current authority: Plan 217 is closed
-(harness/evidence corrective); Plan 218 is next executable; Plan 201
-is blocked on Plan 218's fresh external classification; Plan 205 is
-retained conditional fallback.
+(harness/evidence corrective); Plan 218 is closed as
+`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`
+on commit `7762e13`; Plan 201 stays blocked on Plan 218's fresh
+external classification (now on the corrected harness); Plan 205
+stays retained-deferred-conditional; Plan 218's seven §11 stop
+rows past criteria 10/22/24/25 stay bounded on the inbound-delivery
+primitive. The M6 mixed-router Java second-family qualification
+remains not-yet-passed; the executable next move is a fresh
+plan-of-record.

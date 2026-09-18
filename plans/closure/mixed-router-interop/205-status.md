@@ -1,6 +1,6 @@
 # Plan 205 status — Java I2P SAM/helper publication pivot
 
-Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`**.
+Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`** (Plan 218 inbound-delivery boundary did not reauthorize Plan 205 — the boundary is on Java's helper-side outbound tunnel endpoint's peer-selection path, not on the helper's local LeaseSet publication gap).
 
 ## 2026-09-18 disposition amendment
 
@@ -20,11 +20,27 @@ reactivated only if:
 2. Plan 218 then records a reproducible stock-Java direct-I2CP public-client
    boundary for which SAM is a justified independent API experiment.
 
+Plan 218 ran the corrected Plan 217 harness on commit `7762e13` and
+recorded a reproducible inbound-delivery boundary
+(`java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel
+endpoint cannot resolve the i2pr destination's LeaseSet through Java's
+netDb; Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on
+the destination direction; `streaming-b-accept STATUS OK but inbound
+SYN never reached the backlog` on the streaming direction). SAM-bridge
+helper publication does not address this primitive: Java's SAM bridge
+ultimately routes the destination through the same
+`ClientConnectionRunner → I2PSessionImpl → FloodfillNetworkDatabaseFacade`
+machinery that the direct-I2CP path uses. Plan 205 therefore does NOT
+reauthorize itself on the Plan 218 outcome; a future plan-of-record (e.g.
+Plan 219 — M6 Java second-family inbound-delivery primitive) would own
+the inbound-delivery axis.
+
 Until then:
 
 ```text
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-next_executable_plan = 217-m6-java-closure-harness-corrective
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+next_executable_plan = a fresh plan-of-record (e.g. Plan 219 — M6 Java second-family inbound-delivery primitive), not Plan 205
 ```
 
 The prior Plan 205 registration narrative is retained below for traceability;

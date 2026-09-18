@@ -1,6 +1,6 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-by-plan218-fresh-external-classification`**.
+Status: **`blocked-by-plan218-fresh-external-classification-on-corrected-harness`**.
 
 ## 2026-09-18 authority amendment (Plan 217 closure superseded)
 
@@ -26,23 +26,46 @@ narrow-attempt narrative; the corrected harness is the Plan 218 input.
 Current authority:
 
 ```text
-plan_201 = blocked-by-plan218-fresh-external-classification
+plan_201 = blocked-by-plan218-fresh-external-classification-on-corrected-harness
 plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
-plan_218 = ready-m6-java-second-family-final-qualification
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-milestone6_java_mixed_router_interop = not-yet-passed (corrected harness ready; fresh exact-head classification pending Plan 218)
+milestone6_java_mixed_router_interop = not-yet-passed (corrected harness consumed by Plan 218 on commit 7762e13; terminal P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false; seven §11 stop rows remain blocked on the inbound-delivery primitive until a fresh plan-of-record opens a path past it)
 milestone6_interoperable = not-yet-claimed
 ```
 
-Plan 201 stays `blocked` because the corrected harness itself does not yet
-produce a fresh `P200-*` classification on the closing head — Plan 218 owns
-that. Moving Plan 201 to `ready` here would silently advance authority without
-fresh evidence. Plan 205 stays `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`;
-no Plan 217 closure authority authorizes its reactivation.
+Plan 218 ran the corrected harness once on commit `7762e13` and
+recorded a fresh terminal classification. Criteria 1-9 of Plan 218
+§11 pass (authenticated sessions, RouterInfo bootstrap, public
+helper session, real outbound and inbound installs, LS2 lookup via
+the owned outbound tunnel, LS2 key/signature/destination validation,
+local i2pr LS2 publication via the controlled tunnel path, raw
+i2pr → Java reference payload digest match); criterion 10
+(bidirectional raw Destination payloads match expected digests)
+fails on the Java → i2pr direction at the helper's outbound
+tunnel endpoint's peer-selection path; criteria 11-25 (Direction A /
+Direction B Streaming acceptance matrix + cross-family final-closure
+ledger + reference-side acceptance + the seven §11 stop rows) are
+bounded by the same inbound-delivery primitive. The underlying
+cause is observable in the Plan 218 evidence: `java-floodfill-candidate=0`
+and `java-floodfill-candidate-empty=1` on Router A
+(`target/interop/m6-java-evidence/reference-facts.tsv`); the helper's
+`I2PSessionImpl._leaseSetWait` (`I2PSessionImpl.java:805`) never sees
+a usable LeaseSet for the i2pr destination through Java's netDb, and
+the helper's outbound tunnel endpoint has no real lease to pick.
 
-The prior Plan 201 execution narrative is retained below for traceability; its
-earlier blocker interpretation is superseded by this amendment until Plan 217
-produces fresh evidence.
+Plan 205 stays `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`;
+the Plan 218 boundary is on the helper-side outbound tunnel endpoint's
+peer-selection path, which is the inverse axis from Plan 205's
+SAM-bridge helper-local LeaseSet publication. Plan 205 would re-hit
+the same boundary on the corrected harness and is not reactivated by
+this Plan 218 outcome. A future plan-of-record (e.g. Plan 219 — M6
+Java second-family inbound-delivery primitive) is the documented
+next move and is not registered by Plan 218.
+
+The prior Plan 201 execution narrative is retained below for
+traceability; its earlier "blocked-by-plan217" disposition is
+superseded by this amendment.
 
 ## Retained prior execution record
 
@@ -334,3 +357,6 @@ and `ReferenceStreamingService.java` use.
 Until either path closes the Java-side boundary, this status
 remains the only authorized Plan 201 record, and Plan 204 stays
 blocked on the Java second-family branch per its §1 preconditions.
+Plan 218's `plans/closure/mixed-router-interop/218-status.md`
+records the exact inbound-delivery boundary that bounds this
+amendment.
