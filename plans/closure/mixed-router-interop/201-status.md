@@ -1,33 +1,43 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-plan219-root-cause-classification`**.
+Status: **`blocked-pending-plan220-j219-b-corrective`**.
 
-## 2026-09-18 authority amendment — Plan 219 investigation registered
+## 2026-09-18 authority amendment — Plan 219 typed attribution closed
 
 Plan 218 consumed the corrected Plan 217 harness and proved a reproducible
-Java→i2pr reverse-delivery failure, but its `java-floodfill-candidate=0`
-attribution is not precise enough to select a corrective. Plan 219 is now the
-dependency-ready investigation and must determine the first exact boundary
-among live RouterInfo floodfill advertisement, Router A PeerManager capability
-indexing, FloodfillPeerSelector input/output, client-specific NetDB lookup,
-OutboundClientMessageOneShotJob lease/tunnel selection, Java dispatch, and
-i2pr inbound receive/decrypt.
+Java→i2pr reverse-delivery failure with a coarse `java-floodfill-candidate=0`
+attribution. Plan 219 closed the typed-facts investigation that narrowed the
+attribution to the `J219-B-A-STORED-B-RI-NOT-F` boundary: Router B's live
+RouterInfo advertises the `f` capability on every snapshot (5 timed
+snapshots per A/B/C router across the lane), but Router A's authoritative
+store does not have Router B's signed RouterInfo; consequently
+`peerManager().getPeersByCapability('f')` indexes only Router A itself under
+`f`, and `FloodfillPeerSelector` excludes Router B in the post-ranking
+result set (selector_input=1, selector_result=0). The downstream cascade
+the J219-B boundary produces — empty PeerManager indexing, empty floodfill
+selection, helper `ClientPeerSelector.selectPeers → null`,
+`OutboundClientMessageOneShotJob` lease loop unsatisfied, inbound
+`TunnelData` never constructed — matches the inbound-delivery primitive
+Plan 218 reached on commit `7762e13`.
 
 Current authority:
 
 ```text
-plan_201 = blocked-pending-plan219-root-cause-classification
+plan_201 = blocked-pending-plan220-j219-b-corrective
 plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
 plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
-plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
-plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-milestone6_java_mixed_router_interop = not-yet-passed
+plan_219 = passed-m6-java-reverse-delivery-root-cause-attribution
+plan_220 = registered-ready-m6-java-j219-b-bootstrap-bidirectional-corrective (next executable plan; not registered by Plan 219)
+plan_205 = retained-deferred-conditional-after-plan219-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed (J219-B-A-STORED-B-RI-NOT-F attribution, Plan 220 owns the corrective)
 milestone6_interoperable = not-yet-claimed
 ```
 
-No Plan 201 stop row may flip until Plan 219 emits one typed J219-A..J
-classification and a later corrective/qualification plan produces the required
-command-derived evidence.
+No Plan 201 stop row may flip until a registered Plan 220 closes the
+J219-B-A-STORED-B-RI-NOT-F boundary. The typed-facts surface (12 mandatory
+keys + 5-timed-snapshot timeline per router) lands in
+`target/interop/m6-java-evidence/j219/` and is consumed by
+`scripts/check-m6-mixed-router-acceptance-evidence.sh` §14 invariants.
 
 ## Retained prior authority narrative
 
@@ -55,11 +65,13 @@ narrow-attempt narrative; the corrected harness is the Plan 218 input.
 Current authority:
 
 ```text
-plan_201 = blocked-by-plan218-fresh-external-classification-on-corrected-harness
+plan_201 = blocked-by-plan218-fresh-external-classification-on-corrected-harness (predecessor token; current token is `blocked-pending-plan220-j219-b-corrective`)
 plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
 plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
-plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-milestone6_java_mixed_router_interop = not-yet-passed (corrected harness consumed by Plan 218 on commit 7762e13; terminal P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false; seven §11 stop rows remain blocked on the inbound-delivery primitive until a fresh plan-of-record opens a path past it)
+plan_219 = passed-m6-java-reverse-delivery-root-cause-attribution (J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c8e860aa1c9dd19b8ae53a42da3d9a2c2)
+plan_220 = registered-ready-m6-java-j219-b-bootstrap-bidirectional-corrective (next executable plan)
+plan_205 = retained-deferred-conditional-after-plan219-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed (Plan 219 typed the attribution to J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c…; Plan 220 owns the corrective on the corrected Plan 217 harness; the seven §11 stop rows remain blocked on the inbound-delivery primitive until Plan 220 closes J219-B)
 milestone6_interoperable = not-yet-claimed
 ```
 
@@ -313,21 +325,21 @@ plan_197 = passed-m6-pq-ssu2-option-support-corrective
 plan_198 = superseded-execution-decomposed-and-closed-via-plans200-204
 plan_199 = superseded-execution-decomposed-and-closed-via-plans200-204
 plan_200 = passed-m6-java-public-client-publication-observability-and-verified-bootstrap
-plan_201 = in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring
+plan_201 = blocked-pending-plan220-j219-b-corrective
 plan_202 = passed-m10-production-remote-destination-and-streaming-composition
 plan_203 = passed-m10-positive-remote-http-and-irc-application-interop
 plan_204 = in-progress-docs-and-authority-normalization-blocked-on-plan201-external-run
 
 milestone6_i2pd_streaming_interop          = passed-via-plan193
-milestone6_java_mixed_router_interop       = not-yet-passed (Branch A decode fix landed; Branch C/D three-router topology + 1-hop + zero-hop both attempted and proved blocked on the Java-side profile-scoring + zero-hop LS-publication boundary; the remaining Java-side LeaseSet2 publication gap cannot be closed inside Plan 198 / Plan 201 §4 constraints without patching Java or using public network)
+milestone6_java_mixed_router_interop       = not-yet-passed (Plan 219 typed the attribution to J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c…; Plan 220 owns the corrective on the corrected Plan 217 harness; the remaining Java-side LeaseSet2 publication gap is rooted on Router A's authoritative NetDB, not on the LeaseSetPublisher / profile-scoring axis Branch C/D retained)
 milestone6_interoperable                   = not-yet-claimed
 m6_java_publication_observability          = landed-via-plan200
 m6_java_publication_branch_g_framework     = landed-via-plan201
 m6_java_publication_branch_a_corrective    = landed-this-run (one-direction proof)
-m6_java_publication_branch_c_d_corrective  = attempted-this-run-blocked-on-java-loopback-peer-profile-scoring (Router C retained; 1-hop profile retained as bounded attempt; zero-hop helpers reverted to working configuration)
+m6_java_publication_branch_c_d_corrective  = attempted-this-run-blocked-on-java-loopback-peer-profile-scoring (Router C retained; 1-hop profile retained as bounded attempt; zero-hop helpers reverted to working configuration; Plan 219 proved the inbound primitive root cause is upstream of Branch C/D on the J219-B boundary)
 
-next_executable_plan = 201-or-205-pivot-to-branch-{b..f}-or-pivot-to-java-rewrite (Branch C/D three-router topology + 1-hop helper profile proved bounded by Java's loopback peer profile scoring; the next move is either a follow-up Branch B / E / F attempt against a different Java-side entry point, or a Plan 205 that rewrites the helpers onto the SAM bridge path which has a different LS2 publication lifecycle than the direct I2CP path the current helpers use)
-remaining_sequence = 201-or-205-pivot -> 204-convergence (after the Java-side LeaseSet2 publication boundary closes)
+next_executable_plan = 220-m6-java-j219-b-bootstrap-bidirectional-corrective (Plan 219 typed the boundary at J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c…; the corrective must submit Router B's signed RouterInfo into Router A's authoritative store through the existing authenticated DatabaseStore path so `peerManager().setCapabilities(b_hash, caps)` fires on the receiving side and `FloodfillPeerSelector` indexes Router B under `f`)
+remaining_sequence = 220 -> 204-convergence (after Plan 220 closes J219-B on the corrected Plan 217 harness and re-reaches J219-J)
 ```
 
 ## Required validation on the closing head

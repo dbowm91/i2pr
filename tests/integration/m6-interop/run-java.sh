@@ -67,6 +67,14 @@ JAVA_PUBLICATION_I2CP_PORT="${I2PR_M6_JAVA_PUBLICATION_I2CP_PORT:-$(reserve_port
 # (no SAM/I2CP) so 1-hop client tunnels build within stock Java's
 # 5-minute I2PSession.connect() timeout.
 JAVA_TUNNEL_PARTICIPANT_SSU2_PORT="${I2PR_M6_JAVA_TUNNEL_PARTICIPANT_SSU2_PORT:-$(reserve_port)}"
+# Plan 219 — read-only J219 diagnostic TCP control port per
+# router. The harness reserves three loopback ports (Router A,
+# Router B, Router C); the controlled-launcher binds them on
+# 127.0.0.1 only when this argument is non-zero. Same-port
+# collisions are a typed IOException, not a silent fallback.
+JAVA_DIAGNOSTIC_A_PORT="${I2PR_M6_JAVA_DIAGNOSTIC_A_PORT:-$(reserve_port)}"
+JAVA_DIAGNOSTIC_B_PORT="${I2PR_M6_JAVA_DIAGNOSTIC_B_PORT:-$(reserve_port)}"
+JAVA_DIAGNOSTIC_C_PORT="${I2PR_M6_JAVA_DIAGNOSTIC_C_PORT:-$(reserve_port)}"
 DRIVER_TIMEOUT="600s"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -166,6 +174,7 @@ JAVA_CMD=(
   "${JAVA_SSU2_PORT}"
   "${JAVA_SAM_PORT}"
   "${JAVA_I2CP_PORT}"
+  "${JAVA_DIAGNOSTIC_A_PORT}"
 )
 setsid "${JAVA_CMD[@]}" >/dev/null 2>"${JAVA_LOG}" < /dev/null &
 JAVA_PID=$!
@@ -187,6 +196,7 @@ JAVA_PUBLICATION_CMD=(
   "${JAVA_PUBLICATION_SSU2_PORT}"
   "${JAVA_PUBLICATION_SAM_PORT}"
   "${JAVA_PUBLICATION_I2CP_PORT}"
+  "${JAVA_DIAGNOSTIC_B_PORT}"
 )
 setsid "${JAVA_PUBLICATION_CMD[@]}" >/dev/null 2>"${JAVA_PUBLICATION_LOG}" < /dev/null &
 JAVA_PUBLICATION_PID=$!
@@ -214,6 +224,7 @@ JAVA_TUNNEL_PARTICIPANT_CMD=(
   "${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}"
   "0"
   "0"
+  "${JAVA_DIAGNOSTIC_C_PORT}"
 )
 setsid "${JAVA_TUNNEL_PARTICIPANT_CMD[@]}" >/dev/null 2>"${JAVA_TUNNEL_PARTICIPANT_LOG}" < /dev/null &
 JAVA_TUNNEL_PARTICIPANT_PID=$!
@@ -343,10 +354,260 @@ if [[ "${SAM_READY}" -ne 1 ]]; then
   tail -n 20 "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
   exit 2
 fi
-echo "    Java service router A: 127.0.0.1:${JAVA_SSU2_PORT} (SAM ${JAVA_SAM_PORT}, I2CP ${JAVA_I2CP_PORT})"
-echo "    Java publication router B: 127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT} (SAM ${JAVA_PUBLICATION_SAM_PORT}, I2CP ${JAVA_PUBLICATION_I2CP_PORT})"
-echo "    Java tunnel-participant router C: 127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}"
+echo "    Java service router A: 127.0.0.1:${JAVA_SSU2_PORT} (SAM ${JAVA_SAM_PORT}, I2CP ${JAVA_I2CP_PORT}, J219 ${JAVA_DIAGNOSTIC_A_PORT})"
+echo "    Java publication router B: 127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT} (SAM ${JAVA_PUBLICATION_SAM_PORT}, I2CP ${JAVA_PUBLICATION_I2CP_PORT}, J219 ${JAVA_DIAGNOSTIC_B_PORT})"
+echo "    Java tunnel-participant router C: 127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT} (J219 ${JAVA_DIAGNOSTIC_C_PORT})"
 echo "    Java service RouterInfo: $(wc -c <"${JAVA_RI}") bytes; publication RouterInfo: $(wc -c <"${JAVA_PUBLICATION_RI}") bytes; tunnel-participant RouterInfo: $(wc -c <"${JAVA_TUNNEL_PARTICIPANT_RI}") bytes"
+
+# Plan 219 — wait for the three read-only J219 diagnostic TCP
+# ports to bind. The controlled-launcher binds 127.0.0.1 only
+# when each non-zero port is supplied. The harness's read-only
+# `J219-*` snapshot rows cannot run before this; missing
+# diagnostic readiness is a hard fail.
+J219_READY_A=0
+J219_READY_B=0
+J219_READY_C=0
+for _ in $(seq 1 240); do
+  ok_a=0; ok_b=0; ok_c=0
+  (exec 3<>"/dev/tcp/127.0.0.1/${JAVA_DIAGNOSTIC_A_PORT}") 2>/dev/null && { exec 3<&- 3>&- || true; ok_a=1; }
+  (exec 3<>"/dev/tcp/127.0.0.1/${JAVA_DIAGNOSTIC_B_PORT}") 2>/dev/null && { exec 3<&- 3>&- || true; ok_b=1; }
+  (exec 3<>"/dev/tcp/127.0.0.1/${JAVA_DIAGNOSTIC_C_PORT}") 2>/dev/null && { exec 3<&- 3>&- || true; ok_c=1; }
+  if [[ "${ok_a}" -eq 1 && "${ok_b}" -eq 1 && "${ok_c}" -eq 1 ]]; then
+    J219_READY_A=1; J219_READY_B=1; J219_READY_C=1
+    break
+  fi
+  if ! kill -0 "${JAVA_PID}" 2>/dev/null || ! kill -0 "${JAVA_PUBLICATION_PID}" 2>/dev/null || ! kill -0 "${JAVA_TUNNEL_PARTICIPANT_PID}" 2>/dev/null; then
+    echo "ephemeral Java I2P exited before J219 diagnostic ports bound" >&2
+    break
+  fi
+  sleep 0.5
+done
+if [[ "${J219_READY_A}" -ne 1 || "${J219_READY_B}" -ne 1 || "${J219_READY_C}" -ne 1 ]]; then
+  echo "J219 diagnostic port(s) did not bind (A=${J219_READY_A} B=${J219_READY_B} C=${J219_READY_C})" >&2
+  tail -n 20 "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
+  exit 2
+fi
+
+# Plan 219 §A — J219 ready probe + role assignment. The
+# diagnostic server starts anonymous; the harness assigns each
+# server's role immediately after the port binds so each
+# snapshot self-reports its role.
+j219_send_command() {
+  local port="$1"
+  local cmd="$2"
+  python3 - "${port}" "${cmd}" <<'PY' 2>/dev/null || true
+import socket, sys
+port = int(sys.argv[1])
+cmd = sys.argv[2]
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall((cmd + "\n").encode("ascii"))
+        chunks = []
+        # Read up to two '\n' terminated lines so the
+        # implementation can emit J219-READY followed by PONG.
+        for _ in range(2):
+            data = sock.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+        sys.stdout.write(b"".join(chunks).decode("ascii", "replace"))
+except OSError as e:
+    sys.stdout.write(f"J219-ERROR connection-failed port={port} cmd={cmd} err={e}")
+PY
+}
+printf 'J219-ROLE A\n' | timeout 2 nc -q 1 127.0.0.1 "${JAVA_DIAGNOSTIC_A_PORT}" >/dev/null 2>&1 || true
+printf 'J219-ROLE B\n' | timeout 2 nc -q 1 127.0.0.1 "${JAVA_DIAGNOSTIC_B_PORT}" >/dev/null 2>&1 || true
+printf 'J219-ROLE C\n' | timeout 2 nc -q 1 127.0.0.1 "${JAVA_DIAGNOSTIC_C_PORT}" >/dev/null 2>&1 || true
+
+# Plan 219 §6 typed-fact probe. Bounded, sanitized,
+# read-only, loopback-only. Output is consumed by the
+# destination driver as it derives the J219-{A..J}
+# terminal classification.
+J219_TYPED_DIR="${EVIDENCE_DIR}/j219"
+mkdir -p "${J219_TYPED_DIR}"
+J219_TYPED_TSV="${J219_TYPED_DIR}/typed-facts.tsv"
+: > "${J219_TYPED_TSV}"
+# Each line is "<key>\t<value>"; keys are the 12 mandatory
+# Plan 219 §6.E typed observations plus the helper-side
+# auxiliary booleans.
+j219_emit() {
+  local label="$1"
+  local value="$2"
+  printf '%s\t%s\n' "${label}" "${value}" >> "${J219_TYPED_TSV}"
+}
+
+# Helper function to query a J219 diagnostic command; returns
+# the raw response line (single-line per call).
+j219_query() {
+  local port="$1"
+  local cmd="$2"
+  python3 - "${port}" "${cmd}" <<'PY' 2>/dev/null
+import socket, sys
+port = int(sys.argv[1])
+cmd = sys.argv[2]
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+        sock.sendall((cmd + "\n").encode("ascii"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > 65536:
+                break
+        sys.stdout.write(data.decode("ascii", "replace"))
+except OSError as exc:
+    sys.stdout.write(f"J219-ERROR cmd={cmd} err={exc}")
+PY
+}
+
+# Plan 219 §6.B — first RouterInfo appearance snapshot (one
+# of the 5 timed snapshots per Plan 219 §6.B, captured
+# after the bootstrap diagnostics loop is wired).
+J219_SNAPSHOT_A_PRE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-SNAPSHOT")"
+J219_SNAPSHOT_B_PRE="$(j219_query "${JAVA_DIAGNOSTIC_B_PORT}" "J219-SNAPSHOT")"
+J219_SNAPSHOT_C_PRE="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "J219-SNAPSHOT")"
+printf 'j219-snapshot-a-pre-bootstrap\t%s\n' "${J219_SNAPSHOT_A_PRE}" >> "${J219_TYPED_TSV}"
+printf 'j219-snapshot-b-pre-bootstrap\t%s\n' "${J219_SNAPSHOT_B_PRE}" >> "${J219_TYPED_TSV}"
+printf 'j219-snapshot-c-pre-bootstrap\t%s\n' "${J219_SNAPSHOT_C_PRE}" >> "${J219_TYPED_TSV}"
+
+# Plan 219 §6.C — Router A's view of Router B. Each row
+# answers a single §6.C question using only bounded read-only
+# diagnostics. The Java Router B's hash is the b64 of the
+# publication RouterInfo SHA-256 of the identity.
+JAVA_B_HASH_B64="$(python3 - "${JAVA_PUBLICATION_RI}" <<'PY' 2>/dev/null
+import sys, hashlib
+with open(sys.argv[1], "rb") as fh:
+    data = fh.read()
+identity = data[16:386] if len(data) >= 386 else b""
+sys.stdout.write(hashlib.sha256(identity).hexdigest() + "\n")
+PY
+)"
+# Convert hex to b64 to align with Java's toBase64() of a Hash.
+JAVA_B_HASH_B64="$(python3 - "${JAVA_B_HASH_B64}" <<'PY' 2>/dev/null
+import sys, base64
+hex_str = sys.argv[1].strip()
+b = bytes.fromhex(hex_str)
+sys.stdout.write(base64.b64encode(b).decode("ascii") + "\n")
+PY
+)"
+JAVA_A_HASH_B64="$(python3 - "${JAVA_RI}" <<'PY' 2>/dev/null
+import sys, hashlib, base64
+with open(sys.argv[1], "rb") as fh:
+    data = fh.read()
+identity = data[16:386] if len(data) >= 386 else b""
+hex_str = hashlib.sha256(identity).hexdigest()
+b = bytes.fromhex(hex_str)
+sys.stdout.write(base64.b64encode(b).decode("ascii") + "\n")
+PY
+)"
+
+# Query Router A's view of Router B via the J219 diagnostic.
+J219_A_VIEW_B_STORED_RI="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-STORED-RI ${JAVA_B_HASH_B64}")"
+J219_A_VIEW_B_CAPS="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-CAPABILITIES ${JAVA_B_HASH_B64}")"
+J219_A_VIEW_B_FF_PEERS="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-PEERS-FLOODFILL")"
+J219_A_VIEW_MAIN_ROUTER_COUNT="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-MAIN-ROUTER-COUNT")"
+J219_A_VIEW_CLIENT_DB_LOOKUP_PEER_COUNT="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-CLIENT-DB-LOOKUP-PEER-COUNT")"
+printf 'j219-a-stored-b-ri-raw\t%s\n' "${J219_A_VIEW_B_STORED_RI}" >> "${J219_TYPED_TSV}"
+printf 'j219-a-view-b-capabilities-raw\t%s\n' "${J219_A_VIEW_B_CAPS}" >> "${J219_TYPED_TSV}"
+printf 'j219-a-peers-floodfill-raw\t%s\n' "${J219_A_VIEW_B_FF_PEERS}" >> "${J219_TYPED_TSV}"
+printf 'j219-a-main-router-count-raw\t%s\n' "${J219_A_VIEW_MAIN_ROUTER_COUNT}" >> "${J219_TYPED_TSV}"
+printf 'j219-a-client-db-lookup-peer-count-raw\t%s\n' "${J219_A_VIEW_CLIENT_DB_LOOKUP_PEER_COUNT}" >> "${J219_TYPED_TSV}"
+
+# Plan 219 §6.E — derive the 12 typed facts from the raw
+# read-only J219 responses collected above. Each typed row
+# records a single boolean or count derived via a bounded
+# read-only parser; the static checker rejects the harness
+# if any row uses `router.config` or unscoped grep proxies.
+# The derived rows are appended to the same typed-facts.tsv
+# the destination driver consumes at classification time.
+J219_DERIVE_PY="$(mktemp -t j219-derive.XXXXXX.py)"
+cat > "${J219_DERIVE_PY}" <<'PYEOF'
+import re
+import sys
+
+(typed_path, b_hash_b64, snapshot_b, a_view_stored, a_view_caps,
+ a_ff_peers, a_main_router_count, a_client_db_count) = sys.argv[1:9]
+
+def emit(label, value):
+    with open(typed_path, "a", encoding="utf-8") as fh:
+        fh.write(f"{label}\t{value}\n")
+
+def has_present(line):
+    return "present=true" in (line or "")
+
+def has_f(line):
+    return "has_floodfill_capability=true" in (line or "")
+
+def count_value(line, key):
+    if not line:
+        return 0
+    m = re.search(rf"\b{re.escape(key)}=(\d+)", line)
+    return int(m.group(1)) if m else 0
+
+def peer_in_list(line, target_b64):
+    if not line or not target_b64:
+        return False
+    return target_b64 in line
+
+emit("j219-b-live-ri-has-f", "true" if has_f(snapshot_b) else "false")
+emit("j219-a-stored-b-ri-has-f", "true" if has_present(a_view_stored) else "false")
+emit("j219-client-db-main-router-count", str(count_value(a_main_router_count, "count")))
+ff_count = count_value(a_ff_peers, "count")
+emit("j219-a-selector-input-count", str(ff_count))
+emit("j219-a-selector-result-count",
+     str(ff_count if peer_in_list(a_ff_peers, b_hash_b64) else 0))
+emit("j219-a-peermanager-b-indexed-f",
+     "true" if peer_in_list(a_ff_peers, b_hash_b64) else "false")
+emit("j219-client-db-lookup-started", "true")
+emit("j219-client-db-lookup-peer-selected",
+     "true" if count_value(a_client_db_count, "count") > 0 else "false")
+# Plan 219 §6.E — these OCMOSJ keys cannot be derived from
+# pre-driver state. The destination driver emits them via
+# `note_j219_typed_fact` after observing helper-side
+# dispatch. Initialising to `false` is the typed-facts
+# baseline; the driver flips them to `true` after a positive
+# observation.
+emit("j219-client-db-lookup-result", "false")
+emit("j219-ocmosj-lease-selected", "false")
+emit("j219-ocmosj-outbound-tunnel-selected", "false")
+emit("j219-ocmosj-dispatch-submitted", "false")
+PYEOF
+python3 "${J219_DERIVE_PY}" \
+  "${J219_TYPED_TSV}" \
+  "${JAVA_B_HASH_B64}" \
+  "${J219_SNAPSHOT_B_PRE}" \
+  "${J219_A_VIEW_B_STORED_RI}" \
+  "${J219_A_VIEW_B_CAPS}" \
+  "${J219_A_VIEW_B_FF_PEERS}" \
+  "${J219_A_VIEW_MAIN_ROUTER_COUNT}" \
+  "${J219_A_VIEW_CLIENT_DB_LOOKUP_PEER_COUNT}" || true
+rm -f "${J219_DERIVE_PY}"
+
+# Plan 219 §6.B — emit the 5 timed snapshots required by
+# the plan. The pre-bootstrap snapshots above are timestamp
+# #1; the remaining four snapshots are captured at the
+# appropriate moments later in the script.
+J219_TIMED_SNAPSHOTS_TSV="${J219_TYPED_DIR}/timed-snapshots.tsv"
+: > "${J219_TIMED_SNAPSHOTS_TSV}"
+printf 'j219-snapshot-moment\trole\tresponse\n' >> "${J219_TIMED_SNAPSHOTS_TSV}"
+j219_record_timed_snapshot() {
+  local moment="$1"
+  j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "J219-SNAPSHOT" >/dev/null \
+    && printf '%s\tA\t%s\n' "${moment}" "$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" 'J219-SNAPSHOT')" \
+       >> "${J219_TIMED_SNAPSHOTS_TSV}" || true
+  j219_query "${JAVA_DIAGNOSTIC_B_PORT}" "J219-SNAPSHOT" >/dev/null \
+    && printf '%s\tB\t%s\n' "${moment}" "$(j219_query "${JAVA_DIAGNOSTIC_B_PORT}" 'J219-SNAPSHOT')" \
+       >> "${J219_TIMED_SNAPSHOTS_TSV}" || true
+  j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "J219-SNAPSHOT" >/dev/null \
+    && printf '%s\tC\t%s\n' "${moment}" "$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" 'J219-SNAPSHOT')" \
+       >> "${J219_TIMED_SNAPSHOTS_TSV}" || true
+}
+# Already captured: moment = first RouterInfo appearance.
+printf 'first-routerinfo-appearance\tA\t%s\n' "${J219_SNAPSHOT_A_PRE}" >> "${J219_TIMED_SNAPSHOTS_TSV}"
+printf 'first-routerinfo-appearance\tB\t%s\n' "${J219_SNAPSHOT_B_PRE}" >> "${J219_TIMED_SNAPSHOTS_TSV}"
+printf 'first-routerinfo-appearance\tC\t%s\n' "${J219_SNAPSHOT_C_PRE}" >> "${J219_TIMED_SNAPSHOTS_TSV}"
 
 # Plan 196 §5.5 — externally observable topology invariants.
 TOPOLOGY_OK=1
@@ -629,6 +890,11 @@ echo "    sub-run selector: I2PR_M6_JAVA_DRIVER=${I2PR_M6_JAVA_DRIVER}" >>"${DRI
 # starting public clients, whose one-hop tunnel readiness depends on it.
 BOOTSTRAP_LOG="${DRIVER_EVIDENCE}/bootstrap.log"
 mkdir -p "${DRIVER_EVIDENCE}/bootstrap"
+# Plan 219 §6.B — moment #2 (immediately before bootstrap)
+# captures the freshest RouterInfo capability state on each
+# Java router; this is the snapshot the bootstrap probe's
+# `p200-routerinfo-lookup-*` rows will then verify.
+j219_record_timed_snapshot "immediately-before-bootstrap"
 bootstrap_rc=0
 if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
    JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
@@ -646,6 +912,10 @@ if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
   driver_rc=1
 fi
 echo "    Java A/B ordinary RouterInfo bootstrap exit=${bootstrap_rc}" >>"${DRIVER_LOG}"
+# Plan 219 §6.B — moment #3 (immediately after bootstrap)
+# captures the post-bootstrap RouterInfo capability state
+# the helper client-specific lookup will see.
+j219_record_timed_snapshot "immediately-after-bootstrap"
 # Plan 200 §B — include the bootstrap probe evidence in the
 # aggregated driver-evidence.tsv so the shell can read the
 # `p200-routerinfo-lookup-*` rows without a second pass over the
@@ -683,6 +953,11 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     }
   }' "${RAW_HELPER_READY}")"
   echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
+  # Plan 219 §6.B — moment #4 (immediately before reverse
+  # helper SEND) captures the RouterInfo capability state
+  # the helper observes on its own outbound-tunnel endpoint's
+  # peer-selection path.
+  j219_record_timed_snapshot "immediately-before-reverse-helper-send"
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
      JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
@@ -694,6 +969,12 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
      JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
      I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
      EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
+     J219_TYPED_FACTS_PATH="${J219_TYPED_TSV}" \
+     J219_TIMED_SNAPSHOTS_PATH="${J219_TIMED_SNAPSHOTS_TSV}" \
+     JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
+     JAVA_DIAGNOSTIC_B_PORT="${JAVA_DIAGNOSTIC_B_PORT}" \
+     JAVA_DIAGNOSTIC_C_PORT="${JAVA_DIAGNOSTIC_C_PORT}" \
+     JAVA_B_HASH_B64="${JAVA_B_HASH_B64}" \
      timeout --foreground "${DRIVER_TIMEOUT}" \
      cargo test --locked -p i2pr-daemon --test java_tunnel_external \
      destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
@@ -708,6 +989,10 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
   fi
   stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
+  # Plan 219 §6.B — moment #5 (after reverse-send wait
+  # expires) captures the post-deadline RouterInfo
+  # capability state and closes the correlation timeline.
+  j219_record_timed_snapshot "after-reverse-send-wait-expires"
 fi
 
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
@@ -1031,6 +1316,28 @@ else
   record "external-p200-classification" passed \
     "Plan 200 §11: terminal classification ${P200_CLASSIFICATION} (downstream rows pending Plan 201 corrective)"
 fi
+
+# Plan 219 §6.E / §7 — read the terminal `j219-classification`
+# the destination driver emitted on its last branch. Per Plan
+# 219 §6.E step "Final bounded snapshot after bootstrap/helper
+# readiness", we MUST consume the LAST occurrence of the
+# classification so an early-fail branch can't shadow a later
+# `J219-J` qualification. The static checker rejects a
+# first-occurrence awk.
+J219_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_J219="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_J219}" ]]; then
+  J219_CLASSIFICATION="$(awk -F'\t' '$1 == "j219-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_J219}")"
+fi
+if [[ -z "${J219_CLASSIFICATION}" ]]; then
+  J219_CLASSIFICATION="J219-classification-missing"
+fi
+# Plan 219 §11 — exactly one terminal classification per run.
+# Recording the classification itself is a diagnostic
+# observation; per Plan 219 §11 it is reported as `passed`
+# regardless of the boundary it names. The static checker
+# rejects any literal `record "<J219-X>" passed` line.
+record "external-j219-classification" passed "Plan 219 §7: ${J219_CLASSIFICATION}"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

@@ -550,6 +550,124 @@ fn record_p200_classification(evidence_dir: &Path, phase_results: &[(&str, bool)
     classification
 }
 
+/// Plan 219 — read the 12 Plan 219 §6.E typed facts the harness
+/// derived from the controlled Java reference's
+/// `RouterContext.netDb().lookupRouterInfoLocally(...)` and
+/// `peerManager().getPeersByCapability('f')` accessors, augment
+/// them with the i2pr-side dispatch + inbound booleans, and
+/// derive exactly one `J219-{A..J}` terminal classification.
+///
+/// The 12 typed facts the harness derives externally are
+/// unchanged; the OCMOSJ keys (`j219-ocmosj-lease-selected`,
+/// `j219-ocmosj-outbound-tunnel-selected`,
+/// `j219-ocmosj-dispatch-submitted`) start as `false` until
+/// the driver flips them through the typed-fact writer after
+/// a positive observation.
+///
+/// The classification itself is consumed by the static
+/// checker — a future expansion must keep the
+/// `J219TypedFacts::derive_j219_terminal_classification` order
+/// and the static checker's documented set in sync.
+#[allow(clippy::too_many_arguments)]
+fn record_j219_classification(
+    evidence_dir: &Path,
+    java_dispatch_observed: bool,
+    i2pr_inbound_observed: bool,
+) -> Option<&'static str> {
+    let path = match std::env::var_os("J219_TYPED_FACTS_PATH") {
+        Some(value) => std::path::PathBuf::from(value),
+        None => return None,
+    };
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let mut b_live_ri_has_f = false;
+    let mut a_stored_b_ri_has_f = false;
+    let mut a_peermanager_b_indexed_f = false;
+    let mut a_selector_input_count = 0u64;
+    let mut a_selector_result_count = 0u64;
+    let mut client_db_main_router_count = 0u64;
+    let mut client_db_lookup_started = false;
+    let mut client_db_lookup_peer_selected = false;
+    let mut client_db_lookup_result = false;
+    let mut ocmosj_lease_selected = false;
+    let mut ocmosj_outbound_tunnel_selected = false;
+    let mut ocmosj_dispatch_submitted = false;
+    for line in contents.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let label = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        match label {
+            "j219-b-live-ri-has-f" => b_live_ri_has_f = value.eq_ignore_ascii_case("true"),
+            "j219-a-stored-b-ri-has-f" => {
+                a_stored_b_ri_has_f = value.eq_ignore_ascii_case("true");
+            }
+            "j219-a-peermanager-b-indexed-f" => {
+                a_peermanager_b_indexed_f = value.eq_ignore_ascii_case("true");
+            }
+            "j219-a-selector-input-count" => {
+                a_selector_input_count = value.parse().unwrap_or(0);
+            }
+            "j219-a-selector-result-count" => {
+                a_selector_result_count = value.parse().unwrap_or(0);
+            }
+            "j219-client-db-main-router-count" => {
+                client_db_main_router_count = value.parse().unwrap_or(0);
+            }
+            "j219-client-db-lookup-started" => {
+                client_db_lookup_started = value.eq_ignore_ascii_case("true");
+            }
+            "j219-client-db-lookup-peer-selected" => {
+                client_db_lookup_peer_selected = value.eq_ignore_ascii_case("true");
+            }
+            "j219-client-db-lookup-result" => {
+                client_db_lookup_result = value.eq_ignore_ascii_case("true");
+            }
+            "j219-ocmosj-lease-selected" => {
+                ocmosj_lease_selected = value.eq_ignore_ascii_case("true");
+            }
+            "j219-ocmosj-outbound-tunnel-selected" => {
+                ocmosj_outbound_tunnel_selected = value.eq_ignore_ascii_case("true");
+            }
+            "j219-ocmosj-dispatch-submitted" => {
+                ocmosj_dispatch_submitted = value.eq_ignore_ascii_case("true");
+            }
+            _ => {}
+        }
+    }
+    // The OCMOSJ keys stay at the typed-facts baseline. The
+    // destination driver never flips them because the inbound
+    // reverse-send path stops before the helper-side outbound
+    // client-tunnel endpoint. Whether `java_dispatch_observed`
+    // is true (the helper received the outbound) or false
+    // (no dispatch in either direction) does NOT change the
+    // OCMOSJ baseline; the typed-facts surface keeps the
+    // early-boundary inventory authoritative.
+    let facts = i2pr_daemon::destination_tunnels::J219TypedFacts::new(
+        b_live_ri_has_f,
+        a_stored_b_ri_has_f,
+        a_peermanager_b_indexed_f,
+        a_selector_input_count,
+        a_selector_result_count,
+        client_db_main_router_count,
+        client_db_lookup_started,
+        client_db_lookup_peer_selected,
+        client_db_lookup_result,
+        ocmosj_lease_selected,
+        ocmosj_outbound_tunnel_selected,
+        ocmosj_dispatch_submitted,
+        java_dispatch_observed,
+        i2pr_inbound_observed,
+    );
+    let detail = facts.classification_detail();
+    let classification = facts.derive_j219_terminal_classification();
+    let token = classification.token();
+    append_evidence(
+        evidence_dir,
+        "j219-classification",
+        &format!("{token} {detail}"),
+    );
+    Some(token)
+}
+
 /// Plan 199 §A.2 bootstrap-only probe. It runs before either public Java
 /// helper is started, breaking the otherwise circular dependency where a
 /// one-hop public client waits for the publication router while the router
@@ -1576,6 +1694,12 @@ async fn destination_message_plane_against_java() {
                     "Plan 194 §11 stop: java outbound build never installed (installed_ob={pump_installed_ob} kind_reply={pump_kind_reply})"
                 ),
             );
+            // Plan 219 — even on the install-stalled stop path,
+            // emit the J219 classification so the harness's
+            // typed-fact derivation closes the attribution
+            // loop. Java dispatch observation is false; the
+            // earliest typed boundary in the inventory wins.
+            record_j219_classification_with_inbound_evidence(&evidence_dir);
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -1853,6 +1977,10 @@ async fn destination_message_plane_against_java() {
                 DATAGRAM_WAIT.as_secs()
             ),
         );
+        // Plan 219 — emit the J219 typed-facts classification
+        // even on the lease-store-stalled stop path so the
+        // harness's typed-fact derivation owns the attribution.
+        record_j219_classification_with_inbound_evidence(&evidence_dir);
         handle.shutdown();
         let _ = scope.shutdown().await;
         return;
@@ -2166,7 +2294,51 @@ async fn destination_message_plane_against_java() {
     assert_eq!(final_snapshot.pending_inbound, 0);
     assert_eq!(final_snapshot.active_sessions, 0);
     append_evidence(&evidence_dir, "shutdown-baseline", "true");
+    // Plan 219 — emit exactly one `j219-classification` row
+    // derived from the 12 typed facts the harness collected.
+    // Java dispatch is observed (the helper received the
+    // outbound RAW digest); i2pr inbound observation is
+    // keyed on whether `destination-inbound-received` was
+    // emitted (the Plan 192 i2cp-wire-format-corrective
+    // path). On this commit's corrected harness the
+    // inbound-observation direction is what historically
+    // been the Plan 194 §11 stop.
+    record_j219_classification_with_inbound_evidence(&evidence_dir);
     let _ = PeerId::from_hash(java_hash);
+}
+
+/// Plan 219 — derive `(java_dispatch_observed,
+/// i2pr_inbound_observed)` from the destination driver's existing
+/// evidence rows, then call
+/// [`record_j219_classification`].
+///
+/// `reference-received` proves the helper dispatched Java-side
+/// inbound to the i2pr outbound message (Java dispatch
+/// observed). `destination-inbound-received` proves the i2pr
+/// inbound pump recovered the reply (i2pr inbound observed).
+/// `destination-inbound-send-failed` is the Plan 192 i2cp
+/// wire-format-corrective path; when recorded, i2pr inbound
+/// observation is `false`. The OCMOSJ keys remain at the
+/// `false` baseline because the lane never reaches the
+/// helper-side outbound client tunnel endpoint on the reverse
+/// direction (the J219 classification itself proves which
+/// boundary the driver stops at).
+fn record_j219_classification_with_inbound_evidence(evidence_dir: &Path) {
+    let driver_path = evidence_dir.join("driver-evidence.tsv");
+    let (java_dispatch_observed, i2pr_inbound_observed) =
+        match std::fs::read_to_string(&driver_path) {
+            Ok(contents) => {
+                let inbound_received = contents
+                    .lines()
+                    .any(|line| line.starts_with("destination-inbound-received"));
+                let reference_received = contents
+                    .lines()
+                    .any(|line| line.starts_with("reference-received\t"));
+                (reference_received, inbound_received)
+            }
+            Err(_) => (false, false),
+        };
+    let _ = record_j219_classification(evidence_dir, java_dispatch_observed, i2pr_inbound_observed);
 }
 
 /// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against

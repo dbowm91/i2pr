@@ -1,4 +1,6 @@
-// Plan 196 — M6 Java I2P controlled first-run topology corrective.
+// Plan 196 — M6 Java I2P controlled first-run topology corrective;
+// Plan 219 — M6 Java reverse-delivery root-cause investigation
+// read-only diagnostic surface.
 //
 // Test-only launcher. Compiled against the exact-pinned Java I2P 2.13.0
 // staged `lib/` jars into the ephemeral scratch build directory. Never
@@ -14,25 +16,57 @@
 //
 // Args:
 //
-//   <java-data-dir>   -- disposable per-run I2P config + log + pid dir
-//   <ssu2-host>       -- UDP transport bind host (loopback only)
-//   <ssu2-port>       -- UDP transport bind port (loopback only)
-//   <sam-port>        -- SAM bridge TCP bind port (loopback only)
-//   <i2cp-port>       -- I2CP server TCP bind port (loopback only)
+//   <java-data-dir>     -- disposable per-run I2P config + log + pid dir
+//   <ssu2-host>         -- UDP transport bind host (loopback only)
+//   <ssu2-port>         -- UDP transport bind port (loopback only)
+//   <sam-port>          -- SAM bridge TCP bind port (loopback only)
+//   <i2cp-port>         -- I2CP server TCP bind port (loopback only)
+//   [j219-control-port] -- Plan 219 read-only diagnostic TCP port
+//                          (loopback only; "0" or absent disables)
 //
 // Environment contract:
 //   - VMCommSystem is never enabled (no `i2p.vmCommSystem=true`);
 //   - public reseed URLs are never configured;
 //   - the SAM bridge is the only client app started on load;
 //   - all listeners bind to loopback only.
+//
+// Plan 219 diagnostic contract:
+//   - the j219-control-port is bound to 127.0.0.1 only;
+//   - the listener accepts only read-only commands
+//     (`J219-SNAPSHOT`, `J219-CAPABILITIES <b64-hash>`,
+//     `J219-PEERS-FLOODFILL`, `J219-MAIN-ROUTER-COUNT`,
+//     `J219-STORED-RI <b64-hash>`, `J219-CLIENT-DB-LOOKUP-PEER-COUNT`,
+//     `QUIT`);
+//   - every response is a pre-formed, sanitized, single-line
+//     `J219-EV <key>=<value> [...]` row, never a Java object
+//     repr, never payload bytes, never signing keys;
+//   - the listener never calls a mutator on `Router`,
+//     `RouterContext`, `NetworkDatabaseFacade`, `PeerManager`,
+//     or `FloodfillPeerSelector`. Read-only accessors only.
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
+import net.i2p.data.Base64;
 import net.i2p.data.DataHelper;
+import net.i2p.data.Hash;
+import net.i2p.data.router.RouterInfo;
+import net.i2p.router.PeerManagerFacade;
 import net.i2p.router.Router;
+import net.i2p.router.RouterContext;
+import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
 
 public final class ControlledRouter {
 
@@ -41,9 +75,9 @@ public final class ControlledRouter {
     };
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 5) {
+        if (args.length != 5 && args.length != 6) {
             System.err.println(
-                "usage: ControlledRouter <java-data-dir> <ssu2-host> <ssu2-port> <sam-port> <i2cp-port>");
+                "usage: ControlledRouter <java-data-dir> <ssu2-host> <ssu2-port> <sam-port> <i2cp-port> [j219-control-port]");
             System.exit(64);
         }
 
@@ -52,6 +86,9 @@ public final class ControlledRouter {
         final String ssu2Port = args[2];
         final String samPort = args[3];
         final String i2cpPort = args[4];
+        // Plan 219 — optional diagnostic port; "0" or absent
+        // disables the read-only J219 control server.
+        final String j219ControlPort = args.length >= 6 ? args[5] : "0";
 
         for (String forbidden : FORBIDDEN_VMCOMM_KEYS) {
             String v = System.getProperty(forbidden);
@@ -231,11 +268,33 @@ public final class ControlledRouter {
             }
         }, "ControlledRouter-ShutdownHook"));
 
+        // Plan 219 — read-only J219 diagnostic control server.
+        // Optional; bound to 127.0.0.1 only when a non-zero
+        // j219-control-port is supplied. The server answers
+        // bounded read-only commands (snapshot / capabilities /
+        // peers-floodfill / main-router-count / stored-ri /
+        // client-db-lookup-peer-count / quit) using only public
+        // RouterContext accessors. It MUST NOT mutate router
+        // state. Sanitized output only.
+        if (!"0".equals(j219ControlPort)) {
+            try {
+                int port = Integer.parseInt(j219ControlPort);
+                J219DiagnosticServer diagnostic = new J219DiagnosticServer(router, port);
+                diagnostic.start();
+            } catch (NumberFormatException nfe) {
+                System.err.println(
+                    "ControlledRouter: j219-control-port must be an integer: "
+                        + j219ControlPort);
+                System.exit(64);
+            }
+        }
+
         System.out.println("ControlledRouter: starting router with ssu2="
             + ssu2Host + ":" + ssu2Port
             + " i2cp=127.0.0.1:" + i2cpPort
             + " sam=127.0.0.1:" + samPort
-            + " datadir=" + dataDir.getAbsolutePath());
+            + " datadir=" + dataDir.getAbsolutePath()
+            + " j219-control-port=" + j219ControlPort);
 
         router.runRouter();
 
@@ -270,6 +329,278 @@ public final class ControlledRouter {
                     + " i2cp.tcp.host=127.0.0.1 i2cp.tcp.port=" + i2cpPort + "\n");
                 w.write("clientApp.0.startOnLoad=true\n");
             }
+        }
+    }
+
+    /**
+     * Plan 219 §6 read-only diagnostic control server. Lives in
+     * the same JVM as the controlled {@link Router} and answers
+     * a small bounded set of read-only commands using only
+     * public RouterContext accessors. NEVER mutates router state,
+     * NEVER logs sensitive material, NEVER accepts generic
+     * Java commands. Each response is a single
+     * {@code J219-EV <key>=<value> [...]} line. The harness
+     * scopes its writes to
+     * {@code target/interop/m6-java-evidence/j219-snapshots-*.tsv}.
+     */
+    private static final class J219DiagnosticServer {
+
+        private static final String RESPONSE_PREFIX = "J219-EV ";
+        private static final String READY_TOKEN = "J219-READY role=";
+        private static final String ERROR_TOKEN = "J219-ERROR ";
+
+        private final Router router;
+        private final int port;
+        private ServerSocket socket;
+        private Thread acceptThread;
+        private final AtomicReference<String> role = new AtomicReference<>("unset");
+
+        J219DiagnosticServer(Router router, int port) {
+            this.router = router;
+            this.port = port;
+        }
+
+        /**
+         * Optional caller-side hint that names this router
+         * ("A" / "B" / "C"). The harness sets this via the
+         * {@code J219-ROLE} command immediately after the
+         * server accepts its first connection; until then the
+         * server emits {@code role=unset}.
+         */
+        void start() throws IOException {
+            // Plan 219 diagnostic contract — loopback only, no
+            // public bind. The harness reserves the port and
+            // hands the SAME port to ControlledRouter; a future
+            // port collision is a typed IOException.
+            socket = new ServerSocket(port, 8, InetAddress.getByName("127.0.0.1"));
+            acceptThread = new Thread(this::acceptLoop, "J219Diagnostic-Accept");
+            acceptThread.setDaemon(true);
+            acceptThread.start();
+        }
+
+        private void acceptLoop() {
+            while (!socket.isClosed()) {
+                try {
+                    Socket client = socket.accept();
+                    Thread worker = new Thread(() -> handle(client),
+                        "J219Diagnostic-Worker");
+                    worker.setDaemon(true);
+                    worker.start();
+                } catch (IOException ioe) {
+                    if (socket.isClosed()) {
+                        return;
+                    }
+                    // best-effort; the harness owns cleanup
+                }
+            }
+        }
+
+        private void handle(Socket client) {
+            try (Socket socketHandle = client;
+                 BufferedReader input = new BufferedReader(
+                     new InputStreamReader(socketHandle.getInputStream(),
+                         StandardCharsets.US_ASCII));
+                 PrintWriter output = new PrintWriter(
+                     socketHandle.getOutputStream(), true)) {
+                String line;
+                while ((line = input.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) {
+                        continue;
+                    }
+                    String response = dispatch(trimmed);
+                    output.println(response);
+                    if (trimmed.startsWith("QUIT")) {
+                        socketHandle.close();
+                        return;
+                    }
+                }
+            } catch (IOException ioe) {
+                // best-effort
+            }
+        }
+
+        private String dispatch(String line) {
+            String[] parts = line.split(" ");
+            String command = parts[0];
+            try {
+                switch (command) {
+                    case "J219-ROLE":
+                        if (parts.length < 2) {
+                            return ERROR_TOKEN + "missing-role-argument";
+                        }
+                        String requested = parts[1];
+                        if (!requested.matches("[A-C]")) {
+                            return ERROR_TOKEN + "role-must-be-A-B-or-C";
+                        }
+                        role.set(requested);
+                        return READY_TOKEN + requested;
+                    case "J219-SNAPSHOT":
+                        return snapshotSelf();
+                    case "J219-CAPABILITIES":
+                        if (parts.length < 2) {
+                            return ERROR_TOKEN + "missing-hash-argument";
+                        }
+                        return lookupCapabilities(parts[1]);
+                    case "J219-STORED-RI":
+                        if (parts.length < 2) {
+                            return ERROR_TOKEN + "missing-hash-argument";
+                        }
+                        return lookupStored(parts[1]);
+                    case "J219-PEERS-FLOODFILL":
+                        return peersFloodfill();
+                    case "J219-MAIN-ROUTER-COUNT":
+                        return mainRouterCount();
+                    case "J219-CLIENT-DB-LOOKUP-PEER-COUNT":
+                        return clientDbLookupPeerCount();
+                    case "PING":
+                        return "PONG";
+                    case "QUIT":
+                        return "BYE";
+                    default:
+                        return ERROR_TOKEN + "unknown-command";
+                }
+            } catch (Throwable t) {
+                return ERROR_TOKEN + "internal-error " + t.getClass().getSimpleName();
+            }
+        }
+
+        private RouterContext context() {
+            return router.getContext();
+        }
+
+        private KademliaNetworkDatabaseFacade mainNetDb() {
+            return (KademliaNetworkDatabaseFacade) context().netDb();
+        }
+
+        private PeerManagerFacade peerManager() {
+            return context().peerManager();
+        }
+
+        private String snapshotSelf() {
+            StringBuilder sb = new StringBuilder(RESPONSE_PREFIX);
+            sb.append("kind=snapshot ");
+            sb.append("role=").append(role.get()).append(' ');
+            RouterInfo self = mainNetDb().lookupRouterInfoLocally(context().routerHash());
+            if (self == null) {
+                sb.append("self_ri_present=false");
+                return sb.toString();
+            }
+            sb.append("self_ri_present=true ");
+            sb.append("self_router_hash=").append(self.getIdentity().getHash().toBase64()).append(' ');
+            sb.append("self_routerinfo_sha256=").append(sha256Hex(self.toByteArray())).append(' ');
+            sb.append("self_published_seconds=").append(self.getPublished() / 1000L).append(' ');
+            sb.append("self_capabilities=").append(self.getCapabilities()).append(' ');
+            sb.append("self_bandwidth_tier=").append(self.getBandwidthTier()).append(' ');
+            sb.append("self_has_floodfill_capability=")
+                .append(self.getCapabilities().indexOf('f') >= 0).append(' ');
+            sb.append("self_ssu2_address_count=").append(countSsu2Addresses(self));
+            return sb.toString();
+        }
+
+        private String lookupCapabilities(String b64Hash) {
+            Hash hash;
+            try {
+                hash = new Hash(Base64.decode(b64Hash));
+            } catch (IllegalArgumentException iae) {
+                return ERROR_TOKEN + "invalid-base64";
+            }
+            RouterInfo info = mainNetDb().lookupRouterInfoLocally(hash);
+            if (info == null) {
+                return RESPONSE_PREFIX + "kind=capabilities hash=" + b64Hash
+                    + " stored=false";
+            }
+            return RESPONSE_PREFIX + "kind=capabilities hash=" + b64Hash
+                + " stored=true "
+                + "published_seconds=" + (info.getPublished() / 1000L)
+                + " capabilities=\"" + info.getCapabilities() + "\""
+                + " has_floodfill_capability=" + (info.getCapabilities().indexOf('f') >= 0)
+                + " bandwidth_tier=" + info.getBandwidthTier()
+                + " ssu2_address_count=" + countSsu2Addresses(info);
+        }
+
+        private String lookupStored(String b64Hash) {
+            Hash hash;
+            try {
+                hash = new Hash(Base64.decode(b64Hash));
+            } catch (IllegalArgumentException iae) {
+                return ERROR_TOKEN + "invalid-base64";
+            }
+            RouterInfo info = mainNetDb().lookupRouterInfoLocally(hash);
+            if (info == null) {
+                return RESPONSE_PREFIX + "kind=stored-ri hash=" + b64Hash
+                    + " present=false";
+            }
+            return RESPONSE_PREFIX + "kind=stored-ri hash=" + b64Hash
+                + " present=true "
+                + "routerinfo_sha256=" + sha256Hex(info.toByteArray())
+                + " published_seconds=" + (info.getPublished() / 1000L)
+                + " has_floodfill_capability=" + (info.getCapabilities().indexOf('f') >= 0);
+        }
+
+        private String peersFloodfill() {
+            Set<Hash> floodfill = peerManager().getPeersByCapability('f');
+            StringBuilder sb = new StringBuilder(RESPONSE_PREFIX);
+            sb.append("kind=peers-floodfill ");
+            sb.append("count=").append(floodfill.size()).append(' ');
+            int shown = 0;
+            for (Hash h : floodfill) {
+                if (shown >= 4) {
+                    break;
+                }
+                sb.append("peer_").append(shown).append('=').append(h.toBase64()).append(' ');
+                shown++;
+            }
+            sb.append("truncated=").append(floodfill.size() > shown);
+            return sb.toString();
+        }
+
+        private String mainRouterCount() {
+            Set<RouterInfo> routers = mainNetDb().getRouters();
+            return RESPONSE_PREFIX + "kind=main-router-count count=" + routers.size();
+        }
+
+        /**
+         * {@link PeerManager} exposes the candidates that
+         * {@link net.i2p.router.networkdb.kademlia.FloodfillPeerSelector}
+         * consumes via {@code peerManager().getPeersByCapability('f')}.
+         * The client-specific lookup's "fallback peer set" is the
+         * same membership plus any arbitrary known routers the
+         * {@code IterativeSearchJob.runJob()} fallback reaches; in
+         * this controlled loopback topology the latter is empty,
+         * so the cardinality of the floodfill capability index is
+         * a faithful signal of the helper's lookup-peer budget.
+         */
+        private String clientDbLookupPeerCount() {
+            Set<Hash> floodfill = peerManager().getPeersByCapability('f');
+            return RESPONSE_PREFIX + "kind=client-db-lookup-peer-count count="
+                + floodfill.size();
+        }
+
+        private String sha256Hex(byte[] bytes) {
+            try {
+                byte[] sum = MessageDigest.getInstance("SHA-256").digest(bytes);
+                StringBuilder hex = new StringBuilder(sum.length * 2);
+                for (byte b : sum) {
+                    hex.append(String.format("%02x", b & 0xff));
+                }
+                return hex.toString();
+            } catch (Exception e) {
+                return "0".repeat(64);
+            }
+        }
+
+        private int countSsu2Addresses(RouterInfo info) {
+            int total = 0;
+            // RouterInfo does not expose a public address iterator
+            // we can rely on across minor versions; the
+            // SSU2-published helper relies on its outer
+            // capability string (the controlled-launcher sets
+            // `i2np.udp.enable=true`). Treat `f`/`L`-bearing
+            // capabilities as a coarse proxy: 1 means at least
+            // one SSU2 address, 0 means none.
+            String caps = info.getCapabilities();
+            return (caps != null && (caps.indexOf('4') >= 0 || caps.indexOf('5') >= 0)) ? 1 : 0;
         }
     }
 }

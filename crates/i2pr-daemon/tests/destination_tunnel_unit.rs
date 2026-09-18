@@ -30,9 +30,9 @@ use i2pr_client::{
     DestinationTunnelPool, SendError, build_signed_lease_set2,
 };
 use i2pr_daemon::destination_tunnels::{
-    DestinationTunnelCoordinator, DestinationTunnelError, LeaseStoreIngestOutcome,
-    MAX_CONCURRENT_LEASE_LOOKUPS, MAX_LEASE_LOOKUP_RETRIES, ReplyPathDerivationError,
-    reply_path_for_inbound_route,
+    DestinationTunnelCoordinator, DestinationTunnelError, J219Terminal, J219TypedFacts,
+    LeaseStoreIngestOutcome, MAX_CONCURRENT_LEASE_LOOKUPS, MAX_LEASE_LOOKUP_RETRIES,
+    ReplyPathDerivationError, reply_path_for_inbound_route,
 };
 use i2pr_netdb::{
     DestinationHash, LookupAction, LookupPolicy, ReplyPath, ResponseOutcome, RouterHash,
@@ -1407,5 +1407,381 @@ fn plan217_outbound_role_transfer_once_invariant() {
         registry.outbound_len(),
         0,
         "Plan 217 §6.A: registry length must remain 0 after the second transfer attempt"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Plan 219 — M6 Java reverse-delivery root-cause investigation.
+//
+// The investigation is typed-fact only: a controlled Java
+// reference's `RouterContext.netDb().lookupRouterInfoLocally(...)`
+// and `peerManager().getPeersByCapability('f')` observations feed
+// the destination coordinator's `note_j219_typed_fact` writer,
+// which advances a bounded subset of the documented Plan 219 §6.E
+// counter set. A free-standing `J219TypedFacts` aggregator then
+// derives exactly one Plan 219 §7 terminal class (`J219-{A..J}`)
+// from those typed facts plus the existing Plan 192/194 helper
+// booleans (Java dispatch observed, i2pr inbound observed).
+//
+// The unit rows below lock the documented label / value pairs
+// and the terminal-classification logic so a future regression
+// cannot silently advance the documented counter set or shift
+// the classification. Every row is a typed-fact interaction;
+// none requires an external Java reference.
+// ---------------------------------------------------------------------
+
+#[test]
+fn plan219_j219_typed_facts_documented_set_recognised() {
+    let mut coord = coordinator();
+    // Router B live RI has `f` capability.
+    assert!(coord.note_j219_typed_fact("b-live-ri-has-f", "present"));
+    // Router A's authoritative store has Router B with `f`.
+    assert!(coord.note_j219_typed_fact("a-stored-b-ri-has-f", "present"));
+    // Router A's PeerManager indexes Router B under `f`.
+    assert!(coord.note_j219_typed_fact("a-peermanager-b-indexed-f", "present"));
+    assert!(coord.note_j219_typed_fact("a-selector-input", "count"));
+    assert!(coord.note_j219_typed_fact("a-selector-result", "count"));
+    assert!(coord.note_j219_typed_fact("client-db-main-router-count", "count"));
+    assert!(coord.note_j219_typed_fact("client-db-lookup-started", "lookup-started"));
+    assert!(coord.note_j219_typed_fact("client-db-lookup-peer-selected", "lookup-peer-selected"));
+    assert!(coord.note_j219_typed_fact("client-db-lookup-result", "lookup-succeeded"));
+    assert!(coord.note_j219_typed_fact("ocmosj-lease-selected", "lease-selected"));
+    assert!(coord.note_j219_typed_fact("ocmosj-outbound-tunnel-selected", "tunnel-selected"));
+    assert!(coord.note_j219_typed_fact("ocmosj-dispatch-submitted", "dispatch-submitted"));
+    let counters = coord.counters();
+    // Every "present" / positive observation advanced its
+    // dedicated counter. The negative arms of each `absent`
+    // (or `*-not-*`) pair must be accepted but must NOT advance
+    // a counter, so `false` is itself the typed observation.
+    assert!(counters.j219_b_live_ri_has_f);
+    assert!(counters.j219_a_stored_b_ri_has_f);
+    assert!(counters.j219_a_peermanager_b_indexed_f);
+    assert_eq!(counters.j219_a_selector_input_count, 1);
+    assert_eq!(counters.j219_a_selector_result_count, 1);
+    assert_eq!(counters.j219_client_db_main_router_count, 1);
+    assert!(counters.j219_client_db_lookup_started);
+    assert!(counters.j219_client_db_lookup_peer_selected);
+    assert!(counters.j219_client_db_lookup_result);
+    assert!(counters.j219_ocmosj_lease_selected);
+    assert!(counters.j219_ocmosj_outbound_tunnel_selected);
+    assert!(counters.j219_ocmosj_dispatch_submitted);
+}
+
+#[test]
+fn plan219_j219_typed_facts_negative_arms_recognised_without_counters() {
+    let mut coord = coordinator();
+    // The negative `absent` / `*-not-*` arms are accepted but do
+    // not advance the documented counters; absence is itself a
+    // typed observation recorded outside the counter set.
+    assert!(coord.note_j219_typed_fact("b-live-ri-has-f", "absent"));
+    assert!(coord.note_j219_typed_fact("a-stored-b-ri-has-f", "absent"));
+    assert!(coord.note_j219_typed_fact("a-peermanager-b-indexed-f", "absent"));
+    assert!(coord.note_j219_typed_fact("client-db-lookup-started", "lookup-not-started"));
+    assert!(
+        coord.note_j219_typed_fact("client-db-lookup-peer-selected", "lookup-peer-not-selected")
+    );
+    assert!(coord.note_j219_typed_fact("client-db-lookup-result", "lookup-failed"));
+    assert!(coord.note_j219_typed_fact("ocmosj-lease-selected", "lease-not-selected"));
+    assert!(coord.note_j219_typed_fact("ocmosj-outbound-tunnel-selected", "tunnel-not-selected"));
+    assert!(coord.note_j219_typed_fact("ocmosj-dispatch-submitted", "dispatch-not-submitted"));
+    let counters = coord.counters();
+    // Plan 219 §7 — false is itself the typed observation. None
+    // of the documented "positive" counters may flip on a
+    // `*-not-*` arm.
+    assert!(!counters.j219_b_live_ri_has_f);
+    assert!(!counters.j219_a_stored_b_ri_has_f);
+    assert!(!counters.j219_a_peermanager_b_indexed_f);
+    assert!(!counters.j219_client_db_lookup_started);
+    assert!(!counters.j219_client_db_lookup_peer_selected);
+    assert!(!counters.j219_client_db_lookup_result);
+    assert!(!counters.j219_ocmosj_lease_selected);
+    assert!(!counters.j219_ocmosj_outbound_tunnel_selected);
+    assert!(!counters.j219_ocmosj_dispatch_submitted);
+    // The cardinality counters (`a-selector-input`,
+    // `a-selector-result`, `client-db-main-router-count`) are
+    // NOT advanced by the negative arms — only by the explicit
+    // `count` value.
+    assert_eq!(counters.j219_a_selector_input_count, 0);
+    assert_eq!(counters.j219_a_selector_result_count, 0);
+    assert_eq!(counters.j219_client_db_main_router_count, 0);
+}
+
+#[test]
+fn plan219_j219_typed_facts_unknown_labels_rejected() {
+    let mut coord = coordinator();
+    let before = coord.counters();
+    // Unknown labels and values are silently dropped; a future
+    // expansion of the documented set requires both a new
+    // branch in `note_j219_typed_fact` and a parallel grep row
+    // in the static checker.
+    assert!(!coord.note_j219_typed_fact("not-a-real-label", "value"));
+    assert!(!coord.note_j219_typed_fact("b-live-ri-has-f", "bogus"));
+    assert!(!coord.note_j219_typed_fact("b-live-ri-has-f", "negate"));
+    assert!(!coord.note_j219_typed_fact("a-stored-b-ri-has-f", "present-but-not-f"));
+    assert!(!coord.note_j219_typed_fact("ocmosj-dispatch-submitted", "submitted"));
+    let after = coord.counters();
+    assert_eq!(before, after);
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219a_b_live_ri_not_f() {
+    let facts = J219TypedFacts::new(
+        false, true, true, 1, 1, 1, true, true, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219ABLiveRiNotF
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-A-B-LIVE-RI-NOT-F"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219b_a_stored_b_ri_not_f() {
+    let facts = J219TypedFacts::new(
+        true, false, true, 1, 1, 1, true, true, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219BAStoredBRiNotF
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-B-A-STORED-B-RI-NOT-F"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219c_peermanager_missing_b_f() {
+    let facts = J219TypedFacts::new(
+        true, true, false, 1, 1, 1, true, true, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219CAPeerManagerMissingBF
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-C-A-PEERMANAGER-MISSING-B-F"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219d_selector_excludes_b() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 0, 1, true, true, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219DAFloodfillSelectorExcludesB
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-D-A-FLOODFILL-SELECTOR-EXCLUDES-B"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219e_client_db_lookup_no_peer() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 0, 0, 0, true, false, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219EClientDbLookupHasNoPeer
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-E-CLIENT-DB-LOOKUP-HAS-NO-PEER"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219f_lookup_sent_no_ls() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, false, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219FClientDbLookupSentNoLs
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-F-CLIENT-DB-LOOKUP-SENT-NO-LS"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219g_ls_found_no_outbound_tunnel() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, true, false, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219GLsFoundButNoOutboundClientTunnel
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-G-LS-FOUND-BUT-NO-OUTBOUND-CLIENT-TUNNEL"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219h_java_dispatch_not_observed() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, true, true, true, true, false, false,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219HJavaDispatchNotObserved
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-H-JAVA-DISPATCH-NOT-OBSERVED"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219i_java_dispatch_proven_no_inbound() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, true, true, true, true, true, false,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219IJavaDispatchProvenI2prInboundNotObserved
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-I-JAVA-DISPATCH-PROVEN-I2PR-INBOUND-NOT-OBSERVED"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_j219j_reverse_delivery_passed() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219JReverseDeliveryPassed
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification().token(),
+        "J219-J-REVERSE-DELIVERY-PASSED"
+    );
+}
+
+#[test]
+fn plan219_j219_terminal_classification_earliest_failed_boundary_wins() {
+    // Plan 219 §7 — the earliest failed boundary wins. With
+    // every previous fact passing but `client_db_lookup_result`
+    // false, the classification must be `J219-F`, even though
+    // the later OCMOSJ / inbound booleans also signal failure.
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, false, false, false, false, false, false,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219FClientDbLookupSentNoLs
+    );
+    // Same fact set with `client_db_lookup_peer_selected=false`
+    // must instead be J219-E (earlier boundary).
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, false, false, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219EClientDbLookupHasNoPeer
+    );
+    // No selector activity at all (zero input + zero result) is
+    // permitted; J219-D only fires when the selector was active
+    // and produced zero results. Otherwise the classification
+    // walks to J219-E when lookup_started is true.
+    let facts = J219TypedFacts::new(
+        true, true, true, 0, 0, 0, true, false, true, true, true, true, true, true,
+    );
+    assert_eq!(
+        facts.derive_j219_terminal_classification(),
+        J219Terminal::J219EClientDbLookupHasNoPeer
+    );
+}
+
+#[test]
+fn plan219_j219_classification_detail_emitted() {
+    let facts = J219TypedFacts::new(
+        true, true, true, 1, 1, 1, true, true, true, true, true, true, true, true,
+    );
+    let detail = facts.classification_detail();
+    assert!(
+        detail.starts_with("J219-J-REVERSE-DELIVERY-PASSED "),
+        "detail must start with the canonical J219 token: {detail:?}"
+    );
+    for key in [
+        "b_live_ri_has_f",
+        "a_stored_b_ri_has_f",
+        "a_peermanager_b_indexed_f",
+        "selector_input",
+        "selector_result",
+        "client_db_main_router_count",
+        "client_db_lookup_started",
+        "client_db_lookup_peer_selected",
+        "client_db_lookup_result",
+        "ocmosj_lease_selected",
+        "ocmosj_outbound_tunnel_selected",
+        "ocmosj_dispatch_submitted",
+        "java_dispatch_observed",
+        "i2pr_inbound_observed",
+    ] {
+        assert!(detail.contains(key), "missing key {key:?} in {detail:?}");
+    }
+}
+
+#[test]
+fn plan219_j219_terminal_token_static_canonical() {
+    // Each terminal variant's `token()` MUST be stable across
+    // reorderings because the static checker greps for the
+    // canonical `J219-X-…` strings. Reorderings / renames are
+    // observable as a static check failure.
+    assert_eq!(
+        J219Terminal::J219ABLiveRiNotF.token(),
+        "J219-A-B-LIVE-RI-NOT-F"
+    );
+    assert_eq!(
+        J219Terminal::J219BAStoredBRiNotF.token(),
+        "J219-B-A-STORED-B-RI-NOT-F"
+    );
+    assert_eq!(
+        J219Terminal::J219CAPeerManagerMissingBF.token(),
+        "J219-C-A-PEERMANAGER-MISSING-B-F"
+    );
+    assert_eq!(
+        J219Terminal::J219DAFloodfillSelectorExcludesB.token(),
+        "J219-D-A-FLOODFILL-SELECTOR-EXCLUDES-B"
+    );
+    assert_eq!(
+        J219Terminal::J219EClientDbLookupHasNoPeer.token(),
+        "J219-E-CLIENT-DB-LOOKUP-HAS-NO-PEER"
+    );
+    assert_eq!(
+        J219Terminal::J219FClientDbLookupSentNoLs.token(),
+        "J219-F-CLIENT-DB-LOOKUP-SENT-NO-LS"
+    );
+    assert_eq!(
+        J219Terminal::J219GLsFoundButNoOutboundClientTunnel.token(),
+        "J219-G-LS-FOUND-BUT-NO-OUTBOUND-CLIENT-TUNNEL"
+    );
+    assert_eq!(
+        J219Terminal::J219HJavaDispatchNotObserved.token(),
+        "J219-H-JAVA-DISPATCH-NOT-OBSERVED"
+    );
+    assert_eq!(
+        J219Terminal::J219IJavaDispatchProvenI2prInboundNotObserved.token(),
+        "J219-I-JAVA-DISPATCH-PROVEN-I2PR-INBOUND-NOT-OBSERVED"
+    );
+    assert_eq!(
+        J219Terminal::J219JReverseDeliveryPassed.token(),
+        "J219-J-REVERSE-DELIVERY-PASSED"
     );
 }

@@ -667,6 +667,190 @@ if [[ -f "${DESTINATION_TUNNEL_UNIT_TEST}" ]]; then
   fi
 fi
 
+# ---- 14. Plan 219 typed-fact observation surface -----------------------
+# Plan 219 replaces the coarse `java-floodfill-candidate=0` evidence
+# with a typed observation surface the destination driver derives
+# from the controlled Java reference's public RouterContext
+# accessors. The static checker enforces that:
+#   - `note_j219_typed_fact` exists in the daemon-owned
+#     destination coordinator with the documented label set;
+#   - the 12 typed-facts keys the driver writes are present and
+#     consumed only through `record_j219_classification`;
+#   - the harness reserves three J219 diagnostic TCP ports and
+#     binds them on 127.0.0.1 only;
+#   - exactly one terminal `J219-{A..J}` classification row is
+#     emitted per run, never through a literal `record "<label>"
+#     passed`.
+DESTINATION_TUNNELS_SRC_219="${DESTINATION_TUNNELS_SRC}"
+DRIVER_TEST_219="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+LAUNCHER_SRC_219="${JAVA_LAUNCHER_SRC}"
+HARNESS_219="${JAVA_HARNESS}"
+
+if [[ -f "${DESTINATION_TUNNELS_SRC_219}" ]]; then
+  # 14a. The `note_j219_typed_fact` typed-fact writer and the
+  # `J219TypedFacts` aggregator MUST both be present in the
+  # daemon-owned destination coordinator.
+  if ! grep -q 'fn note_j219_typed_fact' "${DESTINATION_TUNNELS_SRC_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC_219} lacks the Plan 219 note_j219_typed_fact helper" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'pub struct J219TypedFacts' "${DESTINATION_TUNNELS_SRC_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC_219} lacks the Plan 219 J219TypedFacts struct" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'pub enum J219Terminal' "${DESTINATION_TUNNELS_SRC_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC_219} lacks the Plan 219 J219Terminal enum" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'fn derive_j219_terminal_classification' "${DESTINATION_TUNNELS_SRC_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC_219} lacks the Plan 219 derive_j219_terminal_classification method" >&2
+    failures=$((failures + 1))
+  fi
+  # 14b. Every documented typed-fact label MUST have a branch in
+  # `note_j219_typed_fact`. The Plan 219 §6.E documented set is
+  # the canonical authority.
+  for j219_label in \
+    b-live-ri-has-f \
+    a-stored-b-ri-has-f \
+    a-peermanager-b-indexed-f \
+    a-selector-input \
+    a-selector-result \
+    client-db-main-router-count \
+    client-db-lookup-started \
+    client-db-lookup-peer-selected \
+    client-db-lookup-result \
+    ocmosj-lease-selected \
+    ocmosj-outbound-tunnel-selected \
+    ocmosj-dispatch-submitted; do
+    if ! grep -q "\"${j219_label}\"" "${DESTINATION_TUNNELS_SRC_219}"; then
+      echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNELS_SRC_219} lacks the Plan 219 documented label '${j219_label}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${DRIVER_TEST_219}" ]]; then
+  # 14c. The destination driver MUST consume the 12 Plan 219
+  # §6.E typed facts through `record_j219_classification` (and
+  # its `record_j219_classification_with_inbound_evidence`
+  # helper). Reading the typed facts from J219_TYPED_FACTS_PATH
+  # is the only sanctioned path; literal `record "<label>"
+  # passed` lines for any J219-* key fail the check.
+  if ! grep -q 'fn record_j219_classification' "${DRIVER_TEST_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_219} lacks the Plan 219 record_j219_classification helper" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'J219_TYPED_FACTS_PATH' "${DRIVER_TEST_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_219} lacks the Plan 219 J219_TYPED_FACTS_PATH env-var reader" >&2
+    failures=$((failures + 1))
+  fi
+  for j219_key in \
+    j219-b-live-ri-has-f \
+    j219-a-stored-b-ri-has-f \
+    j219-a-peermanager-b-indexed-f \
+    j219-a-selector-input-count \
+    j219-a-selector-result-count \
+    j219-client-db-main-router-count \
+    j219-client-db-lookup-started \
+    j219-client-db-lookup-peer-selected \
+    j219-client-db-lookup-result \
+    j219-ocmosj-lease-selected \
+    j219-ocmosj-outbound-tunnel-selected \
+    j219-ocmosj-dispatch-submitted; do
+    if ! grep -q "${j219_key}" "${DRIVER_TEST_219}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_219} lacks the Plan 219 typed-fact key ${j219_key}" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The terminal `j219-classification` row MUST be emitted only
+  # through the documented J219-{A..J} tokens, never literal.
+  for guarded in J219-A J219-B J219-C J219-D J219-E J219-F J219-G J219-H J219-I J219-J; do
+    if rg -n "^[[:space:]]*record[[:space:]]+[\"']${guarded}" "${DRIVER_TEST_219}" >/dev/null; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_219} hard-codes a J219-classification literal for guarded label '${guarded}' (Plan 219 §11)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The driver MUST call `record_j219_classification` at least
+  # once on the corrected destination path.
+  if ! grep -q 'record_j219_classification(' "${DRIVER_TEST_219}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_219} never invokes the Plan 219 record_j219_classification helper" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${LAUNCHER_SRC_219}" ]]; then
+  # 14d. The controlled-launcher MUST expose the J219 diagnostic
+  # control port and answer the bounded read-only command set.
+  if ! grep -q 'J219DiagnosticServer' "${LAUNCHER_SRC_219}"; then
+    echo "m6 mixed-router evidence check failed: ${LAUNCHER_SRC_219} lacks the Plan 219 J219DiagnosticServer inner class" >&2
+    failures=$((failures + 1))
+  fi
+  for bounded_command in J219-SNAPSHOT J219-CAPABILITIES J219-STORED-RI J219-PEERS-FLOODFILL J219-MAIN-ROUTER-COUNT J219-CLIENT-DB-LOOKUP-PEER-COUNT; do
+    if ! grep -q "\"${bounded_command}\"" "${LAUNCHER_SRC_219}"; then
+      echo "m6 mixed-router evidence check failed: ${LAUNCHER_SRC_219} lacks the Plan 219 read-only command '${bounded_command}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${HARNESS_219}" ]]; then
+  # 14e. The harness MUST reserve three J219 diagnostic TCP
+  # ports and bind them via the controlled-launcher arg.
+  for j219_port_var in JAVA_DIAGNOSTIC_A_PORT JAVA_DIAGNOSTIC_B_PORT JAVA_DIAGNOSTIC_C_PORT; do
+    if ! grep -q "${j219_port_var}" "${HARNESS_219}"; then
+      echo "m6 mixed-router evidence check failed: ${HARNESS_219} lacks the Plan 219 ${j219_port_var} reservation" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The harness MUST consume the typed-facts TSV through the
+  # destination driver's `J219_TYPED_FACTS_PATH` env var.
+  if ! grep -q 'J219_TYPED_FACTS_PATH' "${HARNESS_219}"; then
+    echo "m6 mixed-router evidence check failed: ${HARNESS_219} lacks the Plan 219 J219_TYPED_FACTS_PATH export" >&2
+    failures=$((failures + 1))
+  fi
+  # The harness MUST read the LAST `j219-classification`
+  # occurrence (Plan 219 §6.E final-snapshot rule), mirroring
+  # the Plan 217 §6.B.6 P200 final-snapshot awk.
+  if ! grep -q 'j219-classification' "${HARNESS_219}"; then
+    echo "m6 mixed-router evidence check failed: ${HARNESS_219} never references the Plan 219 j219-classification evidence key" >&2
+    failures=$((failures + 1))
+  fi
+  # The harness MUST record at least one timed snapshot per
+  # router before the bootstrap probe runs.
+  for moment in first-routerinfo-appearance immediately-before-bootstrap immediately-after-bootstrap immediately-before-reverse-helper-send after-reverse-send-wait-expires; do
+    if ! grep -q "${moment}" "${HARNESS_219}"; then
+      echo "m6 mixed-router evidence check failed: ${HARNESS_219} lacks the Plan 219 timed-snapshot moment '${moment}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${DRIVER_TEST_219}" ]]; then
+  # 14f. The destination-tunnel unit suite MUST lock the typed
+  # observation surface with the documented Plan 219 rows.
+  for unit_row in \
+    plan219_j219_typed_facts_documented_set_recognised \
+    plan219_j219_typed_facts_negative_arms_recognised_without_counters \
+    plan219_j219_typed_facts_unknown_labels_rejected \
+    plan219_j219_terminal_classification_j219a_b_live_ri_not_f \
+    plan219_j219_terminal_classification_j219b_a_stored_b_ri_not_f \
+    plan219_j219_terminal_classification_j219c_peermanager_missing_b_f \
+    plan219_j219_terminal_classification_j219d_selector_excludes_b \
+    plan219_j219_terminal_classification_j219e_client_db_lookup_no_peer \
+    plan219_j219_terminal_classification_j219f_lookup_sent_no_ls \
+    plan219_j219_terminal_classification_j219g_ls_found_no_outbound_tunnel \
+    plan219_j219_terminal_classification_j219h_java_dispatch_not_observed \
+    plan219_j219_terminal_classification_j219i_java_dispatch_proven_no_inbound \
+    plan219_j219_terminal_classification_j219j_reverse_delivery_passed \
+    plan219_j219_terminal_classification_earliest_failed_boundary_wins \
+    plan219_j219_terminal_token_static_canonical; do
+    if ! grep -q "fn ${unit_row}" "${DESTINATION_TUNNEL_UNIT_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${DESTINATION_TUNNEL_UNIT_TEST} lacks the Plan 219 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 # ---- 13. Plan 201 Branch C/D corrective — three-router topology. -----
 # Plan 201 §3.3 step 3 added Router C as the independent client-tunnel
 # participant when stock Java I2P 2.13.0 cannot build 1-hop client
@@ -732,4 +916,4 @@ if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 219 §6.E typed-facts invariants)"

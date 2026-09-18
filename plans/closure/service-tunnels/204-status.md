@@ -41,11 +41,12 @@ milestone10_final_acceptance = closed
 
 plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
 plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
-plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
-plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-milestone6_java_mixed_router_interop = not-yet-passed (Plan 218 consumption of the corrected Plan 217 harness on commit 7762e13 reached the inbound-delivery primitive; the seven §11 stop rows past criteria 10/22/24/25 remain bounded; a fresh plan-of-record is the documented next move)
+plan_219 = passed-m6-java-reverse-delivery-root-cause-attribution (J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c8e860aa1c9dd19b8ae53a42da3d9a2c2)
+plan_220 = registered-ready-m6-java-j219-b-bootstrap-bidirectional-corrective (next executable plan)
+plan_205 = retained-deferred-conditional-after-plan219-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed (Plan 219 typed the attribution to J219-B-A-STORED-B-RI-NOT-F on commit 9ce32a9c…; Plan 220 owns the corrective on the corrected Plan 217 harness; the seven §11 stop rows past criteria 10/22/24/25 remain bounded on the inbound-delivery primitive until Plan 220 closes J219-B and re-reaches J219-J)
 
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan219-investigation
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan220-j219-b-corrective
 ```
 
 The prior Plan 204 narrative is retained below for traceability; its older
