@@ -1,5 +1,36 @@
 # Plan 219 status — M6 Java reverse-delivery root-cause investigation
 
+Status: **`retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220`**.
+
+## 2026-09-18 authority correction — Plan 220 supersedes the attribution
+
+The Plan 219 loopback read-only diagnostic infrastructure is retained, but its
+terminal `J219-B-A-STORED-B-RI-NOT-F` root-cause attribution is not
+authoritative.
+
+Post-closure review found the diagnostic defects enumerated in Plan 220,
+including pre-bootstrap typed-fact sampling, invalid RouterHash derivation,
+presence-only `stored-b-ri-has-f` semantics, synthesized selector output,
+defaulted client-NetDB/OCMOSJ facts, wrong-direction dispatch evidence, and
+non-exact implementation-SHA closure evidence.
+
+The underlying Plan 218 behavioral fact remains authoritative: Java → i2pr
+reverse delivery is absent on the corrected Plan 217 harness. Its first exact
+failing layer is again **unknown pending Plan 220**.
+
+```text
+plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
+plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+next_executable_plan = 220-m6-java-plan219-diagnostic-attribution-corrective
+```
+
+The previous Plan 219 closure narrative is retained below for traceability and
+MUST NOT be used as current root-cause authority.
+
+## Retained superseded Plan 219 closure narrative
+
+# Plan 219 status — M6 Java reverse-delivery root-cause investigation
+
 Status: **`passed-m6-java-reverse-delivery-root-cause-attribution`**.
 
 Plan of record:
@@ -759,3 +790,4 @@ authority; the Plan 214 product closure remains the
 canonical M10 remote application closure. No Plan 205
 reactivation is authorized by this status; the inbound
 primitive is not on the SAM-bridge axis.
+
