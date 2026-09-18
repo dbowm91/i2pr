@@ -28,10 +28,7 @@ ultimately routes through the same
 machinery as direct-I2CP). Plan 205 stays
 `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`.
 
-A future plan-of-record (e.g. Plan 219 — M6 Java second-family
-inbound-delivery primitive) is the documented next move and is not
-registered by Plan 218. Plan 204 waits for that fresh plan-of-record
-plus its own dependent normalization pass.
+Plan 219 — M6 Java reverse-delivery root-cause investigation — is now registered and dependency-ready. It owns attribution of the Plan 218 boundary before any corrective successor is authorized. Plan 204 remains blocked until the Java second-family actually closes; Plan 219 investigation alone does not unblock convergence.
 
 Current authority:
 
@@ -43,6 +40,7 @@ milestone10_final_acceptance = closed
 
 plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
 plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 milestone6_java_mixed_router_interop = not-yet-passed (Plan 218 consumption of the corrected Plan 217 harness on commit 7762e13 reached the inbound-delivery primitive; the seven §11 stop rows past criteria 10/22/24/25 remain bounded; a fresh plan-of-record is the documented next move)
 

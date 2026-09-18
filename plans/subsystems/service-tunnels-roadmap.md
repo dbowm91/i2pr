@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked solely on independent M6 Java second-family closure through Plan 218 (or an explicitly reactivated fallback).
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 219 is the registered investigation of the Plan 218 reverse-delivery boundary; it does not itself unblock Plan 204.
 
 ## 5. Target architecture
 
@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; the current primary path is Plan 217 -> Plan 218. This does not reopen or downgrade M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; current M6 work is Plan 219 root-cause investigation after stopped Plan 218. This does not reopen or downgrade M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row (blocked on Plan 218 or an explicitly reactivated fallback).
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 219 is investigative; convergence remains blocked until a later Java-family closure.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`); Plan 204 convergence remains blocked only on M6 Java second-family closure via Plan 218 or an explicitly reactivated fallback.
+Full row history is §7. Current authority: Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`); Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 219 investigates the current boundary.

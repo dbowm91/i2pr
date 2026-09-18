@@ -2,6 +2,27 @@
 
 Status: **`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`**.
 
+## 2026-09-18 handoff amendment — Plan 219 registered
+
+Plan 219 is now the dependency-ready investigation of this stop:
+`plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md`.
+
+This narrows, rather than changes, the Plan 218 conclusion. Reverse delivery is
+reproducibly absent, but the earlier `java-floodfill-candidate=0` root
+cause is still a hypothesis because current evidence proves a floodfill config
+line and coarse global log counts, not Router B's live RouterInfo `f`,
+Router A's PeerManager capability index, the helper client-NetDB lookup peer,
+or how far OutboundClientMessageOneShotJob progressed.
+
+Plan 219 owns exact attribution. Plan 218 remains stopped and does not reopen.
+
+```text
+plan_219 = registered-ready-m6-java-reverse-delivery-root-cause-investigation
+next_executable_plan = 219-m6-java-reverse-delivery-root-cause-investigation
+```
+
+## Retained Plan 218 closure record
+
 Plan of record:
 [`218-m6-java-second-family-final-qualification.md`](../../implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md).
 

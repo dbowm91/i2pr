@@ -33,7 +33,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
 | Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked only on independent M6 Java second-family closure via a fresh plan-of-record following the Plan 218 inbound-delivery boundary |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 217 closed; Plan 218 stopped at the inbound-delivery boundary | Plan 218 consumed the corrected Plan 217 harness and recorded a reproducible stock-Java inbound-delivery boundary on commit `7762e13` (Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the destination direction + `streaming-b-accept STATUS OK but inbound SYN never reached the backlog` on the streaming direction; root cause = `java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel endpoint cannot resolve the i2pr destination's LeaseSet through Java's netDb); Plan 205 stays retained-deferred because its SAM-bridge pivot addresses a different axis; a future plan-of-record (e.g. Plan 219) would own the inbound-delivery primitive |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 219 ready: reverse-delivery root-cause investigation | Plan 218 consumed the corrected Plan 217 harness and recorded a reproducible stock-Java inbound-delivery boundary on commit `7762e13` (Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the destination direction + `streaming-b-accept STATUS OK but inbound SYN never reached the backlog` on the streaming direction; root cause = `java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel endpoint cannot resolve the i2pr destination's LeaseSet through Java's netDb); Plan 205 stays retained-deferred because its SAM-bridge pivot addresses a different axis; a future plan-of-record (e.g. Plan 219) would own the inbound-delivery primitive |
 
 ## Current milestone authorities
 
@@ -48,20 +48,20 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the Java closure harness and evidence corrective; Plan 218 (commit `7762e13`) ran the corrected harness once and stopped at the inbound-delivery boundary. Plan 201 stays blocked on Plan 218's fresh external classification (now on the corrected harness; terminal `P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false`). Plan 205 stays retained-deferred because its SAM-bridge pivot addresses the helper's local LeaseSet publication, not the inbound-delivery primitive. A future plan-of-record (e.g. Plan 219 — M6 Java second-family inbound-delivery primitive) is the documented next move. See `plans/closure/mixed-router-interop/201-status.md`, `plans/closure/mixed-router-interop/217-status.md`, `plans/closure/mixed-router-interop/218-status.md`.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 stopped at the corrected Java→i2pr reverse-delivery boundary; Plan 219 is the executable root-cause investigation and must replace the coarse `java-floodfill-candidate=0` attribution with one typed J219-A..J classification before a corrective is registered. See `plans/closure/mixed-router-interop/218-status.md`, `plans/closure/mixed-router-interop/219-status.md`.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| (none) | — | — | — | The dependency-ready lane is empty after Plan 218 stopped at the inbound-delivery boundary on commit `7762e13`; the executable next move is a fresh plan-of-record (e.g. Plan 219 — M6 Java second-family inbound-delivery primitive). |
+| M6 mixed-router interop | 219 Java reverse-delivery root-cause investigation | ready | `plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md` | Plan 217 passed and Plan 218 produced the corrected reverse-delivery stop. Classify live RouterInfo `f`, Router A capability indexing/selection, client-subdb lookup, OCMOSJ lease/tunnel selection, and Java dispatch before any corrective. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Plan 218 ran the corrected harness and stopped at the inbound-delivery boundary; the seven §11 stop rows remain `blocked` until the inbound-delivery primitive on the Java reference side is closed by a fresh plan-of-record |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure (Plan 218 success or a later explicitly registered fallback; Plan 218 recorded the inbound-delivery stop on commit `7762e13`) |
+| M6 mixed-router interop | 201 | Blocked pending Plan 219 root-cause classification of the corrected Plan 218 reverse-delivery boundary; the seven §11 stop rows remain blocked |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 219 is the registered investigation of the Plan 218 boundary |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
@@ -86,7 +86,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 | 162 external-test lane isolation | closed | `plans/closure/ssu2/162-status.md` |
 | SSU2 | 161 independent IPv4 interop | closed | `plans/closure/ssu2/161-status.md` |
 
-Full per-plan history (000–218) lives in the subsystem roadmaps §7 tables.
+Full per-plan history (000–219) lives in the subsystem roadmaps §7 tables.
 
 ## Superseded remote branches (do not merge)
 
@@ -98,8 +98,8 @@ Full per-plan history (000–218) lives in the subsystem roadmaps §7 tables.
 
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
-- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218` (Plan 205 retained as a conditional fallback branch, not on the critical path; Plan 218 stopped at the inbound-delivery boundary on commit `7762e13`).
-- `next_executable_plan` is a fresh plan-of-record (e.g. Plan 219 — M6 Java second-family inbound-delivery primitive). Plan 205 does not unblock the inbound-delivery boundary; Plan 201 re-evaluates after that fresh plan-of-record lands; Plan 204 convergence follows successful Java-family closure.
+- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219` (Plan 205 retained as a conditional fallback branch, not on the critical path; Plan 219 is investigative only).
+- `next_executable_plan = 219-m6-java-reverse-delivery-root-cause-investigation`; do not register a corrective successor until Plan 219 emits one J219-A..J classification. Plan 204 convergence follows successful Java-family closure.
 
 ## Verification policy
 
