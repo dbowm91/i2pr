@@ -1,5 +1,28 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
+Status: **`blocked-pending-plan220-corrected-java-attribution`**.
+
+## 2026-09-18 authority correction — Plan 219 attribution superseded
+
+Plan 218's Java → i2pr reverse-delivery stop remains reproducible. Plan 219's
+claimed J219-B root cause is superseded because its diagnostic measurements
+were not taken/derived with the required hash, epoch, selector,
+client-NetDB, and directional-dispatch guarantees.
+
+Plan 220 is the dependency-ready diagnostic corrective. No remaining Plan 201
+stop row may flip until Plan 220 produces a corrected exact-clean-head
+classification and a later plan addresses that boundary if necessary.
+
+```text
+plan_201 = blocked-pending-plan220-corrected-java-attribution
+plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
+plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+```
+
+## Retained prior Plan 201 status narrative
+
+# Plan 201 status — Java publication corrective and M6 second-family closure
+
 Status: **`blocked-pending-plan220-j219-b-corrective`**.
 
 ## 2026-09-18 authority amendment — Plan 219 typed attribution closed
@@ -401,3 +424,4 @@ blocked on the Java second-family branch per its §1 preconditions.
 Plan 218's `plans/closure/mixed-router-interop/218-status.md`
 records the exact inbound-delivery boundary that bounds this
 amendment.
+
