@@ -1,6 +1,44 @@
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-independent-java-m6-branch-and-m10-plan213-plan214-qualification`**.
+Status: **`blocked-on-m6-java-second-family-plan218-for-final-convergence`**.
+
+## 2026-09-18 dependency amendment
+
+M10 product/application closure is already authoritative through Plans 213, 214
+and the hosted Plan 215 re-verification. Plan 204 is now a convergence-only
+normalization pass and MUST NOT reopen or downgrade those M10 results.
+
+The remaining hard dependency is independent M6 Java second-family closure:
+
+```text
+Plan 217 — Java closure harness/evidence corrective
+    -> Plan 218 — direct-I2CP Java final qualification
+    -> Plan 204 — cross-milestone authority/docs convergence
+```
+
+Plan 205 is retained as a conditional fallback only if Plan 218, after Plan 217
+closes, proves a genuine stock-Java direct-I2CP public-client boundary.
+
+Current authority:
+
+```text
+plan_213 = passed-m10-router-backed-generic-external-qualification
+plan_214 = passed-m10-product-only-remote-http-and-irc-application-closure
+plan_215 = passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification
+milestone10_final_acceptance = closed
+
+plan_217 = registered-ready-m6-java-closure-harness-corrective
+plan_218 = registered-blocked-on-plan217-m6-java-final-qualification
+milestone6_java_mixed_router_interop = not-yet-passed
+
+plan_204 = blocked-on-m6-java-second-family-plan218-for-final-convergence
+```
+
+The prior Plan 204 narrative is retained below for traceability; its older
+references to Plans 213/214 as unfinished and Plan 205 as the active Java branch
+are superseded by this amendment.
+
+## Retained prior status narrative
 
 Plan of record: [`204-m10-final-closure-evidence-authority-and-documentation-normalization.md`](204-m10-final-closure-evidence-authority-and-documentation-normalization.md).
 

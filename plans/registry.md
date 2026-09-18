@@ -32,7 +32,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on Plan 201 (M6 Java second-family) |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked only on independent M6 Java second-family closure via Plan 218 or an explicitly registered fallback |
 | M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 217 ready; Plan 218 blocked on 217 | Plan 216 exposed harness/evidence contradictions; direct-I2CP must be requalified before conditional Plan 205 SAM fallback |
 
 ## Current milestone authorities
@@ -48,7 +48,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 201 is blocked by the Plan 217 harness corrective; Plan 217 is the executable head and Plan 218 owns final Java-family qualification — `plans/closure/mixed-router-interop/201-status.md`, `217-status.md`, `218-status.md`.
+- **M6 mixed-router program**: Plan 201 is blocked by the Plan 217 harness corrective; Plan 217 is the executable head and Plan 218 owns final Java-family qualification — `plans/closure/mixed-router-interop/201-status.md`, `plans/closure/mixed-router-interop/217-status.md`, `plans/closure/mixed-router-interop/218-status.md`.
 
 ## Dependency-ready and active plans
 
