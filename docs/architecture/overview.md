@@ -1,496 +1,628 @@
 # `i2pr` Architecture Overview
 
-A bird's-eye view of the `i2pr` workspace. This document describes the
-discrete modules, what each one owns, and how they fit together. Each
-section links to a dedicated deep-dive document under `docs/architecture/`.
+A bird's-eye view of the `i2pr` workspace: what each discrete
+module owns, what the tooling owns, what capabilities exist today,
+and how everything fits together at runtime.
 
-> Status: experimental. Not production-ready. Not for anonymity or
-> security-sensitive workloads. See `README.md` and `GUARDRAILS.md`.
+> Status: experimental. Not production-ready. No anonymity, privacy,
+> or censorship-resistance claim. NTCP2 is experimental and
+> non-advertised. SAM / I2CP / service tunnels are loopback-only,
+> disabled by default, and non-advertised. See `README.md`,
+> `GUARDRAILS.md`, and `specs/CONFORMANCE.md`.
 
-## Conceptual model
-
-`i2pr` is an experimental Rust implementation of an I2P router organized
-as a **modular monolith**. Every subsystem lives in its own crate with a
-strictly enforced dependency graph. The codebase is the artifact of a
-sequence of plans under `plans/`; each milestone closure document captures
-the decisions and evidence behind the current shape.
-
-Four conceptual planes run through every crate:
-
-| Plane | Responsibility | Status |
-| --- | --- | --- |
-| Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded: common-structure codecs, initial I2NP models, NTCP2 handshake + data-phase frames, and runtime-neutral transport contracts. No public-network behavior. |
-| Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts + bounded `i2pr-runtime` supervisor + NTCP2 runtime service. Daemon composition and live execution are not yet wired in. |
-| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Plan 120 lands the first local-destination runtime (`i2pr-client`): identity, dedicated tunnel pools, signed Standard LeaseSet2, lifecycle, bounded local payloads, registry. Plan 121 added the first ECIES destination session layer; Plan 126 rewrites it to the normative I2P ECIES-X25519-AEAD-Ratchet contract (`crates/i2pr-crypto/src/ecies.rs`, corrected `EciesSessionManager`); Plan 127 binds accepted sessions to resolved Destinations through bundled-LS2 validation under the sender's own Destination hash with a planned outbound form state machine and production reverse routing. Plan 122 composes the Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane into the first complete local destination routing pipeline: `LeaseSelector`, `OutboundRequest`, `compose_outbound_delivery`, `DestinationRouting`, and `DestinationDispatcher`. Plan 125 lands the minimal Streaming core (`i2pr-client::streaming`) and Plan 128 corrects its packet wire format to the current I2P Streaming specification (normative flag map, no option TLVs, payload-only MAX_PACKET_SIZE, raw final signatures, Proposal 164 replay NACKs on the initial SYN only). Plan 129 closes the Milestone 6 integrated gate: one combined runtime-neutral outbound/inbound `StreamingDestinationAdapter` (client-payload-bound outbound sizing with a single canonical Data-envelope owner; inbound I2NP Data -> gzip -> protocol-6 -> ports -> Streaming dispatch), integrated retransmission/ACK/reorder over the destination stack, and CLOSE/RESET completion policy. Plan 130 closes Milestone 6 with the final wire/runtime corrective closure: production Elligator2 randomized representatives with independent frozen fixtures, application sequences starting at 1 post-SYN, flag-driven ACK presence where `ackThrough == 0` is valid, NACK-aware cumulative ACKs, receiver ack views per Java `MessageInputStream.updateAcks`, coalescing delayed standalone ACKs via `poll_acks(now_ms)` on the 750 ms reference default, authoritative wire destination-port listener dispatch with enforced established tuples, and persistent tunnel duplicate windows with typed replay rejection. SAM/I2CP adapters remain Milestone 7 scope. Plan 136 adds the SAM 3.1 application-protocol foundation in `i2pr-api`: bounded line parser, typed command/reply model, version negotiation, SAM Base64, SamPrivateDestination codec, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. Plan 137 will wire it into the supervised loopback listener through `i2pr-daemon`. |
-| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Plan 174 foundation + Plan 175 generic client/server tunnels + Plan 176 HTTP proxy + Plan 177 SOCKS5 proxy + Plan 178 IRC client profile + Plan 179 IRC server profile and authenticated peer hostname landed: runtime-neutral `i2pr-service-tunnels` crate (typed kinds, destination policy, Base32/alias validation, loopback-only shapes, central ceilings, plus the Plan 176 HTTP/1.1 parser/rewrite/target-validator/error-response surface, the Plan 177 RFC 1928 SOCKS5 negotiation/request/reply surface, the Plan 178 IRC/IRCv3 line-parser/tag/classifier/filter surface, and the Plan 179 IRC server registration interceptor with authenticated peer Destination hash projection), versioned `ServiceDestinationStore` (Plan 175 persistent service destinations), shared daemon Streaming pump reused by SAM and the Plan 175 `ServiceTunnelManager`, strict disabled-by-default `[service_tunnels]` surface that accepts `enabled = true` for `generic-client` / `generic-server` / `http-client` / `socks5-client` / `irc-client` / `irc-server`. The daemon HTTP proxy executor (`crates/i2pr-daemon/src/service_tunnels_http.rs`) owns one loopback listener per `http-client` spec, the daemon SOCKS5 executor (`crates/i2pr-daemon/src/service_tunnels_socks5.rs`) owns one loopback listener per `socks5-client` spec, the daemon IRC client executor (`crates/i2pr-daemon/src/service_tunnels_irc_client.rs`) owns one loopback listener per `irc-client` spec, and the daemon IRC server executor (`crates/i2pr-daemon/src/service_tunnels_irc_server.rs`) owns one Streaming accept loop per `irc-server` spec; all four reuse the Plan 174 shared byte pump + Plan 149 destination product path and the Plan 175 persistent server destination storage. Full I2P Streaming byte round-trip over local TCP for the generic/HTTP/SOCKS5/IRC profiles is proven via Plan 182 (per-destination delivery drivers, wildcard port 0, SAM-parity accepts, completed IRC client executor, orderly half-close). Composition, hardening, and independent interop belong to Plans 180-181; Plan 180 closed the reconcile layer, Plan 181 local rows pass with remote rows blocked on the retained M6 debt, and Plan 183 owns the M6 program. |
-
-Plan 134 is the current local Milestone 6 closure authority. It corrects the receive-window ACK ceiling so a rejected `TooFarAhead` packet is state-inert and cannot advance `highest_received`, create NACK holes, schedule an ACK, or appear in a later piggyback ACK. Independent-router interoperability remains external acceptance debt and is not claimed. **Plan 142 is the passed local Milestone 7 SAM 3.1 Base64/private-destination corrective closure: `i2pr-api/src/sam/base64.rs` now uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — and the prior circular private-destination evidence is replaced with three independent reference vectors (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2plib `I2P_B64_CHARS = "-~"`). See [`plans/142-status.md`](../plans/142-status.md) for the closure record. Plan 143 is the passed same-socket STREAM CONNECT/ACCEPT product bridge closure: the captured-outbound test seam is removed and the live bridge drives the full Plan 129 destination stack through the runtime-neutral `i2pr_client::deliver` seam; canonical evidence is `crates/i2pr-daemon/tests/sam_stream_product.rs`. See [`plans/143-status.md`](../plans/143-status.md) for the closure record.** Plan 139 remains the last passed STREAM FORWARD / NAMING LOOKUP implementation; its real-byte acceptance is re-run in Plan 144. Plan 140 is the historical blocked closure attempt for the same-socket live STREAM product path; its evidence and handoff are in [`plans/140-status.md`](../plans/140-status.md). **Plan 146 has closed as `passed-m7-sam31-private-destination-reference-requalification` ([`plans/146-status.md`](../plans/146-status.md))**: bidirectional reference evidence against the pinned Java I2P 2.12.0 (`2800040deee9bb376567b671ef2e9c34cf3e30b6`) and i2pd 2.60.0 (`f618e417dbd0b7c5956af8f0d5a6b0ee78caf35e`) references proves the canonical SAM private-destination / PrivateKeyFile representation in both directions through `crates/i2pr-daemon/tests/sam_plan146_reference.rs`; the `DestinationIdentity::from_imported` constructor preserves the destination's embedded encryption public field verbatim and only enforces `signing_public == EdDSA(signing_seed)`. **Plan 147 (dedicated raw TCP↔Streaming product bridge driver) is now the next executable plan.**
-
-### Current Milestone 7 SAM authority
-
-The historical Plan 137–147 summary above is superseded by Plan 149 for
-the local SAM product. `SESSION CREATE` now transactionally creates the
-destination identity, signed LeaseSet2, local-product delivery fabric,
-SAM bridge, stream ownership, and exactly one supervised destination
-driver. The runtime shares one `Arc<DestinationIdentity>` between the
-destination runtime and bridge. Local peer LeaseSet2 resolution remains
-inside the daemon, while the authenticated-router-link-bypassed seam is
-explicitly localhost-only. Raw CONNECT/ACCEPT handoff honors both
-`SILENT` modes, preserves same-read bytes, records typed delivery
-degradation, and releases Streaming/SAM ownership on terminal socket
-cleanup. Canonical local evidence is
-[`sam_stream_self_composed.rs`](../../crates/i2pr-daemon/tests/sam_stream_self_composed.rs).
-Plan 150 retains the external-client core evidence; Plan 151 passed the
-final localhost SAM acceptance (sibling/backpressure/fault/lifecycle/
-FORWARD/M6 rows executable and green, routine CI plus the hosted
-external lane green on the closing head — see
-[`plans/151-status.md`](../../plans/151-status.md)). Plan 152 is the
-retained narrow M6 session/streaming robustness corrective underneath
-it (no wire change — see [`plans/152-status.md`](../../plans/152-status.md)).
-Plan 153 has passed the post-M7 authority/CI hygiene pass; Milestone 8
-implementation is unblocked under the Plan 154 roadmap. Plan 155
-landed the runtime-neutral SSU2 v2 protocol foundation
-(`i2pr-transport-ssu2`: strict v2 RouterAddress/header/block
-primitives, no handshake, no UDP sockets — see
-[`plans/155-status.md`](../../plans/155-status.md)); Plan 156
-added the complete Noise XK establishment handshake, header
-protection, bounded one-use token lifecycle, RouterInfo binding,
-and consuming initiator/responder machines (still no UDP sockets —
-see [`plans/156-status.md`](../../plans/156-status.md)); Plan 157
-added the authenticated data-phase session with reliability and
-fragmentation (still no UDP sockets — see
-[`plans/157-status.md`](../../plans/157-status.md)); Plan 158
-passed the localhost-only SSU2 UDP runtime and local session product
-(`i2pr-runtime::Ssu2RuntimeService` driving the Plan 156/157 machines
-over real loopback datagrams with `TransportManager` integration —
-see [`plans/158-status.md`](../../plans/158-status.md)); Plan 159
-passed authenticated path validation/migration, the conservative
-reachability/publication policy, and deterministic NTCP2/SSU2
-selection (see [`plans/159-status.md`](../../plans/159-status.md));
-Plan 160 passed peer-test/relay reachability (Alice/Bob/Charlie
-roles with typed outcomes, requester/introducer/target machines with
-HolePunch, validated introducers, and runtime coordination with
-introducer service disabled by default — see
-[`plans/160-status.md`](../../plans/160-status.md)); Plan 161 has passed
-the final independent gate and closed Milestone 8 within its bounded
-scope: both direct SSU2 v2 directions plus cached-token/malformed rows
-against exact-pinned i2pd 2.61.0 over real loopback UDP, with the
-fail-closed 15-row evidence ledger, its routine-CI-enforced checker,
-and the manual external workflow green locally and hosted (see
-[`plans/161-status.md`](../../plans/161-status.md)).
-It closed after the passed
-Plan 162 test-lane corrective. Its environment-dependent test is explicitly
-ignored by routine libtest execution and selected only by the dedicated
-external lane. The SAM lane stays experimental,
-loopback-only, disabled by default, and non-advertised; no
-localhost result implies router-to-router interoperability. SSU2
-v2 has a localhost-only runtime with path validation and
-peer-test/relay reachability; public
-advertisement and router-to-router interoperability are not claimed
-yet (Plan 161 owns independent interop);
-PQ-hybrid v3/v4 is deferred compatibility-watch debt and SSU1 remains
-unsupported.
-
-Network tunnels (router-to-router) and application service tunnels
-(local app to destination) are deliberately kept apart. Service tunnels
-must not import transport internals or peer-profile storage.
-
-## Plan 042 runtime-owned NTCP2 composition
-
-The runtime boundary is now concrete for the bounded NTCP2 wire path. The
-runtime-neutral state machines in `i2pr-transport-ntcp2` emit complete,
-bounded actions; `i2pr-runtime` fulfills them with exact socket I/O,
-cancellation-aware deadlines, clock and replay services, and authenticated
-data-frame owners. `AuthenticatedLink` supervises one reader and one writer,
-and each queued frame or received frame carries its own accounting lease.
-
-The non-production `i2pr-interop` binary is a disposable composition root. It
-validates the strict synthetic scenario, owns temporary identity/static-key and
-RouterInfo preparation, runs either the listener or dial path, and performs a
-DeliveryStatus smoke exchange before bounded cleanup. It does not enable the
-daemon, publish capabilities, or create interoperability evidence. Reference
-profiles remain a separate Ubuntu namespace gate and require sanitized
-mixed-router observations.
-
-## Plan 038 harness boundary
-
-The Ubuntu reference-router harness is an opt-in test boundary, not another
-runtime plane and not a production daemon path. It supports Ubuntu amd64 for
-the initial closure and separates network-enabled preparation from
-network-isolated execution. Preparation verifies the host, installs only
-declared tools, fetches the pinned Java I2P/i2pd revisions, and hashes cached
-artifacts. Execution creates disposable per-scenario state and two Linux
-namespaces joined only by a veth pair; it rejects default routes, DNS, and
-public egress before starting a router. The normal daemon remains disabled.
-
-The corrective apparatus contract is documented in
-[`interop-apparatus.md`](interop-apparatus.md): canonical full source pins,
-strict cache metadata, short topology tokens, exact nftables policies, and
-evidence finalization outside the secret-bearing run root.
-
-The harness uses three evidence classes: environment smoke covers reference
-startup and cleanup; Plan 041's reference-crosscheck profile runs the two
-directional Java I2P/i2pd control scenarios in a dedicated reference-pair
-topology and requires dual authenticated observations; i2pr mixed-router evidence requires bounded authenticated
-runs between i2pr and each reference in both directions. Only the last class
-can contribute to a protocol support claim, and only after sanitation leaves
-typed outcomes, bounded metadata, and artifact/configuration hashes. Raw
-addresses, identities, RouterInfo, I2NP, keys, transcripts, logs, and arbitrary
-remote error text are not retained.
-
-## Plan 048/049/050 Multipass evidence environment
-
-Plan 048 is an orchestration boundary around the Plan 046 rootless topology,
-not a production crate or a support claim. Plan 049 makes its lifecycle
-ownership explicit. Plan 050 minimizes the cloud-init unit and adds a
-sanitized failure taxonomy, a `--guest-probe-only` flow, and a
-selective-purge remediation that requires a verified ownership contract.
-The current host remains the AppArmor-restricted negative
-baseline. A disposable Multipass Ubuntu 24.04 amd64 guest provides the
-`host.apparmor-restrict-off` recovery category with guest-only user-namespace
-policy, fixed resources, immutable source/cache transfer, and ordinary-user
-execution as `i2ptest`.
-
-The reviewed environment contract has a stable environment ID, separate from
-the safe run ID and the concrete instance name/generation. Host lifecycle
-state is reserved atomically before launch and protected by a per-run/
-per-instance lock. Names are collision-resistant by default; the legacy
-`i2pr-interop-rootless` name is not authoritative. Ownership requires a
-cryptographically linked host/guest contract, not a name match. Adoption,
-resume, recreation, destruction, and inspection are explicit operations; no
-normal path silently mutates an existing or deleted resource, and global
-`multipass purge` is forbidden.
-
-Preparation may use the network; guest nftables egress denial and both early
-and final guest rootless probes are mandatory before the four directional Plan
-045 scenarios. The host baseline probe is recorded separately and does not
-substitute for the guest gate. The canonical reference cache remains
-`target/interop/cache`. Only validated sanitized evidence crosses back to the
-host, and destroying an owned guest does not remove the host evidence directory.
-Environment and directional records carry run/generation and contract digests;
-pre-router blockers remain environment outcomes, not protocol evidence. See
-[ADR 0018](../adr/0018-multipass-rootless-interop-environment.md) and
-[`interop-apparatus.md`](interop-apparatus.md).
-
-## Crate graph
-
-The dependency direction is enforced by `scripts/check-dependency-direction.sh`
-and the [`docs/architecture/dependency-graph.md`](dependency-graph.md)
-detail document.
+Authority order for any behavioral claim:
 
 ```text
-i2pr-proto  <- i2pr-crypto <- i2pr-storage
-     ^             ^              ^
-     |             |              |
-i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
-     ^             ^              ^                ^
-     |             |              |                |
-     +-------------+   i2pr-transport-ntcp2    i2pr-api
-                          ^                     (SAM 3.1)
-                          |                          ^
-                 i2pr-proto + i2pr-crypto     i2pr-netdb-persist
-                          +
-                          |
-                   i2pr-transport-ssu2
-                   (Plans 155-157: foundation +
-                    Noise XK establishment +
-                    data-phase reliability;
-                    Plan 158: runtime-support
-                    APIs for the UDP owner;
-                    Plan 159: path validation +
-                    publication snapshots;
-                    Plan 160: peer-test/relay +
-                    introducer records)
-                                                    ^
-                                                    |
-                                              i2pr-netdb (SU3/reseed)
-                                                    ^
-                                                    |
-                                              i2pr-tunnel
-                                         (Milestone 5 substrate)
-                                     ^
-                                     |
-                               i2pr-client
-                               (Plan 120+)
-
-i2pr-testkit (test-only; may depend on transport crates;
-              no production crate may depend on it)
-
-tools/i2pr-interop (non-production launcher; depends on transport +
-                    runtime + storage; never activates i2pr-daemon)
+plans/*-status.md > executable tests/scripts > ADRs > prose in docs/
 ```
 
-Reading from the arrows: lower crates stay pure, runtime-neutral, and
-narrow. Higher crates widen scope and (in the case of `i2pr-runtime`)
-take exclusive ownership of Tokio and sockets. Plan 120 adds
-`i2pr-client` alongside the runtime, with its own short edges into
-`i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, and
-`i2pr-tunnel`; it never composes back into `i2pr-tunnel` or
-`i2pr-netdb` and never imports `i2pr-daemon`.
+`plans/README.md` plus the newest `plans/<NNN>-status.md` for the
+task area win over any narrative here. Never mark a row `passed`
+because prose says so; it must derive from an executed command.
+`specs/support.toml` plus `specs/CONFORMANCE.md` gate every protocol
+support claim.
 
-## Crate index
+## 1. What `i2pr` is
 
-Each row links to a deep-dive document covering the crate's purpose,
-module layout, public surface, key contracts, errors, dependencies,
-tests, and any distinctive design choices.
+`i2pr` is an experimental I2P router written in Rust, organized as a
+**modular monolith**: one daemon process, one crate per subsystem, a
+strictly enforced dependency DAG.
 
-| Crate | Role | One-liner | Deep dive |
+Four conceptual planes cut across the crates:
+
+| Plane | Responsibility | Representative crates |
+| --- | --- | --- |
+| Data | Bounded wire codecs, authenticated links, I2NP messages, tunnel traffic, garlic, streaming packets | `i2pr-proto`, `i2pr-transport-*`, `i2pr-tunnel`, `i2pr-client` |
+| Control | Config, lifecycle, health, cancellation, supervision, resource budgets, persistence | `i2pr-core`, `i2pr-storage`, `i2pr-runtime`, `i2pr-daemon` |
+| Network state | RouterInfo / LeaseSet2 validation, store, lookup, publication, tunnel construction | `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-tunnel` |
+| Client / service | Destinations, ECIES sessions, Streaming, SAM, I2CP, HTTP/SOCKS5/IRC/generic service tunnels | `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-daemon` |
+
+Hard boundaries (CI-enforced; fix code, never weaken scripts):
+
+- Dependency direction flows one way (see §2). No production crate
+  depends on `i2pr-testkit`.
+- `i2pr-runtime` is the sole production owner of Tokio, sockets,
+  timers, channels, and cancellation. Transport / API / service /
+  tunnel / client / netdb crates stay runtime-neutral: no
+  `tokio::*`, no `std::net`, no `std::fs`, no ownerless `spawn`,
+  no unbounded channels.
+- Every spawned task has explicit ownership and cancellation.
+  Channel/socket close is a lifecycle event, not a blind retry.
+- Listeners bind loopback by default. Non-loopback needs explicit
+  config plus an auth design. SAM / I2CP / service tunnels stay
+  disabled by default.
+- Secrets never implement `Debug` / `Display` / unrestricted
+  serialization, avoid `Clone`, and zeroize where supported. Never
+  log private keys, signing seeds, SSU2 static/session secrets,
+  tokens, or raw payloads.
+- All network / config / disk bytes are hostile and bounded:
+  checked arithmetic, caller-visible alloc caps, exact-consumption
+  decodes, typed errors (no `anyhow` in library crates).
+- No capability, version, RouterInfo, SAM, or I2CP advertisement
+  beyond the tested subset in `specs/CONFORMANCE.md`.
+
+## 2. Workspace map
+
+```text
+crates/
+  i2pr-proto/               Bounded wire codecs, typed errors, no I/O
+  i2pr-crypto/              Protocol crypto wrappers (no local primitives)
+  i2pr-storage/             Identity/key persistence (atomic, versioned)
+  i2pr-core/                Runtime-neutral contracts/budgets/health (zero deps)
+  i2pr-transport/           Runtime-neutral link/delivery contracts + selection policy
+  i2pr-transport-ntcp2/     NTCP2 protocol state machines (no I/O)
+  i2pr-transport-ssu2/      SSU2 v2 protocol + path/peer-test/relay machines (no I/O)
+  i2pr-runtime/             Sole Tokio/socket/timer/channel owner + supervision
+  i2pr-netdb/               RouterInfo + LeaseSet2 validation/store/lookup/publication
+  i2pr-netdb-persist/       Persistent cache + SU3 reseed ingestion composition
+  i2pr-tunnel/              Exploratory pool, short-build, data plane (runtime-neutral)
+  i2pr-client/              Destination lifecycle, ECIES session/routing, Streaming
+  i2pr-api/                 Runtime-neutral SAM 3.1 + I2CP wire/state (no sockets)
+  i2pr-service-tunnels/     Runtime-neutral tunnel config/policy (no sockets)
+  i2pr-daemon/              CLI/config/composition root; owns all listeners
+  i2pr-testkit/             Deterministic fixtures only (test-only)
+tools/
+  i2pr-interop/             Non-production test launcher (never activates daemon)
+```
+
+Dependency direction (enforced by
+`scripts/check-dependency-direction.sh`; detail in
+[dependency-graph.md](dependency-graph.md)):
+
+```text
+i2pr-proto <- i2pr-crypto <- i2pr-storage
+    ^              ^              ^
+    |              |              |
+i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
+    ^              ^              ^                ^
+    |              |              |                |
+    +--------------+  i2pr-transport-ntcp2    i2pr-api (SAM 3.1 + I2CP)
+                           ^                    ^
+                           |                    |
+                  i2pr-proto + i2pr-crypto  i2pr-netdb-persist
+                           +                     ^
+                           |                     |
+                    i2pr-transport-ssu2      i2pr-netdb (RouterInfo/LS2)
+                                                 ^
+                                                 |
+                                             i2pr-tunnel
+                                                 ^
+                                                 |
+                                             i2pr-client
+                                                 ^
+                                                 |
+                              i2pr-service-tunnels (policy only)
+
+i2pr-testkit (test-only; production crates must not depend on it)
+tools/i2pr-interop (non-production; depends on transport + runtime + storage)
+```
+
+## 3. Module index
+
+Each row is a one-line summary. The linked document is the
+review-focused deep dive for that component: purpose, module layout,
+public surface, key contracts, errors, dependencies, tests, and
+design choices.
+
+| Crate / area | Role | One-liner | Deep dive |
 | --- | --- | --- | --- |
-| `i2pr-proto` | Foundation | Bounded wire codecs for I2P common structures and I2NP messages, including the Plan 119 Standard LeaseSet2 carrier (`Lease2`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, signature domain `0x03 || signed_bytes`) and the typed `DatabaseStoreData::LeaseSet2` body. No runtime, no I/O. | [i2pr-proto.md](i2pr-proto.md) |
-| `i2pr-crypto` | Identity crypto | Protocol-specific wrappers around Ed25519, X25519, SHA-256. Secret material is zeroized. | [i2pr-crypto.md](i2pr-crypto.md) |
-| `i2pr-storage` | Persistence | Versioned, atomic, permission-hardened storage for router identity and NTCP2 static key. | [i2pr-storage.md](i2pr-storage.md) |
-| `i2pr-core` | Service contracts | Runtime-neutral lifecycle, health, cancellation, and resource budgets. Zero dependencies. | [i2pr-core.md](i2pr-core.md) |
-| `i2pr-netdb` | Local NetDB | Runtime-neutral RouterInfo validation, bounded in-memory NetDB store, SU3/reseed verification, peer-selection primitives, transport-neutral lookup/publication state machines, and local signed RouterInfo construction. Plan 103/104/105/119. | [i2pr-netdb.md](i2pr-netdb.md) |
-| `i2pr-netdb-persist` | Cache composition | Composition owner for Plan 104 persistent RouterInfo cache and SU3 reseed ingestion. Bridges `i2pr-storage` (raw bytes) and `i2pr-netdb` (validation). | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
-| `i2pr-tunnel` | Milestone 5 substrate | Runtime-neutral tunnel identity, exploratory pool, build-record layout surface, build-cryptography seam, ECIES-X25519 short tunnel-build construction primitive (Plan 111 final local short-build conformance + Plan 112 outbound pre-delivery closure + Plan 113 inbound reference reconciliation + Plan 114 terminal routing and tunnel-chain correction + Plan 115 canonical production I2NP bridge with no-double-prefix STBM record count byte invariant + Plan 116 local tunnel data plane + Plan 117 outbound/inbound exploratory NetDB composition), runtime-neutral build state machine, success-only registrar, deterministic responder peer simulator, and reply-path provider. Plans 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117. | [i2pr-tunnel.md](i2pr-tunnel.md) |
-| `i2pr-transport` | Transport contracts + selection/reachability policy | Runtime-neutral link/delivery contracts plus deterministic NTCP2/SSU2 selection and the conservative reachability policy with typed peer-test/relay outcomes (Plans 159–160). No Tokio, no I/O, no async. | [i2pr-transport.md](i2pr-transport.md) |
-| `i2pr-transport-ntcp2` | NTCP2 protocol | Runtime-neutral Noise handshake, AEAD frames, data-phase blocks. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
-| `i2pr-transport-ssu2` | SSU2 v2 protocol + runtime support | Runtime-neutral SSU2 v2 address/header/block primitives (Plan 155) plus the Noise XK handshake, header protection, bounded one-use tokens, RouterInfo binding, and initiator/responder machines (Plan 156), plus the authenticated data-phase session with reliability/fragmentation (Plan 157), the Plan 158 runtime-support APIs (`queue_new_token`, `matches_inbound`, `outbound_pending`), the Plan 159 path-validation machine plus deterministic publication snapshots, and the Plan 160 PeerTest roles, relay requester/introducer/target machines with HolePunch, and validated introducer records. No sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
-| `i2pr-runtime` | Runtime owner | The only production owner of Tokio tasks, sockets, timers, channels, wakeable cancellation — including the Plan 158 SSU2 UDP runtime (`Ssu2RuntimeService`, real-loopback `ssu2_local` suite) with Plan 159 path validation/migration and reachability observations, plus the Plan 160 peer-test/relay coordinator (`Ssu2PeerRelayService`, real-UDP `ssu2_peer_relay` suite, introducer service disabled by default). The Plan 161 external SSU2 test remains compiled but is ignored in routine libtest execution and explicitly selected in its dedicated lane (Plan 162). | [i2pr-runtime.md](i2pr-runtime.md) |
-| `i2pr-daemon` | Composition root | CLI + config + identity lifecycle + Plan 106 NetDB/bootstrap pipeline + Plan 117 outbound `OutboundGatewayRole` exploratory `DatabaseLookup`/`DatabaseStore` composition and inbound `LocalInboundEndpointRole` `TunnelData` dispatch through `crates/i2pr-daemon/src/{outbound_lookup,inbound_dispatch}.rs` plus the Plan 184 daemon-owned SSU2 router service (`router_i2np.rs`: strict `[ssu2]` controlled activation, central authenticated dispatcher, narrow delivery over existing `send_i2np`; no tunnel/NetDB/Streaming claim). Plan 174 adds the shared `destination_streaming` pump and the strict `[service_tunnels]` surface (no listener yet). | [i2pr-daemon.md](i2pr-daemon.md) |
-| `i2pr-service-tunnels` | M10 service-tunnel policy | Runtime-neutral service kinds, destination references, static aliases, listener/target shapes, resource/deadline ceilings, validated sets, typed errors/events, plus the Plan 176 HTTP/1.1 parser/rewrite/target-validator/error-response surface, the Plan 177 RFC 1928 SOCKS5 negotiation/request/reply surface, the Plan 178 IRC/IRCv3 line-parser/tag/classifier/filter surface, and the Plan 179 IRC server registration interceptor with authenticated peer Destination hash projection. Plans 175-179 add the `generic-client`/`generic-server`/`http-client`/`socks5-client`/`irc-client`/`irc-server` profiles in order; the daemon-side `ServiceTunnelManager` owns the per-service destination runtime, the loopback TCP listener / Streaming listener lifecycle, and the typed cross-tunnel local destination lookup; the daemon `service_tunnels_http`, `service_tunnels_socks5`, `service_tunnels_irc_client`, and `service_tunnels_irc_server` modules own the per-profile executors. | [i2pr-service-tunnels.md](i2pr-service-tunnels.md) |
-| `i2pr-api` | Application protocols | SAM 3.1 protocol foundation + loopback-server surface + STREAM CONNECT / ACCEPT bridge: bounded line/command/reply parser, typed commands, version negotiation, **I2P Base64 codec** (`-`/`~`, `=` padding — Plan 142 corrective from the prior RFC 4648 alphabet), SamPrivateDestination codec for `DEST GENERATE` / `SESSION CREATE`, bounded `SamSessionRegistry` + `LineReader` + `ServerConnectionState`, and the bounded per-session `SamStreamRegistry`. Plans 136, 137, 138, 142; no sockets, no Tokio, no I/O. Plan 164 adds the runtime-neutral I2CP wire/profile foundation (`src/i2cp/`: `0x2a` preamble, common frame, structural message codecs, M9 profile, fixtures); still no sockets, no sessions, no interop claim. | [i2pr-api.md](i2pr-api.md) |
-| `i2pr-client` | Destination runtime | Plan 120: local destination identity, destination-specific tunnel pools that consume real one-shot `EstablishedMaterial`, local Standard LeaseSet2 construction and signing with self-validation through `i2pr-netdb`, LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded local payload contracts, and a router-local destination registry. Plan 126: normative ECIES-X25519-AEAD-Ratchet destination session layer — paired sessions keyed by remote static key, bounded remove-on-hit tag windows, pre-derived pending reply windows, provisional responder state, classify-driven dispatch. Plan 127: destination-session routing final closure — bundled-LS2 sender binding under the sender's own Destination hash, `PlannedOutboundForm` outbound form state machine with retained NSR context, production reverse routing through `install_remote_lease_set2`, active-remote ceiling, master NS → NSR → ES ×4 trajectory through real tunnel roles. Plan 122: destination routing and NetDB composition — `LeaseSelector` / `LeaseSelectionPolicy`, typed `OutboundRequest` builder, `compose_outbound_delivery` planner, `DestinationRouting` cache, and `DestinationDispatcher` inbound surface that classifies envelopes through `EciesSessionManager::classify`. Plan 124: destination-routing corrective closure — `compose_outbound_delivery` wraps the encrypted envelope in an `I2npBody::Garlic` carrier and feeds the standard-encoded I2NP Garlic message bytes into the outbound tunnel data plane; `OutboundDeliveryPlan::garlic_i2np_bytes` is the canonical carrier the tunnel observes; `DestinationDispatcher::bind_destination_hash` enforces the `DestinationId` → `DestinationHash` binding so the dispatcher fails closed on `UnknownDestination` without trial-decryption. Plan 125: minimal Streaming core with the runtime-neutral `StreamingDestinationAdapter` (now `superseded-by-final-corrective-closure`). Plan 128: Streaming packet wire corrective closure - normative flag map, flag-driven option codec, raw final signatures from signing-key context, payload-only MAX_PACKET_SIZE (default 1730), Proposal 164 replay NACKs on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, min-of-advertisements negotiation. Plan 129: integrated destination+Streaming gate (`superseded-by-plan130-final-gate`). Plan 130: Milestone 6 final wire/runtime corrective closure (`passed-milestone6-final-wire-runtime-corrective-closure`) - production Elligator2 randomized representatives with deterministic-vector separation, corrected post-SYN sequence space (first application packet seq 1), semantic ACK presence with NACK-aware cumulative acknowledgement, bounded receiver ack views, coalescing delayed standalone ACKs via `poll_acks`, wire destination-port listener authority with typed rejections, and persistent tunnel duplicate windows with typed `DuplicateCell`. SAM/I2CP adapters remain Milestone 7 scope. | [i2pr-client.md](i2pr-client.md) |
-| `i2pr-testkit` | Test simulation | Deterministic clocks, virtual links, scripted faults. Test-only; never a production dep. | [i2pr-testkit.md](i2pr-testkit.md) |
-| `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrails, fixtures, integration lanes, opt-in fuzzing. | [tooling.md](tooling.md) |
+| `i2pr-proto` | Foundation | Bounded I2P common-structure + I2NP codecs, LeaseSet2 carrier, typed errors. No I/O. | [i2pr-proto.md](i2pr-proto.md) |
+| `i2pr-crypto` | Identity crypto | Ed25519 / X25519 / SHA-256 / HKDF / ECIES wrappers. Secrets zeroized, non-`Debug`, non-`Clone`. | [i2pr-crypto.md](i2pr-crypto.md) |
+| `i2pr-storage` | Persistence | Versioned atomic `router.identity` + separate `ntcp2.static.key` stores (`0o700`/`0o600`). | [i2pr-storage.md](i2pr-storage.md) |
+| `i2pr-core` | Service contracts | Lifecycle, health, wakeable cancellation, `ResourceBudget` with RAII leases. Zero deps. | [i2pr-core.md](i2pr-core.md) |
+| `i2pr-transport` | Transport contracts | `LinkState` FSM, admission with RAII leases, NTCP2/SSU2 selection + reachability policy. No Tokio/async. | [i2pr-transport.md](i2pr-transport.md) |
+| `i2pr-transport-ntcp2` | NTCP2 protocol | Noise XK handshake, AES-CBC obfuscation, ChaCha20-Poly1305 data phase, SipHash length masking. Emits actions; runtime fulfills them. | [i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md) |
+| `i2pr-transport-ssu2` | SSU2 v2 protocol | Addresses/headers/blocks, Noise XK + header protection + one-use tokens, data-phase reliability/fragmentation, path validation, peer-test/relay. No sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
+| `i2pr-runtime` | Runtime owner | Only production Tokio owner: `ServiceGraph`, supervised `JoinSet`, NTCP2 link service, SSU2 UDP service, peer/relay coordinator, bounded channels/timers. | [i2pr-runtime.md](i2pr-runtime.md) |
+| `i2pr-netdb` | Local NetDB | `ValidatedRouterInfo`, bounded `RouterInfoStore`, SU3/reseed verification, peer selection, lookup/publication machines, `LeaseSet2Store`, local RouterInfo builder. | [i2pr-netdb.md](i2pr-netdb.md) |
+| `i2pr-netdb-persist` | Cache composition | Bridges `i2pr-storage` bytes to `i2pr-netdb` validation: `CacheLoader` + `ReseedIngestor`. | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
+| `i2pr-tunnel` | Tunnel substrate | Tunnel identity, exploratory pool, ECIES-X25519 short-build, canonical I2NP bridge, data plane, reply-path provider, NetDB-over-tunnel composition. | [i2pr-tunnel.md](i2pr-tunnel.md) |
+| `i2pr-client` | Destination runtime | Destination identity/pools/registry, Standard LeaseSet2 lifecycle, ECIES-X25519-AEAD-Ratchet sessions, garlic routing/dispatch, Streaming. | [i2pr-client.md](i2pr-client.md) |
+| `i2pr-api` | App protocols | SAM 3.1 parser/registry/server-state/STREAM bridge + I2CP preamble/frame/message codecs, connection/session/option machines, data plane. No sockets. | [i2pr-api.md](i2pr-api.md) |
+| `i2pr-service-tunnels` | Service policy | Runtime-neutral kinds, destination refs, aliases, ceilings, HTTP/SOCKS5/IRC parser/policy surfaces. Daemon owns listeners. | [i2pr-service-tunnels.md](i2pr-service-tunnels.md) |
+| `i2pr-daemon` | Composition root | CLI, TOML config, identity lifecycle, NetDB/bootstrap pipeline, SSU2 router service, SAM/I2CP listeners, service-tunnel executors, `ServiceProduct::start`. | [i2pr-daemon.md](i2pr-daemon.md) |
+| `i2pr-testkit` | Test simulation | `ManualClock`, `NetworkScheduler`, virtual links, `FaultScript`, deterministic RNG. Test-only. | [i2pr-testkit.md](i2pr-testkit.md) |
+| `tools/i2pr-interop` | Test launcher | Disposable NTCP2 composition root: temp identity/RouterInfo, listener-or-dial, DeliveryStatus smoke, bounded cleanup. | [tooling.md](tooling.md) |
+| `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrail checkers, fixture corpora, integration lanes, fuzz targets, CI gates. | [tooling.md](tooling.md) |
+| Dependency graph | Boundary detail | Allowlist table + ASCII graph backing `check-dependency-direction.sh`. | [dependency-graph.md](dependency-graph.md) |
+| Interop apparatus | Harness boundary | Reference-router harness, evidence classes, sanitization, Multipass/rootless lanes (historical NTCP2 surface). | [interop-apparatus.md](interop-apparatus.md) |
 
-## How data flows at runtime
+## 4. Discrete module overviews
 
-A live `i2pr run` (Plan 106) follows this sequence:
+Each subsection is the general overview for one reviewable unit.
+Follow the deep-dive link for the full contract (module table,
+public re-exports, constants, errors, tests).
 
-1. **`i2pr-daemon`** parses CLI flags, loads and validates the TOML
-   config under `deny_unknown_fields` (including the `[netdb]` and
-   `[reseed]` sections), maps errors to stable exit codes, then
-   runs `bootstrap_daemon` before starting the supervisor.
-2. **`i2pr-storage`** loads the router identity from
-   `<data_dir>/router.identity` and (separately) the NTCP2 static key
-   from `<data_dir>/ntcp2.static.key`. Either file can be generated,
-   but never silently replaced (atomic `hard_link` + `AlreadyExists`).
-3. **`i2pr-netdb`** validates and self-validates the local
-   `RouterInfo` through `LocalRouterInfoBuilder`; refuses any
-   transport address or forbidden capability letter under the
-   Plan 101 activation guard.
-4. **`i2pr-netdb-persist`** loads and revalidates the persistent
-   RouterInfo cache through the Plan 104 `CacheLoader`, then runs
-   the optional bounded offline SU3 reseed through `ReseedIngestor`.
-5. **`i2pr-netdb`** keeps the populated `RouterInfoStore`,
-   `CoalescedRouterInfoLookup`, `PublicationCoordinator`, the
-   transport-neutral state machines, and the Standard LeaseSet2
-   store (`ValidatedLeaseSet2`, `LeaseSet2Store`,
-   `LookupKind::LeaseSet2`, Plan 119) ready for the Milestone 5
-   runtime adapter. `i2pr-daemon`'s `NetDbSeam` exposes them
-   through a stable surface; under Plan 107 the seam consults an
-   injected `i2pr_netdb::ReplyPathProvider` implementation backed
-   by `i2pr-tunnel`'s exploratory pool, so a registered inbound
-   tunnel flips the seam's status to `Available` and a
-   `NeedExploratoryReplyPath` lookup action is converted into a real
-   path on the state machine. Plan 117 added the typed
-   `DatabaseLookupMessage`/`DatabaseStoreMessage` carriers, the
-   bounded `DataPlaneRegistry` for activated local roles, and the
-   outbound `OutboundGatewayRole` exploratory `DatabaseLookup` /
-   `DatabaseStore` composition plus inbound `LocalInboundEndpointRole`
-   `TunnelData` dispatch in `i2pr-daemon`. The Plan 117 composition
-   is local-only; the network transport adapter still owns the
-   NTCP2/SSU2 handshake surface, and authenticated external
-   transport remains `deferred-host-lane-unavailable`.
-6. **`i2pr-tunnel`** holds the runtime-neutral exploratory pool
-   (Plans 107–117), the locally-conformant ECIES-X25519 Noise-N
-   short-build cryptography (Plans 108–114), the canonical
-   production I2NP bridge (`ShortBuildI2npBridge` in
-   `crates/i2pr-tunnel/src/bridge.rs`, Plan 115), the local tunnel
-   data plane (Plan 116), and the outbound/inbound exploratory
-   NetDB composition (Plan 117). The single-record request/reply
-   wire format and Noise-N transcript are locally conformant against
-   the current official I2P Tunnel Creation Specification;
-   Plan 115 Q0 construction + native OBEP reply has passed locally
-   against pinned Emissary `9b43484a21d5a1291c4881cdae62a36c527f8c0f`
-   (emissary-core 0.4.0). Q1 (authenticated transport delivery) and
-   Q2 (reply round-trip to `Established`) and qualified external
-   delivery remain pending.
-7. **`i2pr-client`** (Milestone 6 local product, Plan 120+) owns the
-   local destination runtime:
-   - Plan 120: local destination identity (independent Ed25519
-     signing + X25519 static keys, non-`Clone`, non-`Debug`
-     secrets), destination-specific tunnel pools that consume real
-     one-shot `EstablishedMaterial` through a thin `BoundedTunnelPool`
-     alias in `i2pr-tunnel`, local Standard LeaseSet2 construction
-     and signing with self-validation through `i2pr-netdb`,
-     LeaseSet2 lifecycle with bounded rotation/withdrawal, bounded
-     local payload contracts, and a router-local destination
-     registry with explicit capacity and duplicate-rejection
-     guards.
-   - Plan 122/124: destination routing and NetDB composition —
-     `LeaseSelector` / `LeaseSelectionPolicy`, typed
-     `OutboundRequest` builder, `compose_outbound_delivery` planner,
-     `DestinationRouting` cache, `DestinationDispatcher` inbound
-     surface. Plan 124 corrected the composition defect where
-     `compose_outbound_delivery` retained an ECIES Garlic envelope
-     but fed the plaintext inner I2NP `Data` envelope into the
-     outbound tunnel role; the corrected composition wraps the
-     encrypted envelope in an `I2npBody::Garlic` carrier and feeds
-     the standard-encoded I2NP Garlic message bytes into the
-     outbound tunnel data plane. `OutboundDeliveryPlan::
-     garlic_i2np_bytes` is the canonical carrier; `inner_envelope_bytes`
-     is retained for diagnostic comparison only.
-   - Plan 126: normative ECIES-X25519-AEAD-Ratchet destination
-     session layer — paired sessions keyed by remote X25519 static
-     public key, bounded remove-on-hit tag windows, pre-derived
-     pending reply windows, provisional responder state, classify-
-     driven dispatch. The Plan 121 dialect was superseded.
-   - Plan 127: destination-session routing final closure —
-     bundled-LS2 sender binding under the sender's own Destination
-     hash (`MissingBundledLeaseSet2` / `SenderKeyMismatch`),
-     `PlannedOutboundForm` outbound form state machine with
-     retained NSR context, production reverse routing through
-     `install_remote_lease_set2`, active-remote ceiling, master
-     NS → NSR → ES ×4 trajectory through real tunnel roles.
-   - Plan 128: Streaming packet wire corrective closure —
-     normative flag map, no option TLVs, payload-only
-     `MAX_PACKET_SIZE`, raw final signatures from signing context,
-     Proposal 164 replay NACKs on the initial SYN only, retained
-     peer signing key for CLOSE/RESET verification, min-of-
-     advertisements negotiation. Plan 123 is restored as
-     `passed-corrected-streaming-wire-local`.
-   - Plan 129: integrated two-direction destination+Streaming
-     gate with one combined runtime-neutral outbound/inbound
-     `StreamingDestinationAdapter`. Superseded by Plan 130.
-   - Plans 130–133: wire/runtime corrective closures and
-     transactionality. **The current Milestone 6 local closure
-     authority is Plan 134** as
-     `passed-milestone6-recv-window-ack-ceiling-closure`
-     ([`plans/134-status.md`](../../plans/134-status.md)):
-     production Elligator branch randomization via the reviewed
-     `elligator2 = 0.1.0` primitive (Plan 131 retired
-     `curve25519-elligator2 = 0.1.0-alpha.2`), three-layer replay
-     separation, connection-owned I2P port tuple, and side-effect-
-     free oversized `send_data` rollback.
-     `milestone6_local_product = passed`,
-     `milestone6_interoperable = not-yet-claimed`. Corrective
-     Milestone 6 planning stops; the next product layer is SAM
-     baseline planning (Milestone 7).
-8. **`i2pr-runtime`** builds a `ServiceGraph`, topologically
-   validates it before startup, then spawns one supervisor manager
-   per service via a `JoinSet`. Each service receives a narrowed
-   `ServiceContext` (name, cancellation, readiness, health, child
-   scope) — never a direct handle to the supervisor. The graph
-   contains `lifecycle` and `netdb-bootstrap` plus the optional
-   loopback SAM/I2CP listeners and, since Plan 184, the optional
-   strict controlled `ssu2-router` service under daemon ownership.
-9. **`i2pr-transport-ntcp2`** is declared but **not yet used** in
-   the production daemon. It implements the protocol: Noise XK
-   handshake, AES-CBC ephemeral obfuscation, ChaCha20-Poly1305
-   data phase, directional SipHash frame-length masking,
-   deterministic handshake state machines. It returns
-   `HandshakeAction` / `FrameAction` requests; `i2pr-runtime`
-   would fulfill them with real sockets and cancellation. The
-   Plan 101 NTCP2 activation guard keeps the daemon from
-   registering `ntcp2-transport`.
-10. **`i2pr-transport`** sits underneath as the runtime-neutral
-    link manager: `LinkState` FSM, `TransportManager` admission
-    with RAII leases, duplicate-resolution policy, privacy-safe
-    `TransportSnapshot`.
-11. **`i2pr-core`** provides lifecycle, health snapshots,
-    cancellation tokens, and the shared `ResourceBudget` governor.
-12. **`i2pr-proto`** and **`i2pr-crypto`** stay at the bottom —
-    no one depends on anything above them except the test and
-    integration layers.
-13. **`i2pr-testkit`** is used only by tests. It exercises the
-    same crates through a `NetworkScheduler`, `ManualClock`,
-    `Ntcp2DataPhaseDriver`, and a 128-bit `ReproducibilitySeed`.
-    Tests use `#[tokio::test(start_paused = true)]`; no
-    wall-clock sleeps, no real sockets, no DNS, no public-network
-    traffic.
+### 4.1 `i2pr-proto` — bounded wire codecs
 
-The boundary contract is enforced by scripts under `scripts/`:
+Owns every byte-level codec below the state machines: `Mapping`,
+`Hash`, `Date`, keys/certs, `RouterIdentity`, `Destination`,
+`RouterAddress`, `RouterInfo`, `Lease`/`Lease2`, classic `LeaseSet`
+and Standard `LeaseSet2` (signature domain `0x03 || signed_bytes`),
+I2NP headers (`Standard`/`ShortSsu`/`ShortTransport`), `I2npBody`
+registry, `DatabaseStore`/`DatabaseLookup`/`DatabaseSearchReply`,
+`TunnelData`/`TunnelGateway`, build records, garlic/ECIES payload
+blocks, Streaming packet codecs, and the I2CP-style Data body used
+on the inbound-delivery path. Exact-consumption decodes, typed
+errors, caller-visible caps, no I/O. Detail:
+[i2pr-proto.md](i2pr-proto.md).
 
-| Script | Catches |
-| --- | --- |
-| `check-dependency-direction.sh` | Crate-layer DAG violations (e.g. `i2pr-proto` depending on `i2pr-runtime`). |
-| `check-runtime-boundaries.sh` | Unbounded channels, wall-clock sleeps, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. |
-| `check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. |
-| `check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. |
-| `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus under `tests/fixtures/ssu2/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, and the 5 required Plan 155 fixture IDs plus the 6 Plan 156 handshake vectors and the 2 Plan 157 data-phase vectors. |
-| `check-ntcp2-interoperability.sh` | Forbidden artifacts in the synthetic private NTCP2 interoperability lane; manifest pinned to exactly eight scenarios with required disclaimer lines. |
-| `check-rootless-interop-boundary.sh` | Forbidden artifacts in the Plan 046 rootless sealed-namespace lane (no `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host`; no silent fallback to the privileged backend). |
-| `check-multipass-interop-boundary.sh` | Forbidden host-policy mutations in the Plan 048/049/050/051 Multipass recovery lane (no global `multipass purge`; no host lifecycle mutation outside an atomic reservation). |
-| `check-constrained-host-lane-boundary.sh` | Bypasses of the Plan 077 constrained-host selection order (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
-| `check-plan095-workflow.sh` | Artifact-path drift and cleanup-guard violations on the manual Plan 095 live-wire workflow. |
-| `check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
-| `check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
-| `check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
-| `check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows and fail-closed lifecycle gates): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
-| `check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. |
-| `check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity: 29 command-derived local rows plus 2 blocked-only remote rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates (CI-enforced). |
-| `fuzz-smoke.sh` | Opt-in smoke run of all 22 fuzz targets (requires nightly + `cargo-fuzz`). |
+### 4.2 `i2pr-crypto` — protocol crypto wrappers
 
-## Conventions
+Wraps reviewed primitives (Ed25519, X25519, SHA-256, HKDF-SHA256,
+ChaCha20-Poly1305, AES, HMAC, SipHash, Elligator2) in
+protocol-typed keys with zeroize-on-drop, non-`Clone`,
+non-`Debug` secrets. Used by storage (identity), tunnel short-build
+(ECIES-X25519 Noise-N), destination sessions
+(ECIES-X25519-AEAD-Ratchet), and both transports. No local
+primitive implementation. Detail:
+[i2pr-crypto.md](i2pr-crypto.md).
 
-These apply across every crate and are enforced by workspace lints,
-script gates, and review.
+### 4.3 `i2pr-storage` — atomic identity persistence
 
-- `#![forbid(unsafe_code)]` on every crate (workspace lint `unsafe_code = "deny"`).
-- `unexpected_cfgs = "deny"`, `unused_must_use = "warn"`.
-- Clippy denies `dbg_macro`, `todo`, `unimplemented`.
-- `crate/secret` owners are non-cloneable, non-`Debug`, and
-  `zeroize::Zeroize` on drop; the NTCP2 forbidden nonce `2^64 - 1`
-  is never emitted.
-- Codec errors are typed; decode/encode results are never swallowed.
-- NTCP2 static-key/IV material lives in the separate versioned
-  `i2pr-storage` record — never derived from or overwrite the router
-  identity record.
-- Configuration, protocol, and persisted data are treated as hostile:
-  explicit bounds, rejection of unknown or trailing bytes, no
-  validation side effects, and always a tested negative path.
-- All architecture/security decisions live under `docs/adr/`; the
-  plan-of-record is the active `plans/NNN-*.md` plus its closure
-  document. When closing a milestone, attach a closure record with
-  commands, results, and evidence.
+Two independent versioned records with magic + version + checksum:
+`<data_dir>/router.identity` (Ed25519 + X25519 seeds and public
+keys) and `<data_dir>/ntcp2.static.key` (X25519 static pair +
+obfuscation IV). Atomic create via hard-link + `AlreadyExists`
+(never silently replaces), `0o700` dir / `0o600` files, explicit
+generate/load/rotate operations. Includes persistent service
+destinations (`service_destination.rs`). Detail:
+[i2pr-storage.md](i2pr-storage.md).
 
-## Cross-references
+### 4.4 `i2pr-core` — runtime-neutral contracts
 
-- Top-level architecture narrative: [`docs/architecture.md`](../architecture.md)
-- Security model: [`docs/security-model.md`](../security-model.md)
-- Protocol support matrix: [`docs/protocol-support.md`](../protocol-support.md)
-- Conformance: [`specs/CONFORMANCE.md`](../../specs/CONFORMANCE.md)
-- Plan-of-record: latest active `plans/NNN-*.md`
-- Workspace guidelines: [`AGENTS.md`](../../AGENTS.md)
+The only zero-dependency crate. Lifecycle FSM, bounded service
+names, health/liveness snapshots with redaction, `Arc<AtomicBool>`
+cancellation tokens, `ResourceBudget` per-class ceilings with RAII
+leases / high-water marks / denial counters, and
+`ServiceFailure`/`ServiceCompletion` taxonomies. Every runtime
+service builds on these; nothing here knows about sockets, codecs,
+or the router. Detail: [i2pr-core.md](i2pr-core.md).
 
-## Authoritative reference lanes
+### 4.5 `i2pr-transport` — link contracts and selection
 
-Two additional on-disk surfaces sit alongside `docs/architecture/` and
-must be read before changing protocol, harness, or evidence decisions:
+Synchronous, runtime-neutral link/delivery vocabulary: `LinkState`
+FSM, owned delivery requests with deadlines + cancellation,
+`TransportManager` admission with double-checked locking and RAII
+leases, duplicate-resolution policy, privacy-safe snapshots, and
+transport-shaped resource accounting. Also owns deterministic
+NTCP2/SSU2 selection and the conservative reachability policy with
+typed peer-test/relay outcomes. No Tokio, no `async fn`, no I/O.
+Detail: [i2pr-transport.md](i2pr-transport.md).
 
-- **`specs/references/`** — provenance and reference documents for
-  protocol decisions taken in-plan. Examples:
-  `ecies-destination-ratchet.md` (Plan 126),
-  `streaming-packet-wire.md` (Plan 128),
-  `elligator2-production-representation.md` (Plan 131/134),
-  `short-build-inbound-creator-key.md` (Plan 113). These are the
-  "why" for current behavior; the deep-dives in this directory are
-  the "what" and "how".
-- **`.opencode/skills/`** — loadable skill bundles for OpenCode
-   sessions. Five skills ship with the repo: `i2pr-local-dev`
-   (local Milestone 6 product path + SAM baseline planning),
-   `i2pr-architecture` (navigating `docs/architecture/`, ADRs,
-   plans, and specs), `i2pr-ntcp2-interop` (Plan 038–100 harness
-   surface; active lane is closed), `i2pr-rootless-sandbox` (Plan
-   046 rootless sealed-namespace lane), and `i2pr-multipass-recovery`
-   (Plan 048–051/053 Multipass guest lane). Load the matching skill
-   before touching a lane.
+### 4.6 `i2pr-transport-ntcp2` — NTCP2 state machines
 
-## Plan 077 constrained-host execution lane
+Runtime-neutral NTCP2: transcript composition, consuming
+initiator/responder handshake machines (`SessionRequest` /
+`SessionCreated` / `SessionConfirmed` + options), AES-CBC ephemeral
+obfuscation, ChaCha20-Poly1305 data phase, directional SipHash
+frame-length masking, `HandshakeAction`/`FrameAction` request
+enums the runtime fulfills. Experimental and non-advertised in the
+daemon (Plan 101 guard); the retained development result is
+`protocol-defect-localized` at `noise_authenticated`. Detail:
+[i2pr-transport-ntcp2.md](i2pr-transport-ntcp2.md).
 
-The constrained-host lane is a separate, inspection-first boundary. Its
-selection order is accessible rootful Docker with `--network none`, QEMU TCG
-with `-nic none`, reduced inherited descriptors plus seccomp, manual remote
-Linux, then a typed no-full-runtime-lane result. The probe and strict
-qualification contracts live in `execution_lane.py`; a capability or tool
-definition is not interoperability evidence. Plan 080 later qualified an
-owned full-runtime guest for the single Plan 078 attempt.
+### 4.7 `i2pr-transport-ssu2` — SSU2 v2 state machines
 
-Plan 078 records a pre-protocol i2pr RouterInfo stop in
-[`plans/078-status.md`](../../plans/078-status.md), not a protocol pass or
-failure. Plans 082-084 are now the active minimal-probe sequence. Plan 072
-remains inactive until Plan 084 records
-`decision = ambiguous-reference-divergence` for a precise unresolved
-wire-stage question.
+Runtime-neutral SSU2 v2: strict address/header/block codecs,
+Noise XK establishment with header protection, bounded one-use
+token lifecycle (`queue_new_token`, `matches_inbound`,
+`outbound_pending`), RouterInfo binding, initiator/responder
+machines, authenticated data-phase session (replay window, ACK
+scheduling, retransmit with RTT/RTO/congestion, fragmentation),
+path-validation/migration machines, publication snapshots,
+PeerTest roles, relay requester/introducer/target machines with
+HolePunch, validated introducer records, and parser-only `pq`
+tolerance (`Ssu2PqKem`/`PqCapabilities`, classical X25519 sessions
+only, pq-free publication). No sockets. Detail:
+[i2pr-transport-ssu2.md](i2pr-transport-ssu2.md).
+
+### 4.8 `i2pr-runtime` — Tokio supervision and I/O
+
+The sole production Tokio owner. `ServiceGraph` topological
+validation, one supervised manager per service via `JoinSet`,
+narrowed `ServiceContext` (name, cancellation, readiness, health,
+child scope), bounded channels, manual-clock-friendly timers,
+`AuthenticatedLink` reader/writer supervision with per-frame
+accounting leases, `Ssu2RuntimeService` (real loopback UDP,
+path validation/migration, reachability observations),
+`Ssu2PeerRelayService` (rate-limited peer-test/relay, introducer
+service disabled by default), and the NTCP2 link executor.
+Socket tests bind `127.0.0.1:0`. Detail:
+[i2pr-runtime.md](i2pr-runtime.md).
+
+### 4.9 `i2pr-netdb` — RouterInfo and LeaseSet2 store
+
+Runtime-neutral NetDB: `ValidatedRouterInfo` (crypto, freshness,
+key binding), bounded `RouterInfoStore` with deterministic
+replacement/conflict/expiry, I2P Base64 helper, SU3 reseed parser
+with RSA-SHA512-4096 verification, XOR-distance peer selection,
+transport-neutral lookup/publication machines
+(`LookupKind::RouterInfo`/`LeaseSet2`), `PublicationCoordinator`,
+`ValidatedLeaseSet2` + `LeaseSet2Store`, and local signed
+RouterInfo construction under the non-advertisement guard.
+Detail: [i2pr-netdb.md](i2pr-netdb.md).
+
+### 4.10 `i2pr-netdb-persist` — cache and reseed composition
+
+Sits above validation and below the daemon: `CacheLoader` reads raw
+cache bytes through decode → validate → insert (never trusts disk
+directly); `ReseedIngestor` runs bounded offline SU3 ingestion.
+Bridges `i2pr-storage` bytes and `i2pr-netdb` validation without
+embedding either policy. Detail:
+[i2pr-netdb-persist.md](i2pr-netdb-persist.md).
+
+### 4.11 `i2pr-tunnel` — exploratory tunnels and data plane
+
+Runtime-neutral tunnel substrate: tunnel identity, exploratory pool
+with success-only registrar, build-record layout surface,
+ECIES-X25519 short-build construction (locally conformant
+request/reply wire format + Noise-N transcript), canonical
+production I2NP bridge (`ShortBuildI2npBridge`, no-double-prefix
+STBM invariant), local data plane (fragmentation, delivery
+instructions, `DeliveryInstruction` retention), build state
+machine, deterministic responder simulator, reply-path provider,
+`DataPlaneRegistry` with `InboundGatewayRoute`, and outbound /
+inbound exploratory NetDB composition. Detail:
+[i2pr-tunnel.md](i2pr-tunnel.md).
+
+### 4.12 `i2pr-client` — destinations, garlic, Streaming
+
+Local destination product: independent Ed25519/X25519 destination
+identity (non-`Clone`, non-`Debug`), per-destination tunnel pools
+consuming one-shot `EstablishedMaterial`, local Standard LeaseSet2
+construction/signing/self-validation, rotation/withdrawal
+lifecycle, router-local registry with capacity +
+duplicate-rejection guards, `LeaseSelector` /
+`compose_outbound_delivery` (canonical `Garlic` I2NP carrier via
+`garlic_i2np_bytes`), `DestinationRouting` cache,
+`DestinationDispatcher` inbound surface with
+`DestinationId → DestinationHash` binding, normative
+ECIES-X25519-AEAD-Ratchet sessions (paired by remote static key,
+remove-on-hit tag windows, provisional responder state,
+bundled-LS2 sender binding, `PlannedOutboundForm` machine, reverse
+routing), and the Streaming core (normative flags, no option TLVs,
+payload-only `MAX_PACKET_SIZE`, raw final signatures, replay NACKs
+on SYN only, retransmit/ACK/reorder, CLOSE/RESET policy,
+`StreamingDestinationAdapter`). Also carries the client-owned
+destination bridge (`DestinationOwnership`, `DestinationPublic`,
+non-`Clone` `InboundDecryptionCapability`,
+`install_client_lease_set2`, typed `LeaseRequest`). Detail:
+[i2pr-client.md](i2pr-client.md).
+
+### 4.13 `i2pr-api` — SAM 3.1 and I2CP adapters
+
+Runtime-neutral application-protocol adapters (no sockets, no
+Tokio). SAM 3.1: bounded line/command/reply parser, version
+negotiation, I2P Base64 codec (`-`/`~`, `=` padding),
+`SamPrivateDestination` codec, `SamSessionRegistry`,
+`LineReader`, `ServerConnectionState`, per-session
+`SamStreamRegistry`, STREAM CONNECT/ACCEPT bridge, FORWARD and
+`NAMING LOOKUP` policy. I2CP: `0x2a` preamble + common frame +
+structural message codecs, M9 profile, `ConnectionStateMachine`,
+canonical `SessionConfig` verification (±30 s skew, injected
+clock), option disposition → `DestinationConfig` projection,
+`SessionRegistry` reserve/commit/rollback, reconfiguration
+taxonomy, typed `I2cpAction` vocabulary, and the bounded message
+data plane (`I2cpMessageOutcome`, `PendingStatusTable`,
+`InboundPayloadQueue`, per-session ceilings). Detail:
+[i2pr-api.md](i2pr-api.md).
+
+### 4.14 `i2pr-service-tunnels` — service-tunnel policy
+
+Runtime-neutral M10 policy only (no sockets; daemon owns
+listeners): typed kinds (`generic-client` / `generic-server` /
+`http-client` / `socks5-client` / `irc-client` / `irc-server`),
+destination references, static aliases, listener/target shapes,
+resource/deadline ceilings, validated sets, typed errors/events,
+plus the HTTP/1.1 parser-rewrite-target-validator surface, RFC
+1928 SOCKS5 negotiation/request/reply surface, IRC/IRCv3
+line-parser/tag/classifier/filter surface, and the IRC-server
+registration interceptor with authenticated peer-hash projection
+(`<52-char base32>.b32.i2p`). Detail:
+[i2pr-service-tunnels.md](i2pr-service-tunnels.md).
+
+### 4.15 `i2pr-daemon` — CLI and composition root
+
+The `i2pr` binary. Parses CLI, loads/validates TOML under
+`deny_unknown_fields` with stable exit codes, runs
+`bootstrap_daemon` (identity → local RouterInfo → cache → optional
+bounded SU3 reseed → store), builds the `ServiceGraph`, and
+supervises shutdown. Owns: `[netdb]`/`[reseed]` pipeline
+(`NetDbSeam`), exploratory build coordinator + tunnel liveness,
+NetDB-over-tunnels coordinator, destination coordinators,
+`OutboundGatewayRole` lookup/store composition,
+`LocalInboundEndpointRole` dispatch (`outbound_lookup.rs`,
+`inbound_dispatch.rs`), the strict controlled `ssu2-router`
+service with central authenticated dispatcher (`router_i2np.rs`),
+loopback SAM and I2CP listeners (`sam.rs`, `i2cp.rs`) with
+supervised admission + per-connection ceilings, the shared
+`destination_streaming` byte pump, per-profile service-tunnel
+executors (`service_tunnels*.rs`), `ServiceTunnelManager` with
+typed remote routing seams and `RemoteDestinationBackend`, and the
+single production composition helper `ServiceProduct::start`.
+Strict disabled-by-default loopback-only `[sam]` / `[i2cp]` /
+`[service_tunnels]` / `[ssu2]` surfaces. Detail:
+[i2pr-daemon.md](i2pr-daemon.md).
+
+### 4.16 `i2pr-testkit` — deterministic test fixtures
+
+Test-only simulation seam: `ManualClock`, `NetworkScheduler` with
+virtual stream/datagram links and bounded delivery queues,
+scripted `FaultScript` (drop/delay/duplicate/reorder/truncate),
+`ReproducibilitySeed` + `DeterministicRng` (ChaCha8),
+`Ntcp2DataPhaseDriver`, ephemeral peer factories. No production
+crate may depend on it (checker-enforced). Detail:
+[i2pr-testkit.md](i2pr-testkit.md).
+
+### 4.17 `tools/i2pr-interop` — disposable test launcher
+
+Non-production binary for the synthetic NTCP2 scenario only:
+prepares temporary identity/static-key/RouterInfo, runs either the
+listener or dial path, performs a DeliveryStatus smoke exchange,
+then bounded cleanup. Never activates `i2pr-daemon`, publishes
+capabilities, or creates interop evidence. Detail:
+[tooling.md](tooling.md).
+
+## 5. Tools and capabilities
+
+Full inventory: [tooling.md](tooling.md). Summary for reviewers:
+
+### 5.1 Guardrail scripts (`scripts/check-*.sh`)
+
+CI-enforced contracts. If a script rejects, fix the boundary; do
+not weaken the script.
+
+- `check-dependency-direction.sh` — crate DAG allowlist via
+  `cargo metadata`.
+- `check-runtime-boundaries.sh` — no unbounded channels, wall-clock
+  sleeps, raw `JoinHandle`, ownerless `spawn`, `async fn` in
+  transport contracts, Tokio/`std::net`/`std::fs` in wrong crates,
+  or production deps on `i2pr-testkit`.
+- `check-service-tunnel-boundaries.sh` — M10 runtime-neutral
+  invariants (single pump, single manager entry point).
+- `check-fixture-manifest.sh`, `check-ntcp2-vectors.sh`,
+  `check-ssu2-vectors.sh`, `check-i2cp-vectors.sh` — fixture/vector
+  corpus integrity (manifest ↔ file ↔ SHA-256, required IDs).
+- `check-sam-acceptance-evidence.sh`,
+  `check-ssu2-acceptance-evidence.sh`,
+  `check-i2cp-acceptance-evidence.sh`,
+  `check-service-tunnel-acceptance-evidence.sh`,
+  `check-exploratory-tunnel-evidence.sh`,
+  `check-netdb-tunnel-evidence.sh`,
+  `check-destination-tunnel-evidence.sh`,
+  `check-streaming-tunnel-evidence.sh`,
+  `check-m6-mixed-router-acceptance-evidence.sh`,
+  `check-m6-mixed-router-acceptance-evidence.sh` companion
+  `check-m6-final-closure-evidence.sh` (manual gate) — evidence
+  integrity: no literal unconditional `passed` rows; every counted
+  row flows through exit-code/evidence-key-gated helpers.
+- `check-ntcp2-interoperability.sh`,
+  `check-rootless-interop-boundary.sh`,
+  `check-multipass-interop-boundary.sh`,
+  `check-constrained-host-lane-boundary.sh` — historical NTCP2 /
+  sandbox lane boundaries (fail-closed, no silent fallback).
+
+### 5.2 Fixture and vector corpora (`tests/fixtures/`)
+
+Committed golden + malformed fixtures with manifests: I2NP wire
+corpus, NTCP2 crypto vectors, SSU2 v2 vectors (foundation +
+handshake + data-phase), I2CP wire vectors. Changing committed
+fixture bytes requires re-running the matching
+`check-*-vectors.sh` / `check-fixture-manifest.sh`.
+
+### 5.3 Integration and interop lanes (`tests/integration/`)
+
+- `tests/integration/sam/` — localhost SAM STREAM product and
+  acceptance (black-box TCP/SAM only after listener startup).
+- `tests/integration/i2cp/` — `run-independent.sh` loopback lane
+  with exact-pinned Java I2P + go-i2cp drivers (fail-closed rows).
+- `tests/integration/ssu2/` — `run-independent.sh` direct-IPv4
+  loopback lane against exact-pinned i2pd (fail-closed ledger).
+- `tests/integration/m6-interop/` — `run-preflight.sh`,
+  `run-tunnels.sh`, `run-netdb.sh`, `run-destination.sh`,
+  `run-streaming.sh`, `run-java.sh`, `run-m6-mixed-router.sh`:
+  authenticated I2NP preflight, one-hop exploratory tunnels,
+  NetDB lookup/publication, destination delivery, Streaming,
+  Java second-family topology (controlled launcher).
+- `tests/integration/service-tunnels/` — `run-independent.sh`
+  (delegates remote to `run-plan214-applications.sh`),
+  `run-plan213-generic.sh` (router-backed generic A/B),
+  `run-plan214-applications.sh` (product-only HTTP/IRC).
+- `tests/integration/ntcp2/harness/` — historical synthetic lane
+  plus `execution_lane.py` unit suite (`python3 -m unittest`).
+- Raw reference logs are never evidence; only sanitized
+  counts/hashes reach evidence files.
+
+### 5.4 Fuzzing (`fuzz/`)
+
+Opt-in `cargo-fuzz` (nightly) targets for every top-level decoder:
+common structures, I2NP bodies, RouterInfo/Destination/LeaseSet,
+NTCP2 handshake/frames/blocks, tunnel records/fragmentation,
+garlic/ECIES payloads, Streaming packets, SAM/I2CP framing.
+Bounded inputs; assert no panic, no excessive alloc, no infinite
+loop, stable error classification. Smoke via
+`scripts/fuzz-smoke.sh`.
+
+### 5.5 Reference pins (do not change without a new plan)
+
+- i2pd `2.61.0` (`635b013a612ff47278ef02acf8580a28e10e26c5`,
+  mandatory).
+- Java I2P `2.13.0` (`9134f808337b401e8e53c73734c81fab04280c9d`,
+  secondary).
+- go-i2cp `b529ee1c10a6011558b4d69fc9436a4afc489eac`.
+- Counted SAM clients: i2psam `b80ecd48…`, i2plib `6edf51cd…`.
+
+Environment-gated tests are `#[ignore]`-gated: ordinary runs
+compile but skip them; explicit runs require
+`--ignored --exact`, and missing env must fail, never silently
+pass.
+
+### 5.6 Skills (`.opencode/skills/`, `.agents/skills/`)
+
+Loadable agent bundles: `i2pr-local-dev` (local product path
+before touching destination/garlic/LS2/Streaming/SAM/I2CP/tunnel
+code), `i2pr-architecture` (this surface: ADRs, plans, specs,
+doc-vs-source audits), `i2pr-ntcp2-interop` (historical harness),
+`i2pr-rootless-sandbox` and `i2pr-multipass-recovery` (historical
+sandbox lanes).
+
+## 6. Capability snapshot
+
+This section summarizes; the binding records are `plans/README.md`
+(newest `*-status.md` wins), `specs/support.toml`, and
+`specs/CONFORMANCE.md`. No row below is a public-network or
+anonymity claim.
+
+| Area | Proven (bounded scope) | Not claimed / debt |
+| --- | --- | --- |
+| Destinations + garlic + LeaseSet2 + Streaming (M6 local) | Local product closed (Plan 134 authority; Plan 152 robustness corrective underneath). | Mixed-router interoperable not yet claimed; i2pd family Streaming qualified (Plan 193); Java second-family pending Plan 201/205. |
+| SAM 3.1 (M7 localhost) | Final localhost acceptance closed (Plan 151; self-composed product Plan 149; external-client core Plan 150 retained). | No router-to-router claim; loopback-only, disabled by default. |
+| SSU2 v2 (M8 direct interop) | Closed within bounded direct-IPv4 loopback scope vs exact-pinned i2pd, both directions + cached-token/malformed rows (Plan 161; lane isolation Plan 162). | No public advertisement; PQ-hybrid deferred; SSU1 unsupported; IPv6-external pending. |
+| I2CP (M9 loopback) | Final acceptance closed, loopback-only (Plan 172; wire/data-plane Plan 170 retained; invalid-preamble hardening Plan 171). Independent Java/go clients proven on loopback lane. | No remote-I2CP / public-network claim; no `HostLookup` resolution. |
+| Service tunnels (M10) | Local generic/HTTP/SOCKS5/IRC product + round-trip closed (Plans 174–180, 182); generic router-backed A/B (Plan 213) and product-only HTTP/IRC application closure (Plan 214/215, hosted double-pass) proven against exact-pinned i2pd. | Java second-family convergence pending Plan 204 normalization; no clearnet outproxy, SOCKS UDP/BIND, TLS interception, transit/floodfill roles (M11/M12). |
+| NTCP2 | Runtime-owned composition exists; development result `protocol-defect-localized` at `noise_authenticated`. Daemon NTCP2 disabled by guard. | No production activation; no interop claim. |
+| NetDB / tunnels over network | One-hop exploratory tunnels, NetDB lookup/publication, destination delivery proven vs i2pd on the M6 lane (Plans 184–192). | Full multi-hop, floodfill, transit participation not claimed. |
+
+Unsupported or deferred by design (fail-closed, never silently
+bridged): legacy NTCP/SSU1, PQ session establishment (parser
+tolerance only), clearnet outproxy, SOCKS UDP ASSOCIATE/BIND,
+SOCKS4/auth, transparent proxying, HTTP/2+ termination, TLS
+interception, IRC DCC/WEBIRC, general address-book management,
+transit/floodfill router roles, in-process Rust plugins,
+`Arc<RouterContext>` service locators.
+
+## 7. How data flows at runtime
+
+A live `i2pr run` composes bottom-up; each layer only sees the
+narrow seam below it:
+
+1. `i2pr-daemon` parses CLI, loads TOML (`deny_unknown_fields`),
+   maps errors to stable exit codes, then runs
+   `bootstrap_daemon` before starting the supervisor.
+2. `i2pr-storage` loads `router.identity` and (separately)
+   `ntcp2.static.key`. Either file can be generated, never
+   silently replaced.
+3. `i2pr-netdb` self-validates the local `RouterInfo` via
+   `LocalRouterInfoBuilder`; refuses unqualified transports or
+   capability letters under the activation guard.
+4. `i2pr-netdb-persist` revalidates the persistent cache
+   (`CacheLoader`), then runs the optional bounded offline SU3
+   reseed (`ReseedIngestor`).
+5. `i2pr-netdb` serves `RouterInfoStore`,
+   `CoalescedRouterInfoLookup`, `PublicationCoordinator`, and the
+   Standard LeaseSet2 store. The daemon `NetDbSeam` exposes them;
+   a registered inbound tunnel flips the seam to `Available` via
+   the `ReplyPathProvider` backed by `i2pr-tunnel`.
+6. `i2pr-tunnel` holds the exploratory pool, short-build crypto,
+   canonical I2NP bridge, data plane, and NetDB-over-tunnel
+   composition. Outbound gateway roles emit `DatabaseLookup` /
+   `DatabaseStore`; inbound endpoint roles dispatch `TunnelData`.
+7. `i2pr-client` owns destination identity, pools, LeaseSet2
+   lifecycle, ECIES sessions, garlic routing/dispatch, and
+   Streaming. Outbound: lease selection → `compose_outbound_delivery`
+   → Garlic I2NP bytes → tunnel data plane. Inbound: tunnel data →
+   garlic envelope → session classify → Streaming dispatch.
+8. `i2pr-runtime` validates the `ServiceGraph`, then supervises one
+   manager per service (`lifecycle`, `netdb-bootstrap`, optional
+   `ssu2-router`, optional loopback SAM/I2CP listeners, service
+   tunnels). Each service gets a narrowed `ServiceContext`, never
+   the supervisor itself.
+9. Transports sit underneath: `i2pr-transport` link manager;
+   `i2pr-transport-ntcp2` declared but unused in production;
+   `i2pr-transport-ssu2` handshake/session machines driven by the
+   runtime UDP service with path validation and peer-test/relay
+   coordination.
+10. `i2pr-proto` + `i2pr-crypto` stay at the bottom; `i2pr-core`
+    provides budgets/health/cancellation everywhere;
+    `i2pr-testkit` exercises the same crates in tests via virtual
+    time/links/faults (never in production).
+
+Client ingress paths (all loopback-only, disabled by default):
+
+- SAM TCP → `i2pr-api` SAM state → daemon `sam.rs` bridge →
+  `i2pr-client` destination/Streaming product → tunnel data plane.
+- I2CP TCP (`0x2a` preamble + frames) → `i2pr-api` I2CP machines →
+  daemon `i2cp.rs` → Plan 166 client-owned destination runtime →
+  same destination/Streaming product.
+- Service-tunnel TCP (generic/HTTP/SOCKS5/IRC-client) or Streaming
+  accept (IRC-server) → `i2pr-service-tunnels` policy/parser →
+  daemon per-profile executor → shared Streaming pump → same
+  destination product. Remote routing goes through the typed
+  `RemoteDestinationBackend` seams, never a test-owned shadow
+  stack.
+
+## 8. Conventions for reviewers
+
+- `#![forbid(unsafe_code)]` everywhere (workspace deny); `todo` /
+  `unimplemented` / `dbg!` denied by Clippy.
+- Typed errors only in library crates; decode results never
+  swallowed; exact-consumption decodes with trailing-byte
+  rejection.
+- Hostile-input posture: explicit bounds, checked arithmetic,
+  tested negative/malformed/max-plus-one paths, golden vectors,
+  fuzz targets, deterministic state-machine tests, cancellation
+  and resource-exhaustion tests.
+- Runtime tests prefer `#[tokio::test(start_paused = true)]` +
+  manual clock + bounded deadlines; socket tests use
+  `127.0.0.1:0`. Queue tests cover capacity 1 / exact / max+1 and
+  lease release on every drop path.
+- Black-box product tests (e.g. `sam_stream_self_composed.rs`)
+  drive behavior only through TCP/SAM after listener startup —
+  never private bridge/LeaseSet2/driver APIs.
+- Focused commits only; no git config changes, no `--no-verify`,
+  no force-push, no amending others. Handoff lists files changed,
+  behavior + exact test commands/results, tests not run + why,
+  dep changes, security decisions, deviations, remaining risks.
+
+## 9. Cross-references and suggested review order
+
+- Top-level narrative: [../architecture.md](../architecture.md)
+- Security model: [../security-model.md](../security-model.md)
+- Protocol support (generated): [../protocol-support.md](../protocol-support.md)
+- Conformance policy: [../../specs/CONFORMANCE.md](../../specs/CONFORMANCE.md)
+- Machine-readable support: [../../specs/support.toml](../../specs/support.toml)
+- Plan authority: [../../plans/README.md](../../plans/README.md)
+- Workspace rules: [../../AGENTS.md](../../AGENTS.md),
+  [../../GUARDRAILS.md](../../GUARDRAILS.md)
+- Boundary detail: [dependency-graph.md](dependency-graph.md)
+- Tooling inventory: [tooling.md](tooling.md)
+- Harness boundary: [interop-apparatus.md](interop-apparatus.md)
+- ADRs: [../adr/](../adr/)
+
+Suggested review path for a new reader:
+
+1. This overview (§1–§4) for the map.
+2. [dependency-graph.md](dependency-graph.md) + `i2pr-core`,
+   `i2pr-proto`, `i2pr-crypto` deep dives for the foundation.
+3. `i2pr-netdb` → `i2pr-netdb-persist` → `i2pr-tunnel` for network
+   state.
+4. `i2pr-transport` → `i2pr-transport-ssu2` (`-ntcp2` historical)
+   → `i2pr-runtime` for links and supervision.
+5. `i2pr-client` → `i2pr-api` → `i2pr-daemon` for destinations and
+   client ingress.
+6. `i2pr-service-tunnels` → daemon service-tunnel executors for
+   the application layer.
+7. [tooling.md](tooling.md) + the lane under review
+   (`tests/integration/<area>/run-*.sh` + matching
+   `scripts/check-*-evidence.sh`) for evidence semantics.
