@@ -2245,10 +2245,10 @@ async fn destination_message_plane_against_java() {
             // emit exactly one `p220-classification` row. The
             // authoritative epoch was never reached, so it is
             // honestly a HASH-stage observability gap, never a
-            // root-cause attribution.
+            // root-cause attribution (`java_hash` is Router B).
             record_p220_early_stop_gap(
                 &evidence_dir,
-                &p220_bytes_to_hex(service_hash.as_bytes()),
+                &p220_bytes_to_hex(java_hash.as_bytes()),
                 "authoritative-epoch-never-reached-install-stalled",
             );
             handle.shutdown();
@@ -2531,10 +2531,11 @@ async fn destination_message_plane_against_java() {
         // Plan 220 — emit the `p220-classification`
         // observability gap even on the lease-store-stalled stop
         // path. The authoritative epoch was never reached, so no
-        // Java-state observation exists to attribute.
+        // Java-state observation exists to attribute (`java_hash`
+        // is Router B).
         record_p220_early_stop_gap(
             &evidence_dir,
-            &p220_bytes_to_hex(service_hash.as_bytes()),
+            &p220_bytes_to_hex(java_hash.as_bytes()),
             "authoritative-epoch-never-reached-lease-stalled",
         );
         handle.shutdown();
@@ -2740,7 +2741,11 @@ async fn destination_message_plane_against_java() {
     // byte slice, and the Java self snapshot must echo that same
     // value (D220-2 cross-check). Missing responses become
     // Unknown, never protocol facts.
-    let rust_b_hex = p220_bytes_to_hex(service_hash.as_bytes());
+    //
+    // Naming: in this driver `java_hash` is Router B (the
+    // publication router, JAVA_ROUTER_INFO) and `service_hash` is
+    // Router A (the service router, JAVA_SERVICE_ROUTER_INFO).
+    let rust_b_hex = p220_bytes_to_hex(java_hash.as_bytes());
     let reverse_lookup_target_hex = p220_bytes_to_hex(local_dest_hash.as_bytes());
     let diag_a_port: u16 = env_value("JAVA_DIAGNOSTIC_A_PORT")
         .parse()

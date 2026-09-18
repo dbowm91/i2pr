@@ -750,6 +750,19 @@ if [[ -f "${DRIVER_TEST_220}" ]]; then
     echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_220} never invokes p220_collect_authoritative (Plan 220 D220-1)" >&2
     failures=$((failures + 1))
   fi
+  # 14c2. The driver MUST document which hash is Router B: the
+  # service/publication naming has confused the two before (the
+  # b5b049c self-test caught it via the HASH cross-check), so the
+  # authoritative collection MUST derive Router B from `java_hash`
+  # (the publication router), never `service_hash`.
+  if ! grep -q 'p220_bytes_to_hex(java_hash.as_bytes())' "${DRIVER_TEST_220}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_220} does not derive the Router B hash from java_hash (Plan 220 D220-2 identity)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q 'p220_bytes_to_hex(service_hash.as_bytes())' "${DRIVER_TEST_220}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_220} derives a P220 RouterHash from service_hash (Router A) (Plan 220 D220-2 identity)" >&2
+    failures=$((failures + 1))
+  fi
   # 14d. The driver MUST cross-check the protocol-derived B hash
   # against the Java self snapshot (D220-2): the cross-check row
   # and the hex-hash helper are both required.
