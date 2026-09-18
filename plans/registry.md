@@ -32,7 +32,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 219 is investigative and does not itself unblock convergence |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 219 closed (`J219-B-A-STORED-B-RI-NOT-F`) and a Plan 220 corrective owns the boundary — convergence stays blocked until Java-family closure |
 | M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 219 closed: `passed-m6-java-reverse-delivery-root-cause-attribution` | Plan 218 proved reverse delivery is absent; Plan 219 typed the attribution to `J219-B-A-STORED-B-RI-NOT-F` (Router A's authoritative store lacks Router B's signed RouterInfo, even though Router B's live RI advertises `f`); a Plan 220 corrective is owned by that boundary |
 
 ## Current milestone authorities
@@ -61,12 +61,12 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | Subsystem | Plan | Blocker |
 |---|---|---|
 | M6 mixed-router interop | 201 | Blocked pending Plan 220 corrective for the J219-B boundary (Router A's authoritative store lacks Router B's signed RouterInfo) |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 219 is the registered investigation of the Plan 218 boundary |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 219 closed with `J219-B-A-STORED-B-RI-NOT-F` and corrective Plan 220 owns the J219-B boundary |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
 
-- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 218 proved a reverse-delivery failure but Plan 219 is still determining the first exact Java-side or i2pr-inbound boundary. Do not reactivate Plan 205 unless the typed Plan 219 classification shows its SAM/public-helper axis is relevant.
+- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 218 proved a reverse-delivery failure and Plan 219 typed it to `J219-B-A-STORED-B-RI-NOT-F` (Router A's authoritative store lacks Router B's signed RouterInfo — not the helper local-LeaseSet path a SAM bridge would replace). Do not reactivate Plan 205; the typed Plan 219 classification confirms its SAM/public-helper axis is orthogonal to the failing boundary.
 
 ## Recently closed work
 

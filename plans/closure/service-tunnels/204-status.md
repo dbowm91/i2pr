@@ -1,6 +1,6 @@
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-closure-pending-plan219-investigation`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan220-j219-b-corrective`**.
 
 ## 2026-09-18 dependency amendment
 
@@ -13,7 +13,8 @@ The remaining hard dependency is independent M6 Java second-family closure:
 ```text
 Plan 217 — Java closure harness/evidence corrective (closed)
     -> Plan 218 — direct-I2CP Java final qualification (stopped)
-    -> Plan 219 — reverse-delivery root-cause investigation (ready)
+    -> Plan 219 — reverse-delivery root-cause investigation (closed: J219-B-A-STORED-B-RI-NOT-F)
+    -> Plan 220 — J219-B bidirectional-bootstrap corrective (next executable plan; not registered by Plan 219)
     -> later corrective / Java-family closure
     -> Plan 204 — cross-milestone authority/docs convergence
 ```
@@ -29,7 +30,7 @@ ultimately routes through the same
 machinery as direct-I2CP). Plan 205 stays
 `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`.
 
-Plan 219 — M6 Java reverse-delivery root-cause investigation — is now registered and dependency-ready. It owns attribution of the Plan 218 boundary before any corrective successor is authorized. Plan 204 remains blocked until the Java second-family actually closes; Plan 219 investigation alone does not unblock convergence.
+Plan 219 — M6 Java reverse-delivery root-cause investigation — closed with the `J219-B-A-STORED-B-RI-NOT-F` attribution on commit `9ce32a9c8e860aa1c9dd19b8ae53a42da3d9a2c2` (see `plans/closure/mixed-router-interop/219-status.md`). It owned attribution of the Plan 218 boundary before any corrective successor is authorized. Plan 204 remains blocked until the Java second-family actually closes; the Plan 219 classification alone does not unblock convergence — the documented next executable Plan 220 owns the J219-B corrective (not registered by Plan 219).
 
 Current authority:
 
