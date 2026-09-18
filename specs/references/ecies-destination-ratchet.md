@@ -115,7 +115,7 @@ representable check are rejected typed (`EciesError::ElligatorEncode` /
   destination; Plan 127 bound the pairing to resolved Destination
   contexts (bundled sender LeaseSet2 validated under its own
   contained Destination hash with a type-4 key equal to the
-  authenticated NS static key — see `plans/127-status.md`).
+  authenticated NS static key — see `plans/closure/destination-streaming/127-status.md`).
 - Inbound ES traffic is admitted through a bounded remove-on-hit tag
   window (look-ahead ceiling 32): replayed tags classify but decrypt
   paths return `EciesSessionError::UnknownSessionTag`.

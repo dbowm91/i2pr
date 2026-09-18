@@ -37,7 +37,7 @@
 //! inbound reachability.
 //!
 //! Normative traceability:
-//! `plans/160-m8-ssu2-peer-test-and-relay-reachability.md` §§2–12. No
+//! `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md` §§2–12. No
 //! unbounded channels, no task per test (one central
 //! [`Ssu2PeerRelayService::poll_expired`] scheduler input), no secret
 //! logging (§12: snapshots and `Debug` carry counts only).

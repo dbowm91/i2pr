@@ -4,14 +4,14 @@ This directory is the lightweight external/reference evidence surface for Milest
 
 Current authority:
 
-- `plans/146-status.md` — closed private-destination reference compatibility;
-- `plans/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
-- `plans/149-status.md` — passed self-composing local SAM product;
-- `plans/150-status.md` — external-client core evidence retained; broad final closure superseded;
-- `plans/151-status.md` — **passed** final Milestone 7 acceptance/evidence correction;
-- `plans/152-status.md` — **passed** narrow M6 session/streaming robustness corrective;
-- `plans/153-status.md` — **passed** post-M7 authority/CI hygiene.
-- `plans/153-m7-closure-authority-and-ci-hygiene.md` — closed hygiene plan (docs/CI only, no `crates/` or `Cargo.lock` changes).
+- `plans/closure/sam/146-status.md` — closed private-destination reference compatibility;
+- `plans/closure/sam/147-status.md` — retained raw-socket owner/byte-pump implementation evidence;
+- `plans/closure/sam/149-status.md` — passed self-composing local SAM product;
+- `plans/closure/sam/150-status.md` — external-client core evidence retained; broad final closure superseded;
+- `plans/closure/sam/151-status.md` — **passed** final Milestone 7 acceptance/evidence correction;
+- `plans/closure/sam/152-status.md` — **passed** narrow M6 session/streaming robustness corrective;
+- `plans/closure/sam/153-status.md` — **passed** post-M7 authority/CI hygiene.
+- `plans/closure/sam/153-m7-closure-authority-and-ci-hygiene.md` — closed hygiene plan (docs/CI only, no `crates/` or `Cargo.lock` changes).
 
 This lane is localhost-only. It must not require root, namespaces, Docker, a VM,
 systemd, public I2P participation, or live NTCP2/SSU2.
@@ -172,7 +172,7 @@ Plan 151 added the focused final-acceptance suite
 `crates/i2pr-daemon/tests/sam_stream_final_acceptance.rs` that keeps sibling,
 slow-peer, fault, and lifecycle evidence auditable. Plan 152 (narrow M6
 corrective, no wire change) is retained underneath it; see
-`plans/152-status.md`.
+`plans/closure/sam/152-status.md`.
 
 ## Privacy
 
@@ -190,7 +190,7 @@ Milestone 7 final localhost acceptance closed when:
 3. retained Plan 150 independent-client core evidence remained green;
 4. every Plan 151 sibling/backpressure/fault/lifecycle/FORWARD/M6 row was executable and passed;
 5. routine CI and the manual external-client workflow passed on the exact closing head;
-6. `plans/151-status.md` explicitly closed the milestone.
+6. `plans/closure/sam/151-status.md` explicitly closed the milestone.
 
 Plan 152 is the retained narrow M6 corrective underneath that closure.
 Plan 153 (docs/CI hygiene) has passed; Milestone 8 implementation

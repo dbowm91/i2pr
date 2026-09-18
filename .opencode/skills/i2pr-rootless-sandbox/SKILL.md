@@ -22,9 +22,9 @@ describe Plan 046 as an interoperability pass when only the host-blocker result
 was obtained, and never substitute a self-loopback or testkit result for
 evidence.
 
-Read `AGENTS.md`, `plans/046-rootless-sealed-namespace-evidence-lane.md`,
-`plans/046-closure.md`, `plans/047-cross-host-rootless-lane-expansion.md`,
-`plans/054-java-startup-and-reference-observation-qualification-pass.md`,
+Read `AGENTS.md`, `plans/implementation/ntcp2-transport/046-rootless-sealed-namespace-evidence-lane.md`,
+`plans/closure/ntcp2-transport/046-closure.md`, `plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`,
+`plans/implementation/ntcp2-transport/054-java-startup-and-reference-observation-qualification-pass.md`,
 and the relevant `docs/adr/` records before changing anything in this lane.
 
 ## Topology contract

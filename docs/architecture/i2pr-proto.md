@@ -254,7 +254,7 @@ via `CodecError::kind()`.
 - [Conformance](../../specs/CONFORMANCE.md)
 - [Protocol support matrix](../../specs/support.toml)
 - [sources](../../specs/SOURCES.md)
-- Plan-of-record for codec work: `plans/011-m1-codec-foundation.md`
-  and its closure at `plans/011-closure.md`
-- Plan-of-record for ECIES payload work: [`plans/121-m6-ecies-garlic-session-layer.md`](../../plans/121-m6-ecies-garlic-session-layer.md)
-  and its closure at `plans/121-status.md`
+- Plan-of-record for codec work: `plans/implementation/workspace-foundation/011-m1-codec-foundation.md`
+  and its closure at `plans/closure/workspace-foundation/011-closure.md`
+- Plan-of-record for ECIES payload work: [`plans/implementation/destination-streaming/121-m6-ecies-garlic-session-layer.md`](../../plans/implementation/destination-streaming/121-m6-ecies-garlic-session-layer.md)
+  and its closure at `plans/closure/destination-streaming/121-status.md`

@@ -190,5 +190,5 @@ production consumer.
 - [i2pr-daemon](i2pr-daemon.md) — consumes these entry points
   during `bootstrap_daemon` and via `NetDbSeam`.
 - Plan-of-record: `plans/104-*.md`; closure
-  `plans/104-status.md` (cache loading) and
-  `plans/105-status.md` (reseed composition).
+  `plans/closure/netdb/104-status.md` (cache loading) and
+  `plans/closure/netdb/105-status.md` (reseed composition).

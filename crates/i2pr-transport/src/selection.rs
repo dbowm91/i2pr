@@ -26,8 +26,7 @@
 //! those exact candidates are excluded. Transports are excluded only by
 //! explicit per-transport backoff or disablement.
 //!
-//! Normative traceability: `plans/159-m8-ssu2-path-validation-`
-//! `publication-and-transport-selection.md` §§8–9. No sockets, no Tokio,
+//! Normative traceability: `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md` §§8–9. No sockets, no Tokio,
 //! no async traits; every contract is a concrete struct/enum like the
 //! rest of this crate.
 

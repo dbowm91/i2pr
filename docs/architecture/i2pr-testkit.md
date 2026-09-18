@@ -248,5 +248,5 @@ All async tests use `#[tokio::test(start_paused = true)]`.
   synthetic helpers for contract tests.
 - [i2pr-transport-ntcp2](i2pr-transport-ntcp2.md) — driver on top
   of `TransmitState`/`ReceiveState`.
-- Plan-of-record: `plans/023-m2-deterministic-network-testkit.md`;
-  closure: `plans/023-closure.md`.
+- Plan-of-record: `plans/implementation/workspace-foundation/023-m2-deterministic-network-testkit.md`;
+  closure: `plans/closure/workspace-foundation/023-closure.md`.

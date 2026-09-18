@@ -1,7 +1,7 @@
 //! Plan 115 canonical production I2NP bridge for short tunnel-build
 //! messages.
 //!
-//! Work package B of [`plans/115-qualified-independent-short-build-consumption-and-external-delivery.md`](../../../../plans/115-qualified-independent-short-build-consumption-and-external-delivery.md)
+//! Work package B of [`plans/implementation/exploratory-tunnels/115-qualified-independent-short-build-consumption-and-external-delivery.md`](../../../plans/implementation/exploratory-tunnels/115-qualified-independent-short-build-consumption-and-external-delivery.md)
 //! owns the smallest reusable function that turns the canonical
 //! count-prefixed STBM body emitted by
 //! [`crate::short::ShortBuildStateMachine::deliver_action`] into one

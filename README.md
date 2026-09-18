@@ -19,10 +19,7 @@ evidence.
 | M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed (hosted double-pass; docs normalization pending) |
 | M6 mixed-router | i2pd first-family Streaming | Closed; Java second family open |
 
-The plan-of-record index, per-plan closure records, and evidence pointers live
-in [`plans/README.md`](plans/README.md); the `plans/<NNN>-status.md` closure
-records are authoritative over any prose. Interoperability beyond the rows
-above is not claimed.
+Interoperability beyond the rows above is not claimed.
 
 ## Workspace
 
@@ -68,7 +65,7 @@ Focused seams and the constrained-host lane are documented in [`AGENTS.md`](AGEN
 
 ## OpenCode skills
 
-Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the routine development seam ([`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md)), documentation navigation ([`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)), the closed NTCP2 interop lane ([`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md)), the historical rootless sandbox ([`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md)), and the historical Multipass recovery guest ([`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md)). Load the matching skill before touching its surface.
+Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the routine development seam ([`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md)), documentation navigation ([`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)), planning register/close mechanics ([`i2pr-planning`](.opencode/skills/i2pr-planning/SKILL.md)), the closed NTCP2 interop lane ([`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md)), the historical rootless sandbox ([`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md)), and the historical Multipass recovery guest ([`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md)). Load the matching skill before touching its surface.
 
 ## License
 

@@ -15,6 +15,9 @@ Load this skill whenever an agent needs to:
 - Find the deep-dive for a specific crate
 - Find the ADR that records a specific decision
 - Locate a plan-of-record for a specific milestone
+- Register or close out an implementation plan (see `i2pr-planning` for the
+  register/implement/close/unblock lifecycle, `registry.md` mechanics, and
+  closure-evidence rules)
 - Understand which doc is authoritative for a behavioral claim
 - Audit doc-vs-source drift before editing
 - Write or update a deep-dive consistent with the rest of the surface
@@ -59,9 +62,10 @@ specs/
 When two documents disagree, the closure record and the executable
 test win. From highest to lowest authority:
 
-1. **Closure records**: `plans/NNN-status.md` (and the
+1. **Closure records**: `plans/closure/<subsystem>/NNN-status.md` (and the
    `passed-*` / `superseded-by-*` / `closed-for-progression-*`
-   tokens they declare).
+   tokens they declare). Registry index: `plans/registry.md`; subsystem
+   roadmaps: `plans/subsystems/<subsystem>-roadmap.md`.
 2. **Executable tests** (`cargo test -p <crate>`, `python3 -m
    unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'`,
    `bash scripts/check-*.sh`). A passing test is a passing contract.
@@ -72,7 +76,7 @@ test win. From highest to lowest authority:
    (`Accepted` / `Rejected` / `Superseded`) is binding.
 5. **Per-crate deep-dives** (`docs/architecture/i2pr-<crate>.md`).
    Authoritative for the current state; may drift in details.
-6. **Per-plan narratives** (`plans/NNN-name.md`). Historical context;
+6. **Per-plan narratives** (`plans/implementation/<subsystem>/NNN-name.md`). Historical context;
    not a live contract.
 7. **`AGENTS.md`** carries the workspace-wide conventions; it does
    not override a closure record.
@@ -162,10 +166,10 @@ record is not `superseded-by-*`. Currently:
   (`passed-milestone6-recv-window-ack-ceiling-closure`), with the
   narrow Plan 152 M6 session/streaming robustness corrective retained
   underneath Plan 151 (`passed-m6-session-streaming-robustness-corrective`,
-  see [`plans/152-status.md`](../../plans/152-status.md)).
+  see [`plans/closure/sam/152-status.md`](../../../plans/closure/sam/152-status.md)).
 - **Milestone 7 SAM 3.1 final acceptance**: Plan 151
   (`passed-m7-sam31-final-acceptance-evidence-correction`, see
-  [`plans/151-status.md`](../../plans/151-status.md)). Plan 150
+  [`plans/closure/sam/151-status.md`](../../../plans/closure/sam/151-status.md)). Plan 150
   retains external-client core evidence only; its broad final-closure
   interpretation is superseded by Plan 151. Plan 149 closed the
   self-composed local STREAM product
@@ -173,30 +177,30 @@ record is not `superseded-by-*`. Currently:
   canonical evidence lives at
   `crates/i2pr-daemon/tests/sam_stream_self_composed.rs`. Plan 148
   remains `blocked-audit-historical-superseded` per
-  [`plans/148-status.md`](../../plans/148-status.md). The official
+  [`plans/closure/sam/148-status.md`](../../../plans/closure/sam/148-status.md). The official
   libsam3 snapshot was built/probed but not counted because its
   public key-length API rejects i2pr's compact private destination.
 - **Post-M7 hygiene (closed)**: Plan 153
   (`passed-post-m7-authority-and-ci-hygiene`, see
-  [`plans/153-status.md`](../../plans/153-status.md)).
+  [`plans/closure/sam/153-status.md`](../../../plans/closure/sam/153-status.md)).
 - **Milestone 8 planning authority**: Plan 154 (registered SSU2 v2
-  roadmap, see [`plans/154-status.md`](../../plans/154-status.md)).
+  roadmap, see [`plans/closure/ssu2/154-status.md`](../../../plans/closure/ssu2/154-status.md)).
 - **Milestone 8 SSU2 v2 foundation (passed)**: Plan 155
   (`passed-m8-ssu2-v2-protocol-foundation-and-addresses`, see
-  [`plans/155-status.md`](../../plans/155-status.md)):
+  [`plans/closure/ssu2/155-status.md`](../../../plans/closure/ssu2/155-status.md)):
   runtime-neutral `i2pr-transport-ssu2` (strict v2
   RouterAddress/header/block primitives, fixture-backed vectors;
   no handshake, no UDP sockets, no interop claim).
 - **Milestone 8 SSU2 v2 handshake (passed)**: Plan 156
   (`passed-m8-ssu2-v2-handshake-token-and-routerinfo`, see
-  [`plans/156-status.md`](../../plans/156-status.md)):
+  [`plans/closure/ssu2/156-status.md`](../../../plans/closure/ssu2/156-status.md)):
   runtime-neutral Noise XK establishment, header protection,
   TokenRequest/Retry, bounded one-use tokens, RouterInfo binding,
   initiator/responder machines reaching matching directional keys;
   still no UDP sockets, no data phase, no interop claim.
 - **Milestone 8 SSU2 v2 data phase (passed)**: Plan 157
   (`passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation`, see
-  [`plans/157-status.md`](../../plans/157-status.md)):
+  [`plans/closure/ssu2/157-status.md`](../../../plans/closure/ssu2/157-status.md)):
   runtime-neutral authenticated `Ssu2Session` short-header packets
   with the corrected two-step data KDF, replay window, strict bounded
   ACK scheduling, fresh retransmission with RTT/RTO/congestion
@@ -206,11 +210,11 @@ record is not `superseded-by-*`. Currently:
 - **Milestone 8 SSU2 v2 runtime/reachability (passed)**: Plans 158–160
   (UDP runtime/local session product, path validation/publication/
   transport selection, peer-test/relay reachability; see
-  [`plans/158-status.md`](../../plans/158-status.md) through
-  [`plans/160-status.md`](../../plans/160-status.md)).
+  [`plans/closure/ssu2/158-status.md`](../../../plans/closure/ssu2/158-status.md) through
+  [`plans/closure/ssu2/160-status.md`](../../../plans/closure/ssu2/160-status.md)).
 - **Milestone 8 SSU2 v2 independent interop (passed)**: Plan 161
   (`passed-m8-ssu2-independent-ipv4-interop-and-final-closure`, see
-  [`plans/161-status.md`](../../plans/161-status.md)): directions A+B
+  [`plans/closure/ssu2/161-status.md`](../../../plans/closure/ssu2/161-status.md)): directions A+B
   plus cached-token/malformed rows proven against exact-pinned i2pd
   2.61.0; fail-closed 15-row ledger
   `tests/integration/ssu2/run-independent.sh` with checker
@@ -219,20 +223,20 @@ record is not `superseded-by-*`. Currently:
    Milestone 8 closed within that bounded scope); Plan 162 passed the
    narrow external-test lane/CI corrective.
 - **Milestone 9 planning authority**: Plan 163 (registered M9 I2CP
-   roadmap, see [`plans/163-status.md`](../../plans/163-status.md)):
+   roadmap, see [`plans/closure/i2cp/163-status.md`](../../../plans/closure/i2cp/163-status.md)):
    client-owned destinations, `i2pr-api::i2cp` framing/session
    state, daemon-owned loopback listener, reuse of the
    `i2pr-client` destination product, Plans 164–170 in order.
 - **Milestone 9 I2CP wire/profile foundation (passed)**: Plan 164
    (`passed-m9-i2cp-protocol-and-wire-foundation`, see
-   [`plans/164-status.md`](../../plans/164-status.md)):
+   [`plans/closure/i2cp/164-status.md`](../../../plans/closure/i2cp/164-status.md)):
    runtime-neutral `i2pr-api::i2cp` preamble/frame/message codecs,
    M9 compatibility profile, committed `tests/fixtures/i2cp/`
    vectors with `scripts/check-i2cp-vectors.sh`; no sockets,
    sessions, or interop claim.
 - **Milestone 9 I2CP connection/session/options (passed)**: Plan 165
    (`passed-m9-i2cp-connection-session-and-options`, see
-   [`plans/165-status.md`](../../plans/165-status.md)):
+   [`plans/closure/i2cp/165-status.md`](../../../plans/closure/i2cp/165-status.md)):
    `i2pr-api::i2cp` runtime-neutral `ConnectionStateMachine`
    (AwaitProtocolByte → AwaitGetDate → ReadyForSession →
    SessionPending → Active → Closing → Closed) with explicit
@@ -247,7 +251,7 @@ record is not `superseded-by-*`. Currently:
    those belong to Plans 166–170.
 - **Milestone 9 I2CP client-owned destination + LeaseSet2 bridge
   (passed)**: Plan 166 (`passed-m9-i2cp-client-owned-destination-and-leaseset2`,
-  see [`plans/166-status.md`](../../plans/166-status.md)):
+  see [`plans/closure/i2cp/166-status.md`](../../../plans/closure/i2cp/166-status.md)):
   `i2pr-client` gains explicit `DestinationOwnership::RouterOwned`
   / `ClientOwned` ownership modes on a single destination runtime;
   `DestinationPublic` (non-secret public destination), and the
@@ -264,7 +268,7 @@ record is not `superseded-by-*`. Currently:
   claim; those belong to Plans 167–170.
 - **Milestone 9 I2CP loopback server runtime (passed)**: Plan 167
   (`passed-m9-i2cp-loopback-server-runtime`, see
-  [`plans/167-status.md`](../../plans/167-status.md)):
+  [`plans/closure/i2cp/167-status.md`](../../../plans/closure/i2cp/167-status.md)):
   `crates/i2pr-daemon/src/i2cp.rs` composes the runtime-neutral
   `i2pr-api::i2cp` state and the Plan 166 client-owned
   destination runtime into a real Tokio-owned loopback I2CP
@@ -284,7 +288,7 @@ record is not `superseded-by-*`. Currently:
   evidence claim; those belong to Plans 168–170.
 - **Milestone 9 I2CP message data plane (passed)**: Plan 168
   (`passed-m9-i2cp-message-data-plane`, see
-  [`plans/168-status.md`](../../plans/168-status.md)):
+  [`plans/closure/i2cp/168-status.md`](../../../plans/closure/i2cp/168-status.md)):
   `crates/i2pr-api/src/i2cp/data_plane.rs` adds the bounded
   `I2cpMessageOutcome` vocabulary, the `I2cpDataPlaneAction`
   variants, `PendingStatusTable`, `InboundPayloadQueue` with
@@ -311,7 +315,7 @@ record is not `superseded-by-*`. Currently:
 - **Milestone 9 I2CP self-composed local product and hardening
   (passed)**: Plan 169
   (`passed-m9-i2cp-self-composed-local-product-and-hardening`,
-  see [`plans/169-status.md`](../../plans/169-status.md)):
+  see [`plans/closure/i2cp/169-status.md`](../../../plans/closure/i2cp/169-status.md)):
   `crates/i2pr-daemon/src/i2cp.rs` adds
   `handle_reconfigure_session` + `apply_reconfigure` +
   `ReconfigurationOutcome` (the Plan 165 reconfiguration model
@@ -340,7 +344,7 @@ record is not `superseded-by-*`. Currently:
 - **Milestone 9 I2CP invalid-preamble close corrective
   (passed, retained)**: Plan 171
   (`passed-m9-i2cp-invalid-preamble-close-and-ci-corrective`,
-  see [`plans/171-status.md`](../../plans/171-status.md)):
+  see [`plans/closure/i2cp/171-status.md`](../../../plans/closure/i2cp/171-status.md)):
   the common per-connection terminal path in
   `crates/i2pr-daemon/src/i2cp.rs` explicitly shuts the TCP
   stream down before bookkeeping release (no wire change, no
@@ -350,7 +354,7 @@ record is not `superseded-by-*`. Currently:
   (wire/data-plane retained-passed; final acceptance superseded by
   Plan 172)**: Plan 170
   (`passed-m9-i2cp-independent-clients-and-final-closure`,
-  see [`plans/170-status.md`](../../plans/170-status.md)):
+  see [`plans/closure/i2cp/170-status.md`](../../../plans/closure/i2cp/170-status.md)):
   exact-pinned Java I2P 2.13.0 and go-i2cp exchange
   digest-matched 25 B/32 KiB payloads both directions through
   the loopback daemon under the fail-closed 9-row lane
@@ -363,14 +367,14 @@ record is not `superseded-by-*`. Currently:
   mapping, ElGamal-legacy-slot relocation.
 - **Milestone 9 I2CP independent LeaseSet2 lifecycle corrective
   (passed; M9 closed via Plan 172)**: Plan 172 (see
-  [`plans/172-status.md`](../../plans/172-status.md)).
+  [`plans/closure/i2cp/172-status.md`](../../../plans/closure/i2cp/172-status.md)).
 - **Milestone 10 planning authority (registered)**: Plan 173
-  (see [`plans/173-status.md`](../../plans/173-status.md)):
+  (see [`plans/closure/service-tunnels/173-status.md`](../../../plans/closure/service-tunnels/173-status.md)):
   service tunnels, HTTP, SOCKS5, IRC roadmap; Plans 174–183 in
   order.
 - **Milestone 10 service-tunnel foundation (passed)**: Plan 174
   (`passed-m10-service-tunnel-foundation-and-shared-stream-runtime`,
-  see [`plans/174-status.md`](../../plans/174-status.md)):
+  see [`plans/closure/service-tunnels/174-status.md`](../../../plans/closure/service-tunnels/174-status.md)):
   runtime-neutral `i2pr-service-tunnels` crate, strict
   disabled-by-default loopback-only `[service_tunnels]` surface,
   shared daemon Streaming pump reused by SAM, no listener yet.
@@ -378,35 +382,35 @@ record is not `superseded-by-*`. Currently:
   Plans 175 (generic tunnels), 176 (HTTP), 177 (SOCKS5), 178 (IRC
   client), 179 (IRC server), 180 (composition/reconcile/hardening),
   and 182 (local-delivery corrective proving the local byte
-  round-trip). See [`plans/175-status.md`](../../plans/175-status.md)
-  through [`plans/180-status.md`](../../plans/180-status.md) and
-  [`plans/182-status.md`](../../plans/182-status.md).
+  round-trip). See [`plans/closure/service-tunnels/175-status.md`](../../../plans/closure/service-tunnels/175-status.md)
+  through [`plans/closure/service-tunnels/180-status.md`](../../../plans/closure/service-tunnels/180-status.md) and
+  [`plans/closure/service-tunnels/182-status.md`](../../../plans/closure/service-tunnels/182-status.md).
 - **Milestone 10 independent acceptance (status-file token:
   `passed-local-matrix-remote-rows-blocked-pending-plan213-and-plan214`;
   M10 closure via Plans 214–215)**:
-  Plan 181 (see [`plans/181-status.md`](../../plans/181-status.md)): the
+  Plan 181 (see [`plans/closure/service-tunnels/181-status.md`](../../../plans/closure/service-tunnels/181-status.md)): the
   retained local 29-row matrix stays green; the two §6.3 remote
   application rows are owned by the Plan 213/214 qualification (closed
-  via Plans 214–215; see [`plans/214-status.md`](../../plans/214-status.md)
-  and [`plans/215-status.md`](../../plans/215-status.md)). Plan 183 registers
+  via Plans 214–215; see [`plans/closure/service-tunnels/214-status.md`](../../../plans/closure/service-tunnels/214-status.md)
+  and [`plans/closure/service-tunnels/215-status.md`](../../../plans/closure/service-tunnels/215-status.md)). Plan 183 registers
   the M6 mixed-router program (see
-  [`plans/183-status.md`](../../plans/183-status.md)); Plan 184
+  [`plans/closure/mixed-router-interop/183-status.md`](../../../plans/closure/mixed-router-interop/183-status.md)); Plan 184
   passed the authenticated I2NP preflight with no
   tunnel/NetDB/Streaming claim (see
-  [`plans/184-status.md`](../../plans/184-status.md)); Plan 185
+  [`plans/closure/mixed-router-interop/184-status.md`](../../../plans/closure/mixed-router-interop/184-status.md)); Plan 185
   passed the live one-hop exploratory tunnels + liveness lane
   against exact-pinned i2pd 2.61.0 (see
-  [`plans/185-status.md`](../../plans/185-status.md)); Plan 186
+  [`plans/closure/mixed-router-interop/185-status.md`](../../../plans/closure/mixed-router-interop/185-status.md)); Plan 186
   passed the live mixed-router NetDB lookup and publication
-  lane (see [`plans/186-status.md`](../../plans/186-status.md));
+  lane (see [`plans/closure/mixed-router-interop/186-status.md`](../../../plans/closure/mixed-router-interop/186-status.md));
   Plan 187 lands the local destination product but is blocked
   on the `m6-build-reply-interop-gap` (see
-  [`plans/187-status.md`](../../plans/187-status.md)); Plan 188
+  [`plans/closure/mixed-router-interop/187-status.md`](../../../plans/closure/mixed-router-interop/187-status.md)); Plan 188
   is the historical short-build-reply corrective
   (`installed_ob=1 installed_ib=1` via consumed reference
   replies, 2/7 rows flipped to passed; the lookup half was closed by
   Plan 190 and the inbound-delivery half by Plan 192;
-  see [`plans/188-status.md`](../../plans/188-status.md));
+  see [`plans/closure/mixed-router-interop/188-status.md`](../../../plans/closure/mixed-router-interop/188-status.md));
   Plan 190 is the passed inbound NetDB reply-path tunnel-ID
   corrective (typed public `InboundGatewayRoute` in
   `i2pr-tunnel::DataPlaneRegistry`; daemon-owned
@@ -419,7 +423,7 @@ record is not `superseded-by-*`. Currently:
   passed; remote lane proves 3 destination rows flip `blocked`
   → `passed` in fresh external `run-destination.sh`; no M6 wire
   change; no `milestone6_interoperable = passed-via-plan190`
-  claim; see [`plans/190-status.md`](../../plans/190-status.md));
+  claim; see [`plans/closure/mixed-router-interop/190-status.md`](../../../plans/closure/mixed-router-interop/190-status.md));
   Plan 191 ran the inbound-delivery layer and stopped at the
   i2pd-compatible I2CP-style Data body wire-format defect
   (i2pd's `ClientDestination::HandleDataMessage` parses an
@@ -428,12 +432,12 @@ record is not `superseded-by-*`. Currently:
   four bytes are misread as the length field); the test driver
   no longer panics, the 2 ordering rows flip `blocked` →
   `passed`, the 2 inbound-delivery rows stay `blocked` with
-  stop provenance; see [`plans/191-status.md`](../../plans/191-status.md));
+  stop provenance; see [`plans/closure/mixed-router-interop/191-status.md`](../../../plans/closure/mixed-router-interop/191-status.md));
   Plan 192 closed the inbound-delivery layer: 9-byte short-transport
   inner envelope + i2cp I2CP-style Data body + gzip-no-compression
   wrapper + `STYLE=RAW` SAM session switch, with the 2 inbound-delivery
   rows flipping `blocked` → `passed` against exact-pinned i2pd 2.61.0
-  (see [`plans/192-status.md`](../../plans/192-status.md));
+  (see [`plans/closure/mixed-router-interop/192-status.md`](../../../plans/closure/mixed-router-interop/192-status.md));
   Plan 189 is the registered M6 Java I2P second-family
   qualification plan, blocked-by-plan188 + plan190 + plan191 + plan192
   + the deferred Streaming pass with the §8 cross-family
@@ -443,12 +447,12 @@ record is not `superseded-by-*`. Currently:
   `.github/workflows/m6-mixed-router-external.yml`) and the
   second-family Java rows recorded `failed` with stop
   provenance until a follow-up plan lands the Java qualification
-  harness (see [`plans/189-status.md`](../../plans/189-status.md));
+  harness (see [`plans/closure/mixed-router-interop/189-status.md`](../../../plans/closure/mixed-router-interop/189-status.md));
   Plan 194 status-file token is
   `passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap`
-  (see [`plans/194-status.md`](../../plans/194-status.md)); Plans 198/200/201
+  (see [`plans/closure/mixed-router-interop/194-status.md`](../../../plans/closure/mixed-router-interop/194-status.md)); Plans 198/200/201
   re-scoped the public-client branch, whose Java-side LeaseSet2 publication gap
-  stays open under Plan 201 (see [`plans/201-status.md`](../../plans/201-status.md));
+  stays open under Plan 201 (see [`plans/closure/mixed-router-interop/201-status.md`](../../../plans/closure/mixed-router-interop/201-status.md));
   Plan 196 owns the corrective and lands the implementation
   (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
   test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
@@ -458,8 +462,8 @@ record is not `superseded-by-*`. Currently:
   SAM SESSION CREATE because Java strictly requires ≥ 663 decoded bytes
   while i2pd accepts the 391-byte PUB — are bounded to the
   controlled-launcher and fail-closed at the daemon boundary; see
-  [`plans/194-status.md`](../../plans/194-status.md)
-  and [`plans/196-status.md`](../../plans/196-status.md));
+  [`plans/closure/mixed-router-interop/194-status.md`](../../../plans/closure/mixed-router-interop/194-status.md)
+  and [`plans/closure/mixed-router-interop/196-status.md`](../../../plans/closure/mixed-router-interop/196-status.md));
   Plan 197 has landed the narrow PQ SSU2 option support corrective
   (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java
   I2P 2.13.0 unconditionally publishes; typed `Ssu2PqKem`/
@@ -469,8 +473,8 @@ record is not `superseded-by-*`. Currently:
   or silently enabled; 21 required test rows green locally; Plan 196 closed
   the corrective and `external-session-established-java` flipped `failed` →
   `passed`; see
-  [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
-  and [`plans/197-status.md`](../../plans/197-status.md));
+  [`plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md`](../../../plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md)
+  and [`plans/closure/mixed-router-interop/197-status.md`](../../../plans/closure/mixed-router-interop/197-status.md));
   Plan 198 and Plan 199 are now both
    `superseded-execution-decomposed-and-closed-via-plans200-204`; the
    decomposed convergent graph is Plan 200 + Plan 201 + Plan 202 + Plan
@@ -496,7 +500,7 @@ record is not `superseded-by-*`. Currently:
   checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
   extended with §11 + §12 invariants. Plan 201 status-file token is
   `in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring`
-  (see [`plans/201-status.md`](../../plans/201-status.md); Plan 205
+  (see [`plans/closure/mixed-router-interop/201-status.md`](../../../plans/closure/mixed-router-interop/201-status.md); Plan 205
   SAM-bridge pivot registered next). The M10 production remote transport
   branch is Plan 202 (`partial-...-superseded-by-plan206`; executable backend
   attached by Plan 206, wired into the production sweep by Plan 208, both
@@ -504,11 +508,11 @@ record is not `superseded-by-*`. Currently:
   application scaffold) is `partial-...-superseded-by-plan207`, superseded for
   final evidence by Plan 214; Plan 204 status-file token is
   `blocked-on-independent-java-m6-branch-and-m10-plan213-plan214-qualification`
-  (see [`plans/204-status.md`](../../plans/204-status.md)). Plan 195 status-file
+  (see [`plans/closure/service-tunnels/204-status.md`](../../../plans/closure/service-tunnels/204-status.md)). Plan 195 status-file
   token is `blocked-m10-remote-independent-service-pending-plan213-and-plan214`;
   the M10 remote rows are owned by the Plan 213/214 qualification, closed via
-  Plans 214–215 (see [`plans/214-status.md`](../../plans/214-status.md) and
-  [`plans/215-status.md`](../../plans/215-status.md)):
+  Plans 214–215 (see [`plans/closure/service-tunnels/214-status.md`](../../../plans/closure/service-tunnels/214-status.md) and
+  [`plans/closure/service-tunnels/215-status.md`](../../../plans/closure/service-tunnels/215-status.md)):
   Plan 210 `retained-partial-structural-corrective-superseded-by-plan212`,
   Plan 211 `retained-source-harness-superseded-for-final-evidence-by-plan214`,
   Plan 212 `passed-source-and-generic-external-qualification-via-plan213`,
@@ -524,8 +528,8 @@ record is not `superseded-by-*`. Currently:
   result `protocol-defect-localized` at `noise_authenticated`.
 
 When opening a new plan, copy the outline from
-`plans/134-m6-recv-window-ack-ceiling-closure.md` and
-`plans/134-status.md`. Both files pair a narrative with an explicit
+`plans/closure/destination-streaming/134-m6-recv-window-ack-ceiling-closure.md` and
+`plans/closure/destination-streaming/134-status.md`. Both files pair a narrative with an explicit
 closure record; the closure record carries the status token, the
 focused checks, and the test list.
 

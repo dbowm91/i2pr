@@ -41,7 +41,9 @@ the relevant `plans/038-..`, `plans/040-..`, `plans/041-..`,
 `plans/104-..`, `plans/105-..`, `plans/106-..` and `plans/115-..`,
 `plans/117-..`, `plans/118-..` status records, the relevant
 `docs/adr/` records, and `tests/integration/ntcp2/README.md` before
-changing the harness.
+changing the harness. (`plans/NNN-..` means all records for plan NNN
+under `plans/implementation/<subsystem>/` and `plans/closure/<subsystem>/`;
+see `plans/registry.md` for the plan-to-subsystem map.)
 
 The canonical reference identifiers are `java_i2p` and `i2pd`.
 Locked source objects:
@@ -288,7 +290,7 @@ i2pd listener authenticated and the i2pr dialer reached TCP, but
 the NTCP2 Noise handshake closed the socket with `Io(ExactIoError
 { kind: Closed })` before the i2pr initiator reached
 `ntcp2_authenticated`. The Plan 087 closure record is
-`plans/087-status.md`. **The forward direction did not pass.**
+`plans/closure/ntcp2-transport/087-status.md`. **The forward direction did not pass.**
 Per the Plan 090 "Forward attempt reaches TCP and fails protocol"
 branch, the failed record is preserved and Plan 088 is not allowed
 to run until the forward direction passes.
@@ -312,7 +314,7 @@ attempt against a fixed i2pd driver.
 
 On this host Docker is inaccessible, QEMU is absent, and only the
 reduced-scope lane is available; Plan 078 remains blocked until a
-full-runtime qualification record exists. See `plans/077-status.md`
+full-runtime qualification record exists. See `plans/closure/ntcp2-transport/077-status.md`
 and ADR 0024.
 
 ```text
@@ -360,14 +362,14 @@ milestone authority lives in `plans/README.md` and the status files
 M10 remote via Plans 214–215; M6 Java second family open under Plan 201).
 
 The active Milestone 4 authority is
-[Plan 102](../../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md).
+[Plan 102](../../../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md).
 The retained Plan 099/100/101 NTCP2 result is preserved as the
 authoritative NTCP2 development record. The next substantial product
 work is governed by Plan 102 and its child sequence (Plans 103 →
 104 → 105 → 106).
 
 The
-[Plan 102 amendment](../../plans/102-amendment-exploratory-tunnel-dependency.md)
+[Plan 102 amendment](../../../plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md)
 corrects an over-optimistic wording in the first Plan 102 draft: the
 current I2P `DatabaseLookup` operation uses an outbound exploratory
 tunnel and requests the response through an inbound exploratory

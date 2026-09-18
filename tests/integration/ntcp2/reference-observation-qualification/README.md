@@ -44,7 +44,7 @@ ADR-accepted topology or a different pinned Java revision.
 
 Plan 060 cannot claim receiver-observation qualification under these
 receipts. The Plan 059 closure record
-(`plans/059-status.md`) records this typed absence as the closure
+(`plans/closure/ntcp2-transport/059-status.md`) records this typed absence as the closure
 contract.
 
 ## Required external controls

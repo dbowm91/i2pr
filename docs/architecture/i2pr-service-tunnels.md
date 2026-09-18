@@ -149,7 +149,7 @@ stopped deriving from `SHA256(reference.router_info_bytes)`;
 recovered inbound Garlic envelopes dispatch through the canonical
 `DestinationDispatcher::dispatch_garlic_envelope` instead of
 being silently dropped. Plan 212 completes the split (see
-`plans/212-status.md`): `RouterDestinationNetworkState` +
+`plans/closure/service-tunnels/212-status.md`): `RouterDestinationNetworkState` +
 `compose_router_send` (explicit router-backed compose, never
 fabric) + `dispatch_router_garlic_to_canonical_streaming`
 (`pop_payload` drain + `StreamingDestinationAdapter::receive`
@@ -167,7 +167,7 @@ plus 25 `plan212_*` rows in
 `service_tunnels.rs::plan212_router_backed_service_destination_tests`)
 locks the typed path. Plan 213 closed the generic router-backed
 Direction A+B external proof twice on one exact SHA. Plan 214
-(see `plans/214-status.md`) owns the M10 HTTP/IRC application
+(see `plans/closure/service-tunnels/214-status.md`) owns the M10 HTTP/IRC application
 requalification source: the counted v214 driver stays inside the
 black-box `ServiceProduct` boundary (runtime-neutral
 `ServiceTunnelSet::validate` preflight, no placeholder manager),
@@ -182,7 +182,7 @@ aggregates plus exactly one `P214-*` terminal classification;
 `run-independent.sh` delegates remote qualification to it; the
 static checker enforces the Plan 214 §28 invariants (including a
 synthetic-key extraction-boundary self-test for
-`parse_i2pd_destination.py`). Plan 215 (see `plans/215-status.md`)
+`parse_i2pd_destination.py`). Plan 215 (see `plans/closure/service-tunnels/215-status.md`)
 closed the hosted Plan 214 tunnel-config generation corrective on
 the immutable SHA `1992d67ffe1d37c1d5c225fff494c5bf02ba00b3`. The
 source-side corrective (Commit `0fbacc3`) replaced the original

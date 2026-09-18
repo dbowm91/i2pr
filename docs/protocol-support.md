@@ -12,20 +12,20 @@ no usable upstream correction exists, so the bounded Plan 117 native
 closure campaign is closed for progression. Native mixed-router NetDB
 evidence is not claimed. Router construction is `may-continue`. Plan 119
 closed as `passed-leaseset2-protocol-foundation` per
-[`plans/119-status.md`](../plans/119-status.md); the ordinary
+[`plans/closure/destination-streaming/119-status.md`](../plans/closure/destination-streaming/119-status.md); the ordinary
 online-signed published Standard LeaseSet2 carrier is wired into
 `i2pr-proto` and `i2pr-netdb` and `DatabaseStoreData::LeaseSet2`
 replaces the type-3 `Deferred` payload for the ordinary subset.
 EncryptedLeaseSet, MetaLeaseSet, blinded, offline-signing, leased, and
 PQ-hybrid variants remain future work tracked by the Milestone 6
 roadmap. Plan 121 closed as `passed-ecies-destination-session-layer`
-per [`plans/121-status.md`](../plans/121-status.md); the
+per [`plans/closure/destination-streaming/121-status.md`](../plans/closure/destination-streaming/121-status.md); the
 `EciesSessionManager` in `i2pr-client` owns the bounded
 ECIES-X25519-AEAD-Ratchet destination session layer with the
 trajectory test `plan_121_deterministic_local_trajectory`.
 Plan 122 closed as `passed-corrected-local-destination-routing` per
-[`plans/122-status.md`](../plans/122-status.md) and
-[`plans/124-status.md`](../plans/124-status.md); it composes the
+[`plans/closure/destination-streaming/122-status.md`](../plans/closure/destination-streaming/122-status.md) and
+[`plans/closure/destination-streaming/124-status.md`](../plans/closure/destination-streaming/124-status.md); it composes the
 Plan 119 LeaseSet2 lookup surface, the Plan 120 destination runtime,
 the Plan 121 ECIES session layer, and the Plan 116 tunnel data plane
 into the first complete local destination routing pipeline. The
@@ -35,7 +35,7 @@ the full Phase A/B/C/F/H path against real `i2pr-netdb` and
 external I2P reference.
 
 Plan 124 closed as `passed-plan122-corrective-closure` per
-[`plans/124-status.md`](../plans/124-status.md); it corrects the
+[`plans/closure/destination-streaming/124-status.md`](../plans/closure/destination-streaming/124-status.md); it corrects the
 Plan 122 composition defect where `compose_outbound_delivery`
 retained an ECIES Garlic envelope but fed the plaintext inner I2NP
 `Data` envelope into the outbound tunnel role. The corrected
@@ -56,10 +56,10 @@ I2CP, Docker, namespaces, Multipass, or any public-network access.
 Plan 125's corrective surface (canonical gzip framing plus the real
 SYN/SYN-response lifecycle) landed; its final classification is
 `superseded-by-final-corrective-closure`
-([`plans/125-status.md`](../plans/125-status.md)) after the
+([`plans/closure/destination-streaming/125-status.md`](../plans/closure/destination-streaming/125-status.md)) after the
 post-Plan-125 audit, with Plan 123 restored as
 `passed-corrected-streaming-wire-local` by Plans 128/129
-([`plans/123-status.md`](../plans/123-status.md)). Plan 125 replaces the
+([`plans/closure/destination-streaming/123-status.md`](../plans/closure/destination-streaming/123-status.md)). Plan 125 replaces the
 custom Plan 123 `ClientPayload` framing with the canonical RFC 1952
 gzip wire format (no SHA-256 prefix, no custom compressed-length
 prefix; bounded decompressed-size enforcement; explicit
@@ -108,13 +108,13 @@ runtime-neutral; it composes with Plan 124's `compose_outbound_delivery`
 for outbound composition and Plan 124's `DestinationDispatcher` for
 inbound routing. The next executable plan is **Plan 125** (Streaming
 protocol-6 framing correction + reply round-trip) under
-[`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md);
-see [`plans/117-status.md`](../plans/117-status.md) and
-[`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
+[`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md);
+see [`plans/closure/exploratory-tunnels/117-status.md`](../plans/closure/exploratory-tunnels/117-status.md) and
+[`plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md`](../plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md).
 The historical row text below is retained for auditability.
 
 Plan 128 closed as `passed-streaming-wire-protocol-corrective-closure`
-per [`plans/128-status.md`](../plans/128-status.md) and restored Plan
+per [`plans/closure/destination-streaming/128-status.md`](../plans/closure/destination-streaming/128-status.md) and restored Plan
 123 as `passed-corrected-streaming-wire-local`. Plan 128 corrects the
 `i2pr-proto::streaming` packet codec and the `i2pr-client::streaming`
 control packets to match the current I2P Streaming specification while
@@ -154,14 +154,14 @@ independent-router evidence exists.
 Plan 129 is now `superseded-by-plan130-final-gate`; its integrated
 topology remains the closure path. Plan 130 closed as
 `superseded-by-plan131-final-local-correctness-gate` (historical
-evidence retained in `plans/130-status.md`). Plan 131 closed
+evidence retained in `plans/closure/destination-streaming/130-status.md`). Plan 131 closed
 Milestone 6 with the local-correctness closure
 (`passed-milestone6-final-local-correctness-closure`,
-`plans/131-status.md`) and is itself superseded by Plan 132
+`plans/closure/destination-streaming/131-status.md`) and is itself superseded by Plan 132
 (implementation corrections) and Plan 133 (final evidence and
 authority closure). The current Milestone 6 local closure
 authority is Plan 133 (`passed-milestone6-final-evidence-authority-closure`,
-`plans/133-status.md`). Plan 131 added the Plan 131 corrections on
+`plans/closure/destination-streaming/133-status.md`). Plan 131 added the Plan 131 corrections on
 top of the Plan 130 surface: production Elligator2 representatives
 now randomize the inverse-map branch as well as the high bits via
 the reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
@@ -188,7 +188,7 @@ Plan 131 additionally requires connection-owned I2P ports asserted
 recovery for the next valid packet). Historically:
 
 Plan 129 closed as `passed-milestone6-integrated-local-product-gate`
-per [`plans/129-status.md`](../plans/129-status.md) and is the final
+per [`plans/closure/destination-streaming/129-status.md`](../plans/closure/destination-streaming/129-status.md) and is the final
 local-product gate for Milestone 6. It completes the adapter boundary:
 the outbound adapter bounds the gzip-encoded complete Streaming packet
 against the client-payload/I2NP limit
@@ -223,7 +223,7 @@ experimental and non-advertised until independent-router evidence
 exists. The next product layer is SAM baseline planning (Milestone 7).
 
 Plan 130 (`superseded-by-plan131-final-local-correctness-gate`,
-historical evidence in [`plans/130-status.md`](../plans/130-status.md),
+historical evidence in [`plans/closure/destination-streaming/130-status.md`](../plans/closure/destination-streaming/130-status.md),
 [`crates/i2pr-client/tests/plan130_trajectory.rs`](../crates/i2pr-client/tests/plan130_trajectory.rs),
 and the reference addenda in
 [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md)
@@ -233,12 +233,12 @@ landed the wire/runtime corrective closure but left four Plan 131
 acceptance items open.
 
 Plan 131 (`passed-milestone6-final-local-correctness-closure`,
-[`plans/131-status.md`](../plans/131-status.md),
+[`plans/closure/destination-streaming/131-status.md`](../plans/closure/destination-streaming/131-status.md),
 [`crates/i2pr-client/tests/plan131_trajectory.rs`](../crates/i2pr-client/tests/plan131_trajectory.rs))
 closed the local-correctness corrections but is itself superseded by
 Plan 132 and Plan 133. The current Milestone 6 local closure authority
 is Plan 134 (`passed-milestone6-recv-window-ack-ceiling-closure`,
-[`plans/134-status.md`](../plans/134-status.md)). Plan 133 remains
+[`plans/closure/destination-streaming/134-status.md`](../plans/closure/destination-streaming/134-status.md)). Plan 133 remains
 successful historical evidence. On top of the Plan
 130 surface Plan 131 added: production Elligator2 branch randomization
 via the reviewed `elligator2 = 0.1.0` primitive (`curve25519-elligator2
@@ -264,11 +264,11 @@ tunnel duplicate windows with typed `DuplicateCell` replay rejection)
 remains intact and is the retained Plan 130 evidence. Plan 129's
 historical gate remains the topology of record. Plan 132
 (`implementation-landed-evidence-superseded-by-plan133`,
-[`plans/132-status.md`](../plans/132-status.md)) closed the
+[`plans/closure/destination-streaming/132-status.md`](../plans/closure/destination-streaming/132-status.md)) closed the
 implementation corrections but is itself superseded by Plan 133. The
 current Milestone 6 local closure authority is Plan 134
 (`passed-milestone6-recv-window-ack-ceiling-closure`,
-[`plans/134-status.md`](../plans/134-status.md)). Plan 132 added on
+[`plans/closure/destination-streaming/134-status.md`](../plans/closure/destination-streaming/134-status.md)). Plan 132 added on
 top of the Plan 131 surface: strict Elligator2 receive-domain validation
 masking the two free high bits and rejecting `r >= 2^254 - 10` via
 the `is_canonical_elligator_representative` helper before delegating
@@ -335,33 +335,33 @@ advertisement requirements in `specs/CONFORMANCE.md`.
 
 | Protocol area | Status | Planned milestone | Specification/source starting point | Test-vector status | Interoperability status |
 | --- | --- | --- | --- | --- | --- |
-| SAM 3.1 self-composed localhost STREAM product (Plan 149) | Experimental; non-advertised | 7 | [`plans/149-m7-sam31-self-composing-local-product-corrective.md`](../plans/149-m7-sam31-self-composing-local-product-corrective.md), [`plans/149-status.md`](../plans/149-status.md) | `SESSION CREATE` transactionally composes one shared `Arc<DestinationIdentity>`, signed local LeaseSet2, local-product delivery fabric, SAM bridge, stream ownership, and one supervised destination driver. The daemon resolves local peer LeaseSet2 records through its explicit directory, preserves same-read raw bytes, implements byte-exact CONNECT/ACCEPT `SILENT` behavior and authenticated non-silent ACCEPT peer metadata, records typed delivery degradation, and cleans up Streaming/SAM ownership on terminal CLOSE/RESET/cancellation. Canonical evidence is the black-box `crates/i2pr-daemon/tests/sam_stream_self_composed.rs` suite, which uses only listener TCP and SAM commands after startup. This localhost application-product seam does not claim live router interoperability; Plan 150 closes the external-client/FORWARD/NAMING layer on top. | None |
+| SAM 3.1 self-composed localhost STREAM product (Plan 149) | Experimental; non-advertised | 7 | [`plans/implementation/sam/149-m7-sam31-self-composing-local-product-corrective.md`](../plans/implementation/sam/149-m7-sam31-self-composing-local-product-corrective.md), [`plans/closure/sam/149-status.md`](../plans/closure/sam/149-status.md) | `SESSION CREATE` transactionally composes one shared `Arc<DestinationIdentity>`, signed local LeaseSet2, local-product delivery fabric, SAM bridge, stream ownership, and one supervised destination driver. The daemon resolves local peer LeaseSet2 records through its explicit directory, preserves same-read raw bytes, implements byte-exact CONNECT/ACCEPT `SILENT` behavior and authenticated non-silent ACCEPT peer metadata, records typed delivery degradation, and cleans up Streaming/SAM ownership on terminal CLOSE/RESET/cancellation. Canonical evidence is the black-box `crates/i2pr-daemon/tests/sam_stream_self_composed.rs` suite, which uses only listener TCP and SAM commands after startup. This localhost application-product seam does not claim live router interoperability; Plan 150 closes the external-client/FORWARD/NAMING layer on top. | None |
 | Common identity, keys, and certificates | Experimental structural subset plus local type-4/type-7 execution | 1 | `specs/protocols/01-common-identity-crypto.md`, pinned source in `specs/SOURCES.md` | Locally authored structural bytes, Ed25519 mutation tests, and X25519 derivation tests; no independent router vectors | None |
-| Router identity generation and local RouterInfo signing | Experimental local lifecycle | 1 | `plans/013-m1-identity-crypto-storage.md`, ADRs 0004 and 0007 | Deterministic injected-RNG generation, exact signed-region verification, save/reload and mutation tests | None |
-| Private router identity storage | Experimental local persistence | 1 | `plans/013-m1-identity-crypto-storage.md`, ADR 0006 | Version/length/truncation/integrity/permission/concurrency tests; no external storage interoperability claim | None |
+| Router identity generation and local RouterInfo signing | Experimental local lifecycle | 1 | `plans/implementation/workspace-foundation/013-m1-identity-crypto-storage.md`, ADRs 0004 and 0007 | Deterministic injected-RNG generation, exact signed-region verification, save/reload and mutation tests | None |
+| Private router identity storage | Experimental local persistence | 1 | `plans/implementation/workspace-foundation/013-m1-identity-crypto-storage.md`, ADR 0006 | Version/length/truncation/integrity/permission/concurrency tests; no external storage interoperability claim | None |
 | I2NP envelope and header variants | Experimental structural subset; not advertised | 1, 3–6 | `specs/protocols/02-i2np.md`, pinned 0.9.69 source in `specs/SOURCES.md` | Locally authored standard/short vectors, truncation, size, checksum, and trailing-byte tests; hashed fixture manifest | None |
 | I2NP type registry and selected body codecs | Experimental structural subset; NetDB body semantics deferred | 1, 4 | `specs/protocols/02-i2np.md`, `crates/i2pr-proto/src/i2np/mod.rs` | Fixed and malformed local vectors for DatabaseLookup, DatabaseSearchReply, DeliveryStatus, DatabaseStore framing, and fixed tunnel framing | None |
 | I2NP tunnel, garlic, data, and later record semantics | Deferred or framing-only | 1, 5–6 | `specs/protocols/02-i2np.md`, `specs/protocols/05-tunnels.md`, `specs/protocols/06-garlic-ecies-leasesets.md` | Bounded `Deferred`/`Opaque` retention and shape checks only; no crypto or state-machine vectors | None |
-| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/036-closure.md`, `plans/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/046-closure.md`; the Plan 066 fresh-candidate pass is `declared-not-executable` on this host under the historical Plan 058/060 two-lane contract, see `plans/066-closure.md`; the Plan 067 active roadmap records Level 1 smoke and Level 2 development validation lanes for the host loopback |
-| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/036-closure.md`, `plans/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
-| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/036-closure.md`, `plans/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068/074 active roadmap defines Plan 069 (host-loopback smoke), Plan 075 (runner integrity), Plan 076 (real i2pd driver), and Plan 079 (repeated i2pd validation) for development interoperability; no real mixed-router attempt has yet occurred |
-| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/036-closure.md`, `plans/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
-| Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate. Plans 108–112 corrected and locally validated the ECIES-X25519 short-build wire, cryptography, records, slot/fake-record handling, and outbound construction. Plan 113 reconciles inbound construction against pinned Java I2P and i2pd source: the fixed request record remains the canonical 154-byte layout, and the creator-side inbound originator fake is exactly `hash16 || fresh X25519 public key || random remainder`; the final specification text discrepancy is recorded under the explicit `reference-compatible-spec-text-discrepancy` policy. Plan 114 closes four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 closes the canonical production I2NP bridge (`ShortBuildI2npBridge`) so the already count-prefixed `ShortBuildAction::Deliver.message` is wrapped in a single complete I2NP type-25 message without double-prefixing the STBM record count byte and with a round-trip body equality assertion. Plan 115 Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane; no live mixed-router tunnel execution or transit participation has been attained. | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/103-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `specs/references/short-build-inbound-creator-key.md` | Local signed-region verification, bounded NetDB/reseed/bootstrap checks, short-build request/reply vectors, role/topology validation, randomized slot and fake-record construction, originator-fake integrity checks, deterministic multi-hop inbound trajectory, terminal routing field validation, intermediate tunnel-id chain continuity validation, strict trajectory E2E tests, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
-| Network tunnels and transit participation | Experimental local subset; outbound short tunnel-build locally conformant against fixed vectors; inbound construction locally reference-compatible under Plan 113's `reference-compatible-spec-text-discrepancy` policy; exploratory substrate implemented; Plan 114 closed terminal routing and tunnel-chain corrections; Plan 115 added the canonical production I2NP bridge and Q0 construction + native OBEP reply (passed locally against pinned Emissary); live mixed-router build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/111-short-build-final-local-conformance-correction.md`, `plans/112-status.md`, `plans/113-status.md`, `plans/114-status.md`, `plans/115-status.md`, `plans/115-handoff.md`, `specs/references/short-build-inbound-creator-key.md` | Bounded tunnel identity/pool/build crypto types, role-validated short-build state machine, randomized multi-record construction, exactly one inbound originator fake with creator-side integrity verification, explicit terminal routing fields, intermediate tunnel-id chain continuity enforcement, strict trajectory E2E tests, deterministic local inbound trajectory, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
+| NTCP2 crypto/transcript foundation | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0011, `plans/closure/ntcp2-transport/036-closure.md`, `plans/closure/ntcp2-transport/037-closure.md` | Independent deterministic primitive/transcript vectors and corrective review; no router interoperability run | `tests/integration/ntcp2/manifest.toml` pinned but execution blocked; the Plan 046 rootless variant reports `blocked_unprivileged_user_namespace` on the host recorded in `plans/closure/ntcp2-transport/046-closure.md`; the Plan 066 fresh-candidate pass is `declared-not-executable` on this host under the historical Plan 058/060 two-lane contract, see `plans/closure/ntcp2-transport/066-closure.md`; the Plan 067 active roadmap records Level 1 smoke and Level 2 development validation lanes for the host loopback |
+| NTCP2 handshake codecs and state machines | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0012, `plans/closure/ntcp2-transport/036-closure.md`, `plans/closure/ntcp2-transport/037-closure.md` | Fixed/malformed/bounded state and policy tests plus local corrective campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with `blocked_unprivileged_user_namespace`; Plan 066 fresh-candidate pass is `declared-not-executable` on this host with the typed blocker `blocked_execution_lane_unavailable`; see `plans/closure/ntcp2-transport/066-closure.md` and `specs/CONFORMANCE.md`; the Plan 067/068 active roadmap separates evidence into local-conformance, external-loopback-smoke, repeated-development-interop, conditional-differential, and release-qualification tiers (ADR 0023) |
+| NTCP2 authenticated data frames and payload blocks | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0013, `plans/closure/ntcp2-transport/036-closure.md`, `plans/closure/ntcp2-transport/037-closure.md` | Deterministic frame/block vectors, corrected repeated-block/termination ordering tests, partial-I/O cleanup, and local campaign; no mixed-router interoperability | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/closure/ntcp2-transport/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/closure/ntcp2-transport/066-closure.md`; the Plan 067/068/074 active roadmap defines Plan 069 (host-loopback smoke), Plan 075 (runner integrity), Plan 076 (real i2pd driver), and Plan 079 (repeated i2pd validation) for development interoperability; no real mixed-router attempt has yet occurred |
+| NTCP2 runtime link manager, addresses, and controlled TCP lifecycle | Experimental local subset; not advertised | 3 | `specs/protocols/03-ntcp2.md`, ADR 0014, `plans/closure/ntcp2-transport/036-closure.md`, `plans/closure/ntcp2-transport/037-closure.md` | Bounded address/admission/replay/backoff/duplicate/RAII cleanup tests plus loopback lifecycle and preflight; runtime-owned wire adapter implemented and locally validated, mixed-router evidence pending | Required Java I2P/i2pd lanes blocked; Plan 046 rootless lane is closed with a typed blocker (`plans/closure/ntcp2-transport/046-closure.md`); the Plan 066 fresh-candidate pass is `declared-not-executable` on this host, see `plans/closure/ntcp2-transport/066-closure.md`; the Plan 067/068 active roadmap keeps NTCP2 experimental and non-advertised |
+| Reseed and RouterInfo publication | Plans 103–107 implemented locally on this host: RouterInfo validation, bounded local NetDB, persistent cache, SU3 reseed, transport-neutral query state machines, daemon bootstrap integration, and the Milestone 5 exploratory tunnel substrate. Plans 108–112 corrected and locally validated the ECIES-X25519 short-build wire, cryptography, records, slot/fake-record handling, and outbound construction. Plan 113 reconciles inbound construction against pinned Java I2P and i2pd source: the fixed request record remains the canonical 154-byte layout, and the creator-side inbound originator fake is exactly `hash16 || fresh X25519 public key || random remainder`; the final specification text discrepancy is recorded under the explicit `reference-compatible-spec-text-discrepancy` policy. Plan 114 closes four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 closes the canonical production I2NP bridge (`ShortBuildI2npBridge`) so the already count-prefixed `ShortBuildAction::Deliver.message` is wrapped in a single complete I2NP type-25 message without double-prefixing the STBM record count byte and with a round-trip body equality assertion. Plan 115 Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane; no live mixed-router tunnel execution or transit participation has been attained. | 4/5 | `specs/protocols/04-reseed-netdb.md`, `specs/protocols/05-tunnels.md`, `plans/closure/netdb/103-status.md`, `plans/closure/exploratory-tunnels/113-status.md`, `plans/closure/exploratory-tunnels/114-status.md`, `plans/closure/exploratory-tunnels/115-status.md`, `specs/references/short-build-inbound-creator-key.md` | Local signed-region verification, bounded NetDB/reseed/bootstrap checks, short-build request/reply vectors, role/topology validation, randomized slot and fake-record construction, originator-fake integrity checks, deterministic multi-hop inbound trajectory, terminal routing field validation, intermediate tunnel-id chain continuity validation, strict trajectory E2E tests, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
+| Network tunnels and transit participation | Experimental local subset; outbound short tunnel-build locally conformant against fixed vectors; inbound construction locally reference-compatible under Plan 113's `reference-compatible-spec-text-discrepancy` policy; exploratory substrate implemented; Plan 114 closed terminal routing and tunnel-chain corrections; Plan 115 added the canonical production I2NP bridge and Q0 construction + native OBEP reply (passed locally against pinned Emissary); live mixed-router build pending | 5 | `specs/protocols/05-tunnels.md`, `plans/implementation/exploratory-tunnels/107-milestone-5-exploratory-tunnel-substrate.md`, `plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md`, `plans/closure/exploratory-tunnels/112-status.md`, `plans/closure/exploratory-tunnels/113-status.md`, `plans/closure/exploratory-tunnels/114-status.md`, `plans/closure/exploratory-tunnels/115-status.md`, `plans/implementation/exploratory-tunnels/115-handoff.md`, `specs/references/short-build-inbound-creator-key.md` | Bounded tunnel identity/pool/build crypto types, role-validated short-build state machine, randomized multi-record construction, exactly one inbound originator fake with creator-side integrity verification, explicit terminal routing fields, intermediate tunnel-id chain continuity enforcement, strict trajectory E2E tests, deterministic local inbound trajectory, the canonical production I2NP bridge no-double-prefix invariant, and the Plan 115 Q0 Emissary-native OBEP consumption test; no live mixed-router tunnel execution or transit participation | None |
 | Classic LeaseSet structural codec | Experimental structural subset; LeaseSet2-family deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Local Lease/LeaseSet vectors and negative tests; no independent router vectors | None |
-| Standard LeaseSet2 structural codec (ordinary online-signed published subset) | Experimental | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/119-status.md`](../plans/119-status.md), [`plans/121-status.md`](../plans/121-status.md), [`plans/122-status.md`](../plans/122-status.md) | 40-byte Lease2, LeaseSet2Header, LeaseSet2EncryptionKey, canonical Mapping options, signature domain `0x03 || signed_bytes`, strict fresh/Lease accounting, frozen wire-format fixture, i2np-level DatabaseStore round-trip, Plan 122 lookup-engine `handle_database_store_lease_set2` ingestion path with `LookupResult::LeaseSet2Success`, Plan 122 `router_hash_from_destination` helper, and Plan 122 daemon NetDbSeam `begin_lease_set2_lookup`/`ingest_lease_set2_response`/`cancel_lease_set2_lookup`; EncryptedLeaseSet / MetaLeaseSet / blinded / offline-signing / leased / PQ-hybrid variants remain deferred | None |
-| ECIES-X25519-AEAD-Ratchet destination session layer | Experimental structural subset | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/121-status.md`](../plans/121-status.md) | Bounded `EciesSessionManager` with `MAX_OUTBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_INBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_PENDING_NEW_SESSIONS = 64`, `MAX_TAG_LOOK_AHEAD = 32`, `MAX_REPLAY_CACHE_ENTRIES = 64`, `DEFAULT_SESSION_IDLE_SECONDS = 600`, `MAX_SESSION_IDLE_SECONDS = 1800`; structural Garlic payload block codec (`GarlicClove`, DateTime + Garlic encryption envelope) in `i2pr-proto`; deterministic two-destination NS → NSR → Existing Session trajectory with exact-once payload delivery, tag ratchet advancement, and replay rejection (`plan_121_deterministic_local_trajectory`); no remote router exercise | None |
-| Destination routing and Garlic composition | Experimental structural subset | 6 | [`plans/122-status.md`](../plans/122-status.md) | Bounded `LeaseSelector` / `LeaseSelectionPolicy` with expiry / safety-margin / zero-tunnel-id / destination-mismatch / uniform-distribution rejection; typed `OutboundRequest` builder; `compose_outbound_delivery` planner that drives ECIES encryption then `OutboundGatewayRole::forward_cells` with `DeliveryInstruction::Tunnel` targeting the selected lease; `DestinationRouting` cache with bounded `MAX_CONCURRENT_REMOTE_LOOKUPS = 256` and `MAX_PENDING_OUTBOUND_PER_REMOTE = 64`; `DestinationDispatcher` inbound surface with bounded `MAX_INBOUND_DESTINATIONS = 256`, `MAX_INBOUND_PENDING_MESSAGES = 256`, `MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION = 512 * 1024`; deterministic two-destination Phase A/B/C/F/H local composition (`plan_122_two_destination_local_composition`); router-delivery seam emits `OBGWRouterDelivery` cells addressed to the local outbound creator's first hop; authenticated-router link between outbound endpoint and remote inbound gateway remains a transport-level omission | None |
+| Standard LeaseSet2 structural codec (ordinary online-signed published subset) | Experimental | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/closure/destination-streaming/119-status.md`](../plans/closure/destination-streaming/119-status.md), [`plans/closure/destination-streaming/121-status.md`](../plans/closure/destination-streaming/121-status.md), [`plans/closure/destination-streaming/122-status.md`](../plans/closure/destination-streaming/122-status.md) | 40-byte Lease2, LeaseSet2Header, LeaseSet2EncryptionKey, canonical Mapping options, signature domain `0x03 || signed_bytes`, strict fresh/Lease accounting, frozen wire-format fixture, i2np-level DatabaseStore round-trip, Plan 122 lookup-engine `handle_database_store_lease_set2` ingestion path with `LookupResult::LeaseSet2Success`, Plan 122 `router_hash_from_destination` helper, and Plan 122 daemon NetDbSeam `begin_lease_set2_lookup`/`ingest_lease_set2_response`/`cancel_lease_set2_lookup`; EncryptedLeaseSet / MetaLeaseSet / blinded / offline-signing / leased / PQ-hybrid variants remain deferred | None |
+| ECIES-X25519-AEAD-Ratchet destination session layer | Experimental structural subset | 6 | `specs/protocols/06-garlic-ecies-leasesets.md`, [`plans/closure/destination-streaming/121-status.md`](../plans/closure/destination-streaming/121-status.md) | Bounded `EciesSessionManager` with `MAX_OUTBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_INBOUND_SESSIONS_PER_REMOTE = 16`, `MAX_PENDING_NEW_SESSIONS = 64`, `MAX_TAG_LOOK_AHEAD = 32`, `MAX_REPLAY_CACHE_ENTRIES = 64`, `DEFAULT_SESSION_IDLE_SECONDS = 600`, `MAX_SESSION_IDLE_SECONDS = 1800`; structural Garlic payload block codec (`GarlicClove`, DateTime + Garlic encryption envelope) in `i2pr-proto`; deterministic two-destination NS → NSR → Existing Session trajectory with exact-once payload delivery, tag ratchet advancement, and replay rejection (`plan_121_deterministic_local_trajectory`); no remote router exercise | None |
+| Destination routing and Garlic composition | Experimental structural subset | 6 | [`plans/closure/destination-streaming/122-status.md`](../plans/closure/destination-streaming/122-status.md) | Bounded `LeaseSelector` / `LeaseSelectionPolicy` with expiry / safety-margin / zero-tunnel-id / destination-mismatch / uniform-distribution rejection; typed `OutboundRequest` builder; `compose_outbound_delivery` planner that drives ECIES encryption then `OutboundGatewayRole::forward_cells` with `DeliveryInstruction::Tunnel` targeting the selected lease; `DestinationRouting` cache with bounded `MAX_CONCURRENT_REMOTE_LOOKUPS = 256` and `MAX_PENDING_OUTBOUND_PER_REMOTE = 64`; `DestinationDispatcher` inbound surface with bounded `MAX_INBOUND_DESTINATIONS = 256`, `MAX_INBOUND_PENDING_MESSAGES = 256`, `MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION = 512 * 1024`; deterministic two-destination Phase A/B/C/F/H local composition (`plan_122_two_destination_local_composition`); router-delivery seam emits `OBGWRouterDelivery` cells addressed to the local outbound creator's first hop; authenticated-router link between outbound endpoint and remote inbound gateway remains a transport-level omission | None |
 | EncryptedLeaseSet and MetaLeaseSet | Deferred | 6 | `specs/protocols/06-garlic-ecies-leasesets.md` | Explicit `DatabaseStoreData::Deferred` framing only | None |
-| I2P streaming | Experimental minimal core | 6 | `specs/protocols/07-streaming.md`, [`plans/128-status.md`](../plans/128-status.md), [`plans/130-status.md`](../plans/130-status.md), [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md) | Synchronous Tokio-free deterministic `StreamingManager` in `i2pr-client::streaming` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. Wire codec in `i2pr-proto::streaming` (Plan 128 normative form): normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage signed once, eight Proposal 164 replay NACK words on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, and the protocol-6 RFC 1952 gzip `ClientPayload` envelope (Plan 125). Sixteen deterministic integration tests in `plan123_trajectory` cover the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN → data → CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. The streaming layer is runtime-neutral; the combined outbound/inbound `StreamingDestinationAdapter` (Plan 129) bridges it into Plan 122's `compose_outbound_delivery` and `DestinationDispatcher`, and the Plan 129 integrated gate (`plan129_trajectory`, twelve deterministic tests) drives the complete destination stack in both directions. Interoperability against an independent router is not claimed. | None |
-| SAM 3.1 protocol foundation (Plan 136 → Plan 142 corrective → Plan 146 bidirectional reference requalification) | Experimental; non-advertised | 7 | `specs/protocols/08-sam.md`, [`plans/136-m7-sam31-protocol-private-destination-foundation.md`](../plans/136-m7-sam31-protocol-private-destination-foundation.md), [`plans/136-status.md`](../plans/136-status.md), [`plans/142-m7-sam31-encoding-private-destination-corrective.md`](../plans/142-m7-sam31-encoding-private-destination-corrective.md), [`plans/142-status.md`](../plans/142-status.md), [`plans/146-m7-sam31-private-destination-reference-requalification.md`](../plans/146-m7-sam31-private-destination-reference-requalification.md), [`plans/146-status.md`](../plans/146-status.md) | `i2pr-api` crate: bounded line/command/reply parser, typed `HELLO VERSION` / `DEST GENERATE` / `SESSION CREATE` / `STREAM CONNECT` / `STREAM ACCEPT` / `STREAM FORWARD` / `NAMING LOOKUP` / `PING` / `PONG` / `QUIT` vocabulary; explicit 3.1-only version negotiation with typed NOVERSION failure path; **I2P Base64 codec** (`A-Z a-z 0-9 - ~`, `=` padding — Plan 142 corrected the prior RFC 4648 alphabet, with `+`/`/` rejection and frozen alphabet/padding/length vectors; see [`specs/references/sam31-private-destination.md`](../specs/references/sam31-private-destination.md) for the independent i2pd / Java I2P / i2pd `Identity.cpp` / i2plib corroboration); SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation (`Destination || X25519_static_secret || Ed25519_signing_seed`, 455 bytes) with `encode_base64`, `encode_public_base64`, `into_identity`, public-only `PartialEq`; **Plan 146** introduces `DestinationIdentity::from_imported` so the SAM import path preserves the destination's embedded encryption public field verbatim (the standard Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts treat the destination encryption field as opaque random bytes for destinations); `dest_generate` runtime-neutral core operation that produces a `SamPrivateDestination` from an injected CSPRNG; `parse_session_create` typed request parser that accepts `STYLE=STREAM` with either `DESTINATION=TRANSIENT` or an imported `PRIV`; deterministic test vectors covering canonical HELLO 3.1, line-length/token-count ceilings, NUL/control-byte rejection, duplicate critical options, unsupported-style/options detection, version negotiation overlaps and disjoints, malformed/alphabet-incorrect Base64, frozen round-trip of the standard SAM private-destination format, truncation/mutation/padding rejection, I2P Base64 `-`/`~` acceptance and `+`/`/` rejection, and Debug redaction. Plan 136 owns no sockets, timers, channels, or Tokio tasks; Plan 137 owns the supervised loopback listener through `i2pr-daemon`. | None |
-| SAM 3.1 loopback server and session lifecycle (Plan 137) | Experimental; non-advertised | 7 | [`plans/137-m7-sam31-loopback-server-session-lifecycle.md`](../plans/137-m7-sam31-loopback-server-session-lifecycle.md), [`plans/137-status.md`](../plans/137-status.md) | `i2pr-api` runtime-neutral surface (`SamLimits`, `SamSessionId`, `SamSessionRegistry`, `LineReader`, `ServerConnectionState` / `dispatch` / `apply_session_outcome`) + `i2pr-daemon` supervised Tokio listener (`SamServiceState`, `serve`, `bind`, `execute_session_create`, per-destination `StreamingManager` pool, cleanup path). `SESSION CREATE` is transactional across the SAM + `DestinationRegistry` insert. The `[sam]` config section defaults to `enabled = false`; integration tests bind on an ephemeral loopback port via `SamLimits::loopback_test_profile`. STREAM CONNECT / ACCEPT / FORWARD and NAMING LOOKUP reply `NOT_IMPLEMENTED` per Plan 137 §6 / §7. | None |
-| SAM 3.1 STREAM CONNECT / ACCEPT transport bridge (Plan 138) | Experimental; non-advertised | 7 | [`plans/138-m7-sam31-stream-connect-accept-bridge.md`](../plans/138-m7-sam31-stream-connect-accept-bridge.md), [`plans/138-status.md`](../plans/138-status.md) | `i2pr-api` runtime-neutral `SamStreamRegistry` (FIFO ACCEPT queue, per-session stream-socket ceiling, per-session pending-accept ceiling), typed `StreamConnectRequest` / `StreamAcceptRequest` plus their `parse_stream_connect` / `parse_stream_accept` extractors, and the new `DispatchOutcome::RequireStreamConnect` / `DispatchOutcome::RequireStreamAccept` variants. `i2pr-daemon` runtime bridge `SamDestinationBridge` (per-destination `Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`), `SamDestinations` registry, captured-outbound seam, strict `decode_destination_triple`. SAM `STREAM CONNECT` routes to `execute_stream_connect` (validates session, decodes destination, calls `StreamingManager::connect`, drains outbound through `StreamingDestinationAdapter::send`, yields until `Established`; timeout maps to `RESULT=TIMEOUT`); `STREAM ACCEPT` routes to `execute_stream_accept` (validates session, binds wildcard listener, returns registered stream id). Plan 138 returns `RESULT=OK` only after `Established`. STREAM FORWARD and NAMING LOOKUP remain `NOT_IMPLEMENTED` (Plan 139). | None |
-| SAM 3.1 forward/naming hardening (Plan 139) | Experimental; non-advertised | 7 | [`plans/139-m7-sam31-forward-naming-hardening.md`](../plans/139-m7-sam31-forward-naming-hardening.md), [`plans/139-status.md`](../plans/139-status.md), `specs/protocols/08-sam.md` | Loopback-only, control-socket-owned STREAM FORWARD with atomic ACCEPT exclusion, bounded/cancellable raw bridge, session-scoped `NAME=ME`, strict canonical full-Destination lookup, locally-known b32 lookup, no DNS/address book, and explicit unsupported-feature replies. Plan 150 revalidated the real-byte path through the external-client lane. | None |
-| SAM 3.1 independent-client closure (Plans 140–150) | Experimental; non-advertised | 7 | [`plans/150-status.md`](../plans/150-status.md), [`tests/integration/sam/README.md`](../tests/integration/sam/README.md), [`tests/integration/sam/evidence.md`](../tests/integration/sam/evidence.md) | **Plan 150 passed** the real-loopback localhost SAM-client closure with exact i2psam `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac` and qualified unmodified i2plib.sam `6edf51cd5d21cc745aa7e23cb98c582144884fa8` revisions: both client directions move exact binary 2 MiB payloads, with SILENT, private-destination, lifecycle, FORWARD, NAMING, and negative matrices passing. The official libsam3 `7d6e658798baec31394c5685f9583343cc00900b` snapshot is built/probed but not counted because its public API requires an 884-character private key while i2pr's canonical SAM PRIV is 608 characters. This is localhost application evidence only; router-to-router NTCP2/SSU2 and mixed-router tunnel interoperability remain unclaimed. No SAM feature is advertised. | `bash tests/integration/sam/run-independent.sh` plus the Plan 149 black-box suite and full workspace/boundary gates |
-| SSU2 | Experimental v2 peer-test/relay; non-advertised | 8 | `specs/protocols/09-ssu2.md`, [`plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md`](../plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md), [`plans/155-status.md`](../plans/155-status.md), [`plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`](../plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md), [`plans/156-status.md`](../plans/156-status.md), [`plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`](../plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md), [`plans/157-status.md`](../plans/157-status.md), [`plans/158-status.md`](../plans/158-status.md), [`plans/159-status.md`](../plans/159-status.md), [`plans/160-status.md`](../plans/160-status.md) | Runtime-neutral `i2pr-transport-ssu2` (no Tokio, no sockets, no async): strict v2 RouterAddress parsing/validation (`SSU2`, `v=2`, 32-byte static/intro keys, numeric-IP host, UDP port, MTU floor 1280, bounded caps, bounded introducers; v3/v4 classified unsupported/deferred), structural long/short header codecs (types 0/1/2/6/7/9/10/11, version 2, network ID 2), the bounded authenticated-plaintext block vocabulary with unknown-block byte/count ceilings, the complete Noise XK establishment handshake (SessionRequest/Created/Confirmed, TokenRequest/Retry, ChaCha20 header protection, bounded one-use token lifecycle, RouterInfo fragmentation/validation, replay/deadline state, directional data keys), plus the authenticated data phase (`Ssu2Session`: short-header packets with the two-step data KDF, replay window, strict ACK scheduling, fresh retransmission with RTT/RTO/congestion control, I2NP fragmentation/reassembly with duplicate suppression, termination/rekey/idle handling), the localhost UDP runtime (`Ssu2RuntimeService` with central scheduler and the real-loopback session product), authenticated path validation/migration with corroboration-gated reachability/publication policy and deterministic NTCP2/SSU2 selection, and peer-test/relay reachability (Alice/Bob/Charlie roles with typed outcomes, requester/introducer/target machines with HolePunch, validated introducers, runtime coordination with introducer service disabled by default). No public advertisement, no production publication, no interoperability claim. Plan 161 proves both direct IPv4 directions plus cached-token/malformed rows against exact-pinned i2pd 2.61.0 over loopback (mutual auth, small + fragmented DatabaseStore with DeliveryStatus echoes per direction, graceful teardown) and lands the fail-closed 15-row ledger with its routine-CI-enforced checker and manual external workflow; Java I2P is recorded nonblocking debt and Milestone 8 final acceptance is closed-via-plan161 within exactly this bounded scope (see `plans/161-status.md` for the 24-criterion checklist and hosted runs). PQ-hybrid v3/v4 is deferred compatibility-watch debt; SSU1 remains unsupported. | `cargo test --locked -p i2pr-transport-ssu2 --all-targets` plus `cargo test --locked -p i2pr-runtime --test ssu2_peer_relay` plus `bash scripts/check-ssu2-vectors.sh` plus `bash tests/integration/ssu2/run-independent.sh` plus `bash scripts/check-ssu2-acceptance-evidence.sh` |
-| I2CP | Experimental loopback server product (Plans 164–169 plus 171 corrective); non-advertised | 9 | `specs/protocols/10-i2cp-service-tunnels.md`, [`plans/163-m9-i2cp-roadmap.md`](../plans/163-m9-i2cp-roadmap.md), [`plans/164-m9-i2cp-protocol-and-wire-foundation.md`](../plans/164-m9-i2cp-protocol-and-wire-foundation.md), [`plans/164-status.md`](../plans/164-status.md) | Plan 164 `i2pr-api::i2cp`: `0x2a` preamble, strict common frame (64 KiB ceiling, incremental decoder), exact type IDs/directions/dispositions for all 25 assigned types, structural codecs for the M9 profile (GetDate/SetDate, session create/reconfigure/destroy/status, variable-lease request, Standard-LeaseSet2 publication with ordered redacted zeroized keys, send/expires, payload/status, bandwidth, destination/host lookup, disconnect), strict trailing-byte rejection, typed deprecated/unsupported/unknown classification, payload/gzip metadata contract with recorded expansion ceiling; committed `tests/fixtures/i2cp/` corpus with `scripts/check-i2cp-vectors.sh` and `crates/i2pr-api/tests/i2cp_vectors.rs`. Loopback listener, session/destination activation, message data plane, self-composed local product, and the Plan 171 terminal close corrective are landed via Plans 165–169 plus Plan 171; no independent-client interoperability claim — that belongs to Plan 170. | None |
-| Service tunnels | Experimental; non-advertised; loopback-only | 10 | `specs/protocols/10-i2cp-service-tunnels.md`, [`plans/214-status.md`](../plans/214-status.md), [`plans/215-status.md`](../plans/215-status.md) | Generic client/server tunnels + HTTP/SOCKS5/IRC client/IRC server profiles (Plans 174–180, local delivery corrective Plan 182); router-backed generic Direction A+B external proof closed via Plan 213; product-only remote HTTP/IRC application closure via Plan 214 with hosted double-pass re-verification via Plan 215. Loopback-only, disabled by default. | None |
+| I2P streaming | Experimental minimal core | 6 | `specs/protocols/07-streaming.md`, [`plans/closure/destination-streaming/128-status.md`](../plans/closure/destination-streaming/128-status.md), [`plans/closure/destination-streaming/130-status.md`](../plans/closure/destination-streaming/130-status.md), [`specs/references/streaming-packet-wire.md`](../specs/references/streaming-packet-wire.md) | Synchronous Tokio-free deterministic `StreamingManager` in `i2pr-client::streaming` with per-destination outbound and inbound connection tables, listener backlogs, send/receive window and congestion policies, retransmit/timeout policy, and a typed event surface. Wire codec in `i2pr-proto::streaming` (Plan 128 normative form): normative flag map with policy sets `0x04A9`/`0x00A9`/`0x000A`/`0x000C`, no option-data TLVs, flag-driven option order, 2-byte big-endian payload-only MAX_PACKET_SIZE defaulting to 1730, raw final signatures from signing-key context, canonical zeroed-placeholder preimage signed once, eight Proposal 164 replay NACK words on the initial SYN only, retained peer signing key for CLOSE/RESET verification without FROM, and the protocol-6 RFC 1952 gzip `ClientPayload` envelope (Plan 125). Sixteen deterministic integration tests in `plan123_trajectory` cover the signed-SYN payload round trip, canonical preimage signature verification, SYN replay binding rejection, MAX_PACKET_SIZE_INCLUDED policy, corrupt-signature rejection, the full two-destination SYN → data → CLOSE trajectory, loss recovery via retransmit, duplicate packet idempotence, RESET termination, send window backpressure, connection table ceiling, and signed CLOSE / signed RESET packet shapes. The streaming layer is runtime-neutral; the combined outbound/inbound `StreamingDestinationAdapter` (Plan 129) bridges it into Plan 122's `compose_outbound_delivery` and `DestinationDispatcher`, and the Plan 129 integrated gate (`plan129_trajectory`, twelve deterministic tests) drives the complete destination stack in both directions. Interoperability against an independent router is not claimed. | None |
+| SAM 3.1 protocol foundation (Plan 136 → Plan 142 corrective → Plan 146 bidirectional reference requalification) | Experimental; non-advertised | 7 | `specs/protocols/08-sam.md`, [`plans/implementation/sam/136-m7-sam31-protocol-private-destination-foundation.md`](../plans/implementation/sam/136-m7-sam31-protocol-private-destination-foundation.md), [`plans/closure/sam/136-status.md`](../plans/closure/sam/136-status.md), [`plans/implementation/sam/142-m7-sam31-encoding-private-destination-corrective.md`](../plans/implementation/sam/142-m7-sam31-encoding-private-destination-corrective.md), [`plans/closure/sam/142-status.md`](../plans/closure/sam/142-status.md), [`plans/implementation/sam/146-m7-sam31-private-destination-reference-requalification.md`](../plans/implementation/sam/146-m7-sam31-private-destination-reference-requalification.md), [`plans/closure/sam/146-status.md`](../plans/closure/sam/146-status.md) | `i2pr-api` crate: bounded line/command/reply parser, typed `HELLO VERSION` / `DEST GENERATE` / `SESSION CREATE` / `STREAM CONNECT` / `STREAM ACCEPT` / `STREAM FORWARD` / `NAMING LOOKUP` / `PING` / `PONG` / `QUIT` vocabulary; explicit 3.1-only version negotiation with typed NOVERSION failure path; **I2P Base64 codec** (`A-Z a-z 0-9 - ~`, `=` padding — Plan 142 corrected the prior RFC 4648 alphabet, with `+`/`/` rejection and frozen alphabet/padding/length vectors; see [`specs/references/sam31-private-destination.md`](../specs/references/sam31-private-destination.md) for the independent i2pd / Java I2P / i2pd `Identity.cpp` / i2plib corroboration); SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation (`Destination || X25519_static_secret || Ed25519_signing_seed`, 455 bytes) with `encode_base64`, `encode_public_base64`, `into_identity`, public-only `PartialEq`; **Plan 146** introduces `DestinationIdentity::from_imported` so the SAM import path preserves the destination's embedded encryption public field verbatim (the standard Java I2P `PrivateKeyFile` and i2pd `IdentityEx` layouts treat the destination encryption field as opaque random bytes for destinations); `dest_generate` runtime-neutral core operation that produces a `SamPrivateDestination` from an injected CSPRNG; `parse_session_create` typed request parser that accepts `STYLE=STREAM` with either `DESTINATION=TRANSIENT` or an imported `PRIV`; deterministic test vectors covering canonical HELLO 3.1, line-length/token-count ceilings, NUL/control-byte rejection, duplicate critical options, unsupported-style/options detection, version negotiation overlaps and disjoints, malformed/alphabet-incorrect Base64, frozen round-trip of the standard SAM private-destination format, truncation/mutation/padding rejection, I2P Base64 `-`/`~` acceptance and `+`/`/` rejection, and Debug redaction. Plan 136 owns no sockets, timers, channels, or Tokio tasks; Plan 137 owns the supervised loopback listener through `i2pr-daemon`. | None |
+| SAM 3.1 loopback server and session lifecycle (Plan 137) | Experimental; non-advertised | 7 | [`plans/implementation/sam/137-m7-sam31-loopback-server-session-lifecycle.md`](../plans/implementation/sam/137-m7-sam31-loopback-server-session-lifecycle.md), [`plans/closure/sam/137-status.md`](../plans/closure/sam/137-status.md) | `i2pr-api` runtime-neutral surface (`SamLimits`, `SamSessionId`, `SamSessionRegistry`, `LineReader`, `ServerConnectionState` / `dispatch` / `apply_session_outcome`) + `i2pr-daemon` supervised Tokio listener (`SamServiceState`, `serve`, `bind`, `execute_session_create`, per-destination `StreamingManager` pool, cleanup path). `SESSION CREATE` is transactional across the SAM + `DestinationRegistry` insert. The `[sam]` config section defaults to `enabled = false`; integration tests bind on an ephemeral loopback port via `SamLimits::loopback_test_profile`. STREAM CONNECT / ACCEPT / FORWARD and NAMING LOOKUP reply `NOT_IMPLEMENTED` per Plan 137 §6 / §7. | None |
+| SAM 3.1 STREAM CONNECT / ACCEPT transport bridge (Plan 138) | Experimental; non-advertised | 7 | [`plans/implementation/sam/138-m7-sam31-stream-connect-accept-bridge.md`](../plans/implementation/sam/138-m7-sam31-stream-connect-accept-bridge.md), [`plans/closure/sam/138-status.md`](../plans/closure/sam/138-status.md) | `i2pr-api` runtime-neutral `SamStreamRegistry` (FIFO ACCEPT queue, per-session stream-socket ceiling, per-session pending-accept ceiling), typed `StreamConnectRequest` / `StreamAcceptRequest` plus their `parse_stream_connect` / `parse_stream_accept` extractors, and the new `DispatchOutcome::RequireStreamConnect` / `DispatchOutcome::RequireStreamAccept` variants. `i2pr-daemon` runtime bridge `SamDestinationBridge` (per-destination `Arc<DestinationIdentity>` + `StreamingManager` + signed `LeaseSet2` + `DestinationOutboundRole` + `DestinationRouting` + `EciesSessionManager`), `SamDestinations` registry, captured-outbound seam, strict `decode_destination_triple`. SAM `STREAM CONNECT` routes to `execute_stream_connect` (validates session, decodes destination, calls `StreamingManager::connect`, drains outbound through `StreamingDestinationAdapter::send`, yields until `Established`; timeout maps to `RESULT=TIMEOUT`); `STREAM ACCEPT` routes to `execute_stream_accept` (validates session, binds wildcard listener, returns registered stream id). Plan 138 returns `RESULT=OK` only after `Established`. STREAM FORWARD and NAMING LOOKUP remain `NOT_IMPLEMENTED` (Plan 139). | None |
+| SAM 3.1 forward/naming hardening (Plan 139) | Experimental; non-advertised | 7 | [`plans/implementation/sam/139-m7-sam31-forward-naming-hardening.md`](../plans/implementation/sam/139-m7-sam31-forward-naming-hardening.md), [`plans/closure/sam/139-status.md`](../plans/closure/sam/139-status.md), `specs/protocols/08-sam.md` | Loopback-only, control-socket-owned STREAM FORWARD with atomic ACCEPT exclusion, bounded/cancellable raw bridge, session-scoped `NAME=ME`, strict canonical full-Destination lookup, locally-known b32 lookup, no DNS/address book, and explicit unsupported-feature replies. Plan 150 revalidated the real-byte path through the external-client lane. | None |
+| SAM 3.1 independent-client closure (Plans 140–150) | Experimental; non-advertised | 7 | [`plans/closure/sam/150-status.md`](../plans/closure/sam/150-status.md), [`tests/integration/sam/README.md`](../tests/integration/sam/README.md), [`tests/integration/sam/evidence.md`](../tests/integration/sam/evidence.md) | **Plan 150 passed** the real-loopback localhost SAM-client closure with exact i2psam `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac` and qualified unmodified i2plib.sam `6edf51cd5d21cc745aa7e23cb98c582144884fa8` revisions: both client directions move exact binary 2 MiB payloads, with SILENT, private-destination, lifecycle, FORWARD, NAMING, and negative matrices passing. The official libsam3 `7d6e658798baec31394c5685f9583343cc00900b` snapshot is built/probed but not counted because its public API requires an 884-character private key while i2pr's canonical SAM PRIV is 608 characters. This is localhost application evidence only; router-to-router NTCP2/SSU2 and mixed-router tunnel interoperability remain unclaimed. No SAM feature is advertised. | `bash tests/integration/sam/run-independent.sh` plus the Plan 149 black-box suite and full workspace/boundary gates |
+| SSU2 | Experimental v2 peer-test/relay; non-advertised | 8 | `specs/protocols/09-ssu2.md`, [`plans/implementation/ssu2/155-m8-ssu2-v2-protocol-foundation-and-addresses.md`](../plans/implementation/ssu2/155-m8-ssu2-v2-protocol-foundation-and-addresses.md), [`plans/closure/ssu2/155-status.md`](../plans/closure/ssu2/155-status.md), [`plans/implementation/ssu2/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`](../plans/implementation/ssu2/156-m8-ssu2-v2-handshake-token-and-routerinfo.md), [`plans/closure/ssu2/156-status.md`](../plans/closure/ssu2/156-status.md), [`plans/implementation/ssu2/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`](../plans/implementation/ssu2/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md), [`plans/closure/ssu2/157-status.md`](../plans/closure/ssu2/157-status.md), [`plans/closure/ssu2/158-status.md`](../plans/closure/ssu2/158-status.md), [`plans/closure/ssu2/159-status.md`](../plans/closure/ssu2/159-status.md), [`plans/closure/ssu2/160-status.md`](../plans/closure/ssu2/160-status.md) | Runtime-neutral `i2pr-transport-ssu2` (no Tokio, no sockets, no async): strict v2 RouterAddress parsing/validation (`SSU2`, `v=2`, 32-byte static/intro keys, numeric-IP host, UDP port, MTU floor 1280, bounded caps, bounded introducers; v3/v4 classified unsupported/deferred), structural long/short header codecs (types 0/1/2/6/7/9/10/11, version 2, network ID 2), the bounded authenticated-plaintext block vocabulary with unknown-block byte/count ceilings, the complete Noise XK establishment handshake (SessionRequest/Created/Confirmed, TokenRequest/Retry, ChaCha20 header protection, bounded one-use token lifecycle, RouterInfo fragmentation/validation, replay/deadline state, directional data keys), plus the authenticated data phase (`Ssu2Session`: short-header packets with the two-step data KDF, replay window, strict ACK scheduling, fresh retransmission with RTT/RTO/congestion control, I2NP fragmentation/reassembly with duplicate suppression, termination/rekey/idle handling), the localhost UDP runtime (`Ssu2RuntimeService` with central scheduler and the real-loopback session product), authenticated path validation/migration with corroboration-gated reachability/publication policy and deterministic NTCP2/SSU2 selection, and peer-test/relay reachability (Alice/Bob/Charlie roles with typed outcomes, requester/introducer/target machines with HolePunch, validated introducers, runtime coordination with introducer service disabled by default). No public advertisement, no production publication, no interoperability claim. Plan 161 proves both direct IPv4 directions plus cached-token/malformed rows against exact-pinned i2pd 2.61.0 over loopback (mutual auth, small + fragmented DatabaseStore with DeliveryStatus echoes per direction, graceful teardown) and lands the fail-closed 15-row ledger with its routine-CI-enforced checker and manual external workflow; Java I2P is recorded nonblocking debt and Milestone 8 final acceptance is closed-via-plan161 within exactly this bounded scope (see `plans/closure/ssu2/161-status.md` for the 24-criterion checklist and hosted runs). PQ-hybrid v3/v4 is deferred compatibility-watch debt; SSU1 remains unsupported. | `cargo test --locked -p i2pr-transport-ssu2 --all-targets` plus `cargo test --locked -p i2pr-runtime --test ssu2_peer_relay` plus `bash scripts/check-ssu2-vectors.sh` plus `bash tests/integration/ssu2/run-independent.sh` plus `bash scripts/check-ssu2-acceptance-evidence.sh` |
+| I2CP | Experimental loopback server product (Plans 164–169 plus 171 corrective); non-advertised | 9 | `specs/protocols/10-i2cp-service-tunnels.md`, [`plans/implementation/i2cp/163-m9-i2cp-roadmap.md`](../plans/implementation/i2cp/163-m9-i2cp-roadmap.md), [`plans/implementation/i2cp/164-m9-i2cp-protocol-and-wire-foundation.md`](../plans/implementation/i2cp/164-m9-i2cp-protocol-and-wire-foundation.md), [`plans/closure/i2cp/164-status.md`](../plans/closure/i2cp/164-status.md) | Plan 164 `i2pr-api::i2cp`: `0x2a` preamble, strict common frame (64 KiB ceiling, incremental decoder), exact type IDs/directions/dispositions for all 25 assigned types, structural codecs for the M9 profile (GetDate/SetDate, session create/reconfigure/destroy/status, variable-lease request, Standard-LeaseSet2 publication with ordered redacted zeroized keys, send/expires, payload/status, bandwidth, destination/host lookup, disconnect), strict trailing-byte rejection, typed deprecated/unsupported/unknown classification, payload/gzip metadata contract with recorded expansion ceiling; committed `tests/fixtures/i2cp/` corpus with `scripts/check-i2cp-vectors.sh` and `crates/i2pr-api/tests/i2cp_vectors.rs`. Loopback listener, session/destination activation, message data plane, self-composed local product, and the Plan 171 terminal close corrective are landed via Plans 165–169 plus Plan 171; no independent-client interoperability claim — that belongs to Plan 170. | None |
+| Service tunnels | Experimental; non-advertised; loopback-only | 10 | `specs/protocols/10-i2cp-service-tunnels.md`, [`plans/closure/service-tunnels/214-status.md`](../plans/closure/service-tunnels/214-status.md), [`plans/closure/service-tunnels/215-status.md`](../plans/closure/service-tunnels/215-status.md) | Generic client/server tunnels + HTTP/SOCKS5/IRC client/IRC server profiles (Plans 174–180, local delivery corrective Plan 182); router-backed generic Direction A+B external proof closed via Plan 213; product-only remote HTTP/IRC application closure via Plan 214 with hosted double-pass re-verification via Plan 215. Loopback-only, disabled by default. | None |
 
 The workspace may name the `common` and `i2np` namespaces and now includes the
 non-networked `i2pr-runtime` supervision crate, but runtime infrastructure is
@@ -406,8 +406,8 @@ Plan 060 was the execution-only fresh-candidate and two-run
 Milestone 3 certificate closure pass. Plan 060 is now **retired
 by Plan 062** (Plan 062 evidence-contract and architecture
 correction pass). The Plan 060 candidate record
-(`plans/060-candidate.md`) is preserved verbatim for audit; the
-Plan 060 closure record (`plans/060-closure.md`) carries the
+(`plans/closure/ntcp2-transport/060-candidate.md`) is preserved verbatim for audit; the
+Plan 060 closure record (`plans/closure/ntcp2-transport/060-closure.md`) carries the
 explicit "Superseded by Plan 062" marker. Future candidates must
 descend from the Plan 065 implementation floor or later and must
 use the Plan 062 v4 trigger schema, the Plan 062 reference-event
@@ -428,8 +428,8 @@ but cannot complete on this constrained host (per Plan 051).
 The Plan 060 implementation surface
 (`tests/integration/ntcp2/harness/plan060.py`, the Plan 060 test
 matrix, the static boundary checker extension, the candidate
-record `plans/060-candidate.md`, and the closure record
-`plans/060-closure.md`) is preserved as an audit record. NTCP2
+record `plans/closure/ntcp2-transport/060-candidate.md`, and the closure record
+`plans/closure/ntcp2-transport/060-closure.md`) is preserved as an audit record. NTCP2
 remains experimental and non-advertised until a future pinned
 Java revision exposes a transport-only direct seam (or ADR 0021
 is re-issued) and either the Plan 046 rootless sealed-namespace
@@ -704,15 +704,15 @@ separately qualified full-runtime lane.
 Plan 078 used the Plan 080-qualified guest but stopped before TCP at the i2pr
 pre-protocol RouterInfo stage. That result is not protocol evidence. No
 support-ledger status changed and NTCP2 remains experimental and
-non-advertised. See [`plans/078-status.md`](../plans/078-status.md) and
-[`plans/080-status.md`](../plans/080-status.md).
+non-advertised. See [`plans/closure/ntcp2-transport/078-status.md`](../plans/closure/ntcp2-transport/078-status.md) and
+[`plans/closure/ntcp2-transport/080-status.md`](../plans/closure/ntcp2-transport/080-status.md).
 
 ## Active status correction (2026-08-13)
 
 The active Milestone 4 parent authority is
-[Plan 102](../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+[Plan 102](../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 and the
-[Plan 102 amendment](../plans/102-amendment-exploratory-tunnel-dependency.md)
+[Plan 102 amendment](../plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md)
 clarifies that live RouterInfo lookup through a direct router
 transport is not a substitute for the standard exploratory-tunnel
 path. Plans 103, 104, 105, and 106 have all landed locally on this
@@ -729,23 +729,23 @@ vocabulary, `bootstrap_daemon`, `netdb-bootstrap` service) and a
 runtime-facing `NetDbSeam` that reports
 `BlockedExploratoryTunnelUnavailable` until Milestone 5 supplies
 exploratory tunnels. The Plan 103/104/105/106 closure records are
-`plans/103-status.md`, `plans/104-status.md`, `plans/105-status.md`,
-and `plans/106-status.md`. The next executable implementation is
+`plans/closure/netdb/103-status.md`, `plans/closure/netdb/104-status.md`, `plans/closure/netdb/105-status.md`,
+and `plans/closure/netdb/106-status.md`. The next executable implementation is
 Milestone 5 exploratory tunnels → Milestone 4B external acceptance.
 
 The retained Milestone 3 forward-direction closure lane was governed by
-[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md), with
-[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md),
-[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md),
+[Plan 095](../plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md), with
+[Plan 096](../plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md),
+[Plan 097](../plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md),
 and
-[Plan 098](../plans/098-plan095-runner-provenance-boundary-corrective-pass.md)
+[Plan 098](../plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md)
 as closed corrective passes that restored execution correctness before
 the next authoritative dispatch. The Plan 082 prepare / validate-scenario
 surface is implemented and closed; Plans 083 and 084 are implemented and
 reclassified as execution-pending. The Plan 084 historical
 `lane-invalidated` closure is reclassified as "runner implementation
 completed; required reverse wire execution never occurred" and the
-active development decision now lives in `plans/088-status.md`. The
+active development decision now lives in `plans/closure/ntcp2-transport/088-status.md`. The
 Plan 078/080 attempt stopped pre-protocol and did not produce a TCP,
 NTCP2, authenticated-frame, or I2NP result. Plan 082 prepares authentic
 i2pr state and real RouterInfo/hash/run-identity fields, the Rust
@@ -784,12 +784,12 @@ blocked pending the Plan 088 decision. Plan 072 remains inactive. It
 requires a real wire-stage i2pr/i2pd disagreement that source and
 specification review cannot own, plus
 `decision = ambiguous-reference-divergence` and one exact diagnostic
-question in [`plans/088-status.md`](../plans/088-status.md). The
+question in [`plans/closure/ntcp2-transport/088-status.md`](../plans/closure/ntcp2-transport/088-status.md). The
 historical `lane-invalidated` and `same-stage-two-way-i2pr-defect`
 tokens are forbidden by the static boundary checker. Preparation-only
 and pre-protocol results cannot activate Emissary or change this
 support ledger. The
-[Plan 072/079 gate amendment](../plans/072-079-gate-amendment-plan-088.md)
+[Plan 072/079 gate amendment](../plans/implementation/ntcp2-transport/072-079-gate-amendment-plan-088.md)
 records the active gate authority.
 
 The current status of the active sequence is:
@@ -809,7 +809,7 @@ router_construction = next
 
 ### Plan 095 CI host-loopback live-wire evidence lane
 
-[Plan 095](../plans/095-ci-host-loopback-live-wire-evidence-lane.md)
+[Plan 095](../plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md)
 implements the GitHub Actions `ubuntu-24.04` host-loopback live-wire
 evidence lane that runs the Plan 086 `host-loopback-development` topology
 on a fresh VM. The lane is **development-only**; it never satisfies a
@@ -832,7 +832,7 @@ evidence can close.
 
 ### Plan 096/097/098 Plan 095 corrective passes
 
-[Plan 096](../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
+[Plan 096](../plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md)
 closed four demonstrated workflow defects before the first authoritative
 dispatch: explicit i2pr build path, disjoint sanitized evidence,
 embedded Python import audit, and canonical tracked-source digest. The
@@ -840,7 +840,7 @@ static regression matrix `test_plan096.py` (36 cases) and the
 pre-dispatch audit `scripts/check-plan095-workflow.sh` are green
 locally.
 
-[Plan 097](../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
+[Plan 097](../plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md)
 closed two narrow workflow defects that remained after Plan 096:
 artifact-path ownership (one canonical absolute `BUILD_OUTPUT` path used
 by every producer, verifier, manifest generator, artifact uploader, and
@@ -849,7 +849,7 @@ an exact path guard and an unsuppressed absence assertion). The static
 regression matrix `test_plan097.py` (45 cases) and the extended
 pre-dispatch audit are green locally.
 
-[Plan 098](../plans/098-plan095-runner-provenance-boundary-corrective-pass.md)
+[Plan 098](../plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md)
 closed the runner/provenance ownership boundary that the first
 authoritative Plan 095 dispatch exposed on 2026-08-10. The forward,
 reverse, and preflight runners now accept an explicit `i2pr_binary: Path`
@@ -867,7 +867,7 @@ runner/provenance failure with no TCP or NTCP2 wire conclusion.
 
 ### Plan 099 Milestone 3 interop exit, harness reduction, and router buildout
 
-[Plan 099](../plans/099-ntcp2-interop-exit-harness-simplification-and-router-build-unblock.md)
+[Plan 099](../plans/implementation/ntcp2-transport/099-ntcp2-interop-exit-harness-simplification-and-router-build-unblock.md)
 is the corrective and exit plan from the multi-job CI/provenance
 expansion. It corrects the central Plan 099 implementation finding
 — the instrumented i2pd transport libraries were never actually
@@ -881,7 +881,7 @@ control build cannot emit. The development exit gate vocabulary is
 bounded to three values: `passed`, `protocol-defect-localized`,
 `environment-or-harness-blocked`.
 
-[Plan 100](../plans/100-plan099-exit-gate-cleanup-and-router-handoff.md)
+[Plan 100](../plans/implementation/ntcp2-transport/100-plan099-exit-gate-cleanup-and-router-handoff.md)
 is the one-time active cleanup authority that repairs the exit gate
 (D1, D2), hardens the i2pd observer proof (D3), and removes the
 divergent source-tree digest fallback (D4). The Plan 099 single-job
@@ -941,7 +941,7 @@ checkpoint rather than gating offline/local router development.
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
 
-[Plan 102](../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+[Plan 102](../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 is the active Milestone 4 parent authority that supersedes the
 historical Milestone 3 "active" blocks for the purpose of
 continuing router development. The retained Plan 099/100/101
@@ -953,11 +953,11 @@ short-build architecture but its wire/cryptographic algorithm
 diverges from the current official I2P Tunnel Creation
 Specification.
 The amendment closure and future-plan unblock audit are recorded in
-[`plans/102-amendment-status.md`](../plans/102-amendment-status.md).
+[`plans/closure/netdb/102-amendment-status.md`](../plans/closure/netdb/102-amendment-status.md).
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
-[Plan 102 amendment](../plans/102-amendment-exploratory-tunnel-dependency.md)
+[Plan 102 amendment](../plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md)
 corrects an over-optimistic wording in the first Plan 102 draft.
 The current I2P `DatabaseLookup` operation uses an outbound
 exploratory tunnel and requests the response through an inbound
@@ -1012,9 +1012,9 @@ inbound tunnel is registered. Plan 108 landed the local
 short-record construction architecture but its wire/cryptographic
 algorithm is **not** protocol-conformant against the current
 official I2P Tunnel Creation Specification; see
-[`plans/108-conformance-amendment.md`](../plans/108-conformance-amendment.md)
+[`plans/implementation/exploratory-tunnels/108-conformance-amendment.md`](../plans/implementation/exploratory-tunnels/108-conformance-amendment.md)
 and the Plan 109/110 corrective roadmap at
-[`plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](../plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md).
+[`plans/implementation/exploratory-tunnels/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md`](../plans/implementation/exploratory-tunnels/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md).
 Plan 109 corrected the wire format, Noise-N transcript, layer-encryption
 type, request/reply key derivation, response codes, and 218-byte
 envelope layout but missed four defects that Plan 111 reopens.
@@ -1046,8 +1046,8 @@ Emissary's native short-build handler, Emissary replies with
 historical Plan 115 Branch E closure
 (`blocked-no-bounded-independent-consumer-seam`) is superseded by
 this Q0 completion but is preserved as historical context in
-[`plans/115-status.md`](../plans/115-status.md) and
-[`plans/115-handoff.md`](../plans/115-handoff.md). Q1 (authenticated
+[`plans/closure/exploratory-tunnels/115-status.md`](../plans/closure/exploratory-tunnels/115-status.md) and
+[`plans/implementation/exploratory-tunnels/115-handoff.md`](../plans/implementation/exploratory-tunnels/115-handoff.md). Q1 (authenticated
 transport delivery) and Q2 (reply round-trip to `Established`)
 remain pending on a qualified external delivery lane. Milestone
 4A is now
@@ -1066,7 +1066,7 @@ Mapping decoding; the reference-side defect is localized to the
 pinned Emissary revision, and Plan 118 Phase B1 confirmed no
 upstream correction is available. Router construction is
 `may-continue`. Plan 119 closed as `passed-leaseset2-protocol-foundation`
-per [`plans/119-status.md`](../plans/119-status.md); Plan 120 closed
+per [`plans/closure/destination-streaming/119-status.md`](../plans/closure/destination-streaming/119-status.md); Plan 120 closed
 as `passed-destination-lifecycle-and-pools` and lands the first
 `i2pr-client` destination runtime; Plan 121 closed as
 `passed-ecies-destination-session-layer` and lands the first real
@@ -1075,15 +1075,15 @@ ECIES-X25519-AEAD-Ratchet destination Garlic/session layer (audited
 primitives in `i2pr-crypto`, bounded structural Garlic payload block
 codec in `i2pr-proto`, and bounded destination-context
 `EciesSessionManager` in `i2pr-client`). Plan 122 closed as
-`passed-corrected-local-destination-routing` per [`plans/122-status.md`](../plans/122-status.md)
-and [`plans/124-status.md`](../plans/124-status.md)
+`passed-corrected-local-destination-routing` per [`plans/closure/destination-streaming/122-status.md`](../plans/closure/destination-streaming/122-status.md)
+and [`plans/closure/destination-streaming/124-status.md`](../plans/closure/destination-streaming/124-status.md)
 and composes the Plan 119 LeaseSet2 lookup surface, the Plan 120
 destination runtime, the Plan 121 ECIES session layer, and the
 Plan 116 tunnel data plane into the first complete local
 destination routing pipeline. The next executable plan is
 **Plan 123** (minimal streaming core)
 under the Milestone 6 router-construction roadmap at
-[`plans/118-123-milestone6-router-construction-roadmap.md`](../plans/118-123-milestone6-router-construction-roadmap.md).
+[`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md).
 
 ### Plan 113 inbound short-build reconciliation
 
@@ -1097,4 +1097,4 @@ I2P and i2pd construction, but remains
 text conformance because the specification does not define a concrete
 plaintext creator-key encoding. See
 [`specs/references/short-build-inbound-creator-key.md`](../specs/references/short-build-inbound-creator-key.md)
-and [`plans/113-status.md`](../plans/113-status.md).
+and [`plans/closure/exploratory-tunnels/113-status.md`](../plans/closure/exploratory-tunnels/113-status.md).

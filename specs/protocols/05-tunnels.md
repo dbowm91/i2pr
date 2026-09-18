@@ -59,9 +59,9 @@ live mixed-router exploratory             = Plan 117 target
 ```
 
 Plan-of-record:
-[`plans/116-local-tunnel-data-plane.md`](../../plans/116-local-tunnel-data-plane.md) +
-[`plans/116-completion-correction.md`](../../plans/116-completion-correction.md) +
-[`plans/116-status.md`](../../plans/116-status.md)
+[`plans/implementation/exploratory-tunnels/116-local-tunnel-data-plane.md`](../../plans/implementation/exploratory-tunnels/116-local-tunnel-data-plane.md) +
+[`plans/closure/exploratory-tunnels/116-completion-correction.md`](../../plans/closure/exploratory-tunnels/116-completion-correction.md) +
+[`plans/closure/exploratory-tunnels/116-status.md`](../../plans/closure/exploratory-tunnels/116-status.md)
 
 ## Required MVP roles
 

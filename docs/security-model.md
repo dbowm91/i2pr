@@ -435,7 +435,7 @@ I2NP, keys, transcripts, and remote error text must be deleted.
 
 The current checkout has no mixed-router artifacts or results because the
 complete runtime wire adapter and authorized testnet are unavailable. This is
-recorded as a blocker in `plans/036-closure.md`; neither the fixed-seed testkit
+recorded as a blocker in `plans/closure/ntcp2-transport/036-closure.md`; neither the fixed-seed testkit
 matrix nor pure fuzz campaigns are treated as interoperability evidence.
 
 ## Plan 038 harness threats and controls
@@ -608,7 +608,7 @@ path on disk, and the on-host evidence directory
 carries that blocker plus a kernel/sysctl/capability snapshot. The
 lane is runnable by an ordinary user on hosts where the AppArmor
 restriction is `0` (or AppArmor is unloaded); cross-host recovery is
-recorded in `plans/047-cross-host-rootless-lane-expansion.md`.
+recorded in `plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`.
 
 ## Plan 048/049 VM recovery boundary
 

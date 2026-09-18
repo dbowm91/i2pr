@@ -17,7 +17,7 @@
 //! ```
 //!
 //! Normative traceability: Plan 158
-//! (`plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`).
+//! (`plans/implementation/ssu2/158-m8-ssu2-udp-runtime-and-local-session-product.md`).
 //! Classical SSU2 v2 only; no public RouterInfo advertisement, no
 //! introducer/relay roles, no endpoint migration (Plans 159-160), no
 //! router-to-router interoperability claim (Plan 161).

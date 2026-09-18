@@ -136,7 +136,7 @@ record_guarded "plan214-source-head" \
 echo "==> Plan 213 prerequisite gate"
 prereq_rc=0
 if ! grep -Fq "passed-m10-router-backed-generic-external-qualification" \
-    "${REPO_ROOT}/plans/213-status.md" 2>/dev/null; then
+    "${REPO_ROOT}/plans/closure/service-tunnels/213-status.md" 2>/dev/null; then
   echo "Plan 213 has no passed status record; refusing Plan 214 closure" >&2
   prereq_rc=1
 fi

@@ -173,8 +173,8 @@ the original proposed notes; they were never implemented.
 
 ## References
 
-- `plans/055-reference-initiated-ntcp2-trigger-and-topology-qualification-pass.md`
-- `plans/058-plan056-record-and-candidate-integrity-closure-pass.md`
+- `plans/implementation/ntcp2-transport/055-reference-initiated-ntcp2-trigger-and-topology-qualification-pass.md`
+- `plans/closure/ntcp2-transport/058-plan056-record-and-candidate-integrity-closure-pass.md`
 - `tests/integration/ntcp2/reference-trigger-contracts.md`
 - `tests/integration/ntcp2/reference-observation-catalog.toml`
 - `docs/adr/0017-rootless-sealed-namespace-interop-evidence.md`

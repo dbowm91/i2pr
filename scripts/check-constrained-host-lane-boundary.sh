@@ -9,7 +9,7 @@ probe="$root/scripts/interop/probe-constrained-host-lanes.sh"
 module="$root/tests/integration/ntcp2/harness/execution_lane.py"
 tests="$root/tests/integration/ntcp2/harness/test_execution_lane.py"
 
-for path in "$probe" "$module" "$tests" "$root/plans/077-status.md"; do
+for path in "$probe" "$module" "$tests" "$root/plans/closure/ntcp2-transport/077-status.md"; do
   [[ -f "$path" ]] || fail "missing required artifact: $path"
 done
 [[ -x "$probe" ]] || fail "probe must be executable: $probe"

@@ -154,14 +154,14 @@ for the cache loader and reseed ingestor entry points).
   `9b43484a21d5a1291c4881cdae62a36c527f8c0f`; the i2pr parser is not
   relaxed, and publication / lookup / inbound return stages are not
   claimed. Plan 119 closed as `passed-leaseset2-protocol-foundation`
-  per [`plans/119-status.md`](../../plans/119-status.md); the
+  per [`plans/closure/destination-streaming/119-status.md`](../../plans/closure/destination-streaming/119-status.md); the
   ordinary online-signed published Standard LeaseSet2 carrier is
   wired into `i2pr-proto` and `i2pr-netdb` for the local Phase G
   production seam. The next executable plan is **Plan 120**
   (destination lifecycle and dedicated tunnel pools) under
-  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md);
-  see [`plans/117-status.md`](../../plans/117-status.md) and
-  [`plans/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/118-planning-authority-cleanup-and-plan117-disposition.md).
+  [`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md);
+  see [`plans/closure/exploratory-tunnels/117-status.md`](../../plans/closure/exploratory-tunnels/117-status.md) and
+  [`plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md`](../../plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md).
 - `store_message::handle_unsolicited_databasestore` — bounded
   ingestion handler for `DatabaseStore` messages that arrive outside
   an active lookup; rejects non-RouterInfo payloads (including

@@ -14,7 +14,7 @@ exact commit
 independent SSU2 v2 interop reference (both direct UDP directions at
 Plan 161, proven over loopback with the fail-closed
 `tests/integration/ssu2/run-independent.sh` lane — see
-`plans/161-status.md`). PQ-hybrid SSU2 v3/v4 in either router is deferred
+`plans/closure/ssu2/161-status.md`). PQ-hybrid SSU2 v3/v4 in either router is deferred
 compatibility-watch debt, not an M8 target. Specifications remain
 normative; implementation code is reference-only under the
 clean-room restriction in [SOURCES.md](SOURCES.md).

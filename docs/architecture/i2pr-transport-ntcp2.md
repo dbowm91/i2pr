@@ -305,9 +305,9 @@ integrity is enforced by `scripts/check-ntcp2-vectors.sh`.
 - [i2pr-testkit](i2pr-testkit.md) — provides
   `Ntcp2DataPhaseDriver` and handshake fuzz targets.
 - Plan-of-record:
-  - `plans/032-m3-ntcp2-crypto-transcript-and-vectors.md`
-  - `plans/033-m3-ntcp2-handshake-state-machines.md`
-  - `plans/034-m3-ntcp2-data-phase-and-blocks.md`
-- Closures: `plans/032-closure.md` … `plans/034-closure.md`.
+  - `plans/implementation/ntcp2-transport/032-m3-ntcp2-crypto-transcript-and-vectors.md`
+  - `plans/implementation/ntcp2-transport/033-m3-ntcp2-handshake-state-machines.md`
+  - `plans/implementation/ntcp2-transport/034-m3-ntcp2-data-phase-and-blocks.md`
+- Closures: `plans/closure/ntcp2-transport/032-closure.md` … `plans/closure/ntcp2-transport/034-closure.md`.
 - Synthetic interoperability lane: `tests/integration/ntcp2/`
   (manifest enforced by `scripts/check-ntcp2-interoperability.sh`).

@@ -26,7 +26,7 @@ inbound tunnel is registered.
 > exact-byte equality for both unfragmented (`DeliveryStatus`
 > body) and fragmented (`Data` body across multiple TunnelData
 > cells) cases. The Plan 116 terminal cleanup pass
-> ([`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md),
+> ([`plans/closure/exploratory-tunnels/116-terminal-cleanup.md`](../../plans/closure/exploratory-tunnels/116-terminal-cleanup.md),
 > defects `T1`–`T4`) closes the four remaining closure defects:
 > the `BoundedReassembler` now classifies every insertion
 > through `PartialMessage::classify()` into
@@ -90,7 +90,7 @@ inbound tunnel is registered.
 > standard-header decoder assertion that proves the body bytes
 > equal the original delivery payload exactly. Plan 115 Q0
 > construction + native OBEP reply has passed locally against
-> pinned Emissary; see [`plans/115-status.md`](../../plans/115-status.md).
+> pinned Emissary; see [`plans/closure/exploratory-tunnels/115-status.md`](../../plans/closure/exploratory-tunnels/115-status.md).
 > The Q0 covers construction + OBEP reply only; Q1 (authenticated
 > transport) and Q2 (reply round-trip to Established) remain
 > pending. Live mixed-router
@@ -100,7 +100,7 @@ inbound tunnel is registered.
 > `Plan 116 provisional scaffolding` test marker; the Plan 116
 > final closure pass closes the remaining `F1`–`F5` closure
 > defects. The Plan 116 terminal cleanup pass
-> ([`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md))
+> ([`plans/closure/exploratory-tunnels/116-terminal-cleanup.md`](../../plans/closure/exploratory-tunnels/116-terminal-cleanup.md))
 > closes the four remaining `T1`–`T4` closure defects. Plan 122
 > composes the tunnel data plane with the Plan 119 LeaseSet2
 > lookup surface, the Plan 120 destination runtime, and the Plan
@@ -159,21 +159,21 @@ inbound tunnel is registered.
 > [`src/short.rs`](../../crates/i2pr-tunnel/src/short.rs) so a
 > successful `StatePhase::Established` machine produces the
 > canonical `EstablishedMaterial` directly.
-> See [`plans/116-status.md`](../../plans/116-status.md).
+> See [`plans/closure/exploratory-tunnels/116-status.md`](../../plans/closure/exploratory-tunnels/116-status.md).
 > Not production-ready. See `README.md`,
 > `GUARDRAILS.md`,
-> [`plans/116-completion-correction.md`](../../plans/116-completion-correction.md),
-> [`plans/116-final-closure.md`](../../plans/116-final-closure.md),
-> [`plans/116-terminal-cleanup.md`](../../plans/116-terminal-cleanup.md),
-> [`plans/111-short-build-final-local-conformance-correction.md`](../../plans/111-short-build-final-local-conformance-correction.md),
-> [`plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
-> [`plans/112-outbound-short-build-pre-delivery-closure.md`](../../plans/112-outbound-short-build-pre-delivery-closure.md),
-> [`plans/111-status.md`](../../plans/111-status.md),
-> [`plans/112-status.md`](../../plans/112-status.md),
-> [`plans/113-status.md`](../../plans/113-status.md),
-> [`plans/114-status.md`](../../plans/114-status.md),
-> [`plans/115-status.md`](../../plans/115-status.md), and
-> [`plans/116-status.md`](../../plans/116-status.md).
+> [`plans/closure/exploratory-tunnels/116-completion-correction.md`](../../plans/closure/exploratory-tunnels/116-completion-correction.md),
+> [`plans/closure/exploratory-tunnels/116-final-closure.md`](../../plans/closure/exploratory-tunnels/116-final-closure.md),
+> [`plans/closure/exploratory-tunnels/116-terminal-cleanup.md`](../../plans/closure/exploratory-tunnels/116-terminal-cleanup.md),
+> [`plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md`](../../plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md),
+> [`plans/implementation/exploratory-tunnels/112-113-post-plan111-pre-delivery-corrective-roadmap.md`](plans/implementation/exploratory-tunnels/112-113-post-plan111-pre-delivery-corrective-roadmap.md),
+> [`plans/closure/exploratory-tunnels/112-outbound-short-build-pre-delivery-closure.md`](../../plans/closure/exploratory-tunnels/112-outbound-short-build-pre-delivery-closure.md),
+> [`plans/closure/exploratory-tunnels/111-status.md`](../../plans/closure/exploratory-tunnels/111-status.md),
+> [`plans/closure/exploratory-tunnels/112-status.md`](../../plans/closure/exploratory-tunnels/112-status.md),
+> [`plans/closure/exploratory-tunnels/113-status.md`](../../plans/closure/exploratory-tunnels/113-status.md),
+> [`plans/closure/exploratory-tunnels/114-status.md`](../../plans/closure/exploratory-tunnels/114-status.md),
+> [`plans/closure/exploratory-tunnels/115-status.md`](../../plans/closure/exploratory-tunnels/115-status.md), and
+> [`plans/closure/exploratory-tunnels/116-status.md`](../../plans/closure/exploratory-tunnels/116-status.md).
 
 ## Purpose
 
@@ -271,7 +271,7 @@ inbound tunnel is registered.
   `TestTransitTunnelManager::handle_short_tunnel_build` consumes;
   the OBEP returns TunnelGateway + Garlic inner message plus a
   feedback channel. Digests and exact pinned revision live in
-  [`plans/115-status.md`](../../plans/115-status.md). This Q0
+  [`plans/closure/exploratory-tunnels/115-status.md`](../../plans/closure/exploratory-tunnels/115-status.md). This Q0
   covers construction + OBEP reply only; Q1 (authenticated
   transport) and Q2 (reply round-trip to Established) remain
   pending.
@@ -641,25 +641,25 @@ the pinned Emissary revision
 is available. The i2pr parser is not relaxed; publication, lookup,
 and inbound return stages are not claimed. Plan 119 closed as
 `passed-leaseset2-protocol-foundation` per
-  [`plans/119-status.md`](../../plans/119-status.md); the ordinary
+  [`plans/closure/destination-streaming/119-status.md`](../../plans/closure/destination-streaming/119-status.md); the ordinary
   online-signed published Standard LeaseSet2 carrier is wired into
   `i2pr-proto` and `i2pr-netdb` for the local Phase G production
   seam. Plan 120 closed as `passed-destination-lifecycle-and-pools`
-  per [`plans/120-status.md`](../../plans/120-status.md). Plan 120
+  per [`plans/closure/destination-streaming/120-status.md`](../../plans/closure/destination-streaming/120-status.md). Plan 120
   reuses the `BoundedTunnelPool` (= `ExploratoryPool`) container
   through type aliases in [`src/lib.rs`](src/lib.rs) and never
   modifies the cryptography, registrar, or data-plane code; the
   destination-side policy lives in `i2pr-client`. The next
   executable plan is **Plan 121** (ECIES-X25519-AEAD-Ratchet
   Garlic session layer) under
-  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md).
+  [`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md).
 
 ## Out of scope (next plans)
 
 - live mixed-router tunnel build execution against Java I2P and i2pd
   (deferred to a qualified external delivery lane; tracked under the
   external acceptance debt ledger in
-  [`plans/118-123-milestone6-router-construction-roadmap.md`](../../plans/118-123-milestone6-router-construction-roadmap.md));
+  [`plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md`](../../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md));
 - transit participation (Milestone 11);
 - destination-specific tunnel pools and LeaseSet2 publication
   (Milestone 6, owned by Plan 120 → Plan 122; `i2pr-client` already
@@ -713,8 +713,8 @@ coordinator is unchanged: `ShortBuildStateMachine`,
 `ShortBuildI2npBridge`, `ExploratoryPool`, `DataPlaneRegistry`,
 and the `MessageHopProcessor` short-build primitives stay exactly
 the same. See
-[`plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md)
-and [`plans/185-status.md`](../../plans/185-status.md).
+[`plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md`](../../plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md)
+and [`plans/closure/mixed-router-interop/185-status.md`](../../plans/closure/mixed-router-interop/185-status.md).
 
 ## Plan 190 - typed inbound-gateway route in `DataPlaneRegistry` (passed; local + remote rows)
 
@@ -760,12 +760,12 @@ Data body + gzip-no-compression wrapper + `STYLE=RAW` SAM session
 + `RAW RECEIVED SIZE=N` digest equality + `RAW SEND` reply
 direction. Inbound-delivery layer closed for exact-pinned i2pd
 2.61.0; Java second family + Streaming not yet run. See
-[`plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md),
-[`plans/190-status.md`](../../plans/190-status.md),
-[`plans/191-m6-inbound-destination-delivery-boundary.md`](../../plans/191-m6-inbound-destination-delivery-boundary.md),
-[`plans/191-status.md`](../../plans/191-status.md),
-[`plans/192-m6-i2cp-wire-format-corrective.md`](../../plans/192-m6-i2cp-wire-format-corrective.md),
-and [`plans/192-status.md`](../../plans/192-status.md).
+[`plans/implementation/mixed-router-interop/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md`](../../plans/implementation/mixed-router-interop/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md),
+[`plans/closure/mixed-router-interop/190-status.md`](../../plans/closure/mixed-router-interop/190-status.md),
+[`plans/implementation/mixed-router-interop/191-m6-inbound-destination-delivery-boundary.md`](../../plans/implementation/mixed-router-interop/191-m6-inbound-destination-delivery-boundary.md),
+[`plans/closure/mixed-router-interop/191-status.md`](../../plans/closure/mixed-router-interop/191-status.md),
+[`plans/implementation/mixed-router-interop/192-m6-i2cp-wire-format-corrective.md`](../../plans/implementation/mixed-router-interop/192-m6-i2cp-wire-format-corrective.md),
+and [`plans/closure/mixed-router-interop/192-status.md`](../../plans/closure/mixed-router-interop/192-status.md).
 
 ## Cross-references
 
@@ -780,10 +780,10 @@ and [`plans/192-status.md`](../../plans/192-status.md).
 - [`i2pr-daemon`](i2pr-daemon.md) — composes the NetDB seam; the
   seam consumes the reply-path provider when one is injected.
 - Plan-of-record:
-  [`plans/109-short-build-record-and-noise-conformance-correction.md`](../../plans/109-short-build-record-and-noise-conformance-correction.md).
+  [`plans/implementation/exploratory-tunnels/109-short-build-record-and-noise-conformance-correction.md`](../../plans/implementation/exploratory-tunnels/109-short-build-record-and-noise-conformance-correction.md).
 - Inbound policy evidence and closure:
   [`specs/references/short-build-inbound-creator-key.md`](../../specs/references/short-build-inbound-creator-key.md),
-  [`plans/113-status.md`](../../plans/113-status.md).
+  [`plans/closure/exploratory-tunnels/113-status.md`](../../plans/closure/exploratory-tunnels/113-status.md).
 
 ## Plan 172 - explicit local zero-hop kind (passed; M9 closed)
 

@@ -102,8 +102,8 @@ on-host evidence directory `target/interop/evidence/handshake-smoke-rootless--ho
 records the kernel/sysctl/capability snapshot and the two identical
 probe attestations (host shell and `ssh i2ptest@localhost` shell)
 carrying `{"schema":1,"type":"rootless-sandbox-probe","outcome":"blocked_unprivileged_user_namespace"}`.
-The Plan 046 closure is `plans/046-closure.md`; cross-host recovery
-lives in `plans/047-cross-host-rootless-lane-expansion.md`.
+The Plan 046 closure is `plans/closure/ntcp2-transport/046-closure.md`; cross-host recovery
+lives in `plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`.
 
 ## Plan 048/049/050 Multipass bundle
 

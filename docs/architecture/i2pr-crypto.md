@@ -23,7 +23,7 @@ Scope is intentionally narrow:
   cryptography primitive consumes (Plan 108 implementation-landed,
   protocol-conformance reopened; the helper remains useful but
   the Plan 108 derivation labels are superseded — see
-  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md)).
+  [`plans/implementation/exploratory-tunnels/108-conformance-amendment.md`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md)).
 - ECIES-X25519-AEAD-Ratchet destination session primitives
   (Plan 126 rewrite of the Plan 121 surface, `src/ecies.rs`):
   ephemeral key generation, RFC 9380 representative <->
@@ -348,10 +348,10 @@ NS → NSR → bidirectional ES path.
   `X25519SharedSecret`, `hkdf_sha256_32`, and `sha256` in the Plan 108
   ECIES-X25519 short tunnel-build cryptography primitive (Plan 108
   implementation-landed, protocol-conformance reopened by
-  [`plans/108-conformance-amendment.md`](../../plans/108-conformance-amendment.md))
+  [`plans/implementation/exploratory-tunnels/108-conformance-amendment.md`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md))
 - [i2pr-client](i2pr-client.md) — consumes `EciesEphemeralKeypair`,
   `EciesTagSet`, `EciesNoiseState`, and the bound-session function
   family in the Plan 126 ECIES destination session manager
   (`crates/i2pr-client/src/session.rs`).
-- Plan-of-record: `plans/013-m1-identity-crypto-storage.md` and
-  [`plans/121-m6-ecies-garlic-session-layer.md`](../../plans/121-m6-ecies-garlic-session-layer.md)
+- Plan-of-record: `plans/implementation/workspace-foundation/013-m1-identity-crypto-storage.md` and
+  [`plans/implementation/destination-streaming/121-m6-ecies-garlic-session-layer.md`](../../plans/implementation/destination-streaming/121-m6-ecies-garlic-session-layer.md)

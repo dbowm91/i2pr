@@ -207,8 +207,8 @@ allowed but is not part of this decision.
 - Sandbox attestation records and parent-network state equivalence make
   isolation failures visible and reviewed, not hidden.
 - NTCP2 remains experimental and non-advertised. Milestone 3 remains open
-  until a separate evidence review against `plans/000-mvp-roadmap.md`,
-  `plans/030-milestone-3-overview.md`, and `specs/CONFORMANCE.md` is
+  until a separate evidence review against `plans/implementation/workspace-foundation/000-mvp-roadmap.md`,
+  `plans/implementation/ntcp2-transport/030-milestone-3-overview.md`, and `specs/CONFORMANCE.md` is
   completed.
 - The retained evidence claim is narrower than the privileged topology's
   claim: the rootless lane proves protocol compatibility, not separate-stack

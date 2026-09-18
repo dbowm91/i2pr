@@ -34,8 +34,7 @@
 //! [`crate::session::SessionConfig::max_payload_for_mtu`] of the
 //! current validated MTU.
 //!
-//! Normative traceability: `plans/159-m8-ssu2-path-validation-`
-//! `publication-and-transport-selection.md` §§2–4 and §10. No sockets,
+//! Normative traceability: `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md` §§2–4 and §10. No sockets,
 //! no Tokio, no timers, no RNG: challenge bytes and both clocks arrive
 //! as caller inputs.
 

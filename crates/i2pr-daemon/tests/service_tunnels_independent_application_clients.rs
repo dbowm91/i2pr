@@ -19,7 +19,7 @@
 //!
 //! The Plan 181 §6 remote independent-router rows remain classified
 //! `m6-mixed-router-streaming-blocker` (retained M6 debt, not this
-//! suite); see `plans/181-status.md` once written.
+//! suite); see `plans/closure/service-tunnels/181-status.md` once written.
 
 #![forbid(unsafe_code)]
 

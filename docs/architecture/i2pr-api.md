@@ -29,7 +29,7 @@ vocabulary the Plan 167 daemon projects into runtime state. No
 listener, destination activation, or client-interoperability
 claim follows; those belong to Plans 166–170.
 
-> [Plan 136](../plans/136-m7-sam31-protocol-private-destination-foundation.md):
+> [Plan 136](../../plans/implementation/sam/136-m7-sam31-protocol-private-destination-foundation.md):
 > create the `i2pr-api` crate at the intended application-adapter
 > layer; implement a strict bounded SAM v3.1 line/command/reply model;
 > implement exact version negotiation for the declared baseline;
@@ -38,19 +38,19 @@ claim follows; those belong to Plans 166–170.
 > destination construction/import/export seam without weakening
 > Milestone 6 secret ownership.
 >
-> [Plan 137](../plans/137-m7-sam31-loopback-server-session-lifecycle.md):
+> [Plan 137](../../plans/implementation/sam/137-m7-sam31-loopback-server-session-lifecycle.md):
 > add the bounded session registry, line reader, server state
 > machine, and per-session resource counters that the daemon's
 > loopback listener composes.
 >
-> [Plan 138](../plans/138-m7-sam31-stream-connect-accept-bridge.md):
+> [Plan 138](../../plans/implementation/sam/138-m7-sam31-stream-connect-accept-bridge.md):
 > add the bounded per-session STREAM socket registry, the typed
 > `STREAM CONNECT` / `STREAM ACCEPT` request parsers, the new
 > `RequireStreamConnect` / `RequireStreamAccept` dispatch outcomes,
 > and the `apply_stream_connect_outcome` / `apply_stream_accept_outcome`
 > appliers.
 
-> [Plan 139](../plans/139-m7-sam31-forward-naming-hardening.md):
+> [Plan 139](../../plans/implementation/sam/139-m7-sam31-forward-naming-hardening.md):
 > adds bounded FORWARD and naming request models, atomic ACCEPT/FORWARD
 > inbound-mode ownership, canonical local naming outcomes, and explicit
 > unsupported-feature paths.

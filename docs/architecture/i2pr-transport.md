@@ -308,9 +308,9 @@ Inline `src/tests.rs` (`lib.rs:25-26`), inline tests in
   supervised services.
 - [i2pr-testkit](i2pr-testkit.md) — uses synthetic helpers in
   `src/transport.rs` for contract tests.
-- Plan-of-record: `plans/031-m3-transport-contracts-and-crate-boundaries.md`.
-- Related closure: `plans/031-closure.md`.
-- Plan 159 (`plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
-  `plans/159-status.md`) — selection and reachability policy.
-- Plan 160 (`plans/160-m8-ssu2-peer-test-and-relay-reachability.md`,
-  `plans/160-status.md`) — typed peer-test/relay outcomes.
+- Plan-of-record: `plans/implementation/ntcp2-transport/031-m3-transport-contracts-and-crate-boundaries.md`.
+- Related closure: `plans/closure/ntcp2-transport/031-closure.md`.
+- Plan 159 (`plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
+  `plans/closure/ssu2/159-status.md`) — selection and reachability policy.
+- Plan 160 (`plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md`,
+  `plans/closure/ssu2/160-status.md`) — typed peer-test/relay outcomes.

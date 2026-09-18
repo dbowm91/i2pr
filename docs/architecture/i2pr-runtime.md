@@ -523,14 +523,14 @@ never paused Tokio time — and ephemeral loopback ports only.
 - [i2pr-transport-ssu2](i2pr-transport-ssu2.md) — produces SSU2
   `HandshakeAction` / `SessionAction` / `SessionEvent` values
   fulfilled here (Plan 158).
-- Plan-of-record: `plans/021-m2-supervision-cancellation.md`,
-  `plans/022-m2-bounded-channels-resource-governor.md`,
-  `plans/035-m3-runtime-link-manager-and-addresses.md`,
-  `plans/037-m3-corrective-integration-closure.md`,
-  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
-  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
-  `plans/160-m8-ssu2-peer-test-and-relay-reachability.md`.
-- Closures: `plans/021-closure.md`, `plans/022-closure.md`,
-  `plans/035-closure.md`, `plans/037-closure.md`,
-  `plans/158-status.md`, `plans/159-status.md`,
-  `plans/160-status.md`.
+- Plan-of-record: `plans/implementation/workspace-foundation/021-m2-supervision-cancellation.md`,
+  `plans/implementation/workspace-foundation/022-m2-bounded-channels-resource-governor.md`,
+  `plans/implementation/ntcp2-transport/035-m3-runtime-link-manager-and-addresses.md`,
+  `plans/closure/ntcp2-transport/037-m3-corrective-integration-closure.md`,
+  `plans/implementation/ssu2/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
+  `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md`,
+  `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md`.
+- Closures: `plans/closure/workspace-foundation/021-closure.md`, `plans/closure/workspace-foundation/022-closure.md`,
+  `plans/closure/ntcp2-transport/035-closure.md`, `plans/closure/ntcp2-transport/037-closure.md`,
+  `plans/closure/ssu2/158-status.md`, `plans/closure/ssu2/159-status.md`,
+  `plans/closure/ssu2/160-status.md`.

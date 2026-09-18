@@ -2,14 +2,14 @@
 
 `i2pr-client` is the workspace's first local-destination runtime crate. It
 lands as part of the [Milestone 6 destination
-roadmap](../plans/118-123-milestone6-router-construction-roadmap.md) and
-implements [Plan 120](../plans/120-m6-destination-lifecycle-and-tunnel-pools.md):
+roadmap](../../plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md) and
+implements [Plan 120](../../plans/implementation/destination-streaming/120-m6-destination-lifecycle-and-tunnel-pools.md):
 destination identity ownership, destination-specific tunnel pools, local
 Standard LeaseSet2 generation and signing, LeaseSet2 lifecycle, bounded local
 payload contracts, and the destination registry that holds them.
 
 Plan 121 introduced the first ECIES destination session layer;
-[Plan 126](../plans/126-m6-ecies-destination-ratchet-corrective-foundation.md)
+[Plan 126](../../plans/implementation/destination-streaming/126-m6-ecies-destination-ratchet-corrective-foundation.md)
 rewrote it to the normative I2P ECIES-X25519-AEAD-Ratchet contract:
 `EciesSessionManager` now owns paired sessions keyed by remote X25519
 static public key, bounded remove-on-hit inbound tag windows,
@@ -17,7 +17,7 @@ pre-derived pending reply windows, and provisional responder state.
 The superseded Plan 121 dialect (flag-byte framing, per-session random
 "static" keys, single shared tag chain) is removed.
 
-[Plan 127](../plans/127-m6-destination-session-routing-final-closure.md)
+[Plan 127](../../plans/closure/destination-streaming/127-m6-destination-session-routing-final-closure.md)
 closed the remaining Plan 121/122/124 local destination-layer gaps by
 composing the corrected ratchet with Standard LeaseSet2 binding,
 destination-owned tunnel pools, reverse routing, and application
@@ -48,7 +48,7 @@ delivery:
 Plan 122 composes the Plan 119 LS2 lookup surface, the Plan 120 destination
 runtime, the Plan 121 ECIES session layer, and the Plan 116 tunnel data
 plane into the first complete local destination routing pipeline
-([Plan 122](../plans/122-m6-destination-routing-and-netdb-composition.md)).
+([Plan 122](../../plans/implementation/destination-streaming/122-m6-destination-routing-and-netdb-composition.md)).
 The new `routing` module owns `DestinationRouting`, `LeaseSelector`,
 `OutboundRequest`, `compose_outbound_delivery`, and the typed
 `OutboundDeliveryPlan` boundary; the new `dispatch` module owns
@@ -57,7 +57,7 @@ per-destination application queue. The router-delivery seam produces
 `OBGWRouterDelivery` cells for the future transport adapter; the
 
 Plan 124
-([Plan 124](../plans/124-m6-plan122-destination-routing-corrective-closure.md))
+([Plan 124](../../plans/closure/destination-streaming/124-m6-plan122-destination-routing-corrective-closure.md))
 corrects the Plan 122 composition defect where `compose_outbound_delivery`
 built an ECIES Garlic envelope but fed the plaintext inner I2NP `Data`
 envelope into the outbound tunnel role. The corrected composition
@@ -73,7 +73,7 @@ regression at the OBEP, and successful A → B → A New Session trajectory
 through real destination-owned outbound and inbound tunnel roles.
 
 Plan 143 adds the runtime-neutral local delivery pump
-([`plans/143-status.md`](../plans/143-status.md)) as the canonical seam
+([`plans/closure/sam/143-status.md`](../../plans/closure/sam/143-status.md)) as the canonical seam
 the SAM STREAM product bridge drives through. The new
 `streaming::local_delivery` module exports `LocalDeliverySender`,
 `LocalDeliveryReceiver`, `LocalDeliveryOutcome`, `LocalDeliveryError`,
@@ -116,7 +116,7 @@ gzip decode + 16-byte fixed header peek is the routing signal; the
 recovered streaming packet bytes are then passed unchanged to
 `StreamingDestinationAdapter::receive`.
 Plan 125 layers the corrected I2P Streaming core on top of Plan 122
-([Plan 125](../plans/125-m6-streaming-corrective-and-local-closure.md)).
+([Plan 125](../../plans/closure/destination-streaming/125-m6-streaming-corrective-and-local-closure.md)).
 The new `streaming` module owns `StreamingManager`, the per-destination
 outbound and inbound connection tables, listener backlogs, send /
 receive windows, congestion and retransmit policies, the corrected
@@ -128,7 +128,7 @@ canonical RFC 1952 gzip protocol-6 `ClientPayload` envelope — no
 SHA-256 integrity prefix, no custom compressed-length prefix, bounded
 decompressed-size enforcement, explicit trailing-byte rejection).
 Plan 128 corrects that wire format to the current I2P Streaming
-specification ([Plan 128](../plans/128-m6-streaming-wire-protocol-
+specification ([Plan 128](../../plans/128-m6-streaming-wire-protocol-
 corrective-closure.md), provenance in
 [specs/references/streaming-packet-wire.md](../specs/references/streaming-packet-wire.md)):
 normative flag map with M6 policy sets (`0x04A9` initial SYN,
@@ -144,8 +144,8 @@ NACK words on the initial SYN only, split
 `validate_initial_syn` / `validate_syn_response`, and
 `min(local advertised, remote advertised)` payload negotiation.
 Plan 129 closes the Milestone 6 integrated gate
-([Plan 129](../plans/129-m6-integrated-destination-streaming-final-gate.md),
-[`plans/129-status.md`](../plans/129-status.md)) and completes the
+([Plan 129](../../plans/implementation/destination-streaming/129-m6-integrated-destination-streaming-final-gate.md),
+[`plans/closure/destination-streaming/129-status.md`](../../plans/closure/destination-streaming/129-status.md)) and completes the
 adapter boundary: the outbound adapter bounds the gzip-encoded
 complete Streaming packet against the client-payload/I2NP limit
 (`MAX_STREAMING_ADAPTER_PAYLOAD_BYTES = MAX_CLIENT_PAYLOAD_BYTES`, not
@@ -171,17 +171,17 @@ closure; Plans 123/128 closed wire-correct; Plan 129 is superseded by
 the Plan 130 final gate, which retains its topology.
 
 Plan 130 closed Milestone 6 with the wire/runtime corrective
-closure ([Plan 130](../plans/130-m6-final-wire-runtime-corrective-closure.md),
-[`plans/130-status.md`](../plans/130-status.md)) and is now
+closure ([Plan 130](../../plans/closure/destination-streaming/130-m6-final-wire-runtime-corrective-closure.md),
+[`plans/closure/destination-streaming/130-status.md`](../../plans/closure/destination-streaming/130-status.md)) and is now
 `superseded-by-plan131-final-local-correctness-gate` per
-[`plans/131-status.md`](../plans/131-status.md). Plan 131 closed
+[`plans/closure/destination-streaming/131-status.md`](../../plans/closure/destination-streaming/131-status.md). Plan 131 closed
 Milestone 6 with the four local-correctness corrections below and
 is itself superseded by Plan 132 (implementation corrections) and
 Plan 133 (final evidence and authority closure). Plan 133 remains
 successful historical evidence, superseded as authority by Plan 134.
 The current Milestone 6 local closure authority is Plan 134 as
 `passed-milestone6-recv-window-ack-ceiling-closure` per
-[`plans/134-status.md`](../plans/134-status.md). The four Plan 131
+[`plans/closure/destination-streaming/134-status.md`](../../plans/closure/destination-streaming/134-status.md). The four Plan 131
 corrections build on the Plan 130 surface above:
 
 - **Production Elligator2 branch randomization** (with `i2pr-crypto`):

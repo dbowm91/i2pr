@@ -22,7 +22,7 @@ passed probe record does not authorize Plan 079 (repeated development
 validation) or Plan 073 (release qualification); those gates are
 owned by their own plans. The probe closes only after Plan 084 writes
 exactly one of the bounded development decisions to
-``plans/084-status.md``.
+``plans/closure/ntcp2-transport/084-status.md``.
 
 The schema inherits every bounded set from the Plan 083 forward probe
 (stages, terminal results, reason codes, observed-event names,

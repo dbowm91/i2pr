@@ -259,5 +259,5 @@ loaded by `include_str!`:
 - [i2pr-crypto](i2pr-crypto.md) — owns key types and constants
 - [i2pr-daemon](i2pr-daemon.md) — uses `IdentityStore` for the
   `identity generate`/`inspect` commands
-- Plan-of-record: `plans/013-m1-identity-crypto-storage.md`
-- Related closure: `plans/013-closure.md`
+- Plan-of-record: `plans/implementation/workspace-foundation/013-m1-identity-crypto-storage.md`
+- Related closure: `plans/closure/workspace-foundation/013-closure.md`

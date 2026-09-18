@@ -33,8 +33,7 @@
 //!   publication stays disabled in production (the daemon `[ssu2]`
 //!   surface rejects advertisement; Plan 160+ owns activation).
 //!
-//! Normative traceability: `plans/159-m8-ssu2-path-validation-`
-//! `publication-and-transport-selection.md` §7. No sockets, no Tokio,
+//! Normative traceability: `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md` §7. No sockets, no Tokio,
 //! no NetDB mutation, no async.
 
 use std::fmt;

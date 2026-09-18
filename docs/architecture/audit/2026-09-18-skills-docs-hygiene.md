@@ -38,7 +38,7 @@ missing plan_204/plan_215 rows; `m10_remote_application_interop` and
 ## Deliberately not changed
 
 - `plans/*-status.md` (authoritative; never edited in a hygiene pass).
-- Plan 196 `passed-...` rows in the mirrors: `plans/196-status.md:3` still reads
+- Plan 196 `passed-...` rows in the mirrors: `plans/closure/mixed-router-interop/196-status.md:3` still reads
   `in-progress-...-pending-external-re-run`, but downstream Plans 197/200/201
   treat the corrective as landed. Per newest-status-wins, the mirrors keep
   `passed`; resolving the 196 status token itself needs a plan owner, not a

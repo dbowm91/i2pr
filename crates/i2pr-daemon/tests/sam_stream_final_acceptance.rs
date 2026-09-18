@@ -20,7 +20,7 @@
 //! The suite never calls private bridge, LeaseSet2, tunnel-factory,
 //! driver, delivery, or byte-moving setup APIs after startup.
 //!
-//! Row mapping (see `plans/151-status.md` for the ledger):
+//! Row mapping (see `plans/closure/sam/151-status.md` for the ledger):
 //!
 //! - `sibling-stream-isolation` — two simultaneous streams, distinct
 //!   Streaming connection IDs, close one, prove the other usable.

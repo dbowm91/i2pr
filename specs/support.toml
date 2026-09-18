@@ -3,12 +3,12 @@
 # production I2NP bridge closure and Emissary Q0 construction +
 # native OBEP reply completion; Plan 111 status is
 # `passed-final-local-short-build-conformance` per
-# plans/111-short-build-final-local-conformance-correction.md and
-# plans/111-status.md, Plan 112 status is
+# plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md and
+# plans/closure/exploratory-tunnels/111-status.md, Plan 112 status is
 # `passed-outbound-pre-delivery-closure` per
-# plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md,
-# plans/112-outbound-short-build-pre-delivery-closure.md, and
-# plans/112-status.md, Plan 113 status is
+# plans/implementation/exploratory-tunnels/112-113-post-plan111-pre-delivery-corrective-roadmap.md,
+# plans/closure/exploratory-tunnels/112-outbound-short-build-pre-delivery-closure.md, and
+# plans/closure/exploratory-tunnels/112-status.md, Plan 113 status is
 # `passed-inbound-reference-reconciliation`, Plan 114 status is
 # `passed-terminal-routing-chain-correction`, Plan 115 status is
 # `passed-emissary-q0-construction-and-obep-reply-only`, Plan 116
@@ -22,7 +22,7 @@
 # remains the reference pin; Plan 118 Phase B1 confirmed no usable
 # upstream correction exists, so the bounded Plan 117 native closure
 # campaign is closed for progression. Plan 117 corrective closure
-# ([plans/117-corrective-closure.md](plans/117-corrective-closure.md))
+# ([plans/closure/exploratory-tunnels/117-corrective-closure.md](plans/closure/exploratory-tunnels/117-corrective-closure.md))
 # corrected four routing/framing/activation/readiness defects (C1–C4),
 # passed Phase G all-i2pr production-seam terminal trajectory,
 # achieved `passed-emissary-wire-format-compatibility` at stage
@@ -44,7 +44,7 @@
 # complete I2NP type-25 message without double-prefixing the STBM
 # record count byte, with a round-trip body equality assertion. Plan
 # 115 Q0 construction + native OBEP reply has passed locally against
-# pinned Emissary — see plans/115-status.md for the closure record,
+# pinned Emissary — see plans/closure/exploratory-tunnels/115-status.md for the closure record,
 # digests, and pinned revision. Q1/Q2/qualified-external-delivery
 # still pending. Plan 118 closed the planning authority surface and
 # made the Plan 117 terminal disposition; the next executable plan
@@ -85,150 +85,150 @@
 # earlier SAM rows retain historical milestone provenance.
 schema = 1
 milestone = 7
-plan_103_implementation_floor = "plans/103-status.md"
-plan_104_implementation_floor = "plans/104-status.md"
-plan_105_implementation_floor = "plans/105-status.md"
-plan_106_implementation_floor = "plans/106-status.md"
-plan_107_implementation_floor = "plans/107-status.md"
-plan_108_implementation_floor = "plans/108-status.md"
-plan_108_conformance_amendment = "plans/108-conformance-amendment.md"
-plan_109_short_build_conformance = "plans/109-short-build-record-and-noise-conformance-correction.md"
-plan_109_closure = "plans/109-status.md"
-plan_109_110_corrective_roadmap = "plans/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md"
-plan_110_multirecord_closure = "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md"
-plan_111_final_short_build_conformance = "plans/111-short-build-final-local-conformance-correction.md"
-plan_111_closure = "plans/111-status.md"
-plan_112_outbound_pre_delivery_closure = "plans/112-113-post-plan111-pre-delivery-corrective-roadmap.md"
-plan_112_plan_of_record = "plans/112-outbound-short-build-pre-delivery-closure.md"
-plan_112_closure = "plans/112-status.md"
-plan_113_inbound_reconciliation = "plans/113-inbound-short-build-spec-reference-reconciliation.md"
-plan_113_closure = "plans/113-status.md"
-plan_114_terminal_routing = "plans/114-short-build-terminal-routing-chain-correction.md"
-plan_114_closure = "plans/114-status.md"
-plan_115_canonical_bridge = "plans/115-qualified-independent-short-build-consumption-and-external-delivery.md"
-plan_115_closure = "plans/115-status.md"
-plan_115_handoff = "plans/115-handoff.md"
-plan_115_117_roadmap = "plans/115-117-external-delivery-to-live-netdb-roadmap.md"
-plan_116_closure = "plans/116-status.md"
+plan_103_implementation_floor = "plans/closure/netdb/103-status.md"
+plan_104_implementation_floor = "plans/closure/netdb/104-status.md"
+plan_105_implementation_floor = "plans/closure/netdb/105-status.md"
+plan_106_implementation_floor = "plans/closure/netdb/106-status.md"
+plan_107_implementation_floor = "plans/closure/exploratory-tunnels/107-status.md"
+plan_108_implementation_floor = "plans/closure/exploratory-tunnels/108-status.md"
+plan_108_conformance_amendment = "plans/implementation/exploratory-tunnels/108-conformance-amendment.md"
+plan_109_short_build_conformance = "plans/implementation/exploratory-tunnels/109-short-build-record-and-noise-conformance-correction.md"
+plan_109_closure = "plans/closure/exploratory-tunnels/109-status.md"
+plan_109_110_corrective_roadmap = "plans/implementation/exploratory-tunnels/109-110-plan108-short-build-protocol-conformance-corrective-roadmap.md"
+plan_110_multirecord_closure = "plans/closure/exploratory-tunnels/110-short-build-multirecord-preprocessing-and-conformance-closure.md"
+plan_111_final_short_build_conformance = "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md"
+plan_111_closure = "plans/closure/exploratory-tunnels/111-status.md"
+plan_112_outbound_pre_delivery_closure = "plans/implementation/exploratory-tunnels/112-113-post-plan111-pre-delivery-corrective-roadmap.md"
+plan_112_plan_of_record = "plans/closure/exploratory-tunnels/112-outbound-short-build-pre-delivery-closure.md"
+plan_112_closure = "plans/closure/exploratory-tunnels/112-status.md"
+plan_113_inbound_reconciliation = "plans/implementation/exploratory-tunnels/113-inbound-short-build-spec-reference-reconciliation.md"
+plan_113_closure = "plans/closure/exploratory-tunnels/113-status.md"
+plan_114_terminal_routing = "plans/implementation/exploratory-tunnels/114-short-build-terminal-routing-chain-correction.md"
+plan_114_closure = "plans/closure/exploratory-tunnels/114-status.md"
+plan_115_canonical_bridge = "plans/implementation/exploratory-tunnels/115-qualified-independent-short-build-consumption-and-external-delivery.md"
+plan_115_closure = "plans/closure/exploratory-tunnels/115-status.md"
+plan_115_handoff = "plans/implementation/exploratory-tunnels/115-handoff.md"
+plan_115_117_roadmap = "plans/implementation/exploratory-tunnels/115-117-external-delivery-to-live-netdb-roadmap.md"
+plan_116_closure = "plans/closure/exploratory-tunnels/116-status.md"
 plan_117_status = "closed-for-progression-with-evidence-gap"
-plan_118_plan_of_record = "plans/118-planning-authority-cleanup-and-plan117-disposition.md"
-plan_118_116_milestone6_roadmap = "plans/118-123-milestone6-router-construction-roadmap.md"
-plan_119_plan_of_record = "plans/119-m6-leaseset2-protocol-foundation.md"
-plan_119_closure = "plans/119-status.md"
+plan_118_plan_of_record = "plans/implementation/destination-streaming/118-planning-authority-cleanup-and-plan117-disposition.md"
+plan_118_116_milestone6_roadmap = "plans/implementation/destination-streaming/118-123-milestone6-router-construction-roadmap.md"
+plan_119_plan_of_record = "plans/implementation/destination-streaming/119-m6-leaseset2-protocol-foundation.md"
+plan_119_closure = "plans/closure/destination-streaming/119-status.md"
 plan_119_status = "passed-leaseset2-protocol-foundation"
-plan_120_plan_of_record = "plans/120-m6-destination-lifecycle-and-tunnel-pools.md"
+plan_120_plan_of_record = "plans/implementation/destination-streaming/120-m6-destination-lifecycle-and-tunnel-pools.md"
 plan_120_status = "passed-destination-lifecycle-and-pools"
-plan_121_plan_of_record = "plans/121-m6-ecies-garlic-session-layer.md"
+plan_121_plan_of_record = "plans/implementation/destination-streaming/121-m6-ecies-garlic-session-layer.md"
 plan_121_status = "passed-ecies-destination-session-layer"
-plan_122_plan_of_record = "plans/122-m6-destination-routing-and-netdb-composition.md"
-plan_122_corrective_plan_of_record = "plans/124-m6-plan122-destination-routing-corrective-closure.md"
+plan_122_plan_of_record = "plans/implementation/destination-streaming/122-m6-destination-routing-and-netdb-composition.md"
+plan_122_corrective_plan_of_record = "plans/closure/destination-streaming/124-m6-plan122-destination-routing-corrective-closure.md"
 plan_122_status = "passed-corrected-local-destination-routing"
-plan_123_plan_of_record = "plans/123-m6-minimal-streaming-core.md"
+plan_123_plan_of_record = "plans/implementation/destination-streaming/123-m6-minimal-streaming-core.md"
 plan_123_status = "passed-corrected-minimal-streaming-local"
-plan_124_plan_of_record = "plans/124-m6-plan122-destination-routing-corrective-closure.md"
-plan_124_closure = "plans/124-status.md"
+plan_124_plan_of_record = "plans/closure/destination-streaming/124-m6-plan122-destination-routing-corrective-closure.md"
+plan_124_closure = "plans/closure/destination-streaming/124-status.md"
 plan_124_status = "passed-plan122-corrective-closure"
-plan_125_plan_of_record = "plans/125-m6-streaming-corrective-and-local-closure.md"
-plan_125_closure = "plans/125-status.md"
+plan_125_plan_of_record = "plans/closure/destination-streaming/125-m6-streaming-corrective-and-local-closure.md"
+plan_125_closure = "plans/closure/destination-streaming/125-status.md"
 plan_125_status = "superseded-by-final-corrective-closure"
-plan_126_plan_of_record = "plans/126-m6-ecies-destination-ratchet-corrective-foundation.md"
-plan_126_closure = "plans/126-status.md"
+plan_126_plan_of_record = "plans/implementation/destination-streaming/126-m6-ecies-destination-ratchet-corrective-foundation.md"
+plan_126_closure = "plans/closure/destination-streaming/126-status.md"
 plan_126_status = "passed-ecies-destination-ratchet-corrective-foundation"
-plan_127_plan_of_record = "plans/127-m6-destination-session-routing-final-closure.md"
-plan_127_closure = "plans/127-status.md"
+plan_127_plan_of_record = "plans/closure/destination-streaming/127-m6-destination-session-routing-final-closure.md"
+plan_127_closure = "plans/closure/destination-streaming/127-status.md"
 plan_127_status = "passed-destination-session-routing-final-closure"
-plan_128_plan_of_record = "plans/128-m6-streaming-wire-protocol-corrective-closure.md"
-plan_128_closure = "plans/128-status.md"
+plan_128_plan_of_record = "plans/closure/destination-streaming/128-m6-streaming-wire-protocol-corrective-closure.md"
+plan_128_closure = "plans/closure/destination-streaming/128-status.md"
 plan_128_status = "passed-streaming-wire-protocol-corrective-closure"
-plan_129_plan_of_record = "plans/129-m6-integrated-destination-streaming-final-gate.md"
-plan_129_closure = "plans/129-status.md"
+plan_129_plan_of_record = "plans/implementation/destination-streaming/129-m6-integrated-destination-streaming-final-gate.md"
+plan_129_closure = "plans/closure/destination-streaming/129-status.md"
 plan_129_status = "superseded-by-plan130-final-gate"
-plan_130_plan_of_record = "plans/130-m6-final-wire-runtime-corrective-closure.md"
-plan_130_closure = "plans/130-status.md"
+plan_130_plan_of_record = "plans/closure/destination-streaming/130-m6-final-wire-runtime-corrective-closure.md"
+plan_130_closure = "plans/closure/destination-streaming/130-status.md"
 plan_130_status = "superseded-by-plan131-final-local-correctness-gate"
-plan_131_plan_of_record = "plans/131-m6-final-local-correctness-closure.md"
-plan_131_closure = "plans/131-status.md"
+plan_131_plan_of_record = "plans/closure/destination-streaming/131-m6-final-local-correctness-closure.md"
+plan_131_closure = "plans/closure/destination-streaming/131-status.md"
 plan_131_status = "superseded-by-plan132-and-plan133-final-gates"
-plan_132_plan_of_record = "plans/132-m6-final-evidence-and-transactional-closure.md"
-plan_132_closure = "plans/132-status.md"
+plan_132_plan_of_record = "plans/closure/destination-streaming/132-m6-final-evidence-and-transactional-closure.md"
+plan_132_closure = "plans/closure/destination-streaming/132-status.md"
 plan_132_status = "implementation-landed-evidence-superseded-by-plan133"
-plan_133_plan_of_record = "plans/133-m6-final-evidence-authority-closure.md"
-plan_133_closure = "plans/133-status.md"
+plan_133_plan_of_record = "plans/closure/destination-streaming/133-m6-final-evidence-authority-closure.md"
+plan_133_closure = "plans/closure/destination-streaming/133-status.md"
 plan_133_status = "passed-evidence-authority-superseded-by-plan134-streaming-ack-closure"
-plan_134_plan_of_record = "plans/134-m6-recv-window-ack-ceiling-closure.md"
-plan_134_closure = "plans/134-status.md"
+plan_134_plan_of_record = "plans/closure/destination-streaming/134-m6-recv-window-ack-ceiling-closure.md"
+plan_134_closure = "plans/closure/destination-streaming/134-status.md"
 plan_134_status = "passed-milestone6-recv-window-ack-ceiling-closure"
 milestone6_local_product = "passed"
 milestone6_interoperable = "not-yet-claimed"
-plan_135_plan_of_record = "plans/135-m7-sam31-implementation-roadmap.md"
+plan_135_plan_of_record = "plans/implementation/sam/135-m7-sam31-implementation-roadmap.md"
 plan_135_status = "active-milestone7-sam31-planning-authority"
-plan_136_plan_of_record = "plans/136-m7-sam31-protocol-private-destination-foundation.md"
-plan_136_closure = "plans/136-status.md"
+plan_136_plan_of_record = "plans/implementation/sam/136-m7-sam31-protocol-private-destination-foundation.md"
+plan_136_closure = "plans/closure/sam/136-status.md"
 plan_136_status = "passed-m7-sam31-protocol-private-destination-foundation"
-plan_137_plan_of_record = "plans/137-m7-sam31-loopback-server-session-lifecycle.md"
-plan_137_closure = "plans/137-status.md"
+plan_137_plan_of_record = "plans/implementation/sam/137-m7-sam31-loopback-server-session-lifecycle.md"
+plan_137_closure = "plans/closure/sam/137-status.md"
 plan_137_status = "passed-m7-sam31-loopback-server-session-lifecycle"
-plan_138_plan_of_record = "plans/138-m7-sam31-stream-connect-accept-bridge.md"
-plan_138_closure = "plans/138-status.md"
+plan_138_plan_of_record = "plans/implementation/sam/138-m7-sam31-stream-connect-accept-bridge.md"
+plan_138_closure = "plans/closure/sam/138-status.md"
 plan_138_status = "passed-m7-sam31-stream-connect-accept-bridge"
 milestone7_sam_protocol = "passed"
 milestone7_loopback_server = "passed"
 milestone7_stream_bridge = "passed"
 milestone7_self_composing_product = "passed-via-plan149"
 milestone7_independent_clients = "at-least-two-passed-via-plan150"
-plan_145_plan_of_record = "plans/145-m7-sam31-remaining-gap-corrective-roadmap.md"
+plan_145_plan_of_record = "plans/implementation/sam/145-m7-sam31-remaining-gap-corrective-roadmap.md"
 plan_145_status = "passed-m7-sam31-remaining-gap-corrective-roadmap"
-plan_146_plan_of_record = "plans/146-m7-sam31-private-destination-reference-requalification.md"
-plan_146_closure = "plans/146-status.md"
+plan_146_plan_of_record = "plans/implementation/sam/146-m7-sam31-private-destination-reference-requalification.md"
+plan_146_closure = "plans/closure/sam/146-status.md"
 plan_146_status = "passed-m7-sam31-private-destination-reference-requalification"
 plan_147_plan_of_record = "plans/147-m7-sam31-dedicated-raw-stream-driver.md"
-plan_147_closure = "plans/147-status.md"
+plan_147_closure = "plans/closure/sam/147-status.md"
 plan_147_raw_driver_implementation = "landed-and-retained"
 plan_147_local_binary_smoke = "passed"
 plan_147_full_original_acceptance = "superseded-by-plan149"
 plan_148_status = "blocked-audit-superseded-for-next-action-by-plan149-150"
-plan_149_plan_of_record = "plans/149-m7-sam31-self-composing-local-product-corrective.md"
-plan_149_closure = "plans/149-status.md"
+plan_149_plan_of_record = "plans/implementation/sam/149-m7-sam31-self-composing-local-product-corrective.md"
+plan_149_closure = "plans/closure/sam/149-status.md"
 plan_149_status = "passed-m7-sam31-self-composing-local-product-corrective"
-plan_150_plan_of_record = "plans/150-m7-sam31-external-client-reproducible-final-closure.md"
+plan_150_plan_of_record = "plans/closure/sam/150-m7-sam31-external-client-reproducible-final-closure.md"
 plan_150_status = "passed-m7-sam31-external-client-final-closure"
 plan_150_external_core_evidence = "retained-passed"
 plan_150_final_acceptance = "superseded-by-plan151"
-plan_151_plan_of_record = "plans/151-m7-sam31-final-acceptance-evidence-correction.md"
-plan_151_closure = "plans/151-status.md"
+plan_151_plan_of_record = "plans/implementation/sam/151-m7-sam31-final-acceptance-evidence-correction.md"
+plan_151_closure = "plans/closure/sam/151-status.md"
 plan_151_status = "passed-m7-sam31-final-acceptance-evidence-correction"
-plan_152_plan_of_record = "plans/152-m6-session-streaming-robustness-corrective.md"
-plan_152_closure = "plans/152-status.md"
+plan_152_plan_of_record = "plans/implementation/sam/152-m6-session-streaming-robustness-corrective.md"
+plan_152_closure = "plans/closure/sam/152-status.md"
 plan_152_status = "passed-m6-session-streaming-robustness-corrective"
-plan_153_plan_of_record = "plans/153-m7-closure-authority-and-ci-hygiene.md"
-plan_153_closure = "plans/153-status.md"
+plan_153_plan_of_record = "plans/closure/sam/153-m7-closure-authority-and-ci-hygiene.md"
+plan_153_closure = "plans/closure/sam/153-status.md"
 plan_153_status = "passed-post-m7-authority-and-ci-hygiene"
-plan_154_plan_of_record = "plans/154-m8-ssu2-transport-and-reachability-roadmap.md"
-plan_154_closure = "plans/154-status.md"
+plan_154_plan_of_record = "plans/implementation/ssu2/154-m8-ssu2-transport-and-reachability-roadmap.md"
+plan_154_closure = "plans/closure/ssu2/154-status.md"
 plan_154_status = "registered-m8-ssu2-v2-roadmap-blocked-by-plan153"
-plan_155_plan_of_record = "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md"
-plan_155_closure = "plans/155-status.md"
+plan_155_plan_of_record = "plans/implementation/ssu2/155-m8-ssu2-v2-protocol-foundation-and-addresses.md"
+plan_155_closure = "plans/closure/ssu2/155-status.md"
 plan_155_status = "passed-m8-ssu2-v2-protocol-foundation-and-addresses"
-plan_156_plan_of_record = "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md"
-plan_156_closure = "plans/156-status.md"
+plan_156_plan_of_record = "plans/implementation/ssu2/156-m8-ssu2-v2-handshake-token-and-routerinfo.md"
+plan_156_closure = "plans/closure/ssu2/156-status.md"
 plan_156_status = "passed-m8-ssu2-v2-handshake-token-and-routerinfo"
-plan_157_plan_of_record = "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md"
-plan_157_closure = "plans/157-status.md"
+plan_157_plan_of_record = "plans/implementation/ssu2/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md"
+plan_157_closure = "plans/closure/ssu2/157-status.md"
 plan_157_status = "passed-m8-ssu2-v2-data-phase-reliability-and-fragmentation"
-plan_158_plan_of_record = "plans/158-m8-ssu2-udp-runtime-and-local-session-product.md"
-plan_158_closure = "plans/158-status.md"
+plan_158_plan_of_record = "plans/implementation/ssu2/158-m8-ssu2-udp-runtime-and-local-session-product.md"
+plan_158_closure = "plans/closure/ssu2/158-status.md"
 plan_158_status = "passed-m8-ssu2-udp-runtime-and-local-session-product"
-plan_159_plan_of_record = "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md"
-plan_159_closure = "plans/159-status.md"
+plan_159_plan_of_record = "plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md"
+plan_159_closure = "plans/closure/ssu2/159-status.md"
 plan_159_status = "passed-m8-ssu2-path-validation-publication-and-transport-selection"
-plan_160_plan_of_record = "plans/160-m8-ssu2-peer-test-and-relay-reachability.md"
-plan_160_closure = "plans/160-status.md"
+plan_160_plan_of_record = "plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md"
+plan_160_closure = "plans/closure/ssu2/160-status.md"
 plan_160_status = "passed-m8-ssu2-peer-test-and-relay-reachability"
-plan_161_plan_of_record = "plans/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md"
-plan_161_closure = "plans/161-status.md"
+plan_161_plan_of_record = "plans/closure/ssu2/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md"
+plan_161_closure = "plans/closure/ssu2/161-status.md"
 plan_161_status = "passed-m8-ssu2-independent-ipv4-interop-and-final-closure"
-plan_162_plan_of_record = "plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md"
-plan_162_closure = "plans/162-status.md"
+plan_162_plan_of_record = "plans/implementation/ssu2/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md"
+plan_162_closure = "plans/closure/ssu2/162-status.md"
 plan_162_status = "passed-m8-ssu2-external-test-lane-isolation-and-ci-restoration"
 milestone8_protocol = "ssu2-v2-classical"
 ssu2_pq_v3_v4 = "deferred-compatibility-watch"
@@ -243,36 +243,36 @@ ssu2_direct_ipv4 = "passed"
 ssu2_ipv6_structure = "passed"
 ssu2_ipv6_interop = "infrastructure-limited-debt"
 milestone8_final_acceptance = "closed-via-plan161"
-plan_163_plan_of_record = "plans/163-m9-i2cp-roadmap.md"
+plan_163_plan_of_record = "plans/implementation/i2cp/163-m9-i2cp-roadmap.md"
 plan_163_status = "registered-m9-i2cp-roadmap"
-plan_164_plan_of_record = "plans/164-m9-i2cp-protocol-and-wire-foundation.md"
-plan_164_closure = "plans/164-status.md"
+plan_164_plan_of_record = "plans/implementation/i2cp/164-m9-i2cp-protocol-and-wire-foundation.md"
+plan_164_closure = "plans/closure/i2cp/164-status.md"
 plan_164_status = "passed-m9-i2cp-protocol-and-wire-foundation"
-plan_165_plan_of_record = "plans/165-m9-i2cp-connection-session-and-options.md"
-plan_165_closure = "plans/165-status.md"
+plan_165_plan_of_record = "plans/implementation/i2cp/165-m9-i2cp-connection-session-and-options.md"
+plan_165_closure = "plans/closure/i2cp/165-status.md"
 plan_165_status = "passed-m9-i2cp-connection-session-and-options"
-plan_166_plan_of_record = "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md"
-plan_166_closure = "plans/166-status.md"
+plan_166_plan_of_record = "plans/implementation/i2cp/166-m9-i2cp-client-owned-destination-and-leaseset2.md"
+plan_166_closure = "plans/closure/i2cp/166-status.md"
 plan_166_status = "passed-m9-i2cp-client-owned-destination-and-leaseset2"
-plan_167_plan_of_record = "plans/167-m9-i2cp-loopback-server-runtime.md"
-plan_167_closure = "plans/167-status.md"
+plan_167_plan_of_record = "plans/implementation/i2cp/167-m9-i2cp-loopback-server-runtime.md"
+plan_167_closure = "plans/closure/i2cp/167-status.md"
 plan_167_status = "passed-m9-i2cp-loopback-server-runtime"
-plan_168_plan_of_record = "plans/168-m9-i2cp-message-data-plane.md"
-plan_168_closure = "plans/168-status.md"
+plan_168_plan_of_record = "plans/implementation/i2cp/168-m9-i2cp-message-data-plane.md"
+plan_168_closure = "plans/closure/i2cp/168-status.md"
 plan_168_status = "passed-m9-i2cp-message-data-plane"
-plan_169_plan_of_record = "plans/169-m9-i2cp-self-composed-local-product-and-hardening.md"
-plan_169_closure = "plans/169-status.md"
+plan_169_plan_of_record = "plans/implementation/i2cp/169-m9-i2cp-self-composed-local-product-and-hardening.md"
+plan_169_closure = "plans/closure/i2cp/169-status.md"
 plan_169_status = "passed-m9-i2cp-self-composed-local-product-and-hardening"
-plan_170_plan_of_record = "plans/170-m9-i2cp-independent-clients-and-final-closure.md"
-plan_170_closure = "plans/170-status.md"
+plan_170_plan_of_record = "plans/closure/i2cp/170-m9-i2cp-independent-clients-and-final-closure.md"
+plan_170_closure = "plans/closure/i2cp/170-status.md"
 plan_170_status = "passed-m9-i2cp-independent-clients-and-final-closure"
 plan_170_external_wire_data_plane = "retained-passed"
 plan_170_final_acceptance = "superseded-by-plan172"
-plan_171_plan_of_record = "plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md"
-plan_171_closure = "plans/171-status.md"
+plan_171_plan_of_record = "plans/implementation/i2cp/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md"
+plan_171_closure = "plans/closure/i2cp/171-status.md"
 plan_171_status = "passed-m9-i2cp-invalid-preamble-close-and-ci-corrective-retained"
-plan_172_plan_of_record = "plans/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md"
-plan_172_closure = "plans/172-status.md"
+plan_172_plan_of_record = "plans/implementation/i2cp/172-m9-i2cp-independent-leaseset2-lifecycle-corrective.md"
+plan_172_closure = "plans/closure/i2cp/172-status.md"
 plan_172_status = "passed-m9-i2cp-independent-leaseset2-lifecycle-corrective"
 milestone9_planning_authority = "plan163"
 milestone9_protocol = "i2cp"
@@ -287,98 +287,98 @@ milestone9_i2cp_independent_wire_data_plane = "passed-via-plan170"
 milestone9_i2cp_independent_clients = "passed-via-plan170-and-plan172"
 milestone9_i2cp_independent_leaseset2 = "passed-via-plan172"
 milestone9_final_acceptance = "closed-via-plan172"
-plan_173_plan_of_record = "plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md"
-plan_173_closure = "plans/173-status.md"
+plan_173_plan_of_record = "plans/implementation/service-tunnels/173-m10-service-tunnels-http-socks5-irc-roadmap.md"
+plan_173_closure = "plans/closure/service-tunnels/173-status.md"
 plan_173_status = "registered-m10-service-tunnels-roadmap"
-plan_174_plan_of_record = "plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md"
-plan_174_closure = "plans/174-status.md"
+plan_174_plan_of_record = "plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md"
+plan_174_closure = "plans/closure/service-tunnels/174-status.md"
 plan_174_status = "passed-m10-service-tunnel-foundation-and-shared-stream-runtime"
-plan_175_plan_of_record = "plans/175-m10-generic-client-server-service-tunnels.md"
-plan_175_closure = "plans/175-status.md"
+plan_175_plan_of_record = "plans/implementation/service-tunnels/175-m10-generic-client-server-service-tunnels.md"
+plan_175_closure = "plans/closure/service-tunnels/175-status.md"
 plan_175_status = "passed-m10-generic-client-server-service-tunnels"
-plan_176_plan_of_record = "plans/176-m10-http-i2p-proxy-and-connect.md"
-plan_176_closure = "plans/176-status.md"
+plan_176_plan_of_record = "plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md"
+plan_176_closure = "plans/closure/service-tunnels/176-status.md"
 plan_176_status = "passed-m10-http-i2p-proxy-and-connect"
-plan_177_plan_of_record = "plans/177-m10-socks5-i2p-connect-proxy.md"
-plan_177_closure = "plans/177-status.md"
+plan_177_plan_of_record = "plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md"
+plan_177_closure = "plans/closure/service-tunnels/177-status.md"
 plan_177_status = "passed-m10-socks5-i2p-connect-proxy"
-plan_178_plan_of_record = "plans/178-m10-irc-client-profile-and-privacy-filtering.md"
-plan_178_closure = "plans/178-status.md"
+plan_178_plan_of_record = "plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md"
+plan_178_closure = "plans/closure/service-tunnels/178-status.md"
 plan_178_status = "passed-m10-irc-client-profile-and-privacy-filtering"
-plan_179_plan_of_record = "plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md"
-plan_179_closure = "plans/179-status.md"
+plan_179_plan_of_record = "plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md"
+plan_179_closure = "plans/closure/service-tunnels/179-status.md"
 plan_179_status = "passed-m10-irc-server-profile-and-authenticated-peer-hostname"
-plan_180_plan_of_record = "plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md"
-plan_180_closure = "plans/180-status.md"
+plan_180_plan_of_record = "plans/implementation/service-tunnels/180-m10-service-tunnel-composition-reconcile-and-hardening.md"
+plan_180_closure = "plans/closure/service-tunnels/180-status.md"
 plan_180_status = "passed-m10-service-tunnel-composition-reconcile-and-hardening"
-plan_181_plan_of_record = "plans/181-m10-independent-application-and-service-interop-final-closure.md"
-plan_181_closure = "plans/181-status.md"
+plan_181_plan_of_record = "plans/closure/service-tunnels/181-m10-independent-application-and-service-interop-final-closure.md"
+plan_181_closure = "plans/closure/service-tunnels/181-status.md"
 plan_181_status = "passed-m10-independent-application-and-service-interop-final-closure-evidence"
-plan_182_plan_of_record = "plans/182-m10-local-delivery-corrective.md"
-plan_182_closure = "plans/182-status.md"
+plan_182_plan_of_record = "plans/implementation/service-tunnels/182-m10-local-delivery-corrective.md"
+plan_182_closure = "plans/closure/service-tunnels/182-status.md"
 plan_182_status = "passed-m10-local-delivery-corrective"
-plan_183_plan_of_record = "plans/183-m6-mixed-router-streaming-interop-program.md"
-plan_183_closure = "plans/183-status.md"
+plan_183_plan_of_record = "plans/implementation/mixed-router-interop/183-m6-mixed-router-streaming-interop-program.md"
+plan_183_closure = "plans/closure/mixed-router-interop/183-status.md"
 plan_183_status = "registered-m6-mixed-router-streaming-interop-program"
-plan_184_plan_of_record = "plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md"
-plan_184_closure = "plans/184-status.md"
+plan_184_plan_of_record = "plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md"
+plan_184_closure = "plans/closure/mixed-router-interop/184-status.md"
 plan_184_status = "passed-m6-authenticated-i2np-runtime-and-reference-preflight"
-plan_185_plan_of_record = "plans/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md"
-plan_185_closure = "plans/185-status.md"
+plan_185_plan_of_record = "plans/implementation/mixed-router-interop/185-m6-live-one-hop-exploratory-tunnels-and-liveness.md"
+plan_185_closure = "plans/closure/mixed-router-interop/185-status.md"
 plan_185_status = "passed-m6-live-one-hop-exploratory-tunnels-and-liveness"
-plan_186_plan_of_record = "plans/186-m6-mixed-router-netdb-lookup-and-publication.md"
-plan_186_closure = "plans/186-status.md"
+plan_186_plan_of_record = "plans/implementation/mixed-router-interop/186-m6-mixed-router-netdb-lookup-and-publication.md"
+plan_186_closure = "plans/closure/mixed-router-interop/186-status.md"
 plan_186_status = "passed-m6-mixed-router-netdb-lookup-and-publication"
-plan_187_plan_of_record = "plans/187-m6-remote-leaseset2-and-destination-garlic-routing.md"
-plan_187_closure = "plans/187-status.md"
+plan_187_plan_of_record = "plans/implementation/mixed-router-interop/187-m6-remote-leaseset2-and-destination-garlic-routing.md"
+plan_187_closure = "plans/closure/mixed-router-interop/187-status.md"
 plan_187_status = "blocked-by-m6-build-reply-interop-gap-2-7-flipped-via-plan188-5-7-corrected-by-plan190"
-plan_188_plan_of_record = "plans/188-m6-short-build-reply-interop-corrective.md"
-plan_188_closure = "plans/188-status.md"
+plan_188_plan_of_record = "plans/implementation/mixed-router-interop/188-m6-short-build-reply-interop-corrective.md"
+plan_188_closure = "plans/closure/mixed-router-interop/188-status.md"
 plan_188_status = "blocked-by-plan191-and-plan192 (real outbound/inbound i2pd installs retained-passed; reply-path correction retained-passed via plan190; inbound-delivery layer closed via plan192)"
-plan_189_plan_of_record = "plans/189-m6-java-i2p-second-family-qualification-and-closure.md"
-plan_189_closure = "plans/189-status.md"
+plan_189_plan_of_record = "plans/implementation/mixed-router-interop/189-m6-java-i2p-second-family-qualification-and-closure.md"
+plan_189_closure = "plans/closure/mixed-router-interop/189-status.md"
 plan_189_status = "registered-blocked-by-plan188-plan190-plan191-plan192-and-streaming"
-plan_190_plan_of_record = "plans/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md"
-plan_190_closure = "plans/190-status.md"
+plan_190_plan_of_record = "plans/implementation/mixed-router-interop/190-m6-inbound-netdb-reply-path-tunnel-id-corrective.md"
+plan_190_closure = "plans/closure/mixed-router-interop/190-status.md"
 plan_190_status = "passed-m6-inbound-netdb-reply-path-tunnel-id-corrective"
-plan_191_plan_of_record = "plans/191-m6-inbound-destination-delivery-boundary.md"
-plan_191_closure = "plans/191-status.md"
+plan_191_plan_of_record = "plans/implementation/mixed-router-interop/191-m6-inbound-destination-delivery-boundary.md"
+plan_191_closure = "plans/closure/mixed-router-interop/191-status.md"
 plan_191_status = "stopped-by-inbound-delivery-boundary-E-closed-via-plan192"
-plan_192_plan_of_record = "plans/192-m6-i2cp-wire-format-corrective.md"
-plan_192_closure = "plans/192-status.md"
+plan_192_plan_of_record = "plans/implementation/mixed-router-interop/192-m6-i2cp-wire-format-corrective.md"
+plan_192_closure = "plans/closure/mixed-router-interop/192-status.md"
 plan_192_status = "passed-m6-i2cp-wire-format-corrective (i2pd 2.61.0 inbound-delivery layer)"
-plan_193_plan_of_record = "plans/193-m6-i2pd-mixed-router-streaming-qualification.md"
-plan_193_closure = "plans/193-status.md"
+plan_193_plan_of_record = "plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md"
+plan_193_closure = "plans/closure/mixed-router-interop/193-status.md"
 plan_193_status = "passed-m6-i2pd-mixed-router-streaming (Direction A + Direction B external matrix passed twice on exact head 3687189; 33/33 rows; static checker wired)"
-plan_194_plan_of_record = "plans/194-m6-java-second-family-mixed-router-closure.md"
-plan_194_closure = "plans/194-status.md"
+plan_194_plan_of_record = "plans/closure/mixed-router-interop/194-m6-java-second-family-mixed-router-closure.md"
+plan_194_closure = "plans/closure/mixed-router-interop/194-status.md"
 plan_194_status = "retained-partial-java-qualification-sam-ls2-publication-boundary (final closure superseded by Plan 198; Plan 200 closed the diagnostic/evidence side; Plan 201 Branch G corrective framework landed; final closure pending the Plan 200 exact-head external run)"
-plan_198_plan_of_record = "plans/198-m6-java-public-client-final-closure-corrective.md"
-plan_198_closure = "plans/198-status.md"
+plan_198_plan_of_record = "plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md"
+plan_198_closure = "plans/closure/mixed-router-interop/198-status.md"
 plan_198_status = "superseded-execution-decomposed-and-closed-via-plans200-204"
-plan_195_plan_of_record = "plans/195-m10-remote-independent-service-final-closure.md"
-plan_195_closure = "plans/195-status.md"
+plan_195_plan_of_record = "plans/closure/service-tunnels/195-m10-remote-independent-service-final-closure.md"
+plan_195_closure = "plans/closure/service-tunnels/195-status.md"
 plan_195_status = "evidence-passed-m10-remote-independent-service-final-closure-pending-plan204-normalization"
-plan_199_plan_of_record = "plans/199-m10-unified-final-closure.md"
-plan_199_closure = "plans/199-status.md"
+plan_199_plan_of_record = "plans/closure/service-tunnels/199-m10-unified-final-closure.md"
+plan_199_closure = "plans/closure/service-tunnels/199-status.md"
 plan_199_status = "superseded-execution-decomposed-and-closed-via-plans200-204"
-plan_200_plan_of_record = "plans/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md"
-plan_200_closure = "plans/200-status.md"
+plan_200_plan_of_record = "plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md"
+plan_200_closure = "plans/closure/mixed-router-interop/200-status.md"
 plan_200_status = "passed-m6-java-public-client-publication-observability-and-verified-bootstrap"
-plan_201_plan_of_record = "plans/201-m6-java-public-client-publication-corrective-and-second-family-closure.md"
-plan_201_closure = "plans/201-status.md"
+plan_201_plan_of_record = "plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md"
+plan_201_closure = "plans/closure/mixed-router-interop/201-status.md"
 plan_201_status = "in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring (Branch A decode-gap corrective landed; one-direction proof + symmetric b-knows-a fix; Branch G observation framework retained; Branch C/D three-router topology + 1-hop helper profile attempted and proved bounded by Java's ProfileOrganizer _thresholdSpeedValue under controlled loopback topology; the seven Plan 201 §11 stop rows stay blocked with documented Plan 198/199 stop provenance; M6 Java second-family claim stays not-yet-passed; M10 final acceptance stays not-yet-closed)"
-plan_202_plan_of_record = "plans/202-m10-production-remote-destination-and-streaming-composition.md"
-plan_202_closure = "plans/202-status.md"
+plan_202_plan_of_record = "plans/implementation/service-tunnels/202-m10-production-remote-destination-and-streaming-composition.md"
+plan_202_closure = "plans/closure/service-tunnels/202-status.md"
 plan_202_status = "passed-m10-production-remote-destination-and-streaming-composition"
-plan_203_plan_of_record = "plans/203-m10-positive-remote-http-and-irc-application-interop.md"
-plan_203_closure = "plans/203-status.md"
+plan_203_plan_of_record = "plans/implementation/service-tunnels/203-m10-positive-remote-http-and-irc-application-interop.md"
+plan_203_closure = "plans/closure/service-tunnels/203-status.md"
 plan_203_status = "passed-m10-positive-remote-http-and-irc-application-interop"
-plan_204_plan_of_record = "plans/204-m10-final-closure-evidence-authority-and-documentation-normalization.md"
-plan_204_closure = "plans/204-status.md"
+plan_204_plan_of_record = "plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md"
+plan_204_closure = "plans/closure/service-tunnels/204-status.md"
 plan_204_status = "in-progress-docs-and-authority-normalization-blocked-on-plan205-sam-bridge-pivot (intentionally narrow docs/CI/evidence-authority normalization pass on top of Plans 200/202/203; the M6/M10 closed authority transitions in §7/§12 stay deferred until Plan 205's SAM-bridge helper pivot lands and closes the Java M6 mandatory rows; no product bug hidden; no synthetic passed evidence introduced)"
-plan_205_plan_of_record = "plans/205-m6-java-sam-bridge-helper-pivot.md"
-plan_205_closure = "plans/205-status.md"
+plan_205_plan_of_record = "plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md"
+plan_205_closure = "plans/closure/mixed-router-interop/205-status.md"
 plan_205_status = "in-progress-registered-blocked-on-plan198-publication-boundary (documented next executable plan after Plan 201; rewrites the Java second-family helpers from direct I2CP to the public SAM bridge path mirroring what i2pd's SAM bridge does successfully in the Plan 202/203 reference destination path; three-router topology retained from Plan 201 Branch C/D; no public I2P, no Java patching, no i2pr production wire change)"
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
@@ -423,8 +423,8 @@ evidence = [
     "crates/i2pr-transport-ssu2/src/packet.rs",
     "tests/fixtures/ssu2/manifest.tsv",
     "scripts/check-ssu2-vectors.sh",
-    "plans/155-m8-ssu2-v2-protocol-foundation-and-addresses.md",
-    "plans/155-status.md",
+    "plans/implementation/ssu2/155-m8-ssu2-v2-protocol-foundation-and-addresses.md",
+    "plans/closure/ssu2/155-status.md",
 ]
 advertised = false
 
@@ -443,8 +443,8 @@ evidence = [
     "crates/i2pr-transport-ssu2/tests/handshake.rs",
     "tests/fixtures/ssu2/manifest.tsv",
     "scripts/check-ssu2-vectors.sh",
-    "plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md",
-    "plans/156-status.md",
+    "plans/implementation/ssu2/156-m8-ssu2-v2-handshake-token-and-routerinfo.md",
+    "plans/closure/ssu2/156-status.md",
 ]
 advertised = false
 
@@ -462,8 +462,8 @@ evidence = [
     "crates/i2pr-transport-ssu2/tests/data_phase.rs",
     "tests/fixtures/ssu2/manifest.tsv",
     "scripts/check-ssu2-vectors.sh",
-    "plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md",
-    "plans/157-status.md",
+    "plans/implementation/ssu2/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md",
+    "plans/closure/ssu2/157-status.md",
 ]
 advertised = false
 
@@ -479,8 +479,8 @@ evidence = [
     "crates/i2pr-runtime/tests/ssu2_local.rs",
     "crates/i2pr-transport-ssu2/src/session.rs",
     "crates/i2pr-daemon/src/config.rs",
-    "plans/158-m8-ssu2-udp-runtime-and-local-session-product.md",
-    "plans/158-status.md",
+    "plans/implementation/ssu2/158-m8-ssu2-udp-runtime-and-local-session-product.md",
+    "plans/closure/ssu2/158-status.md",
 ]
 advertised = false
 
@@ -500,8 +500,8 @@ evidence = [
     "crates/i2pr-transport/src/reachability.rs",
     "crates/i2pr-transport/src/manager.rs",
     "crates/i2pr-runtime/src/ssu2_runtime.rs",
-    "plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md",
-    "plans/159-status.md",
+    "plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md",
+    "plans/closure/ssu2/159-status.md",
 ]
 advertised = false
 
@@ -521,8 +521,8 @@ evidence = [
     "crates/i2pr-transport/src/reachability.rs",
     "crates/i2pr-runtime/src/ssu2_peer_relay.rs",
     "crates/i2pr-runtime/tests/ssu2_peer_relay.rs",
-    "plans/160-m8-ssu2-peer-test-and-relay-reachability.md",
-    "plans/160-status.md",
+    "plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md",
+    "plans/closure/ssu2/160-status.md",
 ]
 advertised = false
 
@@ -531,7 +531,7 @@ id = "common.codec-foundation"
 structure = "bounded-codec-foundation"
 scope = "required"
 status = "experimental"
-evidence = ["plans/011-closure.md", "crates/i2pr-proto/src/codec.rs"]
+evidence = ["plans/closure/workspace-foundation/011-closure.md", "crates/i2pr-proto/src/codec.rs"]
 advertised = false
 
 [[surface]]
@@ -540,7 +540,7 @@ protocol = "common-structures"
 structure = "integers-dates-utf8-strings-hashes"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/closure/workspace-foundation/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -549,7 +549,7 @@ protocol = "common-structures"
 structure = "mappings-certificates-key-certificates"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/closure/workspace-foundation/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -558,7 +558,7 @@ protocol = "common-structures"
 structure = "router-identity-destination"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/closure/workspace-foundation/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -567,7 +567,7 @@ protocol = "common-structures"
 structure = "router-address-router-info"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/mod.rs", "plans/closure/workspace-foundation/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -576,7 +576,7 @@ protocol = "common-structures"
 structure = "lease-and-classic-leaseset-structural-subset"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/common/lease.rs", "plans/012-closure.md"]
+evidence = ["crates/i2pr-proto/src/common/lease.rs", "plans/closure/workspace-foundation/012-closure.md"]
 advertised = false
 
 [[surface]]
@@ -592,8 +592,8 @@ evidence = [
     "crates/i2pr-proto/src/i2np/message.rs",
     "crates/i2pr-netdb/src/lease_set2.rs",
     "crates/i2pr-netdb/src/lookup_id.rs",
-    "plans/119-m6-leaseset2-protocol-foundation.md",
-    "plans/119-status.md",
+    "plans/implementation/destination-streaming/119-m6-leaseset2-protocol-foundation.md",
+    "plans/closure/destination-streaming/119-status.md",
 ]
 advertised = false
 
@@ -613,7 +613,7 @@ evidence = [
     "crates/i2pr-client/src/message.rs",
     "crates/i2pr-client/src/registry.rs",
     "crates/i2pr-client/tests/plan120_trajectory.rs",
-    "plans/120-m6-destination-lifecycle-and-tunnel-pools.md",
+    "plans/implementation/destination-streaming/120-m6-destination-lifecycle-and-tunnel-pools.md",
 ]
 advertised = false
 
@@ -630,8 +630,8 @@ evidence = [
     "crates/i2pr-client/src/session.rs",
     "crates/i2pr-client/tests/plan126_trajectory.rs",
     "crates/i2pr-client/tests/plan127_trajectory.rs",
-    "plans/126-status.md",
-    "plans/127-status.md",
+    "plans/closure/destination-streaming/126-status.md",
+    "plans/closure/destination-streaming/127-status.md",
 ]
 advertised = false
 
@@ -652,10 +652,10 @@ evidence = [
     "crates/i2pr-client/tests/plan122_trajectory.rs",
     "crates/i2pr-client/tests/plan124_trajectory.rs",
     "crates/i2pr-client/tests/plan127_trajectory.rs",
-    "plans/122-m6-destination-routing-and-netdb-composition.md",
-    "plans/122-status.md",
-    "plans/124-m6-plan122-destination-routing-corrective-closure.md",
-    "plans/124-status.md",
+    "plans/implementation/destination-streaming/122-m6-destination-routing-and-netdb-composition.md",
+    "plans/closure/destination-streaming/122-status.md",
+    "plans/closure/destination-streaming/124-m6-plan122-destination-routing-corrective-closure.md",
+    "plans/closure/destination-streaming/124-status.md",
 ]
 advertised = false
 
@@ -683,13 +683,13 @@ evidence = [
     "specs/references/streaming-packet-wire.md",
     "crates/i2pr-proto/tests/plan128_wire.rs",
     "crates/i2pr-client/tests/plan128_trajectory.rs",
-    "plans/123-m6-minimal-streaming-core.md",
-    "plans/123-status.md",
-    "plans/125-m6-streaming-corrective-and-local-closure.md",
-    "plans/125-status.md",
+    "plans/implementation/destination-streaming/123-m6-minimal-streaming-core.md",
+    "plans/closure/destination-streaming/123-status.md",
+    "plans/closure/destination-streaming/125-m6-streaming-corrective-and-local-closure.md",
+    "plans/closure/destination-streaming/125-status.md",
     "crates/i2pr-client/tests/plan129_trajectory.rs",
-    "plans/129-m6-integrated-destination-streaming-final-gate.md",
-    "plans/129-status.md",
+    "plans/implementation/destination-streaming/129-m6-integrated-destination-streaming-final-gate.md",
+    "plans/closure/destination-streaming/129-status.md",
 ]
 advertised = false
 
@@ -699,7 +699,7 @@ protocol = "cryptography"
 structure = "protocol-specific-key-signature-and-hash-wrappers"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/013-closure.md"]
+evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/closure/workspace-foundation/013-closure.md"]
 advertised = false
 
 [[surface]]
@@ -708,7 +708,7 @@ protocol = "common-structures"
 structure = "router-identity-generation-and-router-info-signing"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/013-closure.md"]
+evidence = ["crates/i2pr-crypto/src/lib.rs", "plans/closure/workspace-foundation/013-closure.md"]
 advertised = false
 
 [[surface]]
@@ -717,7 +717,7 @@ protocol = "storage"
 structure = "versioned-atomic-router-identity-store"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-storage/src/lib.rs", "plans/013-closure.md"]
+evidence = ["crates/i2pr-storage/src/lib.rs", "plans/closure/workspace-foundation/013-closure.md"]
 advertised = false
 
 [[surface]]
@@ -729,8 +729,8 @@ status = "experimental"
 evidence = [
     "crates/i2pr-netdb/src/router_info.rs",
     "crates/i2pr-netdb/src/lib.rs",
-    "plans/103-routerinfo-validation-and-local-netdb-foundation.md",
-    "plans/103-status.md",
+    "plans/implementation/netdb/103-routerinfo-validation-and-local-netdb-foundation.md",
+    "plans/closure/netdb/103-status.md",
 ]
 advertised = false
 
@@ -743,7 +743,7 @@ status = "experimental"
 evidence = [
     "crates/i2pr-netdb/src/store.rs",
     "crates/i2pr-netdb/src/lib.rs",
-    "plans/103-status.md",
+    "plans/closure/netdb/103-status.md",
 ]
 advertised = false
 
@@ -753,7 +753,7 @@ protocol = "reseed-netdb"
 structure = "xor-distance-floodfill-filter-nearest-n"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-netdb/src/routing.rs", "plans/103-status.md"]
+evidence = ["crates/i2pr-netdb/src/routing.rs", "plans/closure/netdb/103-status.md"]
 advertised = false
 
 [[surface]]
@@ -765,7 +765,7 @@ status = "experimental"
 evidence = [
     "crates/i2pr-netdb/src/local.rs",
     "crates/i2pr-netdb/src/lib.rs",
-    "plans/103-status.md",
+    "plans/closure/netdb/103-status.md",
 ]
 advertised = false
 
@@ -775,7 +775,7 @@ protocol = "ntcp2"
 structure = "x25519-aes-chacha-hmac-siphash-protocol-wrappers"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/manifest.tsv", "plans/032-closure.md", "plans/036-closure.md", "plans/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/manifest.tsv", "plans/closure/ntcp2-transport/032-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -784,7 +784,7 @@ protocol = "ntcp2"
 structure = "consuming-three-message-transcript-and-split"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/vectors.tsv", "plans/032-closure.md", "plans/036-closure.md", "plans/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/crypto.rs", "tests/fixtures/ntcp2/crypto/vectors.tsv", "plans/closure/ntcp2-transport/032-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -793,7 +793,7 @@ protocol = "ntcp2"
 structure = "versioned-static-key-and-obfuscation-iv-store"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/storage-static-key.hex", "plans/032-closure.md", "plans/036-closure.md", "plans/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-storage/src/lib.rs", "tests/fixtures/ntcp2/crypto/storage-static-key.hex", "plans/closure/ntcp2-transport/032-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -802,7 +802,7 @@ protocol = "ntcp2"
 structure = "bounded-session-request-created-confirmed-codecs"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/handshake.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/033-closure.md", "plans/036-closure.md", "plans/037-closure.md", "plans/058-status.md", "plans/059-status.md", "plans/060-closure.md", "plans/065-status.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/handshake.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/closure/ntcp2-transport/033-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "plans/closure/ntcp2-transport/058-status.md", "plans/closure/ntcp2-transport/059-status.md", "plans/closure/ntcp2-transport/060-closure.md", "plans/closure/ntcp2-transport/065-status.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -811,7 +811,7 @@ protocol = "ntcp2"
 structure = "consuming-initiator-responder-actions-and-peer-binding"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/033-closure.md", "plans/036-closure.md", "plans/037-closure.md", "plans/058-status.md", "plans/059-status.md", "plans/060-closure.md", "plans/065-status.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/state_machine.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/closure/ntcp2-transport/033-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "plans/closure/ntcp2-transport/058-status.md", "plans/closure/ntcp2-transport/059-status.md", "plans/closure/ntcp2-transport/060-closure.md", "plans/closure/ntcp2-transport/065-status.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -820,7 +820,7 @@ protocol = "ntcp2"
 structure = "siphash-masked-aead-data-frames-and-directional-counters"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/frame.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/034-closure.md", "plans/036-closure.md", "plans/037-closure.md", "plans/058-status.md", "plans/059-status.md", "plans/060-closure.md", "plans/065-status.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/frame.rs", "crates/i2pr-transport-ntcp2/tests/handshake.rs", "plans/closure/ntcp2-transport/034-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "plans/closure/ntcp2-transport/058-status.md", "plans/closure/ntcp2-transport/059-status.md", "plans/closure/ntcp2-transport/060-closure.md", "plans/closure/ntcp2-transport/065-status.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -829,7 +829,7 @@ protocol = "ntcp2"
 structure = "bounded-authenticated-timestamp-options-routerinfo-i2np-termination-padding-blocks"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src/ntcp2.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/034-closure.md", "plans/036-closure.md", "plans/037-closure.md", "plans/058-status.md", "plans/059-status.md", "plans/060-closure.md", "plans/065-status.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-transport-ntcp2/src/block.rs", "crates/i2pr-testkit/src/ntcp2.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/closure/ntcp2-transport/034-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "plans/closure/ntcp2-transport/058-status.md", "plans/closure/ntcp2-transport/059-status.md", "plans/closure/ntcp2-transport/060-closure.md", "plans/closure/ntcp2-transport/065-status.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -838,7 +838,7 @@ protocol = "ntcp2"
 structure = "controlled-runtime-tcp-admission-replay-backoff-and-link-ownership"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-runtime/src/ntcp2_runtime.rs", "crates/i2pr-transport-ntcp2/src/address.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/035-closure.md", "plans/036-closure.md", "plans/037-closure.md", "plans/058-status.md", "plans/059-status.md", "plans/060-closure.md", "plans/065-status.md", "tests/integration/ntcp2/manifest.toml"]
+evidence = ["crates/i2pr-runtime/src/ntcp2_runtime.rs", "crates/i2pr-transport-ntcp2/src/address.rs", "crates/i2pr-testkit/tests/milestone_3.rs", "plans/closure/ntcp2-transport/035-closure.md", "plans/closure/ntcp2-transport/036-closure.md", "plans/closure/ntcp2-transport/037-closure.md", "plans/closure/ntcp2-transport/058-status.md", "plans/closure/ntcp2-transport/059-status.md", "plans/closure/ntcp2-transport/060-closure.md", "plans/closure/ntcp2-transport/065-status.md", "tests/integration/ntcp2/manifest.toml"]
 advertised = false
 
 [[surface]]
@@ -847,7 +847,7 @@ protocol = "i2np"
 structure = "bounded-message-envelope-and-header"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "tests/fixtures/i2np/manifest.tsv", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "tests/fixtures/i2np/manifest.tsv", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -856,7 +856,7 @@ protocol = "i2np"
 structure = "message-type-identifiers-and-bounded-dispatch"
 scope = "required"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -865,7 +865,7 @@ protocol = "i2np"
 structure = "database-lookup-search-reply-delivery-status-and-store-framing"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "crates/i2pr-proto/src/common/lease.rs", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "crates/i2pr-proto/src/common/lease.rs", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -874,7 +874,7 @@ protocol = "i2np"
 structure = "zeroizing-noncloneable-reply-key-and-tag-wrappers"
 scope = "required-later"
 status = "experimental"
-evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "plans/015-m1-corrective-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/netdb.rs", "plans/closure/workspace-foundation/015-m1-corrective-closure.md"]
 advertised = false
 
 [[surface]]
@@ -889,8 +889,8 @@ evidence = [
     "crates/i2pr-proto/src/i2np/message.rs",
     "crates/i2pr-proto/tests/lease_set2_fixture.rs",
     "specs/protocols/02-i2np.md",
-    "plans/119-m6-leaseset2-protocol-foundation.md",
-    "plans/119-status.md",
+    "plans/implementation/destination-streaming/119-m6-leaseset2-protocol-foundation.md",
+    "plans/closure/destination-streaming/119-status.md",
 ]
 advertised = false
 
@@ -900,7 +900,7 @@ protocol = "i2np"
 structure = "tunnel-data-gateway-and-build-record-framing"
 scope = "required-later"
 status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np/deferred.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/deferred.rs", "specs/protocols/02-i2np.md", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -909,7 +909,7 @@ protocol = "i2np"
 structure = "bounded-garlic-and-data-opaque-payload-framing"
 scope = "required-later"
 status = "deferred"
-evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["crates/i2pr-proto/src/i2np/mod.rs", "specs/protocols/02-i2np.md", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -918,7 +918,7 @@ protocol = "i2np"
 structure = "initial-netdb-delivery-tunnel-and-garlic-message-bodies"
 scope = "required-later"
 status = "deferred"
-evidence = ["specs/protocols/02-i2np.md", "plans/014-closure.md"]
+evidence = ["specs/protocols/02-i2np.md", "plans/closure/workspace-foundation/014-closure.md"]
 advertised = false
 
 [[surface]]
@@ -930,8 +930,8 @@ status = "experimental"
 evidence = [
     "crates/i2pr-storage/src/lib.rs (cache_seam)",
     "crates/i2pr-netdb-persist/src/cache_loader.rs",
-    "plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
-    "plans/104-status.md",
+    "plans/implementation/netdb/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
+    "plans/closure/netdb/104-status.md",
 ]
 advertised = false
 
@@ -945,8 +945,8 @@ evidence = [
     "crates/i2pr-netdb/src/reseed.rs",
     "crates/i2pr-netdb/src/base64.rs",
     "crates/i2pr-netdb-persist/src/reseed_ingest.rs",
-    "plans/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
-    "plans/104-status.md",
+    "plans/implementation/netdb/104-persistent-netdb-cache-and-su3-reseed-trust-path.md",
+    "plans/closure/netdb/104-status.md",
 ]
 advertised = false
 
@@ -965,8 +965,8 @@ evidence = [
     "crates/i2pr-netdb/src/lookup_engine.rs",
     "crates/i2pr-netdb/src/publication.rs",
     "crates/i2pr-netdb/src/store_message.rs",
-    "plans/105-transport-neutral-netdb-query-and-publication-state-machines.md",
-    "plans/105-status.md",
+    "plans/implementation/netdb/105-transport-neutral-netdb-query-and-publication-state-machines.md",
+    "plans/closure/netdb/105-status.md",
 ]
 advertised = false
 
@@ -982,10 +982,10 @@ evidence = [
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/src/lib.rs",
     "crates/i2pr-daemon/tests/netdb_integration.rs",
-    "plans/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md",
-    "plans/106-status.md",
-    "plans/117-live-exploratory-netdb-integration.md",
-    "plans/117-status.md",
+    "plans/implementation/netdb/106-daemon-netdb-bootstrap-integration-and-milestone-5-handoff.md",
+    "plans/closure/netdb/106-status.md",
+    "plans/implementation/exploratory-tunnels/117-live-exploratory-netdb-integration.md",
+    "plans/closure/exploratory-tunnels/117-status.md",
 ]
 advertised = false
 
@@ -995,7 +995,7 @@ protocol = "reseed-netdb"
 structure = "live-standards-conformant-routerinfo-lookup-over-exploratory-tunnels"
 scope = "required-later"
 status = "deferred"
-evidence = ["plans/102-amendment-exploratory-tunnel-dependency.md"]
+evidence = ["plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md"]
 advertised = false
 
 [[surface]]
@@ -1012,7 +1012,7 @@ evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
     "crates/i2pr-tunnel/src/provider.rs",
     "crates/i2pr-tunnel/src/lib.rs",
-    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+    "plans/implementation/exploratory-tunnels/107-milestone-5-exploratory-tunnel-substrate.md",
 ]
 advertised = false
 
@@ -1026,7 +1026,7 @@ evidence = [
     "crates/i2pr-netdb/src/lookup_id.rs",
     "crates/i2pr-tunnel/src/provider.rs",
     "crates/i2pr-daemon/src/netdb_seam.rs",
-    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
+    "plans/implementation/exploratory-tunnels/107-milestone-5-exploratory-tunnel-substrate.md",
 ]
 advertised = false
 
@@ -1038,9 +1038,9 @@ scope = "required-later"
 status = "experimental"
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
-    "plans/107-milestone-5-exploratory-tunnel-substrate.md",
-    "plans/111-short-build-final-local-conformance-correction.md",
-    "plans/111-status.md",
+    "plans/implementation/exploratory-tunnels/107-milestone-5-exploratory-tunnel-substrate.md",
+    "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md",
+    "plans/closure/exploratory-tunnels/111-status.md",
 ]
 advertised = false
 
@@ -1051,7 +1051,7 @@ structure = "local-ecies-x25519-noise-n-short-build-cryptography-and-state-machi
 scope = "required-later"
 status = "experimental"
 conformant = true
-conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. Plan 114 closes the four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. This is not a strict final-spec conformance claim for the unresolved inbound creator-key sentence. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane. Plan 116 closed as `passed-local-tunnel-data-plane` via the Plan 116 completion/correction pass (defects `C1`–`C16`): canonical `SHA256(post_zero_record_bytes || IV)[0..4]` checksum builder/parser with distinct unfragmented vs fragmented-first wire encodings; AES-256 ECB-DEC/CBC-DEC/ECB-DEC creator inverse with OBEP applying the participant forward transform; CSPRNG-injected fresh IV per cell and random nonzero padding; `Option<EstablishedNextHop>` typed next-hop state with no `u32::MAX` / zero-hash sentinels; one-shot `EstablishedTunnel::into_extracted` material transfer; success-only `ShortBuildRegistrar::admit_material` that inserts a real `TunnelEntry` carrying registration plus `EstablishedMaterial` into the `ExploratoryPool`; inbound reply path uses the first remote IBGW router hash and receive tunnel id; and deterministic two- and three-hop outbound trajectories plus an outbound-to-inbound trajectory that round-trip exact original standard I2NP bytes through the canonical TunnelMessage + participant layer transform chain. Zero `Plan 116 provisional scaffolding` tests remain ignored. Q1/Q2/qualified-external-delivery still pending; see `plans/116-status.md` and `plans/116-completion-correction.md`."
+conformance_note = "Plan 111/112 preserve local outbound conformance. Plan 113 closes inbound as `reference-compatible-spec-text-discrepancy`: the final specification mentions a creator ephemeral key in inbound plaintext but gives no serializable location, while pinned Java I2P and i2pd agree on the deployed originator fake. The real request retains fixed fields + Mapping/padding; exactly one originator fake carries `hash16 || fresh X25519 pub32 || random remainder` and is integrity-checked after reply processing. Plan 114 closes the four post-Plan-113 routing/composition defects: explicit outbound `outbound_reply_router` and inbound `originator_hash` terminal-routing fields, intermediate `hops[i].next_tunnel == hops[i+1].receive_tunnel` chain continuity enforced at both the high-level `ShortBuildPath::validate()` boundary and the public lower-level `prepare_short_build_message()` entry point, and strict outbound/inbound E2E trajectories that deterministically reach `Established`. Plan 115 Emissary Q0 construction + native OBEP reply has passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f: the i2pr-produced STBM is consumed by Emissary's native short-build handler, Emissary replies with `TunnelGateway` + Garlic inner message + feedback channel. This is not a strict final-spec conformance claim for the unresolved inbound creator-key sentence. Q1 (authenticated transport delivery) and Q2 (reply round-trip to `Established`) remain pending on a qualified external delivery lane. Plan 116 closed as `passed-local-tunnel-data-plane` via the Plan 116 completion/correction pass (defects `C1`–`C16`): canonical `SHA256(post_zero_record_bytes || IV)[0..4]` checksum builder/parser with distinct unfragmented vs fragmented-first wire encodings; AES-256 ECB-DEC/CBC-DEC/ECB-DEC creator inverse with OBEP applying the participant forward transform; CSPRNG-injected fresh IV per cell and random nonzero padding; `Option<EstablishedNextHop>` typed next-hop state with no `u32::MAX` / zero-hash sentinels; one-shot `EstablishedTunnel::into_extracted` material transfer; success-only `ShortBuildRegistrar::admit_material` that inserts a real `TunnelEntry` carrying registration plus `EstablishedMaterial` into the `ExploratoryPool`; inbound reply path uses the first remote IBGW router hash and receive tunnel id; and deterministic two- and three-hop outbound trajectories plus an outbound-to-inbound trajectory that round-trip exact original standard I2NP bytes through the canonical TunnelMessage + participant layer transform chain. Zero `Plan 116 provisional scaffolding` tests remain ignored. Q1/Q2/qualified-external-delivery still pending; see `plans/closure/exploratory-tunnels/116-status.md` and `plans/closure/exploratory-tunnels/116-completion-correction.md`."
 notes = "Plan 115 Emissary Q0 construction + native OBEP reply: passed locally against pinned Emissary at 9b43484a21d5a1291c4881cdae62a36c527f8c0f. Q1/Q2/qualified-external-delivery still pending. Plan 116 local tunnel data plane passed via the completion/correction pass; all active i2pr-tunnel tests are green. Plan 117 closed per Plan 118 as `closed-for-progression-with-evidence-gap`: local production composition (Phase G) is passed; the corrected in-tree native Emissary test reaches OBEP admission and reply AEAD opening but rejects the pinned reference's request-prefixed reply plaintext during strict Mapping decode; the reference-side defect is localized to the pinned Emissary revision and no upstream correction is available. The next executable plan is Plan 119 (LeaseSet2 protocol foundation) under the Milestone 6 router-construction roadmap; router construction is not blocked on the unavailable authenticated external transport lane."
 evidence = [
     "crates/i2pr-tunnel/src/build_crypto.rs",
@@ -1063,13 +1063,13 @@ evidence = [
     "crates/i2pr-tunnel/src/fixed_vectors.rs",
     "crates/i2pr-tunnel/src/bridge.rs",
     "crates/i2pr-crypto/src/hkdf.rs",
-    "plans/111-short-build-final-local-conformance-correction.md",
-    "plans/111-status.md",
-    "plans/112-status.md",
-    "plans/113-status.md",
-    "plans/115-status.md",
-    "plans/116-status.md",
-    "plans/116-completion-correction.md",
+    "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md",
+    "plans/closure/exploratory-tunnels/111-status.md",
+    "plans/closure/exploratory-tunnels/112-status.md",
+    "plans/closure/exploratory-tunnels/113-status.md",
+    "plans/closure/exploratory-tunnels/115-status.md",
+    "plans/closure/exploratory-tunnels/116-status.md",
+    "plans/closure/exploratory-tunnels/116-completion-correction.md",
     "specs/references/short-build-inbound-creator-key.md",
 ]
 advertised = false
@@ -1086,8 +1086,8 @@ evidence = [
     "crates/i2pr-tunnel/src/conformance_fixtures.rs",
     "crates/i2pr-tunnel/src/fixed_vectors.rs",
     "crates/i2pr-tunnel/src/multirecord.rs",
-    "plans/111-short-build-final-local-conformance-correction.md",
-    "plans/111-status.md",
+    "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md",
+    "plans/closure/exploratory-tunnels/111-status.md",
 ]
 advertised = false
 
@@ -1104,9 +1104,9 @@ evidence = [
     "crates/i2pr-tunnel/src/short.rs",
     "crates/i2pr-tunnel/src/short_record.rs",
     "crates/i2pr-tunnel/src/short_state.rs",
-    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
-    "plans/111-short-build-final-local-conformance-correction.md",
-    "plans/111-status.md",
+    "plans/closure/exploratory-tunnels/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md",
+    "plans/closure/exploratory-tunnels/111-status.md",
 ]
 advertised = false
 
@@ -1117,9 +1117,9 @@ structure = "live-ecies-x25519-build-and-mixed-router-execution"
 scope = "required-later"
 status = "deferred"
 evidence = [
-    "plans/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
-    "plans/111-short-build-final-local-conformance-correction.md",
-    "plans/111-status.md",
+    "plans/closure/exploratory-tunnels/110-short-build-multirecord-preprocessing-and-conformance-closure.md",
+    "plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md",
+    "plans/closure/exploratory-tunnels/111-status.md",
 ]
 advertised = false
 
@@ -1129,7 +1129,7 @@ protocol = "sam"
 structure = "sam-3.1-bounded-line-parser-version-negotiation-private-destination-codec"
 scope = "required"
 status = "experimental"
-notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/136-status.md; **Plan 142 reopens and supersedes the Base64 sub-claim** to `passed-m7-sam31-encoding-private-destination-corrective` per plans/142-status.md; **Plan 146 requalifies the private-destination interoperability claim** to `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md. The i2pr SAM codec uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — rather than RFC 4648. The private-destination import path now uses the relaxed `DestinationIdentity::from_imported` constructor (Plan 146) that preserves the destination's embedded encryption public field verbatim; only the `signing_public == EdDSA(signing_seed)` structural invariant is enforced. Both i2pd `IdentityEx` and Java I2P `PrivateKeyFile` populate the destination encryption field with random bytes for destinations and treat the `PRIV[391..423]` slot as opaque random material; Plan 146 documents and pins that tolerance. See `specs/references/sam31-private-destination.md` for the four-reference corroboration (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2pd `libi2pd/Identity.cpp`, i2plib `I2P_B64_CHARS = \"-~\"`) and the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs`. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, the corrected I2P Base64 codec with `+`/`/` rejection and frozen alphabet/padding/length vectors, the SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 wires the SAM bridge service into the supervised daemon."
+notes = "Plan 136 closed as `passed-m7-sam31-protocol-private-destination-foundation` per plans/closure/sam/136-status.md; **Plan 142 reopens and supersedes the Base64 sub-claim** to `passed-m7-sam31-encoding-private-destination-corrective` per plans/closure/sam/142-status.md; **Plan 146 requalifies the private-destination interoperability claim** to `passed-m7-sam31-private-destination-reference-requalification` per plans/146-status.md. The i2pr SAM codec uses the I2P Base64 alphabet (`A-Z a-z 0-9 - ~`, `=` padding) — the spelling every Java I2P / i2pd / independent Python SAM client reference implementation emits — rather than RFC 4648. The private-destination import path now uses the relaxed `DestinationIdentity::from_imported` constructor (Plan 146) that preserves the destination's embedded encryption public field verbatim; only the `signing_public == EdDSA(signing_seed)` structural invariant is enforced. Both i2pd `IdentityEx` and Java I2P `PrivateKeyFile` populate the destination encryption field with random bytes for destinations and treat the `PRIV[391..423]` slot as opaque random material; Plan 146 documents and pins that tolerance. See `specs/references/sam31-private-destination.md` for the four-reference corroboration (i2pd `libi2pd/Base.{h,cpp}`, Java I2P `PrivateKeyFile.java`, i2pd `libi2pd/Identity.cpp`, i2plib `I2P_B64_CHARS = \"-~\"`) and the bidirectional reference evidence at `crates/i2pr-daemon/tests/sam_plan146_reference.rs`. `i2pr-api` owns the bounded line/command/reply parser, typed HELLO VERSION / DEST GENERATE / SESSION CREATE / STREAM CONNECT / STREAM ACCEPT / STREAM FORWARD / NAMING LOOKUP / PING / PONG / QUIT vocabulary, strict SAM 3.1-only version negotiation with typed NOVERSION failure path, the corrected I2P Base64 codec with `+`/`/` rejection and frozen alphabet/padding/length vectors, the SamPrivateDestination wrapper (non-Clone, non-Debug, zeroize-on-drop) carrying the standard Java PrivateKeyFile concatenation, and the runtime-neutral DEST GENERATE / SESSION CREATE private-destination import/export surface. No sockets, no timers, no Tokio; Plan 137 wires the SAM bridge service into the supervised daemon."
 evidence = [
     "crates/i2pr-api/src/sam/version.rs",
     "crates/i2pr-api/src/sam/parser.rs",
@@ -1143,10 +1143,10 @@ evidence = [
     "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
     "tests/integration/sam/reference/Plan146ReferenceHelper.java",
     "specs/references/sam31-private-destination.md",
-    "plans/136-m7-sam31-protocol-private-destination-foundation.md",
-    "plans/136-status.md",
-    "plans/146-m7-sam31-private-destination-reference-requalification.md",
-    "plans/146-status.md",
+    "plans/implementation/sam/136-m7-sam31-protocol-private-destination-foundation.md",
+    "plans/closure/sam/136-status.md",
+    "plans/implementation/sam/146-m7-sam31-private-destination-reference-requalification.md",
+    "plans/closure/sam/146-status.md",
 ]
 
 [[surface]]
@@ -1166,8 +1166,8 @@ evidence = [
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/src/lib.rs",
     "crates/i2pr-daemon/tests/sam_loopback.rs",
-    "plans/137-m7-sam31-loopback-server-session-lifecycle.md",
-    "plans/137-status.md",
+    "plans/implementation/sam/137-m7-sam31-loopback-server-session-lifecycle.md",
+    "plans/closure/sam/137-status.md",
 ]
 advertised = false
 
@@ -1188,8 +1188,8 @@ evidence = [
     "crates/i2pr-daemon/src/sam.rs",
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/tests/sam_forward_naming.rs",
-    "plans/139-m7-sam31-forward-naming-hardening.md",
-    "plans/139-status.md",
+    "plans/implementation/sam/139-m7-sam31-forward-naming-hardening.md",
+    "plans/closure/sam/139-status.md",
 ]
 advertised = false
 
@@ -1208,8 +1208,8 @@ evidence = [
     "crates/i2pr-daemon/src/sam.rs",
     "crates/i2pr-daemon/src/sam/streams.rs",
     "crates/i2pr-daemon/tests/sam_stream.rs",
-    "plans/138-m7-sam31-stream-connect-accept-bridge.md",
-    "plans/138-status.md",
+    "plans/implementation/sam/138-m7-sam31-stream-connect-accept-bridge.md",
+    "plans/closure/sam/138-status.md",
 ]
 advertised = false
 
@@ -1227,8 +1227,8 @@ evidence = [
     "crates/i2pr-daemon/src/sam/streams.rs",
     "crates/i2pr-client/src/registry.rs",
     "crates/i2pr-daemon/tests/sam_stream_self_composed.rs",
-    "plans/149-m7-sam31-self-composing-local-product-corrective.md",
-    "plans/149-status.md",
+    "plans/implementation/sam/149-m7-sam31-self-composing-local-product-corrective.md",
+    "plans/closure/sam/149-status.md",
 ]
 advertised = false
 
@@ -1240,18 +1240,18 @@ scope = "required"
 status = "experimental"
 notes = "Plan 142 closed the I2P Base64/private-destination encoding correction, and Plan 146 closed bidirectional private-destination reference compatibility against the pinned Java I2P and i2pd references. Plan 147's dedicated same-socket raw TCP↔Streaming bridge is retained as the focused lower-level regression. Plan 149 closed the self-composed localhost STREAM product: SESSION CREATE allocates one shared Arc<DestinationIdentity>, signs and publishes the local LeaseSet2, installs the local-product delivery fabric and SAM bridge, starts one supervised destination driver, resolves local peer LeaseSet2 records through the SAM service directory, preserves same-read bytes, honors both SILENT modes, emits authenticated non-silent peer metadata, records typed delivery degradation, and cleans up terminal ownership. Plan 148 remains historical blocked-audit evidence because it correctly rejected one Rust helper used twice as independent clients. Plan 150 closed the localhost external-client layer through the real listener: exact i2psam revision `b80ecd487f7b8d1a743a1f40337b2eb0caaae6ac` and qualified unmodified i2plib.sam revision `6edf51cd5d21cc745aa7e23cb98c582144884fa8` pass bidirectional binary STREAM, SILENT, private-destination, FORWARD, NAMING, negative, lifecycle, and reproducibility evidence. The pinned libsam3 revision `7d6e658798baec31394c5685f9583343cc00900b` is built and probed but not counted because its public API requires an 884-character private key while i2pr's canonical Ed25519 SAM PRIV is 608 characters. Evidence is summarized in `tests/integration/sam/evidence.md` and generated sanitized artifacts under `target/interop/sam-evidence`. No SAM feature is advertised, and router-to-router interoperability remains unclaimed."
 evidence = [
-    "plans/140-m7-sam31-interoperability-closure.md",
-    "plans/140-status.md",
-    "plans/142-m7-sam31-encoding-private-destination-corrective.md",
-    "plans/142-status.md",
-    "plans/146-m7-sam31-private-destination-reference-requalification.md",
-    "plans/146-status.md",
-    "plans/147-m7-sam31-dedicated-raw-stream-driver-corrective.md",
-    "plans/147-status.md",
-    "plans/148-m7-sam31-independent-client-final-closure.md",
-    "plans/148-status.md",
-    "plans/149-m7-sam31-self-composing-local-product-corrective.md",
-    "plans/149-status.md",
+    "plans/closure/sam/140-m7-sam31-interoperability-closure.md",
+    "plans/closure/sam/140-status.md",
+    "plans/implementation/sam/142-m7-sam31-encoding-private-destination-corrective.md",
+    "plans/closure/sam/142-status.md",
+    "plans/implementation/sam/146-m7-sam31-private-destination-reference-requalification.md",
+    "plans/closure/sam/146-status.md",
+    "plans/implementation/sam/147-m7-sam31-dedicated-raw-stream-driver-corrective.md",
+    "plans/closure/sam/147-status.md",
+    "plans/closure/sam/148-m7-sam31-independent-client-final-closure.md",
+    "plans/closure/sam/148-status.md",
+    "plans/implementation/sam/149-m7-sam31-self-composing-local-product-corrective.md",
+    "plans/closure/sam/149-status.md",
     "tests/integration/sam/README.md",
     "tests/integration/sam/reference/Plan146ReferenceHelper.java",
     "crates/i2pr-daemon/tests/sam_plan146_reference.rs",
@@ -1267,16 +1267,16 @@ protocol = "ssu2"
 structure = "direct-authenticated-session-bidirectional-i2np-token-retry-malformed-resource"
 scope = "required"
 status = "experimental"
-notes = "Plan 161 (passed-m8-ssu2-independent-ipv4-interop-and-final-closure) proves direct authenticated SSU2 v2 sessions against exact-pinned i2pd 2.61.0 at 635b013a612ff47278ef02acf8580a28e10e26c5 (unmodified, ephemeral loopback UDP, 127.0.0.1 only) in both directions: tokenless Retry establishment with mutual authentication each way, one small plus one fragmented DatabaseStore i2pr to i2pd per direction with direct DeliveryStatus echoes back, cached-token second dial, compact malformed cheap-drop/resource-baseline rows, and graceful termination. Live comparison corrected three handshake transcript divergences plus three responder-side behaviors with no wire-spec change. The fail-closed 15-row lane (tests/integration/ssu2/run-independent.sh) with its routine-CI-enforced checker (scripts/check-ssu2-acceptance-evidence.sh) and manual workflow (.github/workflows/ssu2-external.yml) is the evidence owner; Java I2P 2.13.0 is recorded nonblocking secondary debt. Expired/invalid/source token and unsupported-version/spoofed-source/tag-corruption rows beyond the compact probe stay local-evidence-only in the Plan 156/157/158 suites. No public-network, NetDB/tunnel/destination, advertisement, IPv6-external, PQ v3/v4, or SSU1 claim follows; Milestone 8 final acceptance is closed-via-plan161 within exactly this bounded scope (see plans/161-status.md for the 24-criterion checklist and hosted runs)."
+notes = "Plan 161 (passed-m8-ssu2-independent-ipv4-interop-and-final-closure) proves direct authenticated SSU2 v2 sessions against exact-pinned i2pd 2.61.0 at 635b013a612ff47278ef02acf8580a28e10e26c5 (unmodified, ephemeral loopback UDP, 127.0.0.1 only) in both directions: tokenless Retry establishment with mutual authentication each way, one small plus one fragmented DatabaseStore i2pr to i2pd per direction with direct DeliveryStatus echoes back, cached-token second dial, compact malformed cheap-drop/resource-baseline rows, and graceful termination. Live comparison corrected three handshake transcript divergences plus three responder-side behaviors with no wire-spec change. The fail-closed 15-row lane (tests/integration/ssu2/run-independent.sh) with its routine-CI-enforced checker (scripts/check-ssu2-acceptance-evidence.sh) and manual workflow (.github/workflows/ssu2-external.yml) is the evidence owner; Java I2P 2.13.0 is recorded nonblocking secondary debt. Expired/invalid/source token and unsupported-version/spoofed-source/tag-corruption rows beyond the compact probe stay local-evidence-only in the Plan 156/157/158 suites. No public-network, NetDB/tunnel/destination, advertisement, IPv6-external, PQ v3/v4, or SSU1 claim follows; Milestone 8 final acceptance is closed-via-plan161 within exactly this bounded scope (see plans/closure/ssu2/161-status.md for the 24-criterion checklist and hosted runs)."
 evidence = [
     "crates/i2pr-runtime/tests/ssu2_independent.rs",
     "tests/integration/ssu2/run-independent.sh",
     "scripts/check-ssu2-acceptance-evidence.sh",
     ".github/workflows/ssu2-external.yml",
-    "plans/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md",
-    "plans/161-status.md",
-    "plans/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md",
-    "plans/162-status.md",
+    "plans/closure/ssu2/161-m8-ssu2-independent-ipv4-interop-and-final-closure.md",
+    "plans/closure/ssu2/161-status.md",
+    "plans/implementation/ssu2/162-m8-ssu2-external-test-lane-isolation-and-ci-restoration.md",
+    "plans/closure/ssu2/162-status.md",
 ]
 advertised = false
 
@@ -1298,9 +1298,9 @@ evidence = [
     "tests/fixtures/i2cp/manifest.tsv",
     "scripts/check-i2cp-vectors.sh",
     "crates/i2pr-api/tests/i2cp_vectors.rs",
-    "plans/163-m9-i2cp-roadmap.md",
-    "plans/164-m9-i2cp-protocol-and-wire-foundation.md",
-    "plans/164-status.md",
+    "plans/implementation/i2cp/163-m9-i2cp-roadmap.md",
+    "plans/implementation/i2cp/164-m9-i2cp-protocol-and-wire-foundation.md",
+    "plans/closure/i2cp/164-status.md",
 ]
 advertised = false
 
@@ -1316,8 +1316,8 @@ evidence = [
     "tests/fixtures/i2cp/manifest.tsv",
     "scripts/check-i2cp-vectors.sh",
     "crates/i2pr-api/tests/i2cp_vectors.rs",
-    "plans/164-m9-i2cp-protocol-and-wire-foundation.md",
-    "plans/164-status.md",
+    "plans/implementation/i2cp/164-m9-i2cp-protocol-and-wire-foundation.md",
+    "plans/closure/i2cp/164-status.md",
 ]
 advertised = false
 
@@ -1335,8 +1335,8 @@ evidence = [
     "crates/i2pr-api/src/i2cp/session.rs",
     "crates/i2pr-api/src/i2cp/actions.rs",
     "crates/i2pr-api/src/i2cp/error.rs",
-    "plans/165-m9-i2cp-connection-session-and-options.md",
-    "plans/165-status.md",
+    "plans/implementation/i2cp/165-m9-i2cp-connection-session-and-options.md",
+    "plans/closure/i2cp/165-status.md",
 ]
 
 [[surface]]
@@ -1352,8 +1352,8 @@ evidence = [
     "crates/i2pr-client/src/registry.rs",
     "crates/i2pr-client/tests/plan166_trajectory.rs",
     "crates/i2pr-api/src/i2cp/actions.rs",
-    "plans/166-m9-i2cp-client-owned-destination-and-leaseset2.md",
-    "plans/166-status.md",
+    "plans/implementation/i2cp/166-m9-i2cp-client-owned-destination-and-leaseset2.md",
+    "plans/closure/i2cp/166-status.md",
 ]
 
 [[surface]]
@@ -1368,8 +1368,8 @@ evidence = [
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/src/lib.rs",
     "crates/i2pr-daemon/tests/i2cp_loopback.rs",
-    "plans/167-m9-i2cp-loopback-server-runtime.md",
-    "plans/167-status.md",
+    "plans/implementation/i2cp/167-m9-i2cp-loopback-server-runtime.md",
+    "plans/closure/i2cp/167-status.md",
 ]
 
 [[surface]]
@@ -1386,8 +1386,8 @@ evidence = [
     "crates/i2pr-daemon/src/i2cp.rs",
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/tests/i2cp_message_data_plane.rs",
-    "plans/168-m9-i2cp-message-data-plane.md",
-    "plans/168-status.md",
+    "plans/implementation/i2cp/168-m9-i2cp-message-data-plane.md",
+    "plans/closure/i2cp/168-status.md",
 ]
 advertised = false
 
@@ -1408,8 +1408,8 @@ evidence = [
     "crates/i2pr-daemon/tests/i2cp_final_acceptance.rs",
     "crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs",
     "crates/i2pr-daemon/tests/i2cp_resource_matrix.rs",
-    "plans/169-m9-i2cp-self-composed-local-product-and-hardening.md",
-    "plans/169-status.md",
+    "plans/implementation/i2cp/169-m9-i2cp-self-composed-local-product-and-hardening.md",
+    "plans/closure/i2cp/169-status.md",
 ]
 advertised = false
 
@@ -1423,8 +1423,8 @@ notes = "Plan 171 closed the M9 I2CP invalid-preamble exact-head CI corrective. 
 evidence = [
     "crates/i2pr-daemon/src/i2cp.rs",
     "crates/i2pr-daemon/tests/i2cp_adversarial_matrix.rs",
-    "plans/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md",
-    "plans/171-status.md",
+    "plans/implementation/i2cp/171-m9-i2cp-invalid-preamble-close-and-ci-corrective.md",
+    "plans/closure/i2cp/171-status.md",
 ]
 advertised = false
 
@@ -1446,8 +1446,8 @@ evidence = [
     "crates/i2pr-daemon/src/config.rs",
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
-    "plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md",
-    "plans/174-status.md",
+    "plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md",
+    "plans/closure/service-tunnels/174-status.md",
 ]
 advertised = false
 
@@ -1475,7 +1475,7 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnel_http_product.rs",
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
-    "plans/176-m10-http-i2p-proxy-and-connect.md",
+    "plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md",
 ]
 advertised = false
 
@@ -1503,7 +1503,7 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnel_socks5_product.rs",
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
-    "plans/177-m10-socks5-i2p-connect-proxy.md",
+    "plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md",
 ]
 advertised = false
 
@@ -1531,7 +1531,7 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnel_irc_client_product.rs",
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
-    "plans/178-m10-irc-client-profile-and-privacy-filtering.md",
+    "plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md",
 ]
 advertised = false
 
@@ -1553,7 +1553,7 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnel_irc_server_product.rs",
     "crates/i2pr-daemon/tests/service_tunnels_foundation.rs",
     "specs/protocols/11-service-tunnels.md",
-    "plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md",
+    "plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md",
 ]
 advertised = false
 
@@ -1570,7 +1570,7 @@ evidence = [
     "crates/i2pr-daemon/src/lib.rs",
     "crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs",
     "tests/integration/m6-interop/run-preflight.sh",
-    "plans/184-m6-authenticated-i2np-runtime-and-reference-preflight.md",
-    "plans/184-status.md",
+    "plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md",
+    "plans/closure/mixed-router-interop/184-status.md",
 ]
 advertised = false

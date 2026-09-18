@@ -280,7 +280,7 @@ forbids `sudo`. The probe (host shell and `ssh i2ptest@localhost`) emits
 the typed blocker; the on-host evidence directory
 `target/interop/evidence/handshake-smoke-rootless--host-blocked/`
 carries that blocker plus a kernel/sysctl/capability snapshot. Plan 047
-(`plans/047-cross-host-rootless-lane-expansion.md`) records cross-host
+(`plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`) records cross-host
 recovery for hosts where the AppArmor restriction is `0` (or AppArmor is
 unloaded).
 
@@ -420,7 +420,7 @@ authorized Ubuntu 24.04 amd64 host or Multipass guest. The local
 checkout on the `apparmor_restrict_on` Plan 046 negative baseline
 cannot exercise the matrix yet; the Plan 048/049 Multipass recovery
 lane is the canonical external path. Plan 054 does not close
-Milestone 3. Plan 054 status is in `plans/054-status.md`.
+Milestone 3. Plan 054 status is in `plans/closure/ntcp2-transport/054-status.md`.
 
 Focused checks:
 
@@ -492,7 +492,7 @@ under the Plan 063 topology contract section.
 
 Plan 063 does not wire the Java driver into the canonical primary
 `mixed_runner.py`; that wiring belongs to Plan 065. Plan 063 status
-is in `plans/063-status.md`.
+is in `plans/closure/ntcp2-transport/063-status.md`.
 
 ## Plan 064 i2pd direct NTCP2 driver and observer correction
 

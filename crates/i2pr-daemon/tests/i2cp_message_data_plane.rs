@@ -8,7 +8,7 @@
 //! harness cannot race a finite deadline.
 //!
 //! Plan 168 covers the full message/data-plane trajectory described in
-//! `plans/168-m9-i2cp-message-data-plane.md`:
+//! `plans/implementation/i2cp/168-m9-i2cp-message-data-plane.md`:
 //!
 //! - SendMessage / SendMessageExpires validation, expiration horizons,
 //!   flag semantics, per-session outbound slot accounting;

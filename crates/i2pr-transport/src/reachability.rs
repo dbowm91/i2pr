@@ -35,9 +35,8 @@
 //! neutral) and relay firewalled signals into these same variants.
 //! Relay success never proves direct reachability.
 //!
-//! Normative traceability: `plans/159-m8-ssu2-path-validation-`
-//! `publication-and-transport-selection.md` §§5–6 and
-//! `plans/160-m8-ssu2-peer-test-and-relay-reachability.md` §§4/11. No
+//! Normative traceability: `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md` §§5–6 and
+//! `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md` §§4/11. No
 //! sockets, no Tokio, no async; every contract is a concrete
 //! struct/enum.
 

@@ -294,11 +294,11 @@ fails the change whenever rootless-owned files contain prohibited
 patterns or omit required contracts. The mixed-router evidence schema
  adds `topology_kind`, `privilege_model`, `sandbox_attestation_sha256`,
 and `parent_network_state_unchanged`. A passed record that violates any
-of these is rejected. The status file `plans/046-status.md` tracks the
+of these is rejected. The status file `plans/closure/ntcp2-transport/046-status.md` tracks the
 stages of implementation completion and external evidence completion;
-the closure record is `plans/046-closure.md`. Plan 046 closed with the
+the closure record is `plans/closure/ntcp2-transport/046-closure.md`. Plan 046 closed with the
 canonical typed blocker `blocked_unprivileged_user_namespace` recorded
-on this host, and `plans/047-cross-host-rootless-lane-expansion.md`
+on this host, and `plans/implementation/ntcp2-transport/047-cross-host-rootless-lane-expansion.md`
 takes on cross-host recovery.
 
 ## Plan 048/049/050 Multipass recovery environment
@@ -454,8 +454,8 @@ Java support topology, or external mixed-router execution.
   under the current four-direction contract.
 
 The Plan 058 plan-of-record is
-`plans/058-plan056-record-and-candidate-integrity-closure-pass.md`;
-the closure record is `plans/058-status.md`.
+`plans/closure/ntcp2-transport/058-plan056-record-and-candidate-integrity-closure-pass.md`;
+the closure record is `plans/closure/ntcp2-transport/058-status.md`.
 
 ## Plan 059 reference-side implementation and live qualification closure pass
 
@@ -505,8 +505,8 @@ is forbidden under the current four-direction contract.
   Multipass recovery lane.
 
 The Plan 059 plan-of-record is
-`plans/059-reference-side-implementation-and-live-qualification-closure-pass.md`;
-the closure record is `plans/059-status.md`.
+`plans/closure/ntcp2-transport/059-reference-side-implementation-and-live-qualification-closure-pass.md`;
+the closure record is `plans/closure/ntcp2-transport/059-status.md`.
 
 ## Plan 060 fresh-candidate and two-run Milestone 3 certificate closure pass
 
@@ -536,7 +536,7 @@ forbidden under the current four-direction contract; the
 pinned Java I2P 2.12.0 revision.
 
 The Plan 060 candidate is `declared-not-executable` on this host
-(`plans/060-candidate.md`). The Plan 060 implementation surface is
+(`plans/closure/ntcp2-transport/060-candidate.md`). The Plan 060 implementation surface is
 mandatory regardless of close outcome:
 
 - `tests/integration/ntcp2/harness/plan060.py` — Plan 060 helper
@@ -554,14 +554,14 @@ mandatory regardless of close outcome:
 - `scripts/check-ntcp2-interoperability.sh` extended to enforce
   the Plan 060 artifacts, the Plan 060 test matrix coverage, and
   the candidate/closure marker invariants.
-- `plans/060-candidate.md` and `plans/060-closure.md` — the
+- `plans/closure/ntcp2-transport/060-candidate.md` and `plans/closure/ntcp2-transport/060-closure.md` — the
   candidate and closure records.
 
 The Plan 060 plan-of-record is
-`plans/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`;
-the candidate record is `plans/060-candidate.md`; the closure
-record is `plans/060-closure.md`. The aggregate Milestone 3
-closure (`plans/030-milestone-3-closure.md`) is amended by Plan 060
+`plans/closure/ntcp2-transport/060-fresh-candidate-and-two-run-milestone3-certificate-closure-pass.md`;
+the candidate record is `plans/closure/ntcp2-transport/060-candidate.md`; the closure
+record is `plans/closure/ntcp2-transport/060-closure.md`. The aggregate Milestone 3
+closure (`plans/closure/ntcp2-transport/030-milestone-3-closure.md`) is amended by Plan 060
 to record the close outcome. NTCP2 stays experimental and
 non-advertised; Milestone 3 stays open until a future pinned Java
 revision exposes a transport-only direct seam or the closure
@@ -625,9 +625,9 @@ Plan 062 lands:
 
 Plan 062 retires the Plan 060 candidate from all future
 candidate validators and the static boundary checker. The
-Plan 060 candidate record (`plans/060-candidate.md`) is preserved
+Plan 060 candidate record (`plans/closure/ntcp2-transport/060-candidate.md`) is preserved
 verbatim for audit; the Plan 060 closure record
-(`plans/060-closure.md`) carries the explicit "Superseded by
+(`plans/closure/ntcp2-transport/060-closure.md`) carries the explicit "Superseded by
 Plan 062" marker. The future candidate implementation floor is
 Plan 065 closure or later. v3 trigger records and v2 observation
 records remain readable for historical inspection but cannot
@@ -1025,12 +1025,12 @@ The Plan 066 implementation surface is mandatory:
 - `scripts/check-ntcp2-interoperability.sh` extended to enforce
   the Plan 066 artifacts, the Plan 066 test matrix coverage, and
   the candidate/closure marker invariants.
-- `plans/066-candidate.md` — the Plan 066 candidate record. Status
+- `plans/closure/ntcp2-transport/066-candidate.md` — the Plan 066 candidate record. Status
   `declared-not-executable`. Implements the executed source
   commit (the Plan 065 implementation floor), the bounded 23-row
   digest table, the lane lock, the typed blockers, and the schema
   marker.
-- `plans/066-closure.md` — the Plan 066 closure record with the
+- `plans/closure/ntcp2-transport/066-closure.md` — the Plan 066 closure record with the
   typed blocker and the close-status.
 
 ### Plan 066 supersession of Plan 060
@@ -1135,7 +1135,7 @@ pending) → Plan 084 (implemented, execution pending) → Plan 085 → Plan 086
 are closed prerequisites or historical lane records. The Plan 084 historical
 `lane-invalidated` closure is reclassified as "runner implementation
 completed; required reverse wire execution never occurred" and the active
-development decision now lives in `plans/088-status.md`.
+development decision now lives in `plans/closure/ntcp2-transport/088-status.md`.
 
 The corrected repository state is:
 
@@ -1164,7 +1164,7 @@ Plan 078 stop as protocol evidence.
 > static boundary check; at Plan 074 registration the runner was
 > scaffolding/fake-process test coverage only. The runner integrity
 > correction landed in Plan 075. Plan 069 remains the historical
-> scaffolding snapshot in `plans/069-status.md`.
+> scaffolding snapshot in `plans/closure/ntcp2-transport/069-status.md`.
 
 Plan 069 implements the Plan 067 Level 1 host-loopback smoke lane.
 The lane is a non-production composition that exercises a single
@@ -1202,7 +1202,7 @@ Plan 069 lands:
   Plan 069 boundary check. Verifies the runner/shell/test artifacts
   are present, the allowlist markers are committed, and the runner
   is free of release/rootless/Multipass authority.
-- `plans/069-status.md` — the closure record with exact commands,
+- `plans/closure/ntcp2-transport/069-status.md` — the closure record with exact commands,
   results, and no fabricated live pass.
 
 The Plan 068 Level 1 smoke record schema
@@ -1267,7 +1267,7 @@ Plan 084 (implemented, execution pending) → Plan 085 → Plan 086 → Plan 087
 → Plan 088 → Plan 079 (blocked)**. The Plan 084 historical
 `lane-invalidated` closure is reclassified as "runner implementation
 completed; required reverse wire execution never occurred" and the active
-development decision now lives in `plans/088-status.md`.
+development decision now lives in `plans/closure/ntcp2-transport/088-status.md`.
 
 ## Plan 077 constrained-host execution lane
 
@@ -1290,7 +1290,7 @@ The historical Plan 077 probe found only the reduced descriptor capability.
 Plan 080 later qualified the owned Multipass guest used for the single Plan
 078 attempt; no Docker/QEMU packaging was added speculatively. See [ADR
 0024](../adr/0024-constrained-host-ntcp2-execution-lanes.md), [the Plan 077
-record](../../plans/077-status.md), and [the Plan 080 closure](../../plans/080-status.md).
+record](../../plans/closure/ntcp2-transport/077-status.md), and [the Plan 080 closure](../../plans/closure/ntcp2-transport/080-status.md).
 
 ## Active correction: Plan 082 pre-protocol state preparation
 
@@ -1305,7 +1305,7 @@ mixed runner prepares i2pr and the pinned reference, validates both
 RouterInfos and Router Hashes, asserts the frozen
 `i2pr-minimal-run-identity-v1` digest, and invokes the Rust
 `validate-scenario` command before any live process. Plan 082 is
-implemented and closed per `plans/082-status.md`.
+implemented and closed per `plans/closure/ntcp2-transport/082-status.md`.
 
 The mixed runner prepares i2pr and the pinned reference before rendering a
 strict Plan 065 scenario, validates both RouterInfos and Router Hashes, and
@@ -1421,7 +1421,7 @@ Plan 086 lands:
 - `scripts/check-ntcp2-interoperability.sh` — extended to enforce
   the Plan 086 topology contract, the placement class, the test
   matrix presence, the wrapper script presence, the Rust schema
-  marker, and the bounded closure state in `plans/086-status.md`.
+  marker, and the bounded closure state in `plans/closure/ntcp2-transport/086-status.md`.
 
 On this host the Plan 086 closure state is `host-loopback-development-ready`
 because the canonical `i2pd_ntcp2_interop_driver_instrumented` binary
@@ -1429,7 +1429,7 @@ was built from the pinned source tree and the concurrent preflight
 recorded a sanitized `i2pr-minimal-i2pd-probe-v1` record whose
 `highest_stage_reached` is `listener_ready`. The Plan 087 forward
 direction is enabled on this host; see
-[`plans/086-status.md`](../../plans/086-status.md) for the closure
+[`plans/closure/ntcp2-transport/086-status.md`](../../plans/closure/ntcp2-transport/086-status.md) for the closure
 record.
 
 ## Plan 087 first real i2pr-to-i2pd host-loopback probe
@@ -1467,26 +1467,26 @@ implementation surface travels with the repository so any future
 host that can run a fixed Plan 064/076 driver can resume the forward
 attempt without further runner changes. The closure record with the
 exact live command, recorded digests, and bounded correction-surfaces
-contract is in [`plans/087-status.md`](../../plans/087-status.md).
+contract is in [`plans/closure/ntcp2-transport/087-status.md`](../../plans/closure/ntcp2-transport/087-status.md).
 NTCP2 stays experimental and non-advertised.
 
 ## Plan 078 first real i2pd two-way execution
 
 Plan 078 used the Plan 080-qualified guest and stopped before TCP at the i2pr
 pre-protocol RouterInfo stage. No protocol pass or failure was inferred. The
-exact stop result is in [`plans/078-status.md`](../../plans/078-status.md),
-with the qualified-lane record in [`plans/080-status.md`](../../plans/080-status.md).
+exact stop result is in [`plans/closure/ntcp2-transport/078-status.md`](../../plans/closure/ntcp2-transport/078-status.md),
+with the qualified-lane record in [`plans/closure/ntcp2-transport/080-status.md`](../../plans/closure/ntcp2-transport/080-status.md).
 
 ## Plan 072 activation gate
 
 Plan 072 is a conditional differential lane, not the next executable plan. It
 may start only after Plan 088 reaches a real wire stage, i2pr and i2pd disagree
 at a precise stage that source/specification review cannot own, and
-[`plans/088-status.md`](../../plans/088-status.md) records
+[`plans/closure/ntcp2-transport/088-status.md`](../../plans/closure/ntcp2-transport/088-status.md) records
 `decision = ambiguous-reference-divergence` plus one exact diagnostic
 question. Preparation, rendering, cleanup, and generic pre-protocol failures
 never satisfy this gate. The Plan 072/079 gate amendment
-[`plans/072-079-gate-amendment-plan-088.md`](../../plans/072-079-gate-amendment-plan-088.md)
+[`plans/implementation/ntcp2-transport/072-079-gate-amendment-plan-088.md`](../../plans/implementation/ntcp2-transport/072-079-gate-amendment-plan-088.md)
 records the active gate authority.
 
 ## Plan 088 reverse host-loopback probe and development decision
@@ -1517,7 +1517,7 @@ Plan 088 lands:
 - `scripts/check-ntcp2-interoperability.sh` — enforces the Plan 088
   test matrix presence, the locked decision vocabulary, the
   `host-loopback-development` topology coverage, the plan-of-record
-  reference, the `plans/088-status.md` decision token, and the
+  reference, the `plans/closure/ntcp2-transport/088-status.md` decision token, and the
   prohibition of the legacy `lane-invalidated` and
   `same-stage-two-way-i2pr-defect` tokens.
 
@@ -1537,7 +1537,7 @@ Plan 087 implementation surface is ready for a fresh attempt against
 a fixed i2pd driver. The Plan 088 implementation surface travels with
 the repository unchanged for any future host where the Plan 086 lane
 becomes executable or the Plan 089 manual-isolated fallback becomes
-available. See [`plans/088-status.md`](../../plans/088-status.md) for
+available. See [`plans/closure/ntcp2-transport/088-status.md`](../../plans/closure/ntcp2-transport/088-status.md) for
 the closure record. NTCP2 remains experimental and non-advertised.
 
 ## Plan 095 CI host-loopback live-wire evidence lane
@@ -1595,7 +1595,7 @@ existing plan surfaces (Plan 055/056/058/059/060/062/063/064/065/066
 freeze-readiness invariants) remain intact.
 
 The plan-of-record is
-[`plans/095-ci-host-loopback-live-wire-evidence-lane.md`](../../plans/095-ci-host-loopback-live-wire-evidence-lane.md).
+[`plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md`](../../plans/implementation/ntcp2-transport/095-ci-host-loopback-live-wire-evidence-lane.md).
 A passing CI evidence pair feeds Plan 088 only after both records
 are validated. Plan 088 remains blocked pending the actual two-way
 Plan 088 decision. Plan 079 remains blocked pending the Plan 088
@@ -1662,7 +1662,7 @@ ntcp2    = experimental-non-advertised
 Plan 095 is the single next executable plan. Exactly one manual
 Plan 095 GitHub Actions dispatch follows the Plan 096 correction.
 The plan-of-record is
-[`plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`](../../plans/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md).
+[`plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md`](../../plans/closure/ntcp2-transport/096-plan095-ci-workflow-correctness-and-pre-dispatch-closure.md).
 
 ## Plan 097 Plan 095 artifact-path and cleanup corrective pass
 
@@ -1723,7 +1723,7 @@ ntcp2    = experimental-non-advertised
 Plan 095 remains the single next executable plan. Exactly one
 manual Plan 095 GitHub Actions dispatch follows the Plan 097
 correction commit. The plan-of-record is
-[`plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md`](../../plans/097-plan095-artifact-path-and-cleanup-corrective-pass.md).
+[`plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md`](../../plans/implementation/ntcp2-transport/097-plan095-artifact-path-and-cleanup-corrective-pass.md).
 
 ## Plan 098 Plan 095 runner/provenance boundary corrective pass
 
@@ -1783,11 +1783,11 @@ ntcp2    = experimental-non-advertised
 Plan 095 remains the single next executable plan. Exactly one
 manual Plan 095 GitHub Actions dispatch follows the Plan 098
 correction commit. The plan-of-record is
-[`plans/098-plan095-runner-provenance-boundary-corrective-pass.md`](../../plans/098-plan095-runner-provenance-boundary-corrective-pass.md).
+[`plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md`](../../plans/implementation/ntcp2-transport/098-plan095-runner-provenance-boundary-corrective-pass.md).
 
 ## Plan 102 Milestone 4 RouterInfo/NetDB authority and the Plan 102 amendment (active parent; amendment closed)
 
-[Plan 102](../../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+[Plan 102](../../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 is the active Milestone 4 parent authority that supersedes the
 historical Milestone 3 "active" blocks for the purpose of
 continuing router development. The retained Plan 099/100/101
@@ -1798,12 +1798,12 @@ status blocks earlier in this document describe that result; the
 next substantial product work is now governed by Plan 102 and
 its child sequence (Plans 103 → 104 → 105 → 106). The local sequence has
 since completed through Plans 107–113. See
-[`plans/102-amendment-status.md`](../../plans/102-amendment-status.md) for
+[`plans/closure/netdb/102-amendment-status.md`](../../plans/closure/netdb/102-amendment-status.md) for
 the formal amendment closure and future-plan unblock audit.
 
 ### Plan 102 amendment — exploratory-tunnel dependency
 
-[Plan 102 amendment](../../plans/102-amendment-exploratory-tunnel-dependency.md)
+[Plan 102 amendment](../../plans/implementation/netdb/102-amendment-exploratory-tunnel-dependency.md)
 corrects an over-optimistic wording in the first Plan 102 draft.
 The current I2P `DatabaseLookup` operation uses an outbound
 exploratory tunnel and requests the response through an inbound
@@ -1871,12 +1871,12 @@ native OBEP admission and reply AEAD opening, then rejects the pinned
 reference's request-prefixed reply during strict i2pr Mapping decoding. The
 result is `native-reference-terminal-pending`; parser compatibility and the
 local Phase G composition are retained but are not promoted to mixed-router
-NetDB evidence. See [`plans/117-status.md`](../../plans/117-status.md).
+NetDB evidence. See [`plans/closure/exploratory-tunnels/117-status.md`](../../plans/closure/exploratory-tunnels/117-status.md).
 
 ## Plan 115 Emissary Q0 construction + native OBEP reply
 
 Plan 115 Emissary Q0 construction + native OBEP reply has passed
-locally; see [`plans/115-status.md`](../../plans/115-status.md) for
+locally; see [`plans/closure/exploratory-tunnels/115-status.md`](../../plans/closure/exploratory-tunnels/115-status.md) for
 digests and the pinned Emissary revision
 (`9b43484a21d5a1291c4881cdae62a36c527f8c0f`, emissary-core 0.4.0).
 The Q0 test was added as a new `#[tokio::test]` module inside
@@ -2018,6 +2018,6 @@ but does not block production daemon composition, RouterInfo
 publication architecture, NetDB storage/indexing, SU3 reseed
 parsing, or deterministic local state-machine tests. The next
 substantial plan after Plan 100 is governed by
-[Plan 102](../../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
+[Plan 102](../../plans/implementation/netdb/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md)
 and its child sequence (Plans 103 → 104 → 105 → 106), not another
 NTCP2 evidence framework plan.

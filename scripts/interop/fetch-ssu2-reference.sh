@@ -169,7 +169,7 @@ if [[ -n "${WITH_JAVA}" ]]; then
     "" "${WORK_ROOT}/i2p.i2p-${JAVA_PIN}")"
   write_source_metadata "${JAVA_CACHE}" "${JAVA_REPO}" "${JAVA_PIN}" \
     "${JAVA_VERSION}" "source-verified-only; router build deferred per Plan 161 section 12"
-  printf 'java source verified at %s (build deferred; see plans/161-status.md)\n' "${JAVA_PIN}"
+  printf 'java source verified at %s (build deferred; see plans/closure/ssu2/161-status.md)\n' "${JAVA_PIN}"
 fi
 
 cat <<EOF

@@ -236,13 +236,13 @@ topology. Triggers include:
 
 ## References
 
-- `plans/061-ntcp2-direct-reference-driver-corrective-roadmap.md`
-- `plans/062-ntcp2-evidence-contract-and-architecture-correction.md`
-- `plans/063-java-i2p-stripped-router-direct-ntcp2-driver.md`
-- `plans/064-i2pd-direct-ntcp2-driver-and-observer-correction.md`
-- `plans/076-real-pinned-i2pd-library-and-direct-driver-construction.md`
-- `plans/065-ntcp2-canonical-integration-and-live-qualification.md`
-- `plans/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md`
+- `plans/implementation/ntcp2-transport/061-ntcp2-direct-reference-driver-corrective-roadmap.md`
+- `plans/implementation/ntcp2-transport/062-ntcp2-evidence-contract-and-architecture-correction.md`
+- `plans/implementation/ntcp2-transport/063-java-i2p-stripped-router-direct-ntcp2-driver.md`
+- `plans/implementation/ntcp2-transport/064-i2pd-direct-ntcp2-driver-and-observer-correction.md`
+- `plans/implementation/ntcp2-transport/076-real-pinned-i2pd-library-and-direct-driver-construction.md`
+- `plans/implementation/ntcp2-transport/065-ntcp2-canonical-integration-and-live-qualification.md`
+- `plans/closure/ntcp2-transport/066-fresh-candidate-and-authoritative-ntcp2-two-run-closure.md`
 - `docs/adr/0021-minimal-java-support-topology.md`
 - `tests/integration/ntcp2/reference-drivers/source-verification.md`
 - `tests/integration/ntcp2/harness/reference_trigger_v4.py`

@@ -830,7 +830,7 @@ fn peer_id_from_hash_round_trip() {
 // ---- Plan 188 reference-shaped reply paths -------------------------------
 // The two tests below prove the coordinator consumes the exact
 // shapes exact-pinned i2pd 2.61.0 emits (see
-// `plans/188-m6-short-build-reply-interop-corrective.md` §2 and the
+// `plans/implementation/mixed-router-interop/188-m6-short-build-reply-interop-corrective.md` §2 and the
 // `TransitTunnel::HandleShortTransitTunnelBuildMsg` endpoint/gateway
 // arms), using the same EciesX25519 cryptography with responder-owned
 // secrets. No production wire change; the creator side is the

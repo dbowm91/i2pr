@@ -13,10 +13,10 @@ and how everything fits together at runtime.
 Authority order for any behavioral claim:
 
 ```text
-plans/*-status.md > executable tests/scripts > ADRs > prose in docs/
+plans/closure/*/*-status.md > executable tests/scripts > ADRs > prose in docs/
 ```
 
-`plans/README.md` plus the newest `plans/<NNN>-status.md` for the
+`plans/registry.md` plus the newest `plans/closure/<subsystem>/<NNN>-status.md` for the
 task area win over any narrative here. Never mark a row `passed`
 because prose says so; it must derive from an executed command.
 `specs/support.toml` plus `specs/CONFORMANCE.md` gate every protocol
@@ -492,7 +492,7 @@ sandbox lanes).
 
 ## 6. Capability snapshot
 
-This section summarizes; the binding records are `plans/README.md`
+This section summarizes; the binding records are `plans/registry.md`
 (newest `*-status.md` wins), `specs/support.toml`, and
 `specs/CONFORMANCE.md`. No row below is a public-network or
 anonymity claim.

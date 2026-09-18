@@ -21,12 +21,12 @@ can be executed. The host's AppArmor and user-namespace policy are **never**
 changed; if they block the guest launch or the rootless probe, the blocker is
 recorded and the dispatcher stops.
 
-Read `AGENTS.md`, `plans/048-multipass-permissive-rootless-evidence-environment.md`,
-`plans/049-multipass-lifecycle-ownership-corrective-pass.md`,
-`plans/050-multipass-cloud-init-recovery.md`,
-`plans/051-external-validation-troubleshooting.md`,
-`plans/053-plan052-evidence-pipeline-integration-corrective-pass.md`,
-`plans/054-java-startup-and-reference-observation-qualification-pass.md`,
+Read `AGENTS.md`, `plans/implementation/ntcp2-transport/048-multipass-permissive-rootless-evidence-environment.md`,
+`plans/implementation/ntcp2-transport/049-multipass-lifecycle-ownership-corrective-pass.md`,
+`plans/implementation/ntcp2-transport/050-multipass-cloud-init-recovery-and-guest-probe-pass.md`,
+`plans/implementation/ntcp2-transport/051-external-validation-troubleshooting.md`,
+`plans/implementation/ntcp2-transport/053-plan052-evidence-pipeline-integration-corrective-pass.md`,
+`plans/implementation/ntcp2-transport/054-java-startup-and-reference-observation-qualification-pass.md`,
 the reviewed environment
 manifest at `scripts/interop/multipass/environment.toml`, and the relevant
 `docs/adr/` records before changing anything in this lane.
@@ -247,7 +247,7 @@ The Plan 052 predicate now applies `receiver_passes_data_phase` against the
 live `observation-v2` records returned by
 `JavaI2pAdapter.collect_observation()` and
 `I2pdAdapter.collect_observation()`. Handshake-only markers may never
-satisfy the data phase. Plan 054 status lives in `plans/054-status.md`.
+satisfy the data phase. Plan 054 status lives in `plans/closure/ntcp2-transport/054-status.md`.
 
 ## Script responsibilities
 

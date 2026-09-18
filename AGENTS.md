@@ -6,11 +6,11 @@
 
 1. `README.md` — status snapshot (may lag).
 2. `GUARDRAILS.md` — non-negotiable security/architecture constraints.
-3. `CONTRIBUTING.md` — conventions (its bare `cargo check/test --workspace` is stale; use `--locked --all-targets` below).
-4. `plans/README.md` + newest `plans/<NNN>-status.md` for the task area — status files win over plan narratives.
+3. `CONTRIBUTING.md` — conventions.
+4. `plans/README.md` (planning system guide: registry, roadmaps, closure records) + load `i2pr-planning` when registering or closing out a plan.
 5. `specs/support.toml` + `specs/CONFORMANCE.md` before claiming any protocol support.
 
-Authority order: `plans/*-status.md` > executable tests/scripts > ADRs > prose. Never mark a row `passed` because prose says so; it must derive from an executed command. Newest explicit `superseded-by-*` status wins on conflict.
+Authority order: closure records > executable tests/scripts > ADRs > prose (see `plans/README.md`).
 
 ## Toolchain
 
@@ -37,7 +37,7 @@ Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-b
 
 ## Skills and architecture index
 
-- Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code. The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
+- Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code, `i2pr-planning` when registering or closing out an implementation plan (roadmap/registry/closure mechanics). The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
 - Architecture entry points: `docs/architecture/overview.md` (crate index, data flow); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives); `docs/adr/` (decisions 0000–0025); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory).
 
 ## Hard boundaries (CI-enforced — fix code, never weaken scripts)

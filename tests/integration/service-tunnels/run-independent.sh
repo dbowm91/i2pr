@@ -155,13 +155,13 @@ fact() {
 echo "==> verifying Plans 174-180 prerequisite status"
 prereq_rc=0
 for plan in 174 175 176 177 178 179 180; do
-  if ! grep -Eq "plan_${plan} = passed" "${REPO_ROOT}/plans/180-status.md" 2>/dev/null; then
-    echo "prerequisite Plan ${plan} has no passed record in plans/180-status.md" >&2
+  if ! grep -Eq "plan_${plan} = passed" "${REPO_ROOT}/plans/closure/service-tunnels/180-status.md" 2>/dev/null; then
+    echo "prerequisite Plan ${plan} has no passed record in plans/closure/service-tunnels/180-status.md" >&2
     prereq_rc=1
   fi
 done
-if ! grep -Eq "plan_182 = passed" "${REPO_ROOT}/plans/182-status.md" 2>/dev/null; then
-  echo "prerequisite Plan 182 has no passed record in plans/182-status.md" >&2
+if ! grep -Eq "plan_182 = passed" "${REPO_ROOT}/plans/closure/service-tunnels/182-status.md" 2>/dev/null; then
+  echo "prerequisite Plan 182 has no passed record in plans/closure/service-tunnels/182-status.md" >&2
   prereq_rc=1
 fi
 record_guarded "m10-prerequisite-plans" \

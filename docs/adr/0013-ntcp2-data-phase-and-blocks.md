@@ -81,7 +81,7 @@ claim.
 - `crates/i2pr-transport-ntcp2/src/crypto.rs`
 - `crates/i2pr-testkit/src/ntcp2.rs`
 - `tests/fixtures/ntcp2/crypto/manifest.tsv`
-- `plans/034-closure.md`
+- `plans/closure/ntcp2-transport/034-closure.md`
 
 ## Plan 037 corrective amendment
 

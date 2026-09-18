@@ -210,7 +210,7 @@ authorize the two real i2pd directions. A reduced-scope selection, a remote
 workflow definition, a stale Multipass guest, or a loopback contract test is a
 typed preflight blocker, not protocol evidence. The Plan 078 attempt stopped
 before TCP at the i2pr pre-protocol RouterInfo stage and is preserved in
-`plans/078-status.md`; it is not a protocol result.
+`plans/closure/ntcp2-transport/078-status.md`; it is not a protocol result.
 
 The active pre-protocol checks are Plan 082's `i2pr-interop ntcp2 prepare`
 and `i2pr-interop ntcp2 validate-scenario` commands, the
@@ -256,6 +256,6 @@ Plan 087 must reach `i2np_delivery_status_decoded` with exact Router
 Hash and DeliveryStatus message ID correlation before Plan 088 begins.
 Plan 087 explicitly forbids patching pinned i2pd behavior; the narrow
 correction for the i2pd direct driver RouterInfo authoring path belongs
-to a Plan 064/076 corrective pass. See `plans/087-status.md` for the
+to a Plan 064/076 corrective pass. See `plans/closure/ntcp2-transport/087-status.md` for the
 closure record with the exact live command, recorded digests, and
 bounded correction-surfaces contract.

@@ -72,7 +72,7 @@ Peer-test/relay roles, previously deferred to Plans 160–161, landed
 in Plan 160 (this crate) with runtime coordination in
 `i2pr-runtime::Ssu2PeerRelayService`; independent interop is proven
 by Plan 161 in both direct IPv4 directions against exact-pinned
-i2pd 2.61.0 (see `plans/161-status.md` and the
+i2pd 2.61.0 (see `plans/closure/ssu2/161-status.md` and the
 `tests/integration/ssu2/run-independent.sh` ledger).
 
 ## Module layout
@@ -599,13 +599,13 @@ NAT-like peer/relay suite lives in
 - [i2pr-runtime](i2pr-runtime.md) — owns the Plan 158 UDP sockets
   and central scheduler that drive these machines.
 - Plan-of-record:
-  `plans/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`,
-  `plans/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`,
-  `plans/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
-  `plans/159-m8-ssu2-path-validation-publication-and-transport-selection.md`, and
-  `plans/160-m8-ssu2-peer-test-and-relay-reachability.md`.
-- Closure: `plans/156-status.md`, `plans/157-status.md`,
-  `plans/158-status.md`, `plans/159-status.md`, and
-  `plans/160-status.md`.
+  `plans/implementation/ssu2/156-m8-ssu2-v2-handshake-token-and-routerinfo.md`,
+  `plans/implementation/ssu2/157-m8-ssu2-v2-data-phase-reliability-and-fragmentation.md`,
+  `plans/implementation/ssu2/158-m8-ssu2-udp-runtime-and-local-session-product.md`,
+  `plans/implementation/ssu2/159-m8-ssu2-path-validation-publication-and-transport-selection.md`, and
+  `plans/implementation/ssu2/160-m8-ssu2-peer-test-and-relay-reachability.md`.
+- Closure: `plans/closure/ssu2/156-status.md`, `plans/closure/ssu2/157-status.md`,
+  `plans/closure/ssu2/158-status.md`, `plans/closure/ssu2/159-status.md`, and
+  `plans/closure/ssu2/160-status.md`.
 - Dossier: `specs/protocols/09-ssu2.md`,
   `specs/SOURCES.md` (Milestone 8 refresh).

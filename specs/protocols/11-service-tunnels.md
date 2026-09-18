@@ -13,20 +13,20 @@ independent-application-client local rows passed via Plan 181 lane;
 remote independent-router rows now flip `blocked → passed-on-env`
 through the Plan 203 positive external driver when the dedicated
 M6 interop lane provisions the SSU2 endpoint + bind tuple).
-Planning authority: **Plan 173** (`plans/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)
-Foundation: **Plan 174** (`plans/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)
-Generic client/server tunnels: **Plan 175** (`plans/175-m10-generic-client-server-service-tunnels.md`)
-HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/176-m10-http-i2p-proxy-and-connect.md`)
-SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/177-m10-socks5-i2p-connect-proxy.md`)
-IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/178-m10-irc-client-profile-and-privacy-filtering.md`)
-IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
-Composition, reconcile, and hardening: **Plan 180** (`plans/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
-Local-delivery corrective: **Plan 182** (`plans/182-m10-local-delivery-corrective.md`)
-Independent acceptance: **Plan 181** (`plans/181-m10-independent-application-and-service-interop-final-closure.md`)
+Planning authority: **Plan 173** (`plans/implementation/service-tunnels/173-m10-service-tunnels-http-socks5-irc-roadmap.md`)
+Foundation: **Plan 174** (`plans/implementation/service-tunnels/174-m10-service-tunnel-foundation-and-shared-stream-runtime.md`)
+Generic client/server tunnels: **Plan 175** (`plans/implementation/service-tunnels/175-m10-generic-client-server-service-tunnels.md`)
+HTTP `.i2p` proxy + CONNECT: **Plan 176** (`plans/implementation/service-tunnels/176-m10-http-i2p-proxy-and-connect.md`)
+SOCKS5 `.i2p` CONNECT: **Plan 177** (`plans/implementation/service-tunnels/177-m10-socks5-i2p-connect-proxy.md`)
+IRC `.i2p` client profile + privacy filter: **Plan 178** (`plans/implementation/service-tunnels/178-m10-irc-client-profile-and-privacy-filtering.md`)
+IRC `.i2p` server profile + authenticated peer hostname: **Plan 179** (`plans/implementation/service-tunnels/179-m10-irc-server-profile-and-authenticated-peer-hostname.md`)
+Composition, reconcile, and hardening: **Plan 180** (`plans/implementation/service-tunnels/180-m10-service-tunnel-composition-reconcile-and-hardening.md`)
+Local-delivery corrective: **Plan 182** (`plans/implementation/service-tunnels/182-m10-local-delivery-corrective.md`)
+Independent acceptance: **Plan 181** (`plans/closure/service-tunnels/181-m10-independent-application-and-service-interop-final-closure.md`)
 plus **Plan 203** promotion for the two `remote-independent-*`
 rows.
 Production remote Destination/Streaming composition: **Plan 202**
-(`plans/202-m10-production-remote-destination-and-streaming-composition.md`)
+(`plans/implementation/service-tunnels/202-m10-production-remote-destination-and-streaming-composition.md`)
 — the `ServiceTunnelManager` owns one shared
 `ServiceDestinationDelivery` capability (installed once per daemon
 through `install_router_delivery_handle`); the typed
@@ -38,7 +38,7 @@ Direction A external driver exercises the manager-level seams
 against the exact-pinned i2pd 2.61.0 cache through the dedicated
 M6 interop lane.
 Positive remote HTTP + IRC application interop: **Plan 203**
-(`plans/203-m10-positive-remote-http-and-irc-application-interop.md`)
+(`plans/implementation/service-tunnels/203-m10-positive-remote-http-and-irc-application-interop.md`)
 — the `m10_positive_remote_http_and_irc_application_interop`
 Direction A external driver declares `http-client` + `irc-client`
 specs whose destination is the i2pd-owned HTTP + IRC
@@ -51,7 +51,7 @@ underlying Plan 184–193 router stack with real one-hop builds +
 lease lookup + Streaming `Established`, and never logs peer key
 material.
 M10 final closure documentation and authority normalization: **Plan 204**
-(`plans/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`)
+(`plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`)
 — landed the docs/CI normalization pass on top of Plans 200/202/203;
 the M6/M10 closed authority transitions in §7/§12 stay deferred
 until Plan 201 records the terminal `P200-{A..H}` classification
@@ -432,7 +432,7 @@ explicit passing status record with command-derived evidence.
   remains runtime-neutral; the new `generation` module is
   `#![forbid(unsafe_code)]` and depends only on the runtime-neutral
   configuration types).
-- `plans/180-status.md` (exact evidence, `next_executable_plan = 181`).
+- `plans/closure/service-tunnels/180-status.md` (exact evidence, `next_executable_plan = 181`).
 
 ## Evidence (Plan 178)
 
@@ -480,7 +480,7 @@ explicit passing status record with command-derived evidence.
 - `scripts/check-dependency-direction.sh` (workspace graph
   unchanged) and `scripts/check-runtime-boundaries.sh`
   (`i2pr-service-tunnels::irc` remains runtime-neutral).
-- `plans/178-status.md` (exact evidence,
+- `plans/closure/service-tunnels/178-status.md` (exact evidence,
   `next_executable_plan = 179`).
 
 ## Evidence (Plan 176)
@@ -524,7 +524,7 @@ explicit passing status record with command-derived evidence.
 - `scripts/check-dependency-direction.sh` (workspace graph
   unchanged) and `scripts/check-runtime-boundaries.sh`
   (`i2pr-service-tunnels::http` remains runtime-neutral).
-- `plans/176-status.md` (exact evidence,
+- `plans/closure/service-tunnels/176-status.md` (exact evidence,
   `next_executable_plan = 177`).
 
 ## Evidence (Plan 175)
@@ -554,7 +554,7 @@ explicit passing status record with command-derived evidence.
 - `scripts/check-dependency-direction.sh` (workspace graph
   unchanged) and `scripts/check-runtime-boundaries.sh`
   (`i2pr-service-tunnels` remains runtime-neutral).
-- `plans/175-status.md` (exact evidence, `next_executable_plan = 176`).
+- `plans/closure/service-tunnels/175-status.md` (exact evidence, `next_executable_plan = 176`).
 
 ## Evidence (Plan 174)
 
@@ -573,7 +573,7 @@ explicit passing status record with command-derived evidence.
   `i2pr-service-tunnels` edge) and
   `scripts/check-runtime-boundaries.sh` (runtime-neutral
   enforcement).
-- `plans/174-status.md` (exact evidence, `next_executable_plan = 175`).
+- `plans/closure/service-tunnels/174-status.md` (exact evidence, `next_executable_plan = 175`).
 
 ## Evidence (Plan 182)
 
@@ -610,7 +610,7 @@ explicit passing status record with command-derived evidence.
   baseline with zero unknown_peer/missing_factory).
 - `crates/i2pr-daemon/tests/service_tunnels_independent_application_clients.rs`
   (6 wire-surface tests incl. restart-stable server identity).
-- `plans/182-status.md` (defect provenance, fix list,
+- `plans/closure/service-tunnels/182-status.md` (defect provenance, fix list,
   command-derived evidence).
 
 ## Evidence (Plan 181 + Plan 203, local rows passed; remote rows now flip via Plan 203)
@@ -671,7 +671,7 @@ explicit passing status record with command-derived evidence.
 - `tests/integration/service-tunnels/fixtures/{http,irc}_remote_eepsite.py`
   (Plan 203 bounded deterministic loopback HTTP + IRC server
   fixtures mirroring the local co-owned target byte-for-byte).
-- `plans/181-status.md` (Plan 204 docs/CI normalization
+- `plans/closure/service-tunnels/181-status.md` (Plan 204 docs/CI normalization
   reclassified Plan 181 to
   `passed-m10-independent-application-and-service-interop-final-closure-evidence`;
   the retained local 29-row matrix stays green; the two §6.3
@@ -709,12 +709,12 @@ explicit passing status record with command-derived evidence.
   unknown labels are silently ignored so a future expansion of
   the documented set must update both the helper and the
   static checker).
-- `plans/202-status.md` (exact evidence, command-derived proof
+- `plans/closure/service-tunnels/202-status.md` (exact evidence, command-derived proof
   on the closing head).
 
 ## Evidence (Plan 204, docs/CI normalization)
 
-- `plans/204-status.md` (exact evidence, no product bug hidden,
+- `plans/closure/service-tunnels/204-status.md` (exact evidence, no product bug hidden,
   no synthetic `passed` evidence introduced; the docs/CI
   normalization pass landed on top of Plans 200/202/203 and
   stays blocked on Plan 201's Java branch corrective).
