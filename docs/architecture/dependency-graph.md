@@ -27,7 +27,7 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-service-tunnels` (Plan 174/175) | `i2pr-client`, `i2pr-proto` + `thiserror` (implementation uses `i2pr-proto` only; `i2pr-client` edge explicitly allowed for future destination/Streaming reuse) |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 | `i2pr-client` (Plan 120 / Plan 121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
-| `i2pr-api` (Plan 136) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto` |
+| `i2pr-api` (Plan 136; extended Plan 164+) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` |
 | `tools/i2pr-interop` (non-production) | `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-transport`, `i2pr-transport-ntcp2` |
 
 Reverse edges (i.e. "may NOT depend on"):
@@ -48,8 +48,10 @@ Reverse edges (i.e. "may NOT depend on"):
 - `i2pr-client` may not depend on `i2pr-daemon`; the daemon is the
   future composition root, not a client library.
 - `i2pr-api` may not depend on `i2pr-daemon`, `i2pr-runtime`,
-  `i2pr-tunnel`, `i2pr-netdb`, `i2pr-storage`, or `i2pr-testkit`
-  (Plan 136; sits between `i2pr-client` and `i2pr-daemon`).
+  `i2pr-netdb`, `i2pr-storage`, or `i2pr-testkit`
+  (Plan 136; sits between `i2pr-client` and `i2pr-daemon`). The
+  `i2pr-tunnel` edge is explicitly allowed (Plan 164+ data-plane
+  composition) and enforced by `check-dependency-direction.sh`.
 - `i2pr-netdb-persist` may not depend on `i2pr-transport`,
   `i2pr-transport-ntcp2`, `i2pr-runtime`, `i2pr-daemon`, or
   `i2pr-testkit` (Plan 104).

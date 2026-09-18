@@ -5,6 +5,16 @@ description: Operate, diagnose, or extend the repository's historical Plan 038/0
 
 # I2PR NTCP2 Interop (host harness, Plans 038/040/041/043/045/055/058/059/081/082/083/084)
 
+> **HISTORICAL — read-only for archaeology.** The NTCP2 development lane is
+> closed (`protocol-defect-localized` at `noise_authenticated`, Plans 099/100;
+> normal-daemon NTCP2 disabled per Plan 101). Do not use this lane for routine
+> work: `AGENTS.md` forbids root/sudo/namespaces/containers/VM/public-I2P for
+> routine acceptance, and this harness requires them. Active interop lanes are
+> the SSU2/M6/M9/M10 `run-independent.sh` + `check-*-acceptance-evidence.sh`
+> surfaces (see the `i2pr-local-dev` skill). The frozen NTCP2-era reference pins
+> below (Java I2P 2.12.0-era / i2pd 2.60.0-era) are **not** the current
+> SSU2/M6 pins (Java I2P 2.13.0 / i2pd 2.61.0 per `AGENTS.md`).
+
 The host-side Ubuntu 24.04 amd64 Plan 038 reference-router NTCP2
 interoperability harness. **The active development interop lane is
 closed; NTCP2 remains experimental and non-advertised.** The Plan
@@ -341,7 +351,13 @@ and release-certificate validator are not required for Plan 100
 closure; they remain available via git history for forensic
 archaeology.
 
-## Plan 102 (Milestone 4) — active authority
+## Plan 102 (Milestone 4) — historical authority
+
+Milestone 4 closed long ago (`local-foundation-complete`); the passage below is
+retained as the contemporary Plan 102 record, not as live guidance. Current
+milestone authority lives in `plans/README.md` and the status files
+(M6 local via Plan 134, M7 via Plan 151, M8 via Plan 161, M9 via Plan 172,
+M10 remote via Plans 214–215; M6 Java second family open under Plan 201).
 
 The active Milestone 4 authority is
 [Plan 102](../../plans/102-milestone-4-routerinfo-netdb-authority-and-roadmap.md).

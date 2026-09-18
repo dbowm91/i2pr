@@ -5,6 +5,12 @@ description: Operate, diagnose, or extend the Plan 048/049/050/051/053 Multipass
 
 # I2PR Multipass Recovery (Plan 048/049/050/051)
 
+> **HISTORICAL — read-only for archaeology.** The Multipass recovery lane
+> belongs to the closed NTCP2 interop sequence (Plans 038–100). Do not use it
+> for routine work: `AGENTS.md` forbids containers/VM/sudo for routine
+> acceptance. Active lanes are the SSU2/M6/M9/M10 `run-independent.sh` +
+> `check-*-acceptance-evidence.sh` surfaces (see the `i2pr-local-dev` skill).
+
 Use this skill from the repository root for the disposable Multipass recovery
 lane. **This is the Plan 046 follow-up lane for hosts that emit a typed
 host-side blocker.** On a host with Multipass, this lane uses a disposable

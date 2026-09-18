@@ -17,8 +17,8 @@ bird's-eye view, then follow the deep-dive links.
 | --- | --- | --- |
 | Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded common-structure and I2NP models, Standard LeaseSet2 (Plan 119), Streaming wire format (Plan 128), transport-neutral link contracts, NTCP2 state, runtime-owned local TCP integration; no public-network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts plus the `i2pr-runtime` supervisor and bounded socket-owning services |
-| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Milestone 6 local product closed via Plan 134 (destinations, garlic, LS2, Streaming); SAM baseline planning (Milestone 7) is next |
-| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Not implemented |
+| Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Milestone 6 local product closed via Plan 134 (destinations, garlic, LS2, Streaming); Milestone 7 SAM 3.1 localhost acceptance closed via Plan 151; Milestone 9 I2CP loopback product closed via Plan 172 |
+| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Milestone 10 local product closed via Plans 174–180/182; remote generic + HTTP/IRC application closure via Plans 213–215 (see `plans/214-status.md`, `plans/215-status.md`); Java second-family row remains open under Plan 201 |
 
 Network tunnels carry router-to-router I2P traffic and are distinct
 from application service tunnels, which eventually connect a local
@@ -31,7 +31,7 @@ The full allowlist and ASCII diagram live in
 [`docs/architecture/dependency-graph.md`](architecture/dependency-graph.md).
 The dependency direction is mechanically checked by
 `scripts/check-dependency-direction.sh`. The current workspace has
-13 production crates under `crates/` plus the non-production
+16 crates under `crates/` (15 production + `i2pr-testkit`) plus the non-production
 `tools/i2pr-interop/` launcher binary. `i2pr-testkit` is a
 test/simulation crate; no production crate may depend on it.
 
@@ -94,7 +94,23 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-rootless-interop-boundary.sh` | Plan 046 rootless lane constraints (no `sudo` / `ip netns` / `nft` / `setcap` / `--privileged` / `--network host`; no silent privileged fallback) |
 | `check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane (no global `multipass purge`; no host policy mutation) |
 | `check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundaries |
-| `check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact-path drift and cleanup-guard violations |
+| `check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity (no synthetic `passed` rows) |
+| `check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity (no synthetic `passed` rows) |
+| `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus |
+| `check-i2cp-vectors.sh` | Drift in the I2CP fixture corpus |
+| `check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows) |
+| `check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants |
+| `check-service-tunnel-acceptance-evidence.sh` | Plan 181/213/214/215 service-tunnel evidence integrity (no synthetic `passed` rows) |
+| `check-exploratory-tunnel-evidence.sh` | Plan 185 exploratory-tunnel evidence integrity |
+| `check-netdb-tunnel-evidence.sh` | Plan 186 NetDB-over-tunnel evidence integrity |
+| `check-destination-tunnel-evidence.sh` | Plan 187/192 destination-tunnel evidence integrity |
+| `check-streaming-tunnel-evidence.sh` | Plan 193 Streaming-tunnel evidence integrity |
+| `check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / 194 / 196 / 197 / 200 / 201 cross-family M6 evidence integrity |
+| `check-m6-final-closure-evidence.sh` | Plan 198/204 evidence-consuming final gate (manual external-workflow only, not routine CI) |
+
+`check-plan095-workflow.sh` (Plan 095 manual live-wire workflow) was
+pruned by the Plan 099 harness reduction and is no longer on disk;
+historical references to it are audit context only.
 
 Production crates do not depend on `i2pr-testkit`, and `i2pr-proto`
 does not depend on filesystem or crypto execution. The daemon is
@@ -169,11 +185,12 @@ A live `i2pr run` (Plan 106) follows this sequence:
 
 The Milestone 6 local product (destinations, garlic, LS2,
 Streaming) is closed locally via Plan 134; independent-router
-interoperability is tracked separately as external acceptance debt.
-The SAM 3.1 local protocol, session, forwarding, and naming seams are
-implemented through Plan 139. Plan 140's independent-client and live
-STREAM closure is blocked; see [`plans/140-status.md`](../plans/140-status.md)
-and the architecture audit.
+interoperability is tracked separately as external acceptance debt
+(i2pd first family closed via Plan 193; Java second family open
+under Plan 201). The SAM 3.1 localhost product is closed via
+Plan 151 (see [`plans/151-status.md`](../plans/151-status.md));
+the I2CP loopback product is closed via Plan 172; the M10 remote
+generic + HTTP/IRC application product is closed via Plans 214–215.
 
 ## Conventions
 
@@ -217,7 +234,7 @@ lints, script gates, and review:
 - [`docs/architecture/audit/`](architecture/audit/) — past
   doc-vs-source drift audits
 - [`docs/architecture/i2pr-<crate>.md`](architecture/) — per-crate
-  deep-dives (13 crates)
+  deep-dives (16 crates)
 - [`docs/security-model.md`](security-model.md) — secret-bearing
   types, memory hygiene, codec error policy
 - [`docs/protocol-support.md`](protocol-support.md) — generated

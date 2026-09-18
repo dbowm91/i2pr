@@ -19,7 +19,7 @@ Paths are relative to the workspace root.
 | `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. |
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. |
 | `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). |
-| `scripts/check-plan095-workflow.sh` | Plan 095 manual live-wire workflow artifact-path drift and cleanup-guard violations. |
+| `scripts/check-plan095-workflow.sh` | Pruned by the Plan 099 harness reduction; script no longer on disk. Historical references are audit context only. |
 | `scripts/check-sam-acceptance-evidence.sh` | Plan 151 SAM evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code-gated helpers (CI-enforced). |
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
@@ -111,7 +111,9 @@ pattern scanning and `sha256sum` / `find` for manifest integrity.
   (`network_id = "synthetic-private-036"`), loopback-only, fixed
   clocks, disposable identities. Pins reference implementations:
   Java I2P 2.12.0 and i2pd 2.60.0 at the exact full revisions recorded in
-  `references.lock.toml`. Specifies exactly 8 scenarios:
+  `references.lock.toml` (frozen NTCP2-era synthetic-lane pins; the
+  current SSU2/M6 lanes pin Java I2P 2.13.0 and i2pd 2.61.0 per
+  `AGENTS.md`). Specifies exactly 8 scenarios:
   1. `java-ipv4-inbound-outbound` — authenticated handshake + I2NP
      exchange.
   2. `java-ipv6-inbound-outbound` — same, IPv6.
@@ -439,14 +441,15 @@ directory are stale.
 
 ## Top-level `Cargo.toml` — workspace configuration
 
-### Members (13 crates + 1 non-production binary)
+### Members (16 crates + 1 non-production binary)
 
 ```
 crates/i2pr-crypto, crates/i2pr-proto, crates/i2pr-core,
 crates/i2pr-daemon, crates/i2pr-runtime, crates/i2pr-storage,
 crates/i2pr-testkit, crates/i2pr-transport,
-crates/i2pr-transport-ntcp2, crates/i2pr-netdb,
-crates/i2pr-netdb-persist, crates/i2pr-tunnel, crates/i2pr-client,
+crates/i2pr-transport-ntcp2, crates/i2pr-transport-ssu2,
+crates/i2pr-netdb, crates/i2pr-netdb-persist, crates/i2pr-tunnel,
+crates/i2pr-client, crates/i2pr-api, crates/i2pr-service-tunnels,
 tools/i2pr-interop
 ```
 

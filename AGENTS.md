@@ -33,7 +33,12 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 - `i2pr-testkit` — deterministic fixtures only; no production crate may depend on it.
 - `tools/i2pr-interop` — non-production test launcher.
 
-Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-boundaries.sh`. Details: `docs/architecture/overview.md`. Load skill `i2pr-architecture` for ADR/plan navigation, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code.
+Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-boundaries.sh`. Details: `docs/architecture/overview.md`.
+
+## Skills and architecture index
+
+- Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code. The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
+- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives); `docs/adr/` (decisions 0000–0025); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory).
 
 ## Hard boundaries (CI-enforced — fix code, never weaken scripts)
 

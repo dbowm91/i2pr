@@ -5,6 +5,13 @@ description: Operate, diagnose, or extend the Plan 046 rootless, process-scoped,
 
 # I2PR Rootless Sandbox (Plan 046)
 
+> **HISTORICAL — read-only for archaeology.** The Plan 046 rootless
+> sealed-namespace lane belongs to the closed NTCP2 interop sequence
+> (Plans 038–100). Do not use it for routine work: `AGENTS.md` forbids
+> namespaces/privilege manipulation for routine acceptance. Active lanes are
+> the SSU2/M6/M9/M10 `run-independent.sh` + `check-*-acceptance-evidence.sh`
+> surfaces (see the `i2pr-local-dev` skill).
+
 Use this skill from the repository root for the Plan 046 rootless sealed-namespace
 lane. **Plan 046 is the host-side fallback.** On any host where
 `kernel.apparmor_restrict_unprivileged_userns=1`, the probe emits the canonical

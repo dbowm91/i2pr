@@ -381,15 +381,14 @@ record is not `superseded-by-*`. Currently:
   round-trip). See [`plans/175-status.md`](../../plans/175-status.md)
   through [`plans/180-status.md`](../../plans/180-status.md) and
   [`plans/182-status.md`](../../plans/182-status.md).
-- **Milestone 10 independent acceptance (passed-via-plan209)**:
-  Plan 181 (`passed-m10-independent-application-and-service-interop-via-plan209`,
-  see [`plans/181-status.md`](../../plans/181-status.md)): the
+- **Milestone 10 independent acceptance (status-file token:
+  `passed-local-matrix-remote-rows-blocked-pending-plan213-and-plan214`;
+  M10 closure via Plans 214–215)**:
+  Plan 181 (see [`plans/181-status.md`](../../plans/181-status.md)): the
   retained local 29-row matrix stays green; the two §6.3 remote
-  application rows now flip `blocked → passed-on-env` through
-  the Plan 209 product-only external driver when the dedicated
-  M6 interop lane provisions the SSU2 endpoint + bind tuple
-  and the driver emits every documented Plan 209 §11 subfact
-  row in the same evidence directory/run id. Plan 183 registers
+  application rows are owned by the Plan 213/214 qualification (closed
+  via Plans 214–215; see [`plans/214-status.md`](../../plans/214-status.md)
+  and [`plans/215-status.md`](../../plans/215-status.md)). Plan 183 registers
   the M6 mixed-router program (see
   [`plans/183-status.md`](../../plans/183-status.md)); Plan 184
   passed the authenticated I2NP preflight with no
@@ -403,11 +402,11 @@ record is not `superseded-by-*`. Currently:
   Plan 187 lands the local destination product but is blocked
   on the `m6-build-reply-interop-gap` (see
   [`plans/187-status.md`](../../plans/187-status.md)); Plan 188
-  is the in-progress short-build-reply corrective
+  is the historical short-build-reply corrective
   (`installed_ob=1 installed_ib=1` via consumed reference
-  replies, 2/7 rows flipped to passed, 5/7 were blocked on the
-  inbound NetDB reply-path metadata defect Plan 190 isolates
-  and corrects; see [`plans/188-status.md`](../../plans/188-status.md));
+  replies, 2/7 rows flipped to passed; the lookup half was closed by
+  Plan 190 and the inbound-delivery half by Plan 192;
+  see [`plans/188-status.md`](../../plans/188-status.md));
   Plan 190 is the passed inbound NetDB reply-path tunnel-ID
   corrective (typed public `InboundGatewayRoute` in
   `i2pr-tunnel::DataPlaneRegistry`; daemon-owned
@@ -445,11 +444,11 @@ record is not `superseded-by-*`. Currently:
   second-family Java rows recorded `failed` with stop
   provenance until a follow-up plan lands the Java qualification
   harness (see [`plans/189-status.md`](../../plans/189-status.md));
-  Plan 194 retains the Java second-family topology, authenticated SSU2,
-  and SAM compatibility evidence, but its bounded SAM-bridge finding is
-  not final M6 closure evidence: 26 rows passed and 22 remained blocked
-  with `plan194-java-stop` provenance against the exact-pinned Java I2P
-  2.13.0 cache;
+  Plan 194 status-file token is
+  `passed-m6-java-second-family-mixed-router-closure-with-sam-ls2-gap`
+  (see [`plans/194-status.md`](../../plans/194-status.md)); Plans 198/200/201
+  re-scoped the public-client branch, whose Java-side LeaseSet2 publication gap
+  stays open under Plan 201 (see [`plans/201-status.md`](../../plans/201-status.md));
   Plan 196 owns the corrective and lands the implementation
   (out-of-tree `tests/integration/m6-interop/java/ControlledRouter.java`
   test-only launcher + rewritten `tests/integration/m6-interop/run-java.sh`
@@ -467,14 +466,12 @@ record is not `superseded-by-*`. Currently:
   `PqCapabilities` surface with bounded `MAX_SSU2_PQ_SCHEMES = 8`;
   i2pr session layer stays classical X25519 only; i2pr
   publication path stays pq-free; ML-KEM not implemented, claimed,
-  or silently enabled; 21 required test rows green locally; the
-  Plan 196 external Java re-run is the operational follow-up that
-  flips `external-session-established-java` from `failed` to
+  or silently enabled; 21 required test rows green locally; Plan 196 closed
+  the corrective and `external-session-established-java` flipped `failed` →
   `passed`; see
   [`plans/197-m6-pq-ssu2-option-support-corrective.md`](../../plans/197-m6-pq-ssu2-option-support-corrective.md)
   and [`plans/197-status.md`](../../plans/197-status.md));
-   Plan 194 retains the bounded SAM-bridge LS2-publication finding.
-   Plan 198 and Plan 199 are now both
+  Plan 198 and Plan 199 are now both
    `superseded-execution-decomposed-and-closed-via-plans200-204`; the
    decomposed convergent graph is Plan 200 + Plan 201 + Plan 202 + Plan
    203 + Plan 204. Plan 200 (M6 Java public-client publication
@@ -496,19 +493,30 @@ record is not `superseded-by-*`. Currently:
    `note_lookup_boundary(label, value)` typed observation surface;
    eight new `plan201_g_*` unit rows in `destination_tunnel_unit.rs`;
    six new `blocked_row` Plan 201 §G entries in `run-java.sh`; static
-   checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
-   extended with §11 + §12 invariants. Final closure of Plan 201 is
-   blocked on the exact-head external run that records the
-   unambiguous `P200-*` classification and flips the seven §11 stop
-   rows `blocked → passed`. The M10 production remote transport
-   branch is Plan 202 (parallel-executable with Plan 200, now
-   `passed`); Plan 203 (positive remote HTTP + IRC application
-   interop) is also `passed`; Plan 204 landed the docs/CI
-   normalization pass on top of the three passed plans and remains
-   blocked on Plan 201. Plan 195 is reactivated to
-   `evidence-passed-m10-remote-independent-service-final-closure-pending-plan204-normalization`
-   because Plan 203 supplies the positive application evidence Plan 195
-   was originally registered to provide.
+  checker `scripts/check-m6-mixed-router-acceptance-evidence.sh`
+  extended with §11 + §12 invariants. Plan 201 status-file token is
+  `in-progress-branch-c-d-attempt-blocked-on-java-loopback-peer-profile-scoring`
+  (see [`plans/201-status.md`](../../plans/201-status.md); Plan 205
+  SAM-bridge pivot registered next). The M10 production remote transport
+  branch is Plan 202 (`partial-...-superseded-by-plan206`; executable backend
+  attached by Plan 206, wired into the production sweep by Plan 208, both
+  retained underneath Plans 210–212); Plan 203 (positive remote HTTP + IRC
+  application scaffold) is `partial-...-superseded-by-plan207`, superseded for
+  final evidence by Plan 214; Plan 204 status-file token is
+  `blocked-on-independent-java-m6-branch-and-m10-plan213-plan214-qualification`
+  (see [`plans/204-status.md`](../../plans/204-status.md)). Plan 195 status-file
+  token is `blocked-m10-remote-independent-service-pending-plan213-and-plan214`;
+  the M10 remote rows are owned by the Plan 213/214 qualification, closed via
+  Plans 214–215 (see [`plans/214-status.md`](../../plans/214-status.md) and
+  [`plans/215-status.md`](../../plans/215-status.md)):
+  Plan 210 `retained-partial-structural-corrective-superseded-by-plan212`,
+  Plan 211 `retained-source-harness-superseded-for-final-evidence-by-plan214`,
+  Plan 212 `passed-source-and-generic-external-qualification-via-plan213`,
+  Plan 213 `passed-m10-router-backed-generic-external-qualification`
+  (hosted runs 35169304975 + 35169987455 both `P213-N-passed` on ef59fb3),
+  Plan 214 `passed-m10-product-only-remote-http-and-irc-application-closure`,
+  Plan 215 `passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`
+  (hosted double-pass 35309158441 + 35309655867 on 1992d67; §18 fired).
 - **Milestone 5**: Plans 107–117 (closed; Plan 117 is
   `closed-for-progression-with-evidence-gap`).
 - **Milestone 4**: Plans 102–106 (local-foundation-complete).
@@ -543,8 +551,12 @@ not weaken the script.
 | `scripts/check-i2cp-vectors.sh` | Plan 164 I2CP fixture corpus drift (CI-enforced). |
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows; CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants (no Tokio/sockets in service-tunnels, no Garlic/I2NP, single pump, no unbounded channels, one entry point). |
-| `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181 service-tunnel evidence integrity (29 local + 2 blocked remote rows; CI-enforced). |
-| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `failed` with stop provenance until the Plan 196 controlled Java topology + authenticated SSU2 preflight passes; Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys (`i2np.reseed.enable`, `router.isFloodfill`, `i2np.ntcp2.enabled`), mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; Plan 197 extends the checker to require that `Ssu2RouterAddress::parse` accepts `pq=4,3` (positive `parses_java_high_mtu_pq_options`/`parses_java_low_mtu_pq_option` regression present), that `Ssu2RouterAddress` surfaces a `pq_capabilities()` accessor, that `crates/i2pr-transport-ssu2/src/lib.rs` re-exports `Ssu2PqKem`/`PqCapabilities`/`MAX_SSU2_PQ_SCHEMES`, and that `crates/i2pr-transport-ssu2/src/publication.rs` contains no `pq` key in any `props.setProperty(...)`-style push or matching branch; CI-enforced). |
+| `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181/213/214/215 service-tunnel evidence integrity: 29 command-derived local rows plus the Plan 213 generic + Plan 214 application remote qualification (§27/§28/§29 invariants); no literal passes (CI-enforced). |
+| `scripts/check-exploratory-tunnel-evidence.sh` | Plan 185 exploratory-tunnel evidence integrity: guarded local build/liveness rows flow through exit-code-gated helpers (CI-enforced). |
+| `scripts/check-netdb-tunnel-evidence.sh` | Plan 186 NetDB-over-tunnel evidence integrity: guarded lookup/publication rows flow through exit-code-gated helpers (CI-enforced). |
+| `scripts/check-destination-tunnel-evidence.sh` | Plan 187/192 destination-tunnel evidence integrity: 21 guarded labels across local and mixed-router harnesses (CI-enforced). |
+| `scripts/check-streaming-tunnel-evidence.sh` | Plan 193 Streaming-tunnel evidence integrity: 33 guarded labels across i2pd + Java harnesses (CI-enforced). |
+| `scripts/check-m6-mixed-router-acceptance-evidence.sh` | Plan 189 §8 / Plan 194 / Plan 196 / Plan 197 cross-family M6 mixed-router evidence integrity (per-layer harnesses + checkers both pin i2pd 2.61.0 + Java I2P 2.13.0; cross-family aggregator reuses the four per-layer harnesses; second-family Java rows stay `blocked` with stop provenance until the Plan 200 exact-head external run consumes the `P200-*` classification and Plan 201 lands its narrow corrective (Plan 200 §B/C/D/§11 + Plan 201 §11/§12 Branch-G invariants); Plan 196 extends the checker to reject `i2p.vmCommSystem=true`, the obsolete Plan 194 keys, mutation of the verified Java cache's `clients.config` / `clients.config.d`, non-loopback reseed URLs, and `|| true` forgiveness in the lane; Plan 197 extends the checker with the `pq` parser-tolerance invariants; CI-enforced). |
 | `scripts/check-m6-final-closure-evidence.sh` | Plan 198 evidence-consuming final gate, retained by Plan 204 as the convergence authoritative gate: exact-head workflow provenance, exact family pins (i2pd 2.61.0 `635b013a612ff47278ef02acf8580a28e10e26c5` + Java I2P 2.13.0 `9134f808337b401e8e53c73734c81fab04280c9d`), and no blocked, failed, or missing mandatory Java/i2pd rows. Manual external-workflow only; can only go green on a host that provisions the exact-pinned Java I2P 2.13.0 cache plus the dedicated M6 interop lane. |
 
 ## Doc-vs-source audit pattern
