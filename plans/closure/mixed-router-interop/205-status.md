@@ -1,5 +1,26 @@
 # Plan 205 status — Java I2P SAM/helper publication pivot
 
+Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`**.
+
+## 2026-09-18 authority correction — Plan 219 attribution superseded
+
+Plan 219's J219-B attribution is no longer authority. That does not reactivate
+Plan 205: Plan 218 still shows a reverse-delivery failure, but the exact layer
+is unknown until Plan 220 repairs the diagnostic.
+
+Plan 205 therefore returns to its pre-Plan-219 disposition: retained/deferred,
+conditional on a trustworthy direct-I2CP classification showing that a SAM
+experiment addresses a genuinely different boundary.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+```
+
+## Retained prior Plan 205 status narrative
+
+# Plan 205 status — Java I2P SAM/helper publication pivot
+
 Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`** (Plan 218 inbound-delivery boundary did not reauthorize Plan 205 — the boundary is on Java's helper-side outbound tunnel endpoint's peer-selection path, not on the helper's local LeaseSet publication gap).
 
 ## 2026-09-18 disposition amendment
@@ -85,3 +106,4 @@ milestone10_final_acceptance = not-yet-closed
 Plan 205 must not depend on Plan 206/207 and must not use their progress to weaken Java-family evidence. Conversely, M10 corrective work need not wait for Java.
 
 The SAM/helper pivot is still an experiment rather than a guaranteed closure mechanism: previous work already showed stock Java client-tunnel/profile constraints in the controlled topology. Plan 205 must preserve fail-closed classification if the public SAM/helper path encounters the same publication/tunnel boundary.
+
