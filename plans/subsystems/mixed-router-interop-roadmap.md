@@ -21,7 +21,7 @@ Related ADRs:
 
 Authenticated I2NP preflight, one-hop exploratory tunnels, NetDB lookup/publication, destination/garlic routing, short-build reply + NetDB reply-path + wire-format correctives, i2pd Streaming qualification (33/33), Java second-family qualification (controlled topology, pq tolerance, public-client observability, Branch G corrective framework, harness/evidence corrective).
 
-Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–219 (global i2pr numbers, preserved).
+Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–220 (global i2pr numbers, preserved).
 
 ## 2. Work classification
 
@@ -36,7 +36,11 @@ Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–219 (globa
 
 ## 4. Current state
 
-Plan 217 closed the Java harness/evidence corrective. Plan 218 ran the corrected destination-only harness and proved criteria 1–9 of its Java destination path but stopped at the Java→i2pr reverse-delivery boundary. Plan 219 closed the root-cause investigation that narrowed Plan 218's coarse `java-floodfill-candidate=0` attribution to a typed `J219-B-A-STORED-B-RI-NOT-F` classification: Router B's live RouterInfo advertises `f`, but Router A's authoritative store does not have Router B's signed RouterInfo, so Router A's PeerManager indexes only Router A itself under `f`, and `FloodfillPeerSelector` excludes Router B in the post-ranking result set. Plan 205 remains retained/deferred (its SAM-bridge axis does not address the J219-B boundary). A corrective Plan 220 inherits the J219-B attribution.
+Plan 217 closed the Java harness corrective. Plan 218 remains the trustworthy Java behavioral stop: the corrected destination lane passes through LS2 lookup/validation, publication and byte-exact i2pr→Java delivery, then Java→i2pr reverse delivery does not arrive.
+
+Plan 219 added useful read-only diagnostics but its `J219-B-A-STORED-B-RI-NOT-F` attribution is superseded. Review found pre-bootstrap fact derivation, incorrect RouterHash construction, presence-only `has-f` semantics, synthesized selector results, defaulted client-NetDB/OCMOSJ facts, wrong-direction dispatch evidence, and non-exact implementation-SHA closure evidence.
+
+Plan 220 is dependency-ready and owns only the diagnostic/evidence corrective. It must produce corrected exact-clean-head attribution (or an explicit observability gap) before any topology/bootstrap/protocol corrective is registered. Plan 205 stays retained/deferred.
 
 ## 5. Target architecture
 
@@ -46,7 +50,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 (planned corrective). Plan 205 is retained conditional fallback and is not part of the primary sequence.
+183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220. Plan 205 is retained conditional fallback and is not part of the primary sequence.
 ```
 
 ## 7. Milestones
@@ -72,11 +76,12 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-pending-plan220-j219-b-corrective | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 201 | blocked | blocked-pending-plan220-corrected-java-attribution | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
 | 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 218 inbound-delivery boundary is on Java's helper-side outbound tunnel endpoint; Plan 205's SAM-bridge pivot addresses the helper's local LeaseSet publication, not the inbound-delivery primitive, and would re-hit the same boundary) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
 | 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (ran the corrected destination-only harness on commit `7762e13`; recorded terminal `P200-H … java-floodfill-candidate=false java-network-visible-leaseset=false`; inbound delivery primitive bounded by Plan 194 §11 stop `client-ls2-local-but-not-network-visible` on the destination direction and `streaming-b-accept STATUS OK but inbound SYN never reached the backlog` on the streaming direction; root cause = `java-floodfill-candidate=0` on Router A ⇒ helper's outbound tunnel endpoint cannot resolve the i2pr destination's LeaseSet through Java's netDb; Plan 205 stays retained because its SAM-bridge pivot addresses a different axis) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
-| 219 | closed | passed-m6-java-reverse-delivery-root-cause-attribution (typed-facts J219-{A..J} classification scheme + 5-timed-snapshot timeline per router + 7 view rows + 12 typed facts; terminal class on commit `9ce32a9c…` is `J219-B-A-STORED-B-RI-NOT-F` — Router B's live RI advertises `f`, but Router A's authoritative store does not have Router B's signed RouterInfo; downstream Plan 220 corrective inherits this boundary) | `plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md` | `plans/closure/mixed-router-interop/219-status.md` |
+| 219 | superseded | retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220 | `plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md` | `plans/closure/mixed-router-interop/219-status.md` |
+| 220 | ready | registered-ready-m6-java-plan219-diagnostic-attribution-corrective | `plans/implementation/mixed-router-interop/220-m6-java-plan219-diagnostic-attribution-corrective.md` | `plans/closure/mixed-router-interop/220-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -111,40 +116,15 @@ Java-router topology. Plan 219 added the
 
 ## 10. Risks and decision points
 
-- Plan 219 closed the typed investigation on commit `9ce32a9c…` with the
-  `J219-B-A-STORED-B-RI-NOT-F` classification. The corrective next plan
-  owns the J219-B boundary: Router A's authoritative store does not
-  have Router B's signed RouterInfo even though Router B's live RI
-  advertises `f`. The bootstrap probe (Plan 200 §B) ships i2pr's
-  signed RouterInfo to Routers A and B but does not ship Router B's
-  signed RouterInfo into Router A's main NetDB; the corrective must
-  make the bootstrap bidirectional on the controlled loopback
-  topology without breaking the J219-{C,D,E,F} chain (plan-220
-  must re-emit the `J219-{A..J}` row and reach J219-J to claim
-  closure).
-
-- Plan 217 closed the harness/evidence corrective; the prior Plan
-  216 "no LS2 reply arrives" interpretation is no longer
-  authoritative because the destination driver reached
-  `LeaseStoreIngestOutcome::Completed` before the panic. Plan
-  218 ran the corrected harness on commit `7762e13` and recorded a
-  fresh terminal `P200-H … java-floodfill-candidate=false
-  java-network-visible-leaseset=false` classification; Plan 219
-  refined the attribution to `J219-B-A-STORED-B-RI-NOT-F` on commit
-  `9ce32a9c…`. The seven §11 stop rows past criteria 10/22/24/25
-  stay bounded on the inbound-delivery primitive until a Plan 220
-  corrective closes the J219-B boundary.
-- Plan 205 SAM work remains off the critical path. Plan 219 proved
-  the failure axis is on Router A's main NetDB membership (J219-B),
-  not on the helper's local LeaseSet publication path that
-  Plan 205's SAM bridge would replace. No Plan 205 reactivation is
-  authorized; the documented next step is a corrective Plan 220
-  that targets the J219-B boundary on the Plan 218-corrected harness.
+- Plan 220 is diagnostic-only. The old J219-B attribution MUST NOT drive a bootstrap/topology corrective unless repaired exact-clean-head evidence independently reproduces it.
+- Plan 219 instrumentation is useful but its classifier currently conflates pre-bootstrap state, invalid hash derivation, PeerManager membership, selector output, and unobserved client-message stages.
+- Missing evidence must be Unknown/observability-gap, never a negative protocol fact.
+- Plan 205 SAM work remains off-path pending corrected direct-I2CP attribution.
 
 ## 11. Completion definition
 
-Open: Plan 220 must close the J219-B-A-STORED-B-RI-NOT-F boundary on the Plan 218-corrected harness. If Plan 220 reaches J219-J, register a fresh Java final-qualification rerun; otherwise register the next narrow corrective named by the earliest failed J219 boundary on the post-Plan-220 harness. Plan 204 remains blocked until Java-family closure.
+Open: Plan 220 must repair the Plan 219 diagnostic and produce a corrected exact-clean-head reverse-delivery attribution or typed observability gap. A later plan, not Plan 220, owns whatever protocol/reference-topology corrective that result justifies. Plan 204 remains blocked until Java-family closure.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness/evidence corrective; Plan 218 stopped at the corrected reverse-delivery primitive; Plan 219 closed with the typed `J219-B-A-STORED-B-RI-NOT-F` attribution on commit `9ce32a9c…`; Plan 201 is `blocked-pending-plan220-j219-b-corrective`; Plan 205 remains retained-deferred (Plan 219 proved the failure axis is not on its SAM-bridge path); Plan 220 is the documented next executable plan and is not registered by Plan 219.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 stopped at the corrected reverse-delivery boundary; Plan 219 instrumentation is retained but its J219-B attribution is superseded by Plan 220; Plan 220 is dependency-ready; Plan 201 remains blocked pending corrected attribution; Plan 205 remains retained-deferred. No topology/bootstrap corrective is currently registered.
