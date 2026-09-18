@@ -2,6 +2,22 @@
 
 Status: **`blocked-on-m6-java-second-family-closure-pending-plan220-diagnostic-corrective`**.
 
+## 2026-09-18 follow-up — Plan 220 passed, convergence still blocked
+
+Plan 220 closed as
+`passed-m6-java-plan219-diagnostic-attribution-corrective` (see
+[`220-status.md`](../../mixed-router-interop/220-status.md)): the
+M6 Java lane is narrowed to `P220-OBSERVABILITY-GAP-CLIENT-NETDB`
+but not closed. Plan 204 stays blocked with an unchanged token
+pending M6 Java second-family closure via the Plan 221 → Plan 201
+chain.
+
+```text
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective
+plan_221 = registered-ready-m6-java-client-netdb-ocmosj-narrowing
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan220-diagnostic-corrective
+```
+
 ## 2026-09-18 dependency correction — Plan 219 attribution superseded
 
 M10 product/application closure through Plans 213–215 remains authoritative.

@@ -2,6 +2,21 @@
 
 Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`**.
 
+## 2026-09-18 follow-up — Plan 220 passed, pivot still deferred
+
+Plan 220 closed as
+`passed-m6-java-plan219-diagnostic-attribution-corrective` (see
+[`220-status.md`](220-status.md)): the Java main-NetDB path fully
+passes on corrected evidence, so the open boundary is below the
+layer a SAM bridge would replace. Plan 205 stays retained/deferred
+with an unchanged token; no reactivation is authorized.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective
+plan_221 = registered-ready-m6-java-client-netdb-ocmosj-narrowing
+```
+
 ## 2026-09-18 authority correction — Plan 219 attribution superseded
 
 Plan 219's J219-B attribution is no longer authority. That does not reactivate

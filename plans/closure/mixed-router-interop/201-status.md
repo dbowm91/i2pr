@@ -1,6 +1,28 @@
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-plan220-corrected-java-attribution`**.
+Status: **`blocked-pending-plan221-client-netdb-narrowing`**.
+
+## 2026-09-18 authority amendment — Plan 220 corrected attribution closed
+
+Plan 220 closed as
+`passed-m6-java-plan219-diagnostic-attribution-corrective` (see
+[`220-status.md`](220-status.md)): on the exact-clean-head
+authoritative run (`a3d2571`) the corrected P220 classifier
+emitted `P220-OBSERVABILITY-GAP-CLIENT-NETDB` with every earlier
+stage `Known(pass)` — hash cross-check, exact A-stored-B with
+current `f` RI, PeerManager indexing, live selector containing B.
+The superseded J219-B claim ("Router A lacks Router B's RI") is
+refuted on corrected evidence, so no bootstrap corrective is or
+was authorized.
+
+Plan 201 cannot target a corrective until Plan 221 narrows the
+client-NetDB/OCMOSJ gap to an exactly observed layer.
+
+```text
+plan_201 = blocked-pending-plan221-client-netdb-narrowing
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective
+plan_221 = registered-ready-m6-java-client-netdb-ocmosj-narrowing
+```
 
 ## 2026-09-18 authority correction — Plan 219 attribution superseded
 
@@ -14,9 +36,9 @@ stop row may flip until Plan 220 produces a corrected exact-clean-head
 classification and a later plan addresses that boundary if necessary.
 
 ```text
-plan_201 = blocked-pending-plan220-corrected-java-attribution
+plan_201 = blocked-pending-plan221-client-netdb-narrowing
 plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
-plan_220 = registered-ready-m6-java-plan219-diagnostic-attribution-corrective
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective
 ```
 
 ## Retained prior Plan 201 status narrative

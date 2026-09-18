@@ -2,6 +2,27 @@
 
 Status: **`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`**.
 
+## 2026-09-18 follow-up — Plan 220 narrowed the boundary
+
+Plan 220 closed as
+`passed-m6-java-plan219-diagnostic-attribution-corrective` (see
+[`220-status.md`](220-status.md)). The Plan 218 behavioral stop
+reproduces under corrected observation and its root cause is
+narrowed: hash, exact stored-RI, PeerManager, and live-selector
+stages all pass at the authoritative epoch, so the boundary is at
+or below the helper client-NetDB/OCMOSJ layer
+(`P220-OBSERVABILITY-GAP-CLIENT-NETDB` on exact head `a3d2571`).
+The superseded J219-B root-cause hypothesis is refuted. This
+status stays `stopped` with the same boundary; Plan 221 owns the
+narrowing.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective
+plan_221 = registered-ready-m6-java-client-netdb-ocmosj-narrowing
+next_executable_plan = 221-m6-java-client-netdb-ocmosj-narrowing
+```
+
 ## 2026-09-18 handoff correction — Plan 220 diagnostic corrective
 
 Plan 218 remains the authoritative behavioral stop: criteria 1–9 passed and
