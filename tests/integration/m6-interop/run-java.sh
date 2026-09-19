@@ -123,7 +123,11 @@ STREAM_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStrea
 # Plan 220 WP D — test-only same-package FloodfillPeerSelector probe
 # (read-only; never patches a Java I2P class).
 SELECTOR_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P220SelectorProbe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" ]]; then
+# Plan 222 WP B — test-only exact client-lookup preflight probe
+# (helper client DBID + Java routing key + effective width through the
+# production-equivalent 3-argument selector overload; read-only).
+P222_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P222SelectorProbe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -136,7 +140,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -1231,6 +1235,24 @@ fi
 # boundary or observability gap it names. The static checker
 # rejects any literal `record "<P220-X>" passed` line.
 record "external-p220-classification" passed "Plan 220 §11: ${P220_CLASSIFICATION}"
+
+# Plan 222 §H — read the terminal `p222-classification` the destination
+# driver emitted from its exact client-lookup preflight + tracked-send
+# path. We MUST consume the LAST occurrence so an early-fail branch
+# can't shadow the authoritative outcome. Recording the classification
+# itself is a diagnostic observation; it is reported as `passed`
+# regardless of the boundary or observability gap it names. The static
+# checker rejects any literal `record "<P222-X>" passed` line. The
+# frozen 45-second i2pr payload row is never rewritten by this status.
+P222_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_P222="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_P222}" ]]; then
+  P222_CLASSIFICATION="$(awk -F'\t' '$1 == "p222-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P222}")"
+fi
+if [[ -z "${P222_CLASSIFICATION}" ]]; then
+  P222_CLASSIFICATION="P222-classification-missing"
+fi
+record "external-p222-classification" passed "Plan 222 §H: ${P222_CLASSIFICATION}"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

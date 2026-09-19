@@ -996,8 +996,184 @@ if [[ -f "${DRIVER_TEST_13}" ]]; then
   fi
 fi
 
+# ---- 15. Plan 222 corrected client-NetDB/OCMOSJ narrowing ---------------
+# Plan 220's selector row (raw target hash + hard-coded N=3 + main facade
+# + empty exclude set) is historical only. Plan 222 must reproduce the
+# exact client lookup (helper client DBID + Java routing key + effective
+# `netdb.searchLimit` + EXTRA_PEERS width through the production-equivalent
+# overload) and correlate one reverse send through the public
+# nonce-bearing `SendMessageStatusListener` path. The 45-second payload
+# window stays frozen; status-only polling is bounded to 70 seconds.
+P222_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P222SelectorProbe.java"
+P220_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P220SelectorProbe.java"
+DRIVER_TEST_222="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+LAUNCHER_SRC_222="${JAVA_LAUNCHER_SRC}"
+HELPER_SRC_222="${JAVA_RAW_HELPER_SRC}"
+HARNESS_222="${JAVA_HARNESS}"
+
+if [[ ! -f "${P222_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 222 exact preflight probe ${P222_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 15a. Selector-equivalence guards: the P222 probe must use the exact
+  # production inputs and must not repeat the P220 overclaim.
+  for required in \
+    'routingKeyGenerator().getRoutingKey' \
+    'netdb.searchLimit' \
+    'EXTRA_PEERS' \
+    'clientNetDb' \
+    'selectFloodfillParticipants(routingKey' \
+    'selectorWidth' \
+    'targetLsPresent' \
+    'isClientDb'; do
+    if ! grep -q "${required}" "${P222_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P222_PROBE_SRC} lacks the Plan 222 exact-selector surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The authoritative P222 probe must not hard-code PROBE_FANOUT=3 and
+  # must not pass Collections.emptySet() as the selector input.
+  if grep -q 'PROBE_FANOUT' "${P222_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P222_PROBE_SRC} retains PROBE_FANOUT=3 as authoritative selector width (Plan 222 §15 I1)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q 'Collections.emptySet()' "${P222_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P222_PROBE_SRC} passes Collections.emptySet() as authoritative selector input (Plan 222 §15 I1)" >&2
+    failures=$((failures + 1))
+  fi
+  # Raw target hash must not feed the selector directly on the P222 path.
+  if grep -q 'selectFloodfillParticipants(target' "${P222_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P222_PROBE_SRC} feeds raw target hash to selectFloodfillParticipants (Plan 222 §15 I1)" >&2
+    failures=$((failures + 1))
+  fi
+  # The historical P220 probe stays frozen for traceability.
+  if [[ -f "${P220_PROBE_SRC}" ]] && ! grep -q 'PROBE_FANOUT' "${P220_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P220_PROBE_SRC} lost its historical PROBE_FANOUT marker (Plan 222 §7 A)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${LAUNCHER_SRC_222}" ]]; then
+  # 15b. The launcher must expose the exact preflight command.
+  if ! grep -q '"P222-CLIENT-LOOKUP-PREFLIGHT"' "${LAUNCHER_SRC_222}"; then
+    echo "m6 mixed-router evidence check failed: ${LAUNCHER_SRC_222} lacks the Plan 222 P222-CLIENT-LOOKUP-PREFLIGHT command" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${HELPER_SRC_222}" ]]; then
+  # 15c. Tracked-send guards: public listener API, bounded nonce map,
+  # legacy SEND remains; no reliability/timeout/tunnel mutation.
+  for required in \
+    'SendMessageStatusListener' \
+    'SEND_TRACKED' \
+    'SEND_STATUS' \
+    'TRACKED_SENT' \
+    'TRACKED_STATUS' \
+    'MAX_TRACKED_MESSAGES' \
+    'MAX_EVENTS_PER_MESSAGE'; do
+    if ! grep -q "${required}" "${HELPER_SRC_222}"; then
+      echo "m6 mixed-router evidence check failed: ${HELPER_SRC_222} lacks the Plan 222 tracked-send surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if ! grep -q 'case "SEND":' "${HELPER_SRC_222}"; then
+    echo "m6 mixed-router evidence check failed: ${HELPER_SRC_222} lost legacy SEND compatibility (Plan 222 §15 I2)" >&2
+    failures=$((failures + 1))
+  fi
+  for forbidden in 'setReliability' 'setExpiration' 'OVERALL_TIMEOUT'; do
+    if grep -q "${forbidden}" "${HELPER_SRC_222}"; then
+      echo "m6 mixed-router evidence check failed: ${HELPER_SRC_222} mutates send lifetime via '${forbidden}' (Plan 222 §15 I2)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${DRIVER_TEST_222}" ]]; then
+  # 15d. The driver must own the P222 classifier, tracked-send surface,
+  # and frozen-window timing; it must not invent terminals.
+  for required in \
+    'fn p222_parse_tracked_sent' \
+    'fn p222_parse_tracked_status' \
+    'fn p222_collect_preflight' \
+    'fn p222_selector_equivalence' \
+    'fn p222_status_facts' \
+    'fn record_p222_classification' \
+    'enum P222Terminal' \
+    'P222-OBSERVABILITY-GAP-SELECTOR-EQUIVALENCE' \
+    'P222-CORRECTED-ATTRIBUTION CLIENT-NETDB-NO-USABLE-LEASESET' \
+    'P222-CORRECTED-ATTRIBUTION OCMOSJ-NO-USABLE-TUNNEL-OR-GARLIC-PATH' \
+    'P222-CORRECTED-ATTRIBUTION JAVA-DISPATCH-PATH-REACHED-I2PR-TUNNELDATA-NOT-OBSERVED' \
+    'P222-OBSERVABILITY-GAP-OCMOSJ-POST-ACCEPT' \
+    'P222-EVIDENCE-CONTRADICTION-ACK-SUCCESS-WITHOUT-I2PR-PAYLOAD' \
+    'P222-REVERSE-DELIVERY-PASSED' \
+    'p222-classification' \
+    'send_raw_tracked' \
+    'P222-CLIENT-LOOKUP-PREFLIGHT' \
+    'P222_STATUS_OBSERVATION_DEADLINE' \
+    'frozen_tunneldata_45s' \
+    'frozen_payload_45s'; do
+    if ! grep -q "${required}" "${DRIVER_TEST_222}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_222} lacks the Plan 222 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The P222 path must not derive a selector boundary from B presence
+  # alone and must not reuse the later deadline for the payload row.
+  if grep -q 'P222.*SELECTOR-EXCLUDES-B' "${DRIVER_TEST_222}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_222} derives a P222 selector pass from Router B presence (Plan 222 §15 I1)" >&2
+    failures=$((failures + 1))
+  fi
+  # Timing guards: 45-second window frozen; diagnostic deadline 70 s.
+  if ! grep -q 'from_secs(70)' "${DRIVER_TEST_222}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_222} lacks the 70-second P222 status-only deadline (Plan 222 §15 I3)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'MUST NOT retroactively' "${DRIVER_TEST_222}"; then
+    echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_222} lacks the frozen-45s invariant comment (Plan 222 §15 I3)" >&2
+    failures=$((failures + 1))
+  fi
+  # P222 unit rows must lock the classifier in the ordinary floor.
+  for unit_row in \
+    p222_old_p220_selector_alone_yields_equivalence_gap \
+    p222_routing_key_vs_raw_key_distinction \
+    p222_dynamic_selector_width_computation \
+    p222_client_dbid_required \
+    p222_selector_empty_maps_to_no_lookup_peer \
+    p222_selector_nonempty_b_absent_is_not_root_cause \
+    p222_tracked_send_parser_accepts_valid \
+    p222_tracked_send_parser_rejects_malformed \
+    p222_ordered_status_sequence_retained \
+    p222_accepted_alone_does_not_pass_client_netdb \
+    p222_no_leaseset_maps_to_client_netdb_failure \
+    p222_no_tunnels_maps_to_combined_boundary \
+    p222_best_effort_failure_without_tunneldata_maps_to_dispatch_boundary \
+    p222_guaranteed_success_without_payload_is_contradiction \
+    p222_no_terminal_callback_maps_to_gap \
+    p222_later_success_overrides_probable_failure \
+    p222_status_deadline_cannot_alter_payload_outcome; do
+    if ! grep -q "fn ${unit_row}" "${DRIVER_TEST_222}"; then
+      echo "m6 mixed-router evidence check failed: ${DRIVER_TEST_222} lacks the Plan 222 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${HARNESS_222}" ]]; then
+  # 15e. The harness must compile the P222 probe and record the LAST
+  # p222-classification occurrence.
+  if ! grep -q 'P222SelectorProbe.java' "${HARNESS_222}"; then
+    echo "m6 mixed-router evidence check failed: ${HARNESS_222} never compiles the Plan 222 P222SelectorProbe" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'p222-classification' "${HARNESS_222}"; then
+    echo "m6 mixed-router evidence check failed: ${HARNESS_222} never references the Plan 222 p222-classification evidence key" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants)"

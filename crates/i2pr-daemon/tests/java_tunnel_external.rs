@@ -228,11 +228,45 @@ impl ReferenceControl {
         Some((fields.next()?.parse().ok()?, fields.next()?.to_owned()))
     }
 
+    // Legacy `send_raw()` remains for historical tests that still need
+    // it; the P222 reverse path uses `send_raw_tracked()`.
+    #[allow(dead_code)]
     async fn send_raw(&mut self, destination: &str, payload: &[u8]) -> bool {
         let response = self
             .command(&format!("SEND {destination} {} 0 0", hex_encode(payload)))
             .await;
         response.starts_with("SENT ")
+    }
+
+    /// Plan 222 WP D — tracked helper send using the public
+    /// listener-enabled `I2PSession.sendMessage(..., SendMessageStatusListener)`
+    /// path. Returns the helper-side nonce, payload length, and SHA-256
+    /// digest on success. Strict parsing: missing nonce, malformed
+    /// integer, or malformed digest yields `None` (Unknown diagnostic
+    /// evidence), never a protocol failure.
+    async fn send_raw_tracked(
+        &mut self,
+        destination: &str,
+        payload: &[u8],
+        from_port: u16,
+        to_port: u16,
+    ) -> Option<TrackedSend> {
+        let response = self
+            .command(&format!(
+                "SEND_TRACKED {destination} {} {from_port} {to_port}",
+                hex_encode(payload)
+            ))
+            .await;
+        p222_parse_tracked_sent(&response)
+    }
+
+    /// Plan 222 WP D — polls the bounded helper-local nonce event map.
+    /// Returns the ordered status events, or `None` for unknown nonce /
+    /// parse failure (Unknown diagnostic evidence). Never synthesizes a
+    /// status. Rejects more than 16 events.
+    async fn send_status(&mut self, nonce: u64) -> Option<Vec<TrackedStatusEvent>> {
+        let response = self.command(&format!("SEND_STATUS {nonce}")).await;
+        p222_parse_tracked_status(&response, nonce)
     }
 
     async fn write_stream(&mut self, id: usize, payload: &[u8]) -> bool {
@@ -2251,6 +2285,12 @@ async fn destination_message_plane_against_java() {
                 &p220_bytes_to_hex(java_hash.as_bytes()),
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            // Plan 222 — every run emits exactly one P222 terminal. A
+            // pre-epoch stop cannot prove selector equivalence.
+            record_p222_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2538,6 +2578,12 @@ async fn destination_message_plane_against_java() {
             &p220_bytes_to_hex(java_hash.as_bytes()),
             "authoritative-epoch-never-reached-lease-stalled",
         );
+        // Plan 222 — every run emits exactly one P222 terminal. A
+        // pre-epoch stop yields the pre-epoch observability gap.
+        record_p222_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
         handle.shutdown();
         let _ = scope.shutdown().await;
         return;
@@ -2762,7 +2808,42 @@ async fn destination_message_plane_against_java() {
     .await;
     p220_facts.forward_i2pr_to_java_received = P220Observed::Known(p220_forward_received);
 
+    // ---- Plan 222 WP B — exact client-lookup preflight --------------------
+    // Helper source Destination hash is the client DBID (`fromLocalDest`
+    // / client DBID used by OCMOSJ). The target is the i2pr destination
+    // hash the reverse lookup must resolve. Both travel as exact 32-byte
+    // lowercase hex; the Java diagnostic derives the routing key with its
+    // own `routingKeyGenerator().getRoutingKey` and reproduces the
+    // `netdb.searchLimit` + EXTRA_PEERS width through the
+    // production-equivalent 3-argument selector overload.
+    let helper_client_dbid_hex = p220_bytes_to_hex(reference_hash.as_bytes());
+    let p222_preflight = p222_collect_preflight(
+        diag_a_port,
+        &helper_client_dbid_hex,
+        &reverse_lookup_target_hex,
+        &rust_b_hex,
+    )
+    .await;
+    let p222_selector_equivalent = p222_selector_equivalence(p222_preflight.as_ref());
+    let (p222_selector_nonempty, p222_target_ls_pre_send) = match p222_preflight.as_ref() {
+        Some(pre) if pre.observable && pre.client_db_is_client => (
+            P220Observed::Known(!pre.selector_empty),
+            P220Observed::Known(pre.target_ls_present_before_send),
+        ),
+        Some(_) => (
+            P220Observed::Unknown("client-db-not-proven"),
+            P220Observed::Unknown("client-db-not-proven"),
+        ),
+        None => (
+            P220Observed::Unknown("preflight-unreachable"),
+            P220Observed::Unknown("preflight-unreachable"),
+        ),
+    };
+
     // ---- Plan 194 §5.4(c) inbound reply via real inbound tunnel ----------
+    // Plan 222 WP C/E — tracked helper send using the public
+    // listener-enabled long `sendMessage`. Legacy `send_raw()` remains
+    // for historical tests; the P222 reverse path uses `SEND_TRACKED`.
     let local_b64 = i2pr_api::sam::base64::encode(
         &local_identity
             .destination()
@@ -2770,12 +2851,30 @@ async fn destination_message_plane_against_java() {
             .expect("encode dest"),
     );
     let app_back = b"plan194-destination-reply-b";
-    let reverse_admitted = reference_control.send_raw(&local_b64, app_back).await;
+    let reverse_sha256 = sha256_hex(app_back);
+    let tracked_start = tokio::time::Instant::now();
+    let tracked = reference_control
+        .send_raw_tracked(&local_b64, app_back, 0, 0)
+        .await;
+    // `reverse_java_send_admitted` is set only after the tracked call
+    // returns successfully with a valid nonce.
+    let reverse_admitted = tracked.is_some();
+    if tracked.as_ref().is_some_and(|t| t.digest != reverse_sha256) {
+        append_evidence(
+            &evidence_dir,
+            "p222-tracked-digest-mismatch",
+            "tracked digest does not match intended reverse payload",
+        );
+    }
     p220_facts.reverse_java_send_admitted = P220Observed::Known(reverse_admitted);
     let inbound_send_status = if reverse_admitted {
         "public-send-accepted"
     } else {
         "public-send-rejected"
+    };
+    let tracked_nonce_observed: P220Observed<u64> = match tracked.as_ref() {
+        Some(t) => P220Observed::Known(t.nonce),
+        None => P220Observed::Unknown("tracked-send-not-admitted"),
     };
 
     let mut dispatcher = DestinationDispatcher::new();
@@ -2790,8 +2889,35 @@ async fn destination_message_plane_against_java() {
     // tracked independently of the forward receipt above.
     let mut p220_tunneldata_observed = false;
     let mut reply_pump_error = 0u64;
+    // Plan 222 WP E — preserve the 45-second delivery window exactly.
+    // The reverse-send flow runs the existing i2pr inbound pump for
+    // exactly the existing `DATAGRAM_WAIT` duration, polls
+    // `SEND_STATUS nonce` during the window without delaying the pump
+    // (the deadline is wall-clock fixed), freezes the legacy
+    // payload-delivery result at 45 seconds, then continues
+    // status-only polling until 70 seconds from the tracked-send
+    // start. The i2pr payload acceptance window is never resumed.
     let reply_deadline = tokio::time::Instant::now() + DATAGRAM_WAIT;
+    let mut p222_status_events: Vec<TrackedStatusEvent> = Vec::new();
+    let mut last_status_poll = tokio::time::Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(tokio::time::Instant::now);
     while tokio::time::Instant::now() < reply_deadline && inbound_payload.is_none() {
+        // Periodic status poll (every ~2 s) without delaying the pump:
+        // the poll uses the bounded helper map and short control RTT;
+        // the payload deadline stays fixed regardless of poll latency.
+        if tracked.is_some()
+            && tokio::time::Instant::now().duration_since(last_status_poll)
+                >= Duration::from_secs(2)
+        {
+            last_status_poll = tokio::time::Instant::now();
+            if let Some(nonce) = tracked.as_ref().map(|t| t.nonce) {
+                #[allow(clippy::collapsible_if)]
+                if let Some(events) = reference_control.send_status(nonce).await {
+                    p222_status_events = events;
+                }
+            }
+        }
         let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
         let Ok(Some(inbound)) = next else {
             continue;
@@ -2856,6 +2982,59 @@ async fn destination_message_plane_against_java() {
         );
     }
 
+    // Freeze the legacy 45-second payload-delivery result here. The
+    // later status-only observation MUST NOT retroactively change
+    // whether this row passed or failed.
+    let frozen_tunneldata_45s = p220_tunneldata_observed;
+    let frozen_payload_45s = inbound_payload
+        .as_ref()
+        .is_some_and(|reply| reply == app_back);
+
+    // Plan 222 WP E — status-only polling extension. If no decisive
+    // status has arrived, continue status-only polling until 70 seconds
+    // from the tracked-send start. Do not resume or extend the i2pr
+    // payload acceptance window after 45 seconds.
+    if let Some(nonce) = tracked.as_ref().map(|t| t.nonce) {
+        // Refresh once more at the freeze boundary.
+        if let Some(events) = reference_control.send_status(nonce).await {
+            p222_status_events = events;
+        }
+        let status_deadline = tracked_start + P222_STATUS_OBSERVATION_DEADLINE;
+        while tokio::time::Instant::now() < status_deadline {
+            let decisive = p222_status_events
+                .iter()
+                .any(|e| matches!(e.status, 3 | 4 | 16 | 17 | 19 | 20 | 21 | 22));
+            if decisive {
+                break;
+            }
+            // Absence of a terminal callback at/after the default
+            // timeout is Unknown: the pinned client listener and router
+            // timeout both default to 60 seconds, so the terminal
+            // timeout notification may race listener expiration. Keep
+            // polling until the 70-second diagnostic deadline.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if let Some(events) = reference_control.send_status(nonce).await {
+                // Retain the strongest later evidence while preserving
+                // the full ordered sequence (later success supersedes
+                // probable failure for delivery-path proof).
+                if events.len() >= p222_status_events.len() {
+                    p222_status_events = events;
+                }
+            }
+        }
+        append_evidence(
+            &evidence_dir,
+            "p222-status-only-observation",
+            &format!(
+                "nonce={nonce} events={:?} frozen_tunneldata_45s={frozen_tunneldata_45s} frozen_payload_45s={frozen_payload_45s}",
+                p222_status_events
+                    .iter()
+                    .map(|e| e.status)
+                    .collect::<Vec<_>>(),
+            ),
+        );
+    }
+
     assert!(dest.note_direct_transport_attempt().is_err());
     append_evidence(&evidence_dir, "direct-rejected", "true");
 
@@ -2906,6 +3085,48 @@ async fn destination_message_plane_against_java() {
             .is_some_and(|reply| reply == app_back),
     );
     let _ = record_p220_classification(&evidence_dir, &p220_facts);
+    // Plan 222 WP F/H — status-to-fact mapping and exactly one P222
+    // terminal per run. ACCEPTED alone does not pass client-NetDB; no
+    // listener status is synthesized; missing callbacks stay Unknown;
+    // the 70-second diagnostic deadline cannot alter the frozen
+    // 45-second payload outcome.
+    let (
+        status_accepted,
+        status_no_leaseset,
+        status_bad_leaseset,
+        status_expired_leaseset,
+        status_unsupported_encryption,
+        status_no_tunnels,
+        status_best_effort_failure,
+        status_guaranteed_success,
+        status_other_terminal,
+        ordered_statuses,
+    ) = p222_status_facts(&p222_status_events);
+    let p222_facts = P222Facts {
+        selector_equivalent: p222_selector_equivalent,
+        selector_nonempty: p222_selector_nonempty,
+        target_leaseset_present_pre_send: p222_target_ls_pre_send,
+        tracked_nonce: tracked_nonce_observed,
+        status_accepted,
+        status_no_leaseset,
+        status_bad_leaseset,
+        status_expired_leaseset,
+        status_unsupported_encryption,
+        status_no_tunnels,
+        status_best_effort_failure,
+        status_guaranteed_success,
+        status_other_terminal,
+        reverse_i2pr_tunneldata_observed_45s: P220Observed::Known(frozen_tunneldata_45s),
+        reverse_i2pr_payload_recovered_45s: P220Observed::Known(frozen_payload_45s),
+        ordered_statuses,
+    };
+    let _ = record_p222_classification(
+        &evidence_dir,
+        &p222_facts,
+        p222_preflight.as_ref(),
+        tracked.as_ref(),
+        &reverse_sha256,
+    );
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -2952,6 +3173,610 @@ fn record_p220_early_stop_gap(evidence_dir: &Path, rust_b_hash_hex: &str, reason
         reverse_i2pr_payload_recovered: gap_bool,
     };
     let _ = record_p220_classification(evidence_dir, &facts);
+}
+
+// ---- Plan 222 — corrected client-NetDB/OCMOSJ narrowing --------------------
+// Plan 220's `SELECTOR Known(pass)` row used the raw target hash and
+// hard-coded N=3 through the main facade; it is retained as historical
+// evidence only. Plan 222 reproduces the exact client lookup (helper
+// client DBID + Java-derived routing key + effective
+// `netdb.searchLimit` + EXTRA_PEERS width through the
+// production-equivalent selector overload) and correlates one reverse
+// helper send through the public nonce-bearing
+// `SendMessageStatusListener` path. The existing 45-second i2pr
+// reverse-delivery acceptance window stays frozen; any later listener
+// polling is status-only diagnostic observation bounded to 70 seconds
+// from the tracked-send start and MUST NOT retroactively change the
+// 45-second payload row.
+
+/// Plan 222 status-only observation deadline: 70 seconds from the
+/// tracked-send start. Rationale: Java default OCMOSJ overall timeout
+/// is 60 seconds; the 10-second margin is diagnostic scheduling
+/// tolerance; no Java timeout property is changed. The diagnostic
+/// status deadline is >= 60 s and <= 75 s; the 45-second i2pr payload
+/// window (`DATAGRAM_WAIT`) is frozen before this extension and no
+/// reuse of the later deadline for the payload pass/fail row is
+/// allowed.
+const P222_STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(70);
+/// Maximum tracked status events per nonce (helper + driver bound).
+const P222_MAX_TRACKED_EVENTS: usize = 16;
+
+/// Plan 222 tracked-send admission record from `TRACKED_SENT`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrackedSend {
+    nonce: u64,
+    payload_len: usize,
+    digest: String,
+}
+
+/// Plan 222 ordered per-message status event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrackedStatusEvent {
+    status: i32,
+    elapsed_ms: u64,
+}
+
+/// Parses `TRACKED_SENT nonce=<u64> payload_len=<n> digest=<sha256>`.
+/// Strict: missing nonce, malformed integer, malformed digest, or
+/// duplicate malformed fields yield `None` (Unknown diagnostic
+/// evidence, never a protocol failure).
+fn p222_parse_tracked_sent(line: &str) -> Option<TrackedSend> {
+    let body = line.strip_prefix("TRACKED_SENT ")?;
+    let mut nonce: Option<u64> = None;
+    let mut payload_len: Option<usize> = None;
+    let mut digest: Option<String> = None;
+    for field in body.split_whitespace() {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "nonce" => {
+                if nonce.is_some() {
+                    return None;
+                }
+                nonce = Some(value.parse::<u64>().ok()?);
+            }
+            "payload_len" => {
+                if payload_len.is_some() {
+                    return None;
+                }
+                payload_len = Some(value.parse::<usize>().ok()?);
+            }
+            "digest" => {
+                if digest.is_some() {
+                    return None;
+                }
+                if value.len() != 64
+                    || !value.bytes().all(|b| b.is_ascii_hexdigit())
+                    || value.bytes().any(|b| b.is_ascii_uppercase())
+                {
+                    return None;
+                }
+                digest = Some(value.to_owned());
+            }
+            _ => return None,
+        }
+    }
+    Some(TrackedSend {
+        nonce: nonce?,
+        payload_len: payload_len?,
+        digest: digest?,
+    })
+}
+
+/// Parses `TRACKED_STATUS nonce=<n> count=<n> events=<status:elapsed,...>`
+/// or `count=0 events=none`. `TRACKED_STATUS_UNKNOWN` yields `None`.
+/// Rejects more than 16 events and any malformed integer.
+fn p222_parse_tracked_status(line: &str, expected_nonce: u64) -> Option<Vec<TrackedStatusEvent>> {
+    if line.starts_with("TRACKED_STATUS_UNKNOWN") {
+        return None;
+    }
+    let body = line.strip_prefix("TRACKED_STATUS ")?;
+    let mut nonce: Option<u64> = None;
+    let mut count: Option<usize> = None;
+    let mut events_raw: Option<&str> = None;
+    for field in body.split_whitespace() {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "nonce" => {
+                if nonce.is_some() {
+                    return None;
+                }
+                nonce = Some(value.parse::<u64>().ok()?);
+            }
+            "count" => {
+                if count.is_some() {
+                    return None;
+                }
+                count = Some(value.parse::<usize>().ok()?);
+            }
+            "events" => {
+                if events_raw.is_some() {
+                    return None;
+                }
+                events_raw = Some(value);
+            }
+            _ => return None,
+        }
+    }
+    if nonce? != expected_nonce {
+        return None;
+    }
+    let count = count?;
+    if count > P222_MAX_TRACKED_EVENTS {
+        return None;
+    }
+    let events_raw = events_raw?;
+    if count == 0 {
+        if events_raw != "none" {
+            return None;
+        }
+        return Some(Vec::new());
+    }
+    let parts: Vec<&str> = events_raw.split(',').collect();
+    if parts.len() != count {
+        return None;
+    }
+    if parts.len() > P222_MAX_TRACKED_EVENTS {
+        return None;
+    }
+    let mut events = Vec::with_capacity(parts.len());
+    for part in parts {
+        let (status_raw, elapsed_raw) = part.split_once(':')?;
+        let status: i32 = status_raw.parse().ok()?;
+        let elapsed_ms: u64 = elapsed_raw.parse().ok()?;
+        events.push(TrackedStatusEvent { status, elapsed_ms });
+    }
+    Some(events)
+}
+
+/// Plan 222 exact client-lookup preflight observation from one
+/// `P222-CLIENT-LOOKUP-PREFLIGHT` response.
+#[derive(Clone, Debug)]
+struct P222Preflight {
+    observable: bool,
+    client_db_resolved: bool,
+    client_db_is_client: bool,
+    target_hash_hex: String,
+    routing_key_hex: String,
+    routing_key_differs: bool,
+    target_ls_present_before_send: bool,
+    facade_floodfill_enabled: bool,
+    router_uptime_ms: u64,
+    netdb_search_limit_effective: u64,
+    selector_extra_peers: u64,
+    selector_width: u64,
+    selector_kbucket_size: u64,
+    selector_count: u64,
+    selector_contains_b: bool,
+    selector_empty: bool,
+}
+
+fn p222_parse_preflight(line: &str) -> Option<P222Preflight> {
+    let kv = p220_parse_kv(&line.replace("P222-EV ", "P220-EV "));
+    let observable = kv.get("observable").is_some_and(|v| v == "true");
+    let get_bool = |key: &str| kv.get(key).is_some_and(|v| v == "true");
+    let get_u64 = |key: &str| kv.get(key).and_then(|v| v.parse::<u64>().ok());
+    Some(P222Preflight {
+        observable,
+        client_db_resolved: get_bool("client_db_resolved"),
+        client_db_is_client: get_bool("client_db_is_client"),
+        target_hash_hex: kv.get("target_hash_hex").cloned().unwrap_or_default(),
+        routing_key_hex: kv.get("routing_key_hex").cloned().unwrap_or_default(),
+        routing_key_differs: get_bool("routing_key_differs"),
+        target_ls_present_before_send: get_bool("target_ls_present_before_send"),
+        facade_floodfill_enabled: get_bool("facade_floodfill_enabled"),
+        router_uptime_ms: get_u64("router_uptime_ms").unwrap_or(u64::MAX),
+        netdb_search_limit_effective: get_u64("netdb_search_limit_effective").unwrap_or(u64::MAX),
+        selector_extra_peers: get_u64("selector_extra_peers").unwrap_or(u64::MAX),
+        selector_width: get_u64("selector_width").unwrap_or(u64::MAX),
+        selector_kbucket_size: get_u64("selector_input_kbucket_size").unwrap_or(u64::MAX),
+        selector_count: get_u64("selector_count").unwrap_or(u64::MAX),
+        selector_contains_b: get_bool("selector_contains_b"),
+        selector_empty: get_bool("selector_empty"),
+    })
+}
+
+/// Queries the exact client-lookup preflight at the authoritative
+/// epoch. `client_dbid_hex` is the helper source Destination hash
+/// (the `fromLocalDest` / client DBID used by OCMOSJ); `target_hex`
+/// is the i2pr destination hash the reverse lookup must resolve;
+/// `router_b_hex` is Router B. Returns `None` when the diagnostic is
+/// unreachable (Unknown, never a protocol fact).
+async fn p222_collect_preflight(
+    diag_port: u16,
+    client_dbid_hex: &str,
+    target_hex: &str,
+    router_b_hex: &str,
+) -> Option<P222Preflight> {
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P222-CLIENT-LOOKUP-PREFLIGHT {client_dbid_hex} {target_hex} {router_b_hex}"),
+    )
+    .await?;
+    if !line.starts_with("P222-EV ") {
+        return None;
+    }
+    p222_parse_preflight(&line)
+}
+
+/// Plan 222 terminal taxonomy. Exactly one terminal per run; no
+/// additional terminal strings may be invented during execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P222Terminal {
+    ObservabilityGapPreEpoch,
+    ObservabilityGapSelectorEquivalence,
+    CorrectedAttributionClientNetdbNoLookupPeer,
+    CorrectedAttributionClientNetdbNoUsableLeaseset,
+    CorrectedAttributionOcmOSJBadLeaseset,
+    CorrectedAttributionOcmOSJExpiredLeaseset,
+    CorrectedAttributionOcmOSJUnsupportedEncryption,
+    CorrectedAttributionOcmOSJNoUsableTunnelOrGarlicPath,
+    CorrectedAttributionJavaDispatchPathReachedI2prTunneldataNotObserved,
+    ObservabilityGapOcmOSJPostAccept,
+    EvidenceContradictionAckSuccessWithoutI2prPayload,
+    ReverseDeliveryPassed,
+}
+
+impl P222Terminal {
+    fn token(&self) -> &'static str {
+        match self {
+            Self::ObservabilityGapPreEpoch => "P222-OBSERVABILITY-GAP-PRE-EPOCH",
+            Self::ObservabilityGapSelectorEquivalence => {
+                "P222-OBSERVABILITY-GAP-SELECTOR-EQUIVALENCE"
+            }
+            Self::CorrectedAttributionClientNetdbNoLookupPeer => {
+                "P222-CORRECTED-ATTRIBUTION CLIENT-NETDB-NO-LOOKUP-PEER"
+            }
+            Self::CorrectedAttributionClientNetdbNoUsableLeaseset => {
+                "P222-CORRECTED-ATTRIBUTION CLIENT-NETDB-NO-USABLE-LEASESET"
+            }
+            Self::CorrectedAttributionOcmOSJBadLeaseset => {
+                "P222-CORRECTED-ATTRIBUTION OCMOSJ-BAD-LEASESET"
+            }
+            Self::CorrectedAttributionOcmOSJExpiredLeaseset => {
+                "P222-CORRECTED-ATTRIBUTION OCMOSJ-EXPIRED-LEASESET"
+            }
+            Self::CorrectedAttributionOcmOSJUnsupportedEncryption => {
+                "P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION"
+            }
+            Self::CorrectedAttributionOcmOSJNoUsableTunnelOrGarlicPath => {
+                "P222-CORRECTED-ATTRIBUTION OCMOSJ-NO-USABLE-TUNNEL-OR-GARLIC-PATH"
+            }
+            Self::CorrectedAttributionJavaDispatchPathReachedI2prTunneldataNotObserved => {
+                "P222-CORRECTED-ATTRIBUTION JAVA-DISPATCH-PATH-REACHED-I2PR-TUNNELDATA-NOT-OBSERVED"
+            }
+            Self::ObservabilityGapOcmOSJPostAccept => "P222-OBSERVABILITY-GAP-OCMOSJ-POST-ACCEPT",
+            Self::EvidenceContradictionAckSuccessWithoutI2prPayload => {
+                "P222-EVIDENCE-CONTRADICTION-ACK-SUCCESS-WITHOUT-I2PR-PAYLOAD"
+            }
+            Self::ReverseDeliveryPassed => "P222-REVERSE-DELIVERY-PASSED",
+        }
+    }
+}
+
+/// Plan 222 facts separate from frozen P220 facts.
+#[derive(Clone, Debug)]
+struct P222Facts {
+    selector_equivalent: P220Observed<bool>,
+    selector_nonempty: P220Observed<bool>,
+    target_leaseset_present_pre_send: P220Observed<bool>,
+    tracked_nonce: P220Observed<u64>,
+    status_accepted: P220Observed<bool>,
+    status_no_leaseset: P220Observed<bool>,
+    status_bad_leaseset: P220Observed<bool>,
+    status_expired_leaseset: P220Observed<bool>,
+    status_unsupported_encryption: P220Observed<bool>,
+    status_no_tunnels: P220Observed<bool>,
+    status_best_effort_failure: P220Observed<bool>,
+    status_guaranteed_success: P220Observed<bool>,
+    status_other_terminal: P220Observed<bool>,
+    reverse_i2pr_tunneldata_observed_45s: P220Observed<bool>,
+    reverse_i2pr_payload_recovered_45s: P220Observed<bool>,
+    ordered_statuses: Vec<i32>,
+}
+
+impl P222Facts {
+    fn derive(&self) -> P222Terminal {
+        // Reverse-delivery fast path first: a digest-matched payload
+        // within the frozen 45-second window proves the chain passed.
+        if matches!(
+            self.reverse_i2pr_payload_recovered_45s,
+            P220Observed::Known(true)
+        ) {
+            // A later GUARANTEED_SUCCESS with no payload is a
+            // contradiction, but payload presence wins as delivery proof.
+            // If both payload and guaranteed success are present the run
+            // passed; contradiction fires only when success arrived yet
+            // the frozen 45-second payload row still failed.
+            if matches!(self.status_guaranteed_success, P220Observed::Known(true)) {
+                return P222Terminal::ReverseDeliveryPassed;
+            }
+            return P222Terminal::ReverseDeliveryPassed;
+        }
+        // Selector equivalence must hold before any OCMOSJ attribution.
+        match self.selector_equivalent {
+            P220Observed::Known(true) => {}
+            _ => return P222Terminal::ObservabilityGapSelectorEquivalence,
+        }
+        // Empty exact selector + actual client DB: no lookup peer, since
+        // pinned client-DB `getAllRouters()` fallback is empty.
+        match self.selector_nonempty {
+            P220Observed::Known(false) => {
+                return P222Terminal::CorrectedAttributionClientNetdbNoLookupPeer;
+            }
+            P220Observed::Known(true) => {}
+            P220Observed::Unknown(_) => {
+                return P222Terminal::ObservabilityGapSelectorEquivalence;
+            }
+        }
+        // Tracked nonce required for any per-message attribution.
+        if !matches!(self.tracked_nonce, P220Observed::Known(_)) {
+            return P222Terminal::ObservabilityGapOcmOSJPostAccept;
+        }
+        // Exact failure statuses map only to documented boundaries.
+        // ACCEPTED alone proves admission only.
+        if matches!(self.status_no_leaseset, P220Observed::Known(true)) {
+            return P222Terminal::CorrectedAttributionClientNetdbNoUsableLeaseset;
+        }
+        if matches!(self.status_bad_leaseset, P220Observed::Known(true)) {
+            return P222Terminal::CorrectedAttributionOcmOSJBadLeaseset;
+        }
+        if matches!(self.status_expired_leaseset, P220Observed::Known(true)) {
+            return P222Terminal::CorrectedAttributionOcmOSJExpiredLeaseset;
+        }
+        if matches!(
+            self.status_unsupported_encryption,
+            P220Observed::Known(true)
+        ) {
+            return P222Terminal::CorrectedAttributionOcmOSJUnsupportedEncryption;
+        }
+        if matches!(self.status_no_tunnels, P220Observed::Known(true)) {
+            return P222Terminal::CorrectedAttributionOcmOSJNoUsableTunnelOrGarlicPath;
+        }
+        if matches!(self.status_guaranteed_success, P220Observed::Known(true)) {
+            // OCMOSJ delivery-ACK path passed yet the frozen 45-second
+            // i2pr payload row failed: evidence contradiction.
+            return P222Terminal::EvidenceContradictionAckSuccessWithoutI2prPayload;
+        }
+        if matches!(self.status_best_effort_failure, P220Observed::Known(true)) {
+            // Post-garlic dispatch path reached (SendTimeoutJob). If i2pr
+            // saw no TunnelData in the frozen window, the boundary is
+            // dispatch-reached / tunneldata-not-observed. Do not claim
+            // the packet left the kernel.
+            match self.reverse_i2pr_tunneldata_observed_45s {
+                P220Observed::Known(false) => {
+                    return P222Terminal::CorrectedAttributionJavaDispatchPathReachedI2prTunneldataNotObserved;
+                }
+                _ => return P222Terminal::ObservabilityGapOcmOSJPostAccept,
+            }
+        }
+        // No decisive terminal status by the 70-second deadline, or an
+        // undocumented status code: observability gap. Absence of a
+        // callback is Unknown, never dispatch proof.
+        P222Terminal::ObservabilityGapOcmOSJPostAccept
+    }
+}
+
+/// Derives P222 selector-equivalence from a parsed preflight. The old
+/// P220-only observation (raw hash + N=3, no client DBID) can never
+/// satisfy this: feeding only it yields the selector-equivalence gap.
+fn p222_selector_equivalence(preflight: Option<&P222Preflight>) -> P220Observed<bool> {
+    let Some(pre) = preflight else {
+        return P220Observed::Unknown("preflight-unreachable");
+    };
+    if !pre.observable {
+        return P220Observed::Unknown("preflight-not-observable");
+    }
+    if !pre.client_db_resolved || !pre.client_db_is_client {
+        return P220Observed::Unknown("client-db-not-proven");
+    }
+    if pre.routing_key_hex.is_empty() || pre.target_hash_hex.is_empty() {
+        return P220Observed::Unknown("routing-key-absent");
+    }
+    // Raw target hash rejected as selector key when the routing key is
+    // available: equivalence requires both recorded and normally
+    // differing. A caller that supplies only the raw hash fails here.
+    if !pre.routing_key_differs
+        && pre
+            .routing_key_hex
+            .eq_ignore_ascii_case(&pre.target_hash_hex)
+    {
+        // Equal keys are suspicious (routing keys normally differ);
+        // without a distinct routing key the selector is not proven
+        // production-equivalent.
+        return P220Observed::Known(false);
+    }
+    // N=3 hard-code rejected: the width must equal the effective
+    // `netdb.searchLimit` + EXTRA_PEERS(1) as emitted by Java.
+    if pre.selector_extra_peers != 1 {
+        return P220Observed::Known(false);
+    }
+    if pre.selector_width != pre.netdb_search_limit_effective.saturating_add(1) {
+        return P220Observed::Known(false);
+    }
+    if pre.selector_width == 0 || pre.selector_width > 8 {
+        return P220Observed::Known(false);
+    }
+    P220Observed::Known(true)
+}
+
+/// Maps an ordered nonce-correlated status sequence to P222 status
+/// facts. Later success supersedes probable failure for
+/// strongest-evidence evaluation, but the full ordered sequence is
+/// preserved in `ordered_statuses`. Missing callbacks stay Unknown.
+#[allow(clippy::type_complexity)]
+fn p222_status_facts(
+    events: &[TrackedStatusEvent],
+) -> (
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    P220Observed<bool>,
+    Vec<i32>,
+) {
+    let ordered: Vec<i32> = events.iter().map(|e| e.status).collect();
+    let has = |code: i32| ordered.contains(&code);
+    // STATUS_SEND_ACCEPTED = 1 proves admission only.
+    let accepted = if has(1) {
+        P220Observed::Known(true)
+    } else {
+        P220Observed::Unknown("accepted-not-observed")
+    };
+    let known = |code: i32| {
+        if has(code) {
+            P220Observed::Known(true)
+        } else {
+            P220Observed::Known(false)
+        }
+    };
+    // 21 NO_LEASESET, 19 BAD, 20 EXPIRED, 17 UNSUPPORTED, 16 NO_TUNNELS,
+    // 3 BEST_EFFORT_FAILURE, 4 GUARANTEED_SUCCESS. Code 22 (META) and
+    // other terminals (15,18,23,…) map to other_terminal with the exact
+    // code preserved in `ordered_statuses`.
+    let no_leaseset = known(21);
+    let bad = known(19);
+    let expired = known(20);
+    let unsupported = known(17);
+    let no_tunnels = known(16);
+    let best_effort = known(3);
+    let guaranteed = known(4);
+    let documented = [1, 3, 4, 16, 17, 19, 20, 21];
+    let other = if ordered.iter().any(|s| !documented.contains(s)) {
+        P220Observed::Known(true)
+    } else if ordered.is_empty() {
+        P220Observed::Unknown("no-terminal-callback")
+    } else {
+        P220Observed::Known(false)
+    };
+    (
+        accepted,
+        no_leaseset,
+        bad,
+        expired,
+        unsupported,
+        no_tunnels,
+        best_effort,
+        guaranteed,
+        other,
+        ordered,
+    )
+}
+
+/// Emits exactly one `p222-classification` row plus supporting P222
+/// evidence rows. Returns the terminal token.
+fn record_p222_classification(
+    evidence_dir: &Path,
+    facts: &P222Facts,
+    preflight: Option<&P222Preflight>,
+    tracked: Option<&TrackedSend>,
+    reverse_sha256: &str,
+) -> String {
+    let terminal = facts.derive();
+    if let Some(pre) = preflight {
+        append_evidence(
+            evidence_dir,
+            "p222-client-lookup-preflight",
+            &format!(
+                "observable={} client_db_resolved={} client_db_is_client={} target_hash_hex={} routing_key_hex={} routing_key_differs={} target_ls_present_before_send={} facade_floodfill_enabled={} router_uptime_ms={} netdb_search_limit_effective={} selector_extra_peers={} selector_width={} selector_kbucket_size={} selector_count={} selector_contains_b={} selector_empty={}",
+                pre.observable,
+                pre.client_db_resolved,
+                pre.client_db_is_client,
+                pre.target_hash_hex,
+                pre.routing_key_hex,
+                pre.routing_key_differs,
+                pre.target_ls_present_before_send,
+                pre.facade_floodfill_enabled,
+                pre.router_uptime_ms,
+                pre.netdb_search_limit_effective,
+                pre.selector_extra_peers,
+                pre.selector_width,
+                pre.selector_kbucket_size,
+                pre.selector_count,
+                pre.selector_contains_b,
+                pre.selector_empty,
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p222-client-lookup-preflight",
+            "observable=false reason=preflight-unreachable",
+        );
+    }
+    if let Some(tracked) = tracked {
+        append_evidence(
+            evidence_dir,
+            "p222-tracked-send",
+            &format!(
+                "nonce={} payload_len={} digest={} reverse_sha256={} ordered_statuses={:?}",
+                tracked.nonce,
+                tracked.payload_len,
+                tracked.digest,
+                reverse_sha256,
+                facts.ordered_statuses,
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p222-tracked-send",
+            "nonce=unknown reason=tracked-send-not-admitted",
+        );
+    }
+    append_evidence(
+        evidence_dir,
+        "p222-classification",
+        &format!(
+            "{} selector_equivalent={:?} selector_nonempty={:?} target_leaseset_present_pre_send={:?} tracked_nonce={:?} status_accepted={:?} status_no_leaseset={:?} status_bad_leaseset={:?} status_expired_leaseset={:?} status_unsupported_encryption={:?} status_no_tunnels={:?} status_best_effort_failure={:?} status_guaranteed_success={:?} status_other_terminal={:?} reverse_i2pr_tunneldata_observed_45s={:?} reverse_i2pr_payload_recovered_45s={:?} reverse_sha256={}",
+            terminal.token(),
+            facts.selector_equivalent,
+            facts.selector_nonempty,
+            facts.target_leaseset_present_pre_send,
+            facts.tracked_nonce,
+            facts.status_accepted,
+            facts.status_no_leaseset,
+            facts.status_bad_leaseset,
+            facts.status_expired_leaseset,
+            facts.status_unsupported_encryption,
+            facts.status_no_tunnels,
+            facts.status_best_effort_failure,
+            facts.status_guaranteed_success,
+            facts.status_other_terminal,
+            facts.reverse_i2pr_tunneldata_observed_45s,
+            facts.reverse_i2pr_payload_recovered_45s,
+            reverse_sha256,
+        ),
+    );
+    terminal.token().to_owned()
+}
+
+/// Plan 222 — early-stop gap before the authoritative epoch. A
+/// pre-epoch stop (install-stalled or lease-stalled) cannot prove
+/// selector equivalence; the terminal is the pre-epoch observability
+/// gap, never a root-cause attribution.
+fn record_p222_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    append_evidence(
+        evidence_dir,
+        "p222-client-lookup-preflight",
+        &format!("observable=false reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p222-tracked-send",
+        &format!("nonce=unknown reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p222-classification",
+        &format!(
+            "{} reason={reason}",
+            P222Terminal::ObservabilityGapPreEpoch.token()
+        ),
+    );
 }
 
 /// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against
@@ -4884,4 +5709,409 @@ fn p220_kv_parser_handles_quoted_capabilities() {
     );
     assert!(p220_parse_kv("P220-ERROR invalid-hex-hash").is_empty());
     assert!(p220_parse_kv("J219-EV kind=snapshot").is_empty());
+}
+
+// ---- Plan 222 WP J unit rows ------------------------------------------------
+// Focused local rows locking the corrected client-NetDB/OCMOSJ semantics.
+// They run in the ordinary workspace floor (no external environment).
+
+fn p222_base_facts() -> P222Facts {
+    P222Facts {
+        selector_equivalent: P220Observed::Known(true),
+        selector_nonempty: P220Observed::Known(true),
+        target_leaseset_present_pre_send: P220Observed::Known(false),
+        tracked_nonce: P220Observed::Known(7),
+        status_accepted: P220Observed::Known(true),
+        status_no_leaseset: P220Observed::Known(false),
+        status_bad_leaseset: P220Observed::Known(false),
+        status_expired_leaseset: P220Observed::Known(false),
+        status_unsupported_encryption: P220Observed::Known(false),
+        status_no_tunnels: P220Observed::Known(false),
+        status_best_effort_failure: P220Observed::Known(false),
+        status_guaranteed_success: P220Observed::Known(false),
+        status_other_terminal: P220Observed::Known(false),
+        reverse_i2pr_tunneldata_observed_45s: P220Observed::Known(false),
+        reverse_i2pr_payload_recovered_45s: P220Observed::Known(false),
+        ordered_statuses: vec![1],
+    }
+}
+
+fn p222_preflight_full() -> P222Preflight {
+    P222Preflight {
+        observable: true,
+        client_db_resolved: true,
+        client_db_is_client: true,
+        target_hash_hex: "aa".repeat(32),
+        routing_key_hex: "bb".repeat(32),
+        routing_key_differs: true,
+        target_ls_present_before_send: false,
+        facade_floodfill_enabled: false,
+        router_uptime_ms: 60_000,
+        netdb_search_limit_effective: 5,
+        selector_extra_peers: 1,
+        selector_width: 6,
+        selector_kbucket_size: 4,
+        selector_count: 2,
+        selector_contains_b: true,
+        selector_empty: false,
+    }
+}
+
+/// Plan 222 §7 A2 — feeding only the old P220 selector observation into
+/// the P222 classifier yields the selector-equivalence gap. The frozen
+/// P220 row (`selector_contains_b=true` from raw hash + N=3) directly
+/// satisfies no P222 terminal.
+#[test]
+fn p222_old_p220_selector_alone_yields_equivalence_gap() {
+    // No preflight at all: the historical P220 observation cannot prove
+    // client DBID, routing key, or effective width.
+    assert_eq!(
+        p222_selector_equivalence(None),
+        P220Observed::Unknown("preflight-unreachable")
+    );
+    let mut facts = p222_base_facts();
+    facts.selector_equivalent = P220Observed::Unknown("preflight-unreachable");
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::ObservabilityGapSelectorEquivalence
+    );
+    assert_eq!(
+        facts.derive().token(),
+        "P222-OBSERVABILITY-GAP-SELECTOR-EQUIVALENCE"
+    );
+}
+
+/// J1 — routing-key vs raw-key distinction: the raw target hash is
+/// rejected as selector key when the routing key is available.
+#[test]
+fn p222_routing_key_vs_raw_key_distinction() {
+    let mut pre = p222_preflight_full();
+    // Distinct keys: equivalent.
+    assert_eq!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Known(true)
+    );
+    // Same key for target and routing key: not production-equivalent.
+    pre.routing_key_hex = pre.target_hash_hex.clone();
+    pre.routing_key_differs = false;
+    assert_eq!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Known(false)
+    );
+}
+
+/// J2 — dynamic selector width computation matches pinned
+/// `IterativeSearchJob` logic (`total + EXTRA_PEERS`, never hard-coded
+/// N=3).
+#[test]
+fn p222_dynamic_selector_width_computation() {
+    let mut pre = p222_preflight_full();
+    pre.netdb_search_limit_effective = 5;
+    pre.selector_extra_peers = 1;
+    pre.selector_width = 6;
+    assert_eq!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Known(true)
+    );
+    // Hard-coded N=3 with effective 5 is rejected.
+    pre.selector_width = 3;
+    assert_eq!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Known(false)
+    );
+    // EXTRA_PEERS must be 1.
+    pre.selector_width = 6;
+    pre.selector_extra_peers = 2;
+    assert_eq!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Known(false)
+    );
+}
+
+/// J3 — client DBID required; fallback-to-main is not a pass.
+#[test]
+fn p222_client_dbid_required() {
+    let mut pre = p222_preflight_full();
+    pre.client_db_resolved = false;
+    assert!(matches!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Unknown(_)
+    ));
+    let mut pre = p222_preflight_full();
+    pre.client_db_is_client = false;
+    assert!(matches!(
+        p222_selector_equivalence(Some(&pre)),
+        P220Observed::Unknown(_)
+    ));
+    let mut facts = p222_base_facts();
+    facts.selector_equivalent = P220Observed::Unknown("client-db-not-proven");
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::ObservabilityGapSelectorEquivalence
+    );
+}
+
+/// J4 — selector empty maps to no-lookup-peer (client `getAllRouters()`
+/// is empty in pinned source, so no fallback rescues the lookup).
+#[test]
+fn p222_selector_empty_maps_to_no_lookup_peer() {
+    let mut facts = p222_base_facts();
+    facts.selector_nonempty = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::CorrectedAttributionClientNetdbNoLookupPeer
+    );
+}
+
+/// J5 — selector nonempty with B absent does not root-cause by itself.
+#[test]
+fn p222_selector_nonempty_b_absent_is_not_root_cause() {
+    // Nonempty selector: the selector stage passes as "lookup has
+    // candidates" even when B is absent. With no decisive status and no
+    // payload, the terminal is the post-accept gap, never a B-absence
+    // root cause.
+    let mut facts = p222_base_facts();
+    facts.selector_nonempty = P220Observed::Known(true);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::ObservabilityGapOcmOSJPostAccept
+    );
+}
+
+/// J6 — tracked-send parser accepts a valid nonce/digest.
+#[test]
+fn p222_tracked_send_parser_accepts_valid() {
+    let digest = "ab".repeat(32);
+    let parsed = p222_parse_tracked_sent(&format!(
+        "TRACKED_SENT nonce=42 payload_len=27 digest={digest}"
+    ));
+    assert_eq!(
+        parsed,
+        Some(TrackedSend {
+            nonce: 42,
+            payload_len: 27,
+            digest,
+        })
+    );
+    let events =
+        p222_parse_tracked_status("TRACKED_STATUS nonce=42 count=2 events=1:10,3:59000", 42);
+    assert_eq!(
+        events,
+        Some(vec![
+            TrackedStatusEvent {
+                status: 1,
+                elapsed_ms: 10
+            },
+            TrackedStatusEvent {
+                status: 3,
+                elapsed_ms: 59000
+            },
+        ])
+    );
+    assert_eq!(
+        p222_parse_tracked_status("TRACKED_STATUS nonce=42 count=0 events=none", 42),
+        Some(Vec::new())
+    );
+}
+
+/// J7 — tracked-send parser rejects malformed nonce/digest/count.
+#[test]
+fn p222_tracked_send_parser_rejects_malformed() {
+    assert_eq!(
+        p222_parse_tracked_sent("TRACKED_SENT payload_len=27 digest=ab"),
+        None
+    );
+    assert_eq!(
+        p222_parse_tracked_sent(&format!(
+            "TRACKED_SENT nonce=xx payload_len=27 digest={}",
+            "ab".repeat(32)
+        )),
+        None
+    );
+    assert_eq!(
+        p222_parse_tracked_sent("TRACKED_SENT nonce=1 payload_len=27 digest=ZZ"),
+        None
+    );
+    // More than 16 events rejected.
+    let many = (0..17)
+        .map(|i| format!("1:{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_eq!(
+        p222_parse_tracked_status(&format!("TRACKED_STATUS nonce=1 count=17 events={many}"), 1),
+        None
+    );
+    // Unknown nonce is Unknown, never a status.
+    assert_eq!(
+        p222_parse_tracked_status("TRACKED_STATUS_UNKNOWN nonce=1", 1),
+        None
+    );
+}
+
+/// J8 — ordered status sequence retained (no collapsing to last).
+#[test]
+fn p222_ordered_status_sequence_retained() {
+    let events = vec![
+        TrackedStatusEvent {
+            status: 1,
+            elapsed_ms: 5,
+        },
+        TrackedStatusEvent {
+            status: 3,
+            elapsed_ms: 59000,
+        },
+        TrackedStatusEvent {
+            status: 4,
+            elapsed_ms: 59500,
+        },
+    ];
+    let (_, _, _, _, _, _, _, _, _, ordered) = p222_status_facts(&events);
+    assert_eq!(ordered, vec![1, 3, 4]);
+}
+
+/// J9 — ACCEPTED alone does not pass client-NetDB.
+#[test]
+fn p222_accepted_alone_does_not_pass_client_netdb() {
+    let mut facts = p222_base_facts();
+    facts.status_accepted = P220Observed::Known(true);
+    facts.status_no_leaseset = P220Observed::Known(false);
+    // No decisive failure, no payload: post-accept gap, never a pass.
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::ObservabilityGapOcmOSJPostAccept
+    );
+    assert_ne!(facts.derive(), P222Terminal::ReverseDeliveryPassed);
+}
+
+/// J10 — NO_LEASESET maps to client-NetDB usable-LS failure.
+#[test]
+fn p222_no_leaseset_maps_to_client_netdb_failure() {
+    let mut facts = p222_base_facts();
+    facts.status_no_leaseset = P220Observed::Known(true);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::CorrectedAttributionClientNetdbNoUsableLeaseset
+    );
+    assert_eq!(
+        facts.derive().token(),
+        "P222-CORRECTED-ATTRIBUTION CLIENT-NETDB-NO-USABLE-LEASESET"
+    );
+}
+
+/// J11 — NO_TUNNELS maps only to the combined OCMOSJ boundary.
+#[test]
+fn p222_no_tunnels_maps_to_combined_boundary() {
+    let mut facts = p222_base_facts();
+    facts.status_no_tunnels = P220Observed::Known(true);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::CorrectedAttributionOcmOSJNoUsableTunnelOrGarlicPath
+    );
+    // The terminal does not distinguish outbound vs inbound-ACK vs
+    // garlic-constructor sub-causes; the token is the combined boundary.
+    assert!(
+        facts
+            .derive()
+            .token()
+            .contains("OCMOSJ-NO-USABLE-TUNNEL-OR-GARLIC-PATH")
+    );
+}
+
+/// J12 — BEST_EFFORT_FAILURE + no 45 s TunnelData maps to the
+/// dispatch-path-reached boundary.
+#[test]
+fn p222_best_effort_failure_without_tunneldata_maps_to_dispatch_boundary() {
+    let mut facts = p222_base_facts();
+    facts.status_best_effort_failure = P220Observed::Known(true);
+    facts.reverse_i2pr_tunneldata_observed_45s = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::CorrectedAttributionJavaDispatchPathReachedI2prTunneldataNotObserved
+    );
+}
+
+/// J13 — GUARANTEED_SUCCESS + no payload maps to evidence contradiction.
+#[test]
+fn p222_guaranteed_success_without_payload_is_contradiction() {
+    let mut facts = p222_base_facts();
+    facts.status_guaranteed_success = P220Observed::Known(true);
+    facts.reverse_i2pr_payload_recovered_45s = P220Observed::Known(false);
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::EvidenceContradictionAckSuccessWithoutI2prPayload
+    );
+}
+
+/// J14 — no terminal callback maps to the observability gap.
+#[test]
+fn p222_no_terminal_callback_maps_to_gap() {
+    let (accepted, _, _, _, _, _, _, _, other, ordered) = p222_status_facts(&[]);
+    assert!(matches!(accepted, P220Observed::Unknown(_)));
+    assert!(matches!(other, P220Observed::Unknown(_)));
+    assert!(ordered.is_empty());
+    let mut facts = p222_base_facts();
+    facts.status_accepted = accepted;
+    facts.status_other_terminal = other;
+    facts.ordered_statuses = ordered;
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::ObservabilityGapOcmOSJPostAccept
+    );
+}
+
+/// J15 — later success overrides probable failure for
+/// strongest-evidence evaluation while preserving order.
+#[test]
+fn p222_later_success_overrides_probable_failure() {
+    let mut facts = p222_base_facts();
+    facts.status_best_effort_failure = P220Observed::Known(true);
+    facts.status_guaranteed_success = P220Observed::Known(true);
+    facts.reverse_i2pr_tunneldata_observed_45s = P220Observed::Known(false);
+    facts.reverse_i2pr_payload_recovered_45s = P220Observed::Known(false);
+    // Guaranteed success is stronger later evidence than the earlier
+    // best-effort failure; with no payload it is a contradiction, not
+    // the dispatch boundary.
+    assert_eq!(
+        facts.derive(),
+        P222Terminal::EvidenceContradictionAckSuccessWithoutI2prPayload
+    );
+    // With payload recovered the run passes regardless of the earlier
+    // probable failure.
+    facts.reverse_i2pr_payload_recovered_45s = P220Observed::Known(true);
+    assert_eq!(facts.derive(), P222Terminal::ReverseDeliveryPassed);
+}
+
+/// J16 — the 70-second diagnostic deadline cannot alter the frozen
+/// 45-second payload outcome.
+#[test]
+fn p222_status_deadline_cannot_alter_payload_outcome() {
+    assert_eq!(P222_STATUS_OBSERVATION_DEADLINE, Duration::from_secs(70));
+    assert!(P222_STATUS_OBSERVATION_DEADLINE >= Duration::from_secs(60));
+    assert!(P222_STATUS_OBSERVATION_DEADLINE <= Duration::from_secs(75));
+    assert_eq!(DATAGRAM_WAIT, Duration::from_secs(45));
+    // A frozen 45-second failure stays failed for payload purposes even
+    // when a later status arrives; the classifier never turns it into
+    // `P222-REVERSE-DELIVERY-PASSED` without payload recovery.
+    let mut facts = p222_base_facts();
+    facts.reverse_i2pr_payload_recovered_45s = P220Observed::Known(false);
+    facts.status_guaranteed_success = P220Observed::Known(false);
+    assert_ne!(facts.derive(), P222Terminal::ReverseDeliveryPassed);
+}
+
+/// Plan 222 terminal tokens are canonical and no extra terminal may be
+/// invented during execution.
+#[test]
+fn p222_terminal_tokens_are_canonical() {
+    assert_eq!(
+        P222Terminal::ObservabilityGapSelectorEquivalence.token(),
+        "P222-OBSERVABILITY-GAP-SELECTOR-EQUIVALENCE"
+    );
+    assert_eq!(
+        P222Terminal::CorrectedAttributionClientNetdbNoLookupPeer.token(),
+        "P222-CORRECTED-ATTRIBUTION CLIENT-NETDB-NO-LOOKUP-PEER"
+    );
+    assert_eq!(
+        P222Terminal::ReverseDeliveryPassed.token(),
+        "P222-REVERSE-DELIVERY-PASSED"
+    );
 }

@@ -21,6 +21,8 @@ import net.i2p.client.I2PClientFactory;
 import net.i2p.client.I2PSession;
 import net.i2p.client.I2PSessionException;
 import net.i2p.client.I2PSessionListener;
+import net.i2p.client.SendMessageOptions;
+import net.i2p.client.SendMessageStatusListener;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Destination;
 
@@ -35,8 +37,13 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -50,6 +57,75 @@ public final class ReferenceRawDestination {
     // bounded lifetime to correlate with sanitized Java router log
     // entries (which themselves are never retained in evidence).
     private static final AtomicLong HELPER_START_MS = new AtomicLong(System.currentTimeMillis());
+
+    // Plan 222 WP C — bounded nonce-correlated helper send state for the
+    // public listener-enabled `I2PSession.sendMessage(..., SendMessageStatusListener)`
+    // API. Maximum tracked messages: 32. Maximum events per message: 16.
+    // Each entry holds payload length, payload SHA-256, creation monotonic
+    // timestamp, and the ordered status events (numeric status + local
+    // monotonic elapsed ms). Oldest completed entries are evicted first.
+    // Never stores destination private key bytes or payload bytes.
+    private static final int MAX_TRACKED_MESSAGES = 32;
+    private static final int MAX_EVENTS_PER_MESSAGE = 16;
+    private static final ConcurrentHashMap<Long, TrackedSend> TRACKED =
+        new ConcurrentHashMap<Long, TrackedSend>();
+
+    private static final class StatusEvent {
+        final int status;
+        final long elapsedMs;
+        StatusEvent(int status, long elapsedMs) {
+            this.status = status;
+            this.elapsedMs = elapsedMs;
+        }
+    }
+
+    private static final class TrackedSend {
+        final int payloadLen;
+        final String digest;
+        final long createdMonoMs;
+        final List<StatusEvent> events = new ArrayList<StatusEvent>();
+        TrackedSend(int payloadLen, String digest, long createdMonoMs) {
+            this.payloadLen = payloadLen;
+            this.digest = digest;
+            this.createdMonoMs = createdMonoMs;
+        }
+        synchronized void append(int status, long nowMonoMs) {
+            if (events.size() >= MAX_EVENTS_PER_MESSAGE) return;
+            events.add(new StatusEvent(status, nowMonoMs - createdMonoMs));
+        }
+        synchronized String renderEvents() {
+            if (events.isEmpty()) return "none";
+            StringBuilder out = new StringBuilder();
+            for (int i = 0; i < events.size(); i++) {
+                if (i > 0) out.append(",");
+                StatusEvent e = events.get(i);
+                out.append(e.status).append(":").append(e.elapsedMs);
+            }
+            return out.toString();
+        }
+        synchronized int count() {
+            return events.size();
+        }
+    }
+
+    private static long monoMs() {
+        return System.nanoTime() / 1000000L;
+    }
+
+    private static void trackEvictIfNeeded() {
+        if (TRACKED.size() < MAX_TRACKED_MESSAGES) return;
+        // Evict oldest completed entries first (completed = has any
+        // terminal event); fall back to oldest creation order.
+        Long oldest = null;
+        long oldestCreated = Long.MAX_VALUE;
+        for (Map.Entry<Long, TrackedSend> e : TRACKED.entrySet()) {
+            if (e.getValue().createdMonoMs < oldestCreated) {
+                oldestCreated = e.getValue().createdMonoMs;
+                oldest = e.getKey();
+            }
+        }
+        if (oldest != null) TRACKED.remove(oldest);
+    }
 
     private static String[] split(String line, int count) {
         String[] result = line.split(" ");
@@ -173,6 +249,80 @@ public final class ReferenceRawDestination {
                             boolean sent = session.sendMessage(peer, body, I2PSession.PROTO_DATAGRAM_RAW,
                                     Integer.parseInt(values[3]), Integer.parseInt(values[4]));
                             output.println(sent ? "SENT " + body.length + " " + digest(body) : "SEND_FAILED");
+                            break;
+                        }
+                        case "SEND_TRACKED": {
+                            // Plan 222 WP C — public API only. Uses the
+                            // listener-enabled long `sendMessage`:
+                            //   long sendMessage(Destination, byte[], int, int,
+                            //       int, int, int, SendMessageOptions,
+                            //       SendMessageStatusListener)
+                            // Do not set a special expiration; do not alter
+                            // reliability/tunnel/publication session options.
+                            // The only behavior difference from legacy SEND
+                            // is requesting public asynchronous status
+                            // notifications correlated by the returned nonce.
+                            String[] values = split(line, 5);
+                            Destination peer = new Destination(values[1]);
+                            byte[] body = unhex(values[2]);
+                            int fromPort = Integer.parseInt(values[3]);
+                            int toPort = Integer.parseInt(values[4]);
+                            String bodyDigest = digest(body);
+                            int bodyLen = body.length;
+                            long created = monoMs();
+                            SendMessageOptions options = new SendMessageOptions();
+                            final long[] nonceHolder = new long[1];
+                            SendMessageStatusListener listener =
+                                new SendMessageStatusListener() {
+                                    public void messageStatus(
+                                            I2PSession s, long nonce, int status) {
+                                        TrackedSend entry = TRACKED.get(nonce);
+                                        if (entry != null) entry.append(status, monoMs());
+                                    }
+                                };
+                            try {
+                                long nonce = session.sendMessage(
+                                    peer, body, 0, body.length,
+                                    I2PSession.PROTO_DATAGRAM_RAW,
+                                    fromPort, toPort, options, listener);
+                                nonceHolder[0] = nonce;
+                                trackEvictIfNeeded();
+                                TRACKED.put(nonce,
+                                    new TrackedSend(bodyLen, bodyDigest, created));
+                                output.println("TRACKED_SENT nonce=" + nonce
+                                    + " payload_len=" + bodyLen
+                                    + " digest=" + bodyDigest);
+                            } catch (Throwable t) {
+                                output.println("TRACKED_ERROR class="
+                                    + t.getClass().getSimpleName());
+                            }
+                            break;
+                        }
+                        case "SEND_STATUS": {
+                            // Plan 222 WP C — status polling. The Rust
+                            // driver polls; the helper MUST NOT block
+                            // waiting for a future status event. The
+                            // listener appends every state-changing
+                            // callback in order; no collapsing to last.
+                            String[] values = split(line, 2);
+                            long nonce;
+                            try {
+                                nonce = Long.parseLong(values[1]);
+                            } catch (NumberFormatException nfe) {
+                                output.println("TRACKED_STATUS_UNKNOWN nonce=" + values[1]);
+                                break;
+                            }
+                            TrackedSend entry = TRACKED.get(nonce);
+                            if (entry == null) {
+                                output.println("TRACKED_STATUS_UNKNOWN nonce=" + nonce);
+                            } else if (entry.count() == 0) {
+                                output.println("TRACKED_STATUS nonce=" + nonce
+                                    + " count=0 events=none");
+                            } else {
+                                output.println("TRACKED_STATUS nonce=" + nonce
+                                    + " count=" + entry.count()
+                                    + " events=" + entry.renderEvents());
+                            }
                             break;
                         }
                         case "REPORT_STATUS": {

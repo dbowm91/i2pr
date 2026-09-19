@@ -56,6 +56,13 @@
 //     `P220-CAPABILITIES <hex-hash>`, `P220-PEERS-FLOODFILL`,
 //     `P220-MAIN-ROUTER-COUNT`, `P220-SELECTOR <target-hex> <b-hex>`,
 //     `QUIT`);
+// Plan 222 diagnostic contract (authoritative for client-NetDB):
+//   - the same port additionally accepts
+//     `P222-CLIENT-LOOKUP-PREFLIGHT <client-dbid-hex> <target-hex> <b-hex>`
+//     which resolves `clientNetDb(clientDbid)`, derives the routing key
+//     via `routingKeyGenerator().getRoutingKey`, reproduces the
+//     `netdb.searchLimit` + EXTRA_PEERS width, and runs the
+//     production-equivalent 3-argument selector overload read-only.
 //   - RouterHash values travel as 32-byte lowercase hex. Standard
 //     (RFC 4648) Base64 MUST NOT be used to construct a query
 //     hash; Java `Hash.toBase64()` (I2P Base64) is echoed only for
@@ -93,6 +100,7 @@ import net.i2p.router.Router;
 import net.i2p.router.RouterContext;
 import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
 import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
+import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 
 public final class ControlledRouter {
 
@@ -504,6 +512,11 @@ public final class ControlledRouter {
                             return p220Error("missing-hash-arguments");
                         }
                         return p220Selector(parts[1], parts[2]);
+                    case "P222-CLIENT-LOOKUP-PREFLIGHT":
+                        if (parts.length < 4) {
+                            return p222Error("missing-hash-arguments");
+                        }
+                        return p222ClientLookupPreflight(parts[1], parts[2], parts[3]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -798,6 +811,70 @@ public final class ControlledRouter {
                 + " selector_count=" + result.selected.size()
                 + " selector_contains_b=" + result.selected.contains(bHash)
                 + " probe_inputs=key-target,N-3,exclude-empty,live-kbuckets";
+        }
+
+        private String p222Error(String reason) {
+            return "P222-ERROR " + reason;
+        }
+
+        /**
+         * Plan 222 WP B — exact client-lookup preflight through the
+         * helper client DBID. Parses all hashes as exact 32-byte
+         * lowercase hex, resolves `clientNetDb(clientDbid)`, derives
+         * the routing key via `routingKeyGenerator().getRoutingKey`,
+         * reproduces the `netdb.searchLimit` + EXTRA_PEERS width, and
+         * runs the production-equivalent 3-argument selector overload
+         * read-only. Never mutates facade state. If the client facade
+         * falls back to main, that is recorded explicitly.
+         */
+        private String p222ClientLookupPreflight(
+                String clientDbidHex, String targetHex, String bHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash target = p220ParseHexHash(targetHex);
+            Hash bHash = p220ParseHexHash(bHex);
+            if (clientDbid == null || target == null || bHash == null) {
+                return p222Error("invalid-hex-hash");
+            }
+            P222SelectorProbe.Result result =
+                P222SelectorProbe.preflightForClient(context(), clientDbid, target, bHash);
+            if (result.error != null) {
+                return "P222-EV kind=client-lookup-preflight"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " target_hash_hex=" + targetHex
+                    + " b_hash_hex=" + bHex
+                    + " observable=false reason=" + result.error
+                    + " client_db_resolved=" + result.clientDbResolved
+                    + " client_db_is_client=" + result.clientDbIsClient;
+            }
+            StringBuilder sb = new StringBuilder("P222-EV kind=client-lookup-preflight");
+            sb.append(" client_dbid_hex=").append(clientDbidHex);
+            sb.append(" target_hash_hex=").append(result.targetHashHex);
+            sb.append(" routing_key_hex=").append(result.routingKeyHex);
+            sb.append(" routing_key_differs=").append(result.routingKeyDiffers);
+            sb.append(" b_hash_hex=").append(bHex);
+            sb.append(" observable=true");
+            sb.append(" client_db_resolved=").append(result.clientDbResolved);
+            sb.append(" client_db_is_client=").append(result.clientDbIsClient);
+            sb.append(" target_ls_present_before_send=").append(result.targetLsPresentBeforeSend);
+            sb.append(" target_ls_type=").append(
+                result.targetLsType == null ? "none" : result.targetLsType);
+            sb.append(" facade_floodfill_enabled=").append(result.facadeFloodfillEnabled);
+            sb.append(" router_uptime_ms=").append(result.routerUptimeMs);
+            sb.append(" netdb_search_limit_effective=").append(result.netdbSearchLimitEffective);
+            sb.append(" selector_extra_peers=").append(result.selectorExtraPeers);
+            sb.append(" selector_width=").append(result.selectorWidth);
+            sb.append(" selector_input_kbucket_size=").append(result.kbucketSize);
+            sb.append(" selector_count=").append(result.selected.size());
+            sb.append(" selector_contains_b=").append(result.containsB);
+            sb.append(" selector_empty=").append(result.selected.isEmpty());
+            int shown = 0;
+            for (Hash h : result.selected) {
+                if (shown >= 8) break;
+                sb.append(" peer_").append(shown).append("_hex=")
+                    .append(p220HexLower(h.getData()));
+                shown++;
+            }
+            return sb.toString();
         }
 
         private String sha256Hex(byte[] bytes) {
