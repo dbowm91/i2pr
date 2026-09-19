@@ -197,6 +197,31 @@ window solely to receive the router's own asynchronous terminal status.
 That later status MUST NOT retroactively change whether the 45-second i2pr
 payload-delivery row passed or failed.
 
+### 2.7 Listener expiration makes missing late timeout status inconclusive
+
+Pinned `I2PSessionMuxedImpl` creates the client-side `MessageState` with an
+expiration of at least 60 seconds when `SendMessageOptions.getTime()==0`.
+Pinned `MessageState.receive()` invokes the listener only while that client
+expiration is still in the future.
+
+Pinned OCMOSJ's default overall expiration is also 60 seconds.
+
+Therefore a `STATUS_SEND_BEST_EFFORT_FAILURE` generated at the OCMOSJ timeout
+boundary may race the client-side listener expiration and may never be
+delivered to the helper callback.
+
+Plan 222 MUST NOT solve this by setting a later `SendMessageOptions` expiration,
+because that same expiration is sent to the router and would alter OCMOSJ's
+message lifetime.
+
+Consequences:
+
+- early/specific terminal failures remain strong nonce-correlated evidence;
+- any observed later success/failure callback remains usable evidence;
+- **absence** of a callback at/after the default timeout is Unknown;
+- the §13 exact stat/log fallback exists specifically for the
+  accepted/no-terminal-callback branch.
+
 ## 3. Authority correction
 
 The authoritative planning state becomes:
@@ -629,7 +654,7 @@ Why 70 seconds:
 - the 10-second margin is diagnostic scheduling tolerance;
 - no Java timeout property is changed.
 
-If no terminal status arrives by 70 seconds, status state is Unknown.
+If no terminal status arrives by 70 seconds, status state is Unknown. In particular, do not infer dispatch failure from callback absence: the pinned client listener and router timeout both default to 60 seconds, so the terminal timeout notification may race listener expiration.
 
 ## 12. Work package F — status-to-fact mapping
 
