@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 223 closed the identity/LS2 separation (NEXT-BOUNDARY NO_LEASESET); Plan 224 successor to be registered |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 223 passed with NEXT-BOUNDARY NO_LEASESET; Plan 224 to be registered | Plan 223 removed the early non-ElGamal guard (type-0/256, LS2 type-4/32, status 17 gone); tracked reverse now draws ACCEPTED→NO_LEASESET (21) with no payload in 45 s; successor owns the NO_LEASESET boundary |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 224 is the active NO_LEASESET lookup-path attribution |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 224 ready: NO_LEASESET lookup-path attribution | Plan 223 moved the reverse send to ACCEPTED→NO_LEASESET (21). Plan 224 first proves Router B main-NetDB answerability, then traces the exact A→B query, B answer, A client-tunnel reply, and helper client-subDB store; no corrective is authorized until attribution closes |
 
 ## Current milestone authorities
 
@@ -48,20 +48,20 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 remains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B and Plan 222 completed selector-equivalent OCMOSJ narrowing with `P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION`; Plan 221 is superseded-before-execution. Plan 223 closed the identity/LS2 separation with `P223-NEXT-BOUNDARY [1,21]`: early guard removed (type-0/256, LS2 type-4/32, status 17 gone), new NO_LEASESET boundary honestly recorded; successor owns it.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`. Plan 224 is now the sole dependency-ready attribution pass and must identify the earliest missing lookup stage before any Plan-225 corrective.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 224 NO_LEASESET corrective (to be registered) | pending | — | Plan 223 closed with `P223-NEXT-BOUNDARY [1,21]` (ACCEPTED→NO_LEASESET, target LS absent, source X25519-only). Registration requires a separate planning step; no bootstrap/floodfill/SAM/tunnel/topology change beyond what that plan proves. |
+| M6 mixed-router interop | 224 NO_LEASESET lookup-path attribution | ready | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | Attribution-only. First prove Router B main-NetDB current/RAP LS state; only if answerable, trace exact helper client lookup A→B, B answer, A inbound-client DSM, and client-subDB installation. The resulting fix belongs to Plan 225. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Blocked pending Plan 224 NO_LEASESET corrective after Plan 223; no J219-B bootstrap, SAM, or topology corrective is authorized |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 223 closed with NEXT-BOUNDARY (does not alter M10 product authority); Plan 224 successor to be registered |
+| M6 mixed-router interop | 201 | Blocked pending Plan 224 NO_LEASESET lookup-path attribution and its evidence-supported successor; no J219-B bootstrap, SAM, or topology corrective is authorized |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 224 is attribution-only and does not alter M10 product authority |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
@@ -91,7 +91,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 | 162 external-test lane isolation | closed | `plans/closure/ssu2/162-status.md` |
 | SSU2 | 161 independent IPv4 interop | closed | `plans/closure/ssu2/161-status.md` |
 
-Full per-plan history (000–223) lives in the subsystem roadmaps §7 tables. Plan 224 is pending registration.
+Full per-plan history (000–224) lives in the subsystem roadmaps §7 tables.
 
 ## Superseded remote branches (do not merge)
 
@@ -104,7 +104,7 @@ Full per-plan history (000–223) lives in the subsystem roadmaps §7 tables. Pl
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
 - `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed the identity separation with NEXT-BOUNDARY; Plan 224 to be registered for NO_LEASESET).
-- `next_executable_plan = 224-m6-java-no-leaseset-corrective (to be registered)`; no bootstrap/floodfill/SAM/tunnel/topology corrective is authorized beyond what that plan proves.
+- `next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution`; Plan 224 is attribution-only and no production corrective is authorized until it closes.
 
 ## Verification policy
 
