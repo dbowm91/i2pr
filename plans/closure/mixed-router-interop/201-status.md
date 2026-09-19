@@ -1,3 +1,20 @@
+# Current dependency amendment — Plan 223 registered
+
+Plan 201 remains blocked. Plan 222 narrowed the reverse failure to
+`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION`; exact-pinned
+Java source then exposed an earlier status-17 guard on the target
+Destination encryption type.
+
+Plan 223 is now the sole executable corrective. It must prove that guard on
+the exact i2pr target bytes before changing router-owned Destination
+generation, keep LS2 X25519/type 4 unchanged, and rerun the destination-only
+Java lane.
+
+```text
+plan_201 = blocked-pending-plan223-destination-identity-crypto-separation-corrective
+plan_223 = registered-ready-m6-java-destination-identity-crypto-separation-corrective
+```
+
 # Current dependency amendment — Plan 222 closed with OCMOSJ narrowing
 
 Plan 201 remains blocked. Plan 222 closed as
@@ -34,7 +51,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-ocmosj-unsupported-encryption-corrective-after-plan222`**.
+Status: **`blocked-pending-plan223-destination-identity-crypto-separation-corrective`**.
 
 ## 2026-09-18 authority amendment — Plan 220 corrected attribution closed
 
