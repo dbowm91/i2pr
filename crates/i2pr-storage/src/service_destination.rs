@@ -423,7 +423,7 @@ fn generate_record<R: TryCryptoRng + ?Sized>(
     if rng.try_fill_bytes(&mut *signing_seed).is_err()
         || rng.try_fill_bytes(&mut *static_secret).is_err()
         || rng.try_fill_bytes(&mut *filler).is_err()
-        || rng.try_fill_bytes(&mut *padding).is_err()
+        || rng.try_fill_bytes(&mut padding).is_err()
     {
         return Err(ServiceDestinationStorageError::Crypto(
             CryptoError::RandomnessUnavailable,
@@ -864,7 +864,7 @@ mod tests {
         use rand_core::RngCore as _;
         rng.fill_bytes(&mut *signing_seed);
         rng.fill_bytes(&mut *static_secret);
-        rng.fill_bytes(&mut *padding);
+        rng.fill_bytes(&mut padding);
         let v1 = ServiceDestinationRecord {
             signing_seed,
             static_secret,
