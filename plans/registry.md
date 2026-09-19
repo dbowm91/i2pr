@@ -72,9 +72,9 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 | Subsystem | Plan | State | Closure record |
 |---|---|---|---|
-| M6 mixed-router interop | 220 Plan 219 diagnostic-attribution corrective | closed | `plans/closure/mixed-router-interop/220-status.md` (`passed-m6-java-plan219-diagnostic-attribution-corrective`, commits `b5b049c` + `a3d2571`, terminal `P220-OBSERVABILITY-GAP-CLIENT-NETDB` on exact head `a3d2571`) |
+| M6 mixed-router interop | 220 Plan 219 diagnostic-attribution corrective | closed | `plans/closure/mixed-router-interop/220-status.md` (`passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required`; J219-B refuted; exact RI/PeerManager evidence retained; selector boundary pending Plan 222) |
 | M6 mixed-router interop | 221 client-NetDB/OCMOSJ narrowing | superseded | `plans/closure/mixed-router-interop/221-status.md` (registered but not executed; superseded by Plan 222 after selector-equivalence/source review) |
-| M6 mixed-router interop | 218 Java second-family final qualification | stopped | `plans/closure/mixed-router-interop/218-status.md` (reverse-delivery boundary; narrowed by Plan 220 to the helper client-message layer) |
+| M6 mixed-router interop | 218 Java second-family final qualification | stopped | `plans/closure/mixed-router-interop/218-status.md` (reverse-delivery behavioral boundary retained; exact selector/client-message attribution pending Plan 222) |
 | M6 mixed-router interop | 219 Java reverse-delivery root-cause investigation | superseded | `plans/closure/mixed-router-interop/219-status.md` (instrumentation retained; J219-B attribution superseded by Plan 220) |
 | M6 mixed-router interop | 217 Java closure harness + evidence corrective | closed | `plans/closure/mixed-router-interop/217-status.md` |
 | Service tunnels | 215 hosted Plan 214 re-verification | closed | `plans/closure/service-tunnels/215-status.md` |
