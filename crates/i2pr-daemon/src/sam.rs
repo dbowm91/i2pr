@@ -2021,11 +2021,14 @@ async fn execute_stream_connect(
     };
     let destination_id = entry.destination_id();
 
-    // Decode the supplied destination text into a (DestinationId,
-    // SigningPublicKey, StaticPublicKey) triple.
-    let (target_destination_id, signing_public_key, static_public) =
-        match streams::decode_destination_triple(&destination) {
-            Ok(triple) => triple,
+    // Plan 223: decode the supplied Destination for both legacy shapes.
+    // ElGamal/type-0 Destinations carry filler, not the X25519 static key;
+    // the active key is resolved via the local LS2 directory below.
+    // X25519/type-4 Destinations (pre-223) still carry the static directly
+    // for backwards compatibility with non-local remotes.
+    let (target_destination_id, signing_public_key) =
+        match streams::decode_destination_id_and_signing(&destination) {
+            Ok(pair) => pair,
             Err(_) => {
                 return Err(StreamConnectFailed {
                     result: ReplyResult::InvalidKey,
@@ -2033,13 +2036,7 @@ async fn execute_stream_connect(
                 });
             }
         };
-    // Build the RemoteDestination for the StreamingManager.
     let destination_hash = *target_destination_id.as_hash().as_bytes();
-    let remote = i2pr_client::streaming::manager::RemoteDestination {
-        destination_hash,
-        signing_public_key,
-        static_public_key: static_public,
-    };
 
     // Acquire the per-destination bridge handle.
     let destinations = state.sam_destinations();
@@ -2064,7 +2061,8 @@ async fn execute_stream_connect(
     // We never call the private `install_remote_lease_set2` from a test
     // here; the SAM service owns the local directory and only hands out
     // records it has validated itself. Unknown remote destinations skip
-    // this path entirely.
+    // this path entirely. Plan 223: the LS2 X25519 key is also the
+    // ECIES static for ElGamal Destinations.
     let local_resolution: Option<i2pr_netdb::ValidatedLeaseSet2> = match state
         .sam_destinations()
         .lock()
@@ -2080,7 +2078,45 @@ async fn execute_stream_connect(
             });
         }
     };
+    // Resolve the ECIES static: prefer the local LS2 X25519 key when the
+    // peer is locally owned; otherwise fall back to the Destination field
+    // for X25519 remotes. ElGamal non-local remotes fail closed (no NetDB
+    // LS2 lookup in the loopback-only SAM path).
+    let static_public: [u8; 32] = if let Some(validated) = local_resolution.as_ref() {
+        match validated.lease_set2().usable_x25519_key() {
+            Ok(key) => {
+                let bytes = key.as_bytes();
+                let mut out = [0_u8; 32];
+                out.copy_from_slice(&bytes[..32]);
+                out
+            }
+            Err(_) => {
+                return Err(StreamConnectFailed {
+                    result: ReplyResult::InvalidKey,
+                    message: "local peer lease set has no X25519 key".to_owned(),
+                });
+            }
+        }
+    } else {
+        match streams::decode_destination_triple(&destination) {
+            Ok((_, _, static_key)) => static_key,
+            Err(_) => {
+                return Err(StreamConnectFailed {
+                    result: ReplyResult::InvalidKey,
+                    message: "could not decode DESTINATION".to_owned(),
+                });
+            }
+        }
+    };
+    // Build the RemoteDestination for the StreamingManager.
+    let remote = i2pr_client::streaming::manager::RemoteDestination {
+        destination_hash,
+        signing_public_key,
+        static_public_key: static_public,
+    };
     if let Some(validated) = local_resolution {
+        // Clone for install (local_resolution was borrowed above for the
+        // static key; re-resolve is unnecessary — move the owned value).
         let install = bridge.with(|bridge| {
             bridge
                 .routing_mut()

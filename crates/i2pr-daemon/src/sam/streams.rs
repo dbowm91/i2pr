@@ -1542,7 +1542,10 @@ pub enum InboundTunnelBuildError {
 /// Decodes a SAM public destination Base64 text into a
 /// `(DestinationId, SigningPublicKey, StaticPublicKey)` triple.
 /// Retained for backwards compatibility with the Plan 138
-/// test seam.
+/// test seam. Only X25519/type-4 Destinations carry the static key
+/// directly; ElGamal/type-0 Destinations (Plan 223) return
+/// `StaticPublicKeyLength` so the caller resolves the active X25519 key
+/// via the local LeaseSet2 directory instead of the Destination field.
 pub fn decode_destination_triple(
     text: &str,
 ) -> Result<
@@ -1571,6 +1574,31 @@ pub fn decode_destination_triple(
     }
     static_public.copy_from_slice(&pk_bytes[..i2pr_crypto::X25519_KEY_LENGTH]);
     Ok((id, signing_key, static_public))
+}
+
+/// Decodes a SAM public destination Base64 text into its
+/// `(DestinationId, SigningPublicKey)` pair without requiring the
+/// Destination encryption field to carry the X25519 static key.
+///
+/// Plan 223: router-owned Destinations use ElGamal/type-0 legacy identity
+/// material (256-byte filler) while the active X25519 key lives in
+/// Standard LS2. STREAM CONNECT resolves that key via the local LS2
+/// directory; this helper supplies the id + signing key for both shapes.
+pub fn decode_destination_id_and_signing(
+    text: &str,
+) -> Result<(DestinationId, i2pr_proto::SigningPublicKey), SamDestinationTripleError> {
+    use i2pr_api::sam::base64;
+    let bytes = base64::decode(text, i2pr_api::sam::private_destination::PUB_LENGTH)
+        .map_err(|_| SamDestinationTripleError::Base64)?;
+    let destination =
+        i2pr_proto::Destination::decode(&bytes, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .map_err(SamDestinationTripleError::Destination)?;
+    let hash = destination
+        .hash()
+        .map_err(SamDestinationTripleError::Destination)?;
+    let id = DestinationId::from_hash(hash);
+    let signing_key = destination.signing_key().clone();
+    Ok((id, signing_key))
 }
 
 #[derive(Debug, thiserror::Error)]
