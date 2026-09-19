@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 223 closed with NEXT-BOUNDARY
+
+M10 product authority remains closed through Plans 213–215. Plan 204 remains
+convergence-only and blocked on independent M6 Java-family closure.
+
+Plan 223 closed as
+`passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset`
+(see `plans/closure/mixed-router-interop/223-status.md`): the early identity
+guard is removed (type-0/256, LS2 type-4/32, status 17 gone), but the reverse
+path now stops at `NO_LEASESET (21)` after `ACCEPTED`. M6 Java-family closure
+still pending; Plan 204 stays blocked pending the Plan-224 successor. Plan 223
+does not reopen M10 product closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan224-after-plan223
+plan_223 = passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset
+```
+
 # Current dependency amendment — Plan 223 registered
 
 M10 product authority remains closed through Plans 213–215. Plan 204 remains

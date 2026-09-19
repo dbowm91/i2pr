@@ -1,3 +1,18 @@
+# Current handoff amendment — Plan 223 closed with NEXT-BOUNDARY
+
+Plan 218's behavioral stop remains authoritative (stop token unchanged). Plan 223
+removed the early identity guard: post-fix Destinations are ElGamal/type-0/256
+with matching Rust/Java hashes and LS2 X25519/type-4/32, status 17 is gone, and
+the tracked reverse send now draws `ACCEPTED` followed by `NO_LEASESET (21)`
+(`P223-NEXT-BOUNDARY [1,21]`, see `223-status.md`). The reverse payload still
+absent in 45 s; the new NO_LEASESET boundary needs a dedicated successor.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_223 = passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset
+next_executable_plan = 224-m6-java-no-leaseset-corrective (to be registered)
+```
+
 # Current handoff amendment — Plan 223 registered
 
 Plan 218's behavioral stop remains authoritative. Plan 222 narrowed that stop

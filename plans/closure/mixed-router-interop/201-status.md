@@ -1,3 +1,20 @@
+# Current dependency amendment — Plan 223 closed with NEXT-BOUNDARY
+
+Plan 201 remains blocked. Plan 223 closed as
+`passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset`
+(see [`223-status.md`](223-status.md)): post-fix Destinations are ElGamal/type-0/256
+with matching Rust/Java hashes, LS2 stays X25519/type-4/32, status 17 is gone,
+and the tracked reverse send now draws `ACCEPTED` followed by `NO_LEASESET (21)`
+with no payload in 45 s (`P223-NEXT-BOUNDARY [1,21]`). The identity guard is
+removed; the new NO_LEASESET boundary (target LS absent in helper client DB,
+source X25519-only) needs a dedicated successor. Plan 201 cannot target closure
+until that successor lands.
+
+```text
+plan_201 = blocked-pending-plan224-no-leaseset-corrective-after-plan223
+plan_223 = passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset
+```
+
 # Current dependency amendment — Plan 223 registered
 
 Plan 201 remains blocked. Plan 222 narrowed the reverse failure to
