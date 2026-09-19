@@ -43,6 +43,15 @@ Plan 222 therefore repairs selector equivalence first, then uses
 `SendMessageStatusListener` as the primary OCMOSJ discriminator. Exact
 router stats/log correlation is conditional fallback only.
 
+### Listener limitation
+
+The listener path is strongest for nonce-correlated admission and specific
+terminal status codes. Its absence is not a terminal fact: the pinned client
+`MessageState` default listener lifetime and OCMOSJ default overall timeout
+are both 60 seconds, so a timeout notification may race listener expiration.
+Plan 222 keeps the message expiration unchanged and uses bounded exact
+stats/log correlation only for the accepted/no-terminal-callback branch.
+
 ## Current authority
 
 ```text
