@@ -42,7 +42,18 @@ Plan 219's J219-B RouterInfo-bootstrap attribution is superseded. Plan 220 corre
 
 Post-closure exact-pinned Java 2.13.0 source review found one remaining Plan 220 evidence defect: its selector probe used the raw Destination hash and hard-coded N=3, while production `IterativeSearchJob` derives a daily routing key and selects `_totalSearchLimit + EXTRA_PEERS` through the helper's client-NetDB path. Therefore Plan 220's selector-pass row and its "earliest gap = CLIENT-NETDB" interpretation require selector-equivalence follow-up; the RI/PeerManager/J219-B-refutation facts remain authoritative.
 
-Plan 221 was registered but not executed and is superseded by Plan 222. Plan 222 is dependency-ready. It first reproduces the actual client lookup selector using the helper client DBID, Java-derived routing key and effective search width, then uses the public nonce-correlated `SendMessageStatusListener` path as the primary OCMOSJ discriminator. No topology/bootstrap/protocol corrective is currently authorized. Plan 205 remains retained/deferred.
+Plan 221 was registered but not executed and is superseded by Plan 222. Plan 222
+is closed as `passed-m6-java-client-netdb-ocmosj-narrowing-corrective`: one
+exact-clean-head destination-only run reproduced the actual client lookup
+selector (helper client DBID → actual client DB, Java-derived routing key,
+effective `netdb.searchLimit` 5 + `EXTRA_PEERS` 1 = width 6, nonempty selector
+containing B) and correlated one reverse helper send through the public
+nonce-bearing `SendMessageStatusListener` path (nonce=1 → status 17), yielding
+`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` with no i2pr
+TunnelData/payload in the frozen 45-second window. No topology/bootstrap/
+protocol corrective is authorized until a new plan-of-record registers the
+dedicated `OCMOSJ-UNSUPPORTED-ENCRYPTION` corrective. Plan 205 remains
+retained/deferred.
 
 ## 5. Target architecture
 
@@ -78,14 +89,14 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-pending-plan222-client-netdb-ocmosj-narrowing | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 201 | blocked | blocked-pending-ocmosj-unsupported-encryption-corrective-after-plan222 | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
 | 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (J219-B bootstrap hypothesis refuted; SAM pivot remains off-path until Plan 222 establishes an exact client-NetDB/OCMOSJ boundary that SAM would actually change) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
 | 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (criteria 1–9 pass on the corrected lane; Java helper admits the reverse raw-Destination send, but no matching reverse payload reaches i2pr inside the bounded acceptance window; J219-B is refuted, while exact selector/client-message attribution is pending Plan 222) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
 | 219 | superseded | retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220 | `plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md` | `plans/closure/mixed-router-interop/219-status.md` |
 | 220 | closed | passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required | `plans/implementation/mixed-router-interop/220-m6-java-plan219-diagnostic-attribution-corrective.md` | `plans/closure/mixed-router-interop/220-status.md` |
 | 221 | superseded | superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective | `plans/implementation/mixed-router-interop/221-m6-java-client-netdb-ocmosj-narrowing.md` | `plans/closure/mixed-router-interop/221-status.md` |
-| 222 | ready | registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective | `plans/implementation/mixed-router-interop/222-m6-java-client-netdb-ocmosj-narrowing-corrective.md` | `plans/closure/mixed-router-interop/222-status.md` |
+| 222 | closed | passed-m6-java-client-netdb-ocmosj-narrowing-corrective | `plans/implementation/mixed-router-interop/222-m6-java-client-netdb-ocmosj-narrowing-corrective.md` | `plans/closure/mixed-router-interop/222-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -97,7 +108,8 @@ evidence model per `specs/CONFORMANCE.md`. Service/transport/API crates stay run
 
 Routine floor plus `scripts/check-m6-mixed-router-acceptance-evidence.sh` (fail-closed; environment-gated).
 
-Plan 222 extends the corrected diagnostic guards with two exactness requirements:
+Plan 222 extended the corrected diagnostic guards with two exactness requirements
+(now closed — see `222-status.md` for the authoritative run):
 
 - the selector preflight must use the helper client DBID, Java's own daily routing key, and the effective `netdb.searchLimit + EXTRA_PEERS` width through the production-equivalent selector overload; and
 - the reverse helper send must use the public listener-enabled `I2PSession.sendMessage(..., SendMessageStatusListener)` API so admission/failure/success statuses are correlated by the returned nonce.
@@ -114,16 +126,25 @@ Environment-gated lanes stay `#[ignore]`-gated and fail closed. Plan 222 allows 
 - A nonempty selector that omits Router B is not itself a root cause because another floodfill may be selected. An empty exact selector is materially stronger because pinned client-DB `getAllRouters()` returns empty.
 - `STATUS_SEND_ACCEPTED` proves admission only. Missing listener status stays Unknown. Failure/success codes must be interpreted no more strongly than exact pinned OCMOSJ source permits.
 - The 45-second payload acceptance window cannot be extended by the later status-observation deadline.
-- Plan 205 SAM work remains off-path until Plan 222 identifies a boundary that SAM would actually change.
+- Plan 205 SAM work remains off-path: Plan 222 identified the boundary
+  (`OCMOSJ-UNSUPPORTED-ENCRYPTION`, below the client send API), which SAM
+  would not change. No pivot reconsideration is authorized.
 
 ## 11. Completion definition
 
-Closed: Plan 220 corrected the Plan 219 evidence path and refuted J219-B, with selector-equivalence follow-up required.
+Closed: Plan 220 corrected the Plan 219 evidence path and refuted J219-B, with
+selector-equivalence follow-up required — that follow-up is now complete via
+Plan 222.
+
+Closed: Plan 222 reproduced the exact client lookup selector and correlated one
+reverse helper send through public nonce-bearing status evidence, yielding
+`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` on an
+exact-clean-head destination-only run. A later plan, not Plan 222, owns the
+dedicated `OCMOSJ-UNSUPPORTED-ENCRYPTION` corrective. Plan 204 remains blocked
+until Java-family closure.
 
 Superseded before execution: Plan 221.
 
-Open: Plan 222 must reproduce the exact client lookup selector and correlate one reverse helper send through public nonce-bearing status evidence, yielding one `P222-*` terminal or an explicit narrower observability gap. A later plan, not Plan 222, owns any protocol/topology corrective. Plan 204 remains blocked until Java-family closure.
-
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B and retains exact RI/PeerManager evidence but needs selector-equivalence follow-up; Plan 221 is superseded-before-execution; Plan 222 is dependency-ready for corrected client-NetDB/OCMOSJ narrowing; Plan 201 remains blocked pending Plan 222; Plan 205 remains retained-deferred. No topology/bootstrap/protocol corrective is registered.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop with exact OCMOSJ attribution from Plan 222; Plan 219 attribution is superseded; Plan 220 refuted J219-B and retains exact RI/PeerManager evidence with the selector-equivalence follow-up completed via Plan 222; Plan 221 is superseded-before-execution; Plan 222 is closed with `P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION`; Plan 201 remains blocked pending the dedicated OCMOSJ corrective; Plan 205 remains retained-deferred. No topology/bootstrap/protocol corrective is registered.

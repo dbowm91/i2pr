@@ -854,3 +854,18 @@ double-pass remains the canonical M10 closure authority; Plan
 213's generic external qualification remains the canonical M10
 generic authority.
 
+
+## 2026-09-19 follow-up — Plan 222 narrowed the stop attribution (token unchanged)
+
+Plan 222 closed as
+`passed-m6-java-client-netdb-ocmosj-narrowing-corrective` (see
+[`222-status.md`](222-status.md)). The behavioral stop recorded here
+reproduces on the exact-clean-head authoritative run (helper admits the
+reverse send; no TunnelData/payload reaches i2pr in the frozen 45-second
+window), and its attribution is now exact rather than an observability gap:
+`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` — the exact
+client lookup has candidates (width-6 selector over the helper client DB,
+B included) and the nonce-tracked send (nonce=1) draws OCMOSJ status 17.
+The dedicated `OCMOSJ-UNSUPPORTED-ENCRYPTION` corrective belongs to a new
+plan-of-record. This status stays
+`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`.

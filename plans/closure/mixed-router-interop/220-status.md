@@ -1,3 +1,21 @@
+# Plan 222 follow-up complete — selector equivalence re-run
+
+The selector-equivalence follow-up this amendment required is complete. Plan
+222 closed as `passed-m6-java-client-netdb-ocmosj-narrowing-corrective` (see
+[`222-status.md`](222-status.md)): the exact preflight (helper client DBID →
+actual client DB, Java-derived routing key differing from the raw target,
+effective `netdb.searchLimit` 5 + `EXTRA_PEERS` 1 = width 6 through the
+production 3-argument selector overload) passes with a nonempty selector
+containing B, and the nonce-tracked reverse send draws OCMOSJ status 17
+(`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION`). The historical
+Plan 220 selector row remains historical evidence only. This plan's token is
+unchanged; history is not rewritten.
+
+```text
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required
+plan_222 = passed-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Current authority amendment — selector equivalence follow-up required
 
 Status: **`passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required`**.

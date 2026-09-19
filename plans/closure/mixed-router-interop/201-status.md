@@ -1,3 +1,23 @@
+# Current dependency amendment — Plan 222 closed with OCMOSJ narrowing
+
+Plan 201 remains blocked. Plan 222 closed as
+`passed-m6-java-client-netdb-ocmosj-narrowing-corrective` (see
+[`222-status.md`](222-status.md)): one exact-clean-head destination-only run
+emitted `P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` — the
+exact client lookup has candidates (helper client DBID resolves to a client
+DB, Java routing key differs, width 6 = 5 + 1, nonempty selector containing
+B) and the nonce-tracked helper send (nonce=1) draws the specific OCMOSJ
+failure 17 with no i2pr TunnelData/payload in the frozen 45-second window.
+
+Plan 201 cannot target a corrective until a dedicated plan-of-record owns
+the `OCMOSJ-UNSUPPORTED-ENCRYPTION` fix. No bootstrap corrective is
+authorized (J219-B stays refuted).
+
+```text
+plan_201 = blocked-pending-ocmosj-unsupported-encryption-corrective-after-plan222
+plan_222 = passed-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Current dependency amendment — Plan 222 corrected narrowing
 
 Plan 201 remains blocked. Plan 221 was superseded before execution because the
@@ -14,7 +34,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-plan222-client-netdb-ocmosj-narrowing`**.
+Status: **`blocked-pending-ocmosj-unsupported-encryption-corrective-after-plan222`**.
 
 ## 2026-09-18 authority amendment — Plan 220 corrected attribution closed
 

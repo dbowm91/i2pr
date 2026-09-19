@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 222 closed with OCMOSJ narrowing
+
+M10 product authority remains closed through Plans 213–215. Plan 204 is still
+convergence-only and blocked on independent M6 Java-family closure.
+
+Plan 222 closed as `passed-m6-java-client-netdb-ocmosj-narrowing-corrective`:
+the M6 Java reverse failure is narrowed to
+`P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` (exact client
+lookup has candidates; nonce-tracked send draws OCMOSJ status 17; no i2pr
+TunnelData/payload in the frozen 45-second window). The lane is narrowed,
+not closed. Plan 204 stays blocked pending the dedicated OCMOSJ corrective
+and M6 Java second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-ocmosj-corrective-after-plan222
+plan_222 = passed-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Current dependency amendment — Plan 222 narrowing
 
 M10 product authority remains closed through Plans 213–215. Plan 204 is still
@@ -15,7 +33,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-closure-pending-plan222-narrowing`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-ocmosj-corrective-after-plan222`**.
 
 ## 2026-09-18 follow-up — Plan 220 passed, convergence still blocked
 
