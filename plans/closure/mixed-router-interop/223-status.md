@@ -1,3 +1,26 @@
+# Plan 224 registration follow-up
+
+The narrow successor implied by this closure is now registered as Plan 224.
+
+Exact-pinned Java source review shows `NO_LEASESET (21)` is a lookup-failure
+result, not a unique root cause. Plan 224 first proves whether Router B's main
+NetDB actually holds a current, `receivedAsPublished`, query-answerable copy
+of the i2pr target LS2. Only if it does, Plan 224 traces the exact helper
+client lookup A→B, Router-B answer, Router-A client-tunnel DSM receipt, and
+helper client-subDB installation.
+
+Pinned `InNetMessagePool` explicitly stores a matching DSM inline before
+queuing the lookup-success reply job, so a store-vs-success scheduling race is
+not an authorized hypothesis.
+
+Plan 224 is attribution-only. The eventual fix belongs to Plan 225.
+
+```text
+plan_223 = passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset
+plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
+next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution
+```
+
 # Plan 223 status — M6 Java Destination identity / LeaseSet2 crypto-separation corrective
 
 Status: **`passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset`**.
@@ -549,7 +572,7 @@ plan_201 = blocked-pending-plan224-no-leaseset-corrective-after-plan223
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 plan_204 = blocked-on-m6-java-second-family-closure-pending-plan224-after-plan223
 
-next_executable_plan = 224-m6-java-no-leaseset-corrective (to be registered; owns ACCEPTED→NO_LEASESET after ElGamal fix)
+next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution
 ```
 
 No bootstrap/topology/protocol corrective beyond the narrow identity/LS2
