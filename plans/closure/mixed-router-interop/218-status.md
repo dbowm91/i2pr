@@ -1,3 +1,23 @@
+# Current handoff amendment — Plan 222 corrected narrowing
+
+Plan 218's behavioral stop remains authoritative: the Java helper's reverse
+raw-Destination send is admitted, but no matching reverse payload reaches i2pr
+inside the bounded acceptance window.
+
+Plan 220 refuted the J219-B bootstrap hypothesis, but its selector probe did not
+exactly match `IterativeSearchJob` routing-key/search-width semantics. Plan 221
+was therefore superseded before execution. Plan 222 owns the corrected
+client-NetDB/OCMOSJ narrowing.
+
+Do not treat Plan 220's historical selector row as proof that every selector
+stage passed.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
+next_executable_plan = 222-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Plan 218 status — M6 Java second-family final qualification
 
 Status: **`stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary`**.
