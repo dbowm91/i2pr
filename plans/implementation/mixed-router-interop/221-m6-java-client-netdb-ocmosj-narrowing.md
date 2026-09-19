@@ -1,6 +1,19 @@
+# Supersession notice
+
+Plan 221 was registered but not executed. Exact-pinned Java I2P 2.13.0 source
+review found that its inherited selector evidence was not
+production-equivalent and that a stronger public nonce-correlated
+`SendMessageStatusListener` path should be used first.
+
+Execute Plan 222 instead:
+
+[`222-m6-java-client-netdb-ocmosj-narrowing-corrective.md`](222-m6-java-client-netdb-ocmosj-narrowing-corrective.md).
+
+The original Plan 221 text is retained below for historical traceability.
+
 # Plan 221 — M6 Java client-NetDB/OCMOSJ narrowing
 
-Status: **registered-ready-m6-java-client-netdb-ocmosj-narrowing**.
+Status: **superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective**.
 
 ## 1. Objective
 
