@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 224 attribution registered
+
+M10 product authority remains closed through Plans 213–215. Plan 204 remains
+convergence-only and blocked on independent M6 Java-family closure.
+
+Plan 224 is now the active M6 attribution pass for the
+`ACCEPTED -> NO_LEASESET (21)` boundary. It does not authorize a production
+corrective and does not change M10 product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan224-attribution
+plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
+```
+
 # Current dependency amendment — Plan 223 closed with NEXT-BOUNDARY
 
 M10 product authority remains closed through Plans 213–215. Plan 204 remains
