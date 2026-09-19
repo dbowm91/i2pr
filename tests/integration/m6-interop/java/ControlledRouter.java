@@ -69,6 +69,26 @@
 //   - `P223-BRANCH <client-dbid-hex> <target-hex> <source-hex>` returns the
 //     bounded C1/C2/C3 discriminator (source LeaseSetKeys, target LS2 as
 //     stored, exact `getEncryptionKey(supported)` intersection) read-only.
+// Plan 224 diagnostic contract (attribution only, read-only, no state mutation):
+//   - `P224-MAIN-LS <target-hex>` returns the read-only main-NetDB LS
+//     snapshot for one target hash (`P224-EV kind=main-ls ...` with raw
+//     vs validated presence, entry type, received-as-published/reply,
+//     received-by, LS2 unpublished flag, lease/key counts and key type
+//     codes only, latest lease time, current flag);
+//   - `P224-CLIENT-LS <client-dbid-hex> <target-hex>` returns the same
+//     snapshot through `clientNetDb(clientDbid)` (`P224-EV
+//     kind=client-ls ...` plus client_db_resolved/is_client); a
+//     main-DB fallback is explicitly non-client and never satisfies
+//     client authority;
+//   - `P224-HASH-B64 <hash-hex>` renders one 32-byte hash exactly as the
+//     pinned JVM logs it (`Hash.toBase64()`) so the whitelist-only
+//     sanitizer can correlate exact-target log lines without
+//     reimplementing the I2P Base64 alphabet;
+//   - every snapshot uses local read-only accessors only
+//     (`lookupLocallyWithoutValidation`, `lookupLeaseSetLocally`,
+//     `getReceivedAsPublished`, `isCurrent`, `getEncryptionKeys`);
+//     no `store`, no `registerKeys`, no reflection, no remote lookup
+//     that could prime a client sub-DB.
 //   - RouterHash values travel as 32-byte lowercase hex. Standard
 //     (RFC 4648) Base64 MUST NOT be used to construct a query
 //     hash; Java `Hash.toBase64()` (I2P Base64) is echoed only for
@@ -108,6 +128,7 @@ import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
 import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P223BranchProbe;
+import net.i2p.router.networkdb.kademlia.P224LsProbe;
 
 public final class ControlledRouter {
 
@@ -534,6 +555,21 @@ public final class ControlledRouter {
                             return p223Error("missing-hash-arguments");
                         }
                         return p223Branch(parts[1], parts[2], parts[3]);
+                    case "P224-MAIN-LS":
+                        if (parts.length < 2) {
+                            return p224Error("missing-hash-argument");
+                        }
+                        return p224MainLs(parts[1]);
+                    case "P224-CLIENT-LS":
+                        if (parts.length < 3) {
+                            return p224Error("missing-hash-arguments");
+                        }
+                        return p224ClientLs(parts[1], parts[2]);
+                    case "P224-HASH-B64":
+                        if (parts.length < 2) {
+                            return p224Error("missing-hash-argument");
+                        }
+                        return p224HashB64(parts[1]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -836,6 +872,139 @@ public final class ControlledRouter {
 
         private String p223Error(String reason) {
             return "P223-ERROR " + reason;
+        }
+
+        private String p224Error(String reason) {
+            return "P224-ERROR " + reason;
+        }
+
+        /**
+         * Plan 224 WP B — read-only main-NetDB LS snapshot for one
+         * target hash. Never stores, publishes, searches, or alters
+         * NetDB state. Key type codes and counts only, never key
+         * bytes or secret material.
+         */
+        private String p224MainLs(String targetHex) {
+            Hash target = p220ParseHexHash(targetHex);
+            if (target == null) {
+                return p224Error("invalid-hex-hash");
+            }
+            P224LsProbe.Result result =
+                P224LsProbe.snapshotMain(context(), mainNetDb(), target);
+            if (result.error != null && !result.rawPresent && !result.validatedPresent) {
+                return "P224-EV kind=main-ls"
+                    + " target_hash_hex=" + targetHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P224-EV kind=main-ls"
+                + " target_hash_hex=" + targetHex
+                + " observable=true"
+                + " raw_present=" + result.rawPresent
+                + " validated_present=" + result.validatedPresent
+                + " entry_type=" + result.entryType
+                + " received_as_published=" + triState(result.receivedAsPublished)
+                + " received_as_reply=" + triState(result.receivedAsReply)
+                + " received_by_hex=" + result.receivedByHex
+                + " ls2_unpublished=" + result.ls2Unpublished
+                + " lease_count=" + result.leaseCount
+                + " key_count=" + result.keyCount
+                + " key_types=" + keyTypesValue(result)
+                + " latest_lease_ms=" + result.latestLeaseMs
+                + " current=" + triState(result.current);
+        }
+
+        /**
+         * Plan 224 WP B — read-only helper client-subDB LS snapshot.
+         * A main-DB fallback is explicitly non-client and never
+         * satisfies Plan-224 client authority. The two accessors are
+         * local reads; no network lookup runs, so the sub-DB cannot
+         * be primed by this snapshot.
+         */
+        private String p224ClientLs(String clientDbidHex, String targetHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash target = p220ParseHexHash(targetHex);
+            if (clientDbid == null || target == null) {
+                return p224Error("invalid-hex-hash");
+            }
+            P224LsProbe.Result result =
+                P224LsProbe.snapshotClient(context(), clientDbid, target);
+            if (result.error != null) {
+                return "P224-EV kind=client-ls"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " target_hash_hex=" + targetHex
+                    + " observable=false reason=" + result.error
+                    + " client_db_resolved=" + result.clientDbResolved
+                    + " client_db_is_client=" + result.clientDbIsClient;
+            }
+            return "P224-EV kind=client-ls"
+                + " client_dbid_hex=" + clientDbidHex
+                + " target_hash_hex=" + targetHex
+                + " observable=true"
+                + " client_db_resolved=" + result.clientDbResolved
+                + " client_db_is_client=" + result.clientDbIsClient
+                + " raw_present=" + result.rawPresent
+                + " validated_present=" + result.validatedPresent
+                + " entry_type=" + result.entryType
+                + " received_as_published=" + triState(result.receivedAsPublished)
+                + " received_as_reply=" + triState(result.receivedAsReply)
+                + " received_by_hex=" + result.receivedByHex
+                + " ls2_unpublished=" + result.ls2Unpublished
+                + " lease_count=" + result.leaseCount
+                + " key_count=" + result.keyCount
+                + " key_types=" + keyTypesValue(result)
+                + " latest_lease_ms=" + result.latestLeaseMs
+                + " current=" + triState(result.current);
+        }
+
+        /**
+         * Plan 224 WP E — renders one 32-byte hash exactly as the
+         * pinned JVM logs it (`Hash.toBase64()`, I2P alphabet) so the
+         * whitelist-only sanitizer correlates exact-target log lines
+         * without reimplementing the alphabet. Deterministic;
+         * touches no router state.
+         */
+        private String p224HashB64(String hashHex) {
+            Hash hash = p220ParseHexHash(hashHex);
+            if (hash == null) {
+                return p224Error("invalid-hex-hash");
+            }
+            String b64;
+            try {
+                b64 = hash.toBase64();
+            } catch (RuntimeException re) {
+                return "P224-EV kind=hash-b64 hash_hex=" + hashHex
+                    + " observable=false reason=render-failed";
+            }
+            if (b64 == null || b64.isEmpty() || b64.length() > 128) {
+                return "P224-EV kind=hash-b64 hash_hex=" + hashHex
+                    + " observable=false reason=render-failed";
+            }
+            return "P224-EV kind=hash-b64 hash_hex=" + hashHex
+                + " observable=true hash_b64=" + b64;
+        }
+
+        private static String triState(Boolean value) {
+            if (value == null) {
+                return "unknown";
+            }
+            return value ? "true" : "false";
+        }
+
+        private static String keyTypesValue(P224LsProbe.Result result) {
+            if (result.keyCodes == null || result.keyCodes.isEmpty()) {
+                if (result.keyCount < 0) {
+                    return "unknown";
+                }
+                return "none";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < result.keyCodes.size(); i++) {
+                if (i > 0) {
+                    sb.append(",");
+                }
+                sb.append(result.keyCodes.get(i));
+            }
+            return sb.toString();
         }
 
         /**

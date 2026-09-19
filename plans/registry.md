@@ -48,13 +48,13 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`. Plan 224 is now the sole dependency-ready attribution pass and must identify the earliest missing lookup stage before any Plan-225 corrective.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`. Plan 224 is now the active attribution pass and must identify the earliest missing lookup stage before any Plan-225 corrective.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 224 NO_LEASESET lookup-path attribution | ready | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | Attribution-only. First prove Router B main-NetDB current/RAP LS state; only if answerable, trace exact helper client lookup A→B, B answer, A inbound-client DSM, and client-subDB installation. The resulting fix belongs to Plan 225. |
+| M6 mixed-router interop | 224 NO_LEASESET lookup-path attribution | active | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | Attribution-only execution active. First prove Router B main-NetDB current/RAP LS state; only if answerable, trace exact helper client lookup A→B, B answer, A inbound-client DSM, and client-subDB installation. The resulting fix belongs to Plan 225. |
 
 ## Blocked work
 
@@ -104,7 +104,7 @@ Full per-plan history (000–224) lives in the subsystem roadmaps §7 tables.
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
 - `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 is registered-ready attribution-only for NO_LEASESET).
-- `next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution`; Plan 224 is attribution-only and no production corrective is authorized until it closes.
+- `active_plan = 224-m6-java-no-leaseset-lookup-path-attribution`; Plan 224 is attribution-only and no production corrective is authorized until it closes.
 
 ## Verification policy
 

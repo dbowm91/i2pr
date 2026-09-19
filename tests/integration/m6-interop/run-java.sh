@@ -131,7 +131,12 @@ P222_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # (source LeaseSetKeys + target LS2 + exact getEncryptionKey intersection;
 # read-only, no KeyManager/client-DB/LeaseSet mutation).
 P223_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P223BranchProbe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" ]]; then
+# Plan 224 WP B — test-only read-only LeaseSet snapshot probe
+# (main-NetDB raw vs validated presence + received-as-published /
+# current / key-type-code facts; client-subDB variant with explicit
+# main-fallback rejection; local reads only, never a network lookup).
+P224_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P224LsProbe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -144,7 +149,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -164,6 +169,31 @@ JAVA_LOG="${SCRATCH}/java.log"
 JAVA_PUBLICATION_LOG="${SCRATCH}/java-publication.log"
 JAVA_TUNNEL_PARTICIPANT_LOG="${SCRATCH}/java-tunnel-participant.log"
 mkdir -p "${JAVA_DATA}/logs" "${JAVA_PUBLICATION_DATA}/logs" "${JAVA_TUNNEL_PARTICIPANT_DATA}/logs"
+
+# Plan 224 §8 — disposable scratch-only targeted Java lookup logging.
+# Written into each scratch router data directory BEFORE the routers
+# start, so the exact-pinned `LogManager` (which defaults to
+# `logger.config` in the router config directory) applies it from the
+# first log line. Diagnostic configuration only: not a protocol,
+# topology, tunnel, NetDB, or timeout change. Raw router logs stay
+# scratch-only; only the whitelist-only sanitizer output reaches
+# evidence. The class list is exactly the pinned lookup path:
+# client `IterativeSearchJob` query dispatch, `HandleDatabaseLookupMessageJob`
+# receive/answer, and `InboundMessageDistributor` client-tunnel DSM receipt.
+write_p224_logger_config() {
+  local datadir="$1"
+  cat >"${datadir}/logger.config" <<'LOGGER_EOF'
+logger.defaultLevel=ERROR
+logger.minimumOnScreenLevel=CRIT
+logger.flushInterval=1
+logger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO
+logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG
+logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO
+LOGGER_EOF
+}
+write_p224_logger_config "${JAVA_DATA}"
+write_p224_logger_config "${JAVA_PUBLICATION_DATA}"
+write_p224_logger_config "${JAVA_TUNNEL_PARTICIPANT_DATA}"
 
 # Sanity: never mutate the verified Java cache/build outputs.
 # Plan 196 §5.3 forbids `sed`/`clients.config` mutations of the cache.
@@ -875,6 +905,8 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
      JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
      JAVA_DIAGNOSTIC_B_PORT="${JAVA_DIAGNOSTIC_B_PORT}" \
      JAVA_DIAGNOSTIC_C_PORT="${JAVA_DIAGNOSTIC_C_PORT}" \
+     JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
+     JAVA_B_LOG_DIR="${JAVA_PUBLICATION_DATA}/logs" \
      timeout --foreground "${DRIVER_TIMEOUT}" \
      cargo test --locked -p i2pr-daemon --test java_tunnel_external \
      destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
@@ -1274,6 +1306,24 @@ if [[ -z "${P223_CLASSIFICATION}" ]]; then
   P223_CLASSIFICATION="P223-classification-missing"
 fi
 record "external-p223-classification" passed "Plan 223 §12: ${P223_CLASSIFICATION}"
+
+# Plan 224 §13 — read the terminal `p224-classification` the destination
+# driver emitted from its Router-B main-LS gate + exact tracked-send
+# lookup trace. We MUST consume the LAST occurrence so an early branch
+# can't shadow the authoritative outcome. Recording the classification
+# itself is a diagnostic observation; it is reported as `passed`
+# regardless of the attribution terminal or observability gap it names.
+# The static checker rejects any literal `record "<P224-X>" passed` line.
+# The frozen 45-second i2pr payload row is never rewritten by this status.
+P224_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_P224="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_P224}" ]]; then
+  P224_CLASSIFICATION="$(awk -F'\t' '$1 == "p224-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P224}")"
+fi
+if [[ -z "${P224_CLASSIFICATION}" ]]; then
+  P224_CLASSIFICATION="P224-classification-missing"
+fi
+record "external-p224-classification" passed "Plan 224 §13: ${P224_CLASSIFICATION}"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

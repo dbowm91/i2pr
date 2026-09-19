@@ -48,7 +48,7 @@ The open boundary is therefore OCMOSJ `NO_LEASESET (21)` after ACCEPTED.
 
 Exact-pinned Java 2.13.0 research shows status 21 is only the lookup-failure result, not a root cause. The current harness publishes the i2pr target LS2 specifically toward Router B but does not prove that Router B's main NetDB actually holds a current `receivedAsPublished` copy that Java would answer from. If B is answerable, the remaining exact path is helper client lookup A→B, B's LS reply, A's inbound client-tunnel DSM receipt, and installation into the helper client sub-DB. Pinned `InNetMessagePool` stores a matching DSM inline before running the lookup-success job, ruling out a store-vs-success scheduling race.
 
-Plan 224 is dependency-ready and attribution-only. It must prove the earliest failing stage and stop; Plan 225 owns the resulting correction. No bootstrap/floodfill/SAM/tunnel/topology corrective is authorized.
+Plan 224 is active and attribution-only. It must prove the earliest failing stage and stop; Plan 225 owns the resulting correction. No bootstrap/floodfill/SAM/tunnel/topology corrective is authorized.
 
 Plan 205 remains retained/deferred.
 
@@ -95,7 +95,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 221 | superseded | superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective | `plans/implementation/mixed-router-interop/221-m6-java-client-netdb-ocmosj-narrowing.md` | `plans/closure/mixed-router-interop/221-status.md` |
 | 222 | closed | passed-m6-java-client-netdb-ocmosj-narrowing-corrective | `plans/implementation/mixed-router-interop/222-m6-java-client-netdb-ocmosj-narrowing-corrective.md` | `plans/closure/mixed-router-interop/222-status.md` |
 | 223 | closed | passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset (type-0/256 + LS2 type-4/32; status 17 gone → P223-NEXT-BOUNDARY [1,21] on 0755dc1) | `plans/implementation/mixed-router-interop/223-m6-java-destination-identity-crypto-separation-corrective.md` | `plans/closure/mixed-router-interop/223-status.md` |
-| 224 | ready | registered-ready-m6-java-no-leaseset-lookup-path-attribution | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | `plans/closure/mixed-router-interop/224-status.md` |
+| 224 | active | in-progress-m6-java-no-leaseset-lookup-path-attribution | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | `plans/closure/mixed-router-interop/224-status.md` |
 
 ## 8. Cross-cutting requirements
 

@@ -2305,6 +2305,13 @@ async fn destination_message_plane_against_java() {
                 &evidence_dir,
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            // Plan 224 — every run emits exactly one P224 terminal. A
+            // pre-epoch stop has no P224 snapshot, so the terminal is
+            // honestly the lookup-path observability gap.
+            record_p224_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2598,6 +2605,13 @@ async fn destination_message_plane_against_java() {
             &evidence_dir,
             "authoritative-epoch-never-reached-lease-stalled",
         );
+        // Plan 224 — every run emits exactly one P224 terminal. A
+        // pre-epoch stop has no P224 snapshot, so the terminal is
+        // honestly the lookup-path observability gap.
+        record_p224_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
         handle.shutdown();
         let _ = scope.shutdown().await;
         return;
@@ -2853,6 +2867,54 @@ async fn destination_message_plane_against_java() {
             P220Observed::Unknown("preflight-unreachable"),
         ),
     };
+
+    // ---- Plan 224 WP B/C — pre-send lookup-path snapshots ------------------
+    // Router-B main-NetDB state first (the mandatory gate before any
+    // search-path attribution), then the Router-A helper client-subDB
+    // state, both at the exact tracked-send target hash. Read-only
+    // local diagnostic commands: no publication retry, no re-publish,
+    // no standalone lookup that could prime the helper client DB. The
+    // settle between publication and these snapshots is the
+    // unmodified forward-path + P220/P222 sequence above (no added
+    // sleep, no tuning). The full frozen tracked-send sequence below
+    // runs unconditionally: a B-gate terminal stops the attribution
+    // descent, never the run (P222/P223 rows and the frozen 45-second
+    // window still require it).
+    let p224_b_pre = p224_collect_main_ls(diag_b_port, &reverse_lookup_target_hex).await;
+    record_p224_main_snapshot(
+        &evidence_dir,
+        "p224-b-main-before-send",
+        p224_b_pre.as_ref(),
+    );
+    let p224_a_pre = p224_collect_client_ls(
+        diag_a_port,
+        &helper_client_dbid_hex,
+        &reverse_lookup_target_hex,
+    )
+    .await;
+    record_p224_client_snapshot(
+        &evidence_dir,
+        "p224-a-client-before-send",
+        p224_a_pre.as_ref(),
+    );
+    // Exact JVM Base64 renderings for the whitelist-only log
+    // sanitizer (stateless diagnostic; touches no router state).
+    let p224_target_b64 = p224_collect_hash_b64(diag_a_port, &reverse_lookup_target_hex).await;
+    let p224_router_b_b64 = p224_collect_hash_b64(diag_a_port, &rust_b_hex).await;
+    let p224_helper_b64 = p224_collect_hash_b64(diag_a_port, &helper_client_dbid_hex).await;
+    append_evidence(
+        &evidence_dir,
+        "p224-target-context",
+        &format!(
+            "target_hash_hex={} target_hash_b64={} router_b_hash_hex={} router_b_hash_b64={} helper_dbid_hex={} helper_dbid_b64={}",
+            reverse_lookup_target_hex,
+            p224_target_b64.as_deref().unwrap_or("unknown"),
+            rust_b_hex,
+            p224_router_b_b64.as_deref().unwrap_or("unknown"),
+            helper_client_dbid_hex,
+            p224_helper_b64.as_deref().unwrap_or("unknown"),
+        ),
+    );
 
     // ---- Plan 194 §5.4(c) inbound reply via real inbound tunnel ----------
     // Plan 222 WP C/E — tracked helper send using the public
@@ -3310,6 +3372,97 @@ async fn destination_message_plane_against_java() {
         )
     };
     let _ = record_p223_classification(&evidence_dir, p223_terminal, &p223_detail);
+    // Plan 224 WP C/D — post-send lookup trace, post snapshots, terminal.
+    // The frozen 45-second results above are inputs now, never
+    // recomputed: trace collection MUST NOT retroactively change the
+    // payload row (Plan 224 §15 item 22). Scratch Java logs are read
+    // with fixed-substring matching only; only typed booleans reach
+    // evidence (Plan 224 §8.1: raw lines may carry reply key/tag
+    // material and stay scratch-only).
+    let p224_a_log_dir: Option<PathBuf> = std::env::var("JAVA_A_LOG_DIR").ok().map(PathBuf::from);
+    let p224_b_log_dir: Option<PathBuf> = std::env::var("JAVA_B_LOG_DIR").ok().map(PathBuf::from);
+    if p224_a_log_dir.is_none() || p224_b_log_dir.is_none() {
+        append_evidence(
+            &evidence_dir,
+            "p224-log-dir-unavailable",
+            "JAVA_A_LOG_DIR or JAVA_B_LOG_DIR missing; trace is Unknown, never synthesized",
+        );
+    }
+    let p224_scan_a = p224_a_log_dir.as_ref().and_then(|dir| {
+        p224_target_b64.as_ref().and_then(|target_b64| {
+            p224_router_b_b64.as_ref().and_then(|b_b64| {
+                p224_helper_b64.as_deref().and_then(|helper_b64| {
+                    p224_scan_log_dir(dir, target_b64, b_b64, Some(helper_b64))
+                })
+            })
+        })
+    });
+    let p224_scan_b = p224_b_log_dir.as_ref().and_then(|dir| {
+        p224_target_b64.as_ref().and_then(|target_b64| {
+            p224_router_b_b64.as_ref().and_then(|b_b64| {
+                p224_helper_b64.as_deref().and_then(|helper_b64| {
+                    p224_scan_log_dir(dir, target_b64, b_b64, Some(helper_b64))
+                })
+            })
+        })
+    });
+    let p224_logger_a_ok = p224_a_log_dir
+        .as_ref()
+        .is_some_and(|dir| p224_logger_config_installed(dir));
+    let p224_logger_b_ok = p224_b_log_dir
+        .as_ref()
+        .is_some_and(|dir| p224_logger_config_installed(dir));
+    if !p224_logger_a_ok || !p224_logger_b_ok {
+        append_evidence(
+            &evidence_dir,
+            "p224-logger-config-unverified",
+            "targeted logger.config not proven installed in both datadirs; trace absence is Unknown",
+        );
+    }
+    let p224_trace = p224_build_trace(
+        &reverse_lookup_target_hex,
+        p224_target_b64.as_deref(),
+        p224_router_b_b64.as_deref(),
+        p224_helper_b64.as_deref(),
+        p224_scan_a.as_ref(),
+        p224_scan_b.as_ref(),
+        p224_logger_a_ok,
+        p224_logger_b_ok,
+    );
+    record_p224_trace(&evidence_dir, &p224_trace);
+    let p224_a_post = p224_collect_client_ls(
+        diag_a_port,
+        &helper_client_dbid_hex,
+        &reverse_lookup_target_hex,
+    )
+    .await;
+    record_p224_client_snapshot(&evidence_dir, "p224-a-client-after", p224_a_post.as_ref());
+    let p224_b_post = p224_collect_main_ls(diag_b_port, &reverse_lookup_target_hex).await;
+    record_p224_main_snapshot(&evidence_dir, "p224-b-main-after", p224_b_post.as_ref());
+    let p224_status_21 = matches!(p222_facts.status_no_leaseset, P220Observed::Known(true));
+    let p224_terminal = p224_classify(
+        &reverse_lookup_target_hex,
+        p224_b_pre.as_ref(),
+        p224_b_post.as_ref(),
+        p224_a_pre.as_ref(),
+        p224_a_post.as_ref(),
+        &p224_trace,
+        p224_status_21,
+        &p222_facts.ordered_statuses,
+        frozen_payload_45s,
+    );
+    let p224_b_answerable_pre = p224_b_pre.as_ref().map(p224_b_answerable);
+    let _ = record_p224_classification(
+        &evidence_dir,
+        p224_terminal,
+        &reverse_lookup_target_hex,
+        p224_b_answerable_pre,
+        &p222_facts.ordered_statuses,
+        frozen_payload_45s,
+        frozen_tunneldata_45s,
+        p224_trace.reply_encryption_error_seen,
+        p224_trace.observable,
+    );
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -4293,6 +4446,921 @@ fn record_p223_classification(evidence_dir: &Path, terminal: P223Terminal, detai
         &format!("{} {detail}", terminal.token()),
     );
     terminal.token().to_owned()
+}
+
+// ---- Plan 224 — NO_LEASESET lookup-path attribution ------------------------
+// Pinned Java I2P 2.13.0 (`9134f808337b401e8e53c73734c81fab04280c9d`)
+// source authority:
+//
+// - `OutboundClientMessageOneShotJob` maps an ordinary client-NetDB
+//   lookup failure to `STATUS_SEND_FAILURE_NO_LEASESET (21)` after a
+//   15-second `LS_LOOKUP_TIMEOUT`; status 21 proves only that no
+//   usable target LeaseSet reached the send path, not which stage
+//   failed (Plan 224 §3.1);
+// - a client LS lookup runs `IterativeSearchJob` with the helper's
+//   outbound/inbound client tunnels and fails fast with
+//   `failed, no IB client tunnel to receive reply` or
+//   `skipped, no ratchet/elg support` when the reply path cannot
+//   form (Plan 224 §3.2);
+// - `HandleDatabaseLookupMessageJob` answers an LS DLM only from a
+//   main-NetDB LeaseSet with `getReceivedAsPublished() == true`,
+//   logging `We have the published LS <target>, answering query`
+//   (Plan 224 §3.3);
+// - an LS DSM arriving down a client tunnel is tagged
+//   `receivedBy=<client>` and routed into that exact client sub-DB,
+//   logging `Storing garlic LS down tunnel for: <target> sent to:
+//   <client>` (Plan 224 §3.4);
+// - `InNetMessagePool` stores a matching DSM inline before the
+//   lookup-success reply job runs, so a store-vs-success scheduling
+//   race is NOT an authorized hypothesis (Plan 224 §3.5).
+//
+// Attribution only: no production i2pr wire change, no Java
+// mutation, no topology/tunnel/selector/SAM change, no second
+// lookup that could prime the helper client DB. The frozen
+// 45-second i2pr payload window (`DATAGRAM_WAIT`) is captured
+// BEFORE trace collection and is never derived from or altered by
+// it. Snapshots are local read-only diagnostic commands
+// (`P224-MAIN-LS`, `P224-CLIENT-LS`); the trace sanitizer below
+// reads scratch Java logs with fixed-substring matching only and
+// emits bounded typed booleans/counts plus hashes — never raw log
+// lines, never session keys/tags, never payloads.
+
+/// Plan 224 Router-B main-NetDB LS snapshot from `P224-MAIN-LS`.
+#[derive(Clone, Debug)]
+struct P224MainLs {
+    target_hash_hex: String,
+    raw_present: bool,
+    validated_present: bool,
+    entry_type: i64,
+    received_as_published: Option<bool>,
+    received_as_reply: Option<bool>,
+    received_by_hex: String,
+    ls2_unpublished: String,
+    lease_count: i64,
+    key_count: i64,
+    key_types: String,
+    latest_lease_ms: u64,
+    current: Option<bool>,
+}
+
+/// Plan 224 Router-A helper client-subDB LS snapshot from
+/// `P224-CLIENT-LS`.
+#[derive(Clone, Debug)]
+struct P224ClientLs {
+    client_dbid_hex: String,
+    target_hash_hex: String,
+    client_db_resolved: bool,
+    client_db_is_client: bool,
+    raw_present: bool,
+    validated_present: bool,
+    entry_type: i64,
+    received_as_published: Option<bool>,
+    received_as_reply: Option<bool>,
+    received_by_hex: String,
+    ls2_unpublished: String,
+    lease_count: i64,
+    key_count: i64,
+    key_types: String,
+    latest_lease_ms: u64,
+    current: Option<bool>,
+}
+
+fn p224_kv_bool(map: &std::collections::HashMap<String, String>, key: &str) -> Option<bool> {
+    match map.get(key).map(String::as_str) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn p224_kv_i64(map: &std::collections::HashMap<String, String>, key: &str) -> i64 {
+    map.get(key)
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(-1)
+}
+
+fn p224_kv_u64(map: &std::collections::HashMap<String, String>, key: &str) -> u64 {
+    map.get(key)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn p224_is_hex64(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Parses `P224-EV kind=main-ls ...`. Returns `None` for error lines
+/// or unparseable input (Unknown, never a protocol fact). An absent
+/// target (`observable=true raw_present=false validated_present=false`)
+/// still parses: absence is a fact, not a parse failure.
+fn p224_parse_main_ls(line: &str) -> Option<P224MainLs> {
+    if !line.starts_with("P224-EV ") || !line.contains("kind=main-ls") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
+    if !kv.get("observable").is_some_and(|v| v == "true") {
+        return None;
+    }
+    let target = kv.get("target_hash_hex").cloned().unwrap_or_default();
+    if !p224_is_hex64(&target) {
+        return None;
+    }
+    Some(P224MainLs {
+        target_hash_hex: target.to_lowercase(),
+        raw_present: kv.get("raw_present").is_some_and(|v| v == "true"),
+        validated_present: kv.get("validated_present").is_some_and(|v| v == "true"),
+        entry_type: p224_kv_i64(&kv, "entry_type"),
+        received_as_published: p224_kv_bool(&kv, "received_as_published"),
+        received_as_reply: p224_kv_bool(&kv, "received_as_reply"),
+        received_by_hex: kv
+            .get("received_by_hex")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        ls2_unpublished: kv
+            .get("ls2_unpublished")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        lease_count: p224_kv_i64(&kv, "lease_count"),
+        key_count: p224_kv_i64(&kv, "key_count"),
+        key_types: kv
+            .get("key_types")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        latest_lease_ms: p224_kv_u64(&kv, "latest_lease_ms"),
+        current: p224_kv_bool(&kv, "current"),
+    })
+}
+
+/// Parses `P224-EV kind=client-ls ...`. A main-DB fallback
+/// (`observable=false`) yields `None`: fallback snapshots are
+/// Unknown/invalid for Plan-224 client authority, never usable LS
+/// facts.
+fn p224_parse_client_ls(line: &str) -> Option<P224ClientLs> {
+    if !line.starts_with("P224-EV ") || !line.contains("kind=client-ls") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
+    if !kv.get("observable").is_some_and(|v| v == "true") {
+        return None;
+    }
+    if !kv.get("client_db_resolved").is_some_and(|v| v == "true")
+        || !kv.get("client_db_is_client").is_some_and(|v| v == "true")
+    {
+        return None;
+    }
+    let target = kv.get("target_hash_hex").cloned().unwrap_or_default();
+    if !p224_is_hex64(&target) {
+        return None;
+    }
+    Some(P224ClientLs {
+        client_dbid_hex: kv
+            .get("client_dbid_hex")
+            .cloned()
+            .unwrap_or_default()
+            .to_lowercase(),
+        target_hash_hex: target.to_lowercase(),
+        client_db_resolved: true,
+        client_db_is_client: true,
+        raw_present: kv.get("raw_present").is_some_and(|v| v == "true"),
+        validated_present: kv.get("validated_present").is_some_and(|v| v == "true"),
+        entry_type: p224_kv_i64(&kv, "entry_type"),
+        received_as_published: p224_kv_bool(&kv, "received_as_published"),
+        received_as_reply: p224_kv_bool(&kv, "received_as_reply"),
+        received_by_hex: kv
+            .get("received_by_hex")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        ls2_unpublished: kv
+            .get("ls2_unpublished")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        lease_count: p224_kv_i64(&kv, "lease_count"),
+        key_count: p224_kv_i64(&kv, "key_count"),
+        key_types: kv
+            .get("key_types")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_owned()),
+        latest_lease_ms: p224_kv_u64(&kv, "latest_lease_ms"),
+        current: p224_kv_bool(&kv, "current"),
+    })
+}
+
+async fn p224_collect_main_ls(diag_port: u16, target_hex: &str) -> Option<P224MainLs> {
+    let line = p220_query_diagnostic(diag_port, &format!("P224-MAIN-LS {target_hex}")).await?;
+    p224_parse_main_ls(&line)
+}
+
+async fn p224_collect_client_ls(
+    diag_port: u16,
+    client_dbid_hex: &str,
+    target_hex: &str,
+) -> Option<P224ClientLs> {
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P224-CLIENT-LS {client_dbid_hex} {target_hex}"),
+    )
+    .await?;
+    p224_parse_client_ls(&line)
+}
+
+/// Renders one hash exactly as the pinned JVM logs it
+/// (`Hash.toBase64()`, I2P alphabet) via the stateless
+/// `P224-HASH-B64` diagnostic. Returns `None` when unreachable or
+/// when the echoed hex does not match the request (Unknown, never a
+/// guessed rendering: reimplementing the alphabet in Rust would risk
+/// silent correlation mismatch).
+/// Parses `P224-EV kind=hash-b64 ...`. Returns the JVM rendering
+/// only when the echoed hex matches the request exactly (a mismatch
+/// is Unknown, never a guessed rendering).
+fn p224_parse_hash_b64(line: &str, expected_hex: &str) -> Option<String> {
+    if !line.starts_with("P224-EV ") || !line.contains("kind=hash-b64") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
+    if !kv.get("observable").is_some_and(|v| v == "true") {
+        return None;
+    }
+    let echoed = kv.get("hash_hex").cloned().unwrap_or_default();
+    if !echoed.eq_ignore_ascii_case(expected_hex) {
+        return None;
+    }
+    let b64 = kv.get("hash_b64").cloned().unwrap_or_default();
+    if b64.is_empty()
+        || b64.len() > 64
+        || !b64
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'~' || b == b'=')
+    {
+        return None;
+    }
+    Some(b64)
+}
+
+async fn p224_collect_hash_b64(diag_port: u16, hash_hex: &str) -> Option<String> {
+    let line = p220_query_diagnostic(diag_port, &format!("P224-HASH-B64 {hash_hex}")).await?;
+    p224_parse_hash_b64(&line, hash_hex)
+}
+
+/// Plan 224 sanitized lookup-trace facts (Plan 224 §9). Only
+/// exact-target-correlated booleans may be authoritative, except
+/// `reply_encryption_error_seen`, which is explicitly supporting-only
+/// (the pinned log token carries no target key).
+#[derive(Clone, Debug, Default)]
+struct P224Trace {
+    observable: bool,
+    target_hash_hex: String,
+    query_started: bool,
+    query_to_b: bool,
+    query_via_client_reply_tunnel: bool,
+    no_ib_client_tunnel: bool,
+    no_ratchet_or_elg_support: bool,
+    search_success: bool,
+    search_failed: bool,
+    b_lookup_received: bool,
+    b_published_ls_answered: bool,
+    /// Router-B DLM logging proven live by at least one handled
+    /// lookup of any key this run. Required only by the D4
+    /// not-received terminal, the sole terminal proving a negative
+    /// on Router B.
+    b_dlm_proven_live: bool,
+    a_client_tunnel_ls_received: bool,
+    reply_encryption_error_seen: bool,
+}
+
+/// Bounds for the whitelist-only scratch-log scan. ISJ tries are
+/// bounded by the search width plus retries (dozens per run); the
+/// caps below are orders of magnitude above any legitimate lookup
+/// epoch and exist only so a hostile or screenful log cannot drive
+/// unbounded driver memory.
+const P224_MAX_LOG_FILES_PER_ROUTER: usize = 16;
+const P224_MAX_LOG_BYTES_PER_ROUTER: u64 = 96 * 1024 * 1024;
+
+#[derive(Clone, Debug, Default)]
+struct P224LogScan {
+    files_read: usize,
+    bytes_scanned: u64,
+    truncated: bool,
+    isj_try: u64,
+    isj_try_to_b: u64,
+    isj_try_client_tunnel: u64,
+    isj_no_ib: u64,
+    isj_no_crypto: u64,
+    isj_success: u64,
+    isj_failed: u64,
+    a_client_tunnel_ls: u64,
+    b_lookup: u64,
+    b_answered: u64,
+    b_reply_enc_err: u64,
+    a_isj_any: u64,
+    b_dlm_any: u64,
+}
+
+/// Whitelist-only scan of one router's `log-router-*.txt` scratch
+/// files. Every predicate is a fixed-substring match (`str::contains`,
+/// never regex); only bounded counts leave this function. Raw lines
+/// are never retained, never logged, never written to evidence: a
+/// `HandleDatabaseLookupMessageJob` INFO line can carry ephemeral
+/// reply key/tag material (Plan 224 §8.1), so even matched lines stay
+/// inside this function.
+fn p224_scan_log_dir(
+    dir: &Path,
+    target_b64: &str,
+    router_b_b64: &str,
+    helper_b64: Option<&str>,
+) -> Option<P224LogScan> {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let read_dir = std::fs::read_dir(dir).ok()?;
+    for entry in read_dir {
+        let entry = entry.ok()?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("log-router-") || !name.ends_with(".txt") {
+            continue;
+        }
+        entries.push(entry.path());
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort();
+    entries.truncate(P224_MAX_LOG_FILES_PER_ROUTER);
+    let for_ls_target = format!("for LS {target_b64}");
+    let isj_for_target_success = format!("ISJ for {target_b64} successful");
+    let isj_for_target_failed = format!("ISJ for {target_b64} failed");
+    let storing_ls_target = format!("Storing garlic LS down tunnel for: {target_b64}");
+    let storing_ls_helper = helper_b64.map(|helper| format!("sent to: {helper}"));
+    let handling_lookup_target = format!("Handling database lookup message for {target_b64}");
+    let answering_ls_target = format!("We have the published LS {target_b64}, answering query");
+    let mut scan = P224LogScan::default();
+    for path in entries {
+        let bytes = std::fs::read(&path).ok()?;
+        if scan.bytes_scanned.saturating_add(bytes.len() as u64) > P224_MAX_LOG_BYTES_PER_ROUTER {
+            scan.truncated = true;
+            break;
+        }
+        scan.files_read += 1;
+        scan.bytes_scanned += bytes.len() as u64;
+        // Lossy conversion is safe here: correlation tokens are pure
+        // ASCII (Base64 + English log scaffolding), so a non-UTF8
+        // byte can never hide or forge a match.
+        let text = String::from_utf8_lossy(&bytes);
+        for line in text.lines() {
+            if line.contains("ISJ ") {
+                scan.a_isj_any += 1;
+            }
+            if line.contains("Handling database lookup message for ") {
+                scan.b_dlm_any += 1;
+            }
+            if !line.contains(target_b64) {
+                if line.contains("DLM reply encryption error") {
+                    scan.b_reply_enc_err += 1;
+                }
+                continue;
+            }
+            if line.contains("ISJ try ") && line.contains(&for_ls_target) {
+                scan.isj_try += 1;
+                if line.contains(router_b_b64) {
+                    scan.isj_try_to_b += 1;
+                }
+                if line.contains("reply via client tunnel? true") {
+                    scan.isj_try_client_tunnel += 1;
+                }
+            }
+            if line.contains(&for_ls_target)
+                && line.contains("failed, no IB client tunnel to receive reply")
+            {
+                scan.isj_no_ib += 1;
+            }
+            if line.contains(&for_ls_target) && line.contains("skipped, no ratchet/elg support") {
+                scan.isj_no_crypto += 1;
+            }
+            if line.contains(&isj_for_target_success) {
+                scan.isj_success += 1;
+            }
+            if line.contains(&isj_for_target_failed) {
+                scan.isj_failed += 1;
+            }
+            if line.contains(&storing_ls_target)
+                && storing_ls_helper
+                    .as_ref()
+                    .is_some_and(|helper| line.contains(helper))
+            {
+                scan.a_client_tunnel_ls += 1;
+            }
+            if line.contains(&handling_lookup_target) {
+                scan.b_lookup += 1;
+            }
+            if line.contains(&answering_ls_target) {
+                scan.b_answered += 1;
+            }
+            if line.contains("DLM reply encryption error") {
+                scan.b_reply_enc_err += 1;
+            }
+        }
+    }
+    Some(scan)
+}
+
+/// Builds the sanitized trace from the two routers' scratch-log
+/// scans. `observable` is true only when every correlation input is
+/// proven: all three exact Base64 renderings available, both log dirs readable
+/// with at least one log file each, byte caps respected, Router-A
+/// ISJ logging proven live by at least one `ISJ ` line (without it,
+/// absence of a target line cannot distinguish "never queried" from
+/// "logging off"), and the targeted `logger.config` verified
+/// installed in both datadirs (the file the harness writes before
+/// router startup; the driver checks the exact three
+/// `logger.record.` scopes through `<logdir>/../logger.config`).
+fn p224_build_trace(
+    target_hash_hex: &str,
+    target_b64: Option<&str>,
+    router_b_b64: Option<&str>,
+    helper_b64: Option<&str>,
+    scan_a: Option<&P224LogScan>,
+    scan_b: Option<&P224LogScan>,
+    logger_config_a_ok: bool,
+    logger_config_b_ok: bool,
+) -> P224Trace {
+    let mut trace = P224Trace {
+        observable: false,
+        target_hash_hex: target_hash_hex.to_owned(),
+        ..P224Trace::default()
+    };
+    let (Some(target_b64), Some(_), Some(helper_b64)) = (target_b64, router_b_b64, helper_b64)
+    else {
+        return trace;
+    };
+    let (Some(scan_a), Some(scan_b)) = (scan_a, scan_b) else {
+        return trace;
+    };
+    if target_b64.is_empty() || helper_b64.is_empty() || scan_a.truncated || scan_b.truncated {
+        return trace;
+    }
+    if scan_a.files_read == 0 || scan_b.files_read == 0 {
+        return trace;
+    }
+    if !logger_config_a_ok || !logger_config_b_ok {
+        return trace;
+    }
+    // Positive control: Router-A ISJ logging must have emitted at
+    // least once this run. The helper client lookup is only one of
+    // many ISJ epochs (tunnel-build searches precede it), so zero
+    // `ISJ ` lines means the INFO override never applied and every
+    // absence below would be meaningless.
+    if scan_a.a_isj_any == 0 {
+        return trace;
+    }
+    let _ = (target_hash_hex, helper_b64);
+    trace.observable = true;
+    trace.query_started = scan_a.isj_try > 0;
+    trace.query_to_b = scan_a.isj_try_to_b > 0;
+    trace.query_via_client_reply_tunnel = scan_a.isj_try_client_tunnel > 0;
+    trace.no_ib_client_tunnel = scan_a.isj_no_ib > 0;
+    trace.no_ratchet_or_elg_support = scan_a.isj_no_crypto > 0;
+    trace.search_success = scan_a.isj_success > 0;
+    trace.search_failed = scan_a.isj_failed > 0;
+    trace.b_lookup_received = scan_b.b_lookup > 0;
+    trace.b_published_ls_answered = scan_b.b_answered > 0;
+    trace.b_dlm_proven_live = scan_b.b_dlm_any > 0;
+    trace.a_client_tunnel_ls_received = scan_a.a_client_tunnel_ls > 0;
+    trace.reply_encryption_error_seen = scan_a.b_reply_enc_err > 0 || scan_b.b_reply_enc_err > 0;
+    trace
+}
+
+/// Verifies the targeted Plan-224 `logger.config` the harness writes
+/// into each scratch router datadir before startup. The log dir is
+/// `<datadir>/logs`, so the config is its sibling. Requires the
+/// exact default level plus the three exact class scopes; any
+/// deviation yields false (Unknown, never assumed active).
+fn p224_logger_config_installed(log_dir: &Path) -> bool {
+    let config_path = log_dir.join("..").join("logger.config");
+    let Ok(bytes) = std::fs::read(&config_path) else {
+        return false;
+    };
+    if bytes.len() > 65536 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    text.contains("logger.defaultLevel=ERROR")
+        && text.contains("logger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO")
+        && text
+            .contains("logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG")
+        && text.contains("logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO")
+}
+
+/// Plan 224 terminal taxonomy (Plan 224 §13). Exactly one terminal
+/// per authoritative attempt, in earliest-proven-failing-stage
+/// priority order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P224Terminal {
+    AttributionBMainLsAbsent,
+    AttributionBMainLsInvalidOrStale,
+    AttributionBMainLsNotQueryAnswerable,
+    AttributionANoInboundClientReplyTunnel,
+    AttributionALookupReplyCryptoUnavailable,
+    AttributionASearchExhaustedWithoutQueryingB,
+    AttributionAToBLookupNotReceived,
+    EvidenceContradictionBAnswerableButNotAnswered,
+    AttributionBReplyNotObservedOnAClientTunnel,
+    EvidenceContradictionClientTunnelDsmNotInClientDb,
+    EvidenceContradictionNoLeasesetWithUsableClientLs,
+    NextBoundary,
+    ReverseDeliveryPassed,
+    ObservabilityGapLookupPath,
+}
+
+impl P224Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::AttributionBMainLsAbsent => "P224-ATTRIBUTION-B-MAIN-LS-ABSENT",
+            Self::AttributionBMainLsInvalidOrStale => "P224-ATTRIBUTION-B-MAIN-LS-INVALID-OR-STALE",
+            Self::AttributionBMainLsNotQueryAnswerable => {
+                "P224-ATTRIBUTION-B-MAIN-LS-NOT-QUERY-ANSWERABLE"
+            }
+            Self::AttributionANoInboundClientReplyTunnel => {
+                "P224-ATTRIBUTION-A-NO-INBOUND-CLIENT-REPLY-TUNNEL"
+            }
+            Self::AttributionALookupReplyCryptoUnavailable => {
+                "P224-ATTRIBUTION-A-LOOKUP-REPLY-CRYPTO-UNAVAILABLE"
+            }
+            Self::AttributionASearchExhaustedWithoutQueryingB => {
+                "P224-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B"
+            }
+            Self::AttributionAToBLookupNotReceived => "P224-ATTRIBUTION-A-TO-B-LOOKUP-NOT-RECEIVED",
+            Self::EvidenceContradictionBAnswerableButNotAnswered => {
+                "P224-EVIDENCE-CONTRADICTION-B-ANSWERABLE-BUT-NOT-ANSWERED"
+            }
+            Self::AttributionBReplyNotObservedOnAClientTunnel => {
+                "P224-ATTRIBUTION-B-REPLY-NOT-OBSERVED-ON-A-CLIENT-TUNNEL"
+            }
+            Self::EvidenceContradictionClientTunnelDsmNotInClientDb => {
+                "P224-EVIDENCE-CONTRADICTION-CLIENT-TUNNEL-DSM-NOT-IN-CLIENT-DB"
+            }
+            Self::EvidenceContradictionNoLeasesetWithUsableClientLs => {
+                "P224-EVIDENCE-CONTRADICTION-NO-LEASESET-WITH-USABLE-CLIENT-LS"
+            }
+            Self::NextBoundary => "P224-NEXT-BOUNDARY",
+            Self::ReverseDeliveryPassed => "P224-REVERSE-DELIVERY-PASSED",
+            Self::ObservabilityGapLookupPath => "P224-OBSERVABILITY-GAP-LOOKUP-PATH",
+        }
+    }
+}
+
+/// Pinned answerability rule (`HandleDatabaseLookupMessageJob`): a
+/// floodfill answers an LS DLM only from a validated LeaseSet that
+/// is current and marked received-as-published. Raw presence alone,
+/// a stale entry, or a non-published entry never answers.
+fn p224_b_answerable(snap: &P224MainLs) -> bool {
+    snap.validated_present && snap.current == Some(true) && snap.received_as_published == Some(true)
+}
+
+/// Plan 224 terminal classifier (Plan 224 §13 D1–D11). Inputs are the
+/// pre/post Router-B main snapshots, the pre/post Router-A helper
+/// client snapshots, the sanitized exact-target trace, the
+/// nonce-correlated ordered status sequence, and the frozen 45-second
+/// payload result. The frozen result is an input, never derived
+/// here: trace collection MUST NOT retroactively change it (the
+/// caller freezes `frozen_payload_45s` before any P224 observation).
+#[allow(clippy::too_many_arguments)]
+fn p224_classify(
+    expected_target_hex: &str,
+    b_pre: Option<&P224MainLs>,
+    b_post: Option<&P224MainLs>,
+    a_pre: Option<&P224ClientLs>,
+    a_post: Option<&P224ClientLs>,
+    trace: &P224Trace,
+    status_no_leaseset_21: bool,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+) -> P224Terminal {
+    // D10. Digest-matched reverse payload inside the frozen window
+    // proves the chain passed, regardless of lookup-trace shape.
+    if frozen_payload_45s {
+        return P224Terminal::ReverseDeliveryPassed;
+    }
+    // D1 gate. The Router-B pre-send snapshot is mandatory before
+    // any search-path attribution; it must carry the exact tracked
+    // target hash (snapshots are never reused across attempts).
+    let Some(b_pre) = b_pre else {
+        return P224Terminal::ObservabilityGapLookupPath;
+    };
+    if !b_pre
+        .target_hash_hex
+        .eq_ignore_ascii_case(expected_target_hex)
+    {
+        return P224Terminal::ObservabilityGapLookupPath;
+    };
+    // B1. The controlled publication submission left no raw LS in
+    // Router B's main NetDB at the authoritative pre-send epoch.
+    if !b_pre.raw_present {
+        return P224Terminal::AttributionBMainLsAbsent;
+    }
+    // B2. Raw present but not validated/current: invalid or stale.
+    if !b_pre.validated_present || b_pre.current != Some(true) {
+        return P224Terminal::AttributionBMainLsInvalidOrStale;
+    }
+    // B3. Valid and current but not received-as-published: pinned
+    // Java will not answer an LS DLM from this entry.
+    if b_pre.received_as_published != Some(true) {
+        return P224Terminal::AttributionBMainLsNotQueryAnswerable;
+    }
+    // B4. Answerable: continue down the lookup path. Every deeper
+    // terminal needs the pre-send helper client snapshot (exact
+    // target, proven client facade) plus an observable trace.
+    let Some(a_pre) = a_pre else {
+        return P224Terminal::ObservabilityGapLookupPath;
+    };
+    if !a_pre
+        .target_hash_hex
+        .eq_ignore_ascii_case(expected_target_hex)
+        || !a_pre.client_db_resolved
+        || !a_pre.client_db_is_client
+    {
+        return P224Terminal::ObservabilityGapLookupPath;
+    }
+    if !trace.observable
+        || !trace
+            .target_hash_hex
+            .eq_ignore_ascii_case(expected_target_hex)
+    {
+        return P224Terminal::ObservabilityGapLookupPath;
+    }
+    // D2. The search cannot form a client lookup: no usable inbound
+    // client reply tunnel, or no ratchet/ElGamal reply capability.
+    // These trace facts imply lookup failure without any status
+    // condition, and they are the earliest lookup-path stage.
+    if trace.no_ib_client_tunnel {
+        return P224Terminal::AttributionANoInboundClientReplyTunnel;
+    }
+    if trace.no_ratchet_or_elg_support {
+        return P224Terminal::AttributionALookupReplyCryptoUnavailable;
+    }
+    // D3. B answerable, the lookup started, but the exact trace
+    // proves B was never queried while the search failed with
+    // status 21. Selector membership alone never satisfies
+    // `query_to_b`: only an exact-target ISJ try line carrying
+    // Router B's hash does.
+    if trace.query_started && !trace.query_to_b && trace.search_failed && status_no_leaseset_21 {
+        return P224Terminal::AttributionASearchExhaustedWithoutQueryingB;
+    }
+    // D4. A dispatched the query to B but B never observed it. This
+    // is the only terminal that proves a negative on Router B, so it
+    // additionally requires B-side DLM logging proven live
+    // (`b_dlm_proven_live`: B handled and logged at least one lookup
+    // this run); otherwise the absence could be logging-off rather
+    // than delivery failure, and the honest terminal is the gap.
+    if trace.query_to_b && !trace.b_lookup_received && trace.search_failed {
+        if trace.b_dlm_proven_live {
+            return P224Terminal::AttributionAToBLookupNotReceived;
+        }
+        return P224Terminal::ObservabilityGapLookupPath;
+    }
+    // D5. B received the query but did not answer despite answerable
+    // pre-send state. Consult the post-send snapshot: a state change
+    // re-derives the B terminal from post-send state (with the
+    // transition recorded by the caller); a still-answerable entry
+    // is an evidence contradiction.
+    if trace.b_lookup_received && !trace.b_published_ls_answered {
+        match b_post {
+            Some(post)
+                if post
+                    .target_hash_hex
+                    .eq_ignore_ascii_case(expected_target_hex) =>
+            {
+                if p224_b_answerable(post) {
+                    return P224Terminal::EvidenceContradictionBAnswerableButNotAnswered;
+                }
+                if !post.raw_present {
+                    return P224Terminal::AttributionBMainLsAbsent;
+                }
+                if !post.validated_present || post.current != Some(true) {
+                    return P224Terminal::AttributionBMainLsInvalidOrStale;
+                }
+                return P224Terminal::AttributionBMainLsNotQueryAnswerable;
+            }
+            _ => return P224Terminal::ObservabilityGapLookupPath,
+        }
+    }
+    // D6. B answered but A never observed the target LS on the
+    // helper inbound client tunnel, with status 21 observed. The
+    // non-target-specific `reply_encryption_error_seen` bit is
+    // supporting evidence only, recorded by the caller.
+    if trace.b_published_ls_answered && !trace.a_client_tunnel_ls_received && status_no_leaseset_21
+    {
+        return P224Terminal::AttributionBReplyNotObservedOnAClientTunnel;
+    }
+    // D7/D8 need the post-send helper client-subDB state. A missing
+    // post snapshot is incomplete evidence, not a protocol fact.
+    let Some(a_post) = a_post else {
+        return P224Terminal::ObservabilityGapLookupPath;
+    };
+    if !a_post
+        .target_hash_hex
+        .eq_ignore_ascii_case(expected_target_hex)
+        || !a_post.client_db_resolved
+        || !a_post.client_db_is_client
+    {
+        return P224Terminal::ObservabilityGapLookupPath;
+    }
+    // D7. Pinned source tags the client-tunnel DSM with
+    // `receivedBy=helper`, routes it to that client DB, and stores
+    // it inline before the lookup reply job runs: a received DSM
+    // with a still-absent client LS is an evidence contradiction,
+    // never an assumed scheduling race.
+    if trace.a_client_tunnel_ls_received && !a_post.validated_present {
+        return P224Terminal::EvidenceContradictionClientTunnelDsmNotInClientDb;
+    }
+    // D8. The client DB holds the target yet OCMOSJ still emits 21.
+    if a_post.validated_present && status_no_leaseset_21 {
+        return P224Terminal::EvidenceContradictionNoLeasesetWithUsableClientLs;
+    }
+    // D9. Status 21 disappeared and another terminal status appears:
+    // a new boundary owned by a successor plan. ACCEPTED (1) alone
+    // is admission, not a terminal; an empty sequence is Unknown.
+    if !status_no_leaseset_21
+        && ordered_statuses.iter().any(|s| *s != 1)
+        && !ordered_statuses.is_empty()
+    {
+        return P224Terminal::NextBoundary;
+    }
+    // D11. None of the above can be proven.
+    P224Terminal::ObservabilityGapLookupPath
+}
+
+fn record_p224_snapshot_row(evidence_dir: &Path, label: &str, detail: &str) {
+    append_evidence(evidence_dir, label, detail);
+}
+
+fn record_p224_main_snapshot(evidence_dir: &Path, label: &str, snap: Option<&P224MainLs>) {
+    match snap {
+        Some(s) => record_p224_snapshot_row(
+            evidence_dir,
+            label,
+            &format!(
+                "target_hash_hex={} raw_present={} validated_present={} entry_type={} received_as_published={} received_as_reply={} received_by_hex={} ls2_unpublished={} lease_count={} key_count={} key_types={} latest_lease_ms={} current={}",
+                s.target_hash_hex,
+                s.raw_present,
+                s.validated_present,
+                s.entry_type,
+                s.received_as_published
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                s.received_as_reply
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                s.received_by_hex,
+                s.ls2_unpublished,
+                s.lease_count,
+                s.key_count,
+                s.key_types,
+                s.latest_lease_ms,
+                s.current
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+        ),
+        None => record_p224_snapshot_row(
+            evidence_dir,
+            label,
+            "observable=false reason=snapshot-unreachable",
+        ),
+    }
+}
+
+fn record_p224_client_snapshot(evidence_dir: &Path, label: &str, snap: Option<&P224ClientLs>) {
+    match snap {
+        Some(s) => record_p224_snapshot_row(
+            evidence_dir,
+            label,
+            &format!(
+                "client_dbid_hex={} target_hash_hex={} observable=true client_db_resolved={} client_db_is_client={} raw_present={} validated_present={} entry_type={} received_as_published={} received_as_reply={} received_by_hex={} ls2_unpublished={} lease_count={} key_count={} key_types={} latest_lease_ms={} current={}",
+                s.client_dbid_hex,
+                s.target_hash_hex,
+                s.client_db_resolved,
+                s.client_db_is_client,
+                s.raw_present,
+                s.validated_present,
+                s.entry_type,
+                s.received_as_published
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                s.received_as_reply
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                s.received_by_hex,
+                s.ls2_unpublished,
+                s.lease_count,
+                s.key_count,
+                s.key_types,
+                s.latest_lease_ms,
+                s.current
+                    .map(|b| b.to_string())
+                    .as_deref()
+                    .unwrap_or("unknown"),
+            ),
+        ),
+        None => record_p224_snapshot_row(
+            evidence_dir,
+            label,
+            "observable=false reason=snapshot-unreachable-or-main-fallback",
+        ),
+    }
+}
+
+fn record_p224_trace(evidence_dir: &Path, trace: &P224Trace) {
+    append_evidence(
+        evidence_dir,
+        "p224-lookup-trace",
+        &format!(
+            "observable={} target_hash_hex={} query_started={} query_to_b={} query_via_client_reply_tunnel={} no_ib_client_tunnel={} no_ratchet_or_elg_support={} search_success={} search_failed={} b_lookup_received={} b_published_ls_answered={} b_dlm_proven_live={} a_client_tunnel_ls_received={} reply_encryption_error_seen={}",
+            trace.observable,
+            if trace.target_hash_hex.is_empty() {
+                "unknown"
+            } else {
+                &trace.target_hash_hex
+            },
+            trace.query_started,
+            trace.query_to_b,
+            trace.query_via_client_reply_tunnel,
+            trace.no_ib_client_tunnel,
+            trace.no_ratchet_or_elg_support,
+            trace.search_success,
+            trace.search_failed,
+            trace.b_lookup_received,
+            trace.b_published_ls_answered,
+            trace.b_dlm_proven_live,
+            trace.a_client_tunnel_ls_received,
+            trace.reply_encryption_error_seen,
+        ),
+    );
+}
+
+/// Emits exactly one `p224-classification` row per authoritative
+/// attempt. Returns the terminal token.
+#[allow(clippy::too_many_arguments)]
+fn record_p224_classification(
+    evidence_dir: &Path,
+    terminal: P224Terminal,
+    expected_target_hex: &str,
+    b_answerable_pre: Option<bool>,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+    frozen_tunneldata_45s: bool,
+    reply_encryption_error_seen: bool,
+    trace_observable: bool,
+) -> String {
+    append_evidence(
+        evidence_dir,
+        "p224-classification",
+        &format!(
+            "{} target_hash_hex={} b_main_ls_answerable_pre_send={} ordered_statuses={:?} frozen_tunneldata_45s={} frozen_payload_45s={} reply_encryption_error_seen={} trace_observable={}",
+            terminal.token(),
+            expected_target_hex,
+            b_answerable_pre
+                .map(|b| b.to_string())
+                .as_deref()
+                .unwrap_or("unknown"),
+            ordered_statuses,
+            frozen_tunneldata_45s,
+            frozen_payload_45s,
+            reply_encryption_error_seen,
+            trace_observable,
+        ),
+    );
+    terminal.token().to_owned()
+}
+
+/// Plan 224 — pre-epoch stop before the authoritative epoch. No
+/// P224 snapshot exists, so the terminal is honestly the lookup-path
+/// observability gap, never a root-cause attribution.
+fn record_p224_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    append_evidence(
+        evidence_dir,
+        "p224-b-main-before-send",
+        &format!("observable=false reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p224-a-client-before-send",
+        &format!("observable=false reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p224-lookup-trace",
+        &format!("observable=false target_hash_hex=unknown reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p224-classification",
+        &format!(
+            "{} reason={reason}",
+            P224Terminal::ObservabilityGapLookupPath.token()
+        ),
+    );
 }
 
 /// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against
@@ -6630,4 +7698,1280 @@ fn p222_terminal_tokens_are_canonical() {
         P222Terminal::ReverseDeliveryPassed.token(),
         "P222-REVERSE-DELIVERY-PASSED"
     );
+}
+
+// ---- Plan 224 unit rows (WP-F) --------------------------------------------
+// Attribution-only classifier, snapshot parsers, and whitelist-only
+// log sanitizer. Every terminal below derives from an exact
+// fixed-string observation; no network, no Java, no timing.
+
+fn p224_test_target_hex() -> String {
+    "ab".repeat(32)
+}
+
+fn p224_test_b_hex() -> String {
+    "cd".repeat(32)
+}
+
+fn p224_test_target_b64() -> String {
+    format!("{}=", "T".repeat(43))
+}
+
+fn p224_test_b_b64() -> String {
+    format!("{}=", "B".repeat(43))
+}
+
+fn p224_test_helper_b64() -> String {
+    format!("{}=", "H".repeat(43))
+}
+
+fn p224_main_row(target: &str, raw: bool, validated: bool, rap: &str, current: &str) -> String {
+    format!(
+        "P224-EV kind=main-ls target_hash_hex={target} observable=true raw_present={raw} validated_present={validated} entry_type=3 received_as_published={rap} received_as_reply=false received_by_hex=none ls2_unpublished=false lease_count=1 key_count=1 key_types=4 latest_lease_ms=1700000000000 current={current}"
+    )
+}
+
+fn p224_client_row(
+    client: &str,
+    target: &str,
+    resolved: bool,
+    is_client: bool,
+    validated: bool,
+) -> String {
+    format!(
+        "P224-EV kind=client-ls client_dbid_hex={client} target_hash_hex={target} observable=true client_db_resolved={resolved} client_db_is_client={is_client} raw_present={validated} validated_present={validated} entry_type=3 received_as_published=true received_as_reply=false received_by_hex={client} ls2_unpublished=false lease_count=1 key_count=1 key_types=4 latest_lease_ms=1700000000000 current=true"
+    )
+}
+
+fn p224_answerable_main(target: &str) -> P224MainLs {
+    p224_parse_main_ls(&p224_main_row(target, true, true, "true", "true"))
+        .expect("answerable main snapshot parses")
+}
+
+fn p224_present_client(client: &str, target: &str) -> P224ClientLs {
+    p224_parse_client_ls(&p224_client_row(client, target, true, true, true))
+        .expect("present client snapshot parses")
+}
+
+fn p224_absent_client(client: &str, target: &str) -> P224ClientLs {
+    p224_parse_client_ls(&p224_client_row(client, target, true, true, false))
+        .expect("absent client snapshot parses")
+}
+
+fn p224_observable_trace(target: &str) -> P224Trace {
+    P224Trace {
+        observable: true,
+        target_hash_hex: target.to_owned(),
+        ..P224Trace::default()
+    }
+}
+
+fn p224_test_tmpdir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("i2pr-p224-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("test tmpdir");
+    dir
+}
+
+const P224_LOGGER_CONFIG: &str = "logger.defaultLevel=ERROR\nlogger.minimumOnScreenLevel=CRIT\nlogger.flushInterval=1\nlogger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO\nlogger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG\nlogger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO\n";
+
+fn p224_write_log_tree(
+    root: &Path,
+    side: &str,
+    log_name: &str,
+    log_body: &str,
+    with_logger_config: bool,
+) -> PathBuf {
+    let side_dir = root.join(side);
+    let logs_dir = side_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir).expect("logs dir");
+    std::fs::write(logs_dir.join(log_name), log_body).expect("log file");
+    if with_logger_config {
+        std::fs::write(side_dir.join("logger.config"), P224_LOGGER_CONFIG).expect("logger.config");
+    }
+    logs_dir
+}
+
+/// Plan 224 §15.1 — the main-LS snapshot distinguishes raw absent
+/// from validated absent (raw store without a validated LeaseSet is
+/// not answerable, but it is a different stage than absence).
+#[test]
+fn p224_main_snapshot_distinguishes_raw_absent_from_validated_absent() {
+    let target = p224_test_target_hex();
+    let raw_only = p224_parse_main_ls(&p224_main_row(&target, true, false, "unknown", "unknown"))
+        .expect("raw-only snapshot parses");
+    assert!(raw_only.raw_present);
+    assert!(!raw_only.validated_present);
+    let absent = p224_parse_main_ls(&p224_main_row(&target, false, false, "unknown", "unknown"))
+        .expect("absent snapshot parses");
+    assert!(!absent.raw_present);
+    assert!(!absent.validated_present);
+    // Raw-only is invalid-or-stale, never absent.
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&raw_only),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBMainLsInvalidOrStale
+    );
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&absent),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBMainLsAbsent
+    );
+}
+
+/// Plan 224 §15.2 — the main-LS snapshot records
+/// received-as-published exactly (the pinned answerability flag).
+#[test]
+fn p224_main_snapshot_records_received_as_published() {
+    let target = p224_test_target_hex();
+    for (rap, expected) in [
+        ("true", Some(true)),
+        ("false", Some(false)),
+        ("unknown", None),
+    ] {
+        let snap = p224_parse_main_ls(&p224_main_row(&target, true, true, rap, "true"))
+            .expect("snapshot parses");
+        assert_eq!(snap.received_as_published, expected, "rap={rap}");
+    }
+    let answerable = p224_answerable_main(&target);
+    assert!(p224_b_answerable(&answerable));
+    let not_rap =
+        p224_parse_main_ls(&p224_main_row(&target, true, true, "false", "true")).expect("parses");
+    assert!(!p224_b_answerable(&not_rap));
+}
+
+/// Plan 224 §15.3 — the client-LS snapshot rejects a main-DB
+/// fallback: `observable=false` or a non-client facade never parses
+/// to usable client facts.
+#[test]
+fn p224_client_snapshot_rejects_main_db_fallback() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    assert!(
+        p224_parse_client_ls(&format!(
+            "P224-EV kind=client-ls client_dbid_hex={client} target_hash_hex={target} observable=false reason=client-db-fallback-to-main client_db_resolved=true client_db_is_client=false"
+        ))
+        .is_none()
+    );
+    assert!(p224_parse_client_ls(&p224_client_row(&client, &target, true, false, true)).is_none());
+    assert!(
+        p224_parse_client_ls(&p224_client_row(&client, &target, false, false, false)).is_none()
+    );
+    let present = p224_present_client(&client, &target);
+    assert!(present.client_db_resolved && present.client_db_is_client);
+}
+
+/// Plan 224 §15.4 — the LS2 snapshot exposes type/counts only, never
+/// key bytes: every key-related field is a short numeric code.
+#[test]
+fn p224_ls2_snapshot_exposes_type_counts_only_not_key_bytes() {
+    let target = p224_test_target_hex();
+    let snap = p224_answerable_main(&target);
+    assert_eq!(snap.entry_type, 3);
+    assert_eq!(snap.key_count, 1);
+    for code in snap.key_types.split(',') {
+        assert!(!code.is_empty());
+        assert!(
+            code.len() <= 2,
+            "key type code must be numeric, got {code:?}"
+        );
+        assert!(code.bytes().all(|b| b.is_ascii_digit()), "code {code:?}");
+    }
+    // The only 64-hex fields are hashes (target + received-by), never keys.
+    assert!(p224_is_hex64(&snap.target_hash_hex));
+    assert!(snap.received_by_hex == "none" || p224_is_hex64(&snap.received_by_hex));
+}
+
+/// Plan 224 §15.5 — B absent maps to `B-MAIN-LS-ABSENT`.
+#[test]
+fn p224_b_absent_maps_to_absent_terminal() {
+    let target = p224_test_target_hex();
+    let absent = p224_parse_main_ls(&p224_main_row(&target, false, false, "unknown", "unknown"))
+        .expect("parses");
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&absent),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBMainLsAbsent
+    );
+}
+
+/// Plan 224 §15.6 — B invalid/stale maps correctly (validated
+/// absent, current false, or current unknown while raw present).
+#[test]
+fn p224_b_invalid_or_stale_mapping() {
+    let target = p224_test_target_hex();
+    let trace = p224_observable_trace(&target);
+    for (rap, current) in [
+        ("true", "false"),
+        ("true", "unknown"),
+        ("unknown", "unknown"),
+    ] {
+        let snap =
+            p224_parse_main_ls(&p224_main_row(&target, true, true, rap, current)).expect("parses");
+        // validated+RAP but not current (or unknown RAP/current) is stale,
+        // except RAP=false which is the not-answerable stage below.
+        if rap == "true" || current != "true" {
+            assert_eq!(
+                p224_classify(
+                    &target,
+                    Some(&snap),
+                    None,
+                    None,
+                    None,
+                    &trace,
+                    true,
+                    &[1, 21],
+                    false
+                ),
+                P224Terminal::AttributionBMainLsInvalidOrStale,
+                "rap={rap} current={current}"
+            );
+        }
+    }
+    let unvalidated =
+        p224_parse_main_ls(&p224_main_row(&target, true, false, "unknown", "unknown"))
+            .expect("parses");
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&unvalidated),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBMainLsInvalidOrStale
+    );
+}
+
+/// Plan 224 §15.7 — B present but not received-as-published maps to
+/// not-query-answerable (pinned Java never answers from it).
+#[test]
+fn p224_b_present_but_not_published_maps_correctly() {
+    let target = p224_test_target_hex();
+    let trace = p224_observable_trace(&target);
+    for rap in ["false", "unknown"] {
+        let snap =
+            p224_parse_main_ls(&p224_main_row(&target, true, true, rap, "true")).expect("parses");
+        // current=true + validated + RAP!=true: unknown RAP falls to
+        // stale only when current is not proven; here current is true
+        // so RAP=false/unknown both mean not-query-answerable... except
+        // unknown RAP with proven current: the answerability helper is
+        // false, and the classifier orders stale (current check) before
+        // RAP. current==Some(true) here, so we reach the RAP gate.
+        let terminal = p224_classify(
+            &target,
+            Some(&snap),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false,
+        );
+        if rap == "false" {
+            assert_eq!(terminal, P224Terminal::AttributionBMainLsNotQueryAnswerable);
+        } else {
+            // Unknown RAP with proven current: not answerable by the
+            // pinned rule (answerability requires proven RAP).
+            assert_eq!(terminal, P224Terminal::AttributionBMainLsNotQueryAnswerable);
+        }
+    }
+}
+
+/// Plan 224 §15.8 — B answerable + no inbound client tunnel maps
+/// correctly (and wins over the crypto terminal: earliest stage).
+#[test]
+fn p224_answerable_plus_no_inbound_tunnel_maps_correctly() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let mut trace = p224_observable_trace(&target);
+    trace.no_ib_client_tunnel = true;
+    trace.no_ratchet_or_elg_support = true;
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionANoInboundClientReplyTunnel
+    );
+}
+
+/// Plan 224 §15.9 — B answerable + no reply crypto maps correctly.
+#[test]
+fn p224_answerable_plus_no_reply_crypto_maps_correctly() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let mut trace = p224_observable_trace(&target);
+    trace.no_ratchet_or_elg_support = true;
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionALookupReplyCryptoUnavailable
+    );
+}
+
+/// Plan 224 §15.10 — selector-contains-B alone never satisfies
+/// `query_to_b`: only an exact-target ISJ try line carrying Router
+/// B's hash does. End-to-end through the fixed-substring sanitizer.
+#[test]
+fn p224_selector_membership_alone_does_not_satisfy_query_to_b() {
+    let target = p224_test_target_hex();
+    let target_b64 = p224_test_target_b64();
+    let b_b64 = p224_test_b_b64();
+    // A different peer's hash on the try line: the lookup started
+    // and failed, but B was never queried.
+    let other_b64 = format!("{}=", "Q".repeat(43));
+    let dir = p224_test_tmpdir("selector-not-query");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "2026-01-01 00:00:01 INFO  Job-1: ISJ try 0 for LS {target_b64} to {other_b64} direct? false reply via client tunnel? true\n2026-01-01 00:00:16 INFO  Job-1: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+        ),
+        true,
+    );
+    let b_logs = p224_write_log_tree(
+        &dir,
+        "b",
+        "log-router-0.txt",
+        "2026-01-01 00:00:02 DEBUG Handling database lookup message for some-other-key with replies going to from\n",
+        true,
+    );
+    let scan_a = p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan B");
+    assert_eq!(scan_a.isj_try, 1);
+    assert_eq!(scan_a.isj_try_to_b, 0);
+    let trace = p224_build_trace(
+        &target,
+        Some(&target_b64),
+        Some(&b_b64),
+        Some(&p224_test_helper_b64()),
+        Some(&scan_a),
+        Some(&scan_b),
+        p224_logger_config_installed(&a_logs),
+        p224_logger_config_installed(&b_logs),
+    );
+    assert!(trace.observable);
+    assert!(trace.query_started);
+    assert!(!trace.query_to_b);
+    assert!(trace.search_failed);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionASearchExhaustedWithoutQueryingB
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.11 — query-to-B true + B receive false maps to
+/// lookup-not-received (B-side DLM logging proven live by an
+/// unrelated lookup, so the absence is delivery failure, not
+/// logging-off).
+#[test]
+fn p224_query_to_b_without_b_receipt_maps_correctly() {
+    let target = p224_test_target_hex();
+    let target_b64 = p224_test_target_b64();
+    let b_b64 = p224_test_b_b64();
+    let dir = p224_test_tmpdir("to-b-not-received");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO Job-7: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-7: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+        ),
+        true,
+    );
+    // B handled an unrelated lookup (proves DLM logging live) but
+    // never saw our target.
+    let b_logs = p224_write_log_tree(
+        &dir,
+        "b",
+        "log-router-0.txt",
+        "DEBUG Handling database lookup message for UnrelatedKeyAAAAAAAAAAAAAAAAAAAAAAAAAA= with replies going to from\n",
+        true,
+    );
+    let scan_a = p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan B");
+    let trace = p224_build_trace(
+        &target,
+        Some(&target_b64),
+        Some(&b_b64),
+        Some(&p224_test_helper_b64()),
+        Some(&scan_a),
+        Some(&scan_b),
+        p224_logger_config_installed(&a_logs),
+        p224_logger_config_installed(&b_logs),
+    );
+    assert!(trace.observable && trace.query_to_b && !trace.b_lookup_received);
+    assert!(trace.b_dlm_proven_live);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionAToBLookupNotReceived
+    );
+    // Without the B-side liveness proof the same shape is honestly a gap.
+    let mut trace_no_proof = trace.clone();
+    trace_no_proof.b_dlm_proven_live = false;
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace_no_proof,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.12 — B answer true + A inbound false maps to
+/// reply-not-observed (the non-target-specific encryption-error bit
+/// is supporting evidence only and never changes the terminal).
+#[test]
+fn p224_b_answer_without_a_inbound_maps_to_reply_not_observed() {
+    let target = p224_test_target_hex();
+    let target_b64 = p224_test_target_b64();
+    let b_b64 = p224_test_b_b64();
+    let dir = p224_test_tmpdir("reply-not-observed");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO Job-9: ISJ try 1 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-9: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+        ),
+        true,
+    );
+    let b_logs = p224_write_log_tree(
+        &dir,
+        "b",
+        "log-router-0.txt",
+        &format!(
+            "DEBUG Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\nERROR DLM reply encryption error\n"
+        ),
+        true,
+    );
+    let scan_a = p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan B");
+    let trace = p224_build_trace(
+        &target,
+        Some(&target_b64),
+        Some(&b_b64),
+        Some(&p224_test_helper_b64()),
+        Some(&scan_a),
+        Some(&scan_b),
+        p224_logger_config_installed(&a_logs),
+        p224_logger_config_installed(&b_logs),
+    );
+    assert!(trace.b_published_ls_answered && !trace.a_client_tunnel_ls_received);
+    assert!(trace.reply_encryption_error_seen);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBReplyNotObservedOnAClientTunnel
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.13 — A inbound true + client DB absent maps to the
+/// store-path contradiction (never an assumed scheduling race: the
+/// pinned source stores the DSM inline before the reply job runs).
+#[test]
+fn p224_a_inbound_but_client_db_absent_is_contradiction() {
+    let target = p224_test_target_hex();
+    let target_b64 = p224_test_target_b64();
+    let b_b64 = p224_test_b_b64();
+    let helper_b64 = p224_test_helper_b64();
+    let dir = p224_test_tmpdir("tunnel-dsm-not-in-db");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO Job-3: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Storing garlic LS down tunnel for: {target_b64} sent to: {helper_b64}\nINFO Job-3: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+        ),
+        true,
+    );
+    let b_logs = p224_write_log_tree(
+        &dir,
+        "b",
+        "log-router-0.txt",
+        &format!(
+            "DEBUG Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\n"
+        ),
+        true,
+    );
+    let scan_a =
+        p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&helper_b64)).expect("scan A");
+    let scan_b =
+        p224_scan_log_dir(&b_logs, &target_b64, &b_b64, Some(&helper_b64)).expect("scan B");
+    let trace = p224_build_trace(
+        &target,
+        Some(&target_b64),
+        Some(&b_b64),
+        Some(&helper_b64),
+        Some(&scan_a),
+        Some(&scan_b),
+        p224_logger_config_installed(&a_logs),
+        p224_logger_config_installed(&b_logs),
+    );
+    assert!(trace.a_client_tunnel_ls_received);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    let a_post = p224_absent_client(&client, &target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::EvidenceContradictionClientTunnelDsmNotInClientDb
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.14 — client DB present + status 21 maps to the
+/// usable-LS contradiction.
+#[test]
+fn p224_client_db_present_with_status21_is_contradiction() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let a_post = p224_present_client(&client, &target);
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::EvidenceContradictionNoLeasesetWithUsableClientLs
+    );
+}
+
+/// Plan 224 §15.15 — a status change away from 21 maps to
+/// NEXT-BOUNDARY (a successor plan owns the new boundary).
+#[test]
+fn p224_status_change_maps_to_next_boundary() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let a_post = p224_absent_client(&client, &target);
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            false,
+            &[1, 19],
+            false
+        ),
+        P224Terminal::NextBoundary
+    );
+    // ACCEPTED alone is admission, not a terminal: still a gap.
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            false,
+            &[1],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+    // An empty sequence is Unknown, never a boundary.
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            false,
+            &[],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+}
+
+/// Plan 224 §15.16 — digest-matched reverse payload inside the
+/// frozen window maps to REVERSE-DELIVERY-PASSED first, regardless
+/// of snapshot/trace shape.
+#[test]
+fn p224_payload_delivery_maps_to_passed() {
+    let target = p224_test_target_hex();
+    let absent = p224_parse_main_ls(&p224_main_row(&target, false, false, "unknown", "unknown"))
+        .expect("parses");
+    let trace = P224Trace::default();
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&absent),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            true
+        ),
+        P224Terminal::ReverseDeliveryPassed
+    );
+}
+
+/// Plan 224 §15.17 — a missing/unreadable log file yields the
+/// observability gap, never false protocol facts.
+#[test]
+fn p224_missing_log_file_yields_gap_not_false_facts() {
+    assert!(
+        p224_scan_log_dir(
+            Path::new("/nonexistent-p224-log-dir"),
+            &p224_test_target_b64(),
+            &p224_test_b_b64(),
+            None,
+        )
+        .is_none()
+    );
+    let target = p224_test_target_hex();
+    let trace = p224_build_trace(&target, None, None, None, None, None, false, false);
+    assert!(!trace.observable);
+    assert!(!trace.query_started && !trace.query_to_b && !trace.b_lookup_received);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+    // A truncated scan is likewise Unknown, never facts.
+    let mut truncated = P224LogScan::default();
+    truncated.truncated = true;
+    truncated.files_read = 1;
+    truncated.a_isj_any = 5;
+    let trace = p224_build_trace(
+        &target,
+        Some(&p224_test_target_b64()),
+        Some(&p224_test_b_b64()),
+        Some(&p224_test_helper_b64()),
+        Some(&truncated),
+        Some(&P224LogScan::default()),
+        true,
+        true,
+    );
+    assert!(!trace.observable);
+}
+
+/// Plan 224 §15.18 — the sanitizer never emits session key/tag
+/// material: a hostile reply-key line changes no fact, and the
+/// recorded evidence row carries only the whitelisted booleans.
+#[test]
+fn p224_sanitizer_censors_session_key_material() {
+    let target = p224_test_target_hex();
+    let target_b64 = p224_test_target_b64();
+    let b_b64 = p224_test_b_b64();
+    // Pinned `HandleDatabaseLookupMessageJob` INFO shape carries the
+    // ephemeral reply key and ratchet tag on one line (Plan 224
+    // §8.1). It must match no target fact and never reach evidence.
+    let hostile_key = "deadbeefcafef00d0123456789abcdef0123456789abcdef0123456789abcdef";
+    let hostile_tag = "session-tag-9f8e7d6c5b4a39281706f5e4d3c2b1a";
+    let dir = p224_test_tmpdir("sanitizer-censors-keys");
+    let b_logs = p224_write_log_tree(
+        &dir,
+        "b",
+        "log-router-0.txt",
+        &format!(
+            "INFO Sending AEAD reply to peerBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB= {hostile_key} {hostile_tag}\nDEBUG Handling database lookup message for UnrelatedKeyCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC= with replies going to from\n"
+        ),
+        true,
+    );
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO Job-5: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\n"
+        ),
+        true,
+    );
+    let scan_a = p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
+        .expect("scan B");
+    assert_eq!(scan_b.b_answered, 0);
+    let trace = p224_build_trace(
+        &target,
+        Some(&target_b64),
+        Some(&b_b64),
+        Some(&p224_test_helper_b64()),
+        Some(&scan_a),
+        Some(&scan_b),
+        p224_logger_config_installed(&a_logs),
+        p224_logger_config_installed(&b_logs),
+    );
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    record_p224_trace(&evidence_dir, &trace);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert!(
+        tsv.contains("p224-lookup-trace"),
+        "trace row must be recorded"
+    );
+    assert!(
+        !tsv.contains(hostile_key),
+        "session key must never reach evidence"
+    );
+    assert!(
+        !tsv.contains(hostile_tag),
+        "session tag must never reach evidence"
+    );
+    assert!(
+        !tsv.contains("Sending AEAD reply"),
+        "raw source line must never reach evidence"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §9.3 — a target-only garlic-store line is not enough to
+/// prove delivery to the helper client. The sanitizer requires the
+/// exact `sent to: <helper>` hash, preventing another client tunnel's
+/// DSM from being attributed to this lookup.
+#[test]
+fn p224_client_tunnel_receipt_requires_exact_helper_hash() {
+    let target_b64 = p224_test_target_b64();
+    let helper_b64 = p224_test_helper_b64();
+    let other_helper_b64 = format!("{}=", "O".repeat(43));
+    let dir = p224_test_tmpdir("client-tunnel-helper-correlation");
+    let logs_dir = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO Storing garlic LS down tunnel for: {target_b64} sent to: {other_helper_b64}\n"
+        ),
+        true,
+    );
+    let scan = p224_scan_log_dir(
+        &logs_dir,
+        &target_b64,
+        &p224_test_b_b64(),
+        Some(&helper_b64),
+    )
+    .expect("scan target-only client line");
+    assert_eq!(scan.a_client_tunnel_ls, 0);
+
+    std::fs::write(
+        logs_dir.join("log-router-0.txt"),
+        format!("INFO Storing garlic LS down tunnel for: {target_b64} sent to: {helper_b64}\n"),
+    )
+    .expect("write exact helper line");
+    let scan = p224_scan_log_dir(
+        &logs_dir,
+        &target_b64,
+        &p224_test_b_b64(),
+        Some(&helper_b64),
+    )
+    .expect("scan exact client line");
+    assert_eq!(scan.a_client_tunnel_ls, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.19 — the sanitizer emits only bounded typed facts:
+/// the per-router file cap holds and every count is a plain integer.
+#[test]
+fn p224_sanitizer_emits_only_bounded_typed_facts() {
+    assert_eq!(P224_MAX_LOG_FILES_PER_ROUTER, 16);
+    assert_eq!(P224_MAX_LOG_BYTES_PER_ROUTER, 96 * 1024 * 1024);
+    let dir = p224_test_tmpdir("sanitizer-bounded");
+    let logs_dir = dir.join("a").join("logs");
+    std::fs::create_dir_all(&logs_dir).expect("logs dir");
+    for i in 0..20 {
+        std::fs::write(
+            logs_dir.join(format!("log-router-{i}.txt")),
+            "INFO unrelated line\n",
+        )
+        .expect("log file");
+    }
+    let target_b64 = p224_test_target_b64();
+    let scan = p224_scan_log_dir(
+        &logs_dir,
+        &target_b64,
+        &p224_test_b_b64(),
+        Some(&p224_test_helper_b64()),
+    )
+    .expect("scan");
+    assert_eq!(scan.files_read, P224_MAX_LOG_FILES_PER_ROUTER);
+    assert!(!scan.truncated);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plan 224 §15.22 — the frozen 45-second result is an input to the
+/// classifier, never derived from the trace: later trace collection
+/// cannot flip it either way.
+#[test]
+fn p224_frozen_payload_cannot_be_altered_by_trace() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let a_post = p224_present_client(&client, &target);
+    // Maximally positive trace with frozen failure: contradiction
+    // (D8), never delivery-passed.
+    let mut trace = p224_observable_trace(&target);
+    trace.query_started = true;
+    trace.query_to_b = true;
+    trace.b_lookup_received = true;
+    trace.b_published_ls_answered = true;
+    trace.a_client_tunnel_ls_received = true;
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            Some(&a_post),
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::EvidenceContradictionNoLeasesetWithUsableClientLs
+    );
+    // Frozen success with absent publication: delivery-passed anyway
+    // (payload is the authoritative delivery proof).
+    let absent = p224_parse_main_ls(&p224_main_row(&target, false, false, "unknown", "unknown"))
+        .expect("parses");
+    let empty_trace = P224Trace::default();
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&absent),
+            None,
+            None,
+            None,
+            &empty_trace,
+            false,
+            &[],
+            true
+        ),
+        P224Terminal::ReverseDeliveryPassed
+    );
+}
+
+/// D5 — B received but did not answer with a still-answerable
+/// post-send entry is an evidence contradiction; a post-send state
+/// change re-derives the B terminal instead, and a missing post
+/// snapshot is a gap.
+#[test]
+fn p224_b_received_but_not_answered_mapping() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let mut trace = p224_observable_trace(&target);
+    trace.query_started = true;
+    trace.query_to_b = true;
+    trace.search_failed = true;
+    trace.b_lookup_received = true;
+    // Still answerable post-send: contradiction.
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_pre),
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::EvidenceContradictionBAnswerableButNotAnswered
+    );
+    // Post-send RAP lost: re-derive from post state (transition, not
+    // a handler-bug claim).
+    let b_post_lost_rap =
+        p224_parse_main_ls(&p224_main_row(&target, true, true, "false", "true")).expect("parses");
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            Some(&b_post_lost_rap),
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::AttributionBMainLsNotQueryAnswerable
+    );
+    // Post-send missing: gap.
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+}
+
+/// A query that never started with status 21 has no authorized
+/// terminal: the honest result is the gap, never an invented stage.
+#[test]
+fn p224_query_never_started_with_status21_is_gap() {
+    let target = p224_test_target_hex();
+    let client = "ef".repeat(32);
+    let b_pre = p224_answerable_main(&target);
+    let a_pre = p224_absent_client(&client, &target);
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+}
+
+/// A target-hash mismatch across snapshots is incomplete evidence,
+/// never attribution (snapshots are never reused across attempts).
+#[test]
+fn p224_target_mismatch_yields_gap() {
+    let target = p224_test_target_hex();
+    let other = p224_test_b_hex();
+    let b_pre = p224_answerable_main(&other);
+    let trace = p224_observable_trace(&target);
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+}
+
+/// Deep terminals require the pre-send helper client snapshot with a
+/// proven client facade; without it the honest result is the gap.
+#[test]
+fn p224_client_pre_snapshot_required_for_deep_terminals() {
+    let target = p224_test_target_hex();
+    let b_pre = p224_answerable_main(&target);
+    let mut trace = p224_observable_trace(&target);
+    trace.b_published_ls_answered = true;
+    // D6 shape but no client pre snapshot: gap, not attribution.
+    assert_eq!(
+        p224_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            None,
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false
+        ),
+        P224Terminal::ObservabilityGapLookupPath
+    );
+}
+
+/// Snapshot and hash parsers reject malformed input (Unknown, never
+/// a protocol fact).
+#[test]
+fn p224_parsers_reject_malformed() {
+    assert!(p224_parse_main_ls("P224-ERROR invalid-hex-hash").is_none());
+    assert!(p224_parse_main_ls("P220-EV kind=selector target_hash_hex=ab").is_none());
+    assert!(p224_parse_main_ls("").is_none());
+    assert!(
+        p224_parse_main_ls("P224-EV kind=main-ls target_hash_hex=xyz observable=true").is_none()
+    );
+    assert!(p224_parse_client_ls("P224-ERROR invalid-hex-hash").is_none());
+    assert!(p224_parse_client_ls("").is_none());
+    assert!(
+        p224_parse_hash_b64(
+            "P224-EV kind=hash-b64 hash_hex=ab observable=false reason=render-failed",
+            "ab"
+        )
+        .is_none()
+    );
+}
+
+/// `P224-HASH-B64` accepts a well-formed rendering and rejects an
+/// echoed-hex mismatch, a non-alphabet rendering, or an error line.
+#[test]
+fn p224_hash_b64_parser_accepts_valid_and_rejects_mismatch() {
+    let hex = p224_test_target_hex();
+    let b64 = p224_test_target_b64();
+    let line = format!("P224-EV kind=hash-b64 hash_hex={hex} observable=true hash_b64={b64}");
+    assert_eq!(
+        p224_parse_hash_b64(&line, &hex).as_deref(),
+        Some(b64.as_str())
+    );
+    // Echoed-hex mismatch: Unknown, never a guessed rendering.
+    let other = p224_test_b_hex();
+    assert!(p224_parse_hash_b64(&line, &other).is_none());
+    // Non-I2P-alphabet rendering rejected (standard-alphabet `+`
+    // and `/` are never valid I2P Base64, even without whitespace).
+    let bad_alpha = format!(
+        "P224-EV kind=hash-b64 hash_hex={hex} observable=true hash_b64=not+valid/base64*chars!!"
+    );
+    assert!(p224_parse_hash_b64(&bad_alpha, &hex).is_none());
+    // Error line rejected.
+    assert!(p224_parse_hash_b64("P224-ERROR invalid-hex-hash", &hex).is_none());
+}
+
+/// Plan 224 terminal tokens are canonical (§13 D1–D11): exactly one
+/// terminal per attempt, no invented strings.
+#[test]
+fn p224_terminal_tokens_are_canonical() {
+    assert_eq!(
+        P224Terminal::AttributionBMainLsAbsent.token(),
+        "P224-ATTRIBUTION-B-MAIN-LS-ABSENT"
+    );
+    assert_eq!(
+        P224Terminal::AttributionBMainLsInvalidOrStale.token(),
+        "P224-ATTRIBUTION-B-MAIN-LS-INVALID-OR-STALE"
+    );
+    assert_eq!(
+        P224Terminal::AttributionBMainLsNotQueryAnswerable.token(),
+        "P224-ATTRIBUTION-B-MAIN-LS-NOT-QUERY-ANSWERABLE"
+    );
+    assert_eq!(
+        P224Terminal::AttributionANoInboundClientReplyTunnel.token(),
+        "P224-ATTRIBUTION-A-NO-INBOUND-CLIENT-REPLY-TUNNEL"
+    );
+    assert_eq!(
+        P224Terminal::AttributionALookupReplyCryptoUnavailable.token(),
+        "P224-ATTRIBUTION-A-LOOKUP-REPLY-CRYPTO-UNAVAILABLE"
+    );
+    assert_eq!(
+        P224Terminal::AttributionASearchExhaustedWithoutQueryingB.token(),
+        "P224-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B"
+    );
+    assert_eq!(
+        P224Terminal::AttributionAToBLookupNotReceived.token(),
+        "P224-ATTRIBUTION-A-TO-B-LOOKUP-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P224Terminal::EvidenceContradictionBAnswerableButNotAnswered.token(),
+        "P224-EVIDENCE-CONTRADICTION-B-ANSWERABLE-BUT-NOT-ANSWERED"
+    );
+    assert_eq!(
+        P224Terminal::AttributionBReplyNotObservedOnAClientTunnel.token(),
+        "P224-ATTRIBUTION-B-REPLY-NOT-OBSERVED-ON-A-CLIENT-TUNNEL"
+    );
+    assert_eq!(
+        P224Terminal::EvidenceContradictionClientTunnelDsmNotInClientDb.token(),
+        "P224-EVIDENCE-CONTRADICTION-CLIENT-TUNNEL-DSM-NOT-IN-CLIENT-DB"
+    );
+    assert_eq!(
+        P224Terminal::EvidenceContradictionNoLeasesetWithUsableClientLs.token(),
+        "P224-EVIDENCE-CONTRADICTION-NO-LEASESET-WITH-USABLE-CLIENT-LS"
+    );
+    assert_eq!(P224Terminal::NextBoundary.token(), "P224-NEXT-BOUNDARY");
+    assert_eq!(
+        P224Terminal::ReverseDeliveryPassed.token(),
+        "P224-REVERSE-DELIVERY-PASSED"
+    );
+    assert_eq!(
+        P224Terminal::ObservabilityGapLookupPath.token(),
+        "P224-OBSERVABILITY-GAP-LOOKUP-PATH"
+    );
+}
+
+/// Every run emits exactly one `p224-classification` row, including
+/// pre-epoch stops (gap, never attribution).
+#[test]
+fn p224_record_emits_exactly_one_classification() {
+    let dir = p224_test_tmpdir("record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let token = record_p224_classification(
+        &evidence_dir,
+        P224Terminal::AttributionBMainLsAbsent,
+        &p224_test_target_hex(),
+        Some(false),
+        &[1, 21],
+        false,
+        false,
+        false,
+        true,
+    );
+    assert_eq!(token, "P224-ATTRIBUTION-B-MAIN-LS-ABSENT");
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|l| l.starts_with("p224-classification\t"))
+            .count(),
+        1
+    );
+    record_p224_early_stop_gap(&evidence_dir, "test-stop");
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|l| l.starts_with("p224-classification\t"))
+            .count(),
+        2
+    );
+    assert!(tsv.contains("P224-OBSERVABILITY-GAP-LOOKUP-PATH"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

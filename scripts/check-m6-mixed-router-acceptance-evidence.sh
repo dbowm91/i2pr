@@ -1338,8 +1338,265 @@ if [[ -f "${P223_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 17. Plan 224 NO_LEASESET lookup-path attribution --------------------
+# Plan 224 is attribution-only: read-only Router-B main-LS and
+# Router-A helper client-subDB snapshots, scratch-only targeted
+# logger.config, whitelist-only sanitized trace facts, one bounded
+# Rust classifier, and the frozen 45-second payload window. No
+# production corrective, no Java mutation, no topology/tunnel/
+# selector/SAM change, no second publication, no standalone lookup
+# that could prime the helper client DB.
+P224_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P224LsProbe.java"
+P224_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P224_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P224_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P224_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 224 snapshot probe ${P224_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 17a. Read-only snapshot surface (exact pinned accessors).
+  for required in \
+    'lookupLocallyWithoutValidation' \
+    'lookupLeaseSetLocally' \
+    'clientNetDb' \
+    'isClientDb' \
+    'getReceivedAsPublished' \
+    'getReceivedAsReply' \
+    'getReceivedBy' \
+    'isUnpublished' \
+    'getEncryptionKeys' \
+    'isCurrent' \
+    'snapshotMain' \
+    'snapshotClient'; do
+    if ! grep -q "${required}" "${P224_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_PROBE_SRC} lacks the Plan 224 read-only surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17b. The probe must never mutate Java state, use reflection, run
+  # a network lookup, or publish/store a LeaseSet. `lookupLeaseSet(`
+  # with an open paren is the remote/search call; the read-only
+  # `lookupLeaseSetLocally(` never matches it.
+  for forbidden in \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'lookupLeaseSet(' \
+    'import java.lang.reflect'; do
+    if grep -q "${forbidden}" "${P224_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_PROBE_SRC} mutates Java state or searches via '${forbidden}' (Plan 224 §6/§17 out of scope)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17c. Key type codes and counts only: the probe must never render
+  # key bytes into evidence (only `getType().getCode()` integers).
+  if ! grep -q 'getType().getCode()' "${P224_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_PROBE_SRC} lost key-type-code-only exposure (Plan 224 §7)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${P224_LAUNCHER_SRC}" ]]; then
+  # 17d. The launcher must expose exactly the three P224 commands.
+  for required in \
+    '"P224-MAIN-LS"' \
+    '"P224-CLIENT-LS"' \
+    '"P224-HASH-B64"' \
+    'P224LsProbe' \
+    'P224-EV kind=main-ls' \
+    'P224-EV kind=client-ls' \
+    'P224-EV kind=hash-b64'; do
+    if ! grep -q "${required}" "${P224_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_LAUNCHER_SRC} lacks the Plan 224 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17e. No second diagnostic server, no P224 mutation path.
+  for forbidden in \
+    'P224.*\.store(' \
+    'P224.*registerKeys' \
+    'P224.*setAccessible'; do
+    if grep -q "${forbidden}" "${P224_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_LAUNCHER_SRC} carries a P224 mutation path '${forbidden}' (Plan 224 §6/§17)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${P224_DRIVER_TEST}" ]]; then
+  # 17f. The driver must own the P224 snapshots, whitelist-only
+  # sanitizer, and single classifier with the frozen window as an
+  # input (never derived from the trace).
+  for required in \
+    'fn p224_parse_main_ls' \
+    'fn p224_parse_client_ls' \
+    'fn p224_parse_hash_b64' \
+    'fn p224_collect_main_ls' \
+    'fn p224_collect_client_ls' \
+    'fn p224_collect_hash_b64' \
+    'fn p224_scan_log_dir' \
+    'fn p224_build_trace' \
+    'fn p224_logger_config_installed' \
+    'fn p224_b_answerable' \
+    'fn p224_classify' \
+    'enum P224Terminal' \
+    'fn record_p224_classification' \
+    'fn record_p224_early_stop_gap' \
+    'P224-ATTRIBUTION-B-MAIN-LS-ABSENT' \
+    'P224-ATTRIBUTION-B-MAIN-LS-INVALID-OR-STALE' \
+    'P224-ATTRIBUTION-B-MAIN-LS-NOT-QUERY-ANSWERABLE' \
+    'P224-ATTRIBUTION-A-NO-INBOUND-CLIENT-REPLY-TUNNEL' \
+    'P224-ATTRIBUTION-A-LOOKUP-REPLY-CRYPTO-UNAVAILABLE' \
+    'P224-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B' \
+    'P224-ATTRIBUTION-A-TO-B-LOOKUP-NOT-RECEIVED' \
+    'P224-EVIDENCE-CONTRADICTION-B-ANSWERABLE-BUT-NOT-ANSWERED' \
+    'P224-ATTRIBUTION-B-REPLY-NOT-OBSERVED-ON-A-CLIENT-TUNNEL' \
+    'P224-EVIDENCE-CONTRADICTION-CLIENT-TUNNEL-DSM-NOT-IN-CLIENT-DB' \
+    'P224-EVIDENCE-CONTRADICTION-NO-LEASESET-WITH-USABLE-CLIENT-LS' \
+    'P224-NEXT-BOUNDARY' \
+    'P224-REVERSE-DELIVERY-PASSED' \
+    'P224-OBSERVABILITY-GAP-LOOKUP-PATH' \
+    'p224-b-main-before-send' \
+    'p224-a-client-before-send' \
+    'p224-a-client-after' \
+    'p224-b-main-after' \
+    'p224-target-context' \
+    'p224-lookup-trace' \
+    'p224-classification'; do
+    if ! grep -q "${required}" "${P224_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lacks the Plan 224 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17g. Whitelist-only fixed-substring patterns (exact pinned log
+  # shapes); the sanitizer must match these and nothing else.
+  for required in \
+    'ISJ try ' \
+    'reply via client tunnel? true' \
+    'failed, no IB client tunnel to receive reply' \
+    'skipped, no ratchet/elg support' \
+    'Handling database lookup message for ' \
+    'We have the published LS ' \
+    'Storing garlic LS down tunnel for: ' \
+    'DLM reply encryption error'; do
+    if ! grep -q -F "${required}" "${P224_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lacks the Plan 224 whitelist pattern '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17h. The P224 unit rows must lock the classifier in the ordinary floor.
+  for unit_row in \
+    p224_main_snapshot_distinguishes_raw_absent_from_validated_absent \
+    p224_main_snapshot_records_received_as_published \
+    p224_client_snapshot_rejects_main_db_fallback \
+    p224_ls2_snapshot_exposes_type_counts_only_not_key_bytes \
+    p224_b_absent_maps_to_absent_terminal \
+    p224_b_invalid_or_stale_mapping \
+    p224_b_present_but_not_published_maps_correctly \
+    p224_answerable_plus_no_inbound_tunnel_maps_correctly \
+    p224_answerable_plus_no_reply_crypto_maps_correctly \
+    p224_selector_membership_alone_does_not_satisfy_query_to_b \
+    p224_query_to_b_without_b_receipt_maps_correctly \
+    p224_b_answer_without_a_inbound_maps_to_reply_not_observed \
+    p224_a_inbound_but_client_db_absent_is_contradiction \
+    p224_client_db_present_with_status21_is_contradiction \
+    p224_status_change_maps_to_next_boundary \
+    p224_payload_delivery_maps_to_passed \
+    p224_missing_log_file_yields_gap_not_false_facts \
+    p224_sanitizer_censors_session_key_material \
+    p224_client_tunnel_receipt_requires_exact_helper_hash \
+    p224_sanitizer_emits_only_bounded_typed_facts \
+    p224_frozen_payload_cannot_be_altered_by_trace \
+    p224_b_received_but_not_answered_mapping \
+    p224_query_never_started_with_status21_is_gap \
+    p224_target_mismatch_yields_gap \
+    p224_client_pre_snapshot_required_for_deep_terminals \
+    p224_parsers_reject_malformed \
+    p224_hash_b64_parser_accepts_valid_and_rejects_mismatch \
+    p224_terminal_tokens_are_canonical \
+    p224_record_emits_exactly_one_classification; do
+    if ! grep -q "fn ${unit_row}" "${P224_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lacks the Plan 224 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17i. Freeze guards (Plan 224 §10 WP-A): the publication path
+  # keeps exactly its pre-224 submissions (destination + streaming +
+  # streaming republication), all still targeted at Router B, and the
+  # P224 code never touches publication itself.
+  if [[ "$(grep -c 'begin_ls2_publication' "${P224_DRIVER_TEST}")" -ne 3 ]]; then
+    echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} changed the LS2 publication submission count (Plan 224 §10 freeze: exactly 3 pre-224 sites)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'RouterHash::from_bytes(\*java_hash.as_bytes())' "${P224_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lost the Router-B publication target (Plan 224 §10 freeze)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q 'p224.*begin_ls2_publication\|begin_ls2_publication.*p224' "${P224_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lets P224 code touch publication (Plan 224 §6 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+  # 17j. The frozen 45-second window stays the payload authority:
+  # P224 consumes `frozen_payload_45s` as a classifier input and the
+  # status-only deadline never feeds the payload row.
+  if ! grep -q 'frozen_payload_45s' "${P224_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lost the frozen-45s P224 input (Plan 224 §15.22)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${P224_HARNESS}" ]]; then
+  # 17k. The harness must compile the P224 probe, install the
+  # targeted logger.config before router startup, pass both log dirs
+  # to the driver, and record the LAST p224-classification.
+  for required in \
+    'P224LsProbe.java' \
+    'write_p224_logger_config' \
+    'logger.defaultLevel=ERROR' \
+    'logger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO' \
+    'logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG' \
+    'logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO' \
+    'JAVA_A_LOG_DIR' \
+    'JAVA_B_LOG_DIR' \
+    'p224-classification'; do
+    if ! grep -q "${required}" "${P224_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_HARNESS} lacks the Plan 224 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 17l. The harness must never invent a P224 terminal: only the
+  # `external-p224-classification` aggregator row may be recorded.
+  if grep -q 'record "P224-' "${P224_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_HARNESS} invents a P224 terminal (Plan 224 §13: exactly one classifier terminal)" >&2
+    failures=$((failures + 1))
+  fi
+  # 17m. Raw Java logs stay scratch-only: no P224 evidence row may be
+  # fed by copying a router log file into evidence.
+  if grep -q 'p224.*log-router\|log-router.*p224' "${P224_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_HARNESS} copies raw router logs into P224 evidence (Plan 224 §8.1: scratch-only)" >&2
+    failures=$((failures + 1))
+  fi
+  # 17n. The sanitizer's hostile-input regression test must stay
+  # wired (it intentionally contains the pinned AEAD-reply shape as
+  # hostile input; the shell/Java side must never emit it).
+  if grep -q 'Sending AEAD reply' "${P224_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P224_HARNESS} emits the pinned reply-key log shape (Plan 224 §8.1)" >&2
+    failures=$((failures + 1))
+  fi
+  for probe_file in "${P224_PROBE_SRC}" "${P224_LAUNCHER_SRC}"; do
+    if [[ -f "${probe_file}" ]] && grep -q 'Sending AEAD reply' "${probe_file}"; then
+      echo "m6 mixed-router evidence check failed: ${probe_file} emits the pinned reply-key log shape (Plan 224 §8.1)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants)"
