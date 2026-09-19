@@ -1,6 +1,21 @@
+# Current dependency amendment — Plan 222 narrowing
+
+M10 product authority remains closed through Plans 213–215. Plan 204 is still
+convergence-only and blocked on independent M6 Java-family closure.
+
+Plan 221 was superseded before execution after exact-pinned source review found
+that the inherited selector probe did not reproduce Java's real routing-key and
+search-width semantics. Plan 222 is the dependency-ready corrected narrowing.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan222-narrowing
+plan_221 = superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective
+plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-closure-pending-plan220-diagnostic-corrective`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan222-narrowing`**.
 
 ## 2026-09-18 follow-up — Plan 220 passed, convergence still blocked
 
