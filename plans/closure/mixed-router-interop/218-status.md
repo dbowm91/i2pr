@@ -1,3 +1,16 @@
+# Current handoff amendment — Plan 224 attribution registered
+
+Plan 218's behavioral stop remains authoritative. Plan 223 moved the exact
+reverse-send boundary to `ACCEPTED -> NO_LEASESET (21)`. Plan 224 is now the
+sole executable attribution pass and must identify the first missing
+publication/lookup/reply/store stage before any corrective is authorized.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
+next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution
+```
+
 # Current handoff amendment — Plan 223 closed with NEXT-BOUNDARY
 
 Plan 218's behavioral stop remains authoritative (stop token unchanged). Plan 223
