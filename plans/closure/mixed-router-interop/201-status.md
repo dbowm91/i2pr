@@ -1,4 +1,4 @@
-# Current dependency amendment — Plan 224 closed with observability gap
+# Current dependency amendment — Plan 225 closed with exact lookup attribution
 
 Plan 224 closed as
 `passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap` (see
@@ -8,14 +8,21 @@ remained empty before and after the nonce-correlated `ACCEPTED -> NO_LEASESET`
 send, but the exact A→B/B→A lookup trace was not observable from the permitted
 diagnostics. No lookup-stage corrective is authorized from that gap.
 
-Plan 225 is now registered as the narrow observability corrective. Plan 201
-remains blocked until Plan 225 produces an exact stage attribution and the
-resulting Java-family closure is complete.
+Plan 225 is now closed as the narrow observability corrective with the exact
+terminal `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`: Router A's
+helper search started and exhausted without dispatching the target lookup to
+Router B. This closes the observability dependency, but Plan 225 is diagnostic
+only and does not complete the Java second-family closure or authorize a
+production correction. Plan 201 remains blocked pending that closure.
 
 ```text
-plan_201 = blocked-pending-plan225-no-leaseset-lookup-path-observability-corrective
+plan_201 = blocked-pending-m6-java-second-family-closure-after-plan225-attribution
 plan_224 = passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap
-plan_225 = registered-ready-m6-java-no-leaseset-lookup-path-observability-corrective
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan201-after-plan225-attribution
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed
+next_executable_plan = none
 ```
 
 # Current dependency amendment — Plan 224 attribution registered
@@ -104,7 +111,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-plan223-destination-identity-crypto-separation-corrective`**.
+Status: **`blocked-pending-m6-java-second-family-closure-after-plan225-attribution`**.
 
 ## 2026-09-18 authority amendment — Plan 220 corrected attribution closed
 

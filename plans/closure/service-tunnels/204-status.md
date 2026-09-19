@@ -1,16 +1,24 @@
-# Current dependency amendment — Plan 224 closed with observability gap
+# Current dependency amendment — Plan 225 closed with exact lookup attribution
 
 Plan 224 closed as
 `passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap`.
 Its exact-clean-head destination evidence proves Router-B LS2 answerability
 and a persistent empty Java helper client DB, but the lookup-path trace is not
-observable. Plan 225 owns the resulting diagnostic corrective; the M6 Java
-second-family convergence gate remains open.
+observable. Plan 225 closed the resulting diagnostic corrective with the exact
+terminal `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`: the Java
+helper search started and exhausted without dispatching the target lookup to
+Router B. The M6 Java second-family convergence gate remains open because this
+is diagnostic evidence, not a product correction or final qualification.
 
 ```text
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan225-observability
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan201-after-plan225-attribution
 plan_224 = passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap
-plan_225 = registered-ready-m6-java-no-leaseset-lookup-path-observability-corrective
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+plan_201 = blocked-pending-m6-java-second-family-closure-after-plan225-attribution
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+milestone6_java_mixed_router_interop = not-yet-passed
+milestone10_final_acceptance = closed
+next_executable_plan = none
 ```
 
 # Current dependency amendment — Plan 224 attribution registered
@@ -94,7 +102,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-closure-pending-plan223`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan201-after-plan225-attribution`**.
 
 ## 2026-09-18 follow-up — Plan 220 passed, convergence still blocked
 
