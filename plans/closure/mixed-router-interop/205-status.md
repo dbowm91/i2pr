@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 224 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 224 attributes the direct Java
+client-NetDB lookup path below the helper API. Router-B publication state,
+client-tunnel lookup/reply delivery, and client-subDB installation are not
+layers a SAM bridge replaces.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
+```
+
 # Current dependency amendment — Plan 223 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 223 targets the target-Destination
