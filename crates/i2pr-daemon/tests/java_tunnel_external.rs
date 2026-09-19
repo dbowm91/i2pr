@@ -4833,7 +4833,7 @@ fn p225_parse_hash_b32(line: &str, expected_hex: &str) -> Option<String> {
     if b32.len() != 52
         || !b32
             .bytes()
-            .all(|b| (b'a'..=b'z').contains(&b) || (b'2'..=b'7').contains(&b))
+            .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
     {
         return None;
     }
