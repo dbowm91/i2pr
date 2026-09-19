@@ -1,3 +1,19 @@
+# Current dependency amendment — Plan 222 corrected narrowing
+
+Plan 205 stays retained/deferred. Plan 220 definitively refuted the J219-B
+RouterInfo-bootstrap hypothesis, but its selector result was not
+production-equivalent enough to prove that the open boundary is strictly below
+every NetDB-selection step.
+
+Plan 222 must first reproduce the client lookup with the helper client DBID,
+Java-derived routing key/effective selector width, and nonce-correlated public
+send status. No SAM pivot is authorized by this amendment.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Plan 205 status — Java I2P SAM/helper publication pivot
 
 Status: **`retained-deferred-conditional-after-plan218-direct-i2cp-requalification`**.
