@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 223 registered
+
+M10 product authority remains closed through Plans 213–215. Plan 204 remains
+convergence-only and blocked on independent M6 Java-family closure.
+
+Plan 223 is the active M6 corrective after Plan 222 narrowed the reverse
+failure to status 17. Plan 223 does not reopen M10 product closure and does
+not itself close M6.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan223
+plan_223 = registered-ready-m6-java-destination-identity-crypto-separation-corrective
+```
+
 # Current dependency amendment — Plan 222 closed with OCMOSJ narrowing
 
 M10 product authority remains closed through Plans 213–215. Plan 204 is still
@@ -33,7 +47,7 @@ plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
 
 # Plan 204 status — final M6/M10 evidence and authority convergence
 
-Status: **`blocked-on-m6-java-second-family-closure-pending-ocmosj-corrective-after-plan222`**.
+Status: **`blocked-on-m6-java-second-family-closure-pending-plan223`**.
 
 ## 2026-09-18 follow-up — Plan 220 passed, convergence still blocked
 
