@@ -127,7 +127,11 @@ SELECTOR_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/route
 # (helper client DBID + Java routing key + effective width through the
 # production-equivalent 3-argument selector overload; read-only).
 P222_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P222SelectorProbe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" ]]; then
+# Plan 223 WP C — test-only bounded status-17 branch discriminator
+# (source LeaseSetKeys + target LS2 + exact getEncryptionKey intersection;
+# read-only, no KeyManager/client-DB/LeaseSet mutation).
+P223_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P223BranchProbe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -140,7 +144,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -1253,6 +1257,23 @@ if [[ -z "${P222_CLASSIFICATION}" ]]; then
   P222_CLASSIFICATION="P222-classification-missing"
 fi
 record "external-p222-classification" passed "Plan 222 §H: ${P222_CLASSIFICATION}"
+
+# Plan 223 §12 — read the terminal `p223-classification` the destination
+# driver emitted from its exact Destination + branch discriminator path.
+# We MUST consume the LAST occurrence so an early branch can't shadow the
+# authoritative outcome. Recording the classification itself is a
+# diagnostic observation; it is reported as `passed` regardless of the
+# terminal it names. The static checker rejects any literal
+# `record "<P223-X>" passed` line.
+P223_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_P223="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_P223}" ]]; then
+  P223_CLASSIFICATION="$(awk -F'\t' '$1 == "p223-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P223}")"
+fi
+if [[ -z "${P223_CLASSIFICATION}" ]]; then
+  P223_CLASSIFICATION="P223-classification-missing"
+fi
+record "external-p223-classification" passed "Plan 223 §12: ${P223_CLASSIFICATION}"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

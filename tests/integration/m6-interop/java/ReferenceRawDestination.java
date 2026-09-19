@@ -25,6 +25,7 @@ import net.i2p.client.SendMessageOptions;
 import net.i2p.client.SendMessageStatusListener;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Destination;
+import net.i2p.data.Hash;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -338,6 +339,36 @@ public final class ReferenceRawDestination {
                                 + " public_client_control_ready=" + PUBLIC_CLIENT_CONTROL_READY
                                 + " helper_uptime_ms=" + uptimeMs
                                 + " publications_observed=no");
+                            break;
+                        }
+                        case "INSPECT_DEST": {
+                            // Plan 223 WP B — read-only exact Destination
+                            // observation. Parses the supplied I2P Base64
+                            // Destination via the public
+                            // `new Destination(String)` API and returns only
+                            // public facts: hash, encryption type, public-key
+                            // length, signing type. Never mutates NetDB,
+                            // KeyManager, tunnel, or LeaseSet state. Never
+                            // carries private key material.
+                            String[] values = split(line, 2);
+                            String b64 = values[1];
+                            try {
+                                Destination peer = new Destination(b64);
+                                Hash h = peer.calculateHash();
+                                String hashHex = hex(h.getData());
+                                int encCode = peer.getEncType().getCode();
+                                String encName = peer.getEncType().name();
+                                int pubLen = peer.getPublicKey().length();
+                                int sigCode = peer.getSigType().getCode();
+                                output.println("DEST_INFO hash_hex=" + hashHex
+                                    + " enc_type_code=" + encCode
+                                    + " enc_type_name=" + encName
+                                    + " public_key_len=" + pubLen
+                                    + " sig_type_code=" + sigCode);
+                            } catch (Throwable t) {
+                                output.println("DEST_INFO_ERROR class="
+                                    + t.getClass().getSimpleName());
+                            }
                             break;
                         }
                         case "STOP": output.println("STOPPING"); stop = true; break;

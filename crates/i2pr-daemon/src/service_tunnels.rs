@@ -46,7 +46,7 @@ use i2pr_client::{
     DestinationConfig, DestinationId, DestinationIdentity, DestinationOutboundRole,
     DestinationRegistry, DestinationRuntime, DestinationShutdown, RegistryConfig,
 };
-use i2pr_crypto::{IDENTITY_PADDING_LENGTH, OsRng, PRIVATE_KEY_LENGTH, X25519_KEY_LENGTH};
+use i2pr_crypto::{OsRng, X25519_KEY_LENGTH};
 use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::{Destination, LeaseSet2};
 use i2pr_runtime::{CancellationToken, ChildScope};
@@ -2705,19 +2705,36 @@ fn identity_from_record(
     record: &ServiceDestinationRecord,
     service_id: &str,
 ) -> Result<DestinationIdentity, ServiceTunnelError> {
-    let mut signing_seed = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
-    signing_seed.copy_from_slice(record.signing_seed());
-    let mut static_secret = Zeroizing::new([0_u8; X25519_KEY_LENGTH]);
-    static_secret.copy_from_slice(record.static_secret());
-    let mut padding = Zeroizing::new(vec![0_u8; IDENTITY_PADDING_LENGTH]);
-    padding.copy_from_slice(record.padding());
-    DestinationIdentity::from_private_bytes(*signing_seed, *static_secret, padding).map_err(
-        |error| {
+    // Plan 223 §15: v1 records reconstruct byte-identical X25519
+    // Destinations; v2 records reconstruct ElGamal/type-0 Destinations from
+    // explicit filler + 96-byte padding. No silent hash change on load.
+    if let Some(filler) = record.legacy_filler() {
+        let mut padding = Zeroizing::new(vec![0_u8; record.padding().len()]);
+        padding.copy_from_slice(record.padding());
+        return DestinationIdentity::from_private_bytes(
+            *record.signing_seed(),
+            *record.static_secret(),
+            *filler,
+            padding,
+        )
+        .map_err(|error| {
             ServiceTunnelError::InvalidConfig(format!(
                 "{service_id} destination reconstruction failed: {error}"
             ))
-        },
+        });
+    }
+    let mut padding = Zeroizing::new(vec![0_u8; record.padding().len()]);
+    padding.copy_from_slice(record.padding());
+    DestinationIdentity::from_private_bytes_legacy_x25519(
+        *record.signing_seed(),
+        *record.static_secret(),
+        padding,
     )
+    .map_err(|error| {
+        ServiceTunnelError::InvalidConfig(format!(
+            "{service_id} destination reconstruction failed: {error}"
+        ))
+    })
 }
 
 /// Resolved client target material.

@@ -56,8 +56,11 @@ pub use dispatch::{
     MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION, MAX_INBOUND_PENDING_MESSAGES,
 };
 pub use identity::{
-    DestinationId, DestinationIdentity, DestinationIdentityError, DestinationOwnership,
-    DestinationPublic, InboundDecryptionCapability, InboundDecryptionRef,
+    DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE, DESTINATION_LEGACY_PADDING_LENGTH,
+    DESTINATION_LEGACY_PUBLIC_LENGTH, DESTINATION_LS2_CRYPTO_TYPE,
+    DESTINATION_X25519_PADDING_LENGTH, DestinationId, DestinationIdentity,
+    DestinationIdentityError, DestinationOwnership, DestinationPublic, InboundDecryptionCapability,
+    InboundDecryptionRef,
 };
 pub use lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, MAX_LEASE_SAFETY_MARGIN_SECONDS,

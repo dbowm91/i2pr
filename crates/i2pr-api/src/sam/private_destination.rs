@@ -44,10 +44,14 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::sam::base64;
 
-/// The exact `PUB` byte length for SIGNATURE_TYPE=7 / CRYPTO_TYPE=4.
+/// The exact `PUB` byte length for SIGNATURE_TYPE=7 with either
+/// CRYPTO_TYPE=4 (pre-Plan-223 X25519) or CRYPTO_TYPE=0 (Plan-223 legacy
+/// ElGamal). Both shapes encode to 391 bytes (`384` key area + `7`
+/// key-certificate).
 pub const PUB_LENGTH: usize = 391;
 
-/// The exact binary `PRIV` length for SIGNATURE_TYPE=7 / CRYPTO_TYPE=4.
+/// The exact binary `PRIV` length for SIGNATURE_TYPE=7 (either Destination
+/// shape) plus the 32-byte X25519 static secret and 32-byte Ed25519 seed.
 pub const PRIV_LENGTH: usize = PUB_LENGTH + 32 + 32;
 
 /// Errors emitted by the private-destination codec.

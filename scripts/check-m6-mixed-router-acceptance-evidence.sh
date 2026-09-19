@@ -1172,8 +1172,174 @@ if [[ -f "${HARNESS_222}" ]]; then
   fi
 fi
 
+# ---- 16. Plan 223 Destination identity / LS2 crypto-separation --------
+# Plan 223 separates the legacy Destination identity field (ElGamal/type 0,
+# 256-byte slot, public non-secret filler) from the active Standard-LS2
+# X25519/type-4 key. The checker verifies behavior-shaping source, not only
+# token presence.
+P223_IDENTITY_SRC="${REPO_ROOT}/crates/i2pr-client/src/identity.rs"
+P223_LEASESET_SRC="${REPO_ROOT}/crates/i2pr-client/src/leaseset.rs"
+P223_BRANCH_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P223BranchProbe.java"
+P223_HELPER_SRC="${JAVA_RAW_HELPER_SRC}"
+P223_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P223_HARNESS="${JAVA_HARNESS}"
+if [[ -f "${P223_IDENTITY_SRC}" ]]; then
+  # 16a. Explicit separation constants must exist.
+  for required in \
+    'DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE' \
+    'DESTINATION_LS2_CRYPTO_TYPE' \
+    'DESTINATION_LEGACY_PUBLIC_LENGTH' \
+    'DESTINATION_LEGACY_PADDING_LENGTH' \
+    'from_explicit_parts' \
+    'from_private_bytes_legacy_x25519'; do
+    if ! grep -q "${required}" "${P223_IDENTITY_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P223_IDENTITY_SRC} lacks Plan 223 separation surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 16b. Generated Destination must not reuse ROUTER_CRYPTO_KEY_TYPE
+  # directly (old 3-arg reconstruction must be gone; new path uses
+  # explicit filler + legacy type).
+  if grep -q 'from_private_bytes(\*signing, \*static_secret, Zeroizing::new(padding))' "${P223_IDENTITY_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_IDENTITY_SRC} retains pre-223 3-arg X25519 Destination reconstruction (Plan 223 §17.1)" >&2
+    failures=$((failures + 1))
+  fi
+  # 16c. New canonical path must advertise ElGamal/type 0, not X25519/type 4.
+  if ! grep -q 'DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE' "${P223_IDENTITY_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_IDENTITY_SRC} lacks legacy ElGamal cert type (Plan 223 §17.2)" >&2
+    failures=$((failures + 1))
+  fi
+  # 16d. Filler must come from caller CSPRNG, never derived from secrets.
+  # Reject any filler derivation from static/secret bytes in the new path.
+  if grep -n 'legacy_filler.*static_secret\|filler.*signing\|X25519(static_secret).*filler' "${P223_IDENTITY_SRC}" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${P223_IDENTITY_SRC} derives legacy filler from secret material (Plan 223 §17 invariant 11)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P223_LEASESET_SRC}" ]]; then
+  # 16e. LS2 must remain X25519/type 4 sourced from the static secret,
+  # never from the Destination public field.
+  if ! grep -q 'DESTINATION_LS2_CRYPTO_TYPE' "${P223_LEASESET_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_LEASESET_SRC} lacks Plan 223 LS2 type separation (Plan 223 §17.3)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q 'destination().public_key().as_bytes().*LeaseSet2EncryptionKey\|LeaseSet2EncryptionKey.*destination.*public_key' "${P223_LEASESET_SRC}" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${P223_LEASESET_SRC} sources LS2 key from Destination field (Plan 223 §17.3)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'identity.static_public_bytes()' "${P223_LEASESET_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_LEASESET_SRC} lost static-secret LS2 sourcing (Plan 223 D3)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+# 16f. DATAGRAM_WAIT must stay 45 seconds (frozen acceptance window).
+if [[ -f "${P223_DRIVER_TEST}" ]]; then
+  if ! grep -q 'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' "${P223_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_DRIVER_TEST} changed DATAGRAM_WAIT from 45s (Plan 223 §17.4)" >&2
+    failures=$((failures + 1))
+  fi
+  # 16g. Java pin must remain frozen in the Java lane (i2pd pin lives in
+  # the per-layer i2pd harnesses + cross-family aggregator, already
+  # enforced by §5/§8; the Java lane itself pins Java only).
+  if ! grep -q "9134f808337b401e8e53c73734c81fab04280c9d" "${P223_HARNESS}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: run-java.sh lost Java pin (Plan 223 §17.5)" >&2
+    failures=$((failures + 1))
+  fi
+  # 16h. P223 classifier must discriminate status 17 via Destination-type /
+  # source-key / target-key facts, never treat status 17 alone as sufficient.
+  for required in \
+    'p223_classify_preflight' \
+    'P223Preflight' \
+    'P223Terminal' \
+    'P223-PREFLIGHT-DESTINATION-ENC-GUARD-CONFIRMED' \
+    'P223-REVERSE-DELIVERY-PASSED' \
+    'P223-STATUS17-PERSISTS-SOURCE-KEYS-MISSING' \
+    'P223-STATUS17-PERSISTS-SOURCE-KEYS-NO-X25519' \
+    'P223-STATUS17-PERSISTS-TARGET-LS2-NO-X25519' \
+    'P223-STATUS17-PERSISTS-NO-KEY-INTERSECTION' \
+    'source_keys_present' \
+    'target_has_x25519' \
+    'selected_key_present' \
+    'p223-rust-destination' \
+    'p223-java-helper-destination' \
+    'p223-branch' \
+    'p223-classification'; do
+    if ! grep -q "${required}" "${P223_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P223_DRIVER_TEST} lacks Plan 223 discriminator surface '${required}' (Plan 223 §17.6)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Source-key absence must be explicit absent (observable=false or
+  # present=false), never a silent false default without Unknown handling.
+  if ! grep -q 'observable=false reason=branch-unreachable\|source_keys_present=' "${P223_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_DRIVER_TEST} lacks explicit source-key absence handling (Plan 223 §17.7)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P223_BRANCH_PROBE_SRC}" ]]; then
+  # 16i. Branch probe must use read-only public APIs with SET_ELG fallback,
+  # and must never mutate KeyManager/client DB/LeaseSet state or use
+  # reflection.
+  for required in \
+    'keyManager().getKeys' \
+    'getSupportedEncryption' \
+    'lookupLeaseSetLocally' \
+    'getEncryptionKey(' \
+    'SET_ELG' \
+    'branchForClient' \
+    'inspectDestination'; do
+    if ! grep -q "${required}" "${P223_BRANCH_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P223_BRANCH_PROBE_SRC} lacks Plan 223 read-only surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    'setKeys' \
+    'getDeclaredField' \
+    'setAccessible'; do
+    if grep -q "${forbidden}" "${P223_BRANCH_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P223_BRANCH_PROBE_SRC} mutates Java state via '${forbidden}' (Plan 223 §17.8)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+else
+  echo "m6 mixed-router evidence check failed: missing Plan 223 branch probe ${P223_BRANCH_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+fi
+if [[ -f "${P223_HELPER_SRC}" ]]; then
+  if ! grep -q 'INSPECT_DEST' "${P223_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_HELPER_SRC} lacks Plan 223 INSPECT_DEST (WP B)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'DEST_INFO' "${P223_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_HELPER_SRC} lacks Plan 223 DEST_INFO (WP B)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P223_HARNESS}" ]]; then
+  if ! grep -q 'P223-DEST-INSPECT' "${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"; then
+    echo "m6 mixed-router evidence check failed: ControlledRouter.java lacks Plan 223 P223-DEST-INSPECT (WP B/C)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'P223-BRANCH' "${REPO_ROOT}/tests/integration/m6-interop/java/ControlledRouter.java"; then
+    echo "m6 mixed-router evidence check failed: ControlledRouter.java lacks Plan 223 P223-BRANCH (WP C)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'p223-classification' "${P223_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_HARNESS} never references Plan 223 p223-classification (WP G)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'P223BranchProbe.java' "${P223_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P223_HARNESS} never compiles Plan 223 P223BranchProbe" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants)"

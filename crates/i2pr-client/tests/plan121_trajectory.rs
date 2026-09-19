@@ -45,13 +45,16 @@ fn destination_with_static(seed: u64) -> (i2pr_client::DestinationIdentity, [u8;
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
     let mut signing = [0_u8; 32];
     let mut static_secret = [0_u8; 32];
-    let mut padding = vec![0_u8; i2pr_crypto::IDENTITY_PADDING_LENGTH];
+    let mut filler = [0_u8; i2pr_client::DESTINATION_LEGACY_PUBLIC_LENGTH];
+    let mut padding = vec![0_u8; i2pr_client::DESTINATION_LEGACY_PADDING_LENGTH];
     rng.fill_bytes(&mut signing);
     rng.fill_bytes(&mut static_secret);
+    rng.fill_bytes(&mut filler);
     rng.fill_bytes(&mut padding);
     let identity = i2pr_client::DestinationIdentity::from_private_bytes(
         signing,
         static_secret,
+        filler,
         Zeroizing::new(padding),
     )
     .expect("destination identity");

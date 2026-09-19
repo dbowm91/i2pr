@@ -63,6 +63,12 @@
 //     via `routingKeyGenerator().getRoutingKey`, reproduces the
 //     `netdb.searchLimit` + EXTRA_PEERS width, and runs the
 //     production-equivalent 3-argument selector overload read-only.
+// Plan 223 diagnostic contract (read-only, no state mutation):
+//   - `P223-DEST-INSPECT <dest-b64>` parses one Destination via the public
+//     `new Destination(String)` API and returns hash/enc-type/pubkey-len;
+//   - `P223-BRANCH <client-dbid-hex> <target-hex> <source-hex>` returns the
+//     bounded C1/C2/C3 discriminator (source LeaseSetKeys, target LS2 as
+//     stored, exact `getEncryptionKey(supported)` intersection) read-only.
 //   - RouterHash values travel as 32-byte lowercase hex. Standard
 //     (RFC 4648) Base64 MUST NOT be used to construct a query
 //     hash; Java `Hash.toBase64()` (I2P Base64) is echoed only for
@@ -101,6 +107,7 @@ import net.i2p.router.RouterContext;
 import net.i2p.router.networkdb.kademlia.KademliaNetworkDatabaseFacade;
 import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
+import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 
 public final class ControlledRouter {
 
@@ -517,6 +524,16 @@ public final class ControlledRouter {
                             return p222Error("missing-hash-arguments");
                         }
                         return p222ClientLookupPreflight(parts[1], parts[2], parts[3]);
+                    case "P223-DEST-INSPECT":
+                        if (parts.length < 2) {
+                            return p223Error("missing-dest-argument");
+                        }
+                        return P223BranchProbe.inspectDestination(parts[1]);
+                    case "P223-BRANCH":
+                        if (parts.length < 4) {
+                            return p223Error("missing-hash-arguments");
+                        }
+                        return p223Branch(parts[1], parts[2], parts[3]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -815,6 +832,75 @@ public final class ControlledRouter {
 
         private String p222Error(String reason) {
             return "P222-ERROR " + reason;
+        }
+
+        private String p223Error(String reason) {
+            return "P223-ERROR " + reason;
+        }
+
+        /**
+         * Plan 223 WP C — bounded read-only status-17 branch discriminator.
+         * Never registers keys, installs LeaseSets, or alters the client DB.
+         */
+        private String p223Branch(
+                String clientDbidHex, String targetHex, String sourceHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash target = p220ParseHexHash(targetHex);
+            Hash source = p220ParseHexHash(sourceHex);
+            if (clientDbid == null || target == null || source == null) {
+                return p223Error("invalid-hex-hash");
+            }
+            P223BranchProbe.Result result =
+                P223BranchProbe.branchForClient(context(), clientDbid, target, source);
+            if (result.error != null) {
+                return "P223-EV kind=branch"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " target_hash_hex=" + targetHex
+                    + " source_hash_hex=" + sourceHex
+                    + " observable=false reason=" + result.error
+                    + " source_keys_present=" + result.sourceKeysPresent
+                    + " target_ls_present=" + result.targetLsPresent;
+            }
+            StringBuilder sb = new StringBuilder("P223-EV kind=branch");
+            sb.append(" client_dbid_hex=").append(clientDbidHex);
+            sb.append(" target_hash_hex=").append(targetHex);
+            sb.append(" source_hash_hex=").append(sourceHex);
+            sb.append(" observable=true");
+            sb.append(" source_keys_present=").append(result.sourceKeysPresent);
+            sb.append(" source_supported_types=");
+            if (result.sourceSupportedCodes.isEmpty()) {
+                sb.append("none");
+            } else {
+                for (int i = 0; i < result.sourceSupportedCodes.size(); i++) {
+                    if (i > 0) {
+                        sb.append(",");
+                    }
+                    sb.append(result.sourceSupportedCodes.get(i));
+                }
+            }
+            sb.append(" source_supports_elgamal=").append(result.sourceSupportsElgamal);
+            sb.append(" source_supports_x25519=").append(result.sourceSupportsX25519);
+            sb.append(" target_ls_present=").append(result.targetLsPresent);
+            sb.append(" target_ls_type=").append(
+                result.targetLsType == null ? "none" : result.targetLsType);
+            sb.append(" target_destination_hash_match=").append(result.targetDestinationHashMatch);
+            sb.append(" target_destination_enc_type=").append(result.targetDestinationEncType);
+            sb.append(" target_key_count=").append(result.targetKeyCount);
+            sb.append(" target_key_types=");
+            if (result.targetKeyCodes.isEmpty()) {
+                sb.append("none");
+            } else {
+                for (int i = 0; i < result.targetKeyCodes.size(); i++) {
+                    if (i > 0) {
+                        sb.append(",");
+                    }
+                    sb.append(result.targetKeyCodes.get(i));
+                }
+            }
+            sb.append(" target_has_x25519=").append(result.targetHasX25519);
+            sb.append(" selected_key_present=").append(result.selectedKeyPresent);
+            sb.append(" selected_key_type=").append(result.selectedKeyType);
+            return sb.toString();
         }
 
         /**

@@ -181,6 +181,11 @@ fn install_with_mismatched_decryption_key_is_rejected_atomically() {
     // Build a destination with a different static key and reuse its
     // X25519 secret for the capability; the install must reject the
     // mismatched public key without mutating any state.
+    // Plan 223: generated Destinations are ElGamal/type-0, so the early
+    // X25519 pre-check is skipped and the mismatch surfaces as the LS2
+    // decryption-key match (`DecryptionKeyMismatch`); X25519-slot
+    // destinations still surface the pre-check (`KeyMismatch`). Both are
+    // fail-closed atomic rejections.
     let (other_identity, _other_public) = client_identity_and_public(404);
     let bad_capability = InboundDecryptionCapability::from_secret_bytes(
         other_identity.static_public_bytes(),
@@ -189,10 +194,13 @@ fn install_with_mismatched_decryption_key_is_rejected_atomically() {
     let error = runtime
         .install_client_lease_set2(record, bad_capability, NOW_SECONDS)
         .expect_err("decryption mismatch rejected");
-    assert!(matches!(
-        error,
-        LeaseSetError::Identity(DestinationIdentityError::DecryptionCapabilityKeyMismatch)
-    ));
+    assert!(
+        matches!(
+            error,
+            LeaseSetError::Identity(DestinationIdentityError::DecryptionCapabilityKeyMismatch)
+        ) || matches!(error, LeaseSetError::DecryptionKeyMismatch),
+        "unexpected error: {error:?}"
+    );
     assert!(runtime.client_lease_set().is_none());
     assert!(runtime.decryption_capability().is_none());
 }

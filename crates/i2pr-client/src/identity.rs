@@ -21,16 +21,54 @@ use core::fmt;
 use core::ops::Deref;
 
 use i2pr_crypto::{
-    CryptoError, IDENTITY_PADDING_LENGTH, PRIVATE_KEY_LENGTH, ROUTER_CRYPTO_KEY_TYPE,
-    ROUTER_SIGNING_KEY_TYPE, SigningPrivateKey, X25519_KEY_LENGTH, X25519PrivateKey,
+    CryptoError, PRIVATE_KEY_LENGTH, ROUTER_CRYPTO_KEY_TYPE, ROUTER_SIGNING_KEY_TYPE,
+    SigningPrivateKey, X25519_KEY_LENGTH, X25519PrivateKey,
 };
 use i2pr_proto::{
     Certificate, CodecError, CryptoKeyType, Destination, Hash, KeyAndCert, KeyCertificate,
-    SignatureValue, SigningPublicKey,
+    PublicKey, SignatureValue, SigningPublicKey,
 };
 use rand_core::TryCryptoRng;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
+
+/// Plan 223 D1 — explicit crypto-layer separation for router-owned
+/// Destinations.
+///
+/// Java I2P 2.13.0 `OutboundClientMessageOneShotJob.runJob()` rejects any
+/// target Destination whose `getEncType()` is not `ELGAMAL_2048` (type 0)
+/// before the client-NetDB lookup or LeaseSet2 key-selection path. Java's
+/// own `I2PClientImpl.createDestination()` therefore keeps the legacy
+/// 256-byte Destination public-encryption slot in its ElGamal/type-0
+/// identity shape even though that field is unused for end-to-end
+/// encryption; modern ECIES capability is advertised independently in
+/// Standard LeaseSet2 (`i2cp.leaseSetEncType=4`).
+///
+/// i2pr separates the same two concepts:
+///
+/// - [`DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE`] (ElGamal/type 0) is the
+///   legacy Destination identity/key-certificate shape. The 256-byte slot
+///   carries public non-secret filler/identity material and is never the
+///   active destination message encryption key. No ElGamal encryption is
+///   implemented.
+/// - [`DESTINATION_LS2_CRYPTO_TYPE`] (X25519/type 4) is the active
+///   Standard-LS2 encryption key, derived from the owned X25519 static
+///   secret and emitted by `build_signed_lease_set2()`.
+///
+/// Router identity crypto (`ROUTER_CRYPTO_KEY_TYPE`) is a separate concern
+/// and is never reused for Destination construction after this corrective.
+pub const DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE: CryptoKeyType = CryptoKeyType::ElGamal;
+/// Active Standard-LS2 encryption type for destinations (X25519/type 4).
+pub const DESTINATION_LS2_CRYPTO_TYPE: CryptoKeyType = CryptoKeyType::X25519;
+/// Legacy Destination public-encryption slot length (ElGamal/type 0).
+pub const DESTINATION_LEGACY_PUBLIC_LENGTH: usize = 256;
+/// Canonical key-area padding for Ed25519/type-7 + ElGamal/type-0
+/// Destinations: `384 - 256 - 32 = 96`.
+pub const DESTINATION_LEGACY_PADDING_LENGTH: usize = 96;
+/// Legacy X25519 Destination padding (`384 - 32 - 32 = 320`). Retained only
+/// for exact-byte reconstruction of pre-Plan-223 persisted v1 service
+/// records; new router-owned Destinations must not use it.
+pub const DESTINATION_X25519_PADDING_LENGTH: usize = 320;
 
 /// Non-secret local destination identifier: the SHA-256 hash of the canonical
 /// `Destination` structure.
@@ -312,37 +350,102 @@ pub struct DestinationIdentity {
 }
 
 impl DestinationIdentity {
-    /// Generates a fresh destination identity from the supplied CSPRNG.
+    /// Generates a fresh router-owned destination identity from the supplied
+    /// CSPRNG.
+    ///
+    /// Plan 223 D2: the generated Destination uses the Java-compatible
+    /// legacy identity shape (ElGamal/type 0, 256-byte public slot,
+    /// Ed25519/type 7, 96-byte padding) while the owned X25519 static key
+    /// remains independent for Standard-LS2 X25519/type-4 advertisement.
+    /// The 256-byte filler is public non-secret identity material sampled
+    /// from the caller CSPRNG; it is never derived from the X25519 static
+    /// secret, the Ed25519 signing seed, or any other secret-bearing field.
+    /// No ElGamal private key is generated or implemented.
     pub fn generate<R: TryCryptoRng + ?Sized>(
         rng: &mut R,
     ) -> Result<Self, DestinationIdentityError> {
         let mut signing = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
         let mut static_secret = Zeroizing::new([0_u8; X25519_KEY_LENGTH]);
+        let mut filler = [0_u8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let mut padding = vec![0_u8; DESTINATION_LEGACY_PADDING_LENGTH];
         if rng.try_fill_bytes(&mut *signing).is_err()
             || rng.try_fill_bytes(&mut *static_secret).is_err()
+            || rng.try_fill_bytes(&mut filler).is_err()
+            || rng.try_fill_bytes(&mut padding).is_err()
         {
             return Err(DestinationIdentityError::RandomnessUnavailable);
         }
-        let mut padding = vec![0_u8; IDENTITY_PADDING_LENGTH];
-        if rng.try_fill_bytes(&mut padding).is_err() {
-            return Err(DestinationIdentityError::RandomnessUnavailable);
-        }
-        Self::from_private_bytes(*signing, *static_secret, Zeroizing::new(padding))
+        Self::from_explicit_parts(*signing, *static_secret, filler, Zeroizing::new(padding))
     }
 
-    /// Reconstructs a destination identity from explicit private key bytes and
-    /// an exact identity padding buffer. Deterministic destination creation in
-    /// tests uses this constructor; Plan 120 defers encrypted destination-key
-    /// persistence, so there is no storage-backed constructor yet.
-    pub fn from_private_bytes(
+    /// Reconstructs a router-owned destination identity from explicit
+    /// signing/X25519 secrets plus explicit public legacy identity
+    /// material (Plan 223 D4).
+    ///
+    /// - `signing`: Ed25519 seed;
+    /// - `static_secret`: X25519 static secret for LS2/ECIES (never embedded
+    ///   in the Destination public field);
+    /// - `legacy_filler`: 256-byte public non-secret ElGamal-slot bytes;
+    /// - `padding`: exact 96-byte key-area padding for type-7/type-0.
+    ///
+    /// Deterministic tests must supply deterministic public filler
+    /// explicitly. The filler must never be derived from secret material.
+    pub fn from_explicit_parts(
+        signing: [u8; PRIVATE_KEY_LENGTH],
+        static_secret: [u8; X25519_KEY_LENGTH],
+        legacy_filler: [u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
+        padding: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, DestinationIdentityError> {
+        if padding.len() != DESTINATION_LEGACY_PADDING_LENGTH {
+            return Err(DestinationIdentityError::PaddingLength {
+                actual: padding.len(),
+                expected: DESTINATION_LEGACY_PADDING_LENGTH,
+            });
+        }
+        let signing_key = SigningPrivateKey::from_bytes(signing);
+        let static_key = X25519PrivateKey::from_bytes(static_secret);
+        let signing_public = signing_key.public_key()?;
+        let encryption_public = PublicKey::new(
+            DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE,
+            legacy_filler.to_vec(),
+        )?;
+        let certificate = Certificate::Key(KeyCertificate::for_types(
+            ROUTER_SIGNING_KEY_TYPE,
+            DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE,
+        )?);
+        let keys = KeyAndCert::new(
+            encryption_public,
+            signing_public,
+            padding.to_vec(),
+            certificate,
+        )?;
+        let destination = Destination::new(keys)?;
+        let id = DestinationId::from_hash(destination.hash()?);
+        Ok(Self {
+            id,
+            destination,
+            signing_key,
+            static_key,
+        })
+    }
+
+    /// Deterministic test/compat constructor preserving the pre-Plan-223
+    /// X25519 Destination shape (type 4, 32-byte slot, 320-byte padding).
+    ///
+    /// Retained only so pre-Plan-223 persisted v1 service records reconstruct
+    /// byte-identical Destinations on load (Plan 223 §15: no silent
+    /// regeneration of a different public identity). New router-owned
+    /// Destinations must use [`Self::from_explicit_parts`]/[`Self::generate`].
+    /// Do not use for new identities.
+    pub fn from_private_bytes_legacy_x25519(
         signing: [u8; PRIVATE_KEY_LENGTH],
         static_secret: [u8; X25519_KEY_LENGTH],
         padding: Zeroizing<Vec<u8>>,
     ) -> Result<Self, DestinationIdentityError> {
-        if padding.len() != IDENTITY_PADDING_LENGTH {
+        if padding.len() != DESTINATION_X25519_PADDING_LENGTH {
             return Err(DestinationIdentityError::PaddingLength {
                 actual: padding.len(),
-                expected: IDENTITY_PADDING_LENGTH,
+                expected: DESTINATION_X25519_PADDING_LENGTH,
             });
         }
         let signing_key = SigningPrivateKey::from_bytes(signing);
@@ -367,6 +470,21 @@ impl DestinationIdentity {
             signing_key,
             static_key,
         })
+    }
+
+    /// Reconstructs a destination identity from explicit private key bytes and
+    /// an exact identity padding buffer plus explicit legacy public filler.
+    ///
+    /// Plan 223 D4: this is the deterministic form of
+    /// [`Self::from_explicit_parts`]. The legacy filler is public
+    /// non-secret caller input; it must not be derived from secret bytes.
+    pub fn from_private_bytes(
+        signing: [u8; PRIVATE_KEY_LENGTH],
+        static_secret: [u8; X25519_KEY_LENGTH],
+        legacy_filler: [u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
+        padding: Zeroizing<Vec<u8>>,
+    ) -> Result<Self, DestinationIdentityError> {
+        Self::from_explicit_parts(signing, static_secret, legacy_filler, padding)
     }
 
     /// Reconstructs a destination identity from an already-decoded public
@@ -516,7 +634,10 @@ pub enum DestinationIdentityError {
         signing_type: u16,
     },
     /// The destination encryption key type is outside the supported set.
-    /// M9 accepts X25519 (type 4) only.
+    /// Plan 223: router-owned Destinations use ElGamal/type 0 legacy
+    /// identity material; Standard LS2 uses X25519/type 4. Both are
+    /// accepted in the Destination slot; X25519 is enforced at the LS2
+    /// install path, never by downgrading LS2.
     #[error("destination encryption type {crypto_type} is outside the supported set")]
     UnsupportedCryptoType {
         /// Numeric encryption type code.
@@ -558,16 +679,21 @@ mod tests {
 
     #[test]
     fn generated_identity_exposes_x25519_and_ed25519_public_material() {
+        // Plan 223 F1/F2: generated Destination uses legacy ElGamal/type 0
+        // identity material while LS2/X25519 stays independent.
         let identity = identity_for(1);
         assert_eq!(
             identity.destination().public_key().key_type(),
-            ROUTER_CRYPTO_KEY_TYPE
+            DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE
         );
+        assert_eq!(identity.destination().public_key().key_type().code(), 0);
+        assert_eq!(identity.destination().public_key().as_bytes().len(), 256);
         assert_eq!(
             identity.signing_public_key().key_type(),
             ROUTER_SIGNING_KEY_TYPE
         );
-        assert_eq!(
+        // Legacy filler is public identity material, never the LS2 key.
+        assert_ne!(
             identity.destination().public_key().as_bytes(),
             &identity.static_public_bytes()[..]
         );
@@ -575,6 +701,84 @@ mod tests {
             identity.id().as_bytes(),
             identity.destination().hash().expect("hash").as_bytes()
         );
+    }
+
+    #[test]
+    fn generated_destination_shape_is_legacy_while_ls2_stays_x25519() {
+        let identity = identity_for(11);
+        assert_eq!(
+            identity.destination().public_key().key_type(),
+            CryptoKeyType::ElGamal
+        );
+        assert_eq!(identity.destination().public_key().as_bytes().len(), 256);
+        assert_eq!(
+            identity.signing_public_key().key_type().code(),
+            ROUTER_SIGNING_KEY_TYPE.code()
+        );
+        // Filler is independent of the X25519 static public key.
+        assert_ne!(
+            identity.destination().public_key().as_bytes()[..32],
+            identity.static_public_bytes()[..]
+        );
+    }
+
+    #[test]
+    fn distinct_filler_yields_distinct_destination_hash() {
+        let signing = [7_u8; PRIVATE_KEY_LENGTH];
+        let static_secret = [9_u8; X25519_KEY_LENGTH];
+        let padding = Zeroizing::new(vec![0x5a_u8; DESTINATION_LEGACY_PADDING_LENGTH]);
+        let first = DestinationIdentity::from_private_bytes(
+            signing,
+            static_secret,
+            [0x11_u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
+            padding.clone(),
+        )
+        .expect("identity");
+        let second = DestinationIdentity::from_private_bytes(
+            signing,
+            static_secret,
+            [0x22_u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
+            padding,
+        )
+        .expect("identity");
+        assert_ne!(first.id(), second.id());
+        // Same filler reconstructs identically.
+        let third = DestinationIdentity::from_private_bytes(
+            signing,
+            static_secret,
+            [0x11_u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
+            Zeroizing::new(vec![0x5a_u8; DESTINATION_LEGACY_PADDING_LENGTH]),
+        )
+        .expect("identity");
+        assert_eq!(first.id(), third.id());
+    }
+
+    #[test]
+    fn legacy_filler_is_not_secret_derived() {
+        // The filler must come from explicit public caller input; this test
+        // locks that generate() samples filler from the CSPRNG independently
+        // of both secrets by proving two identities with identical secrets
+        // but different explicit filler differ, while identical explicit
+        // filler matches.
+        let signing = [0xabu8; PRIVATE_KEY_LENGTH];
+        let static_secret = [0xcdu8; X25519_KEY_LENGTH];
+        let padding = Zeroizing::new(vec![0xef_u8; DESTINATION_LEGACY_PADDING_LENGTH]);
+        let filler_a = [0x01_u8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let filler_b = [0x02_u8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let a = DestinationIdentity::from_private_bytes(
+            signing,
+            static_secret,
+            filler_a,
+            padding.clone(),
+        )
+        .expect("a");
+        let b = DestinationIdentity::from_private_bytes(signing, static_secret, filler_b, padding)
+            .expect("b");
+        assert_ne!(
+            a.destination().public_key().as_bytes(),
+            b.destination().public_key().as_bytes()
+        );
+        assert_ne!(a.id(), b.id());
     }
 
     #[test]
@@ -612,12 +816,18 @@ mod tests {
     fn deterministic_reconstruction_matches_generated_identity() {
         let signing = [7_u8; PRIVATE_KEY_LENGTH];
         let static_secret = [9_u8; X25519_KEY_LENGTH];
-        let padding = Zeroizing::new(vec![0x5a_u8; IDENTITY_PADDING_LENGTH]);
-        let first =
-            DestinationIdentity::from_private_bytes(signing, static_secret, padding.clone())
+        let filler = [0x5a_u8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let padding = Zeroizing::new(vec![0x5a_u8; DESTINATION_LEGACY_PADDING_LENGTH]);
+        let first = DestinationIdentity::from_private_bytes(
+            signing,
+            static_secret,
+            filler,
+            padding.clone(),
+        )
+        .expect("identity");
+        let second =
+            DestinationIdentity::from_private_bytes(signing, static_secret, filler, padding)
                 .expect("identity");
-        let second = DestinationIdentity::from_private_bytes(signing, static_secret, padding)
-            .expect("identity");
         assert_eq!(first.id(), second.id());
     }
 
@@ -626,6 +836,7 @@ mod tests {
         let error = DestinationIdentity::from_private_bytes(
             [1_u8; PRIVATE_KEY_LENGTH],
             [2_u8; X25519_KEY_LENGTH],
+            [0x11_u8; DESTINATION_LEGACY_PUBLIC_LENGTH],
             Zeroizing::new(vec![0_u8; 8]),
         )
         .expect_err("padding rejected");
@@ -637,25 +848,88 @@ mod tests {
 
     #[test]
     fn destination_public_rejects_wrong_encryption_curve() {
-        // Build a Destination whose encryption field is not 32 bytes; the
-        // wrapper must refuse it before the runtime accepts a capability.
+        // Plan 223: router-owned ElGamal Destinations carry legacy filler;
+        // DestinationPublic zeroes the X25519 slot for them because the
+        // active key arrives via LS2. X25519-slot Destinations (legacy
+        // pre-223 shape) still expose the static key directly.
         let signing = [0x09_u8; PRIVATE_KEY_LENGTH];
         let static_secret = [0x11_u8; X25519_KEY_LENGTH];
-        let padding = Zeroizing::new(vec![0x22_u8; IDENTITY_PADDING_LENGTH]);
+        let filler = [0x33_u8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let padding = Zeroizing::new(vec![0x22_u8; DESTINATION_LEGACY_PADDING_LENGTH]);
         let identity =
-            DestinationIdentity::from_private_bytes(signing, static_secret, padding).expect("id");
-        // Mutate the destination to carry a wrong-length encryption public
-        // key. The proto layer rejects the rebuild, so we exercise the
-        // public-key-length branch by rebuilding with a bad signature
-        // post-facto.
+            DestinationIdentity::from_private_bytes(signing, static_secret, filler, padding)
+                .expect("id");
         let public = DestinationPublic::from_destination(identity.destination().clone())
             .expect("supported curve");
-        assert_eq!(
-            public.static_public_bytes(),
-            &identity.static_public_bytes()[..]
-        );
+        // ElGamal legacy slot: static slot is zeroed; LS2 is the
+        // enforcement point, not the Destination field.
+        assert_eq!(public.static_public_bytes(), &[0_u8; 32][..]);
         assert_eq!(public.id(), identity.id());
-        assert_eq!(public.encryption_public_key_type(), ROUTER_CRYPTO_KEY_TYPE);
+        assert_eq!(
+            public.encryption_public_key_type(),
+            DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE
+        );
+        // Legacy X25519 shape still round-trips for v1 persistence.
+        let legacy = DestinationIdentity::from_private_bytes_legacy_x25519(
+            signing,
+            static_secret,
+            Zeroizing::new(vec![0x44_u8; DESTINATION_X25519_PADDING_LENGTH]),
+        )
+        .expect("legacy");
+        let legacy_public =
+            DestinationPublic::from_destination(legacy.destination().clone()).expect("legacy");
+        assert_eq!(
+            legacy_public.static_public_bytes(),
+            &legacy.static_public_bytes()[..]
+        );
+        assert_eq!(
+            legacy_public.encryption_public_key_type(),
+            ROUTER_CRYPTO_KEY_TYPE
+        );
+    }
+
+    #[test]
+    fn imported_java_compatible_destination_is_preserved() {
+        // Plan 223 F3: Java-compatible legacy Destination fixture parses
+        // and remains accepted without rewriting its public field.
+        // Construct a Java-style ElGamal/type-0 Destination directly via
+        // proto (256-byte filler, Ed25519, 96-byte padding).
+        let signing = [0x5eu8; PRIVATE_KEY_LENGTH];
+        let filler = [0xabu8; DESTINATION_LEGACY_PUBLIC_LENGTH];
+        let padding = vec![0x33_u8; DESTINATION_LEGACY_PADDING_LENGTH];
+        let signing_key = i2pr_crypto::SigningPrivateKey::from_bytes(signing);
+        let signing_public = signing_key.public_key().expect("signing public");
+        let encryption_public =
+            PublicKey::new(DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE, filler.to_vec())
+                .expect("public");
+        let certificate = Certificate::Key(
+            KeyCertificate::for_types(
+                ROUTER_SIGNING_KEY_TYPE,
+                DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE,
+            )
+            .expect("cert"),
+        );
+        let keys =
+            KeyAndCert::new(encryption_public, signing_public, padding, certificate).expect("kc");
+        let dest = Destination::new(keys).expect("dest");
+        let encoded = dest
+            .encode_to_vec(i2pr_proto::MAX_COMMON_STRUCTURE_SIZE)
+            .expect("encode");
+        assert_eq!(encoded.len(), 391);
+        let decoded =
+            Destination::decode(&encoded, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE).expect("decode");
+        assert_eq!(decoded, dest);
+        let public = DestinationPublic::from_destination(decoded.clone()).expect("public");
+        assert_eq!(
+            public.encryption_public_key_type(),
+            DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE
+        );
+        // Import preserves bytes verbatim (Plan 146 tolerance).
+        let static_secret = [0x11_u8; X25519_KEY_LENGTH];
+        let imported = DestinationIdentity::from_imported(decoded.clone(), signing, static_secret)
+            .expect("import");
+        assert_eq!(imported.destination(), &decoded);
+        assert_eq!(imported.id(), public.id());
     }
 
     #[test]

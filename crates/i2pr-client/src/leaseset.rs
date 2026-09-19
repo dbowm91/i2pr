@@ -24,7 +24,9 @@ use i2pr_proto::{
 };
 
 use crate::config::DestinationConfig;
-use crate::identity::{DestinationIdentity, DestinationIdentityError, DestinationPublic};
+use crate::identity::{
+    DESTINATION_LS2_CRYPTO_TYPE, DestinationIdentity, DestinationIdentityError, DestinationPublic,
+};
 use crate::pool::InboundLeaseSource;
 
 /// Signature domain byte prepended to the LeaseSet2 signature preimage.
@@ -643,9 +645,12 @@ pub fn build_signed_lease_set2(
     }
     let offset = u16::try_from(latest_expiry.saturating_sub(published_seconds))
         .map_err(|_| LeaseSetError::ExpirationOffsetOverflow)?;
+    // Plan 223 D3: LS2 encryption stays X25519/type 4 sourced from the
+    // owned static secret, never from `destination.public_key()` (legacy
+    // ElGamal filler after the corrective).
     let encryption_keys = vec![
         LeaseSet2EncryptionKey::new(
-            i2pr_crypto::ROUTER_CRYPTO_KEY_TYPE,
+            DESTINATION_LS2_CRYPTO_TYPE,
             identity.static_public_bytes().to_vec(),
         )
         .map_err(|_| LeaseSetError::EmptyEncryptionKey)?,
@@ -951,6 +956,31 @@ mod tests {
         assert_eq!(key.key_type().code(), 4);
         i2pr_crypto::verify_lease_set2(current.lease_set2()).expect("signature verifies");
         assert!(lifecycle.publication_pending());
+    }
+
+    #[test]
+    fn plan223_ls2_remains_ecies_while_destination_is_legacy() {
+        // Plan 223 F2: generated Destination is ElGamal/type-0/256 while
+        // Standard LS2 (DatabaseStore type 3) stays exactly one
+        // X25519/type-4/32 key sourced from the static secret, never from
+        // the Destination field.
+        let identity = identity(223);
+        assert_eq!(
+            identity.destination().public_key().key_type(),
+            crate::identity::DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE
+        );
+        assert_eq!(identity.destination().public_key().as_bytes().len(), 256);
+        let pool = pool_with_inbound(&[7], 2_000);
+        let leases = pool.inbound_lease_sources(2_000);
+        let signed = build_signed_lease_set2(&identity, &leases, 2_000).expect("ls2");
+        assert_eq!(i2pr_proto::LEASE_SET2_DATABASE_STORE_TYPE, 0x03);
+        assert_eq!(signed.encryption_keys().len(), 1);
+        let key = &signed.encryption_keys()[0];
+        assert_eq!(key.key_type(), crate::identity::DESTINATION_LS2_CRYPTO_TYPE);
+        assert_eq!(key.key_type().code(), 4);
+        assert_eq!(key.as_bytes().len(), 32);
+        assert_eq!(key.as_bytes(), &identity.static_public_bytes()[..]);
+        i2pr_crypto::verify_lease_set2(&signed).expect("signature verifies");
     }
 
     #[test]

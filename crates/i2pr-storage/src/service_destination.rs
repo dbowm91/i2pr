@@ -54,7 +54,22 @@ pub const SERVICE_DESTINATIONS_SUBDIR: &str = "service_destinations";
 /// Maximum bytes read from a service destination file before parsing.
 pub const MAX_SERVICE_DESTINATION_FILE_SIZE: usize = 4096;
 /// Version of the explicit private service destination format.
-pub const SERVICE_DESTINATION_FORMAT_VERSION: u16 = 1;
+///
+/// Plan 223: v1 files carry the pre-corrective X25519 Destination shape
+/// (320-byte padding, no legacy filler) and reconstruct byte-identical
+/// X25519 Destinations on load. v2 files carry the Java-compatible legacy
+/// identity shape (256-byte public filler + 96-byte padding) and
+/// reconstruct ElGamal/type-0 Destinations. New generations write v2;
+/// v1 decodes are preserved with no silent hash change.
+pub const SERVICE_DESTINATION_FORMAT_VERSION: u16 = 2;
+/// Legacy v1 version (pre-Plan-223 X25519 Destination shape).
+pub const SERVICE_DESTINATION_FORMAT_VERSION_V1: u16 = 1;
+/// Current v2 version (Plan-223 legacy ElGamal Destination shape).
+pub const SERVICE_DESTINATION_FORMAT_VERSION_V2: u16 = 2;
+/// Legacy ElGamal public-filler length for v2 records.
+pub const SERVICE_DESTINATION_LEGACY_FILLER_LENGTH: usize = 256;
+/// Canonical v2 padding length (`384 - 256 - 32 = 96`).
+pub const SERVICE_DESTINATION_V2_PADDING_LENGTH: usize = 96;
 
 const SERVICE_DESTINATION_MAGIC: &[u8; 8] = b"I2PRSD\0\0";
 const SERVICE_DESTINATION_RESERVED_HEADER: u16 = 0;
@@ -63,10 +78,19 @@ const SERVICE_DESTINATION_PAYLOAD_LENGTH: usize = PRIVATE_KEY_LENGTH
     + X25519_KEY_LENGTH
     + PRIVATE_KEY_LENGTH
     + X25519_KEY_LENGTH
+    + SERVICE_DESTINATION_V2_PADDING_LENGTH
+    + SERVICE_DESTINATION_LEGACY_FILLER_LENGTH;
+const SERVICE_DESTINATION_V1_PAYLOAD_LENGTH: usize = PRIVATE_KEY_LENGTH
+    + X25519_KEY_LENGTH
+    + PRIVATE_KEY_LENGTH
+    + X25519_KEY_LENGTH
     + crate::IDENTITY_PADDING_LENGTH;
 const SERVICE_DESTINATION_INTEGRITY_LENGTH: usize = 32;
 const SERVICE_DESTINATION_FILE_LENGTH: usize = SERVICE_DESTINATION_HEADER_LENGTH
     + SERVICE_DESTINATION_PAYLOAD_LENGTH
+    + SERVICE_DESTINATION_INTEGRITY_LENGTH;
+const SERVICE_DESTINATION_V1_FILE_LENGTH: usize = SERVICE_DESTINATION_HEADER_LENGTH
+    + SERVICE_DESTINATION_V1_PAYLOAD_LENGTH
     + SERVICE_DESTINATION_INTEGRITY_LENGTH;
 
 /// Typed errors returned while creating, loading, validating, or atomically
@@ -142,13 +166,21 @@ pub enum ServiceDestinationStorageError {
 }
 
 /// A loaded service destination identity.
+///
+/// Plan 223: v1 records (no filler, 320-byte padding) reconstruct the
+/// legacy X25519 Destination shape byte-identically. v2 records carry the
+/// 256-byte public legacy filler plus 96-byte padding and reconstruct the
+/// ElGamal/type-0 Destination shape. The filler is public non-secret
+/// identity material, never derived from secrets.
 pub struct ServiceDestinationRecord {
     /// Ed25519 signing seed (32 bytes).
     signing_seed: Zeroizing<[u8; PRIVATE_KEY_LENGTH]>,
     /// X25519 static inbound secret (32 bytes).
     static_secret: Zeroizing<[u8; X25519_KEY_LENGTH]>,
-    /// Exact destination padding.
+    /// Exact destination padding (320 bytes for v1, 96 bytes for v2).
     padding: Zeroizing<Vec<u8>>,
+    /// Public legacy ElGamal filler for v2 records (`None` for v1).
+    legacy_filler: Option<Zeroizing<[u8; SERVICE_DESTINATION_LEGACY_FILLER_LENGTH]>>,
 }
 
 impl std::fmt::Debug for ServiceDestinationRecord {
@@ -158,6 +190,10 @@ impl std::fmt::Debug for ServiceDestinationRecord {
             .field("signing_seed", &"<redacted>")
             .field("static_secret", &"<redacted>")
             .field("padding", &"<redacted>")
+            .field(
+                "legacy_filler",
+                &self.legacy_filler.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -176,6 +212,16 @@ impl ServiceDestinationRecord {
     /// Borrows the destination padding buffer.
     pub fn padding(&self) -> &[u8] {
         &self.padding
+    }
+
+    /// Borrows the public legacy filler for v2 records (`None` for v1).
+    pub fn legacy_filler(&self) -> Option<&[u8; SERVICE_DESTINATION_LEGACY_FILLER_LENGTH]> {
+        self.legacy_filler.as_deref()
+    }
+
+    /// Whether this record is a v2 (Plan-223 ElGamal) record.
+    pub fn is_v2(&self) -> bool {
+        self.legacy_filler.is_some()
     }
 }
 
@@ -367,17 +413,18 @@ fn validate_service_id(value: &str) -> Result<(), ServiceDestinationStorageError
 fn generate_record<R: TryCryptoRng + ?Sized>(
     rng: &mut R,
 ) -> Result<ServiceDestinationRecord, ServiceDestinationStorageError> {
+    // Plan 223: new service destinations are v2 (ElGamal legacy identity
+    // shape). Filler is public non-secret CSPRNG material, never derived
+    // from secrets.
     let mut signing_seed = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
     let mut static_secret = Zeroizing::new([0_u8; X25519_KEY_LENGTH]);
+    let mut filler = Zeroizing::new([0_u8; SERVICE_DESTINATION_LEGACY_FILLER_LENGTH]);
+    let mut padding = Zeroizing::new(vec![0_u8; SERVICE_DESTINATION_V2_PADDING_LENGTH]);
     if rng.try_fill_bytes(&mut *signing_seed).is_err()
         || rng.try_fill_bytes(&mut *static_secret).is_err()
+        || rng.try_fill_bytes(&mut *filler).is_err()
+        || rng.try_fill_bytes(&mut *padding).is_err()
     {
-        return Err(ServiceDestinationStorageError::Crypto(
-            CryptoError::RandomnessUnavailable,
-        ));
-    }
-    let mut padding = Zeroizing::new(vec![0_u8; crate::IDENTITY_PADDING_LENGTH]);
-    if rng.try_fill_bytes(&mut padding).is_err() {
         return Err(ServiceDestinationStorageError::Crypto(
             CryptoError::RandomnessUnavailable,
         ));
@@ -386,25 +433,54 @@ fn generate_record<R: TryCryptoRng + ?Sized>(
         signing_seed,
         static_secret,
         padding,
+        legacy_filler: Some(filler),
     })
 }
 
 fn encode_service_destination(
     record: &ServiceDestinationRecord,
 ) -> Result<Zeroizing<Vec<u8>>, ServiceDestinationStorageError> {
-    if record.padding().len() != crate::IDENTITY_PADDING_LENGTH {
-        return Err(ServiceDestinationStorageError::Malformed {
-            context: "padding length",
-        });
-    }
     // Derive public keys for the stored integrity hash so any
     // corruption in the private seeds is detectable without ever
     // returning the public material outside the decoder.
     let signing_public = derive_signing_public(record.signing_seed())?;
     let encryption_public = derive_x25519_public(record.static_secret())?;
-    let mut bytes = Vec::with_capacity(SERVICE_DESTINATION_FILE_LENGTH);
+    if let Some(filler) = record.legacy_filler() {
+        if record.padding().len() != SERVICE_DESTINATION_V2_PADDING_LENGTH {
+            return Err(ServiceDestinationStorageError::Malformed {
+                context: "padding length",
+            });
+        }
+        let mut bytes = Vec::with_capacity(SERVICE_DESTINATION_FILE_LENGTH);
+        bytes.extend_from_slice(SERVICE_DESTINATION_MAGIC);
+        push_u16(&mut bytes, SERVICE_DESTINATION_FORMAT_VERSION_V2);
+        push_u16(&mut bytes, SERVICE_DESTINATION_RESERVED_HEADER);
+        push_u16(&mut bytes, ROUTER_SIGNING_KEY_TYPE.code());
+        push_u16(&mut bytes, ROUTER_CRYPTO_KEY_TYPE.code());
+        bytes.extend_from_slice(record.signing_seed().as_ref());
+        bytes.extend_from_slice(record.static_secret().as_ref());
+        bytes.extend_from_slice(&signing_public);
+        bytes.extend_from_slice(&encryption_public);
+        bytes.extend_from_slice(&filler[..]);
+        bytes.extend_from_slice(record.padding());
+        let checksum = sha256(&bytes);
+        bytes.extend_from_slice(checksum.as_bytes());
+        if bytes.len() != SERVICE_DESTINATION_FILE_LENGTH {
+            return Err(ServiceDestinationStorageError::Malformed {
+                context: "service destination encoded length",
+            });
+        }
+        return Ok(Zeroizing::new(bytes));
+    }
+    // v1 legacy path: exact-byte preservation for pre-Plan-223 files.
+    if record.padding().len() != crate::IDENTITY_PADDING_LENGTH {
+        return Err(ServiceDestinationStorageError::Malformed {
+            context: "padding length",
+        });
+    }
+    let mut bytes = Vec::with_capacity(SERVICE_DESTINATION_V1_FILE_LENGTH);
     bytes.extend_from_slice(SERVICE_DESTINATION_MAGIC);
-    push_u16(&mut bytes, SERVICE_DESTINATION_FORMAT_VERSION);
+    push_u16(&mut bytes, SERVICE_DESTINATION_FORMAT_VERSION_V1);
     push_u16(&mut bytes, SERVICE_DESTINATION_RESERVED_HEADER);
     push_u16(&mut bytes, ROUTER_SIGNING_KEY_TYPE.code());
     push_u16(&mut bytes, ROUTER_CRYPTO_KEY_TYPE.code());
@@ -412,10 +488,10 @@ fn encode_service_destination(
     bytes.extend_from_slice(record.static_secret().as_ref());
     bytes.extend_from_slice(&signing_public);
     bytes.extend_from_slice(&encryption_public);
-    bytes.extend_from_slice(record.padding().as_ref());
+    bytes.extend_from_slice(record.padding());
     let checksum = sha256(&bytes);
     bytes.extend_from_slice(checksum.as_bytes());
-    if bytes.len() != SERVICE_DESTINATION_FILE_LENGTH {
+    if bytes.len() != SERVICE_DESTINATION_V1_FILE_LENGTH {
         return Err(ServiceDestinationStorageError::Malformed {
             context: "service destination encoded length",
         });
@@ -426,10 +502,12 @@ fn encode_service_destination(
 fn decode_service_destination(
     bytes: &[u8],
 ) -> Result<ServiceDestinationRecord, ServiceDestinationStorageError> {
-    if bytes.len() < SERVICE_DESTINATION_FILE_LENGTH {
-        return Err(ServiceDestinationStorageError::Truncated);
-    }
-    if bytes.len() > SERVICE_DESTINATION_FILE_LENGTH {
+    if bytes.len() != SERVICE_DESTINATION_V1_FILE_LENGTH
+        && bytes.len() != SERVICE_DESTINATION_FILE_LENGTH
+    {
+        if bytes.len() < SERVICE_DESTINATION_V1_FILE_LENGTH.min(SERVICE_DESTINATION_FILE_LENGTH) {
+            return Err(ServiceDestinationStorageError::Truncated);
+        }
         return Err(ServiceDestinationStorageError::TrailingBytes);
     }
     let mut reader = Reader::new(bytes);
@@ -437,7 +515,9 @@ fn decode_service_destination(
         return Err(ServiceDestinationStorageError::Malformed { context: "magic" });
     }
     let version = reader.u16()?;
-    if version != SERVICE_DESTINATION_FORMAT_VERSION {
+    if version != SERVICE_DESTINATION_FORMAT_VERSION_V1
+        && version != SERVICE_DESTINATION_FORMAT_VERSION_V2
+    {
         return Err(ServiceDestinationStorageError::UnsupportedVersion { actual: version });
     }
     if reader.u16()? != SERVICE_DESTINATION_RESERVED_HEADER {
@@ -463,7 +543,41 @@ fn decode_service_destination(
     let static_secret_bytes = reader.array::<X25519_KEY_LENGTH>()?;
     let signing_public_bytes = reader.array::<PRIVATE_KEY_LENGTH>()?;
     let encryption_public_bytes = reader.array::<X25519_KEY_LENGTH>()?;
-    let padding_bytes = reader.take(crate::IDENTITY_PADDING_LENGTH)?;
+    if version == SERVICE_DESTINATION_FORMAT_VERSION_V1 {
+        if bytes.len() != SERVICE_DESTINATION_V1_FILE_LENGTH {
+            return Err(ServiceDestinationStorageError::TrailingBytes);
+        }
+        let padding_bytes = reader.take(crate::IDENTITY_PADDING_LENGTH)?;
+        let stored_checksum = reader.array::<SERVICE_DESTINATION_INTEGRITY_LENGTH>()?;
+        reader.finish()?;
+        let expected_checksum = sha256(
+            &bytes[..SERVICE_DESTINATION_V1_FILE_LENGTH - SERVICE_DESTINATION_INTEGRITY_LENGTH],
+        );
+        if !constant_time_eq(&*stored_checksum, expected_checksum.as_bytes()) {
+            return Err(ServiceDestinationStorageError::Integrity);
+        }
+        let derived_signing = derive_signing_public(&signing_seed_bytes)?;
+        let derived_x25519 = derive_x25519_public(&static_secret_bytes)?;
+        if !constant_time_eq(&*signing_public_bytes, &derived_signing)
+            || !constant_time_eq(&*encryption_public_bytes, &derived_x25519)
+        {
+            return Err(ServiceDestinationStorageError::Integrity);
+        }
+        let mut padding = Zeroizing::new(vec![0_u8; padding_bytes.len()]);
+        padding.copy_from_slice(padding_bytes);
+        return Ok(ServiceDestinationRecord {
+            signing_seed: signing_seed_bytes,
+            static_secret: static_secret_bytes,
+            padding,
+            legacy_filler: None,
+        });
+    }
+    // v2 path.
+    if bytes.len() != SERVICE_DESTINATION_FILE_LENGTH {
+        return Err(ServiceDestinationStorageError::TrailingBytes);
+    }
+    let filler_bytes = reader.take(SERVICE_DESTINATION_LEGACY_FILLER_LENGTH)?;
+    let padding_bytes = reader.take(SERVICE_DESTINATION_V2_PADDING_LENGTH)?;
     let stored_checksum = reader.array::<SERVICE_DESTINATION_INTEGRITY_LENGTH>()?;
     reader.finish()?;
     let expected_checksum =
@@ -480,10 +594,13 @@ fn decode_service_destination(
     }
     let mut padding = Zeroizing::new(vec![0_u8; padding_bytes.len()]);
     padding.copy_from_slice(padding_bytes);
+    let mut filler = Zeroizing::new([0_u8; SERVICE_DESTINATION_LEGACY_FILLER_LENGTH]);
+    filler.copy_from_slice(filler_bytes);
     Ok(ServiceDestinationRecord {
         signing_seed: signing_seed_bytes,
         static_secret: static_secret_bytes,
         padding,
+        legacy_filler: Some(filler),
     })
 }
 
@@ -712,6 +829,13 @@ mod tests {
         let data_dir = directory.path();
         let s = store(data_dir, "alpha");
         let original = record(1);
+        // Plan 223: new records are v2 with legacy filler + 96-byte padding.
+        assert!(original.is_v2());
+        assert_eq!(
+            original.padding().len(),
+            SERVICE_DESTINATION_V2_PADDING_LENGTH
+        );
+        assert!(original.legacy_filler().is_some());
         s.save_new(&original).expect("save");
         let loaded = s.load().expect("load");
         assert_eq!(
@@ -724,6 +848,35 @@ mod tests {
         );
         assert_eq!(loaded.padding().len(), original.padding().len());
         assert_eq!(loaded.padding(), original.padding());
+        assert_eq!(loaded.legacy_filler(), original.legacy_filler());
+        assert!(loaded.is_v2());
+    }
+
+    #[test]
+    fn v1_legacy_record_preserves_x25519_shape() {
+        // Plan 223 §15: v1 files (320-byte padding, no filler) must decode
+        // without silent hash change. Construct a v1 payload manually via
+        // the legacy encoder path (filler None).
+        let mut rng = ChaCha8Rng::seed_from_u64(99);
+        let mut signing_seed = Zeroizing::new([0_u8; PRIVATE_KEY_LENGTH]);
+        let mut static_secret = Zeroizing::new([0_u8; X25519_KEY_LENGTH]);
+        let mut padding = Zeroizing::new(vec![0_u8; crate::IDENTITY_PADDING_LENGTH]);
+        use rand_core::RngCore as _;
+        rng.fill_bytes(&mut *signing_seed);
+        rng.fill_bytes(&mut *static_secret);
+        rng.fill_bytes(&mut *padding);
+        let v1 = ServiceDestinationRecord {
+            signing_seed,
+            static_secret,
+            padding,
+            legacy_filler: None,
+        };
+        assert!(!v1.is_v2());
+        let encoded = encode_service_destination(&v1).expect("encode v1");
+        assert_eq!(encoded.len(), SERVICE_DESTINATION_V1_FILE_LENGTH);
+        let decoded = decode_service_destination(&encoded).expect("decode v1");
+        assert!(!decoded.is_v2());
+        assert_eq!(decoded.padding(), v1.padding());
     }
 
     #[test]

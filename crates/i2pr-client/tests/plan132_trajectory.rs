@@ -1400,13 +1400,16 @@ fn plan132_ecies_session_layer_rejects_consumed_tag_directly() {
     let mut rng = ChaCha8Rng::seed_from_u64(0x1329_0000);
     let mut alice_seed = [0_u8; 32];
     let mut alice_signing = [0_u8; 32];
-    let mut alice_padding = vec![0_u8; i2pr_crypto::IDENTITY_PADDING_LENGTH];
+    let mut alice_filler = [0_u8; i2pr_client::DESTINATION_LEGACY_PUBLIC_LENGTH];
+    let mut alice_padding = vec![0_u8; i2pr_client::DESTINATION_LEGACY_PADDING_LENGTH];
     rng.fill_bytes(&mut alice_seed);
     rng.fill_bytes(&mut alice_signing);
+    rng.fill_bytes(&mut alice_filler);
     rng.fill_bytes(&mut alice_padding);
     let alice_id = i2pr_client::DestinationIdentity::from_private_bytes(
         alice_signing,
         alice_seed,
+        alice_filler,
         zeroize::Zeroizing::new(alice_padding),
     )
     .expect("alice identity");
@@ -1414,13 +1417,16 @@ fn plan132_ecies_session_layer_rejects_consumed_tag_directly() {
 
     let mut bob_seed = [0_u8; 32];
     let mut bob_signing = [0_u8; 32];
-    let mut bob_padding = vec![0_u8; i2pr_crypto::IDENTITY_PADDING_LENGTH];
+    let mut bob_filler = [0_u8; i2pr_client::DESTINATION_LEGACY_PUBLIC_LENGTH];
+    let mut bob_padding = vec![0_u8; i2pr_client::DESTINATION_LEGACY_PADDING_LENGTH];
     rng.fill_bytes(&mut bob_seed);
     rng.fill_bytes(&mut bob_signing);
+    rng.fill_bytes(&mut bob_filler);
     rng.fill_bytes(&mut bob_padding);
     let bob_id = i2pr_client::DestinationIdentity::from_private_bytes(
         bob_signing,
         bob_seed,
+        bob_filler,
         zeroize::Zeroizing::new(bob_padding),
     )
     .expect("bob identity");

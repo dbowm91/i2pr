@@ -269,6 +269,20 @@ impl ReferenceControl {
         p222_parse_tracked_status(&response, nonce)
     }
 
+    /// Plan 223 WP B — read-only exact Destination observation via the
+    /// helper `INSPECT_DEST` surface. Returns the raw `DEST_INFO` line, or
+    /// `None` when unreachable (Unknown, never a protocol fact).
+    async fn inspect_dest(&mut self, destination_b64: &str) -> Option<String> {
+        let response = self
+            .command(&format!("INSPECT_DEST {destination_b64}"))
+            .await;
+        if response.starts_with("DEST_INFO ") {
+            Some(response)
+        } else {
+            None
+        }
+    }
+
     async fn write_stream(&mut self, id: usize, payload: &[u8]) -> bool {
         self.command(&format!("WRITE {id} {}", hex_encode(payload)))
             .await
@@ -2850,6 +2864,39 @@ async fn destination_message_plane_against_java() {
             .encode_to_vec(65535)
             .expect("encode dest"),
     );
+    // Plan 223 WP B — exact Rust Destination facts for the same bytes
+    // the reverse send will use. No inference from source alone; the
+    // helper + router Java parses below must match these exactly.
+    let p223_rust_dest = {
+        let dest = local_identity.destination();
+        let hash_hex = p220_bytes_to_hex(dest.hash().expect("destination hash").as_bytes());
+        Some(P223Dest {
+            hash_hex,
+            enc_type_code: dest.public_key().key_type().code() as i32,
+            enc_type_name: format!("{:?}", dest.public_key().key_type()),
+            public_key_len: dest.public_key().as_bytes().len(),
+            sig_type_code: dest.signing_key().key_type().code() as i32,
+        })
+    };
+    // Pre-send Java observations at the same epoch as the P222 preflight
+    // (post-bootstrap, pre-send). Both are read-only; neither mutates
+    // NetDB, KeyManager, tunnel, or LeaseSet state.
+    let p223_helper_dest = reference_control
+        .inspect_dest(&local_b64)
+        .await
+        .and_then(|line| p223_parse_dest_info(&line));
+    let p223_router_dest = p223_collect_router_dest_inspect(diag_a_port, &local_b64).await;
+    // P223 WP C pre-send branch snapshot (same epoch). Recorded now;
+    // the post-fix fallback re-queries only if status 17 persists is
+    // handled by reusing this pre-send snapshot plus a post-send refresh
+    // below when needed.
+    let p223_branch_presend = p223_collect_branch(
+        diag_a_port,
+        &helper_client_dbid_hex,
+        &reverse_lookup_target_hex,
+        &helper_client_dbid_hex,
+    )
+    .await;
     let app_back = b"plan194-destination-reply-b";
     let reverse_sha256 = sha256_hex(app_back);
     let tracked_start = tokio::time::Instant::now();
@@ -3127,6 +3174,142 @@ async fn destination_message_plane_against_java() {
         tracked.as_ref(),
         &reverse_sha256,
     );
+    // Plan 223 WP B/C/G — exact Destination + branch discriminator and
+    // exactly one P223 final terminal. Pre-send Java observations were
+    // taken above; refresh the branch post-send only when status 17
+    // persists so the C1–C3 intersection reflects the failure epoch.
+    let status_17 = matches!(
+        p222_facts.status_unsupported_encryption,
+        P220Observed::Known(true)
+    );
+    let p223_preflight = p223_classify_preflight(
+        p223_rust_dest.as_ref(),
+        p223_helper_dest.as_ref(),
+        status_17,
+    );
+    record_p223_destination(
+        &evidence_dir,
+        p223_rust_dest.as_ref(),
+        p223_helper_dest.as_ref(),
+        p223_router_dest.as_ref(),
+        p223_preflight,
+    );
+    // Local LS2 facts for the same identity (post-fix must stay type-4).
+    {
+        let (enc_code, key_len, key_match) = match local_ls2.usable_x25519_key() {
+            Ok(k) => (
+                k.key_type().code(),
+                k.as_bytes().len(),
+                k.as_bytes() == &local_identity.static_public_bytes()[..],
+            ),
+            Err(_) => (0xFFFF, 0, false),
+        };
+        append_evidence(
+            &evidence_dir,
+            "p223-local-ls2",
+            &format!(
+                "ls_type=3 key_count={} enc_type_code={} key_len={} key_match={}",
+                local_ls2.encryption_keys().len(),
+                enc_code,
+                key_len,
+                key_match,
+            ),
+        );
+    }
+    let p223_branch_post = if status_17 {
+        p223_collect_branch(
+            diag_a_port,
+            &helper_client_dbid_hex,
+            &reverse_lookup_target_hex,
+            &helper_client_dbid_hex,
+        )
+        .await
+        .or(p223_branch_presend.clone())
+    } else {
+        p223_branch_presend.clone()
+    };
+    // Prefer the post-send refresh when status 17 persists; otherwise the
+    // pre-send snapshot is the authoritative C record (or Unknown when
+    // delivery passes and C is not required).
+    let p223_branch_ref = if status_17 {
+        p223_branch_post.as_ref().or(p223_branch_presend.as_ref())
+    } else {
+        p223_branch_presend.as_ref()
+    };
+    record_p223_branch(&evidence_dir, p223_branch_ref);
+    // Decision table (§13 G1–G7).
+    let p223_terminal = if frozen_payload_45s {
+        P223Terminal::ReverseDeliveryPassed
+    } else if status_17 {
+        match p223_branch_ref {
+            None => P223Terminal::Status17PersistsUnknown,
+            Some(branch) if !branch.observable => P223Terminal::Status17PersistsUnknown,
+            Some(branch) if !branch.source_keys_present => {
+                P223Terminal::Status17PersistsSourceKeysMissing
+            }
+            Some(branch) if branch.source_keys_present && !branch.source_supports_x25519 => {
+                P223Terminal::Status17PersistsSourceKeysNoX25519
+            }
+            Some(branch) if branch.target_ls_present && !branch.target_has_x25519 => {
+                P223Terminal::Status17PersistsTargetLsNoX25519
+            }
+            Some(branch)
+                if branch.source_keys_present
+                    && branch.target_ls_present
+                    && !branch.selected_key_present =>
+            {
+                P223Terminal::Status17PersistsNoKeyIntersection
+            }
+            Some(_) => P223Terminal::Status17PersistsUnknown,
+        }
+    } else if !p222_status_events.is_empty() {
+        // Status 17 disappeared but another terminal appears (§13 G6).
+        // Contradiction check: Java reports type-0 + selected X25519 yet
+        // status 17 would have been G7; here status is non-17, so record
+        // the next boundary honestly without a second corrective.
+        P223Terminal::NextBoundary
+    } else {
+        // No payload and no decisive status: check for contradiction
+        // (hash/type mismatch across parsers) else Unknown.
+        let contradiction = match (
+            p223_rust_dest.as_ref(),
+            p223_helper_dest.as_ref(),
+            p223_router_dest.as_ref(),
+        ) {
+            (Some(rust), Some(helper), _) if rust.hash_hex != helper.hash_hex => true,
+            (Some(rust), _, Some(router)) if rust.hash_hex != router.hash_hex => true,
+            _ => false,
+        };
+        if contradiction {
+            P223Terminal::EvidenceContradiction
+        } else {
+            P223Terminal::Status17PersistsUnknown
+        }
+    };
+    // For NEXT-BOUNDARY, include the ordered statuses in the detail.
+    let p223_detail = if p223_terminal == P223Terminal::NextBoundary {
+        format!(
+            "ordered_statuses={:?} preflight={} hash_match={} frozen_payload_45s={}",
+            p222_status_events
+                .iter()
+                .map(|e| e.status)
+                .collect::<Vec<_>>(),
+            p223_preflight.token(),
+            match (&p223_rust_dest, &p223_helper_dest) {
+                (Some(rust), Some(helper)) => rust.hash_hex == helper.hash_hex,
+                _ => false,
+            },
+            frozen_payload_45s,
+        )
+    } else {
+        format!(
+            "preflight={} frozen_payload_45s={} frozen_tunneldata_45s={}",
+            p223_preflight.token(),
+            frozen_payload_45s,
+            frozen_tunneldata_45s,
+        )
+    };
+    let _ = record_p223_classification(&evidence_dir, p223_terminal, &p223_detail);
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -3777,6 +3960,339 @@ fn record_p222_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
             P222Terminal::ObservabilityGapPreEpoch.token()
         ),
     );
+}
+
+/// Plan 223 WP B — exact Destination observation (Rust + Java).
+#[derive(Clone, Debug)]
+struct P223Dest {
+    hash_hex: String,
+    enc_type_code: i32,
+    enc_type_name: String,
+    public_key_len: usize,
+    sig_type_code: i32,
+}
+
+fn p223_parse_dest_info(line: &str) -> Option<P223Dest> {
+    let body = line.strip_prefix("DEST_INFO ")?;
+    let mut hash_hex: Option<String> = None;
+    let mut enc_type_code: Option<i32> = None;
+    let mut enc_type_name: Option<String> = None;
+    let mut public_key_len: Option<usize> = None;
+    let mut sig_type_code: Option<i32> = None;
+    for field in body.split_whitespace() {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "hash_hex" => {
+                if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                hash_hex = Some(value.to_lowercase());
+            }
+            "enc_type_code" => enc_type_code = Some(value.parse().ok()?),
+            "enc_type_name" => enc_type_name = Some(value.to_owned()),
+            "public_key_len" => public_key_len = Some(value.parse().ok()?),
+            "sig_type_code" => sig_type_code = Some(value.parse().ok()?),
+            _ => return None,
+        }
+    }
+    Some(P223Dest {
+        hash_hex: hash_hex?,
+        enc_type_code: enc_type_code?,
+        enc_type_name: enc_type_name?,
+        public_key_len: public_key_len?,
+        sig_type_code: sig_type_code?,
+    })
+}
+
+fn p223_parse_router_dest_inspect(line: &str) -> Option<P223Dest> {
+    // `P223-EV kind=dest-inspect ...` — reuse the DEST_INFO parser after
+    // normalising the prefix.
+    let normalised = line
+        .replace("P223-EV kind=dest-inspect ", "DEST_INFO ")
+        .replace("P223-EV ", "DEST_INFO ");
+    // The router row carries `observable=true/false`; strip it for parsing.
+    let filtered: String = normalised
+        .split_whitespace()
+        .filter(|f| {
+            !f.starts_with("observable=") && !f.starts_with("kind=") && !f.starts_with("reason=")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Ensure DEST_INFO prefix remains.
+    let with_prefix = if filtered.starts_with("DEST_INFO ") {
+        filtered
+    } else {
+        format!("DEST_INFO {filtered}")
+    };
+    p223_parse_dest_info(&with_prefix)
+}
+
+/// Plan 223 WP C — bounded status-17 branch discriminator.
+#[derive(Clone, Debug)]
+struct P223Branch {
+    observable: bool,
+    source_keys_present: bool,
+    source_supported_types: String,
+    source_supports_elgamal: bool,
+    source_supports_x25519: bool,
+    target_ls_present: bool,
+    target_ls_type: String,
+    target_destination_hash_match: bool,
+    target_destination_enc_type: i32,
+    target_key_count: usize,
+    target_key_types: String,
+    target_has_x25519: bool,
+    selected_key_present: bool,
+    selected_key_type: i32,
+}
+
+fn p223_parse_branch(line: &str) -> Option<P223Branch> {
+    let kv = p220_parse_kv(&line.replace("P223-EV ", "P220-EV "));
+    let observable = kv.get("observable").is_some_and(|v| v == "true");
+    let get_bool = |key: &str| kv.get(key).is_some_and(|v| v == "true");
+    let get_i32 = |key: &str| {
+        kv.get(key)
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(-1)
+    };
+    let get_usize = |key: &str| {
+        kv.get(key)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(usize::MAX)
+    };
+    Some(P223Branch {
+        observable,
+        source_keys_present: get_bool("source_keys_present"),
+        source_supported_types: kv
+            .get("source_supported_types")
+            .cloned()
+            .unwrap_or_default(),
+        source_supports_elgamal: get_bool("source_supports_elgamal"),
+        source_supports_x25519: get_bool("source_supports_x25519"),
+        target_ls_present: get_bool("target_ls_present"),
+        target_ls_type: kv.get("target_ls_type").cloned().unwrap_or_default(),
+        target_destination_hash_match: get_bool("target_destination_hash_match"),
+        target_destination_enc_type: get_i32("target_destination_enc_type"),
+        target_key_count: get_usize("target_key_count"),
+        target_key_types: kv.get("target_key_types").cloned().unwrap_or_default(),
+        target_has_x25519: get_bool("target_has_x25519"),
+        selected_key_present: get_bool("selected_key_present"),
+        selected_key_type: get_i32("selected_key_type"),
+    })
+}
+
+async fn p223_collect_router_dest_inspect(diag_port: u16, dest_b64: &str) -> Option<P223Dest> {
+    let line = p220_query_diagnostic(diag_port, &format!("P223-DEST-INSPECT {dest_b64}")).await?;
+    if !line.starts_with("P223-EV ") {
+        return None;
+    }
+    p223_parse_router_dest_inspect(&line)
+}
+
+async fn p223_collect_branch(
+    diag_port: u16,
+    client_dbid_hex: &str,
+    target_hex: &str,
+    source_hex: &str,
+) -> Option<P223Branch> {
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P223-BRANCH {client_dbid_hex} {target_hex} {source_hex}"),
+    )
+    .await?;
+    if !line.starts_with("P223-EV ") {
+        return None;
+    }
+    p223_parse_branch(&line)
+}
+
+/// Plan 223 pre-fix classifier (gate, not final terminal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P223Preflight {
+    Confirmed,
+    NotConfirmed,
+    ObservabilityGap,
+}
+
+impl P223Preflight {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Confirmed => "P223-PREFLIGHT-DESTINATION-ENC-GUARD-CONFIRMED",
+            Self::NotConfirmed => "P223-PREFLIGHT-DESTINATION-ENC-GUARD-NOT-CONFIRMED",
+            Self::ObservabilityGap => "P223-PREFLIGHT-OBSERVABILITY-GAP",
+        }
+    }
+}
+
+fn p223_classify_preflight(
+    rust: Option<&P223Dest>,
+    java: Option<&P223Dest>,
+    status_17_observed: bool,
+) -> P223Preflight {
+    let (Some(rust), Some(java)) = (rust, java) else {
+        return P223Preflight::ObservabilityGap;
+    };
+    if rust.hash_hex != java.hash_hex
+        || rust.enc_type_code != java.enc_type_code
+        || rust.public_key_len != java.public_key_len
+    {
+        return P223Preflight::ObservabilityGap;
+    }
+    if java.enc_type_code != 0 && status_17_observed {
+        P223Preflight::Confirmed
+    } else if java.enc_type_code == 0 {
+        P223Preflight::NotConfirmed
+    } else {
+        P223Preflight::ObservabilityGap
+    }
+}
+
+/// Plan 223 final terminals (§5 post-corrective).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P223Terminal {
+    ReverseDeliveryPassed,
+    Status17PersistsSourceKeysMissing,
+    Status17PersistsSourceKeysNoX25519,
+    Status17PersistsTargetLsNoX25519,
+    Status17PersistsNoKeyIntersection,
+    Status17PersistsUnknown,
+    NextBoundary,
+    EvidenceContradiction,
+}
+
+impl P223Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::ReverseDeliveryPassed => "P223-REVERSE-DELIVERY-PASSED",
+            Self::Status17PersistsSourceKeysMissing => "P223-STATUS17-PERSISTS-SOURCE-KEYS-MISSING",
+            Self::Status17PersistsSourceKeysNoX25519 => {
+                "P223-STATUS17-PERSISTS-SOURCE-KEYS-NO-X25519"
+            }
+            Self::Status17PersistsTargetLsNoX25519 => "P223-STATUS17-PERSISTS-TARGET-LS2-NO-X25519",
+            Self::Status17PersistsNoKeyIntersection => "P223-STATUS17-PERSISTS-NO-KEY-INTERSECTION",
+            Self::Status17PersistsUnknown => "P223-STATUS17-PERSISTS-UNKNOWN",
+            Self::NextBoundary => "P223-NEXT-BOUNDARY",
+            Self::EvidenceContradiction => "P223-EVIDENCE-CONTRADICTION",
+        }
+    }
+}
+
+fn record_p223_destination(
+    evidence_dir: &Path,
+    rust: Option<&P223Dest>,
+    helper: Option<&P223Dest>,
+    router: Option<&P223Dest>,
+    preflight: P223Preflight,
+) {
+    if let Some(rust) = rust {
+        append_evidence(
+            evidence_dir,
+            "p223-rust-destination",
+            &format!(
+                "hash_hex={} enc_type_code={} public_key_len={} sig_type_code={}",
+                rust.hash_hex, rust.enc_type_code, rust.public_key_len, rust.sig_type_code
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p223-rust-destination",
+            "observable=false reason=rust-destination-unavailable",
+        );
+    }
+    if let Some(helper) = helper {
+        append_evidence(
+            evidence_dir,
+            "p223-java-helper-destination",
+            &format!(
+                "hash_hex={} enc_type_code={} enc_type_name={} public_key_len={} sig_type_code={}",
+                helper.hash_hex,
+                helper.enc_type_code,
+                helper.enc_type_name,
+                helper.public_key_len,
+                helper.sig_type_code
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p223-java-helper-destination",
+            "observable=false reason=helper-inspect-unreachable",
+        );
+    }
+    if let Some(router) = router {
+        append_evidence(
+            evidence_dir,
+            "p223-java-router-destination",
+            &format!(
+                "hash_hex={} enc_type_code={} enc_type_name={} public_key_len={} sig_type_code={}",
+                router.hash_hex,
+                router.enc_type_code,
+                router.enc_type_name,
+                router.public_key_len,
+                router.sig_type_code
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p223-java-router-destination",
+            "observable=false reason=router-inspect-unreachable",
+        );
+    }
+    let hash_match = match (rust, helper, router) {
+        (Some(rust), Some(helper), Some(router)) => {
+            rust.hash_hex == helper.hash_hex && rust.hash_hex == router.hash_hex
+        }
+        (Some(rust), Some(helper), None) => rust.hash_hex == helper.hash_hex,
+        _ => false,
+    };
+    append_evidence(
+        evidence_dir,
+        "p223-destination-match",
+        &format!("hash_match={} preflight={}", hash_match, preflight.token()),
+    );
+}
+
+fn record_p223_branch(evidence_dir: &Path, branch: Option<&P223Branch>) {
+    if let Some(branch) = branch {
+        append_evidence(
+            evidence_dir,
+            "p223-branch",
+            &format!(
+                "observable={} source_keys_present={} source_supported_types={} source_supports_elgamal={} source_supports_x25519={} target_ls_present={} target_ls_type={} target_destination_hash_match={} target_destination_enc_type={} target_key_count={} target_key_types={} target_has_x25519={} selected_key_present={} selected_key_type={}",
+                branch.observable,
+                branch.source_keys_present,
+                branch.source_supported_types,
+                branch.source_supports_elgamal,
+                branch.source_supports_x25519,
+                branch.target_ls_present,
+                branch.target_ls_type,
+                branch.target_destination_hash_match,
+                branch.target_destination_enc_type,
+                branch.target_key_count,
+                branch.target_key_types,
+                branch.target_has_x25519,
+                branch.selected_key_present,
+                branch.selected_key_type,
+            ),
+        );
+    } else {
+        append_evidence(
+            evidence_dir,
+            "p223-branch",
+            "observable=false reason=branch-unreachable",
+        );
+    }
+}
+
+fn record_p223_classification(evidence_dir: &Path, terminal: P223Terminal, detail: &str) -> String {
+    append_evidence(
+        evidence_dir,
+        "p223-classification",
+        &format!("{} {detail}", terminal.token()),
+    );
+    terminal.token().to_owned()
 }
 
 /// Plan 199 §A.5 — full Streaming matrix (Direction A + B) against
