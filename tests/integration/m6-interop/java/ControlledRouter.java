@@ -896,6 +896,10 @@ public final class ControlledRouter {
             return "P224-ERROR " + reason;
         }
 
+        private String p225Error(String reason) {
+            return "P225-ERROR " + reason;
+        }
+
         /**
          * Plan 224 WP B — read-only main-NetDB LS snapshot for one
          * target hash. Never stores, publishes, searches, or alters
