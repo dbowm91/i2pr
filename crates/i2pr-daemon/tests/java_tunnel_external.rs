@@ -4558,7 +4558,7 @@ fn p224_parse_main_ls(line: &str) -> Option<P224MainLs> {
         return None;
     }
     let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
-    if !kv.get("observable").is_some_and(|v| v == "true") {
+    if kv.get("observable").is_none_or(|v| v != "true") {
         return None;
     }
     let target = kv.get("target_hash_hex").cloned().unwrap_or_default();
@@ -4600,11 +4600,11 @@ fn p224_parse_client_ls(line: &str) -> Option<P224ClientLs> {
         return None;
     }
     let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
-    if !kv.get("observable").is_some_and(|v| v == "true") {
+    if kv.get("observable").is_none_or(|v| v != "true") {
         return None;
     }
-    if !kv.get("client_db_resolved").is_some_and(|v| v == "true")
-        || !kv.get("client_db_is_client").is_some_and(|v| v == "true")
+    if kv.get("client_db_resolved").is_none_or(|v| v != "true")
+        || kv.get("client_db_is_client").is_none_or(|v| v != "true")
     {
         return None;
     }
@@ -4677,7 +4677,7 @@ fn p224_parse_hash_b64(line: &str, expected_hex: &str) -> Option<String> {
         return None;
     }
     let kv = p220_parse_kv(&line.replace("P224-EV ", "P220-EV "));
-    if !kv.get("observable").is_some_and(|v| v == "true") {
+    if kv.get("observable").is_none_or(|v| v != "true") {
         return None;
     }
     let echoed = kv.get("hash_hex").cloned().unwrap_or_default();
@@ -4870,6 +4870,7 @@ fn p224_scan_log_dir(
 /// installed in both datadirs (the file the harness writes before
 /// router startup; the driver checks the exact three
 /// `logger.record.` scopes through `<logdir>/../logger.config`).
+#[allow(clippy::too_many_arguments)]
 fn p224_build_trace(
     target_hash_hex: &str,
     target_b64: Option<&str>,
@@ -8482,10 +8483,12 @@ fn p224_missing_log_file_yields_gap_not_false_facts() {
         P224Terminal::ObservabilityGapLookupPath
     );
     // A truncated scan is likewise Unknown, never facts.
-    let mut truncated = P224LogScan::default();
-    truncated.truncated = true;
-    truncated.files_read = 1;
-    truncated.a_isj_any = 5;
+    let truncated = P224LogScan {
+        truncated: true,
+        files_read: 1,
+        a_isj_any: 5,
+        ..P224LogScan::default()
+    };
     let trace = p224_build_trace(
         &target,
         Some(&p224_test_target_b64()),
