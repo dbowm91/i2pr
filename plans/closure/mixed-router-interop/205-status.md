@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 223 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 223 targets the target-Destination
+identity / LeaseSet2 crypto boundary inside Java's direct client-message
+path, below the SAM API. Nothing in the Plan-223 registration reactivates a
+SAM/helper pivot.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_223 = registered-ready-m6-java-destination-identity-crypto-separation-corrective
+```
+
 # Current dependency amendment — Plan 222 corrected narrowing
 
 Plan 205 stays retained/deferred. Plan 220 definitively refuted the J219-B
