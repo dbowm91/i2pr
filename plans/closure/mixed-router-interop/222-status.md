@@ -1,3 +1,23 @@
+# Plan 223 registration follow-up
+
+Plan 223 is now registered as the executable corrective implied by this
+closure. Exact-pinned Java source distinguishes an earlier status-17 branch
+from the later LS2 key-intersection branch: OCMOSJ rejects a target
+Destination whose encryption type is not legacy ElGamal/type 0 before the
+client-NetDB lookup. Current i2pr router-owned generation advertises
+X25519/type 4 in that Destination field.
+
+Plan 223 must prove the early guard on the exact target bytes before changing
+production identity generation. If confirmed, it separates the legacy
+Destination identity field from the already-independent LS2 X25519/type-4
+key and reruns this same destination lane.
+
+```text
+plan_222 = passed-m6-java-client-netdb-ocmosj-narrowing-corrective
+plan_223 = registered-ready-m6-java-destination-identity-crypto-separation-corrective
+next_executable_plan = 223-m6-java-destination-identity-crypto-separation-corrective
+```
+
 # Plan 222 status — M6 Java client-NetDB/OCMOSJ narrowing corrective
 
 Status: **`passed-m6-java-client-netdb-ocmosj-narrowing-corrective`**.
@@ -505,7 +525,7 @@ plan_201 = blocked-pending-ocmosj-unsupported-encryption-corrective-after-plan22
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 plan_204 = blocked-on-m6-java-second-family-closure-pending-ocmosj-corrective-after-plan222
 
-next_executable_plan = none-pending-new-plan-of-record-for-ocmosj-unsupported-encryption-corrective
+next_executable_plan = 223-m6-java-destination-identity-crypto-separation-corrective
 ```
 
 No bootstrap/topology/protocol corrective is registered or authorized by
