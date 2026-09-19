@@ -1058,14 +1058,21 @@ public final class ControlledRouter {
                 return "P225-EV kind=hash-b32 hash_hex=" + hashHex
                     + " observable=false reason=render-failed";
             }
-            if (b32 == null || b32.length() != 52
-                    || !b32.equals(b32.toLowerCase())
-                    || !b32.matches("[a-z2-7]{52}")) {
+            // Hash.toBase32() returns the complete 60-character b32.i2p
+            // hostname; the router log's `sent to:` field uses that same
+            // hostname. Return only its 52-character label so the bounded
+            // Rust sanitizer appends the suffix exactly once.
+            if (b32 == null || b32.length() != 60 || !b32.endsWith(".b32.i2p")) {
+                return "P225-EV kind=hash-b32 hash_hex=" + hashHex
+                    + " observable=false reason=render-failed";
+            }
+            String label = b32.substring(0, 52);
+            if (!label.equals(label.toLowerCase()) || !label.matches("[a-z2-7]{52}")) {
                 return "P225-EV kind=hash-b32 hash_hex=" + hashHex
                     + " observable=false reason=render-failed";
             }
             return "P225-EV kind=hash-b32 hash_hex=" + hashHex
-                + " observable=true hash_b32=" + b32;
+                + " observable=true hash_b32=" + label;
         }
 
         private static String triState(Boolean value) {
