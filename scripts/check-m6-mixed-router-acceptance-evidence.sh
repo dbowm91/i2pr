@@ -1595,8 +1595,97 @@ if [[ -f "${P224_HARNESS}" ]]; then
   done
 fi
 
+# ---- 18. Plan 225 effective logger activation corrective ------------------
+# Plan 225 remains diagnostic-only. It closes the Plan 224 false-gap by
+# proving the three lookup logger scopes in the running Java LogManager,
+# rendering the exact client Base32 label through Java, and scanning only the
+# bounded nested router log layout. No Java state mutation, topology change,
+# extra lookup, or production wire change is permitted.
+if [[ -f "${P224_LAUNCHER_SRC}" ]]; then
+  for required in \
+    '"P225-LOGGER-CONFIG"' \
+    '"P225-HASH-B32"' \
+    'kind=logger-config' \
+    'kind=hash-b32' \
+    'p225LoggerConfig' \
+    'p225HashB32' \
+    'getDefaultLimit' \
+    'getMinimumPriority' \
+    'toBase32'; do
+    if ! grep -q -F "${required}" "${P224_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_LAUNCHER_SRC} lacks the Plan 225 read-only activation surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in \
+    'setConfig(' \
+    'setLimits(' \
+    'rereadConfig(' \
+    'getDeclaredField(' \
+    'setAccessible(' \
+    'registerKeys(' \
+    '.store(' \
+    '.publish('; do
+    if grep -q -F "${forbidden}" "${P224_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_LAUNCHER_SRC} carries a Plan 225 mutation/reflection path '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${P224_DRIVER_TEST}" ]]; then
+  for required in \
+    'struct P225LoggerConfig' \
+    'fn p225_parse_logger_config' \
+    'fn p225_collect_logger_config' \
+    'fn p225_parse_hash_b32' \
+    'fn p225_collect_hash_b32' \
+    'fn record_p225_logger_config' \
+    'fn p224_scan_log_dir_with_b32' \
+    'fn p224_build_trace_with_b32' \
+    'isj_new' \
+    'isj_encrypted_to_b' \
+    'Encrypted DLM for ' \
+    'kind=logger-config' \
+    'kind=hash-b32' \
+    'enum P225Terminal' \
+    'fn p225_classify' \
+    'fn record_p225_classification' \
+    'fn record_p225_early_stop_gap' \
+    'P225-OBSERVABILITY-GAP-LOOKUP-PATH' \
+    'p225-logger-config-a' \
+    'p225-logger-config-b' \
+    'p225-classification'; do
+    if ! grep -q -F "${required}" "${P224_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lacks the Plan 225 corrective surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    p225_logger_parser_requires_effective_pinned_levels \
+    p225_hash_b32_parser_requires_exact_echo_and_alphabet \
+    p225_terminal_namespace_and_mapping_are_canonical \
+    p225_record_emits_one_terminal_for_pre_epoch_gap; do
+    if ! grep -q "fn ${unit_row}" "${P224_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_DRIVER_TEST} lacks the Plan 225 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+if [[ -f "${P224_HARNESS}" ]]; then
+  for required in \
+    'p225-classification' \
+    'external-p225-classification'; do
+    if ! grep -q -F "${required}" "${P224_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P224_HARNESS} lacks the Plan 225 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants)"

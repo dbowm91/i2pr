@@ -101,6 +101,16 @@
 //     live k-buckets read-only and returns sanitized counts plus
 //     target-membership booleans. It MUST NOT patch or replace any
 //     Java I2P class.
+// Plan 225 diagnostic contract (observability only, read-only, no state
+// mutation):
+//   - `P225-LOGGER-CONFIG` reads the running LogManager's effective default
+//     and exact lookup-class levels. It does not reload, set, or mutate the
+//     logger configuration;
+//   - `P225-HASH-B32` renders one exact Hash in the Base32 form used by the
+//     pinned InboundMessageDistributor log, so client-tunnel DSM correlation
+//     does not confuse a client DBID's Base64 form with its b32.i2p label;
+//   - every P225 response is one bounded, sanitized line and contains no
+//     log text, keys, tags, payloads, or private material.
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -129,6 +139,7 @@ import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 import net.i2p.router.networkdb.kademlia.P224LsProbe;
+import net.i2p.util.Log;
 
 public final class ControlledRouter {
 
@@ -570,6 +581,13 @@ public final class ControlledRouter {
                             return p224Error("missing-hash-argument");
                         }
                         return p224HashB64(parts[1]);
+                    case "P225-LOGGER-CONFIG":
+                        return p225LoggerConfig();
+                    case "P225-HASH-B32":
+                        if (parts.length < 2) {
+                            return p225Error("missing-hash-argument");
+                        }
+                        return p225HashB32(parts[1]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -981,6 +999,69 @@ public final class ControlledRouter {
             }
             return "P224-EV kind=hash-b64 hash_hex=" + hashHex
                 + " observable=true hash_b64=" + b64;
+        }
+
+        /**
+         * Plan 225 — read the effective logger levels from the running
+         * LogManager. This is deliberately an observation only: it does not
+         * modify or reload the logger configuration file.
+         * The exact fully-qualified scopes are the classes whose pinned log
+         * messages carry the lookup-path facts.
+         */
+        private String p225LoggerConfig() {
+            try {
+                net.i2p.util.LogManager manager = context().logManager();
+                String defaultLevel = manager.getDefaultLimit();
+                String isjLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.networkdb.kademlia.IterativeSearchJob"
+                ).getMinimumPriority());
+                String dlmLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.networkdb.HandleDatabaseLookupMessageJob"
+                ).getMinimumPriority());
+                String ibmdLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.InboundMessageDistributor"
+                ).getMinimumPriority());
+                boolean observable = "ERROR".equals(defaultLevel)
+                    && "INFO".equals(isjLevel)
+                    && "DEBUG".equals(dlmLevel)
+                    && "INFO".equals(ibmdLevel);
+                return "P225-EV kind=logger-config"
+                    + " observable=" + observable
+                    + " default_level=" + defaultLevel
+                    + " isj_level=" + isjLevel
+                    + " dlm_level=" + dlmLevel
+                    + " ibmd_level=" + ibmdLevel;
+            } catch (Throwable t) {
+                return "P225-EV kind=logger-config observable=false reason=unreadable-"
+                    + t.getClass().getSimpleName();
+            }
+        }
+
+        /**
+         * Plan 225 — render the exact Base32 form used by the pinned Java
+         * client-tunnel log. This is a deterministic Hash rendering only;
+         * it performs no lookup and touches no router state.
+         */
+        private String p225HashB32(String hashHex) {
+            Hash hash = p220ParseHexHash(hashHex);
+            if (hash == null) {
+                return "P225-ERROR invalid-hex-hash";
+            }
+            String b32;
+            try {
+                b32 = hash.toBase32();
+            } catch (RuntimeException re) {
+                return "P225-EV kind=hash-b32 hash_hex=" + hashHex
+                    + " observable=false reason=render-failed";
+            }
+            if (b32 == null || b32.length() != 52
+                    || !b32.equals(b32.toLowerCase())
+                    || !b32.matches("[a-z2-7]{52}")) {
+                return "P225-EV kind=hash-b32 hash_hex=" + hashHex
+                    + " observable=false reason=render-failed";
+            }
+            return "P225-EV kind=hash-b32 hash_hex=" + hashHex
+                + " observable=true hash_b32=" + b32;
         }
 
         private static String triState(Boolean value) {

@@ -2312,6 +2312,10 @@ async fn destination_message_plane_against_java() {
                 &evidence_dir,
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            record_p225_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2612,6 +2616,10 @@ async fn destination_message_plane_against_java() {
             &evidence_dir,
             "authoritative-epoch-never-reached-lease-stalled",
         );
+        record_p225_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
         handle.shutdown();
         let _ = scope.shutdown().await;
         return;
@@ -2902,18 +2910,39 @@ async fn destination_message_plane_against_java() {
     let p224_target_b64 = p224_collect_hash_b64(diag_a_port, &reverse_lookup_target_hex).await;
     let p224_router_b_b64 = p224_collect_hash_b64(diag_a_port, &rust_b_hex).await;
     let p224_helper_b64 = p224_collect_hash_b64(diag_a_port, &helper_client_dbid_hex).await;
+    // Plan 225 — InboundMessageDistributor logs the helper as its b32.i2p
+    // hostname, not as Hash.toBase64(). Ask the same read-only Java control
+    // surface for the exact Base32 rendering; never guess it in Rust.
+    let p225_helper_b32 = p225_collect_hash_b32(diag_a_port, &helper_client_dbid_hex).await;
     append_evidence(
         &evidence_dir,
         "p224-target-context",
         &format!(
-            "target_hash_hex={} target_hash_b64={} router_b_hash_hex={} router_b_hash_b64={} helper_dbid_hex={} helper_dbid_b64={}",
+            "target_hash_hex={} target_hash_b64={} router_b_hash_hex={} router_b_hash_b64={} helper_dbid_hex={} helper_dbid_b64={} helper_dbid_b32={}",
             reverse_lookup_target_hex,
             p224_target_b64.as_deref().unwrap_or("unknown"),
             rust_b_hex,
             p224_router_b_b64.as_deref().unwrap_or("unknown"),
             helper_client_dbid_hex,
             p224_helper_b64.as_deref().unwrap_or("unknown"),
+            p225_helper_b32.as_deref().unwrap_or("unknown"),
         ),
+    );
+
+    // Plan 225 — prove the exact lookup logger levels are effective in both
+    // running Java LogManagers before the tracked send. A config file on
+    // disk alone is not sufficient to make log absence authoritative.
+    let p225_logger_a = p225_collect_logger_config(diag_a_port).await;
+    let p225_logger_b = p225_collect_logger_config(diag_b_port).await;
+    record_p225_logger_config(
+        &evidence_dir,
+        "p225-logger-config-a",
+        p225_logger_a.as_ref(),
+    );
+    record_p225_logger_config(
+        &evidence_dir,
+        "p225-logger-config-b",
+        p225_logger_b.as_ref(),
     );
 
     // ---- Plan 194 §5.4(c) inbound reply via real inbound tunnel ----------
@@ -3392,7 +3421,15 @@ async fn destination_message_plane_against_java() {
         p224_target_b64.as_ref().and_then(|target_b64| {
             p224_router_b_b64.as_ref().and_then(|b_b64| {
                 p224_helper_b64.as_deref().and_then(|helper_b64| {
-                    p224_scan_log_dir(dir, target_b64, b_b64, Some(helper_b64))
+                    p225_helper_b32.as_deref().and_then(|helper_b32| {
+                        p224_scan_log_dir_with_b32(
+                            dir,
+                            target_b64,
+                            b_b64,
+                            Some(helper_b64),
+                            Some(helper_b32),
+                        )
+                    })
                 })
             })
         })
@@ -3401,29 +3438,44 @@ async fn destination_message_plane_against_java() {
         p224_target_b64.as_ref().and_then(|target_b64| {
             p224_router_b_b64.as_ref().and_then(|b_b64| {
                 p224_helper_b64.as_deref().and_then(|helper_b64| {
-                    p224_scan_log_dir(dir, target_b64, b_b64, Some(helper_b64))
+                    p225_helper_b32.as_deref().and_then(|helper_b32| {
+                        p224_scan_log_dir_with_b32(
+                            dir,
+                            target_b64,
+                            b_b64,
+                            Some(helper_b64),
+                            Some(helper_b32),
+                        )
+                    })
                 })
             })
         })
     });
     let p224_logger_a_ok = p224_a_log_dir
         .as_ref()
-        .is_some_and(|dir| p224_logger_config_installed(dir));
+        .is_some_and(|dir| p224_logger_config_installed(dir))
+        && p225_logger_a
+            .as_ref()
+            .is_some_and(|config| config.effective);
     let p224_logger_b_ok = p224_b_log_dir
         .as_ref()
-        .is_some_and(|dir| p224_logger_config_installed(dir));
+        .is_some_and(|dir| p224_logger_config_installed(dir))
+        && p225_logger_b
+            .as_ref()
+            .is_some_and(|config| config.effective);
     if !p224_logger_a_ok || !p224_logger_b_ok {
         append_evidence(
             &evidence_dir,
             "p224-logger-config-unverified",
-            "targeted logger.config not proven installed in both datadirs; trace absence is Unknown",
+            "targeted logger.config not proven installed and effective in both datadirs; trace absence is Unknown",
         );
     }
-    let p224_trace = p224_build_trace(
+    let p224_trace = p224_build_trace_with_b32(
         &reverse_lookup_target_hex,
         p224_target_b64.as_deref(),
         p224_router_b_b64.as_deref(),
         p224_helper_b64.as_deref(),
+        p225_helper_b32.as_deref(),
         p224_scan_a.as_ref(),
         p224_scan_b.as_ref(),
         p224_logger_a_ok,
@@ -3455,6 +3507,28 @@ async fn destination_message_plane_against_java() {
     let _ = record_p224_classification(
         &evidence_dir,
         p224_terminal,
+        &reverse_lookup_target_hex,
+        p224_b_answerable_pre,
+        &p222_facts.ordered_statuses,
+        frozen_payload_45s,
+        frozen_tunneldata_45s,
+        p224_trace.reply_encryption_error_seen,
+        p224_trace.observable,
+    );
+    let p225_terminal = p225_classify(
+        &reverse_lookup_target_hex,
+        p224_b_pre.as_ref(),
+        p224_b_post.as_ref(),
+        p224_a_pre.as_ref(),
+        p224_a_post.as_ref(),
+        &p224_trace,
+        p224_status_21,
+        &p222_facts.ordered_statuses,
+        frozen_payload_45s,
+    );
+    let _ = record_p225_classification(
+        &evidence_dir,
+        p225_terminal,
         &reverse_lookup_target_hex,
         p224_b_answerable_pre,
         &p222_facts.ordered_statuses,
@@ -4701,6 +4775,98 @@ async fn p224_collect_hash_b64(diag_port: u16, hash_hex: &str) -> Option<String>
     p224_parse_hash_b64(&line, hash_hex)
 }
 
+/// Plan 225 — effective logger activation reported by the running pinned
+/// Java LogManager. The file-level `logger.config` check remains useful as a
+/// provenance fact, but it is not sufficient to make a missing log line
+/// authoritative unless these exact class levels are also active in-process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P225LoggerConfig {
+    effective: bool,
+    default_level: String,
+    isj_level: String,
+    dlm_level: String,
+    ibmd_level: String,
+}
+
+fn p225_parse_logger_config(line: &str) -> Option<P225LoggerConfig> {
+    if !line.starts_with("P225-EV ") || !line.contains("kind=logger-config") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P225-EV ", "P220-EV "));
+    let observable = kv.get("observable").is_some_and(|v| v == "true");
+    let default_level = kv.get("default_level")?.to_owned();
+    let isj_level = kv.get("isj_level")?.to_owned();
+    let dlm_level = kv.get("dlm_level")?.to_owned();
+    let ibmd_level = kv.get("ibmd_level")?.to_owned();
+    let effective = observable
+        && default_level == "ERROR"
+        && isj_level == "INFO"
+        && dlm_level == "DEBUG"
+        && ibmd_level == "INFO";
+    Some(P225LoggerConfig {
+        effective,
+        default_level,
+        isj_level,
+        dlm_level,
+        ibmd_level,
+    })
+}
+
+async fn p225_collect_logger_config(diag_port: u16) -> Option<P225LoggerConfig> {
+    let line = p220_query_diagnostic(diag_port, "P225-LOGGER-CONFIG").await?;
+    p225_parse_logger_config(&line)
+}
+
+fn p225_parse_hash_b32(line: &str, expected_hex: &str) -> Option<String> {
+    if !line.starts_with("P225-EV ") || !line.contains("kind=hash-b32") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P225-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("hash_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_hex) {
+        return None;
+    }
+    let b32 = kv.get("hash_b32")?;
+    if b32.len() != 52
+        || !b32
+            .bytes()
+            .all(|b| (b'a'..=b'z').contains(&b) || (b'2'..=b'7').contains(&b))
+    {
+        return None;
+    }
+    Some(b32.to_owned())
+}
+
+async fn p225_collect_hash_b32(diag_port: u16, hash_hex: &str) -> Option<String> {
+    let line = p220_query_diagnostic(diag_port, &format!("P225-HASH-B32 {hash_hex}")).await?;
+    p225_parse_hash_b32(&line, hash_hex)
+}
+
+fn record_p225_logger_config(evidence_dir: &Path, label: &str, config: Option<&P225LoggerConfig>) {
+    match config {
+        Some(config) => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=true effective={} default_level={} isj_level={} dlm_level={} ibmd_level={}",
+                config.effective,
+                config.default_level,
+                config.isj_level,
+                config.dlm_level,
+                config.ibmd_level,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            label,
+            "observable=false effective=false reason=diagnostic-unreachable-or-malformed",
+        ),
+    }
+}
+
 /// Plan 224 sanitized lookup-trace facts (Plan 224 §9). Only
 /// exact-target-correlated booleans may be authoritative, except
 /// `reply_encryption_error_seen`, which is explicitly supporting-only
@@ -4740,8 +4906,10 @@ struct P224LogScan {
     files_read: usize,
     bytes_scanned: u64,
     truncated: bool,
+    isj_new: u64,
     isj_try: u64,
     isj_try_to_b: u64,
+    isj_encrypted_to_b: u64,
     isj_try_client_tunnel: u64,
     isj_no_ib: u64,
     isj_no_crypto: u64,
@@ -4768,28 +4936,57 @@ fn p224_scan_log_dir(
     router_b_b64: &str,
     helper_b64: Option<&str>,
 ) -> Option<P224LogScan> {
-    let mut entries: Vec<PathBuf> = Vec::new();
-    let read_dir = std::fs::read_dir(dir).ok()?;
-    for entry in read_dir {
-        let entry = entry.ok()?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with("log-router-") || !name.ends_with(".txt") {
-            continue;
-        }
-        entries.push(entry.path());
+    p224_scan_log_dir_with_b32(dir, target_b64, router_b_b64, helper_b64, None)
+}
+
+fn p224_scan_log_dir_with_b32(
+    dir: &Path,
+    target_b64: &str,
+    router_b_b64: &str,
+    helper_b64: Option<&str>,
+    helper_b32: Option<&str>,
+) -> Option<P224LogScan> {
+    // The pinned Java launcher receives `${JAVA_DATA}/logs`, while Java's
+    // LogManager creates the router files below `${JAVA_DATA}/logs/logs`.
+    // Inspect exactly one conventional child directory; do not recurse over
+    // an attacker-controlled scratch tree.
+    let mut log_dirs = vec![dir.to_path_buf()];
+    let child_logs = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            (entry.file_name() == "logs"
+                && entry.file_type().ok().is_some_and(|kind| kind.is_dir()))
+            .then(|| entry.path())
+        });
+    if let Some(child_logs) = child_logs {
+        log_dirs.push(child_logs);
     }
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for log_dir in log_dirs {
+        let read_dir = std::fs::read_dir(log_dir).ok()?;
+        for entry in read_dir {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("log-router-") || !name.ends_with(".txt") {
+                continue;
+            }
+            entries.push(entry.path());
+        }
+    }
+    entries.sort();
+    entries.dedup();
     if entries.is_empty() {
         return None;
     }
-    entries.sort();
     entries.truncate(P224_MAX_LOG_FILES_PER_ROUTER);
-    let for_ls_target = format!("for LS {target_b64}");
-    let isj_for_target_success = format!("ISJ for {target_b64} successful");
-    let isj_for_target_failed = format!("ISJ for {target_b64} failed");
-    let storing_ls_target = format!("Storing garlic LS down tunnel for: {target_b64}");
-    let storing_ls_helper = helper_b64.map(|helper| format!("sent to: {helper}"));
-    let handling_lookup_target = format!("Handling database lookup message for {target_b64}");
-    let answering_ls_target = format!("We have the published LS {target_b64}, answering query");
+    let target_token = format!("[Hash: {target_b64}]");
+    let router_b_token = format!("[Hash: {router_b_b64}]");
+    let helper_b64_token = helper_b64.map(|helper| format!("sent to: {helper}"));
+    let helper_b32_token = helper_b32.map(|helper| format!("sent to: {helper}.b32.i2p"));
+    let line_has_target = |line: &str| line.contains(target_b64) || line.contains(&target_token);
+    let line_has_router_b =
+        |line: &str| line.contains(router_b_b64) || line.contains(&router_b_token);
     let mut scan = P224LogScan::default();
     for path in entries {
         let bytes = std::fs::read(&path).ok()?;
@@ -4804,53 +5001,66 @@ fn p224_scan_log_dir(
         // byte can never hide or forge a match.
         let text = String::from_utf8_lossy(&bytes);
         for line in text.lines() {
-            if line.contains("ISJ ") {
+            if line.contains("IterativeSearchJob:") || line.contains("ISJ ") {
                 scan.a_isj_any += 1;
             }
-            if line.contains("Handling database lookup message for ") {
+            if line.contains("HandleDatabaseLookupMessageJob:")
+                && line.contains("Handling database lookup message for ")
+            {
                 scan.b_dlm_any += 1;
             }
-            if !line.contains(target_b64) {
+            if line.contains("New ISJ for LS ") && line_has_target(line) {
+                scan.isj_new += 1;
+            }
+            if !line_has_target(line) {
                 if line.contains("DLM reply encryption error") {
                     scan.b_reply_enc_err += 1;
                 }
                 continue;
             }
-            if line.contains("ISJ try ") && line.contains(&for_ls_target) {
+            if line.contains("ISJ try ") && line.contains(" for LS ") {
                 scan.isj_try += 1;
-                if line.contains(router_b_b64) {
+                if line_has_router_b(line) {
                     scan.isj_try_to_b += 1;
                 }
                 if line.contains("reply via client tunnel? true") {
                     scan.isj_try_client_tunnel += 1;
                 }
             }
-            if line.contains(&for_ls_target)
+            if line.contains(" for LS ")
                 && line.contains("failed, no IB client tunnel to receive reply")
             {
                 scan.isj_no_ib += 1;
             }
-            if line.contains(&for_ls_target) && line.contains("skipped, no ratchet/elg support") {
+            if line.contains(" for LS ") && line.contains("skipped, no ratchet/elg support") {
                 scan.isj_no_crypto += 1;
             }
-            if line.contains(&isj_for_target_success) {
+            if line.contains("ISJ for ") && line.contains(" successful") {
                 scan.isj_success += 1;
             }
-            if line.contains(&isj_for_target_failed) {
+            if line.contains("ISJ for ") && line.contains(" failed") {
                 scan.isj_failed += 1;
             }
-            if line.contains(&storing_ls_target)
-                && storing_ls_helper
+            if line.contains("Storing garlic LS down tunnel for: ")
+                && (helper_b32_token
                     .as_ref()
                     .is_some_and(|helper| line.contains(helper))
+                    || helper_b64_token
+                        .as_ref()
+                        .is_some_and(|helper| line.contains(helper)))
             {
                 scan.a_client_tunnel_ls += 1;
             }
-            if line.contains(&handling_lookup_target) {
+            if line.contains("HandleDatabaseLookupMessageJob:")
+                && line.contains("Handling database lookup message for ")
+            {
                 scan.b_lookup += 1;
             }
-            if line.contains(&answering_ls_target) {
+            if line.contains("We have the published LS ") && line.contains(" answering query") {
                 scan.b_answered += 1;
+            }
+            if line.contains("Encrypted DLM for ") && line_has_router_b(line) {
+                scan.isj_encrypted_to_b += 1;
             }
             if line.contains("DLM reply encryption error") {
                 scan.b_reply_enc_err += 1;
@@ -4872,6 +5082,63 @@ fn p224_scan_log_dir(
 /// `logger.record.` scopes through `<logdir>/../logger.config`).
 #[allow(clippy::too_many_arguments)]
 fn p224_build_trace(
+    target_hash_hex: &str,
+    target_b64: Option<&str>,
+    router_b_b64: Option<&str>,
+    helper_b64: Option<&str>,
+    scan_a: Option<&P224LogScan>,
+    scan_b: Option<&P224LogScan>,
+    logger_config_a_ok: bool,
+    logger_config_b_ok: bool,
+) -> P224Trace {
+    p224_build_trace_common(
+        target_hash_hex,
+        target_b64,
+        router_b_b64,
+        helper_b64,
+        scan_a,
+        scan_b,
+        logger_config_a_ok,
+        logger_config_b_ok,
+    )
+}
+
+/// Plan 225 production wrapper. A successful client-tunnel attribution must
+/// have the exact JVM Base32 client label; when that diagnostic is unavailable,
+/// keep the complete lookup trace Unknown instead of falling back to a guessed
+/// or differently encoded client identifier.
+#[allow(clippy::too_many_arguments)]
+fn p224_build_trace_with_b32(
+    target_hash_hex: &str,
+    target_b64: Option<&str>,
+    router_b_b64: Option<&str>,
+    helper_b64: Option<&str>,
+    helper_b32: Option<&str>,
+    scan_a: Option<&P224LogScan>,
+    scan_b: Option<&P224LogScan>,
+    logger_config_a_ok: bool,
+    logger_config_b_ok: bool,
+) -> P224Trace {
+    if helper_b32.is_none() {
+        return P224Trace {
+            target_hash_hex: target_hash_hex.to_owned(),
+            ..P224Trace::default()
+        };
+    }
+    p224_build_trace_common(
+        target_hash_hex,
+        target_b64,
+        router_b_b64,
+        helper_b64,
+        scan_a,
+        scan_b,
+        logger_config_a_ok,
+        logger_config_b_ok,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn p224_build_trace_common(
     target_hash_hex: &str,
     target_b64: Option<&str>,
     router_b_b64: Option<&str>,
@@ -4912,8 +5179,12 @@ fn p224_build_trace(
     }
     let _ = (target_hash_hex, helper_b64);
     trace.observable = true;
-    trace.query_started = scan_a.isj_try > 0;
-    trace.query_to_b = scan_a.isj_try_to_b > 0;
+    trace.query_started = scan_a.isj_new > 0 || scan_a.isj_try > 0;
+    // `ISJ try` records a candidate attempt. The pinned Java source emits
+    // `Encrypted DLM for <target> to <peer>` immediately before handing the
+    // encrypted query to the tunnel dispatcher; only that stronger line is a
+    // query-dispatch fact for Plan 225.
+    trace.query_to_b = scan_a.isj_encrypted_to_b > 0;
     trace.query_via_client_reply_tunnel = scan_a.isj_try_client_tunnel > 0;
     trace.no_ib_client_tunnel = scan_a.isj_no_ib > 0;
     trace.no_ratchet_or_elg_support = scan_a.isj_no_crypto > 0;
@@ -5002,6 +5273,106 @@ impl P224Terminal {
             Self::NextBoundary => "P224-NEXT-BOUNDARY",
             Self::ReverseDeliveryPassed => "P224-REVERSE-DELIVERY-PASSED",
             Self::ObservabilityGapLookupPath => "P224-OBSERVABILITY-GAP-LOOKUP-PATH",
+        }
+    }
+}
+
+/// Plan 225 terminal taxonomy. It mirrors the already-tested earliest-stage
+/// ordering from Plan 224, but has its own terminal namespace so the
+/// corrective's effective-observability result cannot be mistaken for the
+/// predecessor plan's closure row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P225Terminal {
+    AttributionBMainLsAbsent,
+    AttributionBMainLsInvalidOrStale,
+    AttributionBMainLsNotQueryAnswerable,
+    AttributionANoInboundClientReplyTunnel,
+    AttributionALookupReplyCryptoUnavailable,
+    AttributionASearchExhaustedWithoutQueryingB,
+    AttributionAToBLookupNotReceived,
+    EvidenceContradictionBAnswerableButNotAnswered,
+    AttributionBReplyNotObservedOnAClientTunnel,
+    EvidenceContradictionClientTunnelDsmNotInClientDb,
+    EvidenceContradictionNoLeasesetWithUsableClientLs,
+    NextBoundary,
+    ReverseDeliveryPassed,
+    ObservabilityGapLookupPath,
+}
+
+impl P225Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::AttributionBMainLsAbsent => "P225-ATTRIBUTION-B-MAIN-LS-ABSENT",
+            Self::AttributionBMainLsInvalidOrStale => "P225-ATTRIBUTION-B-MAIN-LS-INVALID-OR-STALE",
+            Self::AttributionBMainLsNotQueryAnswerable => {
+                "P225-ATTRIBUTION-B-MAIN-LS-NOT-QUERY-ANSWERABLE"
+            }
+            Self::AttributionANoInboundClientReplyTunnel => {
+                "P225-ATTRIBUTION-A-NO-INBOUND-CLIENT-REPLY-TUNNEL"
+            }
+            Self::AttributionALookupReplyCryptoUnavailable => {
+                "P225-ATTRIBUTION-A-LOOKUP-REPLY-CRYPTO-UNAVAILABLE"
+            }
+            Self::AttributionASearchExhaustedWithoutQueryingB => {
+                "P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B"
+            }
+            Self::AttributionAToBLookupNotReceived => "P225-ATTRIBUTION-A-TO-B-LOOKUP-NOT-RECEIVED",
+            Self::EvidenceContradictionBAnswerableButNotAnswered => {
+                "P225-EVIDENCE-CONTRADICTION-B-ANSWERABLE-BUT-NOT-ANSWERED"
+            }
+            Self::AttributionBReplyNotObservedOnAClientTunnel => {
+                "P225-ATTRIBUTION-B-REPLY-NOT-OBSERVED-ON-A-CLIENT-TUNNEL"
+            }
+            Self::EvidenceContradictionClientTunnelDsmNotInClientDb => {
+                "P225-EVIDENCE-CONTRADICTION-CLIENT-TUNNEL-DSM-NOT-IN-CLIENT-DB"
+            }
+            Self::EvidenceContradictionNoLeasesetWithUsableClientLs => {
+                "P225-EVIDENCE-CONTRADICTION-NO-LEASESET-WITH-USABLE-CLIENT-LS"
+            }
+            Self::NextBoundary => "P225-NEXT-BOUNDARY",
+            Self::ReverseDeliveryPassed => "P225-REVERSE-DELIVERY-PASSED",
+            Self::ObservabilityGapLookupPath => "P225-OBSERVABILITY-GAP-LOOKUP-PATH",
+        }
+    }
+}
+
+impl From<P224Terminal> for P225Terminal {
+    fn from(value: P224Terminal) -> Self {
+        match value {
+            P224Terminal::AttributionBMainLsAbsent => Self::AttributionBMainLsAbsent,
+            P224Terminal::AttributionBMainLsInvalidOrStale => {
+                Self::AttributionBMainLsInvalidOrStale
+            }
+            P224Terminal::AttributionBMainLsNotQueryAnswerable => {
+                Self::AttributionBMainLsNotQueryAnswerable
+            }
+            P224Terminal::AttributionANoInboundClientReplyTunnel => {
+                Self::AttributionANoInboundClientReplyTunnel
+            }
+            P224Terminal::AttributionALookupReplyCryptoUnavailable => {
+                Self::AttributionALookupReplyCryptoUnavailable
+            }
+            P224Terminal::AttributionASearchExhaustedWithoutQueryingB => {
+                Self::AttributionASearchExhaustedWithoutQueryingB
+            }
+            P224Terminal::AttributionAToBLookupNotReceived => {
+                Self::AttributionAToBLookupNotReceived
+            }
+            P224Terminal::EvidenceContradictionBAnswerableButNotAnswered => {
+                Self::EvidenceContradictionBAnswerableButNotAnswered
+            }
+            P224Terminal::AttributionBReplyNotObservedOnAClientTunnel => {
+                Self::AttributionBReplyNotObservedOnAClientTunnel
+            }
+            P224Terminal::EvidenceContradictionClientTunnelDsmNotInClientDb => {
+                Self::EvidenceContradictionClientTunnelDsmNotInClientDb
+            }
+            P224Terminal::EvidenceContradictionNoLeasesetWithUsableClientLs => {
+                Self::EvidenceContradictionNoLeasesetWithUsableClientLs
+            }
+            P224Terminal::NextBoundary => Self::NextBoundary,
+            P224Terminal::ReverseDeliveryPassed => Self::ReverseDeliveryPassed,
+            P224Terminal::ObservabilityGapLookupPath => Self::ObservabilityGapLookupPath,
         }
     }
 }
@@ -5187,6 +5558,32 @@ fn p224_classify(
     P224Terminal::ObservabilityGapLookupPath
 }
 
+#[allow(clippy::too_many_arguments)]
+fn p225_classify(
+    expected_target_hex: &str,
+    b_pre: Option<&P224MainLs>,
+    b_post: Option<&P224MainLs>,
+    a_pre: Option<&P224ClientLs>,
+    a_post: Option<&P224ClientLs>,
+    trace: &P224Trace,
+    status_no_leaseset_21: bool,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+) -> P225Terminal {
+    p224_classify(
+        expected_target_hex,
+        b_pre,
+        b_post,
+        a_pre,
+        a_post,
+        trace,
+        status_no_leaseset_21,
+        ordered_statuses,
+        frozen_payload_45s,
+    )
+    .into()
+}
+
 fn record_p224_snapshot_row(evidence_dir: &Path, label: &str, detail: &str) {
     append_evidence(evidence_dir, label, detail);
 }
@@ -5335,6 +5732,42 @@ fn record_p224_classification(
     terminal.token().to_owned()
 }
 
+/// Emits exactly one `p225-classification` row for the same authoritative
+/// attempt. The P225 row is deliberately separate from P224 so the
+/// corrective can be checked independently by the shell evidence gate.
+#[allow(clippy::too_many_arguments)]
+fn record_p225_classification(
+    evidence_dir: &Path,
+    terminal: P225Terminal,
+    expected_target_hex: &str,
+    b_answerable_pre: Option<bool>,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+    frozen_tunneldata_45s: bool,
+    reply_encryption_error_seen: bool,
+    trace_observable: bool,
+) -> String {
+    append_evidence(
+        evidence_dir,
+        "p225-classification",
+        &format!(
+            "{} target_hash_hex={} b_main_ls_answerable_pre_send={} ordered_statuses={:?} frozen_tunneldata_45s={} frozen_payload_45s={} reply_encryption_error_seen={} trace_observable={}",
+            terminal.token(),
+            expected_target_hex,
+            b_answerable_pre
+                .map(|b| b.to_string())
+                .as_deref()
+                .unwrap_or("unknown"),
+            ordered_statuses,
+            frozen_tunneldata_45s,
+            frozen_payload_45s,
+            reply_encryption_error_seen,
+            trace_observable,
+        ),
+    );
+    terminal.token().to_owned()
+}
+
 /// Plan 224 — pre-epoch stop before the authoritative epoch. No
 /// P224 snapshot exists, so the terminal is honestly the lookup-path
 /// observability gap, never a root-cause attribution.
@@ -5360,6 +5793,25 @@ fn record_p224_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
         &format!(
             "{} reason={reason}",
             P224Terminal::ObservabilityGapLookupPath.token()
+        ),
+    );
+}
+
+/// Plan 225 pre-epoch stop: no effective lookup-path observation exists, so
+/// the corrective emits its own honest gap terminal rather than inheriting a
+/// predecessor-plan row.
+fn record_p225_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    append_evidence(
+        evidence_dir,
+        "p225-lookup-trace",
+        &format!("observable=false target_hash_hex=unknown reason={reason}"),
+    );
+    append_evidence(
+        evidence_dir,
+        "p225-classification",
+        &format!(
+            "{} reason={reason}",
+            P225Terminal::ObservabilityGapLookupPath.token()
         ),
     );
 }
@@ -8148,7 +8600,7 @@ fn p224_query_to_b_without_b_receipt_maps_correctly() {
         "a",
         "log-router-0.txt",
         &format!(
-            "INFO Job-7: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-7: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+            "INFO Job-7: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-7: Encrypted DLM for {target_b64} to {b_b64}\nINFO Job-7: ISJ for {target_b64} failed with 0 remaining after 15000\n"
         ),
         true,
     );
@@ -8158,7 +8610,7 @@ fn p224_query_to_b_without_b_receipt_maps_correctly() {
         &dir,
         "b",
         "log-router-0.txt",
-        "DEBUG Handling database lookup message for UnrelatedKeyAAAAAAAAAAAAAAAAAAAAAAAAAA= with replies going to from\n",
+        "DEBUG HandleDatabaseLookupMessageJob: Handling database lookup message for UnrelatedKeyAAAAAAAAAAAAAAAAAAAAAAAAAA= with replies going to from\n",
         true,
     );
     let scan_a = p224_scan_log_dir(&a_logs, &target_b64, &b_b64, Some(&p224_test_helper_b64()))
@@ -8228,7 +8680,7 @@ fn p224_b_answer_without_a_inbound_maps_to_reply_not_observed() {
         "a",
         "log-router-0.txt",
         &format!(
-            "INFO Job-9: ISJ try 1 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-9: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+            "INFO Job-9: ISJ try 1 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-9: Encrypted DLM for {target_b64} to {b_b64}\nINFO Job-9: ISJ for {target_b64} failed with 0 remaining after 15000\n"
         ),
         true,
     );
@@ -8237,7 +8689,7 @@ fn p224_b_answer_without_a_inbound_maps_to_reply_not_observed() {
         "b",
         "log-router-0.txt",
         &format!(
-            "DEBUG Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\nERROR DLM reply encryption error\n"
+            "DEBUG HandleDatabaseLookupMessageJob: Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\nERROR DLM reply encryption error\n"
         ),
         true,
     );
@@ -8292,7 +8744,7 @@ fn p224_a_inbound_but_client_db_absent_is_contradiction() {
         "a",
         "log-router-0.txt",
         &format!(
-            "INFO Job-3: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Storing garlic LS down tunnel for: {target_b64} sent to: {helper_b64}\nINFO Job-3: ISJ for {target_b64} failed with 0 remaining after 15000\n"
+            "INFO Job-3: ISJ try 0 for LS {target_b64} to {b_b64} direct? false reply via client tunnel? true\nINFO Job-3: Encrypted DLM for {target_b64} to {b_b64}\nINFO Storing garlic LS down tunnel for: {target_b64} sent to: {helper_b64}\nINFO Job-3: ISJ for {target_b64} failed with 0 remaining after 15000\n"
         ),
         true,
     );
@@ -8301,7 +8753,7 @@ fn p224_a_inbound_but_client_db_absent_is_contradiction() {
         "b",
         "log-router-0.txt",
         &format!(
-            "DEBUG Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\n"
+            "DEBUG HandleDatabaseLookupMessageJob: Handling database lookup message for {target_b64} with replies going to fromKey\nINFO We have the published LS {target_b64}, answering query\n"
         ),
         true,
     );
@@ -8976,5 +9428,95 @@ fn p224_record_emits_exactly_one_classification() {
         2
     );
     assert!(tsv.contains("P224-OBSERVABILITY-GAP-LOOKUP-PATH"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- Plan 225 corrective unit rows ----------------------------------------
+
+#[test]
+fn p225_logger_parser_requires_effective_pinned_levels() {
+    let line = "P225-EV kind=logger-config observable=true default_level=ERROR isj_level=INFO dlm_level=DEBUG ibmd_level=INFO";
+    let parsed = p225_parse_logger_config(line).expect("logger config parses");
+    assert_eq!(
+        parsed,
+        P225LoggerConfig {
+            effective: true,
+            default_level: "ERROR".to_owned(),
+            isj_level: "INFO".to_owned(),
+            dlm_level: "DEBUG".to_owned(),
+            ibmd_level: "INFO".to_owned(),
+        }
+    );
+    let wrong_class = line.replace("dlm_level=DEBUG", "dlm_level=INFO");
+    assert!(
+        !p225_parse_logger_config(&wrong_class)
+            .expect("wrong logger level remains an observed response")
+            .effective
+    );
+    assert!(
+        p225_parse_logger_config("P225-EV kind=logger-config observable=false reason=unreadable")
+            .is_none()
+    );
+}
+
+#[test]
+fn p225_hash_b32_parser_requires_exact_echo_and_alphabet() {
+    let hex = p224_test_target_hex();
+    let b32 = "a2".repeat(26);
+    let line = format!("P225-EV kind=hash-b32 hash_hex={hex} observable=true hash_b32={b32}");
+    assert_eq!(
+        p225_parse_hash_b32(&line, &hex).as_deref(),
+        Some(b32.as_str())
+    );
+    assert!(p225_parse_hash_b32(&line, &p224_test_b_hex()).is_none());
+    assert!(p225_parse_hash_b32(&line.replace("a2", "a0"), &hex).is_none());
+    assert!(p225_parse_hash_b32("P225-ERROR invalid-hex-hash", &hex).is_none());
+}
+
+#[test]
+fn p225_terminal_namespace_and_mapping_are_canonical() {
+    assert_eq!(
+        P225Terminal::AttributionASearchExhaustedWithoutQueryingB.token(),
+        "P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B"
+    );
+    assert_eq!(
+        P225Terminal::ObservabilityGapLookupPath.token(),
+        "P225-OBSERVABILITY-GAP-LOOKUP-PATH"
+    );
+    let target = p224_test_target_hex();
+    let trace = p224_observable_trace(&target);
+    let b_pre = p224_answerable_main(&target);
+    let client = "ef".repeat(32);
+    let a_pre = p224_absent_client(&client, &target);
+    assert_eq!(
+        p225_classify(
+            &target,
+            Some(&b_pre),
+            None,
+            Some(&a_pre),
+            None,
+            &trace,
+            true,
+            &[1, 21],
+            false,
+        ),
+        P225Terminal::ObservabilityGapLookupPath
+    );
+}
+
+#[test]
+fn p225_record_emits_one_terminal_for_pre_epoch_gap() {
+    let dir = p224_test_tmpdir("p225-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    record_p225_early_stop_gap(&evidence_dir, "test-stop");
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p225-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P225-OBSERVABILITY-GAP-LOOKUP-PATH"));
     let _ = std::fs::remove_dir_all(&dir);
 }

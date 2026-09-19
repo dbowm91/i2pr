@@ -1325,6 +1325,20 @@ if [[ -z "${P224_CLASSIFICATION}" ]]; then
 fi
 record "external-p224-classification" passed "Plan 224 §13: ${P224_CLASSIFICATION}"
 
+# Plan 225 §13 — read the corrective terminal emitted by the destination
+# driver. This is a separate diagnostic row: the corrective proves effective
+# lookup logger activation and exact b32 client correlation before allowing the
+# trace to attribute or close the lookup path.
+P225_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_P225="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_P225}" ]]; then
+  P225_CLASSIFICATION="$(awk -F'\t' '$1 == "p225-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P225}")"
+fi
+if [[ -z "${P225_CLASSIFICATION}" ]]; then
+  P225_CLASSIFICATION="P225-classification-missing"
+fi
+record "external-p225-classification" passed "Plan 225 §13: ${P225_CLASSIFICATION}"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted
