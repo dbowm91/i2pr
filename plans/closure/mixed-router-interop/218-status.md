@@ -1,3 +1,17 @@
+# Current handoff amendment — Plan 223 registered
+
+Plan 218's behavioral stop remains authoritative. Plan 222 narrowed that stop
+to nonce-correlated Java status 17. Plan 223 is now the executable corrective:
+it must prove Java's early non-ElGamal target-Destination guard on the exact
+i2pr bytes and, if confirmed, separate the legacy Destination identity field
+from LS2 X25519 without changing the frozen reverse-delivery window.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_223 = registered-ready-m6-java-destination-identity-crypto-separation-corrective
+next_executable_plan = 223-m6-java-destination-identity-crypto-separation-corrective
+```
+
 # Current handoff amendment — Plan 222 corrected narrowing
 
 Plan 218's behavioral stop remains authoritative: the Java helper's reverse
