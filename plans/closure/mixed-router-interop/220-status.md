@@ -1,5 +1,7 @@
 # Current authority amendment — selector equivalence follow-up required
 
+Status: **`passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required`**.
+
 Plan 220 remains closed as a successful correction of the Plan 219 evidence
 path, and these findings remain authoritative:
 
