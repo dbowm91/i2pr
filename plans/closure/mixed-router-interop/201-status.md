@@ -1,6 +1,20 @@
+# Current dependency amendment — Plan 222 corrected narrowing
+
+Plan 201 remains blocked. Plan 221 was superseded before execution because the
+Plan 220 selector preflight was not production-equivalent. Plan 222 now owns
+the exact client-NetDB/OCMOSJ narrowing using the helper client DBID, Java's
+derived routing key/effective selector width, and nonce-correlated public send
+status.
+
+```text
+plan_201 = blocked-pending-plan222-client-netdb-ocmosj-narrowing
+plan_221 = superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective
+plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
 # Plan 201 status — Java publication corrective and M6 second-family closure
 
-Status: **`blocked-pending-plan221-client-netdb-narrowing`**.
+Status: **`blocked-pending-plan222-client-netdb-ocmosj-narrowing`**.
 
 ## 2026-09-18 authority amendment — Plan 220 corrected attribution closed
 
