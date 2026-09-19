@@ -1,3 +1,37 @@
+# Current authority amendment — selector equivalence follow-up required
+
+Plan 220 remains closed as a successful correction of the Plan 219 evidence
+path, and these findings remain authoritative:
+
+- Router B hash identity cross-check passed;
+- Router A stores Router B's exact current `f`-bearing RouterInfo;
+- Router A PeerManager indexes Router B under `f`;
+- the public Java helper admits the reverse send;
+- no reverse TunnelData/payload reaches i2pr inside the existing 45-second
+  acceptance window; and
+- J219-B (Router A lacks Router B's RI) is refuted.
+
+Exact-pinned Java I2P 2.13.0 review after closure found that the Plan 220
+selector probe was not production-equivalent: it supplied the raw Destination
+hash and a hard-coded N=3, while `IterativeSearchJob` derives a daily routing
+key and selects `_totalSearchLimit + EXTRA_PEERS` through the helper's client
+NetDB path.
+
+Therefore the historical Plan 220 `SELECTOR Known(pass)` row and the
+`P220-OBSERVABILITY-GAP-CLIENT-NETDB` earliest-stage interpretation are
+retained as evidence but are not current boundary authority until Plan 222
+re-runs selector equivalence.
+
+Current token for dependency purposes:
+
+```text
+plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required
+plan_221 = superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective
+plan_222 = registered-ready-m6-java-client-netdb-ocmosj-narrowing-corrective
+```
+
+The original Plan 220 closure follows unchanged for traceability.
+
 # Plan 220 status — M6 Java Plan 219 diagnostic-attribution corrective
 
 Status: **`passed-m6-java-plan219-diagnostic-attribution-corrective`**.
