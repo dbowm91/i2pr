@@ -1,3 +1,19 @@
+# Current dependency amendment — Plan 224 attribution registered
+
+Plan 201 remains blocked. Plan 223 removed the Destination encryption guard,
+but the tracked reverse send now stops at `ACCEPTED -> NO_LEASESET (21)`.
+
+Exact-pinned Java source shows status 21 is only a bounded client-NetDB lookup
+failure result. Plan 224 now owns attribution across Router-B main-NetDB
+answerability, actual helper client lookup dispatch, Router-B answer, Router-A
+client-tunnel DSM receipt, and helper client-subDB installation. The concrete
+fix belongs to Plan 225 after that attribution.
+
+```text
+plan_201 = blocked-pending-plan224-no-leaseset-lookup-path-attribution
+plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
+```
+
 # Current dependency amendment — Plan 223 closed with NEXT-BOUNDARY
 
 Plan 201 remains blocked. Plan 223 closed as
