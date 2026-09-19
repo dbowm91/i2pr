@@ -1,3 +1,23 @@
+# Current dependency amendment — Plan 224 closed with observability gap
+
+Plan 224 closed as
+`passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap` (see
+[`224-status.md`](224-status.md)). It proved that Router B's main NetDB held a
+current, `receivedAsPublished` target LS2 and that Router A's helper client DB
+remained empty before and after the nonce-correlated `ACCEPTED -> NO_LEASESET`
+send, but the exact A→B/B→A lookup trace was not observable from the permitted
+diagnostics. No lookup-stage corrective is authorized from that gap.
+
+Plan 225 is now registered as the narrow observability corrective. Plan 201
+remains blocked until Plan 225 produces an exact stage attribution and the
+resulting Java-family closure is complete.
+
+```text
+plan_201 = blocked-pending-plan225-no-leaseset-lookup-path-observability-corrective
+plan_224 = passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap
+plan_225 = registered-ready-m6-java-no-leaseset-lookup-path-observability-corrective
+```
+
 # Current dependency amendment — Plan 224 attribution registered
 
 Plan 201 remains blocked. Plan 223 removed the Destination encryption guard,
@@ -530,4 +550,3 @@ blocked on the Java second-family branch per its §1 preconditions.
 Plan 218's `plans/closure/mixed-router-interop/218-status.md`
 records the exact inbound-delivery boundary that bounds this
 amendment.
-

@@ -1,3 +1,18 @@
+# Current dependency amendment — Plan 224 closed with observability gap
+
+Plan 224 closed as
+`passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap`.
+Its exact-clean-head destination evidence proves Router-B LS2 answerability
+and a persistent empty Java helper client DB, but the lookup-path trace is not
+observable. Plan 225 owns the resulting diagnostic corrective; the M6 Java
+second-family convergence gate remains open.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan225-observability
+plan_224 = passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap
+plan_225 = registered-ready-m6-java-no-leaseset-lookup-path-observability-corrective
+```
+
 # Current dependency amendment — Plan 224 attribution registered
 
 M10 product authority remains closed through Plans 213–215. Plan 204 remains
@@ -278,4 +293,3 @@ next_product_layer = milestone11-planning
 This M10 transition does **not** require Java M6 second-family closure.
 
 Plan 204 later consumes independently closed M10 authority plus independently closed Java M6 authority and normalizes cross-milestone documentation. It must not rerun or downgrade valid M10 closure merely because Java closure lands later.
-

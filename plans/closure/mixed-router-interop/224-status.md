@@ -1,113 +1,307 @@
 # Plan 224 status — M6 Java NO_LEASESET lookup-path attribution
 
-Status: **`registered-ready-m6-java-no-leaseset-lookup-path-attribution`**.
+Status: **`passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap`**.
 
 Plan of record:
 [`224-m6-java-no-leaseset-lookup-path-attribution.md`](../../implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md).
 
-## Registration basis
+## 1. Closure result
 
-Plan 223 closed with:
+Plan 224 is closed as an attribution pass with the single authoritative
+terminal:
 
 ```text
-P223-NEXT-BOUNDARY ordered_statuses=[1, 21]
+P224-OBSERVABILITY-GAP-LOOKUP-PATH
 ```
 
-The Java helper accepts the tracked reverse send, but OCMOSJ reports
-`STATUS_SEND_FAILURE_NO_LEASESET (21)`. Plan 223 also proves:
-
-- the target Destination identity shape is now Java-compatible;
-- Standard LS2 remains X25519/type 4;
-- helper/source LeaseSetKeys are present and X25519-capable;
-- target LS is absent in Router A's helper client DB before send;
-- the exact selector is nonempty and contains Router B;
-- i2pr publishes its local LS2 specifically toward Router B;
-- no reverse payload arrives in the frozen 45-second window.
-
-Exact-pinned Java I2P 2.13.0 source review shows that status 21 is not precise
-enough to authorize a corrective. The missing target LS may originate at
-publication/store, actual query dispatch, Router-B answering, encrypted reply
-delivery, or helper client-subDB installation.
-
-Plan 224 therefore performs attribution only.
-
-## Source-backed narrowing
-
-The pinned Java source establishes:
-
-1. client LS lookups run through `IterativeSearchJob` with the helper's
-   client outbound and inbound tunnels;
-2. a floodfill answers an LS DLM only from a current LeaseSet marked
-   `receivedAsPublished`;
-3. an LS DSM arriving down a client tunnel is tagged with that client hash and
-   routed to that exact client sub-DB;
-4. `InNetMessagePool` stores a matching DSM inline before the lookup-success
-   reply job is queued.
-
-The fourth point rules out a speculative "lookup success raced client-DB
-storage" explanation.
-
-The first missing evidence is whether Router B's main NetDB actually contains
-a current, query-answerable copy of the exact i2pr target LS2 after the
-existing publication path.
-
-## Current authority
+The earliest supported conclusion is deliberately bounded:
 
 ```text
-plan_217 = passed-m6-java-closure-harness-and-evidence-corrective
-plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
-plan_219 = retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220
-plan_220 = passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required
-plan_221 = superseded-before-execution-by-plan222-client-netdb-ocmosj-narrowing-corrective
-plan_222 = passed-m6-java-client-netdb-ocmosj-narrowing-corrective
-plan_223 = passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset
-plan_224 = registered-ready-m6-java-no-leaseset-lookup-path-attribution
-
-plan_201 = blocked-pending-plan224-no-leaseset-lookup-path-attribution
-plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan224-attribution
-
-next_executable_plan = 224-m6-java-no-leaseset-lookup-path-attribution
+Router B main NetDB: current, receivedAsPublished, query-answerable LS2
+Router A helper client DB: target absent before and after the send
+Java send: ACCEPTED (1) -> NO_LEASESET (21)
+Exact A->B/B->A lookup trace: not observable from the permitted diagnostics
 ```
 
-## Registration constraints
+Therefore Plan 224 does not attribute the failure to publication, query
+dispatch, Router-B handling, reply delivery, or client-subDB installation.
+Those stages remain unknown. Plan 225 owns the narrowly scoped observability
+corrective; no production correction was implemented here.
 
-Plan 224 does not authorize a production correction.
+The overall legacy `run-java.sh` process exited nonzero because the enclosing
+Plan-199/M6 Java lane still has its pre-existing qualification failures. The
+Plan-224 destination evidence was nevertheless emitted and passed its own
+fail-closed classifier on two authoritative attempts after one pre-epoch
+startup/publication stop.
 
-It may add only:
+## 2. Implementation and pinned inputs
 
-- read-only Java main/client NetDB LS snapshots;
-- scratch-only class-specific logger configuration;
-- whitelist-only sanitized lookup-path facts;
-- Rust test-driver/classifier evidence;
-- static guards and tests.
-
-It may not change:
-
-- i2pr LS2 publication behavior;
-- Java NetDB state;
-- helper client options;
-- tunnel pools;
-- floodfill roles;
-- selector behavior;
-- SAM;
-- topology;
-- public-network participation.
-
-Any concrete fix belongs to Plan 225 after Plan 224 closes with exact
-attribution.
-
-## Closure requirement
-
-This status is registration only.
-
-Closure must replace the token above with one exact P224 result and record all
-required Plan-224 snapshots, sanitized trace facts, verification results, and
-dependency audit.
-
-Until then:
+The implementation was committed before counted external execution:
 
 ```text
+implementation_sha = 895132cabb9a220c64e288bad288c1bf77bda81f
+java_i2p          = 2.13.0
+java_commit       = 9134f808337b401e8e53c73734c81fab04280c9d
+i2pd_pin          = 2.61.0
+i2pd_commit       = 635b013a612ff47278ef02acf8580a28e10e26c5
+rust              = 1.95.0
+```
+
+Immediately before counted execution:
+
+```text
+git rev-parse HEAD       = 895132cabb9a220c64e288bad288c1bf77bda81f
+git status --porcelain   = empty
+```
+
+The i2pd pin was retained for repository consistency and was not exercised by
+this Java destination-only lane. No reference source was patched or vendored.
+
+## 3. Authoritative sanitized evidence
+
+The primary reproducible result is attempt 3. The sanitized artifacts were
+written to:
+
+```text
+target/interop/m6-java-evidence-attempt-3/evidence.md
+target/interop/m6-java-evidence-attempt-3/evidence.json
+target/interop/m6-java-evidence-attempt-3/driver/destination/driver-evidence.tsv
+```
+
+These are generated, ignored artifacts; the durable facts below are the
+closure evidence. Raw Java logs were not copied into any evidence artifact.
+
+### 3.1 Exact identity correlation
+
+```text
+target_hash_hex = 36a34cb1a7d2180350f19567fefbca783d0cb3f5197b272bf55618028a1d1f1c
+target_hash_b64 = NqNMsafSGANQ8ZVn~vvKeD0Ms~UZeycr9VYYAoodHxw=
+router_b_hash_hex = c2dc3270c54048e148a3ba18c5134c821b870d52461327bc95d1498317b1b69e
+helper_dbid_hex = d1eb885ddd08286e230ea41cce587def4cca37c671e5cf041544a239647d22ce
+```
+
+The target hash is identical in every Plan-224 snapshot. The helper DBID is
+resolved and reported as a client DB; the probe rejects a main-DB fallback.
+
+### 3.2 Router B pre-send main-NetDB snapshot
+
+```text
+raw_present=true
+validated_present=true
+entry_type=3
+received_as_published=true
+received_as_reply=false
+received_by_hex=none
+ls2_unpublished=false
+lease_count=1
+key_count=1
+key_types=4
+latest_lease_ms=1789848296000
+current=true
+```
+
+Under the exact-pinned Java `HandleDatabaseLookupMessageJob` rule, this is a
+current, published, query-answerable Standard LS2. It is not evidence that a
+query was actually sent or answered; those are separate stages.
+
+### 3.3 Router A pre-send client-subDB snapshot
+
+```text
+client_db_resolved=true
+client_db_is_client=true
+raw_present=false
+validated_present=false
+entry_type=-1
+received_as_published=unknown
+received_as_reply=unknown
+received_by_hex=none
+lease_count=-1
+key_count=-1
+key_types=unknown
+current=unknown
+```
+
+The exact target was absent from the helper client sub-DB before the tracked
+send. No diagnostic lookup was issued before `SEND_TRACKED`.
+
+### 3.4 Tracked send and frozen outcome
+
+```text
+nonce=1
+payload_len=27
+reverse_sha256=8a9e8146bb7d8c0b32b19b2483913d9f38aab1c7bfc925b1a73e7cd5aebb2271
+ordered_statuses=[1, 21]
+frozen_tunneldata_45s=false
+frozen_payload_45s=false
+reply_encryption_error_seen=false
+```
+
+This is the existing single-send causal path. The 45-second result was
+collected before lookup-trace collection and was not modified by it.
+
+### 3.5 Lookup trace and post-send snapshots
+
+The sanitized trace row was emitted with:
+
+```text
+trace_observable=false
+```
+
+The targeted `logger.config` was verified in the disposable Router-A and
+Router-B datadirs, but no exact target-correlated facts proved query start,
+query-to-B dispatch, B receipt, B answer, or A client-tunnel DSM receipt.
+The serializer's false-valued fields in the unobservable row are not treated
+as negative protocol facts; they are unknown because the trace was not
+observable.
+
+Post-send Router A remained:
+
+```text
+client_db_resolved=true
+client_db_is_client=true
+raw_present=false
+validated_present=false
+```
+
+Post-send Router B remained the same exact answerable state as the pre-send
+snapshot, including `validated_present=true`, `received_as_published=true`,
+`key_types=4`, and `current=true`.
+
+## 4. Attempt history
+
+All attempts used implementation SHA `895132c`, fresh Java RouterContexts,
+the exact Java pin, the same topology, the same logger configuration, the
+existing destination driver, and the frozen timing. Attempts 2 and 3 used a
+different output directory and retained scratch only for post-run diagnosis;
+that did not alter router behavior or evidence collection.
+
+1. Attempt 1 used the default sanitized evidence directory and stopped before
+   the authoritative epoch at `plan199-java-stop:
+   client-ls2-local-but-not-network-visible`. It emitted only a pre-epoch
+   observability-gap record and is not authoritative for stage attribution.
+2. Attempt 2 reached the authoritative epoch and emitted the same terminal,
+   `P224-OBSERVABILITY-GAP-LOOKUP-PATH`, with an answerable Router-B snapshot,
+   an empty helper client DB, `[1, 21]`, and no frozen-window payload.
+3. Attempt 3 reached the authoritative epoch and reproduced the same terminal
+   and the same stage facts on a fresh scratch context. Its sanitized evidence
+   is the primary result recorded above.
+
+No attempt used a standalone Java lookup, publication retry, topology change,
+tunnel tuning, timeout change, or production behavior change.
+
+## 5. Java source provenance
+
+The attribution boundary follows the exact-pinned Java 2.13.0 source review in
+Plan 224:
+
+- `OutboundClientMessageOneShotJob` maps an unsuccessful bounded client-NetDB
+  LeaseSet lookup to `STATUS_SEND_FAILURE_NO_LEASESET (21)`;
+- `IterativeSearchJob` separates client lookup dispatch, reply-tunnel
+  capability, and search completion;
+- `HandleDatabaseLookupMessageJob` answers a LeaseSet lookup only when the
+  main-NetDB entry is a current LeaseSet marked `receivedAsPublished`;
+- `InboundMessageDistributor` tags a client-tunnel LeaseSet DSM with the
+  receiving client;
+- `FloodfillDatabaseStoreMessageHandler` routes a received-by-client DSM to
+  that client sub-DB;
+- `InNetMessagePool` runs the matching DSM store inline before queuing the
+  lookup-success reply job.
+
+The last ordering rules out treating a hypothetical store-vs-success race as
+the explanation. Since the client-tunnel DSM was not observably proven, no
+contradiction was asserted.
+
+## 6. Requirement-to-evidence matrix
+
+| Plan-224 requirement | Evidence / result |
+|---|---|
+| Preserve Plan-222 selector and Plan-223 identity/LS2 invariants | Focused tests, static guards, exact destination lane; status 17 absent and `[1,21]` retained |
+| Exact target identity in all snapshots | `target_hash_hex` and helper/router context above; one target in every P224 row |
+| Router-B raw, validated, current, received-as-published state | Pre/post main-LS snapshots above; answerability derived explicitly |
+| Router-A helper client DB pre/post state | Client-scoped snapshots above; no main-DB fallback |
+| One causal tracked send | `nonce=1`, one digest, ordered statuses `[1,21]` |
+| Frozen 45-second result | `frozen_tunneldata_45s=false`, `frozen_payload_45s=false` |
+| Targeted logging before startup | Verified scratch `logger.config`, default ERROR and three class overrides |
+| No raw or secret log evidence | Whitelist-only typed rows; raw logs remained disposable scratch-only |
+| Distinguish selector membership from actual lookup stages | Trace fields remain unobservable; no stage was inferred from selector membership |
+| Exact DSM/store ordering respected | Pinned Java source provenance above; no store-race claim |
+| One terminal and earliest supported conclusion | Exactly one `p224-classification`: `P224-OBSERVABILITY-GAP-LOOKUP-PATH` |
+| No production correction or Java mutation | Read-only same-package probe; static checker rejects mutation/reflection/standalone lookup |
+| Clean committed head before external evidence | SHA and clean-tree proof above |
+| Retry budget | Three attempts maximum; one pre-epoch stop, two authoritative reproductions |
+| Registry/roadmap/dependency audit | Sections 8–9 below; Plan 225 registered, blocked rows retained |
+
+## 7. Verification
+
+Completed before closure:
+
+```text
+cargo fmt --all --check                                      PASS
+cargo test --locked -p i2pr-daemon --test java_tunnel_external --no-run PASS
+cargo test --locked -p i2pr-daemon --test java_tunnel_external p224 -- --test-threads=1 PASS (29)
+cargo test --locked -p i2pr-daemon --test java_tunnel_external p222 -- --test-threads=1 PASS (18)
+bash scripts/check-m6-mixed-router-acceptance-evidence.sh     PASS
+bash scripts/check-dependency-direction.sh                    PASS
+bash scripts/check-runtime-boundaries.sh                      PASS
+bash -n tests/integration/m6-interop/run-java.sh              PASS
+bash -n scripts/check-m6-mixed-router-acceptance-evidence.sh  PASS
+javac exact-pinned ControlledRouter + P220/P222/P223/P224 probes PASS
+```
+
+The full routine floor was run for this closure commit; its exact results
+are recorded in the final handoff and must remain green before push. Any
+environment-gated external rows are reported as their actual skipped/failed
+outcome, not converted into success.
+
+## 8. Security and operational review
+
+- The Java probe performs only read-only local main/client NetDB snapshots.
+- No `store`, `registerKeys`, lookup initiation, reflection, or private-key
+  extraction was added.
+- The logger defaults to `ERROR`; only the three named source classes receive
+  temporary diagnostic levels.
+- Sanitization requires the exact target and helper correlation for the client
+  receipt fact and emits only bounded booleans, counts, type codes, hashes, and
+  timestamps already required by the evidence contract.
+- Session keys, reply tags, raw payloads, private identity material, and raw
+  Java log lines are absent from committed evidence and closure facts.
+- Listeners and routers remained loopback-only and disposable.
+
+Findings by severity:
+
+```text
+critical: none
+high:     none
+medium:   lookup-path trace remains unobservable; handed to Plan 225
+low:      enclosing legacy Java qualification still exits nonzero; does not
+          invalidate the independently emitted P224 attribution terminal
+```
+
+## 9. Dependency and unblock audit
+
+No existing future plan can be unblocked by this result:
+
+- Plan 201 remains `blocked-pending-plan225-no-leaseset-lookup-path-observability-corrective`.
+  The exact failing lookup stage is still unknown and M6 Java closure cannot
+  be claimed.
+- Plan 204 remains `blocked-on-m6-java-second-family-closure-pending-plan225-observability`.
+  Its cross-milestone convergence gate is not satisfied.
+- Plan 205 remains `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`.
+  The direct Java client-NetDB path is still the active lane; no SAM pivot is
+  authorized.
+- Plan 218 remains the stopped behavioral boundary; Plans 222 and 223 remain
+  closed and their evidence is retained.
+
+Plan 225 is registered as the next dependency-ready work item with the exact
+boundary proved here. It owns observability, not a guessed protocol fix:
+
+```text
+plan_224 = passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap
+plan_225 = registered-ready-m6-java-no-leaseset-lookup-path-observability-corrective
+next_executable_plan = 225-m6-java-no-leaseset-lookup-path-observability-corrective
 milestone6_java_mixed_router_interop = not-yet-passed
-milestone6_interoperable             = not-yet-claimed
+milestone6_interoperable = not-yet-claimed
 ```
+
+The live registry, mixed-router roadmap, Plan-201 status, and Plan-204 status
+are updated in the same closure change.
