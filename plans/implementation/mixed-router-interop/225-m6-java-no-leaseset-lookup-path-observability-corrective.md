@@ -44,7 +44,7 @@ diagnostic corrective, not a requalification or production protocol fix.
 Plan 224's authoritative implementation SHA is:
 
 ```text
-895132cabb9a220c64e288bad288c1bf77bda81f
+96824f8e5e2cd56c90bb94ebb12aedad68435e66
 ```
 
 Its exact destination-only lane established:
