@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 225 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 225 attributes the open failure to the
+direct Java helper client-NetDB iterative-search path: the search starts and
+exhausts without dispatching the target lookup to Router B. A SAM bridge does
+not replace this search machinery.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+next_executable_plan = none
+```
+
 # Current dependency amendment — Plan 224 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 224 attributes the direct Java
