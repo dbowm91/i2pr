@@ -1,3 +1,25 @@
+# Plan 228 registration follow-up
+
+Plan 227 remains closed at
+`P227-EXPLICIT-ONE-HOP-NOT-BUILT`. Pinned Java source review shows the next
+unresolved path is not peer selectability but stock tunnel construction:
+client config creation, BuildExecutor scheduling, paired-tunnel availability,
+build-message creation/dispatch, Router-C request handling, reply processing,
+and local join.
+
+Plan 228 is registered as attribution-only and must stop at the earliest
+proven missing stage.
+
+```text
+plan_227 = passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary
+plan_228 = registered-ready-m6-java-client-tunnel-build-path-attribution
+next_executable_plan = 228-m6-java-client-tunnel-build-path-attribution
+```
+
+No workaround, exploratory/client tunnel policy change, profile mutation,
+VMComm, `netDb.alwaysQuery`, topology change, or timeout increase is
+authorized.
+
 # Plan 227 status — M6 Java explicit one-hop client-tunnel corrective
 
 Status: **`passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary`**.
