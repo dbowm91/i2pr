@@ -1,3 +1,14 @@
+# Current dependency amendment — Plan 226 registered
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 226 is a controlled Java harness/topology corrective and does not
+alter M10 product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan226
+plan_226 = registered-ready-m6-java-loopback-peer-diversity-corrective
+```
+
 # Current dependency amendment — Plan 225 closed with exact lookup attribution
 
 Plan 224 closed as
