@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 228 closed with NO-PAIRED-TUNNEL boundary
+
+Plan 201 remains blocked on Java second-family closure. Plan 228 closed as
+`passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary`
+(see `228-status.md`): Router C selectable, client configs through C created
+in both directions, but neither direction obtains the paired tunnel Java
+requires (`P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` on all 4 counted
+attempts; only zero-hop exploratory tunnels available). No dispatch ever
+occurs, so no lookup/reply/install stage was reached. A narrow paired-tunnel
+corrective plan-of-record is required before 201's qualification can proceed;
+none is registered here.
+
+```text
+plan_201 = blocked-pending-paired-tunnel-corrective-after-plan228-no-paired-tunnel
+plan_228 = passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary
+next_executable_plan = none (narrow paired-tunnel successor may be registered separately)
+```
+
 # Current dependency amendment — Plan 228 registered
 
 Plan 201 remains blocked on Java second-family closure. Plan 227 proved Router C

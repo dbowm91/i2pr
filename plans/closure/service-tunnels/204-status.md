@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 228 closed with NO-PAIRED-TUNNEL boundary
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 228 closed as
+`passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary`
+(see `plans/closure/mixed-router-interop/228-status.md`): attribution-only at
+paired-tunnel selection, no workaround, no production change. It does not
+alter M10 product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-paired-tunnel-corrective
+plan_228 = passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary
+```
+
 # Current dependency amendment — Plan 228 registered
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family
