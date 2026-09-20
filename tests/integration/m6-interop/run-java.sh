@@ -790,9 +790,17 @@ start_raw_helper() {
       cat "${RAW_HELPER_LOG}" >&2 || true
       local helper_end_ms
       helper_end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
-      printf 'helper_connect_elapsed_ms\t%s\n' "$((helper_end_ms - helper_start_ms))" >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      local helper_elapsed_ms=$((helper_end_ms - helper_start_ms))
+      printf 'helper_connect_elapsed_ms\t%s\n' "${helper_elapsed_ms}" >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
       printf 'helper_ready\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
-      printf 'helper_connect_timeout_seen\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      # A PID death after ~270 s is Java's own five-minute
+      # I2PSession.connect() ceiling (the helper throws and exits);
+      # a fast death is a startup failure, not a timeout.
+      if [[ "${helper_elapsed_ms}" -ge 270000 ]]; then
+        printf 'helper_connect_timeout_seen\ttrue\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      else
+        printf 'helper_connect_timeout_seen\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      fi
       return 1
     fi
     sleep 0.5
