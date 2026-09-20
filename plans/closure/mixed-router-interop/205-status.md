@@ -1,3 +1,14 @@
+# Current dependency amendment — Plan 228 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 227 stopped below client-tunnel
+establishment and Plan 228 traces the stock Java client build path directly;
+a SAM bridge does not replace that machinery.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_228 = registered-ready-m6-java-client-tunnel-build-path-attribution
+```
+
 # Current dependency amendment — Plan 227 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 227 addresses Java's direct client
