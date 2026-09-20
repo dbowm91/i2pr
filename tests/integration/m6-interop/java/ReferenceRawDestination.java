@@ -178,8 +178,8 @@ public final class ReferenceRawDestination {
         if (candidate == null) {
             return null;
         }
-        if (candidate.length() != 44) {
-            throw new IllegalArgumentException("explicit peer must be 44-char I2P Base64");
+        if (candidate.length() != 44 && candidate.length() != 43) {
+            throw new IllegalArgumentException("explicit peer must be 43-44 char I2P Base64");
         }
         for (int i = 0; i < candidate.length(); i++) {
             char c = candidate.charAt(i);
