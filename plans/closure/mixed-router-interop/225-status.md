@@ -1,3 +1,20 @@
+# Plan 226 registration follow-up
+
+Plan 226 is now registered as the narrow successor to the exact Plan-225
+attribution. Exact-pinned Java uses `IP_CLOSE_BYTES=3` in
+`IterativeSearchJob`, while the current controlled A/B/C SSU2 RouterInfos all
+advertise `127.0.0.1`. Plan 226 must prove the exact target-job
+`Skipping query w/ router too close to others <Router-B>` branch before
+moving A/B/C SSU2 hosts to distinct loopback /24s.
+
+`netDb.alwaysQuery` is explicitly excluded from acceptance authority.
+
+```text
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+plan_226 = registered-ready-m6-java-loopback-peer-diversity-corrective
+next_executable_plan = 226-m6-java-loopback-peer-diversity-corrective
+```
+
 # Plan 225 status — M6 Java NO_LEASESET lookup-path observability corrective
 
 Status: **`passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution`**.
