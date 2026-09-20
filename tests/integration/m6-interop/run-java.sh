@@ -1069,7 +1069,24 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   fi
   if [[ "${P227_EARLY_STOP}" -eq 0 ]]; then
   : > "${DRIVER_EVIDENCE}/p227-helper-connect.tsv"
-  start_raw_helper "${P227_C_B64}"
+  # Plan 227 §8/§14 — a five-minute I2PSession.connect() failure is a
+  # counted build outcome, not a harness error. Do not exit on it;
+  # record P227-EXPLICIT-ONE-HOP-NOT-BUILT as the single terminal.
+  P227_HELPER_RC=0
+  start_raw_helper "${P227_C_B64}" || P227_HELPER_RC=$?
+  if [[ "${P227_HELPER_RC}" -ne 0 ]]; then
+    echo "    public Java raw helper failed to connect (Plan 227 five-minute ceiling, rc=${P227_HELPER_RC})" >>"${DRIVER_LOG}"
+    if [[ -f "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" ]]; then
+      cat "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" >> "${DRIVER_DEST_TSV}"
+    fi
+    printf 'p227-classification\tP227-EXPLICIT-ONE-HOP-NOT-BUILT helper_ready=false helper_connect_timeout_seen=true\n' >> "${DRIVER_DEST_TSV}"
+    # Do not retry the helper inside this counted run (Plan 227 §8).
+    # Skip the counted lookup driver; the row above is the terminal.
+    P227_HELPER_FAILED=1
+  else
+    P227_HELPER_FAILED=0
+  fi
+  if [[ "${P227_HELPER_FAILED:-0}" -eq 0 ]]; then
   # Plan 200 §A.1 — the helper's `READY` line is intentionally the
   # minimal public-client fact set; the b64 destination is the
   # last-but-one whitespace-separated field after `READY`, with
@@ -1180,6 +1197,7 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # expires) captures the post-deadline RouterInfo
   # capability state and closes the correlation timeline.
   j219_record_timed_snapshot "after-reverse-send-wait-expires"
+  fi
   fi
 fi
 
