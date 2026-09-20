@@ -5058,11 +5058,7 @@ fn p226_new_isj_job_id(line: &str, target_b64: &str) -> Option<u64> {
     let marker = "New ISJ for ";
     let marker_pos = line.find(marker)?;
     let suffix = &line[marker_pos + marker.len()..];
-    let target_present = suffix
-        .strip_prefix("LS ")
-        .unwrap_or(suffix)
-        .strip_prefix(target_b64)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+    let target_present = p226_hash_suffix_matches(suffix, target_b64);
     if !target_present {
         return None;
     }
@@ -5072,6 +5068,21 @@ fn p226_new_isj_job_id(line: &str, target_b64: &str) -> Option<u64> {
     (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
         .then(|| digits.parse().ok())
         .flatten()
+}
+
+fn p226_hash_token_matches(token: &str, expected_b64: &str) -> bool {
+    token == expected_b64 || token == format!("[Hash: {expected_b64}]")
+}
+
+fn p226_hash_suffix_matches(suffix: &str, expected_b64: &str) -> bool {
+    let suffix = suffix.strip_prefix("LS ").unwrap_or(suffix);
+    [expected_b64.to_owned(), format!("[Hash: {expected_b64}]")]
+        .into_iter()
+        .any(|rendering| {
+            suffix
+                .strip_prefix(&rendering)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        })
 }
 
 fn p226_job_id_before(line: &str, marker: &str) -> Option<u64> {
@@ -5094,9 +5105,13 @@ fn p226_target_and_peer(line: &str, marker: &str, target_b64: &str, peer_b64: &s
         return false;
     };
     let mut fields = suffix.split_whitespace();
-    fields.next() == Some(target_b64)
+    fields
+        .next()
+        .is_some_and(|token| p226_hash_token_matches(token, target_b64))
         && fields.next() == Some("to")
-        && fields.next() == Some(peer_b64)
+        && fields
+            .next()
+            .is_some_and(|token| p226_hash_token_matches(token, peer_b64))
 }
 
 /// Whitelist-only scan of one router's `log-router-*.txt` scratch
@@ -5204,7 +5219,7 @@ fn p224_scan_log_dir_with_b32(
                 |marker: &str| p226_target_job_line(line, &scan.p226_target_job_ids, marker);
             if target_job(": Skipping query w/ router too close to others ")
                 && p226_token_after(line, ": Skipping query w/ router too close to others ")
-                    == Some(router_b_b64)
+                    .is_some_and(|token| p226_hash_token_matches(token, router_b_b64))
             {
                 scan.p226_ip_close_skipped += 1;
             }
@@ -10049,6 +10064,17 @@ fn p226_exact_target_job_requires_exact_job_id_and_router_hash() {
         p226_classify_baseline(true, &trace),
         P226Terminal::BaselineIpDiversityConfirmed
     );
+    assert_eq!(
+        p226_new_isj_job_id(
+            &format!("INFO JobId: 44; dbid: helper: New ISJ for LS [Hash: {target}] (rkey key)"),
+            &target,
+        ),
+        Some(44)
+    );
+    assert!(p226_hash_token_matches(
+        &format!("[Hash: {router_b}]"),
+        &router_b
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
