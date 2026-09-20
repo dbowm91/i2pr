@@ -97,14 +97,14 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 227 is reference-harness-only and does not reopen or downgrade M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 228 is attribution-only and does not reopen or downgrade M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 227 closed with selectable-C-but-not-built boundary; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 is registered for build-path attribution; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
