@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 225 closed the latest M6 diagnostic pass with exact attribution (`A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`), but that is not a product correction or Java-family closure.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 225 closed the latest M6 diagnostic pass with exact attribution (`A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`). Plan 226 is now the registered controlled-loopback peer-diversity corrective; neither changes M10 product authority.
 
 ## 5. Target architecture
 
@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 225 closed the lookup-path observability corrective with exact attribution but did not reopen or downgrade M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 226 is harness/topology corrective only and does not reopen or downgrade M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 225 is closed diagnostic authority only; convergence remains blocked until a later evidence-supported corrective and Java-family qualification close M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 226 is the active evidence-supported controlled-topology corrective; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure after Plan 225's exact lookup-path attribution.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 226 executes the controlled-loopback peer-diversity corrective.
