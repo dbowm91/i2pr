@@ -70,7 +70,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 199 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/service-tunnels/199-m10-unified-final-closure.md`; `plans/closure/service-tunnels/199-status.md` |
 | 202 | superseded | partial-m10-remote-routing-capability-surface-superseded-by-plan206 (Plan 206 §5 promoted the marker/counter capabili... | `plans/implementation/service-tunnels/202-m10-production-remote-destination-and-streaming-composition.md` | `plans/closure/service-tunnels/202-status.md` |
 | 203 | superseded | retained-partial-m10-remote-application-evidence-scaffolding-superseded-by-plan207 (the `m10_positive_remote_http_and... | `plans/implementation/service-tunnels/203-m10-positive-remote-http-and-irc-application-interop.md` | `plans/closure/service-tunnels/203-status.md` |
-| 204 | blocked | blocked-on-m6-java-second-family-closure-pending-plan226-baseline-zero-hop-boundary | — | `plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`; `plans/closure/service-tunnels/204-status.md` |
+| 204 | blocked | blocked-on-m6-java-second-family-closure-pending-plan227 | — | `plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`; `plans/closure/service-tunnels/204-status.md` |
 | 206 | superseded | retained-partial-executable-backend-seams-superseded-by-plan208 (the executable `ServiceDestinationDelivery` backend ... | `plans/implementation/service-tunnels/206-m10-production-remote-delivery-composition-corrective.md` | `plans/closure/service-tunnels/206-status.md` |
 | 207 | superseded | passed-m10-genuine-remote-http-and-irc-application-interop-superseded-by-plan209 (introduced real system `curl` + exa... | `plans/implementation/service-tunnels/207-m10-genuine-remote-http-and-irc-application-interop-corrective.md` | `plans/closure/service-tunnels/207-status.md` |
 | 208 | closed | passed-m10-production-delivery-driver-remote-route-integration (`crates/i2pr-daemon/src/service_tunnels.rs::deliver_o... | `plans/implementation/service-tunnels/208-m10-production-delivery-driver-remote-route-integration-corrective.md` | `plans/closure/service-tunnels/208-status.md` |
@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 226 is harness/topology corrective only and does not reopen or downgrade M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 227 is reference-harness-only and does not reopen or downgrade M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 226 is the active evidence-supported controlled-topology corrective; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 227 is the active evidence-supported raw-helper client-tunnel corrective; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 226 executes the controlled-loopback peer-diversity corrective.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 227 executes the explicit one-hop Java client-tunnel corrective.
