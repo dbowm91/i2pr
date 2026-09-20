@@ -1,3 +1,22 @@
+# Current handoff amendment — Plan 225 exact attribution closed
+
+Plan 218's behavioral stop remains authoritative. Plan 225 has now made the
+lookup path observable and proved the earliest missing stage:
+
+```text
+P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B
+```
+
+Router B is query-answerable, but Router A's helper search starts and exhausts
+without dispatching the target lookup to B. Plan 225 is diagnostic-only; it
+does not itself authorize a topology or product correction.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+next_executable_plan = none
+```
+
 # Current handoff amendment — Plan 224 attribution registered
 
 Plan 218's behavioral stop remains authoritative. Plan 223 moved the exact
