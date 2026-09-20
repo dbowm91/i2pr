@@ -21,7 +21,7 @@ Related ADRs:
 
 Authenticated I2NP preflight, one-hop exploratory tunnels, NetDB lookup/publication, destination/garlic routing, short-build reply + NetDB reply-path + wire-format correctives, i2pd Streaming qualification (33/33), Java second-family qualification (controlled topology, pq tolerance, public-client observability, Branch G corrective framework, harness/evidence corrective).
 
-Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–226 (global i2pr numbers, preserved).
+Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–227 (global i2pr numbers, preserved).
 
 ## 2. Work classification
 
@@ -59,6 +59,8 @@ remains not-yet-passed.
 
 Exact-pinned source review after Plan 225 identified a narrow controlled-topology hypothesis: `IterativeSearchJob` uses `IP_CLOSE_BYTES=3`, while A/B/C currently advertise SSU2 on the same `127.0.0.0/24`. Plan 226 closed with an exact target-job `P226-BASELINE-B-ZERO-HOP-UNKNOWN` terminal: `b_ip_close_skipped=false`, so the distinct loopback /24 correction was not admitted. `netDb.alwaysQuery` remains outside acceptance authority.
 
+Pinned/current Java I2P also exposes `explicitPeers` as a client tunnel debugging option carried through ordinary I2CP SessionConfig. Unlike the old Plan-201 one-hop attempt, it can select a valid Router C without waiting for fresh-router fast/high-capacity tier promotion while still constructing a genuine stock-Java tunnel. Plan 227 is registered-ready to prove C selectable, install/prove one-hop raw-helper inbound/outbound tunnels through C, and rerun the exact frozen destination lookup. Profile mutation, VMComm, `netDb.alwaysQuery`, direct tunnel install, and client-NetDB RI injection remain forbidden.
+
 Plan 205 remains retained/deferred.
 
 ## 5. Target architecture
@@ -69,7 +71,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226. Plan 205 is retained conditional fallback and is not part of the primary sequence.
+183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227. Plan 205 is retained conditional fallback and is not part of the primary sequence.
 ```
 
 ## 7. Milestones
@@ -107,6 +109,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 224 | closed | passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap (Router B answerable; helper client DB empty; exact lookup trace unavailable on 895132c) | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | `plans/closure/mixed-router-interop/224-status.md` |
 | 225 | closed | passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution (exact terminal `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`) | `plans/implementation/mixed-router-interop/225-m6-java-no-leaseset-lookup-path-observability-corrective.md` | `plans/closure/mixed-router-interop/225-status.md`; `plans/closure/mixed-router-interop/225-corrective-closure.md` |
 | 226 | closed | passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary | `plans/implementation/mixed-router-interop/226-m6-java-loopback-peer-diversity-corrective.md` | `plans/closure/mixed-router-interop/226-status.md` |
+| 227 | ready | registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective | `plans/implementation/mixed-router-interop/227-m6-java-explicit-one-hop-client-tunnel-corrective.md` | `plans/closure/mixed-router-interop/227-status.md` |
 
 ## 8. Cross-cutting requirements
 
