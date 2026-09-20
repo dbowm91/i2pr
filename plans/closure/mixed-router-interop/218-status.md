@@ -1,3 +1,17 @@
+# Current handoff amendment — Plan 228 registered
+
+Plan 218's behavioral stop remains authoritative. Plan 227 proved a valid,
+selectable Router C but no installed one-hop client tunnels. Plan 228 is now
+the sole executable diagnostic and must identify the earliest missing
+stock-Java build stage without changing Java, peer profiles, tunnel policy, or
+i2pr production behavior.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_228 = registered-ready-m6-java-client-tunnel-build-path-attribution
+next_executable_plan = 228-m6-java-client-tunnel-build-path-attribution
+```
+
 # Current handoff amendment — Plan 227 registered
 
 Plan 218's behavioral stop remains authoritative. Plan 226 localized the
