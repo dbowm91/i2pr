@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 228 registered
+
+Plan 201 remains blocked on Java second-family closure. Plan 227 proved Router C
+selectable but no stock-Java one-hop client tunnel installed within the
+five-minute helper ceiling. Plan 228 now owns attribution of the exact client
+tunnel build path and may not implement a workaround.
+
+```text
+plan_201 = blocked-pending-plan228-client-tunnel-build-path-attribution
+plan_228 = registered-ready-m6-java-client-tunnel-build-path-attribution
+next_executable_plan = 228-m6-java-client-tunnel-build-path-attribution
+```
+
 # Current dependency amendment — Plan 227 closed with NOT-BUILT boundary
 
 Plan 201 remains blocked on Java second-family closure. Plan 227 closed as
