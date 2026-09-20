@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 227 registered
+
+Plan 201 remains blocked on Java second-family closure. Plan 226 proved the
+current raw helper is stopped by Java's zero-hop lookup-to-unknown guard.
+Plan 227 now owns the narrow stock-Java client-tunnel corrective: establish and
+prove a genuine one-hop raw-helper tunnel through Router C using ordinary I2CP
+`explicitPeers`, then rerun the frozen destination lane.
+
+```text
+plan_201 = blocked-pending-plan227-explicit-one-hop-client-tunnel-corrective
+plan_227 = registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective
+next_executable_plan = 227-m6-java-explicit-one-hop-client-tunnel-corrective
+```
+
 # Current dependency amendment — Plan 226 closed at exact non-IP boundary
 
 Plan 226 closed as
