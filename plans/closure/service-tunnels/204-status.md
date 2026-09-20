@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 227 registered
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 227 changes only the controlled Java raw-reference helper tunnel
+profile through stock I2CP test/debug options; it does not alter M10 product
+authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan227
+plan_227 = registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective
+```
+
 # Current dependency amendment — Plan 226 closed at exact non-IP boundary
 
 M10 product authority remains closed through Plans 213–215. Plan 204 remains
