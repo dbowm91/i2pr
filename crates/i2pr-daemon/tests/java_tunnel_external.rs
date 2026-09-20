@@ -11070,3 +11070,1223 @@ fn p227_classification_is_single_and_frozen_payload_wins() {
     assert!(tsv.contains("P227-REVERSE-DELIVERY-PASSED"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- Plan 228 build-path attribution ---------------------------------------
+// Attribution-only. No production behavior change, no Java patch, no profile
+// mutation, no NetDB store, no tunnel install, no timeout change. The
+// whitelist below matches only exact-pinned English log scaffolding; full
+// log lines (which may carry reply keys/tags/records) are never retained.
+// Durable evidence carries only booleans, bounded counts, directions,
+// hashes, response/status codes, and elapsed timings.
+
+const P228_MAX_LOG_FILES_PER_ROUTER: usize = 16;
+const P228_MAX_LOG_BYTES_PER_ROUTER: u64 = 96 * 1024 * 1024;
+const P228_MAX_LINE_LEN: usize = 8192;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P228Direction {
+    Inbound,
+    Outbound,
+    Both,
+}
+
+impl P228Direction {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Inbound => "inbound",
+            Self::Outbound => "outbound",
+            Self::Both => "both",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P228Infra {
+    observable: bool,
+    free_tunnel_count: u64,
+    inbound_tunnel_count: u64,
+    outbound_tunnel_count: u64,
+    inbound_exploratory_count: u64,
+    outbound_exploratory_count: u64,
+    inbound_exploratory_nonzero_count: u64,
+    outbound_exploratory_nonzero_count: u64,
+}
+
+impl Default for P228Infra {
+    fn default() -> Self {
+        Self {
+            observable: false,
+            free_tunnel_count: 0,
+            inbound_tunnel_count: 0,
+            outbound_tunnel_count: 0,
+            inbound_exploratory_count: 0,
+            outbound_exploratory_count: 0,
+            inbound_exploratory_nonzero_count: 0,
+            outbound_exploratory_nonzero_count: 0,
+        }
+    }
+}
+
+fn p228_parse_count(value: Option<&String>) -> Option<u64> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > 2 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed: u64 = raw.parse().ok()?;
+    (parsed <= 64).then_some(parsed)
+}
+
+fn p228_line_is_secret_bearing(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Raw secret/key/record markers that must never satisfy a durable fact.
+    // Note: peer Base64 hashes are NOT secrets here (Router-C identity is a
+    // bounded hash correlation input, explicitly permitted); only private
+    // material, session keys/tags, payloads, and raw log-file paths are
+    // rejected.
+    for forbidden in [
+        "priv",
+        "seed",
+        "session_key",
+        "sessionkey",
+        "reply key",
+        "replykey",
+        "tag=",
+        "payload=",
+        "log-router",
+    ] {
+        if lower.contains(forbidden) {
+            return true;
+        }
+    }
+    false
+}
+
+fn p228_parse_infra(line: &str) -> Option<P228Infra> {
+    if !line.starts_with("P228-EV ") || !line.contains("kind=tunnel-infra") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P228-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    Some(P228Infra {
+        observable: true,
+        free_tunnel_count: p228_parse_count(kv.get("free_tunnel_count"))?,
+        inbound_tunnel_count: p228_parse_count(kv.get("inbound_tunnel_count"))?,
+        outbound_tunnel_count: p228_parse_count(kv.get("outbound_tunnel_count"))?,
+        inbound_exploratory_count: p228_parse_count(kv.get("inbound_exploratory_count"))?,
+        outbound_exploratory_count: p228_parse_count(kv.get("outbound_exploratory_count"))?,
+        inbound_exploratory_nonzero_count: p228_parse_count(
+            kv.get("inbound_exploratory_nonzero_count"),
+        )?,
+        outbound_exploratory_nonzero_count: p228_parse_count(
+            kv.get("outbound_exploratory_nonzero_count"),
+        )?,
+    })
+}
+
+async fn p228_collect_infra(diag_port: u16) -> Option<P228Infra> {
+    let line = p220_query_diagnostic(diag_port, "P228-TUNNEL-INFRA").await?;
+    p228_parse_infra(&line)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P228Trace {
+    observable: bool,
+    logger_config_ok: bool,
+    files_read_a: u64,
+    files_read_c: u64,
+    // WP B — pool configuration / selection.
+    selector_activity_seen: bool,
+    explicit_not_selectable_seen: bool,
+    zero_hop_fallback_seen: bool,
+    peers_for_inbound_seen: bool,
+    peers_for_outbound_seen: bool,
+    config_contains_c: bool,
+    configuring_new_tunnel_seen: bool,
+    no_tunnel_to_build_with_seen: bool,
+    // WP C — paired tunnel.
+    paired_missing_seen: bool,
+    paired_exploratory_fallback_seen: bool,
+    build_message_create_fail_seen: bool,
+    // WP D — dispatch.
+    inbound_dispatch_seen: bool,
+    outbound_dispatch_seen: bool,
+    outbound_dispatch_to_c: bool,
+    inbound_dispatch_to_c: bool,
+    next_hop_missing_seen: bool,
+    first_hop_failure_seen: bool,
+    // WP E — Router-C processing.
+    c_log_observable: bool,
+    c_read_slot_seen: bool,
+    c_response_code: Option<i32>,
+    c_decrypt_failure_seen: bool,
+    // WP F — Router-A reply handling.
+    a_reply_handling_seen: bool,
+    a_peer_status_seen: bool,
+    a_remote_status_code: Option<i32>,
+    a_reply_decrypt_fail_seen: bool,
+    a_reply_no_match_seen: bool,
+    a_dup_id_seen: bool,
+    // WP G — timeout/result counters.
+    build_timeout_seen: bool,
+    client_build_success_hint_seen: bool,
+    // Install proof comes from the P227 snapshot, never from log text.
+    inbound_installed: bool,
+    outbound_installed: bool,
+}
+
+fn p228_parse_response_code(line: &str, marker: &str) -> Option<i32> {
+    let idx = line.find(marker)?;
+    let rest = line[idx + marker.len()..].trim_start();
+    let mut digits = String::new();
+    let mut negative = false;
+    for (i, ch) in rest.char_indices() {
+        if i == 0 && ch == '-' {
+            negative = true;
+            continue;
+        }
+        if ch.is_ascii_digit() && digits.len() < 4 {
+            digits.push(ch);
+        } else {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value: i32 = digits.parse().ok()?;
+    if negative {
+        value = value.saturating_neg();
+    }
+    // Bounded response/status codes only.
+    if (-8..=64).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn p228_scan_single_file(text: &str, c_b64: &str, trace: &mut P228Trace, is_c_side: bool) {
+    for line in text.lines() {
+        if line.len() > P228_MAX_LINE_LEN {
+            continue;
+        }
+        // Never let a secret-bearing line satisfy a durable fact, and never
+        // retain the line. Counters below only advance on clean scaffolding.
+        if p228_line_is_secret_bearing(line) {
+            continue;
+        }
+        // WP B — selector / config scaffolding (Router A side only).
+        if !is_c_side {
+            if line.contains("TunnelPeerSelector")
+                || line.contains("ClientPeerSelector")
+                || (line.contains("peers for ") && line.contains(" peers: "))
+            {
+                trace.selector_activity_seen = true;
+            }
+            if line.contains("Explicit peer is not selectable") {
+                trace.explicit_not_selectable_seen = true;
+            }
+            if line.contains("No valid explicit peers found, building zero hop") {
+                trace.zero_hop_fallback_seen = true;
+            }
+            if line.contains("peers for ") && line.contains(" inbound") {
+                trace.peers_for_inbound_seen = true;
+            }
+            if line.contains("peers for ") && line.contains(" outbound") {
+                trace.peers_for_outbound_seen = true;
+            }
+            if (line.contains("peers for ") || line.contains("selectExplicit"))
+                && !c_b64.is_empty()
+                && line.contains(c_b64)
+            {
+                trace.config_contains_c = true;
+            }
+            if line.contains("Configuring new tunnel") {
+                trace.configuring_new_tunnel_seen = true;
+            }
+            if line.contains("No tunnel to build with") {
+                trace.no_tunnel_to_build_with_seen = true;
+            }
+            // WP C.
+            if line.contains("couldn't find a paired tunnel") {
+                trace.paired_missing_seen = true;
+            }
+            if line.contains("using exploratory tunnel") {
+                trace.paired_exploratory_fallback_seen = true;
+            }
+            if line.contains("couldn't create the tunnel build message") {
+                trace.build_message_create_fail_seen = true;
+            }
+            // WP D.
+            if line.contains("Sending the tunnel build request directly to") {
+                trace.outbound_dispatch_seen = true;
+                if !c_b64.is_empty() && line.contains(c_b64) {
+                    trace.outbound_dispatch_to_c = true;
+                }
+            } else if line.contains("Sending the tunnel build request ")
+                && line.contains(" out the tunnel ")
+            {
+                trace.inbound_dispatch_seen = true;
+                if !c_b64.is_empty() && line.contains(c_b64) {
+                    trace.inbound_dispatch_to_c = true;
+                }
+            }
+            if line.contains("Could not find the next hop to send the outbound request to") {
+                trace.next_hop_missing_seen = true;
+            }
+            // The first-hop fail job has no pinned log line; the stat-only
+            // path is unobservable via logs. The flag stays false on live
+            // scans and is exercised only by unit rows for precedence.
+            // WP F (A side).
+            if line.contains("Handling the reply after") {
+                trace.a_reply_handling_seen = true;
+            }
+            if line.contains("replied with status") {
+                trace.a_peer_status_seen = true;
+                if trace.a_remote_status_code.is_none()
+                    && let Some(code) = p228_parse_response_code(line, "replied with status")
+                {
+                    trace.a_remote_status_code = Some(code);
+                }
+            }
+            if line.contains("could not be decrypted for tunnel") {
+                trace.a_reply_decrypt_fail_seen = true;
+            }
+            if line.contains("did not match any pending tunnels") {
+                trace.a_reply_no_match_seen = true;
+            }
+            if line.contains("Dup ID for our own tunnel") {
+                trace.a_dup_id_seen = true;
+            }
+            // WP G.
+            if line.contains("Timed out waiting for reply asking for") {
+                trace.build_timeout_seen = true;
+            }
+        } else {
+            // WP E — Router-C side only.
+            if line.contains("could not be decrypted from:")
+                || line.contains("No record decrypted")
+                || line.contains("Matching record decrypt failure")
+            {
+                trace.c_decrypt_failure_seen = true;
+            }
+            if line.contains("Read slot") && line.contains("accepted? ") {
+                trace.c_read_slot_seen = true;
+                if trace.c_response_code.is_none()
+                    && let Some(code) = p228_parse_response_code(line, "accepted? ")
+                {
+                    trace.c_response_code = Some(code);
+                }
+            }
+        }
+    }
+}
+
+fn p228_scan_log_dir(dir: &std::path::Path, c_b64: &str, is_c_side: bool) -> Option<P228Trace> {
+    let mut log_dirs = vec![dir.to_path_buf()];
+    if let Ok(read_dir) = std::fs::read_dir(dir)
+        && let Some(child) = read_dir.filter_map(Result::ok).find_map(|entry| {
+            (entry.file_name() == "logs"
+                && entry.file_type().ok().is_some_and(|kind| kind.is_dir()))
+            .then(|| entry.path())
+        })
+    {
+        log_dirs.push(child);
+    }
+    let mut entries: Vec<std::path::PathBuf> = Vec::new();
+    for log_dir in log_dirs {
+        let Ok(read_dir) = std::fs::read_dir(&log_dir) else {
+            continue;
+        };
+        for entry in read_dir {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("log-router-") || !name.ends_with(".txt") {
+                continue;
+            }
+            entries.push(entry.path());
+        }
+    }
+    entries.sort();
+    entries.dedup();
+    if entries.is_empty() {
+        return None;
+    }
+    entries.truncate(P228_MAX_LOG_FILES_PER_ROUTER);
+    let mut trace = P228Trace::default();
+    let mut bytes_scanned: u64 = 0;
+    for path in entries {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if bytes_scanned.saturating_add(bytes.len() as u64) > P228_MAX_LOG_BYTES_PER_ROUTER {
+            break;
+        }
+        bytes_scanned += bytes.len() as u64;
+        if is_c_side {
+            trace.files_read_c += 1;
+        } else {
+            trace.files_read_a += 1;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        p228_scan_single_file(&text, c_b64, &mut trace, is_c_side);
+    }
+    Some(trace)
+}
+
+fn p228_logger_config_installed(log_dir: &std::path::Path) -> bool {
+    let config_path = log_dir.join("..").join("logger.config");
+    let Ok(bytes) = std::fs::read(&config_path) else {
+        return false;
+    };
+    if bytes.len() > 65536 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    text.contains("logger.defaultLevel=ERROR")
+        && text.contains("logger.record.net.i2p.router.tunnel.pool.TunnelPeerSelector=INFO")
+        && text.contains("logger.record.net.i2p.router.tunnel.pool.ClientPeerSelector=INFO")
+        && text.contains("logger.record.net.i2p.router.tunnel.pool.BuildExecutor=DEBUG")
+        && text.contains("logger.record.net.i2p.router.tunnel.pool.BuildRequestor=DEBUG")
+        && text.contains("logger.record.net.i2p.router.tunnel.pool.BuildHandler=DEBUG")
+}
+
+fn p228_config_direction(trace: &P228Trace) -> P228Direction {
+    match (trace.peers_for_inbound_seen, trace.peers_for_outbound_seen) {
+        (true, true) => P228Direction::Both,
+        (true, false) => P228Direction::Inbound,
+        (false, true) => P228Direction::Outbound,
+        (false, false) => P228Direction::Both,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P228Terminal {
+    NoRouterTunnelInfra,
+    NoClientConfig(P228Direction),
+    NoPairedTunnel(P228Direction),
+    BuildMessageCreateFailure(P228Direction),
+    BuildCreatedNotDispatched(P228Direction),
+    FirstHopDeliveryFailure,
+    ADispatchedCNotReceived,
+    CDecryptFailure,
+    CRejected(i32),
+    ReplyNotReturned,
+    BuildReplyTimeout(P228Direction),
+    ReplyDecryptFailure,
+    RemoteReject(i32),
+    LocalJoinFailure,
+    NextBoundaryClientTunnelsBuilt,
+    ObservabilityGapBuildPath,
+}
+
+impl P228Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::NoRouterTunnelInfra => "P228-ATTRIBUTION-NO-ROUTER-TUNNEL-INFRA".to_owned(),
+            Self::NoClientConfig(dir) => {
+                format!(
+                    "P228-ATTRIBUTION-NO-CLIENT-CONFIG direction={}",
+                    dir.token()
+                )
+            }
+            Self::NoPairedTunnel(dir) => {
+                format!(
+                    "P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction={}",
+                    dir.token()
+                )
+            }
+            Self::BuildMessageCreateFailure(dir) => {
+                format!(
+                    "P228-ATTRIBUTION-BUILD-MESSAGE-CREATE-FAILURE direction={}",
+                    dir.token()
+                )
+            }
+            Self::BuildCreatedNotDispatched(dir) => {
+                format!(
+                    "P228-ATTRIBUTION-BUILD-CREATED-NOT-DISPATCHED direction={}",
+                    dir.token()
+                )
+            }
+            Self::FirstHopDeliveryFailure => {
+                "P228-ATTRIBUTION-FIRST-HOP-DELIVERY-FAILURE".to_owned()
+            }
+            Self::ADispatchedCNotReceived => {
+                "P228-ATTRIBUTION-A-DISPATCHED-C-NOT-RECEIVED".to_owned()
+            }
+            Self::CDecryptFailure => "P228-ATTRIBUTION-C-DECRYPT-FAILURE".to_owned(),
+            Self::CRejected(code) => format!("P228-ATTRIBUTION-C-REJECTED code={code}"),
+            Self::ReplyNotReturned => "P228-ATTRIBUTION-REPLY-NOT-RETURNED".to_owned(),
+            Self::BuildReplyTimeout(dir) => {
+                format!(
+                    "P228-ATTRIBUTION-BUILD-REPLY-TIMEOUT direction={}",
+                    dir.token()
+                )
+            }
+            Self::ReplyDecryptFailure => "P228-ATTRIBUTION-REPLY-DECRYPT-FAILURE".to_owned(),
+            Self::RemoteReject(code) => format!("P228-ATTRIBUTION-REMOTE-REJECT code={code}"),
+            Self::LocalJoinFailure => "P228-ATTRIBUTION-LOCAL-JOIN-FAILURE".to_owned(),
+            Self::NextBoundaryClientTunnelsBuilt => {
+                "P228-NEXT-BOUNDARY-CLIENT-TUNNELS-BUILT".to_owned()
+            }
+            Self::ObservabilityGapBuildPath => "P228-OBSERVABILITY-GAP-BUILD-PATH".to_owned(),
+        }
+    }
+}
+
+// Earliest-proven-missing-stage order. Later evidence never overrides an
+// earlier proven gap; unrelated exploratory/destination facts never satisfy
+// the raw-helper correlation (callers must only set flags from
+// Router-C-correlated lines).
+#[allow(clippy::too_many_arguments)]
+fn p228_classify(
+    infra: Option<&P228Infra>,
+    trace: &P228Trace,
+    c_hex_known: bool,
+    helper_connected: bool,
+) -> P228Terminal {
+    // Installed one-hop tunnels through C retire the assumed boundary.
+    // Proof comes only from the installed-pool snapshot, never from logs.
+    if trace.inbound_installed && trace.outbound_installed {
+        return P228Terminal::NextBoundaryClientTunnelsBuilt;
+    }
+    let Some(infra) = infra else {
+        return P228Terminal::ObservabilityGapBuildPath;
+    };
+    if !infra.observable {
+        return P228Terminal::ObservabilityGapBuildPath;
+    }
+    // WP A — BuildExecutor prerequisite: usable router tunnel infrastructure.
+    if infra.free_tunnel_count == 0 || infra.outbound_tunnel_count == 0 {
+        return P228Terminal::NoRouterTunnelInfra;
+    }
+    if !trace.observable || !trace.logger_config_ok {
+        return P228Terminal::ObservabilityGapBuildPath;
+    }
+    if !c_hex_known {
+        return P228Terminal::ObservabilityGapBuildPath;
+    }
+    let dir = p228_config_direction(trace);
+    // WP B — client pool configuration/selection for the raw helper.
+    // A config is proven only by Router-C-correlated selector activity plus
+    // a build-config event. Selector log presence alone never suffices.
+    let config_proven = trace.config_contains_c && trace.configuring_new_tunnel_seen;
+    if !config_proven {
+        return P228Terminal::NoClientConfig(dir);
+    }
+    // WP C — paired tunnel requirement.
+    if trace.paired_missing_seen {
+        return P228Terminal::NoPairedTunnel(dir);
+    }
+    if trace.build_message_create_fail_seen {
+        return P228Terminal::BuildMessageCreateFailure(dir);
+    }
+    // WP D — dispatch.
+    let dispatched = trace.inbound_dispatch_seen || trace.outbound_dispatch_seen;
+    if !dispatched {
+        return P228Terminal::BuildCreatedNotDispatched(dir);
+    }
+    if trace.first_hop_failure_seen || trace.next_hop_missing_seen {
+        return P228Terminal::FirstHopDeliveryFailure;
+    }
+    // WP E — Router-C handling.
+    if !trace.c_log_observable {
+        return P228Terminal::ObservabilityGapBuildPath;
+    }
+    if !trace.c_read_slot_seen {
+        return P228Terminal::ADispatchedCNotReceived;
+    }
+    if trace.c_decrypt_failure_seen {
+        return P228Terminal::CDecryptFailure;
+    }
+    if let Some(code) = trace.c_response_code {
+        if code != 0 {
+            return P228Terminal::CRejected(code);
+        }
+    } else {
+        return P228Terminal::ObservabilityGapBuildPath;
+    }
+    // WP F — Router-A reply handling.
+    if !trace.a_reply_handling_seen && !trace.a_peer_status_seen {
+        // No matching reply observed at A. A bare timeout line confirms the
+        // expiry path; otherwise the reply path is unproven.
+        if trace.build_timeout_seen {
+            return P228Terminal::BuildReplyTimeout(dir);
+        }
+        return P228Terminal::ReplyNotReturned;
+    }
+    if trace.a_reply_decrypt_fail_seen {
+        return P228Terminal::ReplyDecryptFailure;
+    }
+    if let Some(code) = trace.a_remote_status_code {
+        if code != 0 {
+            return P228Terminal::RemoteReject(code);
+        }
+    }
+    // All remote statuses agree (or no explicit nonzero status) but no
+    // install: with the helper still disconnected this is the local
+    // join/install gap. A dup-ID line confirms it; otherwise the timeout
+    // expiry with agreed statuses still maps to join failure when the
+    // install snapshot is negative.
+    if !helper_connected
+        && (trace.a_dup_id_seen || trace.build_timeout_seen || trace.a_peer_status_seen)
+    {
+        return P228Terminal::LocalJoinFailure;
+    }
+    if trace.build_timeout_seen {
+        return P228Terminal::BuildReplyTimeout(dir);
+    }
+    P228Terminal::ObservabilityGapBuildPath
+}
+
+fn record_p228_infra(evidence_dir: &std::path::Path, stage: &str, infra: Option<&P228Infra>) {
+    match infra {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p228-tunnel-infra",
+            &format!(
+                "stage={stage} observable={} free_tunnel_count={} inbound_tunnel_count={} outbound_tunnel_count={} inbound_exploratory_count={} outbound_exploratory_count={} inbound_exploratory_nonzero_count={} outbound_exploratory_nonzero_count={}",
+                facts.observable,
+                facts.free_tunnel_count,
+                facts.inbound_tunnel_count,
+                facts.outbound_tunnel_count,
+                facts.inbound_exploratory_count,
+                facts.outbound_exploratory_count,
+                facts.inbound_exploratory_nonzero_count,
+                facts.outbound_exploratory_nonzero_count,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p228-tunnel-infra",
+            &format!("stage={stage} observable=false reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+fn record_p228_trace(evidence_dir: &std::path::Path, trace: &P228Trace, router_c_hex: &str) {
+    append_evidence(
+        evidence_dir,
+        "p228-trace",
+        &format!(
+            "router_c_hex={router_c_hex} observable={} logger_config_ok={} selector_activity_seen={} explicit_not_selectable_seen={} zero_hop_fallback_seen={} peers_for_inbound_seen={} peers_for_outbound_seen={} config_contains_c={} configuring_new_tunnel_seen={} no_tunnel_to_build_with_seen={} paired_missing_seen={} paired_exploratory_fallback_seen={} build_message_create_fail_seen={} inbound_dispatch_seen={} outbound_dispatch_seen={} outbound_dispatch_to_c={} inbound_dispatch_to_c={} next_hop_missing_seen={} first_hop_failure_seen={} c_log_observable={} c_read_slot_seen={} c_response_code={} c_decrypt_failure_seen={} a_reply_handling_seen={} a_peer_status_seen={} a_remote_status_code={} a_reply_decrypt_fail_seen={} a_reply_no_match_seen={} a_dup_id_seen={} build_timeout_seen={} inbound_installed={} outbound_installed={}",
+            trace.observable,
+            trace.logger_config_ok,
+            trace.selector_activity_seen,
+            trace.explicit_not_selectable_seen,
+            trace.zero_hop_fallback_seen,
+            trace.peers_for_inbound_seen,
+            trace.peers_for_outbound_seen,
+            trace.config_contains_c,
+            trace.configuring_new_tunnel_seen,
+            trace.no_tunnel_to_build_with_seen,
+            trace.paired_missing_seen,
+            trace.paired_exploratory_fallback_seen,
+            trace.build_message_create_fail_seen,
+            trace.inbound_dispatch_seen,
+            trace.outbound_dispatch_seen,
+            trace.outbound_dispatch_to_c,
+            trace.inbound_dispatch_to_c,
+            trace.next_hop_missing_seen,
+            trace.first_hop_failure_seen,
+            trace.c_log_observable,
+            trace.c_read_slot_seen,
+            trace
+                .c_response_code
+                .map(|c| c.to_string())
+                .as_deref()
+                .unwrap_or("none"),
+            trace.c_decrypt_failure_seen,
+            trace.a_reply_handling_seen,
+            trace.a_peer_status_seen,
+            trace
+                .a_remote_status_code
+                .map(|c| c.to_string())
+                .as_deref()
+                .unwrap_or("none"),
+            trace.a_reply_decrypt_fail_seen,
+            trace.a_reply_no_match_seen,
+            trace.a_dup_id_seen,
+            trace.build_timeout_seen,
+            trace.inbound_installed,
+            trace.outbound_installed,
+        ),
+    )
+}
+
+fn record_p228_classification(evidence_dir: &std::path::Path, terminal: &P228Terminal) {
+    append_evidence(evidence_dir, "p228-classification", &terminal.token());
+}
+
+/// Plan 228 attribution driver. Runs when the destination sub-run executed,
+/// regardless of helper connect outcome. Collects the authoritative
+/// tunnel-infra snapshot, the whitelist-only log trace correlated to
+/// Router C, the installed-tunnel install proof (when the client DBID
+/// resolved), and emits exactly one terminal.
+#[tokio::test]
+#[ignore = "Plan 228: requires the exact-pinned triple Java router environment"]
+async fn p228_build_path_attribution() {
+    let evidence_dir = std::env::var("EVIDENCE_DIR").expect("EVIDENCE_DIR");
+    let evidence_dir = std::path::PathBuf::from(evidence_dir);
+    let router_c_hex = std::env::var("P228_ROUTER_C_HEX").unwrap_or_default();
+    let router_c_b64 = std::env::var("P228_ROUTER_C_B64").unwrap_or_default();
+    let client_hex = std::env::var("P228_CLIENT_DBID_HEX").unwrap_or_default();
+    let diag_a: u16 = std::env::var("JAVA_DIAGNOSTIC_A_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let log_a = std::env::var("JAVA_A_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok();
+    let log_c = std::env::var("JAVA_C_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok();
+    let c_hex_known = p227_is_hex64(&router_c_hex);
+    let client_known = p227_is_hex64(&client_hex);
+
+    // Authoritative infra snapshot at the attribution epoch.
+    let infra = if diag_a != 0 {
+        p228_collect_infra(diag_a).await
+    } else {
+        None
+    };
+    record_p228_infra(&evidence_dir, "attribution-epoch", infra.as_ref());
+
+    // Logger-config proof on both routers (file sibling of each log dir).
+    let logger_a_ok = log_a
+        .as_ref()
+        .is_some_and(|path| p228_logger_config_installed(path.as_path()));
+    let logger_c_ok = log_c
+        .as_ref()
+        .is_some_and(|path| p228_logger_config_installed(path.as_path()));
+    append_evidence(
+        &evidence_dir,
+        "p228-logger-config-a",
+        &format!("stage=attribution-epoch observable={logger_a_ok}"),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p228-logger-config-c",
+        &format!("stage=attribution-epoch observable={logger_c_ok}"),
+    );
+
+    // Whitelist-only log trace, correlated to Router-C Base64.
+    let mut trace = P228Trace::default();
+    trace.logger_config_ok = logger_a_ok;
+    trace.c_log_observable = logger_c_ok;
+    if c_hex_known && !router_c_b64.is_empty() {
+        let mut any_a = false;
+        let mut any_c = false;
+        if let Some(log_a) = log_a.as_ref()
+            && let Some(scan_a) = p228_scan_log_dir(log_a, &router_c_b64, false)
+        {
+            any_a = scan_a.files_read_a > 0;
+            trace.files_read_a = scan_a.files_read_a;
+            trace.selector_activity_seen |= scan_a.selector_activity_seen;
+            trace.explicit_not_selectable_seen |= scan_a.explicit_not_selectable_seen;
+            trace.zero_hop_fallback_seen |= scan_a.zero_hop_fallback_seen;
+            trace.peers_for_inbound_seen |= scan_a.peers_for_inbound_seen;
+            trace.peers_for_outbound_seen |= scan_a.peers_for_outbound_seen;
+            trace.config_contains_c |= scan_a.config_contains_c;
+            trace.configuring_new_tunnel_seen |= scan_a.configuring_new_tunnel_seen;
+            trace.no_tunnel_to_build_with_seen |= scan_a.no_tunnel_to_build_with_seen;
+            trace.paired_missing_seen |= scan_a.paired_missing_seen;
+            trace.paired_exploratory_fallback_seen |= scan_a.paired_exploratory_fallback_seen;
+            trace.build_message_create_fail_seen |= scan_a.build_message_create_fail_seen;
+            trace.inbound_dispatch_seen |= scan_a.inbound_dispatch_seen;
+            trace.outbound_dispatch_seen |= scan_a.outbound_dispatch_seen;
+            trace.outbound_dispatch_to_c |= scan_a.outbound_dispatch_to_c;
+            trace.inbound_dispatch_to_c |= scan_a.inbound_dispatch_to_c;
+            trace.next_hop_missing_seen |= scan_a.next_hop_missing_seen;
+            trace.a_reply_handling_seen |= scan_a.a_reply_handling_seen;
+            trace.a_peer_status_seen |= scan_a.a_peer_status_seen;
+            if trace.a_remote_status_code.is_none() {
+                trace.a_remote_status_code = scan_a.a_remote_status_code;
+            }
+            trace.a_reply_decrypt_fail_seen |= scan_a.a_reply_decrypt_fail_seen;
+            trace.a_reply_no_match_seen |= scan_a.a_reply_no_match_seen;
+            trace.a_dup_id_seen |= scan_a.a_dup_id_seen;
+            trace.build_timeout_seen |= scan_a.build_timeout_seen;
+        }
+        if let Some(log_c) = log_c.as_ref()
+            && let Some(scan_c) = p228_scan_log_dir(log_c, &router_c_b64, true)
+        {
+            any_c = scan_c.files_read_c > 0;
+            trace.files_read_c = scan_c.files_read_c;
+            trace.c_read_slot_seen |= scan_c.c_read_slot_seen;
+            if trace.c_response_code.is_none() {
+                trace.c_response_code = scan_c.c_response_code;
+            }
+            trace.c_decrypt_failure_seen |= scan_c.c_decrypt_failure_seen;
+        }
+        trace.observable = any_a && logger_a_ok;
+        trace.c_log_observable = any_c && logger_c_ok;
+    }
+
+    // Install proof from the installed-pool snapshot when the client DBID
+    // resolved (helper connected). Never inferred from log presence.
+    let mut helper_connected = false;
+    if client_known && diag_a != 0 {
+        if let Some(tunnels) = p227_collect_tunnels(diag_a, &client_hex, &router_c_hex).await {
+            helper_connected = true;
+            trace.inbound_installed =
+                tunnels.inbound_exact_one_remote_hop_via_c && !tunnels.inbound_zero_hop_present;
+            trace.outbound_installed =
+                tunnels.outbound_exact_one_remote_hop_via_c && !tunnels.outbound_zero_hop_present;
+            record_p227_tunnels(&evidence_dir, Some(&tunnels), &client_hex, &router_c_hex);
+        }
+    }
+    record_p228_trace(&evidence_dir, &trace, &router_c_hex);
+
+    let terminal = p228_classify(infra.as_ref(), &trace, c_hex_known, helper_connected);
+    record_p228_classification(&evidence_dir, &terminal);
+}
+
+// ---- Plan 228 focused unit rows --------------------------------------------
+
+fn p228_test_infra(free: u64, outbound: u64) -> P228Infra {
+    P228Infra {
+        observable: true,
+        free_tunnel_count: free,
+        inbound_tunnel_count: free,
+        outbound_tunnel_count: outbound,
+        inbound_exploratory_count: free,
+        outbound_exploratory_count: outbound,
+        inbound_exploratory_nonzero_count: 1,
+        outbound_exploratory_nonzero_count: 1,
+    }
+}
+
+fn p228_test_trace_full() -> P228Trace {
+    P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_inbound_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        inbound_dispatch_seen: true,
+        outbound_dispatch_seen: true,
+        outbound_dispatch_to_c: true,
+        inbound_dispatch_to_c: true,
+        c_log_observable: true,
+        c_read_slot_seen: true,
+        c_response_code: Some(0),
+        a_reply_handling_seen: true,
+        a_peer_status_seen: true,
+        a_remote_status_code: Some(0),
+        ..P228Trace::default()
+    }
+}
+
+#[test]
+fn p228_no_router_tunnel_infra_maps_to_infra_terminal() {
+    let infra = p228_test_infra(0, 0);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::NoRouterTunnelInfra
+    );
+    let infra_free_only = p228_test_infra(2, 0);
+    assert_eq!(
+        p228_classify(Some(&infra_free_only), &trace, true, false),
+        P228Terminal::NoRouterTunnelInfra
+    );
+}
+
+#[test]
+fn p228_selector_without_config_maps_to_no_client_config() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        // No configuring event and no C correlation: selector presence alone
+        // never proves a config.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::NoClientConfig(P228Direction::Outbound)
+    );
+}
+
+#[test]
+fn p228_config_through_c_without_paired_tunnel_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_inbound_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        paired_missing_seen: true,
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::NoPairedTunnel(P228Direction::Both)
+    );
+}
+
+#[test]
+fn p228_message_created_but_not_dispatched_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        // Paired tunnel available, message created, but no dispatch lines.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::BuildCreatedNotDispatched(P228Direction::Outbound)
+    );
+}
+
+#[test]
+fn p228_outbound_first_hop_failure_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        outbound_dispatch_to_c: true,
+        first_hop_failure_seen: true,
+        c_log_observable: true,
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::FirstHopDeliveryFailure
+    );
+}
+
+#[test]
+fn p228_dispatched_but_c_receives_nothing_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        outbound_dispatch_to_c: true,
+        c_log_observable: true,
+        // No read-slot on C despite dispatch.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::ADispatchedCNotReceived
+    );
+}
+
+#[test]
+fn p228_c_receive_decrypt_failure_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        c_log_observable: true,
+        c_read_slot_seen: true,
+        c_response_code: Some(0),
+        c_decrypt_failure_seen: true,
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::CDecryptFailure
+    );
+}
+
+#[test]
+fn p228_c_explicit_reject_code_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        c_log_observable: true,
+        c_read_slot_seen: true,
+        c_response_code: Some(30),
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::CRejected(30)
+    );
+}
+
+#[test]
+fn p228_c_accept_reply_absent_at_a_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        c_log_observable: true,
+        c_read_slot_seen: true,
+        c_response_code: Some(0),
+        // C accepted but A sees no reply handling or status.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::ReplyNotReturned
+    );
+}
+
+#[test]
+fn p228_a_reply_decrypt_failure_maps_correctly() {
+    let mut trace = p228_test_trace_full();
+    trace.a_reply_decrypt_fail_seen = true;
+    let infra = p228_test_infra(2, 2);
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::ReplyDecryptFailure
+    );
+}
+
+#[test]
+fn p228_a_remote_rejection_maps_correctly() {
+    let mut trace = p228_test_trace_full();
+    trace.a_remote_status_code = Some(20);
+    let infra = p228_test_infra(2, 2);
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::RemoteReject(20)
+    );
+}
+
+#[test]
+fn p228_local_join_failure_maps_correctly() {
+    let mut trace = p228_test_trace_full();
+    trace.a_dup_id_seen = true;
+    let infra = p228_test_infra(2, 2);
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::LocalJoinFailure
+    );
+}
+
+#[test]
+fn p228_build_reply_timeout_maps_correctly() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        peers_for_outbound_seen: true,
+        config_contains_c: true,
+        configuring_new_tunnel_seen: true,
+        outbound_dispatch_seen: true,
+        c_log_observable: true,
+        c_read_slot_seen: true,
+        c_response_code: Some(0),
+        build_timeout_seen: true,
+        // No reply handling at A: pending request expired.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::BuildReplyTimeout(P228Direction::Outbound)
+    );
+}
+
+#[test]
+fn p228_inbound_only_install_is_insufficient() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        inbound_installed: true,
+        ..p228_test_trace_full()
+    };
+    // Inbound-only install never claims both tunnels built.
+    assert_ne!(
+        p228_classify(Some(&infra), &trace, true, true),
+        P228Terminal::NextBoundaryClientTunnelsBuilt
+    );
+}
+
+#[test]
+fn p228_outbound_only_install_is_insufficient() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        outbound_installed: true,
+        ..p228_test_trace_full()
+    };
+    assert_ne!(
+        p228_classify(Some(&infra), &trace, true, true),
+        P228Terminal::NextBoundaryClientTunnelsBuilt
+    );
+}
+
+#[test]
+fn p228_both_installed_maps_only_to_next_boundary() {
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        inbound_installed: true,
+        outbound_installed: true,
+        ..p228_test_trace_full()
+    };
+    let terminal = p228_classify(Some(&infra), &trace, true, true);
+    assert_eq!(terminal, P228Terminal::NextBoundaryClientTunnelsBuilt);
+    assert_eq!(terminal.token(), "P228-NEXT-BOUNDARY-CLIENT-TUNNELS-BUILT");
+}
+
+#[test]
+fn p228_unrelated_exploratory_logs_cannot_classify_client_build() {
+    // Exploratory generic activity without Router-C correlation must not
+    // prove a client config: the classifier requires config_contains_c.
+    let infra = p228_test_infra(2, 2);
+    let trace = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        configuring_new_tunnel_seen: true,
+        paired_exploratory_fallback_seen: true,
+        // No config_contains_c: generic exploratory/config lines only.
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::NoClientConfig(P228Direction::Both)
+    );
+}
+
+#[test]
+fn p228_unrelated_destinations_cannot_classify_raw_helper() {
+    // Unknown Router-C identity fails closed to a gap, never to a
+    // stage attribution for another destination.
+    let infra = p228_test_infra(2, 2);
+    let trace = p228_test_trace_full();
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, false, false),
+        P228Terminal::ObservabilityGapBuildPath
+    );
+}
+
+#[test]
+fn p228_secret_raw_log_lines_rejected_from_evidence() {
+    // Secret-bearing diagnostic rows never parse.
+    let c_hex = p227_test_c_hex();
+    let secret_infra = format!(
+        "P228-EV kind=tunnel-infra observable=true free_tunnel_count=2 inbound_tunnel_count=2 outbound_tunnel_count=2 inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_exploratory_nonzero_count=1 outbound_exploratory_nonzero_count=1 session_key=abcd"
+    );
+    assert!(p228_parse_infra(&secret_infra).is_none());
+    let raw_log = format!(
+        "P228-EV kind=tunnel-infra observable=true free_tunnel_count=2 inbound_tunnel_count=2 outbound_tunnel_count=2 inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_exploratory_nonzero_count=1 outbound_exploratory_nonzero_count=1 not doing zero-hop lookup to unknown foo"
+    );
+    assert!(p228_parse_infra(&raw_log).is_some());
+    // Secret lines never advance trace flags.
+    let mut trace = P228Trace::default();
+    let secret_line =
+        format!("Sending the tunnel build request directly to {c_hex} session_key=deadbeef");
+    p228_scan_single_file(&secret_line, &c_hex, &mut trace, false);
+    assert!(!trace.outbound_dispatch_seen);
+    assert!(!trace.outbound_dispatch_to_c);
+    // Response codes outside the bounded range are rejected.
+    assert_eq!(
+        p228_parse_response_code("accepted? 9999", "accepted? "),
+        None
+    );
+    assert_eq!(
+        p228_parse_response_code("replied with status 0", "replied with status"),
+        Some(0)
+    );
+}
+
+#[test]
+fn p228_classification_emits_exactly_one_terminal() {
+    let dir = p224_test_tmpdir("p228-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let terminal = P228Terminal::NoPairedTunnel(P228Direction::Both);
+    record_p228_classification(&evidence_dir, &terminal);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p228-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p228_earliest_stage_precedence_is_deterministic() {
+    // Every later signal present, but missing infra still wins.
+    let infra = p228_test_infra(0, 0);
+    let trace = p228_test_trace_full();
+    assert_eq!(
+        p228_classify(Some(&infra), &trace, true, false),
+        P228Terminal::NoRouterTunnelInfra
+    );
+    // Config gap beats a later paired-tunnel signal.
+    let infra_ok = p228_test_infra(2, 2);
+    let early = P228Trace {
+        observable: true,
+        logger_config_ok: true,
+        selector_activity_seen: true,
+        paired_missing_seen: true,
+        ..P228Trace::default()
+    };
+    assert_eq!(
+        p228_classify(Some(&infra_ok), &early, true, false),
+        P228Terminal::NoClientConfig(P228Direction::Both)
+    );
+    // Paired gap beats dispatch/reply signals.
+    let mut paired_trace = p228_test_trace_full();
+    paired_trace.paired_missing_seen = true;
+    paired_trace.a_remote_status_code = Some(20);
+    assert_eq!(
+        p228_classify(Some(&infra_ok), &paired_trace, true, false),
+        P228Terminal::NoPairedTunnel(P228Direction::Both)
+    );
+    // Dispatch gap beats C-side signals.
+    let mut dispatch_trace = p228_test_trace_full();
+    dispatch_trace.inbound_dispatch_seen = false;
+    dispatch_trace.outbound_dispatch_seen = false;
+    dispatch_trace.build_timeout_seen = true;
+    assert_eq!(
+        p228_classify(Some(&infra_ok), &dispatch_trace, true, false),
+        P228Terminal::BuildCreatedNotDispatched(P228Direction::Both)
+    );
+}

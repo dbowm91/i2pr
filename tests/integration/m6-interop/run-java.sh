@@ -219,7 +219,8 @@ P224_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # client-tunnel snapshot probe (public accessors only; no profile/tier
 # mutation, no NetDB store, no tunnel install, no reflection).
 P227_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P227Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" ]]; then
+P228_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P228Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -232,7 +233,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -274,6 +275,12 @@ logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG
 logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO
 logger.record.net.i2p.router.tunnel.pool.TunnelPeerSelector=INFO
 logger.record.net.i2p.router.tunnel.pool.ClientPeerSelector=INFO
+logger.record.net.i2p.router.tunnel.pool.TunnelPool=DEBUG
+logger.record.net.i2p.router.tunnel.pool.BuildExecutor=DEBUG
+logger.record.net.i2p.router.tunnel.pool.BuildRequestor=DEBUG
+logger.record.net.i2p.router.tunnel.pool.BuildHandler=DEBUG
+logger.record.net.i2p.router.tunnel.pool.BuildMessageProcessor=DEBUG
+logger.record.net.i2p.router.tunnel.pool.BuildReplyHandler=DEBUG
 LOGGER_EOF
 }
 write_p224_logger_config "${JAVA_DATA}"
@@ -1065,6 +1072,29 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     > "${DRIVER_EVIDENCE}/destination/p227-eligibility.tsv"
   cat "${DRIVER_EVIDENCE}/destination/p227-eligibility.tsv" >> "${DRIVER_DEST_TSV}"
   cat "${DRIVER_EVIDENCE}/destination/p227-derivation.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 228 WP A — pre-build tunnel-infrastructure snapshot on Router A.
+  # Read-only diagnostic through public tunnel-manager/pool accessors only;
+  # no peer paths. Taken before the raw helper starts so BuildExecutor
+  # prerequisite state is observable independent of the helper outcome.
+  # Does not cause a build.
+  P228_INFRA_PRE_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-TUNNEL-INFRA" 2>/dev/null || true)"
+  printf '%s\n' "${P228_INFRA_PRE_LINE}" > "${DRIVER_EVIDENCE}/destination/p228-infra-pre-raw.tsv"
+  P228_INFRA_PRE_NORM="$(printf '%s' "${P228_INFRA_PRE_LINE}" | tr ' ' '\n' || true)"
+  p228_infra_field() {
+    printf '%s' "${P228_INFRA_PRE_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  printf 'p228-tunnel-infra\tstage=pre-build free_tunnel_count=%s inbound_tunnel_count=%s outbound_tunnel_count=%s inbound_exploratory_count=%s outbound_exploratory_count=%s inbound_exploratory_nonzero_count=%s outbound_exploratory_nonzero_count=%s\n' \
+    "$(p228_infra_field free_tunnel_count)" "$(p228_infra_field inbound_tunnel_count)" "$(p228_infra_field outbound_tunnel_count)" \
+    "$(p228_infra_field inbound_exploratory_count)" "$(p228_infra_field outbound_exploratory_count)" \
+    "$(p228_infra_field inbound_exploratory_nonzero_count)" "$(p228_infra_field outbound_exploratory_nonzero_count)" \
+    > "${DRIVER_EVIDENCE}/destination/p228-infra-pre.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p228-infra-pre.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 228 WP B-F — logger-config proof that the targeted scratch scopes
+  # are effective on Router A before the helper runs. Raw logs stay
+  # scratch-only; only this bounded config row reaches evidence.
+  P228_LOGGER_A_PRE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-LOGGER-CONFIG" 2>/dev/null || true)"
+  printf 'p228-logger-config-a\t%s\n' "${P228_LOGGER_A_PRE}" > "${DRIVER_EVIDENCE}/destination/p228-logger-a-pre.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p228-logger-a-pre.tsv" >> "${DRIVER_DEST_TSV}"
   if [[ "${P227_MAIN_RAW}" != "true" || "${P227_MAIN_VALID}" != "true" || "${P227_SELECTABLE}" != "true" ]]; then
     echo "P227-C-NOT-SELECTABLE main_raw=${P227_MAIN_RAW} main_valid=${P227_MAIN_VALID} selectable=${P227_SELECTABLE}" >&2
     printf 'p227-classification\tP227-C-NOT-SELECTABLE main_raw_present=%s main_valid_present=%s selectable=%s\n' \
@@ -1209,6 +1239,75 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   fi
 fi
 
+# Plan 228 WP A-G — attribution-only build-path diagnosis on the exact
+# Plan-227 raw-helper profile. Runs when the destination sub-run executed,
+# regardless of helper connect outcome (the NOT-BUILT path is the expected
+# Plan-228 input). Must not mutate profiles, tunnel policy, NetDB, or
+# timeouts; must not run the Streaming helper. Exactly one terminal is
+# emitted by the Rust classifier; shell rows here are supporting evidence.
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  P228_C_HEX="${P227_C_HEX:-}"
+  P228_C_B64="${P227_C_B64:-}"
+  P228_CLIENT_HEX="${P227_CLIENT_DBID_HEX:-}"
+  if [[ -n "${P228_C_HEX}" ]]; then
+    # Post-helper tunnel-infrastructure snapshot (helper-timeout epoch).
+    P228_INFRA_POST_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-TUNNEL-INFRA" 2>/dev/null || true)"
+    printf '%s\n' "${P228_INFRA_POST_LINE}" > "${DRIVER_EVIDENCE}/destination/p228-infra-post-raw.tsv"
+    P228_INFRA_POST_NORM="$(printf '%s' "${P228_INFRA_POST_LINE}" | tr ' ' '\n' || true)"
+    p228_post_field() {
+      printf '%s' "${P228_INFRA_POST_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+    }
+    printf 'p228-tunnel-infra\tstage=at-helper-timeout free_tunnel_count=%s inbound_tunnel_count=%s outbound_tunnel_count=%s inbound_exploratory_count=%s outbound_exploratory_count=%s inbound_exploratory_nonzero_count=%s outbound_exploratory_nonzero_count=%s\n' \
+      "$(p228_post_field free_tunnel_count)" "$(p228_post_field inbound_tunnel_count)" "$(p228_post_field outbound_tunnel_count)" \
+      "$(p228_post_field inbound_exploratory_count)" "$(p228_post_field outbound_exploratory_count)" \
+      "$(p228_post_field inbound_exploratory_nonzero_count)" "$(p228_post_field outbound_exploratory_nonzero_count)" \
+      > "${DRIVER_EVIDENCE}/destination/p228-infra-post.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p228-infra-post.tsv" >> "${DRIVER_DEST_TSV}"
+    # Logger-config re-proof at timeout epoch (both routers).
+    P228_LOGGER_A_POST="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-LOGGER-CONFIG" 2>/dev/null || true)"
+    printf 'p228-logger-config-a\tstage=at-helper-timeout %s\n' "${P228_LOGGER_A_POST}" > "${DRIVER_EVIDENCE}/destination/p228-logger-a-post.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p228-logger-a-post.tsv" >> "${DRIVER_DEST_TSV}"
+    P228_LOGGER_C_POST="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P228-LOGGER-CONFIG" 2>/dev/null || true)"
+    printf 'p228-logger-config-c\tstage=at-helper-timeout %s\n' "${P228_LOGGER_C_POST}" > "${DRIVER_EVIDENCE}/destination/p228-logger-c-post.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p228-logger-c-post.tsv" >> "${DRIVER_DEST_TSV}"
+    # Client-pool presence at timeout epoch (when the client DBID resolved).
+    if [[ "${P228_CLIENT_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
+      P228_POOLS_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-CLIENT-POOLS ${P228_CLIENT_HEX}" 2>/dev/null || true)"
+      printf 'p228-client-pools\t%s\n' "${P228_POOLS_LINE}" > "${DRIVER_EVIDENCE}/destination/p228-client-pools.tsv"
+      cat "${DRIVER_EVIDENCE}/destination/p228-client-pools.tsv" >> "${DRIVER_DEST_TSV}"
+    else
+      printf 'p228-client-pools\tobservable=false reason=client-dbid-unresolvable-no-helper-tunnels\n' > "${DRIVER_EVIDENCE}/destination/p228-client-pools.tsv"
+      cat "${DRIVER_EVIDENCE}/destination/p228-client-pools.tsv" >> "${DRIVER_DEST_TSV}"
+    fi
+    # Rust authoritative classifier: infra + whitelist log trace + single
+    # terminal. Log dirs are scratch-only inputs; only bounded typed facts
+    # reach evidence. Never promotes peer lists, keys, or raw log text.
+    P228_DRIVER_RC=0
+    if /usr/bin/env P228_ROUTER_C_HEX="${P228_C_HEX}" \
+       P228_ROUTER_C_B64="${P228_C_B64}" \
+       P228_CLIENT_DBID_HEX="${P228_CLIENT_HEX}" \
+       JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
+       JAVA_DIAGNOSTIC_C_PORT="${JAVA_DIAGNOSTIC_C_PORT}" \
+       JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
+       JAVA_C_LOG_DIR="${JAVA_TUNNEL_PARTICIPANT_DATA}/logs" \
+       EVIDENCE_DIR="${DRIVER_EVIDENCE}/destination" \
+       timeout --foreground "${DRIVER_TIMEOUT}" \
+       cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+       p228_build_path_attribution -- --ignored --exact --nocapture --test-threads=1 \
+       >>"${DRIVER_LOG}" 2>&1; then
+      P228_DRIVER_RC=0
+    else
+      P228_DRIVER_RC=$?
+    fi
+    echo "    p228 attribution driver exit=${P228_DRIVER_RC}" >>"${DRIVER_LOG}"
+    if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
+      cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
+    fi
+  else
+    echo "    p228 attribution skipped (Router-C hex unavailable)" >>"${DRIVER_LOG}"
+  fi
+fi
+
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
   start_stream_helper
   # Plan 200 §A.1 — see RAW_REFERENCE_DESTINATION_B64 above.
@@ -1337,6 +1436,27 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   printf 'client-build-success-seen\t%s\n' "$(grep -cE 'Build successful|tunnel built|Tunnel.*established|Client tunnel.*built' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'client-build-reject-seen\t%s\n' "$(grep -cE 'Build rejected|tunnel build failed|Client tunnel.*fail' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'client-build-timeout-seen\t%s\n' "$(grep -cE 'Build timeout|tunnel.*timeout|I2PSession.*timeout' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 228 WP B-G — scratch-log corroboration for the build-path
+  # attribution. The Rust whitelist sanitizer is authoritative; these
+  # counts are corroborative only and never promote peer lists, keys,
+  # tags, SessionConfig contents, or raw log text to evidence.
+  printf 'p228-selector-activity-seen\t%s\n' "$(grep -cE 'TunnelPeerSelector|ClientPeerSelector|peers for .* (inbound|outbound)' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-explicit-not-selectable-seen\t%s\n' "$(grep -cF 'Explicit peer is not selectable' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-zero-hop-fallback-seen\t%s\n' "$(grep -cF 'No valid explicit peers found, building zero hop' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-configuring-tunnel-seen\t%s\n' "$(grep -cF 'Configuring new tunnel' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-no-tunnel-to-build-with-seen\t%s\n' "$(grep -cF 'No tunnel to build with' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-no-paired-tunnel-seen\t%s\n' "$(grep -cF "couldn't find a paired tunnel" "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-paired-exploratory-fallback-seen\t%s\n' "$(grep -cF "using exploratory tunnel" "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-build-message-create-fail-seen\t%s\n' "$(grep -cF "couldn't create the tunnel build message" "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-inbound-dispatch-seen\t%s\n' "$(grep -cF 'Sending the tunnel build request ' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-outbound-dispatch-seen\t%s\n' "$(grep -cF 'Sending the tunnel build request directly to' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-next-hop-missing-seen\t%s\n' "$(grep -cF 'Could not find the next hop to send the outbound request to' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-reply-handling-seen\t%s\n' "$(grep -cF 'Handling the reply after' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-peer-status-seen\t%s\n' "$(grep -cF 'replied with status' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-reply-decrypt-fail-seen\t%s\n' "$(grep -cF 'could not be decrypted' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-reply-no-match-seen\t%s\n' "$(grep -cF 'did not match any pending tunnels' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-build-reply-timeout-seen\t%s\n' "$(grep -cF 'Timed out waiting for reply asking for' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'p228-c-read-slot-seen\t%s\n' "$(grep -cF 'Read slot' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -1685,6 +1805,37 @@ m6_key_row "external-p227-client-tunnels" "p227-client-tunnels" \
   "Plan 227 WP D: installed one-hop inbound/outbound client tunnels through C proven before reverse send"
 m6_key_row "external-p227-helper-connect" "helper_connect_elapsed_ms" \
   "Plan 227 WP C: raw helper connect duration recorded within Java five-minute ceiling"
+
+# Plan 228 §13 — read the single attribution terminal emitted by the Rust
+# classifier. The destination TSV may carry supporting p228 rows from the
+# shell pre/post snapshots; the authoritative terminal is the LAST
+# `p228-classification` occurrence. Recording the classification itself is
+# a diagnostic observation (always passed when present). The static checker
+# rejects any literal `record "<P228-X>" passed` line.
+P228_CLASSIFICATION=""
+if [[ -f "${DRIVER_DEST_TSV}" ]]; then
+  P228_CLASSIFICATION="$(awk -F'\t' '$1 == "p228-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DRIVER_DEST_TSV}")"
+fi
+if [[ -z "${P228_CLASSIFICATION}" ]]; then
+  DEST_DRIVER_TSV_FOR_P228="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+  if [[ -f "${DEST_DRIVER_TSV_FOR_P228}" ]]; then
+    P228_CLASSIFICATION="$(awk -F'\t' '$1 == "p228-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P228}")"
+  fi
+fi
+if [[ -z "${P228_CLASSIFICATION}" ]]; then
+  P228_CLASSIFICATION="P228-classification-missing"
+fi
+record "external-p228-classification" passed "Plan 228 §13: ${P228_CLASSIFICATION}"
+m6_key_row "external-p228-tunnel-infra" "p228-tunnel-infra" \
+  "Plan 228 WP A: router/exploratory tunnel infrastructure observable pre-build and at helper timeout"
+m6_key_row "external-p228-logger-config-a" "p228-logger-config-a" \
+  "Plan 228 WP B-F: targeted build-path logger scopes effective on Router A"
+m6_key_row "external-p228-logger-config-c" "p228-logger-config-c" \
+  "Plan 228 WP E: targeted build-path logger scopes effective on Router C"
+m6_key_row "external-p228-client-pools" "p228-client-pools" \
+  "Plan 228 WP B/G: client-pool presence/counts at helper timeout"
+m6_key_row "external-p228-trace" "p228-trace" \
+  "Plan 228 WP B-G: sanitized build-path trace (selector/paired/dispatch/reply) correlated to Router C"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

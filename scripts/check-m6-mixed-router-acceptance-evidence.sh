@@ -2009,8 +2009,219 @@ if [[ -f "${P227_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 21. Plan 228 client-tunnel build-path attribution ---------------------
+# Attribution-only. No production change, no Java patch, no profile/tier
+# mutation, no NetDB store, no tunnel install, no exploratory/client policy
+# change, no paired-tunnel override, no VMComm, no alwaysQuery, no public
+# topology, no timeout change, no Plan-227 helper profile change, no
+# distinct topology. Exactly one terminal; raw logs stay scratch-only.
+P228_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P228Probe.java"
+P228_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P228_RAW_HELPER_SRC="${JAVA_RAW_HELPER_SRC}"
+P228_STREAM_HELPER_SRC="${JAVA_STREAM_HELPER_SRC}"
+P228_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P228_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P228_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 228 probe ${P228_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  for required in \
+    'snapshotTunnelInfra' \
+    'snapshotClientPools' \
+    'getFreeTunnelCount' \
+    'getOutboundTunnelCount' \
+    'getInboundClientTunnelCount' \
+    'getOutboundClientTunnelCount' \
+    'getInboundExploratoryPool' \
+    'getOutboundExploratoryPool' \
+    'listTunnels' \
+    'getLength()'; do
+    if ! grep -q -F "${required}" "${P228_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_PROBE_SRC} lacks Plan 228 read-only surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'buildTunnels' \
+    'removeTunnels' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P228_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_PROBE_SRC} mutates Java state via '${forbidden}' (Plan 228 invariants)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P228_LAUNCHER_SRC}" ]]; then
+  for required in \
+    '"P228-TUNNEL-INFRA"' \
+    '"P228-CLIENT-POOLS"' \
+    '"P228-LOGGER-CONFIG"' \
+    'P228Probe' \
+    'p228TunnelInfra' \
+    'p228ClientPools' \
+    'p228LoggerConfig'; do
+    if ! grep -q -F "${required}" "${P228_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_LAUNCHER_SRC} lacks Plan 228 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in 'usePairedTunnels' 'netDb.alwaysQuery'; do
+    if grep -q -F "${forbidden}" "${P228_LAUNCHER_SRC}" "${P228_PROBE_SRC}" 2>/dev/null; then
+      echo "m6 mixed-router evidence check failed: Plan 228 enables forbidden '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # VMComm uses the assignment-form guard (bare key appears in the
+  # forbidden-list array and comments by design).
+  if grep -n -E "^[[:space:]]*([^/#].*setProperty\([^)]*\"i2p\.vmCommSystem\"[^)]*\"(true|1)\"|[^/#].*i2p\.vmCommSystem[[:space:]]*[:=][[:space:]]*(true|1)\b)" "${P228_LAUNCHER_SRC}" "${P228_PROBE_SRC}" "${P228_HARNESS}" 2>/dev/null >/dev/null; then
+    echo "m6 mixed-router evidence check failed: Plan 228 enables forbidden 'i2p.vmCommSystem'" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q 'setProperty.*"explicitPeers"' "${P228_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P228_LAUNCHER_SRC} sets router-global explicitPeers (Plan 228 forbids policy change)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P228_STREAM_HELPER_SRC}" ]]; then
+  if grep -q 'explicitPeers' "${P228_STREAM_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: streaming helper carries explicitPeers (Plan 228 invariant: frozen)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P228_DRIVER_TEST}" ]]; then
+  for required in \
+    'fn p228_parse_infra' \
+    'fn p228_collect_infra' \
+    'fn p228_scan_log_dir' \
+    'fn p228_logger_config_installed' \
+    'fn p228_config_direction' \
+    'enum P228Terminal' \
+    'fn p228_classify' \
+    'fn record_p228_infra' \
+    'fn record_p228_trace' \
+    'fn record_p228_classification' \
+    'p228_build_path_attribution' \
+    'P228-ATTRIBUTION-NO-ROUTER-TUNNEL-INFRA' \
+    'P228-ATTRIBUTION-NO-CLIENT-CONFIG' \
+    'P228-ATTRIBUTION-NO-PAIRED-TUNNEL' \
+    'P228-ATTRIBUTION-BUILD-MESSAGE-CREATE-FAILURE' \
+    'P228-ATTRIBUTION-BUILD-CREATED-NOT-DISPATCHED' \
+    'P228-ATTRIBUTION-FIRST-HOP-DELIVERY-FAILURE' \
+    'P228-ATTRIBUTION-A-DISPATCHED-C-NOT-RECEIVED' \
+    'P228-ATTRIBUTION-C-DECRYPT-FAILURE' \
+    'P228-ATTRIBUTION-C-REJECTED' \
+    'P228-ATTRIBUTION-REPLY-NOT-RETURNED' \
+    'P228-ATTRIBUTION-BUILD-REPLY-TIMEOUT' \
+    'P228-ATTRIBUTION-REPLY-DECRYPT-FAILURE' \
+    'P228-ATTRIBUTION-REMOTE-REJECT' \
+    'P228-ATTRIBUTION-LOCAL-JOIN-FAILURE' \
+    'P228-NEXT-BOUNDARY-CLIENT-TUNNELS-BUILT' \
+    'P228-OBSERVABILITY-GAP-BUILD-PATH' \
+    'p228-tunnel-infra' \
+    'p228-trace' \
+    'p228-classification'; do
+    if ! grep -q -F "${required}" "${P228_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_DRIVER_TEST} lacks Plan 228 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    p228_no_router_tunnel_infra_maps_to_infra_terminal \
+    p228_selector_without_config_maps_to_no_client_config \
+    p228_config_through_c_without_paired_tunnel_maps_correctly \
+    p228_message_created_but_not_dispatched_maps_correctly \
+    p228_outbound_first_hop_failure_maps_correctly \
+    p228_dispatched_but_c_receives_nothing_maps_correctly \
+    p228_c_receive_decrypt_failure_maps_correctly \
+    p228_c_explicit_reject_code_maps_correctly \
+    p228_c_accept_reply_absent_at_a_maps_correctly \
+    p228_a_reply_decrypt_failure_maps_correctly \
+    p228_a_remote_rejection_maps_correctly \
+    p228_local_join_failure_maps_correctly \
+    p228_build_reply_timeout_maps_correctly \
+    p228_inbound_only_install_is_insufficient \
+    p228_outbound_only_install_is_insufficient \
+    p228_both_installed_maps_only_to_next_boundary \
+    p228_unrelated_exploratory_logs_cannot_classify_client_build \
+    p228_unrelated_destinations_cannot_classify_raw_helper \
+    p228_secret_raw_log_lines_rejected_from_evidence \
+    p228_classification_emits_exactly_one_terminal \
+    p228_earliest_stage_precedence_is_deterministic; do
+    if ! grep -q "fn ${unit_row}" "${P228_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_DRIVER_TEST} lacks Plan 228 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P228-" "${P228_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P228_DRIVER_TEST} hard-codes a Plan 228 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' "${P228_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P228_DRIVER_TEST} changed DATAGRAM_WAIT from 45s (Plan 228 frozen)" >&2
+    failures=$((failures + 1))
+  fi
+  # Production policy guards: the test-only driver must not override
+  # paired-tunnel policy, enable alwaysQuery, or touch timeouts.
+  for forbidden in 'usePairedTunnels' 'netDb.alwaysQuery' 'BUILD_MSG_TIMEOUT' 'FIRST_HOP_TIMEOUT'; do
+    if grep -q -F "${forbidden}" "${P228_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_DRIVER_TEST} carries forbidden Plan 228 policy '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P228_HARNESS}" ]]; then
+  for required in \
+    'P228Probe.java' \
+    'P228-TUNNEL-INFRA' \
+    'P228-CLIENT-POOLS' \
+    'P228-LOGGER-CONFIG' \
+    'p228-tunnel-infra' \
+    'p228-logger-config-a' \
+    'p228-logger-config-c' \
+    'p228-client-pools' \
+    'p228-trace' \
+    'p228-classification' \
+    'external-p228-classification' \
+    'external-p228-tunnel-infra' \
+    'external-p228-trace' \
+    'p228_build_path_attribution' \
+    'BuildExecutor=DEBUG' \
+    'BuildRequestor=DEBUG' \
+    'BuildHandler=DEBUG' \
+    'BuildMessageProcessor=DEBUG' \
+    'BuildReplyHandler=DEBUG'; do
+    if ! grep -q -F "${required}" "${P228_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_HARNESS} lacks Plan 228 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'netDb.alwaysQuery' "${P228_HARNESS}" "${P228_LAUNCHER_SRC}" "${P228_PROBE_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: Plan 228 enables netDb.alwaysQuery" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P228-" "${P228_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P228_HARNESS} invents a Plan 228 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # A Plan-228 terminal without required upstream stage evidence is
+  # forbidden: the harness must record infra/trace/logger/pools rows.
+  for upstream in 'p228-tunnel-infra' 'p228-trace' 'p228-logger-config-a' 'p228-client-pools'; do
+    if ! grep -q -F "${upstream}" "${P228_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P228_HARNESS} emits a Plan 228 terminal without upstream '${upstream}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants)"

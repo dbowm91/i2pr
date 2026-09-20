@@ -111,6 +111,21 @@
 //     does not confuse a client DBID's Base64 form with its b32.i2p label;
 //   - every P225 response is one bounded, sanitized line and contains no
 //     log text, keys, tags, payloads, or private material.
+// Plan 228 diagnostic contract (attribution only, read-only, no state
+// mutation):
+//   - `P228-TUNNEL-INFRA` returns the bounded router tunnel-infrastructure
+//     snapshot (`P228-EV kind=tunnel-infra ...` with free/inbound/outbound
+//     counts plus exploratory nonzero-hop counts; no peer paths);
+//   - `P228-CLIENT-POOLS <client-dbid-hex>` returns bounded client-pool
+//     presence/counts for one helper client DBID;
+//   - `P228-LOGGER-CONFIG` reads the running LogManager's effective levels
+//     for the exact build-path scopes (TunnelPool, TunnelPeerSelector,
+//     ClientPeerSelector, BuildExecutor, BuildRequestor, BuildHandler,
+//     BuildMessageProcessor, BuildReplyHandler); it never reloads or
+//     mutates the logger configuration;
+//   - every P228 response is one bounded `P228-EV ...` line with booleans,
+//     bounded counts, and response/status codes only, never peer paths,
+//     keys, tags, payloads, or raw log text.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -154,6 +169,7 @@ import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 import net.i2p.router.networkdb.kademlia.P224LsProbe;
 import net.i2p.router.networkdb.kademlia.P227Probe;
+import net.i2p.router.networkdb.kademlia.P228Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -613,6 +629,15 @@ public final class ControlledRouter {
                             return p227Error("missing-hash-arguments");
                         }
                         return p227ClientTunnels(parts[1], parts[2]);
+                    case "P228-TUNNEL-INFRA":
+                        return p228TunnelInfra();
+                    case "P228-CLIENT-POOLS":
+                        if (parts.length < 2) {
+                            return p228Error("missing-hash-argument");
+                        }
+                        return p228ClientPools(parts[1]);
+                    case "P228-LOGGER-CONFIG":
+                        return p228LoggerConfig();
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -927,6 +952,114 @@ public final class ControlledRouter {
 
         private String p227Error(String reason) {
             return "P227-ERROR " + reason;
+        }
+
+        private String p228Error(String reason) {
+            return "P228-ERROR " + reason;
+        }
+
+        /**
+         * Plan 228 WP A — read-only router tunnel-infrastructure snapshot.
+         * Uses only the public TunnelManagerFacade accessors via
+         * P228Probe; never builds, installs, or mutates tunnels. No peer
+         * paths, keys, or log text exposed.
+         */
+        private String p228TunnelInfra() {
+            P228Probe.Infra result =
+                P228Probe.snapshotTunnelInfra(context());
+            if (result.error != null && !result.observable) {
+                return "P228-EV kind=tunnel-infra"
+                    + " observable=false reason=" + result.error;
+            }
+            return "P228-EV kind=tunnel-infra"
+                + " observable=true"
+                + " free_tunnel_count=" + result.freeTunnelCount
+                + " inbound_tunnel_count=" + result.inboundTunnelCount
+                + " outbound_tunnel_count=" + result.outboundTunnelCount
+                + " inbound_exploratory_count=" + result.inboundExploratoryCount
+                + " outbound_exploratory_count=" + result.outboundExploratoryCount
+                + " inbound_exploratory_nonzero_count=" + result.inboundExploratoryNonzeroCount
+                + " outbound_exploratory_nonzero_count=" + result.outboundExploratoryNonzeroCount;
+        }
+
+        /**
+         * Plan 228 WP B/G — read-only client-pool presence/count snapshot
+         * for one helper client DBID. Never installs, builds, or mutates
+         * tunnels. No peer paths exposed.
+         */
+        private String p228ClientPools(String clientDbidHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            if (clientDbid == null) {
+                return p228Error("invalid-hex-hash");
+            }
+            P228Probe.ClientPools result =
+                P228Probe.snapshotClientPools(context(), clientDbid);
+            if (result.error != null && !result.observable) {
+                return "P228-EV kind=client-pools"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P228-EV kind=client-pools"
+                + " client_dbid_hex=" + clientDbidHex
+                + " observable=true"
+                + " inbound_pool_present=" + result.inboundPoolPresent
+                + " outbound_pool_present=" + result.outboundPoolPresent
+                + " inbound_tunnel_count=" + result.inboundTunnelCount
+                + " outbound_tunnel_count=" + result.outboundTunnelCount;
+        }
+
+        /**
+         * Plan 228 WP B-F — read the effective logger levels for the
+         * exact build-path scopes from the running LogManager.
+         * Observation only: never reloads, sets, or mutates configuration.
+         */
+        private String p228LoggerConfig() {
+            try {
+                net.i2p.util.LogManager manager = context().logManager();
+                String defaultLevel = manager.getDefaultLimit();
+                String tunnelPoolLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.TunnelPool"
+                ).getMinimumPriority());
+                String tpsLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.TunnelPeerSelector"
+                ).getMinimumPriority());
+                String cpsLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.ClientPeerSelector"
+                ).getMinimumPriority());
+                String execLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.BuildExecutor"
+                ).getMinimumPriority());
+                String reqLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.BuildRequestor"
+                ).getMinimumPriority());
+                String handlerLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.BuildHandler"
+                ).getMinimumPriority());
+                String procLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.BuildMessageProcessor"
+                ).getMinimumPriority());
+                String replyLevel = Log.toLevelString(manager.getLog(
+                    "net.i2p.router.tunnel.pool.BuildReplyHandler"
+                ).getMinimumPriority());
+                boolean observable = "ERROR".equals(defaultLevel)
+                    && ("DEBUG".equals(execLevel) || "INFO".equals(execLevel))
+                    && ("DEBUG".equals(reqLevel) || "INFO".equals(reqLevel))
+                    && ("DEBUG".equals(handlerLevel) || "INFO".equals(handlerLevel));
+                return "P228-EV kind=logger-config"
+                    + " observable=" + observable
+                    + " default_level=" + defaultLevel
+                    + " tunnel_pool_level=" + tunnelPoolLevel
+                    + " tps_level=" + tpsLevel
+                    + " cps_level=" + cpsLevel
+                    + " build_executor_level=" + execLevel
+                    + " build_requestor_level=" + reqLevel
+                    + " build_handler_level=" + handlerLevel
+                    + " build_processor_level=" + procLevel
+                    + " build_reply_level=" + replyLevel;
+            } catch (Throwable t) {
+                return "P228-EV kind=logger-config observable=false reason=unreadable-"
+                    + t.getClass().getSimpleName();
+            }
         }
 
         /**
