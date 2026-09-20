@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 226 registered
+
+Plan 201 remains blocked on Java second-family closure. Plan 225 proved that
+Router A's helper search starts and exhausts without dispatching the target
+lookup to answerable Router B. Plan 226 now owns the narrow controlled-loopback
+peer-diversity corrective and must prove the exact target-job IP-close skip
+before changing topology.
+
+```text
+plan_201 = blocked-pending-plan226-loopback-peer-diversity-corrective
+plan_226 = registered-ready-m6-java-loopback-peer-diversity-corrective
+```
+
 # Current dependency amendment — Plan 225 closed with exact lookup attribution
 
 Plan 224 closed as
