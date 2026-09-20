@@ -11100,7 +11100,7 @@ impl P228Direction {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct P228Infra {
     observable: bool,
     free_tunnel_count: u64,
@@ -11110,21 +11110,6 @@ struct P228Infra {
     outbound_exploratory_count: u64,
     inbound_exploratory_nonzero_count: u64,
     outbound_exploratory_nonzero_count: u64,
-}
-
-impl Default for P228Infra {
-    fn default() -> Self {
-        Self {
-            observable: false,
-            free_tunnel_count: 0,
-            inbound_tunnel_count: 0,
-            outbound_tunnel_count: 0,
-            inbound_exploratory_count: 0,
-            outbound_exploratory_count: 0,
-            inbound_exploratory_nonzero_count: 0,
-            outbound_exploratory_nonzero_count: 0,
-        }
-    }
 }
 
 fn p228_parse_count(value: Option<&String>) -> Option<u64> {
@@ -11623,10 +11608,10 @@ fn p228_classify(
     if trace.a_reply_decrypt_fail_seen {
         return P228Terminal::ReplyDecryptFailure;
     }
-    if let Some(code) = trace.a_remote_status_code {
-        if code != 0 {
-            return P228Terminal::RemoteReject(code);
-        }
+    if let Some(code) = trace.a_remote_status_code
+        && code != 0
+    {
+        return P228Terminal::RemoteReject(code);
     }
     // All remote statuses agree (or no explicit nonzero status) but no
     // install: with the helper still disconnected this is the local
@@ -11776,9 +11761,11 @@ async fn p228_build_path_attribution() {
     );
 
     // Whitelist-only log trace, correlated to Router-C Base64.
-    let mut trace = P228Trace::default();
-    trace.logger_config_ok = logger_a_ok;
-    trace.c_log_observable = logger_c_ok;
+    let mut trace = P228Trace {
+        logger_config_ok: logger_a_ok,
+        c_log_observable: logger_c_ok,
+        ..P228Trace::default()
+    };
     if c_hex_known && !router_c_b64.is_empty() {
         let mut any_a = false;
         let mut any_c = false;
@@ -11831,15 +11818,16 @@ async fn p228_build_path_attribution() {
     // Install proof from the installed-pool snapshot when the client DBID
     // resolved (helper connected). Never inferred from log presence.
     let mut helper_connected = false;
-    if client_known && diag_a != 0 {
-        if let Some(tunnels) = p227_collect_tunnels(diag_a, &client_hex, &router_c_hex).await {
-            helper_connected = true;
-            trace.inbound_installed =
-                tunnels.inbound_exact_one_remote_hop_via_c && !tunnels.inbound_zero_hop_present;
-            trace.outbound_installed =
-                tunnels.outbound_exact_one_remote_hop_via_c && !tunnels.outbound_zero_hop_present;
-            record_p227_tunnels(&evidence_dir, Some(&tunnels), &client_hex, &router_c_hex);
-        }
+    if client_known
+        && diag_a != 0
+        && let Some(tunnels) = p227_collect_tunnels(diag_a, &client_hex, &router_c_hex).await
+    {
+        helper_connected = true;
+        trace.inbound_installed =
+            tunnels.inbound_exact_one_remote_hop_via_c && !tunnels.inbound_zero_hop_present;
+        trace.outbound_installed =
+            tunnels.outbound_exact_one_remote_hop_via_c && !tunnels.outbound_zero_hop_present;
+        record_p227_tunnels(&evidence_dir, Some(&tunnels), &client_hex, &router_c_hex);
     }
     record_p228_trace(&evidence_dir, &trace, &router_c_hex);
 
@@ -12206,13 +12194,13 @@ fn p228_unrelated_destinations_cannot_classify_raw_helper() {
 fn p228_secret_raw_log_lines_rejected_from_evidence() {
     // Secret-bearing diagnostic rows never parse.
     let c_hex = p227_test_c_hex();
-    let secret_infra = format!(
+    let secret_infra =
         "P228-EV kind=tunnel-infra observable=true free_tunnel_count=2 inbound_tunnel_count=2 outbound_tunnel_count=2 inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_exploratory_nonzero_count=1 outbound_exploratory_nonzero_count=1 session_key=abcd"
-    );
+            .to_string();
     assert!(p228_parse_infra(&secret_infra).is_none());
-    let raw_log = format!(
+    let raw_log =
         "P228-EV kind=tunnel-infra observable=true free_tunnel_count=2 inbound_tunnel_count=2 outbound_tunnel_count=2 inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_exploratory_nonzero_count=1 outbound_exploratory_nonzero_count=1 not doing zero-hop lookup to unknown foo"
-    );
+            .to_string();
     assert!(p228_parse_infra(&raw_log).is_some());
     // Secret lines never advance trace flags.
     let mut trace = P228Trace::default();
