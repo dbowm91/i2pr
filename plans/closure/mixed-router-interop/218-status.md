@@ -1,3 +1,18 @@
+# Current handoff amendment — Plan 227 registered
+
+Plan 218's behavioral stop remains authoritative. Plan 226 localized the
+current Java reference boundary to a zero-hop client lookup rejected as
+unknown before DLM construction. Plan 227 is now the sole executable
+corrective and may change only the raw helper's client tunnel profile through
+stock I2CP `explicitPeers`, with a real installed one-hop tunnel required as
+evidence.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_227 = registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective
+next_executable_plan = 227-m6-java-explicit-one-hop-client-tunnel-corrective
+```
+
 # Current handoff amendment — Plan 226 closed at exact non-IP boundary
 
 Plan 218's behavioral stop remains authoritative. Plan 226 closed after the
