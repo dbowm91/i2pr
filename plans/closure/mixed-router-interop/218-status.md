@@ -1,3 +1,16 @@
+# Current handoff amendment — Plan 226 registered
+
+Plan 218's behavioral stop remains authoritative. Plan 225 attributes the open
+lookup failure to search exhaustion without dispatch to answerable Router B.
+Plan 226 is now the sole executable corrective and may change only controlled
+Java SSU2 loopback topology after proving the exact target-job IP-close skip.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_226 = registered-ready-m6-java-loopback-peer-diversity-corrective
+next_executable_plan = 226-m6-java-loopback-peer-diversity-corrective
+```
+
 # Current handoff amendment — Plan 225 exact attribution closed
 
 Plan 218's behavioral stop remains authoritative. Plan 225 has now made the
