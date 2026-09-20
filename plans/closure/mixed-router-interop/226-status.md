@@ -1,3 +1,27 @@
+# Plan 227 registration follow-up
+
+Plan 226 remains closed at
+`P226-BASELINE-B-ZERO-HOP-UNKNOWN`. Exact-pinned source review confirms the
+active helper is deliberately zero-hop while Java client NetDBs intentionally
+do not store RouterInfos. The zero-hop guard is therefore structural for the
+current raw-helper profile.
+
+Plan 227 is registered as the narrow successor. It uses Java I2P's own public
+I2CP `explicitPeers` debug/testing option to request a genuine one-hop
+raw-helper client tunnel through Router C, requires read-only proof that both
+inbound and outbound tunnels are actually installed through C, and then reruns
+the same target lookup.
+
+```text
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+plan_227 = registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective
+next_executable_plan = 227-m6-java-explicit-one-hop-client-tunnel-corrective
+```
+
+Plan 226's distinct-loopback topology remains unadmitted. Plan 227 does not
+authorize profile mutation, client-NetDB RouterInfo injection, direct tunnel
+installation, VMComm, or `netDb.alwaysQuery`.
+
 # Plan 226 status — M6 Java loopback peer-diversity corrective
 
 Status: **`passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary`**.
