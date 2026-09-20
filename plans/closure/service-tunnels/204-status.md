@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 227 closed with NOT-BUILT boundary
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 227 closed as
+`passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary`
+(see `plans/closure/mixed-router-interop/227-status.md`): Router C selectable
+on all 3 counted attempts, no one-hop tunnels built within the five-minute
+ceiling. It does not alter M10 product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-build-path-investigation
+plan_227 = passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary
+```
+
 # Current dependency amendment — Plan 227 registered
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family

@@ -104,8 +104,8 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 227 is the active evidence-supported raw-helper client-tunnel corrective; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 227 closed with selectable-C-but-not-built boundary; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 227 executes the explicit one-hop Java client-tunnel corrective.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure; Plan 227 closed reference-harness-only with NOT-BUILT and does not alter M10 authority.

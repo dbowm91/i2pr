@@ -59,7 +59,7 @@ remains not-yet-passed.
 
 Exact-pinned source review after Plan 225 identified a narrow controlled-topology hypothesis: `IterativeSearchJob` uses `IP_CLOSE_BYTES=3`, while A/B/C currently advertise SSU2 on the same `127.0.0.0/24`. Plan 226 closed with an exact target-job `P226-BASELINE-B-ZERO-HOP-UNKNOWN` terminal: `b_ip_close_skipped=false`, so the distinct loopback /24 correction was not admitted. `netDb.alwaysQuery` remains outside acceptance authority.
 
-Pinned/current Java I2P also exposes `explicitPeers` as a client tunnel debugging option carried through ordinary I2CP SessionConfig. Unlike the old Plan-201 one-hop attempt, it can select a valid Router C without waiting for fresh-router fast/high-capacity tier promotion while still constructing a genuine stock-Java tunnel. Plan 227 is registered-ready to prove C selectable, install/prove one-hop raw-helper inbound/outbound tunnels through C, and rerun the exact frozen destination lookup. Profile mutation, VMComm, `netDb.alwaysQuery`, direct tunnel install, and client-NetDB RI injection remain forbidden.
+Pinned/current Java I2P also exposes `explicitPeers` as a client tunnel debugging option carried through ordinary I2CP SessionConfig. Unlike the old Plan-201 one-hop attempt, it can select a valid Router C without waiting for fresh-router fast/high-capacity tier promotion while still constructing a genuine stock-Java tunnel. Plan 227 is closed: it proved C selectable in A's main NetDB on all 3 counted attempts but stock Java built no one-hop client tunnels within the five-minute `I2PSession.connect()` ceiling (`P227-EXPLICIT-ONE-HOP-NOT-BUILT`), so no lookup rerun was interpretable. Profile mutation, VMComm, `netDb.alwaysQuery`, direct tunnel install, and client-NetDB RI injection remain forbidden.
 
 Plan 205 remains retained/deferred.
 
@@ -109,7 +109,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 224 | closed | passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap (Router B answerable; helper client DB empty; exact lookup trace unavailable on 895132c) | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | `plans/closure/mixed-router-interop/224-status.md` |
 | 225 | closed | passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution (exact terminal `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`) | `plans/implementation/mixed-router-interop/225-m6-java-no-leaseset-lookup-path-observability-corrective.md` | `plans/closure/mixed-router-interop/225-status.md`; `plans/closure/mixed-router-interop/225-corrective-closure.md` |
 | 226 | closed | passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary | `plans/implementation/mixed-router-interop/226-m6-java-loopback-peer-diversity-corrective.md` | `plans/closure/mixed-router-interop/226-status.md` |
-| 227 | ready | registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective | `plans/implementation/mixed-router-interop/227-m6-java-explicit-one-hop-client-tunnel-corrective.md` | `plans/closure/mixed-router-interop/227-status.md` |
+| 227 | closed | passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary | `plans/implementation/mixed-router-interop/227-m6-java-explicit-one-hop-client-tunnel-corrective.md` | `plans/closure/mixed-router-interop/227-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -154,8 +154,8 @@ identified the earliest missing stage as the absence of an actual target lookup
 dispatch from Router A to Router B, emitting exactly
 `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`.
 
-Plan 226 owns the evidence gate for the controlled-topology correction and closed without authorizing that correction. Plan 201 and Plan 204 remain blocked because the Java second-family closure is not complete.
+Plan 226 owns the evidence gate for the controlled-topology correction and closed without authorizing that correction. Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no tunnels built): the next investigation is the stock-Java tunnel build request/reply path, not profile scoring. Plan 201 and Plan 204 remain blocked because the Java second-family closure is not complete.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 201 and Plan 204 remain blocked; Plan 205 remains retained-deferred.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no one-hop tunnels built); Plan 201 and Plan 204 remain blocked; Plan 205 remains retained-deferred.

@@ -1,3 +1,20 @@
+# Current dependency amendment — Plan 227 closed with NOT-BUILT boundary
+
+Plan 201 remains blocked on Java second-family closure. Plan 227 closed as
+`passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary`
+(see `226-status.md` for the zero-hop baseline and `227-status.md` for the
+explicit one-hop attempt): Router C proven selectable in A's main NetDB on
+all 3 counted attempts, but stock Java built no one-hop client tunnels
+within the five-minute ceiling, so the frozen destination lookup was never
+re-observable. The next investigation is the tunnel build request/reply
+path, not profile scoring.
+
+```text
+plan_201 = blocked-pending-build-path-investigation-after-plan227-selectable-c-not-built
+plan_227 = passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary
+next_executable_plan = none (narrow build-request/reply successor may be registered separately)
+```
+
 # Current dependency amendment — Plan 227 registered
 
 Plan 201 remains blocked on Java second-family closure. Plan 226 proved the
