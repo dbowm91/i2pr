@@ -1,3 +1,18 @@
+# Current dependency amendment — Plan 226 closed at exact non-IP boundary
+
+M10 product authority remains closed through Plans 213–215. Plan 204 remains
+convergence-only and blocked because Plan 226 observed Java's exact
+`P226-BASELINE-B-ZERO-HOP-UNKNOWN` boundary without qualifying the Java
+second-family destination lane. The conditional distinct-topology correction
+was correctly not admitted.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan226-baseline-zero-hop-boundary
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+milestone10_final_acceptance = closed
+next_executable_plan = none
+```
+
 # Current dependency amendment — Plan 226 registered
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family

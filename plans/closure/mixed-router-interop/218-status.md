@@ -1,3 +1,15 @@
+# Current handoff amendment — Plan 226 closed at exact non-IP boundary
+
+Plan 218's behavioral stop remains authoritative. Plan 226 closed after the
+exact target job proved `P226-BASELINE-B-ZERO-HOP-UNKNOWN`; the hypothesized
+IP-close skip was false and no distinct Java SSU2 topology was admitted.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+next_executable_plan = none
+```
+
 # Current handoff amendment — Plan 226 registered
 
 Plan 218's behavioral stop remains authoritative. Plan 225 attributes the open

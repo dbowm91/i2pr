@@ -1,3 +1,19 @@
+# Current dependency amendment — Plan 226 closed at exact non-IP boundary
+
+Plan 226 closed as
+`passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary`
+(see [`226-status.md`](226-status.md)). Its exact target-job trace proved
+`P226-BASELINE-B-ZERO-HOP-UNKNOWN`, not the hypothesized Router-B IP-close
+skip; therefore no distinct SSU2 topology was admitted and Java second-family
+closure remains outstanding.
+
+```text
+plan_201 = blocked-pending-m6-java-second-family-closure-after-plan226-baseline-zero-hop-boundary
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan226-baseline-zero-hop-boundary
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+next_executable_plan = none
+```
+
 # Current dependency amendment — Plan 226 registered
 
 Plan 201 remains blocked on Java second-family closure. Plan 225 proved that

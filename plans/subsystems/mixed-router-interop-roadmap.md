@@ -57,7 +57,7 @@ started and exhausted without dispatching the target lookup to Router B. No
 bootstrap/floodfill/SAM/tunnel/topology corrective is authorized, and M6 Java
 remains not-yet-passed.
 
-Exact-pinned source review after Plan 225 identifies a narrow controlled-topology hypothesis: `IterativeSearchJob` uses `IP_CLOSE_BYTES=3`, while A/B/C currently advertise SSU2 on the same `127.0.0.0/24`. Plan 226 is registered-ready to prove the exact target-job IP-close skip and, only if proven, place the three Java SSU2 RouterInfo hosts on distinct loopback /24s while keeping SAM/I2CP/diagnostics on `127.0.0.1`. `netDb.alwaysQuery` is not acceptance authority.
+Exact-pinned source review after Plan 225 identified a narrow controlled-topology hypothesis: `IterativeSearchJob` uses `IP_CLOSE_BYTES=3`, while A/B/C currently advertise SSU2 on the same `127.0.0.0/24`. Plan 226 closed with an exact target-job `P226-BASELINE-B-ZERO-HOP-UNKNOWN` terminal: `b_ip_close_skipped=false`, so the distinct loopback /24 correction was not admitted. `netDb.alwaysQuery` remains outside acceptance authority.
 
 Plan 205 remains retained/deferred.
 
@@ -95,8 +95,8 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-pending-plan226-loopback-peer-diversity-corrective | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
-| 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 225 attributes the active failure to direct client-NetDB search below SAM; Plan 226 remains on that path) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
+| 201 | blocked | blocked-pending-m6-java-second-family-closure-after-plan226-baseline-zero-hop-boundary | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 225 attributes the active failure to direct client-NetDB search below SAM; Plan 226 localizes the exact next boundary to zero-hop lookup-to-unknown) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
 | 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (behavioral stop retained; Plan 225 attributes the current lookup failure to search exhaustion without dispatch to B; Plan 226 owns the conditional loopback peer-diversity corrective) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
 | 219 | superseded | retained-diagnostic-instrumentation-attribution-invalid-superseded-by-plan220 | `plans/implementation/mixed-router-interop/219-m6-java-reverse-delivery-root-cause-investigation.md` | `plans/closure/mixed-router-interop/219-status.md` |
@@ -106,7 +106,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 223 | closed | passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset (type-0/256 + LS2 type-4/32; status 17 gone → P223-NEXT-BOUNDARY [1,21] on 0755dc1) | `plans/implementation/mixed-router-interop/223-m6-java-destination-identity-crypto-separation-corrective.md` | `plans/closure/mixed-router-interop/223-status.md` |
 | 224 | closed | passed-m6-java-no-leaseset-lookup-path-attribution-observability-gap (Router B answerable; helper client DB empty; exact lookup trace unavailable on 895132c) | `plans/implementation/mixed-router-interop/224-m6-java-no-leaseset-lookup-path-attribution.md` | `plans/closure/mixed-router-interop/224-status.md` |
 | 225 | closed | passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution (exact terminal `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`) | `plans/implementation/mixed-router-interop/225-m6-java-no-leaseset-lookup-path-observability-corrective.md` | `plans/closure/mixed-router-interop/225-status.md`; `plans/closure/mixed-router-interop/225-corrective-closure.md` |
-| 226 | ready | registered-ready-m6-java-loopback-peer-diversity-corrective | `plans/implementation/mixed-router-interop/226-m6-java-loopback-peer-diversity-corrective.md` | `plans/closure/mixed-router-interop/226-status.md` |
+| 226 | closed | passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary | `plans/implementation/mixed-router-interop/226-m6-java-loopback-peer-diversity-corrective.md` | `plans/closure/mixed-router-interop/226-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -126,7 +126,7 @@ Plan 224 retained every Plan-222/223 invariant and added lookup-path attribution
 - exact distinction between selector membership, actual A→B query, B lookup receipt, B published-LS answer, A inbound-client-tunnel DSM receipt, and A client-subDB post-send presence;
 - the pinned Java DSM store-before-success ordering is treated as source authority and the speculative race explanation is forbidden.
 
-Plan 225 is closed as a diagnostic corrective. Plan 226 is the registered-ready harness corrective: it must prove the exact target-job `MaskedIPSet` IP-close skip before changing any topology, then may use pairwise-distinct loopback /24 SSU2 hosts while preserving the normal Java search algorithm.
+Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted.
 
 Raw Java logs never become evidence. The Plan-223 45-second reverse-payload acceptance window stays frozen. External attempts remain limited to three per committed implementation SHA with no tuning.
 
@@ -151,8 +151,8 @@ identified the earliest missing stage as the absence of an actual target lookup
 dispatch from Router A to Router B, emitting exactly
 `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`.
 
-Plan 226 owns the evidence-supported controlled-topology correction. Plan 201 and Plan 204 remain blocked because the Java second-family closure is not complete.
+Plan 226 owns the evidence gate for the controlled-topology correction and closed without authorizing that correction. Plan 201 and Plan 204 remain blocked because the Java second-family closure is not complete.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 is registered-ready for the controlled loopback peer-diversity corrective; Plan 201 and Plan 204 remain blocked; Plan 205 remains retained-deferred.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 201 and Plan 204 remain blocked; Plan 205 remains retained-deferred.

@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 226 closed; SAM pivot remains deferred
+
+Plan 226 closed with the exact direct Java client-NetDB terminal
+`P226-BASELINE-B-ZERO-HOP-UNKNOWN`. This is still below the SAM bridge and did
+not authorize reactivating Plan 205; the retained/deferred token is unchanged.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+next_executable_plan = none
+```
+
 # Current dependency amendment — Plan 226 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 226 targets Java's direct
@@ -185,4 +197,3 @@ milestone10_final_acceptance = not-yet-closed
 Plan 205 must not depend on Plan 206/207 and must not use their progress to weaken Java-family evidence. Conversely, M10 corrective work need not wait for Java.
 
 The SAM/helper pivot is still an experiment rather than a guaranteed closure mechanism: previous work already showed stock Java client-tunnel/profile constraints in the controlled topology. Plan 205 must preserve fail-closed classification if the public SAM/helper path encounters the same publication/tunnel boundary.
-

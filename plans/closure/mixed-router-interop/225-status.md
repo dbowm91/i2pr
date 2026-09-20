@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 226 closed at exact non-IP boundary
+
+Plan 225 remains closed with exact lookup attribution. Its successor Plan 226
+closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN`: the exact target job was
+observable, but `b_ip_close_skipped=false`, so no topology correction was
+authorized and no Java second-family closure was claimed.
+
+```text
+plan_225 = passed-m6-java-no-leaseset-lookup-path-observability-corrective-with-exact-attribution
+plan_226 = passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary
+next_executable_plan = none
+```
+
 # Plan 226 registration follow-up
 
 Plan 226 is now registered as the narrow successor to the exact Plan-225
