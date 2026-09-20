@@ -62,7 +62,7 @@
 #![forbid(unsafe_code)]
 
 use std::io::Write as _;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -165,6 +165,36 @@ fn env_value(name: &str) -> String {
 
 fn env_path(name: &str) -> PathBuf {
     PathBuf::from(env_value(name))
+}
+
+/// Plan 226 — Java's pinned `MaskedIPSet` uses the first three IPv4 bytes
+/// for `IP_CLOSE_BYTES=3`. Keep this harness-side proof independent from
+/// production routing code and reject IPv6/non-loopback inputs explicitly.
+fn p226_mask3_prefix(host: IpAddr) -> Option<[u8; 3]> {
+    match host {
+        IpAddr::V4(address) if address.is_loopback() => {
+            let octets = address.octets();
+            Some([octets[0], octets[1], octets[2]])
+        }
+        _ => None,
+    }
+}
+
+fn p226_pairwise_mask3_distinct(hosts: &[IpAddr]) -> bool {
+    if hosts.len() != 3 {
+        return false;
+    }
+    let mut prefixes = Vec::with_capacity(hosts.len());
+    for host in hosts {
+        let Some(prefix) = p226_mask3_prefix(*host) else {
+            return false;
+        };
+        if prefixes.contains(&prefix) {
+            return false;
+        }
+        prefixes.push(prefix);
+    }
+    true
 }
 
 fn append_evidence(dir: &Path, label: &str, value: &str) {
@@ -1294,6 +1324,15 @@ async fn bootstrap_java_router_peers() {
         env_value("JAVA_TUNNEL_PARTICIPANT_SSU2_ENDPOINT")
             .parse()
             .expect("tunnel-participant endpoint");
+    let service_host: IpAddr = env_value("JAVA_SERVICE_SSU2_HOST")
+        .parse()
+        .expect("service SSU2 host");
+    let publication_host: IpAddr = env_value("JAVA_PUBLICATION_SSU2_HOST")
+        .parse()
+        .expect("publication SSU2 host");
+    let tunnel_participant_host: IpAddr = env_value("JAVA_TUNNEL_PARTICIPANT_SSU2_HOST")
+        .parse()
+        .expect("tunnel-participant SSU2 host");
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND").parse().expect("bind");
     assert!(bind.ip().is_loopback());
     assert!(publication_endpoint.ip().is_loopback());
@@ -1315,6 +1354,28 @@ async fn bootstrap_java_router_peers() {
     let tunnel_participant_material = tunnel_participant_ssu2
         .address_material()
         .expect("tunnel-participant keys");
+    assert_eq!(service_ssu2.host(), Some(service_host));
+    assert_eq!(publication_ssu2.host(), Some(publication_host));
+    assert_eq!(
+        tunnel_participant_ssu2.host(),
+        Some(tunnel_participant_host)
+    );
+    let pairwise_mask3_distinct =
+        p226_pairwise_mask3_distinct(&[service_host, publication_host, tunnel_participant_host]);
+    append_evidence(
+        &evidence_dir,
+        "p226-routerinfo-hosts",
+        &format!(
+            "A_SSU2_HOST={} B_SSU2_HOST={} C_SSU2_HOST={} pairwise_mask3_distinct={} all_loopback={}",
+            service_host,
+            publication_host,
+            tunnel_participant_host,
+            pairwise_mask3_distinct,
+            service_host.is_loopback()
+                && publication_host.is_loopback()
+                && tunnel_participant_host.is_loopback(),
+        ),
+    );
     let publication_target = daemon_dial_target(
         publication_hash,
         publication_endpoint,
@@ -2316,6 +2377,10 @@ async fn destination_message_plane_against_java() {
                 &evidence_dir,
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            record_p226_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2617,6 +2682,10 @@ async fn destination_message_plane_against_java() {
             "authoritative-epoch-never-reached-lease-stalled",
         );
         record_p225_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
+        record_p226_early_stop_gap(
             &evidence_dir,
             "authoritative-epoch-never-reached-lease-stalled",
         );
@@ -3537,6 +3606,54 @@ async fn destination_message_plane_against_java() {
         p224_trace.reply_encryption_error_seen,
         p224_trace.observable,
     );
+    // Plan 226 — exact target-job attribution is a separate corrective
+    // surface. The baseline run is allowed to prove only the historical
+    // shared-/24 skip; the distinct run consumes that proof and then
+    // classifies the next independently observed boundary.
+    let p226_trace = p226_build_trace(p224_scan_a.as_ref(), p224_scan_b.as_ref());
+    let selected_preflight = matches!(p222_selector_equivalent, P220Observed::Known(true));
+    record_p226_trace(&evidence_dir, &p226_trace, selected_preflight);
+    let p226_topology =
+        std::env::var("JAVA_PEER_TOPOLOGY").unwrap_or_else(|_| "baseline".to_owned());
+    let hosts_distinct = [
+        std::env::var("JAVA_SERVICE_SSU2_HOST").ok(),
+        std::env::var("JAVA_PUBLICATION_SSU2_HOST").ok(),
+        std::env::var("JAVA_TUNNEL_PARTICIPANT_SSU2_HOST").ok(),
+    ]
+    .into_iter()
+    .map(|host| host.and_then(|value| value.parse::<IpAddr>().ok()))
+    .collect::<Option<Vec<_>>>()
+    .is_some_and(|hosts| p226_pairwise_mask3_distinct(&hosts));
+    append_evidence(
+        &evidence_dir,
+        "p226-topology-mode",
+        &format!(
+            "mode={} pairwise_mask3_distinct={} baseline_gate_required=true",
+            p226_topology, hosts_distinct
+        ),
+    );
+    let p226_terminal = if frozen_payload_45s {
+        P226Terminal::ReverseDeliveryPassed
+    } else if p226_topology == "baseline" {
+        p226_classify_baseline(selected_preflight, &p226_trace)
+    } else {
+        p226_classify_distinct(
+            hosts_distinct,
+            selected_preflight,
+            &p226_trace,
+            p224_b_pre.as_ref().is_some_and(p224_b_answerable),
+            p224_trace.b_lookup_received,
+            p224_trace.b_published_ls_answered,
+            p224_trace.a_client_tunnel_ls_received,
+            p224_a_post
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.validated_present),
+            p224_status_21,
+            &p222_facts.ordered_statuses,
+            frozen_payload_45s,
+        )
+    };
+    record_p226_classification(&evidence_dir, &p226_terminal, &p226_trace);
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -4900,6 +5017,7 @@ struct P224Trace {
 /// unbounded driver memory.
 const P224_MAX_LOG_FILES_PER_ROUTER: usize = 16;
 const P224_MAX_LOG_BYTES_PER_ROUTER: u64 = 96 * 1024 * 1024;
+const P226_MAX_TARGET_JOB_IDS: usize = 8;
 
 #[derive(Clone, Debug, Default)]
 struct P224LogScan {
@@ -4921,6 +5039,64 @@ struct P224LogScan {
     b_reply_enc_err: u64,
     a_isj_any: u64,
     b_dlm_any: u64,
+    // Plan 226 exact target-job facts. These are kept as bounded typed
+    // counters only; no log line or job identifier is exported verbatim.
+    p226_target_job_ids: Vec<u64>,
+    p226_target_job_id_overflow: bool,
+    p226_ip_close_skipped: u64,
+    p226_old_router_rejected: u64,
+    p226_zero_hop_unknown_rejected: u64,
+    p226_encrypted_lookup_unsupported: u64,
+    p226_no_ib_client_tunnel: u64,
+    p226_no_reply_crypto: u64,
+    p226_peer_try_count: u64,
+    p226_query_to_b: u64,
+    p226_search_failed: u64,
+}
+
+fn p226_new_isj_job_id(line: &str, target_b64: &str) -> Option<u64> {
+    let marker = "New ISJ for ";
+    let marker_pos = line.find(marker)?;
+    let suffix = &line[marker_pos + marker.len()..];
+    let target_present = suffix
+        .strip_prefix("LS ")
+        .unwrap_or(suffix)
+        .strip_prefix(target_b64)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+    if !target_present {
+        return None;
+    }
+    let job_marker = "JobId: ";
+    let job_start = line[..marker_pos].rfind(job_marker)? + job_marker.len();
+    let digits = line[job_start..].split(';').next()?;
+    (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
+fn p226_job_id_before(line: &str, marker: &str) -> Option<u64> {
+    let marker_pos = line.find(marker)?;
+    let prefix = line[..marker_pos].split_whitespace().last()?;
+    prefix.trim_end_matches(':').parse().ok()
+}
+
+fn p226_target_job_line(line: &str, target_job_ids: &[u64], marker: &str) -> bool {
+    p226_job_id_before(line, marker)
+        .is_some_and(|job_id| target_job_ids.binary_search(&job_id).is_ok())
+}
+
+fn p226_token_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    line.split_once(marker)?.1.split_whitespace().next()
+}
+
+fn p226_target_and_peer(line: &str, marker: &str, target_b64: &str, peer_b64: &str) -> bool {
+    let Some(suffix) = line.split_once(marker).map(|(_, suffix)| suffix) else {
+        return false;
+    };
+    let mut fields = suffix.split_whitespace();
+    fields.next() == Some(target_b64)
+        && fields.next() == Some("to")
+        && fields.next() == Some(peer_b64)
 }
 
 /// Whitelist-only scan of one router's `log-router-*.txt` scratch
@@ -5000,6 +5176,21 @@ fn p224_scan_log_dir_with_b32(
         // ASCII (Base64 + English log scaffolding), so a non-UTF8
         // byte can never hide or forge a match.
         let text = String::from_utf8_lossy(&bytes);
+        // Plan 226 §A — identify the exact target ISJ job first. The
+        // second pass only attributes facts whose numeric getJobId()
+        // prefix belongs to this bounded target set.
+        for line in text.lines() {
+            if let Some(job_id) = p226_new_isj_job_id(line, target_b64)
+                && !scan.p226_target_job_ids.contains(&job_id)
+            {
+                if scan.p226_target_job_ids.len() < P226_MAX_TARGET_JOB_IDS {
+                    scan.p226_target_job_ids.push(job_id);
+                } else {
+                    scan.p226_target_job_id_overflow = true;
+                }
+            }
+        }
+        scan.p226_target_job_ids.sort_unstable();
         for line in text.lines() {
             if line.contains("IterativeSearchJob:") || line.contains("ISJ ") {
                 scan.a_isj_any += 1;
@@ -5008,6 +5199,42 @@ fn p224_scan_log_dir_with_b32(
                 && line.contains("Handling database lookup message for ")
             {
                 scan.b_dlm_any += 1;
+            }
+            let target_job =
+                |marker: &str| p226_target_job_line(line, &scan.p226_target_job_ids, marker);
+            if target_job(": Skipping query w/ router too close to others ")
+                && p226_token_after(line, ": Skipping query w/ router too close to others ")
+                    == Some(router_b_b64)
+            {
+                scan.p226_ip_close_skipped += 1;
+            }
+            if target_job(": not sending query to old router: ") {
+                scan.p226_old_router_rejected += 1;
+            }
+            if target_job(": not doing zero-hop lookup to unknown ") {
+                scan.p226_zero_hop_unknown_rejected += 1;
+            }
+            if target_job(": Can't do encrypted lookup to ") {
+                scan.p226_encrypted_lookup_unsupported += 1;
+            }
+            if target_job(": ISJ from ") && line.contains("no IB client tunnel to receive reply") {
+                scan.p226_no_ib_client_tunnel += 1;
+            }
+            if target_job(": ISJ from client for ")
+                && line.contains("skipped, no ratchet/elg support")
+            {
+                scan.p226_no_reply_crypto += 1;
+            }
+            if target_job(": ISJ try ") {
+                scan.p226_peer_try_count += 1;
+            }
+            if target_job(": Encrypted DLM for ")
+                && p226_target_and_peer(line, ": Encrypted DLM for ", target_b64, router_b_b64)
+            {
+                scan.p226_query_to_b += 1;
+            }
+            if target_job(": ISJ for ") && line.contains(target_b64) && line.contains(" failed") {
+                scan.p226_search_failed += 1;
             }
             if line.contains("New ISJ for LS ") && line_has_target(line) {
                 scan.isj_new += 1;
@@ -5196,6 +5423,243 @@ fn p224_build_trace_common(
     trace.a_client_tunnel_ls_received = scan_a.a_client_tunnel_ls > 0;
     trace.reply_encryption_error_seen = scan_a.b_reply_enc_err > 0 || scan_b.b_reply_enc_err > 0;
     trace
+}
+
+/// Plan 226 exact target-job facts. `observable` is false unless the target
+/// `New ISJ` line identifies exactly one bounded numeric job and both log
+/// scans remain within their existing caps.
+#[derive(Clone, Debug, Default)]
+struct P226Trace {
+    observable: bool,
+    target_job_count: usize,
+    target_job_id_overflow: bool,
+    b_ip_close_skipped: bool,
+    b_old_router_rejected: bool,
+    b_zero_hop_unknown_rejected: bool,
+    b_encrypted_lookup_unsupported: bool,
+    no_ib_client_tunnel: bool,
+    no_reply_crypto: bool,
+    peer_try_count: u64,
+    query_to_b: bool,
+    search_failed: bool,
+}
+
+fn p226_build_trace(scan_a: Option<&P224LogScan>, scan_b: Option<&P224LogScan>) -> P226Trace {
+    let (Some(scan_a), Some(scan_b)) = (scan_a, scan_b) else {
+        return P226Trace::default();
+    };
+    let target_job_count = scan_a.p226_target_job_ids.len();
+    let observable = !scan_a.truncated
+        && !scan_b.truncated
+        && scan_a.files_read > 0
+        && scan_b.files_read > 0
+        && target_job_count == 1
+        && !scan_a.p226_target_job_id_overflow;
+    P226Trace {
+        observable,
+        target_job_count,
+        target_job_id_overflow: scan_a.p226_target_job_id_overflow,
+        b_ip_close_skipped: scan_a.p226_ip_close_skipped > 0,
+        b_old_router_rejected: scan_a.p226_old_router_rejected > 0,
+        b_zero_hop_unknown_rejected: scan_a.p226_zero_hop_unknown_rejected > 0,
+        b_encrypted_lookup_unsupported: scan_a.p226_encrypted_lookup_unsupported > 0,
+        no_ib_client_tunnel: scan_a.p226_no_ib_client_tunnel > 0,
+        no_reply_crypto: scan_a.p226_no_reply_crypto > 0,
+        peer_try_count: scan_a.p226_peer_try_count,
+        query_to_b: scan_a.p226_query_to_b > 0,
+        search_failed: scan_a.p226_search_failed > 0,
+    }
+}
+
+fn record_p226_trace(evidence_dir: &Path, trace: &P226Trace, selected_preflight: bool) {
+    append_evidence(
+        evidence_dir,
+        "p226-target-job-trace",
+        &format!(
+            "observable={} target_job_count={} target_job_id_overflow={} b_selected_preflight={} b_ip_close_skipped={} b_old_router_rejected={} b_zero_hop_unknown_rejected={} b_encrypted_lookup_unsupported={} no_ib_client_tunnel={} no_reply_crypto={} peer_try_count={} query_to_b={} search_failed={}",
+            trace.observable,
+            trace.target_job_count,
+            trace.target_job_id_overflow,
+            selected_preflight,
+            trace.b_ip_close_skipped,
+            trace.b_old_router_rejected,
+            trace.b_zero_hop_unknown_rejected,
+            trace.b_encrypted_lookup_unsupported,
+            trace.no_ib_client_tunnel,
+            trace.no_reply_crypto,
+            trace.peer_try_count,
+            trace.query_to_b,
+            trace.search_failed,
+        ),
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P226Terminal {
+    BaselineIpDiversityConfirmed,
+    BaselineOldRouterRejected,
+    BaselineZeroHopUnknown,
+    BaselineEncryptedLookupUnsupported,
+    BaselineNoInboundClientTunnel,
+    BaselineNoReplyCrypto,
+    BaselineNotIpDiversity,
+    EvidenceContradictionIpDiversityPersists,
+    NextBoundaryBStillNotQueried,
+    NextBoundaryAToBLookupDelivery,
+    EvidenceContradictionBAnswerableNotAnswered,
+    NextBoundaryBReplyToAClientTunnel,
+    EvidenceContradictionClientDsmNotStored,
+    NextBoundary(Vec<i32>),
+    ReverseDeliveryPassed,
+    EnvironmentDistinctLoopbackUnavailable,
+    ObservabilityGap,
+}
+
+impl P226Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::BaselineIpDiversityConfirmed => "P226-BASELINE-IP-DIVERSITY-CONFIRMED".to_owned(),
+            Self::BaselineOldRouterRejected => "P226-BASELINE-B-OLD-ROUTER-REJECTED".to_owned(),
+            Self::BaselineZeroHopUnknown => "P226-BASELINE-B-ZERO-HOP-UNKNOWN".to_owned(),
+            Self::BaselineEncryptedLookupUnsupported => {
+                "P226-BASELINE-B-ENCRYPTED-LOOKUP-UNSUPPORTED".to_owned()
+            }
+            Self::BaselineNoInboundClientTunnel => {
+                "P226-BASELINE-NO-INBOUND-CLIENT-TUNNEL".to_owned()
+            }
+            Self::BaselineNoReplyCrypto => "P226-BASELINE-NO-REPLY-CRYPTO".to_owned(),
+            Self::BaselineNotIpDiversity => "P226-BASELINE-NOT-IP-DIVERSITY".to_owned(),
+            Self::EvidenceContradictionIpDiversityPersists => {
+                "P226-EVIDENCE-CONTRADICTION-IP-DIVERSITY-PERSISTS".to_owned()
+            }
+            Self::NextBoundaryBStillNotQueried => {
+                "P226-NEXT-BOUNDARY-B-STILL-NOT-QUERIED".to_owned()
+            }
+            Self::NextBoundaryAToBLookupDelivery => {
+                "P226-NEXT-BOUNDARY-A-TO-B-LOOKUP-DELIVERY".to_owned()
+            }
+            Self::EvidenceContradictionBAnswerableNotAnswered => {
+                "P226-EVIDENCE-CONTRADICTION-B-ANSWERABLE-NOT-ANSWERED".to_owned()
+            }
+            Self::NextBoundaryBReplyToAClientTunnel => {
+                "P226-NEXT-BOUNDARY-B-REPLY-TO-A-CLIENT-TUNNEL".to_owned()
+            }
+            Self::EvidenceContradictionClientDsmNotStored => {
+                "P226-EVIDENCE-CONTRADICTION-CLIENT-DSM-NOT-STORED".to_owned()
+            }
+            Self::NextBoundary(statuses) => {
+                format!("P226-NEXT-BOUNDARY ordered_statuses={statuses:?}")
+            }
+            Self::ReverseDeliveryPassed => "P226-REVERSE-DELIVERY-PASSED".to_owned(),
+            Self::EnvironmentDistinctLoopbackUnavailable => {
+                "P226-ENVIRONMENT-DISTINCT-LOOPBACK-SUBNETS-UNAVAILABLE".to_owned()
+            }
+            Self::ObservabilityGap => "P226-OBSERVABILITY-GAP".to_owned(),
+        }
+    }
+}
+
+fn p226_classify_baseline(selected_preflight: bool, trace: &P226Trace) -> P226Terminal {
+    if !trace.observable {
+        return P226Terminal::ObservabilityGap;
+    }
+    if trace.b_old_router_rejected {
+        return P226Terminal::BaselineOldRouterRejected;
+    }
+    if trace.b_zero_hop_unknown_rejected {
+        return P226Terminal::BaselineZeroHopUnknown;
+    }
+    if trace.b_encrypted_lookup_unsupported {
+        return P226Terminal::BaselineEncryptedLookupUnsupported;
+    }
+    if trace.no_ib_client_tunnel {
+        return P226Terminal::BaselineNoInboundClientTunnel;
+    }
+    if trace.no_reply_crypto {
+        return P226Terminal::BaselineNoReplyCrypto;
+    }
+    if selected_preflight && trace.b_ip_close_skipped && !trace.query_to_b && trace.search_failed {
+        return P226Terminal::BaselineIpDiversityConfirmed;
+    }
+    P226Terminal::BaselineNotIpDiversity
+}
+
+#[allow(clippy::too_many_arguments)]
+fn p226_classify_distinct(
+    hosts_distinct: bool,
+    selected_preflight: bool,
+    trace: &P226Trace,
+    b_answerable: bool,
+    b_lookup_received: bool,
+    b_published_ls_answered: bool,
+    a_client_tunnel_ls_received: bool,
+    client_db_validated_present: bool,
+    status_no_leaseset_21: bool,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+) -> P226Terminal {
+    if frozen_payload_45s {
+        return P226Terminal::ReverseDeliveryPassed;
+    }
+    if !hosts_distinct {
+        return P226Terminal::EnvironmentDistinctLoopbackUnavailable;
+    }
+    if !trace.observable {
+        return P226Terminal::ObservabilityGap;
+    }
+    if trace.b_ip_close_skipped {
+        return P226Terminal::EvidenceContradictionIpDiversityPersists;
+    }
+    if trace.b_old_router_rejected
+        || trace.b_zero_hop_unknown_rejected
+        || trace.b_encrypted_lookup_unsupported
+        || trace.no_ib_client_tunnel
+        || trace.no_reply_crypto
+    {
+        return P226Terminal::NextBoundaryBStillNotQueried;
+    }
+    if !selected_preflight || !trace.query_to_b {
+        return P226Terminal::NextBoundaryBStillNotQueried;
+    }
+    if !b_lookup_received {
+        return P226Terminal::NextBoundaryAToBLookupDelivery;
+    }
+    if !b_published_ls_answered {
+        return if b_answerable {
+            P226Terminal::EvidenceContradictionBAnswerableNotAnswered
+        } else {
+            P226Terminal::NextBoundaryBStillNotQueried
+        };
+    }
+    if !a_client_tunnel_ls_received {
+        return P226Terminal::NextBoundaryBReplyToAClientTunnel;
+    }
+    if a_client_tunnel_ls_received && !client_db_validated_present {
+        return P226Terminal::EvidenceContradictionClientDsmNotStored;
+    }
+    if !status_no_leaseset_21
+        && ordered_statuses.iter().any(|status| *status != 1)
+        && !ordered_statuses.is_empty()
+    {
+        return P226Terminal::NextBoundary(ordered_statuses.to_vec());
+    }
+    P226Terminal::ObservabilityGap
+}
+
+fn record_p226_classification(evidence_dir: &Path, terminal: &P226Terminal, trace: &P226Trace) {
+    append_evidence(
+        evidence_dir,
+        "p226-classification",
+        &format!(
+            "{} target_job_count={} b_ip_close_skipped={} query_to_b={} search_failed={} peer_try_count={}",
+            terminal.token(),
+            trace.target_job_count,
+            trace.b_ip_close_skipped,
+            trace.query_to_b,
+            trace.search_failed,
+            trace.peer_try_count,
+        ),
+    );
 }
 
 /// Verifies the targeted Plan-224 `logger.config` the harness writes
@@ -5813,6 +6277,20 @@ fn record_p225_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
             "{} reason={reason}",
             P225Terminal::ObservabilityGapLookupPath.token()
         ),
+    );
+}
+
+/// Plan 226 pre-epoch stop: the exact target-job topology correction
+/// cannot be attributed before the authoritative epoch exists. Emit the
+/// required trace and one honest terminal rather than allowing a partial
+/// run to masquerade as a baseline or corrected result.
+fn record_p226_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    let trace = P226Trace::default();
+    record_p226_trace(evidence_dir, &trace, false);
+    append_evidence(
+        evidence_dir,
+        "p226-classification",
+        &format!("{} reason={reason}", P226Terminal::ObservabilityGap.token()),
     );
 }
 
@@ -9518,5 +9996,258 @@ fn p225_record_emits_one_terminal_for_pre_epoch_gap() {
         1
     );
     assert!(tsv.contains("P225-OBSERVABILITY-GAP-LOOKUP-PATH"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- Plan 226 corrective unit rows ----------------------------------------
+
+#[test]
+fn p226_loopback_mask3_semantics_are_pairwise_exact() {
+    let shared = [
+        "127.0.0.1".parse::<IpAddr>().unwrap(),
+        "127.0.0.2".parse::<IpAddr>().unwrap(),
+        "127.0.0.3".parse::<IpAddr>().unwrap(),
+    ];
+    assert!(!p226_pairwise_mask3_distinct(&shared));
+    let distinct = [
+        "127.0.1.1".parse::<IpAddr>().unwrap(),
+        "127.0.2.1".parse::<IpAddr>().unwrap(),
+        "127.0.3.1".parse::<IpAddr>().unwrap(),
+    ];
+    assert!(p226_pairwise_mask3_distinct(&distinct));
+    assert_eq!(p226_mask3_prefix(distinct[0]), Some([127, 0, 1]));
+    assert!(p226_mask3_prefix("192.0.2.1".parse().unwrap()).is_none());
+    assert!(p226_mask3_prefix("::1".parse().unwrap()).is_none());
+}
+
+#[test]
+fn p226_exact_target_job_requires_exact_job_id_and_router_hash() {
+    let target = p224_test_target_b64();
+    let router_b = p224_test_b_b64();
+    let other = format!("{}=", "O".repeat(43));
+    let dir = p224_test_tmpdir("p226-target-job");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO JobId: 42; dbid: helper: New ISJ for LS {target} (rkey key) timeout 15000 toTry: 2\nINFO 42: Skipping query w/ router too close to others {router_b}\nINFO 42: ISJ try 0 for LS {target} to {other} direct? false reply via client tunnel? true\nINFO 42: ISJ for {target} failed with 0 remaining after 15000, peers queried: 1\nINFO 43: Skipping query w/ router too close to others {router_b}\n"
+        ),
+        true,
+    );
+    let b_logs = p224_write_log_tree(&dir, "b", "log-router-0.txt", "INFO unrelated\n", true);
+    let scan_a = p224_scan_log_dir(&a_logs, &target, &router_b, None).expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target, &router_b, None).expect("scan B");
+    let trace = p226_build_trace(Some(&scan_a), Some(&scan_b));
+    assert!(trace.observable);
+    assert_eq!(trace.target_job_count, 1);
+    assert!(trace.b_ip_close_skipped);
+    assert!(!trace.query_to_b);
+    assert!(trace.search_failed);
+    assert_eq!(trace.peer_try_count, 1);
+    assert_eq!(
+        p226_classify_baseline(true, &trace),
+        P226Terminal::BaselineIpDiversityConfirmed
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p226_unrelated_skip_cannot_classify_router_b() {
+    let target = p224_test_target_b64();
+    let router_b = p224_test_b_b64();
+    let dir = p224_test_tmpdir("p226-unrelated-skip");
+    let a_logs = p224_write_log_tree(
+        &dir,
+        "a",
+        "log-router-0.txt",
+        &format!(
+            "INFO JobId: 42; dbid: helper: New ISJ for LS {target} (rkey key) timeout 15000 toTry: 2\nINFO 43: Skipping query w/ router too close to others {router_b}\nINFO 42: ISJ for {target} failed with 0 remaining after 15000, peers queried: 1\n"
+        ),
+        true,
+    );
+    let b_logs = p224_write_log_tree(&dir, "b", "log-router-0.txt", "INFO unrelated\n", true);
+    let scan_a = p224_scan_log_dir(&a_logs, &target, &router_b, None).expect("scan A");
+    let scan_b = p224_scan_log_dir(&b_logs, &target, &router_b, None).expect("scan B");
+    let trace = p226_build_trace(Some(&scan_a), Some(&scan_b));
+    assert!(trace.observable);
+    assert!(!trace.b_ip_close_skipped);
+    assert_eq!(
+        p226_classify_baseline(true, &trace),
+        P226Terminal::BaselineNotIpDiversity
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p226_non_ip_baseline_reason_stops_before_topology_correction() {
+    let mut trace = P226Trace {
+        observable: true,
+        target_job_count: 1,
+        b_old_router_rejected: true,
+        ..P226Trace::default()
+    };
+    assert_eq!(
+        p226_classify_baseline(true, &trace),
+        P226Terminal::BaselineOldRouterRejected
+    );
+    trace.b_old_router_rejected = false;
+    trace.b_zero_hop_unknown_rejected = true;
+    assert_eq!(
+        p226_classify_baseline(true, &trace),
+        P226Terminal::BaselineZeroHopUnknown
+    );
+}
+
+#[test]
+fn p226_distinct_topology_requires_query_dispatch_not_selector_membership() {
+    let trace = P226Trace {
+        observable: true,
+        target_job_count: 1,
+        query_to_b: false,
+        search_failed: true,
+        ..P226Trace::default()
+    };
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true,
+            &[1, 21],
+            false
+        ),
+        P226Terminal::NextBoundaryBStillNotQueried
+    );
+}
+
+#[test]
+fn p226_distinct_topology_maps_post_dispatch_boundaries() {
+    let trace = P226Trace {
+        observable: true,
+        target_job_count: 1,
+        query_to_b: true,
+        ..P226Trace::default()
+    };
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true,
+            &[1, 21],
+            false
+        ),
+        P226Terminal::NextBoundaryAToBLookupDelivery
+    );
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            true,
+            false,
+            false,
+            false,
+            true,
+            &[1, 21],
+            false
+        ),
+        P226Terminal::EvidenceContradictionBAnswerableNotAnswered
+    );
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            true,
+            true,
+            false,
+            false,
+            true,
+            &[1, 21],
+            false
+        ),
+        P226Terminal::NextBoundaryBReplyToAClientTunnel
+    );
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            true,
+            true,
+            true,
+            false,
+            true,
+            &[1, 21],
+            false
+        ),
+        P226Terminal::EvidenceContradictionClientDsmNotStored
+    );
+    assert_eq!(
+        p226_classify_distinct(
+            true,
+            true,
+            &trace,
+            true,
+            true,
+            true,
+            true,
+            true,
+            false,
+            &[1, 19],
+            false
+        ),
+        P226Terminal::NextBoundary(vec![1, 19])
+    );
+}
+
+#[test]
+fn p226_classification_is_single_and_frozen_payload_wins() {
+    let dir = p224_test_tmpdir("p226-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let trace = P226Trace {
+        observable: true,
+        target_job_count: 1,
+        ..P226Trace::default()
+    };
+    let terminal = p226_classify_distinct(
+        true,
+        true,
+        &trace,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        &[1, 21],
+        true,
+    );
+    assert_eq!(terminal, P226Terminal::ReverseDeliveryPassed);
+    record_p226_classification(&evidence_dir, &terminal, &trace);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p226-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P226-REVERSE-DELIVERY-PASSED"));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1684,8 +1684,117 @@ if [[ -f "${P224_HARNESS}" ]]; then
   done
 fi
 
+# ---- 19. Plan 226 loopback peer-diversity corrective --------------------
+# Plan 226 is a harness/observability corrective only. It must prove the
+# exact target ISJ job and the historical shared-/24 skip before admitting
+# a corrected run with three loopback /24s. It must not change the router
+# protocol, enable `netDb.alwaysQuery`, patch the Java cache, or move any
+# control endpoint away from 127.0.0.1.
+P226_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P226_HARNESS="${JAVA_HARNESS}"
+if [[ -f "${P226_DRIVER_TEST}" ]]; then
+  for required in \
+    'struct P226Trace' \
+    'P226_MAX_TARGET_JOB_IDS' \
+    'fn p226_new_isj_job_id' \
+    'fn p226_target_job_line' \
+    'fn p226_target_and_peer' \
+    'fn p226_build_trace' \
+    'fn p226_classify_baseline' \
+    'fn p226_classify_distinct' \
+    'fn record_p226_trace' \
+    'fn record_p226_classification' \
+    'fn record_p226_early_stop_gap' \
+    'P226-BASELINE-IP-DIVERSITY-CONFIRMED' \
+    'P226-EVIDENCE-CONTRADICTION-IP-DIVERSITY-PERSISTS' \
+    'P226-NEXT-BOUNDARY-B-STILL-NOT-QUERIED' \
+    'P226-OBSERVABILITY-GAP' \
+    'p226-target-job-trace' \
+    'p226-routerinfo-hosts' \
+    'p226-topology-mode' \
+    'p226-classification'; do
+    if ! grep -q -F "${required}" "${P226_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P226_DRIVER_TEST} lacks the Plan 226 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    p226_loopback_mask3_semantics_are_pairwise_exact \
+    p226_exact_target_job_requires_exact_job_id_and_router_hash \
+    p226_unrelated_skip_cannot_classify_router_b \
+    p226_non_ip_baseline_reason_stops_before_topology_correction \
+    p226_distinct_topology_requires_query_dispatch_not_selector_membership \
+    p226_distinct_topology_maps_post_dispatch_boundaries \
+    p226_classification_is_single_and_frozen_payload_wins; do
+    if ! grep -q "fn ${unit_row}" "${P226_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P226_DRIVER_TEST} lacks the Plan 226 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in 'netDb.alwaysQuery' 'new Router(' 'getDeclaredField(' 'setAccessible(' 'registerKeys(' '.store('; do
+    if [[ "${forbidden}" == 'new Router(' ]]; then
+      continue
+    fi
+    if grep -q -F "${forbidden}" "${P226_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P226_DRIVER_TEST} carries forbidden Plan 226 mutation/property '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P226-" "${P226_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P226_DRIVER_TEST} hard-codes a Plan 226 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
+if [[ -f "${P226_HARNESS}" ]]; then
+  for required in \
+    'JAVA_PEER_TOPOLOGY' \
+    'I2PR_M6_JAVA_BASELINE_EVIDENCE_DIR' \
+    'JAVA_SSU2_HOST_A' \
+    'JAVA_SSU2_HOST_B' \
+    'JAVA_SSU2_HOST_C' \
+    '127.0.1.1' \
+    '127.0.2.1' \
+    '127.0.3.1' \
+    'ipaddress.ip_address' \
+    'socket.AF_INET' \
+    'p226-topology-preflight' \
+    'p226-classification' \
+    'external-p226-classification' \
+    'external-p226-topology-preflight' \
+    'external-p226-routerinfo-hosts' \
+    'external-p226-target-job-trace'; do
+    if ! grep -q -F "${required}" "${P226_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P226_HARNESS} lacks the Plan 226 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for control in \
+    'JAVA_I2CP_ENDPOINT="127.0.0.1:' \
+    'JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:' \
+    'JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:' \
+    '/dev/tcp/127.0.0.1/'; do
+    if ! grep -q -F "${control}" "${P226_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P226_HARNESS} moved or omitted control endpoint '${control}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'netDb.alwaysQuery' "${P226_HARNESS}" "${JAVA_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: Plan 226 enables netDb.alwaysQuery" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E '127\.0\.0\.[234][^0-9]' "${P226_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: corrected topology uses same-/24 127.0.0.x peer addresses" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P226-" "${P226_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P226_HARNESS} invents a Plan 226 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants)"

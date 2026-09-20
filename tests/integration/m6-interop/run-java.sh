@@ -79,10 +79,85 @@ JAVA_DIAGNOSTIC_B_PORT="${I2PR_M6_JAVA_DIAGNOSTIC_B_PORT:-$(reserve_port)}"
 JAVA_DIAGNOSTIC_C_PORT="${I2PR_M6_JAVA_DIAGNOSTIC_C_PORT:-$(reserve_port)}"
 DRIVER_TIMEOUT="600s"
 
+# Plan 226 — retain the historical shared-subnet topology for the first
+# counted run so the exact target-job IP-close skip is proven before any
+# correction. A corrected run is selected only after that baseline evidence
+# has been retained outside the disposable evidence directory.
+JAVA_PEER_TOPOLOGY="${I2PR_M6_JAVA_PEER_TOPOLOGY:-baseline}"
+JAVA_BASELINE_EVIDENCE_DIR="${I2PR_M6_JAVA_BASELINE_EVIDENCE_DIR:-}"
+case "${JAVA_PEER_TOPOLOGY}" in
+  baseline)
+    JAVA_SSU2_HOST_A="${I2PR_M6_JAVA_SSU2_HOST_A:-127.0.0.1}"
+    JAVA_SSU2_HOST_B="${I2PR_M6_JAVA_SSU2_HOST_B:-127.0.0.1}"
+    JAVA_SSU2_HOST_C="${I2PR_M6_JAVA_SSU2_HOST_C:-127.0.0.1}"
+    ;;
+  distinct)
+    JAVA_SSU2_HOST_A="${I2PR_M6_JAVA_SSU2_HOST_A:-127.0.1.1}"
+    JAVA_SSU2_HOST_B="${I2PR_M6_JAVA_SSU2_HOST_B:-127.0.2.1}"
+    JAVA_SSU2_HOST_C="${I2PR_M6_JAVA_SSU2_HOST_C:-127.0.3.1}"
+    ;;
+  *)
+    echo "I2PR_M6_JAVA_PEER_TOPOLOGY must be baseline or distinct (got '${JAVA_PEER_TOPOLOGY}')" >&2
+    exit 64
+    ;;
+esac
+
+if [[ "${JAVA_PEER_TOPOLOGY}" == "distinct" ]]; then
+  if [[ -z "${JAVA_BASELINE_EVIDENCE_DIR}" ]]; then
+    echo "distinct Java topology requires I2PR_M6_JAVA_BASELINE_EVIDENCE_DIR" >&2
+    exit 64
+  fi
+  if [[ "${JAVA_BASELINE_EVIDENCE_DIR}" != /* ]]; then
+    JAVA_BASELINE_EVIDENCE_DIR="${REPO_ROOT}/${JAVA_BASELINE_EVIDENCE_DIR}"
+  fi
+  if [[ ! -f "${JAVA_BASELINE_EVIDENCE_DIR}/driver/destination/driver-evidence.tsv" ]] ||
+     ! grep -Fq $'p226-classification\tP226-BASELINE-IP-DIVERSITY-CONFIRMED' \
+       "${JAVA_BASELINE_EVIDENCE_DIR}/driver/destination/driver-evidence.tsv"; then
+    echo "distinct Java topology requires a retained P226 baseline IP-close proof: ${JAVA_BASELINE_EVIDENCE_DIR}" >&2
+    exit 64
+  fi
+fi
+
 mkdir -p "${EVIDENCE_DIR}"
 SCRATCH="$(mktemp -d -t i2pr-m6-plan196-java.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
+
+# Plan 226 §7 — validate the selected SSU2 hosts before launching Java. The
+# corrected topology is loopback-only, pairwise distinct by the first three
+# IPv4 octets, and bindable without privilege. Baseline mode records the same
+# facts but intentionally permits one shared /24.
+P226_HOST_PREFLIGHT_RESULT=""
+if ! P226_HOST_PREFLIGHT_RESULT="$(python3 - "${JAVA_PEER_TOPOLOGY}" "${JAVA_SSU2_HOST_A}" "${JAVA_SSU2_HOST_B}" "${JAVA_SSU2_HOST_C}" <<'PY'
+import ipaddress
+import socket
+import sys
+
+mode, *hosts = sys.argv[1:]
+parsed = []
+for host in hosts:
+    address = ipaddress.ip_address(host)
+    if not address.is_loopback or address.version != 4:
+        raise SystemExit(f"non-loopback-or-non-ipv4:{host}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((host, 0))
+    except OSError as exc:
+        raise SystemExit(f"udp-bind-failed:{host}:{exc}")
+    finally:
+        sock.close()
+    parsed.append(tuple(int(part) for part in host.split(".")))
+
+prefixes = {parts[:3] for parts in parsed}
+distinct = len(prefixes) == len(parsed)
+if mode == "distinct" and not distinct:
+    raise SystemExit("mask3-prefixes-not-distinct")
+print(f"all_loopback=true pairwise_mask3_distinct={str(distinct).lower()} hosts={','.join(hosts)}")
+PY
+ )"; then
+  echo "P226-ENVIRONMENT-DISTINCT-LOOPBACK-SUBNETS-UNAVAILABLE" >&2
+  exit 70
+fi
 # Hygiene: no stale secret-bearing or result-bearing file from a
 # previous run may linger in evidence. The raw Java I2P log is never
 # evidence (it carries SAM session lines); only sanitized counts
@@ -91,9 +166,13 @@ rm -f "${EVIDENCE_DIR}/java.log" \
   "${EVIDENCE_DIR}/driver/driver-evidence.tsv" \
   "${EVIDENCE_DIR}/driver/destination/driver-evidence.tsv" \
   "${EVIDENCE_DIR}/driver/streaming/driver-evidence.tsv" \
-  "${EVIDENCE_DIR}/reference-facts.tsv"
+  "${EVIDENCE_DIR}/reference-facts.tsv" \
+  "${EVIDENCE_DIR}/p226-topology.tsv"
 rm -f "${EVIDENCE_DIR}/reference-raw-destination.tsv" \
   "${EVIDENCE_DIR}/reference-streaming-service.tsv"
+printf 'p226-topology-preflight\ttopology=%s %s\n' \
+  "${JAVA_PEER_TOPOLOGY}" "${P226_HOST_PREFLIGHT_RESULT}" \
+  > "${EVIDENCE_DIR}/p226-topology.tsv"
 
 # ---- Java I2P cache verification (fail closed before any network use) ----
 if [[ ! -d "${JAVA_CACHE}/lib" ]]; then
@@ -213,7 +292,7 @@ JAVA_CMD=(
   -Dlauncher.scratch="${SCRATCH}"
   "ControlledRouter"
   "${JAVA_DATA}"
-  "127.0.0.1"
+  "${JAVA_SSU2_HOST_A}"
   "${JAVA_SSU2_PORT}"
   "${JAVA_SAM_PORT}"
   "${JAVA_I2CP_PORT}"
@@ -235,7 +314,7 @@ JAVA_PUBLICATION_CMD=(
   -Dlauncher.scratch="${SCRATCH}"
   "ControlledRouter"
   "${JAVA_PUBLICATION_DATA}"
-  "127.0.0.1"
+  "${JAVA_SSU2_HOST_B}"
   "${JAVA_PUBLICATION_SSU2_PORT}"
   "${JAVA_PUBLICATION_SAM_PORT}"
   "${JAVA_PUBLICATION_I2CP_PORT}"
@@ -263,7 +342,7 @@ JAVA_TUNNEL_PARTICIPANT_CMD=(
   -Dlauncher.scratch="${SCRATCH}"
   "ControlledRouter"
   "${JAVA_TUNNEL_PARTICIPANT_DATA}"
-  "127.0.0.1"
+  "${JAVA_SSU2_HOST_C}"
   "${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}"
   "0"
   "0"
@@ -307,7 +386,7 @@ stop_helper() {
   CHILD_PIDS=("${CHILD_PIDS[@]/${pid}}")
 }
 
-echo "==> waiting for ephemeral Java I2P on 127.0.0.1:${JAVA_SSU2_PORT} (SAM 127.0.0.1:${JAVA_SAM_PORT} I2CP 127.0.0.1:${JAVA_I2CP_PORT})"
+echo "==> waiting for ephemeral Java I2P on ${JAVA_SSU2_HOST_A}:${JAVA_SSU2_PORT} (SAM 127.0.0.1:${JAVA_SAM_PORT} I2CP 127.0.0.1:${JAVA_I2CP_PORT})"
 JAVA_RI=""
 # Plan 196 §5.4 — Java writes router.info to
 # `${i2p.dir.router}/router.info`; we set i2p.dir.router to
@@ -397,9 +476,9 @@ if [[ "${SAM_READY}" -ne 1 ]]; then
   tail -n 20 "${JAVA_DATA}/logs/log-router-0.txt" 2>&1 >&2 || true
   exit 2
 fi
-echo "    Java service router A: 127.0.0.1:${JAVA_SSU2_PORT} (SAM ${JAVA_SAM_PORT}, I2CP ${JAVA_I2CP_PORT}, J219 ${JAVA_DIAGNOSTIC_A_PORT})"
-echo "    Java publication router B: 127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT} (SAM ${JAVA_PUBLICATION_SAM_PORT}, I2CP ${JAVA_PUBLICATION_I2CP_PORT}, J219 ${JAVA_DIAGNOSTIC_B_PORT})"
-echo "    Java tunnel-participant router C: 127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT} (J219 ${JAVA_DIAGNOSTIC_C_PORT})"
+echo "    Java service router A: ${JAVA_SSU2_HOST_A}:${JAVA_SSU2_PORT} (SAM 127.0.0.1:${JAVA_SAM_PORT}, I2CP 127.0.0.1:${JAVA_I2CP_PORT}, J219 127.0.0.1:${JAVA_DIAGNOSTIC_A_PORT})"
+echo "    Java publication router B: ${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT} (SAM 127.0.0.1:${JAVA_PUBLICATION_SAM_PORT}, I2CP 127.0.0.1:${JAVA_PUBLICATION_I2CP_PORT}, J219 127.0.0.1:${JAVA_DIAGNOSTIC_B_PORT})"
+echo "    Java tunnel-participant router C: ${JAVA_SSU2_HOST_C}:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT} (J219 127.0.0.1:${JAVA_DIAGNOSTIC_C_PORT})"
 echo "    Java service RouterInfo: $(wc -c <"${JAVA_RI}") bytes; publication RouterInfo: $(wc -c <"${JAVA_PUBLICATION_RI}") bytes; tunnel-participant RouterInfo: $(wc -c <"${JAVA_TUNNEL_PARTICIPANT_RI}") bytes"
 
 # Plan 220 — wait for the three read-only diagnostic TCP
@@ -545,7 +624,7 @@ printf 'first-routerinfo-appearance\tC\t%s\n' "${P220_SNAPSHOT_C_PRE}" >> "${J21
 TOPOLOGY_OK=1
 TOPOLOGY_REASON=""
 if [[ -s "${JAVA_DATA}/router.config" ]]; then
-  if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_DATA}/router.config"; then
+  if ! grep -q "^i2np.udp.host=${JAVA_SSU2_HOST_A}$" "${JAVA_DATA}/router.config"; then
     TOPOLOGY_OK=0
     TOPOLOGY_REASON="${TOPOLOGY_REASON} udp-host-mismatch"
   fi
@@ -604,7 +683,7 @@ if ! python3 - <<PY 2>/dev/null
 import socket
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 try:
-    s.bind(("127.0.0.1", ${JAVA_SSU2_PORT}))
+    s.bind(("${JAVA_SSU2_HOST_A}", ${JAVA_SSU2_PORT}))
 except OSError:
     raise SystemExit(0)
 raise SystemExit(1)
@@ -629,7 +708,7 @@ fi
 # Router B is independently checked as the publication/floodfill role. It
 # has a separate RouterContext and disposable state, never a shared VMComm
 # or copied NetDB.
-if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_PUBLICATION_DATA}/router.config" ||
+if ! grep -q "^i2np.udp.host=${JAVA_SSU2_HOST_B}$" "${JAVA_PUBLICATION_DATA}/router.config" ||
    ! grep -q "^i2np.udp.port=${JAVA_PUBLICATION_SSU2_PORT}$" "${JAVA_PUBLICATION_DATA}/router.config" ||
    ! grep -q '^router.reseedDisable=true$' "${JAVA_PUBLICATION_DATA}/router.config" ||
    ! grep -q '^router.floodfillParticipant=true$' "${JAVA_PUBLICATION_DATA}/router.config" ||
@@ -640,7 +719,8 @@ if ! grep -q '^i2np.udp.host=127.0.0.1$' "${JAVA_PUBLICATION_DATA}/router.config
 fi
 
 # Router C is a tunnel participant — no SAM/I2CP required, no floodfill required.
-if ! grep -q "^i2np.udp.port=${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+if ! grep -q "^i2np.udp.host=${JAVA_SSU2_HOST_C}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+   ! grep -q "^i2np.udp.port=${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    ! grep -q '^router.reseedDisable=true$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    ! grep -q '^i2np.ntcp.enable=false$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    [[ ! -f "${JAVA_TUNNEL_PARTICIPANT_DATA}/noreseed.i2p" ]]; then
@@ -829,11 +909,15 @@ mkdir -p "${DRIVER_EVIDENCE}/bootstrap"
 j219_record_timed_snapshot "immediately-before-bootstrap"
 bootstrap_rc=0
 if ! /usr/bin/env JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
-   JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+   JAVA_SERVICE_SSU2_ENDPOINT="${JAVA_SSU2_HOST_A}:${JAVA_SSU2_PORT}" \
    JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-   JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+   JAVA_PUBLICATION_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
    JAVA_TUNNEL_PARTICIPANT_ROUTER_INFO="${JAVA_TUNNEL_PARTICIPANT_RI}" \
-   JAVA_TUNNEL_PARTICIPANT_SSU2_ENDPOINT="127.0.0.1:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}" \
+   JAVA_TUNNEL_PARTICIPANT_SSU2_ENDPOINT="${JAVA_SSU2_HOST_C}:${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}" \
+   JAVA_SERVICE_SSU2_HOST="${JAVA_SSU2_HOST_A}" \
+   JAVA_PUBLICATION_SSU2_HOST="${JAVA_SSU2_HOST_B}" \
+   JAVA_TUNNEL_PARTICIPANT_SSU2_HOST="${JAVA_SSU2_HOST_C}" \
+   JAVA_PEER_TOPOLOGY="${JAVA_PEER_TOPOLOGY}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_BOOTSTRAP_PORT}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}/bootstrap" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
@@ -892,11 +976,15 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # authoritative P220 snapshot at its post-bootstrap epoch.
   j219_record_timed_snapshot "immediately-before-reverse-helper-send"
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-     JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
-     JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+     JAVA_SERVICE_SSU2_ENDPOINT="${JAVA_SSU2_HOST_A}:${JAVA_SSU2_PORT}" \
      JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-     JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_PUBLICATION_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SERVICE_SSU2_HOST="${JAVA_SSU2_HOST_A}" \
+     JAVA_PUBLICATION_SSU2_HOST="${JAVA_SSU2_HOST_B}" \
+     JAVA_TUNNEL_PARTICIPANT_SSU2_HOST="${JAVA_SSU2_HOST_C}" \
+     JAVA_PEER_TOPOLOGY="${JAVA_PEER_TOPOLOGY}" \
      JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
      JAVA_RAW_CONTROL_ENDPOINT="127.0.0.1:${JAVA_RAW_CONTROL_PORT}" \
      JAVA_RAW_REFERENCE_DESTINATION_B64="${RAW_REFERENCE_DESTINATION_B64}" \
@@ -939,11 +1027,15 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "bo
   # Streaming driver run. Reuses the same SSU2 endpoint and SAM
   # Java public Streaming manager; it is independent of §5.4.
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-     JAVA_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
-     JAVA_SERVICE_SSU2_ENDPOINT="127.0.0.1:${JAVA_SSU2_PORT}" \
+     JAVA_SERVICE_SSU2_ENDPOINT="${JAVA_SSU2_HOST_A}:${JAVA_SSU2_PORT}" \
      JAVA_PUBLICATION_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
-     JAVA_PUBLICATION_SSU2_ENDPOINT="127.0.0.1:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_PUBLICATION_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
+     JAVA_SERVICE_SSU2_HOST="${JAVA_SSU2_HOST_A}" \
+     JAVA_PUBLICATION_SSU2_HOST="${JAVA_SSU2_HOST_B}" \
+     JAVA_TUNNEL_PARTICIPANT_SSU2_HOST="${JAVA_SSU2_HOST_C}" \
+     JAVA_PEER_TOPOLOGY="${JAVA_PEER_TOPOLOGY}" \
      JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
      JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
      JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
@@ -970,6 +1062,7 @@ if [[ -f "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv" ]]; then
 fi
 cat "${DRIVER_DEST_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 cat "${DRIVER_STREAM_TSV}" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
+cat "${EVIDENCE_DIR}/p226-topology.tsv" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 DRIVER_TSV="${DRIVER_EVIDENCE}/driver-evidence.tsv"
 echo "==> sanitized reference-side facts (counts only, never key material)"
 # Keep a narrowly filtered, secret-scrubbed router diagnostic so a public
@@ -1339,6 +1432,26 @@ if [[ -z "${P225_CLASSIFICATION}" ]]; then
 fi
 record "external-p225-classification" passed "Plan 225 §13: ${P225_CLASSIFICATION}"
 
+# Plan 226 §11 — read the single topology-corrective terminal emitted by
+# the destination driver. The baseline and corrected runs are deliberately
+# separate evidence directories; a corrected run is admitted only after the
+# retained baseline row proves the exact shared-/24 IP-close skip.
+P226_CLASSIFICATION=""
+DEST_DRIVER_TSV_FOR_P226="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+if [[ -f "${DEST_DRIVER_TSV_FOR_P226}" ]]; then
+  P226_CLASSIFICATION="$(awk -F'\t' '$1 == "p226-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P226}")"
+fi
+if [[ -z "${P226_CLASSIFICATION}" ]]; then
+  P226_CLASSIFICATION="P226-classification-missing"
+fi
+record "external-p226-classification" passed "Plan 226 §11: ${P226_CLASSIFICATION}"
+m6_key_row "external-p226-topology-preflight" "p226-topology-preflight" \
+  "Plan 226 §7: selected Java SSU2 hosts passed bounded loopback/UDP-bind preflight"
+m6_key_row "external-p226-routerinfo-hosts" "p226-routerinfo-hosts" \
+  "Plan 226 §8: Java RouterInfo hosts match the selected topology and are pairwise mask-3 distinct when corrected"
+m6_key_row "external-p226-target-job-trace" "p226-target-job-trace" \
+  "Plan 226 §9: exact target ISJ job facts are correlated by bounded numeric job ID"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted
@@ -1382,7 +1495,7 @@ record_guarded "workspace-gates" \
   "fmt + workspace check --all-targets + static boundary scripts (full test/clippy/doc/deny floor stays in routine CI)" \
   "${gates_rc}"
 
-python3 - "${RESULTS_FILE}" "${EVIDENCE_DIR}" "${REPO_ROOT}" "${JAVA_PIN}" "${JAVA_VERSION}" "${JAVA_SSU2_PORT}" "${JAVA_SAM_PORT}" "${JAVA_I2CP_PORT}" <<'PY'
+python3 - "${RESULTS_FILE}" "${EVIDENCE_DIR}" "${REPO_ROOT}" "${JAVA_PIN}" "${JAVA_VERSION}" "${JAVA_SSU2_PORT}" "${JAVA_SAM_PORT}" "${JAVA_I2CP_PORT}" "${JAVA_PEER_TOPOLOGY}" "${JAVA_SSU2_HOST_A}" "${JAVA_SSU2_HOST_B}" "${JAVA_SSU2_HOST_C}" <<'PY'
 import json
 import platform
 import subprocess
@@ -1393,6 +1506,7 @@ from pathlib import Path
 results_path, evidence_dir, repo_root = sys.argv[1:4]
 java_pin, java_version = sys.argv[4:6]
 ssu2_port, sam_port, i2cp_port = sys.argv[6:9]
+peer_topology, host_a, host_b, host_c = sys.argv[9:13]
 rows = []
 with open(results_path, encoding="utf-8") as stream:
     for line in stream:
@@ -1427,6 +1541,11 @@ evidence = {
     "os_image": platform.platform(),
     "rust_toolchain": rustc,
     "execution_lane": "m6-java-external",
+    "p226_topology": {
+        "mode": peer_topology,
+        "hosts": {"a": host_a, "b": host_b, "c": host_c},
+        "preflight": (Path(evidence_dir) / "p226-topology.tsv").read_text(encoding="utf-8").strip(),
+    },
     "ssu2_bind_policy": "127.0.0.1 loopback only, advertise=false, no introducer",
     "java_i2p": {
         "repository": "https://github.com/i2p/i2p.i2p.git",
