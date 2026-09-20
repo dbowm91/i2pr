@@ -111,6 +111,20 @@
 //     does not confuse a client DBID's Base64 form with its b32.i2p label;
 //   - every P225 response is one bounded, sanitized line and contains no
 //     log text, keys, tags, payloads, or private material.
+// Plan 227 diagnostic contract (reference-harness corrective only,
+// read-only, no state mutation):
+//   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
+//     presence/validity plus `ProfileOrganizer.isSelectable`, comm-system
+//     established (diagnostic only), and banlist facts for Router C;
+//     no profile creation, tier promotion, connection forcing, or NetDB
+//     store;
+//   - `P227-CLIENT-TUNNELS <client-dbid-hex> <router-c-hex>` resolves the
+//     live inbound/outbound client pools through public tunnel-manager
+//     accessors and inspects installed tunnels read-only; one remote hop
+//     via C is the exact local+Router-C path (`getLength() == 2`), never
+//     a hard-coded length name alone; zero-hop is `getLength() <= 1`;
+//   - every P227 response is one bounded `P227-EV ...` line with booleans,
+//     counts, and hex hashes only.
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -139,6 +153,7 @@ import net.i2p.router.networkdb.kademlia.P220SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P222SelectorProbe;
 import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 import net.i2p.router.networkdb.kademlia.P224LsProbe;
+import net.i2p.router.networkdb.kademlia.P227Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -588,6 +603,16 @@ public final class ControlledRouter {
                             return p225Error("missing-hash-argument");
                         }
                         return p225HashB32(parts[1]);
+                    case "P227-PEER-ELIGIBILITY":
+                        if (parts.length < 2) {
+                            return p227Error("missing-hash-argument");
+                        }
+                        return p227PeerEligibility(parts[1]);
+                    case "P227-CLIENT-TUNNELS":
+                        if (parts.length < 3) {
+                            return p227Error("missing-hash-arguments");
+                        }
+                        return p227ClientTunnels(parts[1], parts[2]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -898,6 +923,74 @@ public final class ControlledRouter {
 
         private String p225Error(String reason) {
             return "P225-ERROR " + reason;
+        }
+
+        private String p227Error(String reason) {
+            return "P227-ERROR " + reason;
+        }
+
+        /**
+         * Plan 227 WP A — read-only Router-C eligibility on this router's
+         * main NetDB. Uses only public read-only accessors; never creates
+         * profiles, never promotes tiers, never forces connections, never
+         * stores RouterInfos.
+         */
+        private String p227PeerEligibility(String routerCHex) {
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (routerC == null) {
+                return p227Error("invalid-hex-hash");
+            }
+            P227Probe.Eligibility result =
+                P227Probe.snapshotEligibility(context(), mainNetDb(), routerC);
+            if (result.error != null) {
+                return "P227-EV kind=peer-eligibility"
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P227-EV kind=peer-eligibility"
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " main_raw_present=" + result.mainRawPresent
+                + " main_valid_present=" + result.mainValidPresent
+                + " selectable=" + result.selectable
+                + " established=" + result.established
+                + " banlisted=" + result.banlisted;
+        }
+
+        /**
+         * Plan 227 WP D — read-only installed client-tunnel snapshot for
+         * one helper client DBID. Resolves live pools through public
+         * tunnel-manager accessors and inspects installed tunnels
+         * read-only. One remote hop via C is the exact local+Router-C
+         * path (`getLength() == 2`); zero-hop is `getLength() <= 1`.
+         */
+        private String p227ClientTunnels(String clientDbidHex, String routerCHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (clientDbid == null || routerC == null) {
+                return p227Error("invalid-hex-hash");
+            }
+            P227Probe.Tunnels result =
+                P227Probe.snapshotClientTunnels(context(), clientDbid, routerC);
+            if (result.error != null) {
+                return "P227-EV kind=client-tunnels"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P227-EV kind=client-tunnels"
+                + " client_dbid_hex=" + clientDbidHex
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " client_resolved=" + result.clientResolved
+                + " inbound_pool_present=" + result.inboundPoolPresent
+                + " outbound_pool_present=" + result.outboundPoolPresent
+                + " inbound_tunnel_count=" + result.inboundTunnelCount
+                + " outbound_tunnel_count=" + result.outboundTunnelCount
+                + " inbound_exact_one_remote_hop_via_c=" + result.inboundExactOneRemoteHopViaC
+                + " outbound_exact_one_remote_hop_via_c=" + result.outboundExactOneRemoteHopViaC
+                + " inbound_zero_hop_present=" + result.inboundZeroHopPresent
+                + " outbound_zero_hop_present=" + result.outboundZeroHopPresent;
         }
 
         /**

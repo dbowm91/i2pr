@@ -2381,6 +2381,10 @@ async fn destination_message_plane_against_java() {
                 &evidence_dir,
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            record_p227_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2686,6 +2690,10 @@ async fn destination_message_plane_against_java() {
             "authoritative-epoch-never-reached-lease-stalled",
         );
         record_p226_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
+        record_p227_early_stop_gap(
             &evidence_dir,
             "authoritative-epoch-never-reached-lease-stalled",
         );
@@ -3654,6 +3662,81 @@ async fn destination_message_plane_against_java() {
         )
     };
     record_p226_classification(&evidence_dir, &p226_terminal, &p226_trace);
+    // Plan 227 — explicit one-hop corrective terminal. The shell has already
+    // proven Router-C eligibility and installed one-hop pools before the
+    // counted driver; the driver re-queries the same read-only diagnostics
+    // at its post-bootstrap epoch and emits exactly one authoritative
+    // `p227-classification` row. Installed pool state is authoritative;
+    // scratch-log selection is corroborative only.
+    let p227_router_c_hex = std::env::var("P227_ROUTER_C_HEX").unwrap_or_default();
+    let p227_router_c_b64_env = std::env::var("P227_ROUTER_C_B64").unwrap_or_default();
+    let p227_client_hex_env =
+        std::env::var("P227_CLIENT_DBID_HEX").unwrap_or_else(|_| helper_client_dbid_hex.clone());
+    let p227_client_hex = if p227_is_hex64(&p227_client_hex_env) {
+        p227_client_hex_env.clone()
+    } else {
+        helper_client_dbid_hex.clone()
+    };
+    // Exact-C identity proof: the explicit peer B64 must equal Java's own
+    // P224-HASH-B64 rendering of the Router-C hex (never reimplemented).
+    let p227_rendered_b64 = if p227_is_hex64(&p227_router_c_hex) {
+        p224_collect_hash_b64(diag_a_port, &p227_router_c_hex).await
+    } else {
+        None
+    };
+    let p227_option_identity_match = !p227_router_c_hex.is_empty()
+        && !p227_router_c_b64_env.is_empty()
+        && p227_rendered_b64.as_deref() == Some(p227_router_c_b64_env.as_str());
+    append_evidence(
+        &evidence_dir,
+        "p227-explicit-peer-derivation",
+        &format!(
+            "router_c_hex={} b64_len={} renderer=P224-HASH-B64 option_identity_match={}",
+            if p227_router_c_hex.is_empty() {
+                "missing".to_owned()
+            } else {
+                p227_router_c_hex.clone()
+            },
+            p227_router_c_b64_env.len(),
+            p227_option_identity_match,
+        ),
+    );
+    let p227_eligibility = if p227_is_hex64(&p227_router_c_hex) {
+        p227_collect_eligibility(diag_a_port, &p227_router_c_hex).await
+    } else {
+        None
+    };
+    record_p227_eligibility(&evidence_dir, p227_eligibility.as_ref(), &p227_router_c_hex);
+    let p227_tunnels = if p227_is_hex64(&p227_client_hex) && p227_is_hex64(&p227_router_c_hex) {
+        p227_collect_tunnels(diag_a_port, &p227_client_hex, &p227_router_c_hex).await
+    } else {
+        None
+    };
+    record_p227_tunnels(
+        &evidence_dir,
+        p227_tunnels.as_ref(),
+        &p227_client_hex,
+        &p227_router_c_hex,
+    );
+    // Helper-connect facts are recorded by the shell
+    // (`p227-helper-connect.tsv`); the driver consumes the frozen
+    // 45-second payload result as its acceptance input and never
+    // re-derives it from the trace.
+    let p227_terminal = p227_classify(
+        p227_eligibility.as_ref(),
+        p227_tunnels.as_ref(),
+        &p226_trace,
+        p224_b_pre.as_ref().is_some_and(p224_b_answerable),
+        p224_trace.b_lookup_received,
+        p224_trace.b_published_ls_answered,
+        p224_trace.a_client_tunnel_ls_received,
+        p224_a_post
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.validated_present),
+        &p222_facts.ordered_statuses,
+        frozen_payload_45s,
+    );
+    record_p227_classification(&evidence_dir, &p227_terminal);
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -5674,6 +5757,383 @@ fn record_p226_classification(evidence_dir: &Path, terminal: &P226Terminal, trac
             trace.search_failed,
             trace.peer_try_count,
         ),
+    );
+}
+
+// ---- Plan 227 — explicit one-hop client-tunnel corrective -----------------
+// Reference-harness corrective only. No production protocol change. The raw
+// helper requests a genuine stock-Java one-hop inbound/outbound client tunnel
+// through controlled Router C via ordinary I2CP SessionConfig
+// `inbound.explicitPeers` / `outbound.explicitPeers`. Installed pool state
+// from `P227-CLIENT-TUNNELS` is authoritative; scratch-log selection facts
+// are corroborative only. Exactly one `p227-classification` row per run.
+
+/// Lowercase-hex 32-byte hash validation (exactly 64 chars, no uppercase).
+fn p227_is_hex64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Strict boolean field (`true` / `false` only; anything else is Unknown).
+fn p227_parse_bool(value: Option<&String>) -> Option<bool> {
+    match value.map(String::as_str) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+/// Strict bounded count (0..=8, decimal only).
+fn p227_parse_count(value: Option<&String>) -> Option<u64> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > 2 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed: u64 = raw.parse().ok()?;
+    (parsed <= 8).then_some(parsed)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P227Eligibility {
+    observable: bool,
+    main_raw_present: bool,
+    main_valid_present: bool,
+    selectable: bool,
+    established: bool,
+    banlisted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P227Tunnels {
+    observable: bool,
+    client_resolved: bool,
+    inbound_pool_present: bool,
+    outbound_pool_present: bool,
+    inbound_tunnel_count: u64,
+    outbound_tunnel_count: u64,
+    inbound_exact_one_remote_hop_via_c: bool,
+    outbound_exact_one_remote_hop_via_c: bool,
+    inbound_zero_hop_present: bool,
+    outbound_zero_hop_present: bool,
+}
+
+fn p227_parse_eligibility(line: &str, expected_c_hex: &str) -> Option<P227Eligibility> {
+    if !line.starts_with("P227-EV ") || !line.contains("kind=peer-eligibility") {
+        return None;
+    }
+    // Reject raw-log promotion: the line must be a single bounded diagnostic
+    // row, never raw Java log text.
+    if line.len() > 1024 || line.contains("not doing zero-hop") || line.contains("Skipping query") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P227-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("router_c_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_c_hex) || !p227_is_hex64(&echoed.to_lowercase()) {
+        return None;
+    }
+    // Secret/raw-log rejection: no key material, payload, or log text may
+    // appear in the diagnostic row.
+    for forbidden in [
+        "priv",
+        "seed",
+        "session_key",
+        "tag=",
+        "payload",
+        "log-router",
+    ] {
+        if line.to_lowercase().contains(forbidden) {
+            return None;
+        }
+    }
+    Some(P227Eligibility {
+        observable: true,
+        main_raw_present: p227_parse_bool(kv.get("main_raw_present"))?,
+        main_valid_present: p227_parse_bool(kv.get("main_valid_present"))?,
+        selectable: p227_parse_bool(kv.get("selectable"))?,
+        established: p227_parse_bool(kv.get("established")).unwrap_or(false),
+        banlisted: p227_parse_bool(kv.get("banlisted")).unwrap_or(false),
+    })
+}
+
+fn p227_parse_tunnels(
+    line: &str,
+    expected_client_hex: &str,
+    expected_c_hex: &str,
+) -> Option<P227Tunnels> {
+    if !line.starts_with("P227-EV ") || !line.contains("kind=client-tunnels") {
+        return None;
+    }
+    if line.len() > 2048 || line.contains("not doing zero-hop") || line.contains("Skipping query") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P227-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echo_client = kv.get("client_dbid_hex")?;
+    let echo_c = kv.get("router_c_hex")?;
+    if !echo_client.eq_ignore_ascii_case(expected_client_hex)
+        || !echo_c.eq_ignore_ascii_case(expected_c_hex)
+    {
+        return None;
+    }
+    if !p227_is_hex64(&echo_client.to_lowercase()) || !p227_is_hex64(&echo_c.to_lowercase()) {
+        return None;
+    }
+    for forbidden in ["priv", "seed", "session_key", "payload", "log-router"] {
+        if line.to_lowercase().contains(forbidden) {
+            return None;
+        }
+    }
+    Some(P227Tunnels {
+        observable: true,
+        client_resolved: p227_parse_bool(kv.get("client_resolved"))?,
+        inbound_pool_present: p227_parse_bool(kv.get("inbound_pool_present"))?,
+        outbound_pool_present: p227_parse_bool(kv.get("outbound_pool_present"))?,
+        inbound_tunnel_count: p227_parse_count(kv.get("inbound_tunnel_count"))?,
+        outbound_tunnel_count: p227_parse_count(kv.get("outbound_tunnel_count"))?,
+        inbound_exact_one_remote_hop_via_c: p227_parse_bool(
+            kv.get("inbound_exact_one_remote_hop_via_c"),
+        )?,
+        outbound_exact_one_remote_hop_via_c: p227_parse_bool(
+            kv.get("outbound_exact_one_remote_hop_via_c"),
+        )?,
+        inbound_zero_hop_present: p227_parse_bool(kv.get("inbound_zero_hop_present"))?,
+        outbound_zero_hop_present: p227_parse_bool(kv.get("outbound_zero_hop_present"))?,
+    })
+}
+
+async fn p227_collect_eligibility(diag_port: u16, router_c_hex: &str) -> Option<P227Eligibility> {
+    if !p227_is_hex64(router_c_hex) {
+        return None;
+    }
+    let line =
+        p220_query_diagnostic(diag_port, &format!("P227-PEER-ELIGIBILITY {router_c_hex}")).await?;
+    p227_parse_eligibility(&line, router_c_hex)
+}
+
+async fn p227_collect_tunnels(
+    diag_port: u16,
+    client_dbid_hex: &str,
+    router_c_hex: &str,
+) -> Option<P227Tunnels> {
+    if !p227_is_hex64(client_dbid_hex) || !p227_is_hex64(router_c_hex) {
+        return None;
+    }
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P227-CLIENT-TUNNELS {client_dbid_hex} {router_c_hex}"),
+    )
+    .await?;
+    p227_parse_tunnels(&line, client_dbid_hex, router_c_hex)
+}
+
+fn p227_tunnel_gate_pass(tunnels: &P227Tunnels) -> bool {
+    tunnels.observable
+        && tunnels.client_resolved
+        && tunnels.inbound_pool_present
+        && tunnels.outbound_pool_present
+        && tunnels.inbound_exact_one_remote_hop_via_c
+        && tunnels.outbound_exact_one_remote_hop_via_c
+        && !tunnels.inbound_zero_hop_present
+        && !tunnels.outbound_zero_hop_present
+}
+
+fn p227_eligibility_gate_pass(eligibility: &P227Eligibility) -> bool {
+    eligibility.observable
+        && eligibility.main_raw_present
+        && eligibility.main_valid_present
+        && eligibility.selectable
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P227Terminal {
+    CNotSelectable,
+    ExplicitOneHopNotBuilt,
+    ObservabilityGap,
+    EvidenceContradictionOneHopButZeroHopUnknown,
+    EvidenceContradictionClientDsmNotStored,
+    NextBoundaryBNotQueried,
+    NextBoundaryAToBLookupDelivery,
+    NextBoundaryBReplyToAClientTunnel,
+    NextBoundary(Vec<i32>),
+    ReverseDeliveryPassed,
+}
+
+impl P227Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::CNotSelectable => "P227-C-NOT-SELECTABLE".to_owned(),
+            Self::ExplicitOneHopNotBuilt => "P227-EXPLICIT-ONE-HOP-NOT-BUILT".to_owned(),
+            Self::ObservabilityGap => "P227-OBSERVABILITY-GAP".to_owned(),
+            Self::EvidenceContradictionOneHopButZeroHopUnknown => {
+                "P227-EVIDENCE-CONTRADICTION-ONE-HOP-BUT-ZERO-HOP-UNKNOWN".to_owned()
+            }
+            Self::EvidenceContradictionClientDsmNotStored => {
+                "P227-EVIDENCE-CONTRADICTION-CLIENT-DSM-NOT-STORED".to_owned()
+            }
+            Self::NextBoundaryBNotQueried => "P227-NEXT-BOUNDARY-B-NOT-QUERIED".to_owned(),
+            Self::NextBoundaryAToBLookupDelivery => {
+                "P227-NEXT-BOUNDARY-A-TO-B-LOOKUP-DELIVERY".to_owned()
+            }
+            Self::NextBoundaryBReplyToAClientTunnel => {
+                "P227-NEXT-BOUNDARY-B-REPLY-TO-A-CLIENT-TUNNEL".to_owned()
+            }
+            Self::NextBoundary(statuses) => {
+                format!("P227-NEXT-BOUNDARY ordered_statuses={statuses:?}")
+            }
+            Self::ReverseDeliveryPassed => "P227-REVERSE-DELIVERY-PASSED".to_owned(),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn p227_classify(
+    eligibility: Option<&P227Eligibility>,
+    tunnels: Option<&P227Tunnels>,
+    p226_trace: &P226Trace,
+    b_answerable: bool,
+    b_lookup_received: bool,
+    b_published_ls_answered: bool,
+    a_client_tunnel_ls_received: bool,
+    client_db_validated_present: bool,
+    ordered_statuses: &[i32],
+    frozen_payload_45s: bool,
+) -> P227Terminal {
+    if frozen_payload_45s {
+        return P227Terminal::ReverseDeliveryPassed;
+    }
+    let Some(eligibility) = eligibility else {
+        return P227Terminal::ObservabilityGap;
+    };
+    if !eligibility.observable {
+        return P227Terminal::ObservabilityGap;
+    }
+    if !p227_eligibility_gate_pass(eligibility) {
+        return P227Terminal::CNotSelectable;
+    }
+    let Some(tunnels) = tunnels else {
+        return P227Terminal::ObservabilityGap;
+    };
+    if !tunnels.observable {
+        return P227Terminal::ObservabilityGap;
+    }
+    if !p227_tunnel_gate_pass(tunnels) {
+        // Inbound-only or outbound-only or zero-hop fallback is insufficient.
+        return P227Terminal::ExplicitOneHopNotBuilt;
+    }
+    // One-hop proven: the zero-hop guard must be absent. If the exact
+    // target job still fires the zero-hop branch, that is a contradiction.
+    if p226_trace.observable && p226_trace.b_zero_hop_unknown_rejected {
+        return P227Terminal::EvidenceContradictionOneHopButZeroHopUnknown;
+    }
+    if !p226_trace.observable {
+        return P227Terminal::ObservabilityGap;
+    }
+    if !p226_trace.query_to_b {
+        return P227Terminal::NextBoundaryBNotQueried;
+    }
+    if !b_lookup_received {
+        return P227Terminal::NextBoundaryAToBLookupDelivery;
+    }
+    if !b_published_ls_answered {
+        // B answerability was already proven pre-send; a missing answer
+        // after dispatch is a reply-path boundary, not a re-attribution.
+        let _ = b_answerable;
+        return P227Terminal::NextBoundaryAToBLookupDelivery;
+    }
+    if !a_client_tunnel_ls_received {
+        return P227Terminal::NextBoundaryBReplyToAClientTunnel;
+    }
+    if a_client_tunnel_ls_received && !client_db_validated_present {
+        return P227Terminal::EvidenceContradictionClientDsmNotStored;
+    }
+    // Client DB usable and status 21 replaced by a new send terminal.
+    let status_21_present = ordered_statuses.contains(&21);
+    if !status_21_present && !ordered_statuses.is_empty() {
+        return P227Terminal::NextBoundary(ordered_statuses.to_vec());
+    }
+    P227Terminal::ObservabilityGap
+}
+
+fn record_p227_eligibility(
+    evidence_dir: &Path,
+    eligibility: Option<&P227Eligibility>,
+    router_c_hex: &str,
+) {
+    match eligibility {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p227-peer-eligibility",
+            &format!(
+                "router_c_hex={} observable={} main_raw_present={} main_valid_present={} selectable={} established={} banlisted={}",
+                router_c_hex,
+                facts.observable,
+                facts.main_raw_present,
+                facts.main_valid_present,
+                facts.selectable,
+                facts.established,
+                facts.banlisted,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p227-peer-eligibility",
+            &format!("router_c_hex={router_c_hex} observable=false reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+fn record_p227_tunnels(
+    evidence_dir: &Path,
+    tunnels: Option<&P227Tunnels>,
+    client_hex: &str,
+    router_c_hex: &str,
+) {
+    match tunnels {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p227-client-tunnels",
+            &format!(
+                "client_dbid_hex={} router_c_hex={} observable={} client_resolved={} inbound_pool_present={} outbound_pool_present={} inbound_tunnel_count={} outbound_tunnel_count={} inbound_exact_one_remote_hop_via_c={} outbound_exact_one_remote_hop_via_c={} inbound_zero_hop_present={} outbound_zero_hop_present={}",
+                client_hex,
+                router_c_hex,
+                facts.observable,
+                facts.client_resolved,
+                facts.inbound_pool_present,
+                facts.outbound_pool_present,
+                facts.inbound_tunnel_count,
+                facts.outbound_tunnel_count,
+                facts.inbound_exact_one_remote_hop_via_c,
+                facts.outbound_exact_one_remote_hop_via_c,
+                facts.inbound_zero_hop_present,
+                facts.outbound_zero_hop_present,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p227-client-tunnels",
+            &format!(
+                "client_dbid_hex={client_hex} router_c_hex={router_c_hex} observable=false reason=diagnostic-unreachable"
+            ),
+        ),
+    }
+}
+
+fn record_p227_classification(evidence_dir: &Path, terminal: &P227Terminal) {
+    append_evidence(evidence_dir, "p227-classification", &terminal.token());
+}
+
+fn record_p227_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    append_evidence(
+        evidence_dir,
+        "p227-classification",
+        &format!("P227-OBSERVABILITY-GAP reason={reason}"),
     );
 }
 
@@ -10275,5 +10735,338 @@ fn p226_classification_is_single_and_frozen_payload_wins() {
         1
     );
     assert!(tsv.contains("P226-REVERSE-DELIVERY-PASSED"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- Plan 227 corrective unit rows ----------------------------------------
+
+fn p227_test_c_hex() -> String {
+    "ab".repeat(32)
+}
+
+fn p227_test_client_hex() -> String {
+    "cd".repeat(32)
+}
+
+fn p227_test_eligibility(selectable: bool) -> P227Eligibility {
+    P227Eligibility {
+        observable: true,
+        main_raw_present: true,
+        main_valid_present: true,
+        selectable,
+        established: false,
+        banlisted: false,
+    }
+}
+
+fn p227_test_tunnels(
+    inbound_exact: bool,
+    outbound_exact: bool,
+    inbound_zero: bool,
+    outbound_zero: bool,
+) -> P227Tunnels {
+    P227Tunnels {
+        observable: true,
+        client_resolved: true,
+        inbound_pool_present: true,
+        outbound_pool_present: true,
+        inbound_tunnel_count: 1,
+        outbound_tunnel_count: 1,
+        inbound_exact_one_remote_hop_via_c: inbound_exact,
+        outbound_exact_one_remote_hop_via_c: outbound_exact,
+        inbound_zero_hop_present: inbound_zero,
+        outbound_zero_hop_present: outbound_zero,
+    }
+}
+
+fn p227_test_trace(query_to_b: bool, zero_hop_rejected: bool) -> P226Trace {
+    P226Trace {
+        observable: true,
+        target_job_count: 1,
+        b_zero_hop_unknown_rejected: zero_hop_rejected,
+        query_to_b,
+        ..P226Trace::default()
+    }
+}
+
+#[test]
+fn p227_c_selectable_passes_eligibility_gate() {
+    let eligible = p227_test_eligibility(true);
+    assert!(p227_eligibility_gate_pass(&eligible));
+    let tunnels = p227_test_tunnels(true, true, false, false);
+    assert!(p227_tunnel_gate_pass(&tunnels));
+}
+
+#[test]
+fn p227_c_non_selectable_maps_to_not_selectable() {
+    let eligible = p227_test_eligibility(false);
+    assert!(!p227_eligibility_gate_pass(&eligible));
+    let tunnels = p227_test_tunnels(true, true, false, false);
+    let terminal = p227_classify(
+        Some(&eligible),
+        Some(&tunnels),
+        &p227_test_trace(true, false),
+        true,
+        true,
+        true,
+        true,
+        true,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::CNotSelectable);
+}
+
+#[test]
+fn p227_exact_c_identity_mismatch_rejected() {
+    let c_hex = p227_test_c_hex();
+    let other_hex = p227_test_client_hex();
+    let line = format!(
+        "P227-EV kind=peer-eligibility router_c_hex={c_hex} observable=true main_raw_present=true main_valid_present=true selectable=true established=false banlisted=false"
+    );
+    assert!(p227_parse_eligibility(&line, &c_hex).is_some());
+    assert!(p227_parse_eligibility(&line, &other_hex).is_none());
+    let tun_line = format!(
+        "P227-EV kind=client-tunnels client_dbid_hex={} router_c_hex={} observable=true client_resolved=true inbound_pool_present=true outbound_pool_present=true inbound_tunnel_count=1 outbound_tunnel_count=1 inbound_exact_one_remote_hop_via_c=true outbound_exact_one_remote_hop_via_c=true inbound_zero_hop_present=false outbound_zero_hop_present=false",
+        p227_test_client_hex(),
+        c_hex,
+    );
+    assert!(p227_parse_tunnels(&tun_line, &p227_test_client_hex(), &c_hex).is_some());
+    assert!(p227_parse_tunnels(&tun_line, &p227_test_client_hex(), &other_hex).is_none());
+    assert!(!p227_is_hex64("AB".repeat(32).as_str()));
+    assert!(!p227_is_hex64("abc"));
+}
+
+#[test]
+fn p227_inbound_only_tunnel_is_insufficient() {
+    let tunnels = p227_test_tunnels(true, false, false, false);
+    assert!(!p227_tunnel_gate_pass(&tunnels));
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&tunnels),
+        &p227_test_trace(false, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::ExplicitOneHopNotBuilt);
+}
+
+#[test]
+fn p227_outbound_only_tunnel_is_insufficient() {
+    let tunnels = p227_test_tunnels(false, true, false, false);
+    assert!(!p227_tunnel_gate_pass(&tunnels));
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&tunnels),
+        &p227_test_trace(false, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::ExplicitOneHopNotBuilt);
+}
+
+#[test]
+fn p227_zero_hop_fallback_is_insufficient() {
+    let tunnels = p227_test_tunnels(true, true, true, false);
+    assert!(!p227_tunnel_gate_pass(&tunnels));
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&tunnels),
+        &p227_test_trace(false, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::ExplicitOneHopNotBuilt);
+}
+
+#[test]
+fn p227_exact_one_hop_both_directions_passes_gate() {
+    let tunnels = p227_test_tunnels(true, true, false, false);
+    assert!(p227_tunnel_gate_pass(&tunnels));
+    // Gate passes but B never queried -> new boundary, not a pass.
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&tunnels),
+        &p227_test_trace(false, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::NextBoundaryBNotQueried);
+}
+
+#[test]
+fn p227_one_hop_plus_zero_hop_contradiction() {
+    // Direct gate fails when zero-hop present, but the classifier must
+    // also surface the one-hop-but-zero-hop contradiction when the
+    // zero-hop guard fires despite proven one-hop pools.
+    let trace = p227_test_trace(true, true);
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &trace,
+        true,
+        true,
+        true,
+        true,
+        true,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(
+        terminal,
+        P227Terminal::EvidenceContradictionOneHopButZeroHopUnknown
+    );
+}
+
+#[test]
+fn p227_one_hop_no_b_query_maps_to_next_boundary() {
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(false, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::NextBoundaryBNotQueried);
+}
+
+#[test]
+fn p227_b_query_reply_client_store_downstream() {
+    // A dispatches toward B but B never receives.
+    let to_b = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(true, false),
+        true,
+        false,
+        false,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(to_b, P227Terminal::NextBoundaryAToBLookupDelivery);
+    // B answers but A does not observe the client-tunnel DSM.
+    let reply = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(true, false),
+        true,
+        true,
+        true,
+        false,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(reply, P227Terminal::NextBoundaryBReplyToAClientTunnel);
+    // DSM received but not installed in the client DB.
+    let store = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(true, false),
+        true,
+        true,
+        true,
+        true,
+        false,
+        &[1, 21],
+        false,
+    );
+    assert_eq!(store, P227Terminal::EvidenceContradictionClientDsmNotStored);
+}
+
+#[test]
+fn p227_changed_send_status_maps_to_next_boundary() {
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(true, false),
+        true,
+        true,
+        true,
+        true,
+        true,
+        &[1, 22],
+        false,
+    );
+    assert_eq!(terminal, P227Terminal::NextBoundary(vec![1, 22]));
+}
+
+#[test]
+fn p227_digest_matched_delivery_passes() {
+    let terminal = p227_classify(
+        Some(&p227_test_eligibility(true)),
+        Some(&p227_test_tunnels(true, true, false, false)),
+        &p227_test_trace(true, false),
+        true,
+        true,
+        true,
+        true,
+        true,
+        &[1, 21],
+        true,
+    );
+    assert_eq!(terminal, P227Terminal::ReverseDeliveryPassed);
+}
+
+#[test]
+fn p227_secret_raw_log_rejected() {
+    let c_hex = p227_test_c_hex();
+    // Secret material in the row must be rejected.
+    let secret = format!(
+        "P227-EV kind=peer-eligibility router_c_hex={c_hex} observable=true main_raw_present=true main_valid_present=true selectable=true established=false banlisted=false session_key=abcd"
+    );
+    assert!(p227_parse_eligibility(&secret, &c_hex).is_none());
+    // Raw-log promotion must be rejected.
+    let raw = format!(
+        "P227-EV kind=peer-eligibility router_c_hex={c_hex} observable=true main_raw_present=true main_valid_present=true selectable=true established=false banlisted=false not doing zero-hop lookup to unknown foo"
+    );
+    assert!(p227_parse_eligibility(&raw, &c_hex).is_none());
+    // Uppercase hex must be rejected (lowercase-only authority).
+    assert!(!p227_is_hex64(&"AB".repeat(32)));
+    assert!(p227_is_hex64(&c_hex));
+}
+
+#[test]
+fn p227_classification_is_single_and_frozen_payload_wins() {
+    let dir = p224_test_tmpdir("p227-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let terminal = P227Terminal::ReverseDeliveryPassed;
+    record_p227_classification(&evidence_dir, &terminal);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p227-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P227-REVERSE-DELIVERY-PASSED"));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -215,7 +215,11 @@ P223_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # current / key-type-code facts; client-subDB variant with explicit
 # main-fallback rejection; local reads only, never a network lookup).
 P224_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P224LsProbe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" ]]; then
+# Plan 227 WP A/D — test-only read-only Router-C eligibility + installed
+# client-tunnel snapshot probe (public accessors only; no profile/tier
+# mutation, no NetDB store, no tunnel install, no reflection).
+P227_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P227Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -228,7 +232,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -268,6 +272,8 @@ logger.flushInterval=1
 logger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO
 logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG
 logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO
+logger.record.net.i2p.router.tunnel.pool.TunnelPeerSelector=INFO
+logger.record.net.i2p.router.tunnel.pool.ClientPeerSelector=INFO
 LOGGER_EOF
 }
 write_p224_logger_config "${JAVA_DATA}"
@@ -742,25 +748,67 @@ RAW_HELPER_READY="${SCRATCH}/reference-raw.ready"
 STREAM_HELPER_READY="${SCRATCH}/reference-stream.ready"
 
 start_raw_helper() {
+  # Plan 227 WP C — optional explicit Router-C I2P Base64 peer for the
+  # genuine one-hop client tunnel. Passed as $1 when the harness has
+  # derived it via the authoritative P224-HASH-B64 renderer; empty means
+  # the legacy zero-hop profile (only for non-counted diagnosis).
+  # The helper also honours I2PR_M6_JAVA_EXPLICIT_PEER_B64 as an env
+  # fallback (strict 44-char I2P Base64 validated in Java); the counted
+  # harness always passes the explicit 5th argument so the option stays
+  # scoped to this raw client's SessionConfig.
+  local explicit_b64="${1:-}"
   : > "${RAW_HELPER_LOG}"
-  setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
-    -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
-    -Di2p.dir.base="${JAVA_CACHE}" -cp "${HELPER_CP}" \
-    ReferenceRawDestination 127.0.0.1 "${JAVA_I2CP_PORT}" "${JAVA_RAW_CONTROL_PORT}" \
-    "${RAW_HELPER_KEY}" >"${RAW_HELPER_READY}" 2>"${RAW_HELPER_LOG}" < /dev/null &
+  : > "${RAW_HELPER_READY}"
+  # Plan 227 §8 — readiness budget covers Java's own five-minute
+  # I2PSession.connect() LeaseSet/tunnel ceiling (600 half-second polls
+  # = 300 s). This is not the frozen 45-second reverse-delivery window.
+  local helper_start_ms
+  helper_start_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+  if [[ -n "${explicit_b64}" ]]; then
+    setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
+      -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
+      -Di2p.dir.base="${JAVA_CACHE}" -cp "${HELPER_CP}" \
+      ReferenceRawDestination 127.0.0.1 "${JAVA_I2CP_PORT}" "${JAVA_RAW_CONTROL_PORT}" \
+      "${RAW_HELPER_KEY}" "${explicit_b64}" >"${RAW_HELPER_READY}" 2>"${RAW_HELPER_LOG}" < /dev/null &
+  else
+    setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
+      -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
+      -Di2p.dir.base="${JAVA_CACHE}" -cp "${HELPER_CP}" \
+      ReferenceRawDestination 127.0.0.1 "${JAVA_I2CP_PORT}" "${JAVA_RAW_CONTROL_PORT}" \
+      "${RAW_HELPER_KEY}" >"${RAW_HELPER_READY}" 2>"${RAW_HELPER_LOG}" < /dev/null &
+  fi
   RAW_HELPER_PID=$!
   CHILD_PIDS+=("${RAW_HELPER_PID}")
-  for _ in $(seq 1 180); do
+  local helper_ready=0
+  local helper_timeout_seen=0
+  for _ in $(seq 1 600); do
     if grep -q '^READY ' "${RAW_HELPER_READY}" 2>/dev/null; then
-      return 0
+      helper_ready=1
+      break
     fi
     if ! kill -0 "${RAW_HELPER_PID}" 2>/dev/null; then
       cat "${RAW_HELPER_LOG}" >&2 || true
+      local helper_end_ms
+      helper_end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+      printf 'helper_connect_elapsed_ms\t%s\n' "$((helper_end_ms - helper_start_ms))" >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      printf 'helper_ready\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+      printf 'helper_connect_timeout_seen\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
       return 1
     fi
     sleep 0.5
   done
-  echo "public Java raw helper did not become ready" >&2
+  local helper_end_ms
+  helper_end_ms="$(python3 -c 'import time; print(int(time.time()*1000))')"
+  mkdir -p "${DRIVER_EVIDENCE}" 2>/dev/null || true
+  printf 'helper_connect_elapsed_ms\t%s\n' "$((helper_end_ms - helper_start_ms))" >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+  if [[ "${helper_ready}" -eq 1 ]]; then
+    printf 'helper_ready\ttrue\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+    printf 'helper_connect_timeout_seen\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+    return 0
+  fi
+  printf 'helper_ready\tfalse\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+  printf 'helper_connect_timeout_seen\ttrue\n' >> "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" 2>/dev/null || true
+  echo "public Java raw helper did not become ready (Plan 227 five-minute ceiling)" >&2
   cat "${RAW_HELPER_LOG}" >&2 || true
   return 1
 }
@@ -958,7 +1006,70 @@ streaming_rc=0
 # (Plan 217 §6.D), so each sub-run is independent and may be
 # executed alone for diagnosis.
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
-  start_raw_helper
+  # Plan 227 §12 / invariant 12 — the distinct-loopback topology remains
+  # unadmitted. A P227 counted run MUST use the baseline topology; the
+  # harness rejects a distinct invocation by construction.
+  if [[ "${JAVA_PEER_TOPOLOGY}" == "distinct" ]]; then
+    echo "Plan 227 forbids distinct loopback topology in a counted run (P226 baseline unadmitted correction)" >&2
+    exit 64
+  fi
+  # Plan 227 WP B — exact Router-C I2P Base64 identity. Reuse the
+  # authoritative read-only diagnostics: obtain Router C's 32-byte hash
+  # from its P220 self snapshot, validate 64 lowercase hex, then render
+  # Java's exact I2P Base64 via P224-HASH-B64. Never reimplement the
+  # alphabet in shell.
+  P227_C_SNAPSHOT="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P220-SNAPSHOT")"
+  P227_C_HEX="$(printf '%s' "${P227_C_SNAPSHOT}" | grep -oE 'self_router_hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+  if [[ ! "${P227_C_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Plan 227 Router-C hex derivation failed (P220 self snapshot)" >&2
+    echo "snapshot was: ${P227_C_SNAPSHOT}" >&2
+    exit 70
+  fi
+  P227_C_B64_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P224-HASH-B64 ${P227_C_HEX}")"
+  P227_C_B64="$(printf '%s' "${P227_C_B64_LINE}" | grep -oE 'hash_b64=[A-Za-z0-9\-\~=]{44}' | cut -d= -f2 | head -n 1 || true)"
+  if [[ -z "${P227_C_B64}" ]]; then
+    echo "Plan 227 Router-C Base64 render failed (P224-HASH-B64)" >&2
+    echo "line was: ${P227_C_B64_LINE}" >&2
+    exit 70
+  fi
+  if [[ "${#P227_C_B64}" -ne 44 ]]; then
+    echo "Plan 227 Router-C Base64 has wrong length (${#P227_C_B64})" >&2
+    exit 70
+  fi
+  mkdir -p "${DRIVER_EVIDENCE}/destination" 2>/dev/null || true
+  printf 'p227-explicit-peer-derivation\trouter_c_hex=%s b64_len=%s renderer=P224-HASH-B64\n' \
+    "${P227_C_HEX}" "${#P227_C_B64}" > "${DRIVER_EVIDENCE}/destination/p227-derivation.tsv"
+  # Plan 227 WP A — Router-C eligibility preflight before helper start.
+  # Bounded read-only diagnostic only; no profile/tier mutation.
+  P227_ELIG_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-PEER-ELIGIBILITY ${P227_C_HEX}")"
+  printf '%s\n' "${P227_ELIG_LINE}" > "${DRIVER_EVIDENCE}/destination/p227-eligibility-raw.tsv"
+  P227_ELIG_NORM="$(printf '%s' "${P227_ELIG_LINE}" | tr ' ' '\n' || true)"
+  p227_field() {
+    printf '%s' "${P227_ELIG_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  P227_MAIN_RAW="$(p227_field main_raw_present)"
+  P227_MAIN_VALID="$(p227_field main_valid_present)"
+  P227_SELECTABLE="$(p227_field selectable)"
+  P227_ESTABLISHED="$(p227_field established)"
+  P227_BANLISTED="$(p227_field banlisted)"
+  printf 'p227-peer-eligibility\tmain_raw_present=%s main_valid_present=%s selectable=%s established=%s banlisted=%s router_c_hex=%s\n' \
+    "${P227_MAIN_RAW}" "${P227_MAIN_VALID}" "${P227_SELECTABLE}" "${P227_ESTABLISHED}" "${P227_BANLISTED}" "${P227_C_HEX}" \
+    > "${DRIVER_EVIDENCE}/destination/p227-eligibility.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p227-eligibility.tsv" >> "${DRIVER_DEST_TSV}"
+  cat "${DRIVER_EVIDENCE}/destination/p227-derivation.tsv" >> "${DRIVER_DEST_TSV}"
+  if [[ "${P227_MAIN_RAW}" != "true" || "${P227_MAIN_VALID}" != "true" || "${P227_SELECTABLE}" != "true" ]]; then
+    echo "P227-C-NOT-SELECTABLE main_raw=${P227_MAIN_RAW} main_valid=${P227_MAIN_VALID} selectable=${P227_SELECTABLE}" >&2
+    printf 'p227-classification\tP227-C-NOT-SELECTABLE main_raw_present=%s main_valid_present=%s selectable=%s\n' \
+      "${P227_MAIN_RAW}" "${P227_MAIN_VALID}" "${P227_SELECTABLE}" >> "${DRIVER_DEST_TSV}"
+    # Early-stop: do not start helper, do not compensate with another peer.
+    # The p227-classification row above is the single terminal for this run.
+    P227_EARLY_STOP=1
+  else
+    P227_EARLY_STOP=0
+  fi
+  if [[ "${P227_EARLY_STOP}" -eq 0 ]]; then
+  : > "${DRIVER_EVIDENCE}/p227-helper-connect.tsv"
+  start_raw_helper "${P227_C_B64}"
   # Plan 200 §A.1 — the helper's `READY` line is intentionally the
   # minimal public-client fact set; the b64 destination is the
   # last-but-one whitespace-separated field after `READY`, with
@@ -969,12 +1080,58 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     }
   }' "${RAW_HELPER_READY}")"
   echo "    public Java raw helper ready; running destination driver" >>"${DRIVER_LOG}"
+  # Plan 227 WP D — prove installed one-hop client tunnels before the
+  # tracked reverse send. Derive the helper client DBID via the
+  # read-only P223-DEST-INSPECT renderer, then resolve live pools via
+  # P227-CLIENT-TUNNELS. Installed pool state is authoritative; log
+  # selection facts are corroborative only.
+  P227_CLIENT_DBID_HEX=""
+  P227_TUNNEL_GATE_OK=0
+  if [[ -n "${RAW_REFERENCE_DESTINATION_B64}" ]]; then
+    P227_DEST_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P223-DEST-INSPECT ${RAW_REFERENCE_DESTINATION_B64}" 2>/dev/null || true)"
+    P227_CLIENT_DBID_HEX="$(printf '%s' "${P227_DEST_LINE}" | grep -oE 'hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+  fi
+  if [[ "${P227_CLIENT_DBID_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
+    P227_TUN_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-CLIENT-TUNNELS ${P227_CLIENT_DBID_HEX} ${P227_C_HEX}" 2>/dev/null || true)"
+    printf '%s\n' "${P227_TUN_LINE}" > "${DRIVER_EVIDENCE}/destination/p227-tunnels-raw.tsv"
+    P227_TUN_NORM="$(printf '%s' "${P227_TUN_LINE}" | tr ' ' '\n' || true)"
+    p227t_field() {
+      printf '%s' "${P227_TUN_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+    }
+    P227_IN_EXACT="$(p227t_field inbound_exact_one_remote_hop_via_c)"
+    P227_OUT_EXACT="$(p227t_field outbound_exact_one_remote_hop_via_c)"
+    P227_IN_ZERO="$(p227t_field inbound_zero_hop_present)"
+    P227_OUT_ZERO="$(p227t_field outbound_zero_hop_present)"
+    P227_IN_COUNT="$(p227t_field inbound_tunnel_count)"
+    P227_OUT_COUNT="$(p227t_field outbound_tunnel_count)"
+    printf 'p227-client-tunnels\tclient_resolved=%s inbound_pool_present=%s outbound_pool_present=%s inbound_tunnel_count=%s outbound_tunnel_count=%s inbound_exact_one_remote_hop_via_c=%s outbound_exact_one_remote_hop_via_c=%s inbound_zero_hop_present=%s outbound_zero_hop_present=%s router_c_hex=%s\n' \
+      "$(p227t_field client_resolved)" "$(p227t_field inbound_pool_present)" "$(p227t_field outbound_pool_present)" \
+      "${P227_IN_COUNT}" "${P227_OUT_COUNT}" "${P227_IN_EXACT}" "${P227_OUT_EXACT}" "${P227_IN_ZERO}" "${P227_OUT_ZERO}" "${P227_C_HEX}" \
+      > "${DRIVER_EVIDENCE}/destination/p227-tunnels.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p227-tunnels.tsv" >> "${DRIVER_DEST_TSV}"
+    if [[ -f "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" ]]; then
+      cat "${DRIVER_EVIDENCE}/p227-helper-connect.tsv" >> "${DRIVER_DEST_TSV}"
+    fi
+    if [[ "${P227_IN_EXACT}" == "true" && "${P227_OUT_EXACT}" == "true" && "${P227_IN_ZERO}" == "false" && "${P227_OUT_ZERO}" == "false" ]]; then
+      P227_TUNNEL_GATE_OK=1
+    else
+      echo "P227-EXPLICIT-ONE-HOP-NOT-BUILT in=${P227_IN_EXACT}/${P227_IN_ZERO} out=${P227_OUT_EXACT}/${P227_OUT_ZERO}" >&2
+      printf 'p227-classification\tP227-EXPLICIT-ONE-HOP-NOT-BUILT inbound_exact=%s outbound_exact=%s inbound_zero=%s outbound_zero=%s\n' \
+        "${P227_IN_EXACT}" "${P227_OUT_EXACT}" "${P227_IN_ZERO}" "${P227_OUT_ZERO}" >> "${DRIVER_DEST_TSV}"
+      P227_TUNNEL_GATE_OK=0
+    fi
+  else
+    echo "Plan 227 client DBID derivation failed; cannot prove one-hop tunnels" >&2
+    printf 'p227-classification\tP227-OBSERVABILITY-GAP reason=client-dbid-unresolvable\n' >> "${DRIVER_DEST_TSV}"
+    P227_TUNNEL_GATE_OK=0
+  fi
   # Plan 220 §7 — moment #4 (immediately before reverse
   # helper SEND) captures the RouterInfo capability state
   # the helper observes on its own outbound-tunnel endpoint's
   # peer-selection path. History only; the driver takes its own
   # authoritative P220 snapshot at its post-bootstrap epoch.
   j219_record_timed_snapshot "immediately-before-reverse-helper-send"
+  if [[ "${P227_TUNNEL_GATE_OK}" -eq 1 ]]; then
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
      JAVA_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
@@ -995,6 +1152,9 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
      JAVA_DIAGNOSTIC_C_PORT="${JAVA_DIAGNOSTIC_C_PORT}" \
      JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
      JAVA_B_LOG_DIR="${JAVA_PUBLICATION_DATA}/logs" \
+     P227_ROUTER_C_HEX="${P227_C_HEX}" \
+     P227_ROUTER_C_B64="${P227_C_B64}" \
+     P227_CLIENT_DBID_HEX="${P227_CLIENT_DBID_HEX}" \
      timeout --foreground "${DRIVER_TIMEOUT}" \
      cargo test --locked -p i2pr-daemon --test java_tunnel_external \
      destination_message_plane_against_java -- --ignored --exact --nocapture --test-threads=1 \
@@ -1002,6 +1162,13 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     driver_rc=0
   else
     driver_rc=$?
+  fi
+  else
+    # Tunnel gate failed: skip the counted lookup driver; the
+    # P227-EXPLICIT-ONE-HOP-NOT-BUILT row above is the terminal.
+    # Still emit the driver-evidence concatenation guard below.
+    driver_rc=0
+    echo "    destination driver skipped (P227 tunnel gate failed)" >>"${DRIVER_LOG}"
   fi
   echo "    destination driver exit=${driver_rc}" >>"${DRIVER_LOG}"
   # Concatenate the destination driver's evidence into the destination TSV
@@ -1013,6 +1180,7 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # expires) captures the post-deadline RouterInfo
   # capability state and closes the correlation timeline.
   j219_record_timed_snapshot "after-reverse-send-wait-expires"
+  fi
 fi
 
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
@@ -1133,6 +1301,16 @@ REFERENCE_FACTS="${EVIDENCE_DIR}/reference-facts.tsv"
   printf 'java-client-inbound-tunnel-unavailable\t%s\n' "$(grep -cE 'No inbound tunnels available|No reply inbound tunnels' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-client-outbound-tunnel-unavailable\t%s\n' "$(grep -cE 'No outbound tunnels available' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
   printf 'java-floodfill-candidate-empty\t%s\n' "$(grep -cE 'No floodfill peers|No peers|No more peers' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  # Plan 227 WP E — scratch-log corroboration for the explicit one-hop
+  # path. Installed pool state (P227-CLIENT-TUNNELS) is authoritative;
+  # these counts are corroborative only and never promote peer lists,
+  # keys, tags, SessionConfig contents, or raw log text to evidence.
+  printf 'explicit-peer-option-present\t%s\n' "$(grep -cE 'explicitPeers|explicit peer' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'explicit-c-selection-observed\t%s\n' "$(grep -cE 'TunnelPeerSelector|ClientPeerSelector|selectExplicit' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'explicit-c-not-selectable-seen\t%s\n' "$(grep -cE 'not selectable|not eligible.*explicit|explicit.*not' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'client-build-success-seen\t%s\n' "$(grep -cE 'Build successful|tunnel built|Tunnel.*established|Client tunnel.*built' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'client-build-reject-seen\t%s\n' "$(grep -cE 'Build rejected|tunnel build failed|Client tunnel.*fail' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
+  printf 'client-build-timeout-seen\t%s\n' "$(grep -cE 'Build timeout|tunnel.*timeout|I2PSession.*timeout' "${JAVA_LOG_FILE}" 2>/dev/null || true)"
 } >> "${REFERENCE_FACTS}"
 ref_row() {
   local label="$1"
@@ -1451,6 +1629,36 @@ m6_key_row "external-p226-routerinfo-hosts" "p226-routerinfo-hosts" \
   "Plan 226 §8: Java RouterInfo hosts match the selected topology and are pairwise mask-3 distinct when corrected"
 m6_key_row "external-p226-target-job-trace" "p226-target-job-trace" \
   "Plan 226 §9: exact target ISJ job facts are correlated by bounded numeric job ID"
+
+# Plan 227 §11/§13 — read the single explicit-one-hop terminal. The
+# destination TSV may carry it from the shell early-stop path
+# (P227-C-NOT-SELECTABLE / P227-EXPLICIT-ONE-HOP-NOT-BUILT /
+# P227-OBSERVABILITY-GAP) or from the counted driver when the one-hop
+# gate passes. Consume the LAST occurrence so an early preflight row
+# cannot shadow the authoritative driver outcome, and record exactly
+# one external row (diagnostic observation, always passed when present).
+P227_CLASSIFICATION=""
+if [[ -f "${DRIVER_DEST_TSV}" ]]; then
+  P227_CLASSIFICATION="$(awk -F'\t' '$1 == "p227-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DRIVER_DEST_TSV}")"
+fi
+if [[ -z "${P227_CLASSIFICATION}" ]]; then
+  DEST_DRIVER_TSV_FOR_P227="${DRIVER_EVIDENCE}/destination/driver-evidence.tsv"
+  if [[ -f "${DEST_DRIVER_TSV_FOR_P227}" ]]; then
+    P227_CLASSIFICATION="$(awk -F'\t' '$1 == "p227-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DEST_DRIVER_TSV_FOR_P227}")"
+  fi
+fi
+if [[ -z "${P227_CLASSIFICATION}" ]]; then
+  P227_CLASSIFICATION="P227-classification-missing"
+fi
+record "external-p227-classification" passed "Plan 227 §12: ${P227_CLASSIFICATION}"
+m6_key_row "external-p227-peer-eligibility" "p227-peer-eligibility" \
+  "Plan 227 WP A: Router C proven present/valid/selectable in A main NetDB before helper start"
+m6_key_row "external-p227-explicit-peer-derivation" "p227-explicit-peer-derivation" \
+  "Plan 227 WP B: exact Router-C I2P Base64 derived via P224-HASH-B64 renderer"
+m6_key_row "external-p227-client-tunnels" "p227-client-tunnels" \
+  "Plan 227 WP D: installed one-hop inbound/outbound client tunnels through C proven before reverse send"
+m6_key_row "external-p227-helper-connect" "helper_connect_elapsed_ms" \
+  "Plan 227 WP C: raw helper connect duration recorded within Java five-minute ceiling"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

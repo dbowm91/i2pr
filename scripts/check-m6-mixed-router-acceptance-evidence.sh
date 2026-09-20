@@ -1793,8 +1793,224 @@ if [[ -f "${P226_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 20. Plan 227 explicit one-hop client-tunnel corrective ------------
+# Reference-harness corrective only. The raw helper requests a genuine
+# stock-Java one-hop inbound/outbound client tunnel through Router C via
+# ordinary I2CP SessionConfig explicitPeers. Installed pool state is
+# authoritative; no profile/tier mutation, no NetDB injection, no direct
+# install, no VMComm, no alwaysQuery, no distinct topology, no streaming
+# change, no production protocol change.
+P227_RAW_HELPER_SRC="${JAVA_RAW_HELPER_SRC}"
+P227_STREAM_HELPER_SRC="${JAVA_STREAM_HELPER_SRC}"
+P227_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P227_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P227Probe.java"
+P227_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P227_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P227_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 227 probe ${P227_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  for required in \
+    'snapshotEligibility' \
+    'snapshotClientTunnels' \
+    'isSelectable' \
+    'isEstablished' \
+    'isBanlisted' \
+    'lookupLocallyWithoutValidation' \
+    'lookupRouterInfoLocally' \
+    'getInboundPool' \
+    'getOutboundPool' \
+    'listTunnels' \
+    'getLength()' \
+    'getPeer('; do
+    if ! grep -q -F "${required}" "${P227_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_PROBE_SRC} lacks Plan 227 read-only surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for forbidden in \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'lookupLeaseSet(' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P227_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_PROBE_SRC} mutates Java state via '${forbidden}' (Plan 227 invariants 8-10)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P227_RAW_HELPER_SRC}" ]]; then
+  # 1. Length 1 inbound/outbound required.
+  if ! grep -qE 'inbound\.length".*"1"' "${P227_RAW_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_RAW_HELPER_SRC} lacks inbound.length=1 (Plan 227 §13.1)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -qE 'outbound\.length".*"1"' "${P227_RAW_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_RAW_HELPER_SRC} lacks outbound.length=1 (Plan 227 §13.1)" >&2
+    failures=$((failures + 1))
+  fi
+  # 2. Zero-hop disabled.
+  if ! grep -qE 'allowZeroHop".*"false"' "${P227_RAW_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_RAW_HELPER_SRC} lacks allowZeroHop=false (Plan 227 §13.2)" >&2
+    failures=$((failures + 1))
+  fi
+  # 3. Both explicit-peer options scoped to the raw client SessionConfig.
+  for scoped in 'inbound.explicitPeers' 'outbound.explicitPeers'; do
+    if ! grep -q -F "${scoped}" "${P227_RAW_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_RAW_HELPER_SRC} lacks scoped ${scoped} (Plan 227 §13.3)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 4. Explicit peer derives from Router-C identity (validated Base64 shape).
+  if ! grep -q 'explicitPeerB64OrNull\|I2PR_M6_JAVA_EXPLICIT_PEER_B64' "${P227_RAW_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_RAW_HELPER_SRC} lacks Router-C explicit-peer derivation (Plan 227 §13.4)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P227_STREAM_HELPER_SRC}" ]]; then
+  # 5. Streaming helper remains frozen (zero-hop, no explicitPeers).
+  if grep -q 'explicitPeers' "${P227_STREAM_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: streaming helper carries explicitPeers (Plan 227 invariant 17)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -qE 'inbound\.length".*"0"' "${P227_STREAM_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: streaming helper lost frozen zero-hop profile (Plan 227 §13.5)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P227_LAUNCHER_SRC}" ]]; then
+  # 6. No router-global explicitPeers (only client SessionConfig may carry it).
+  if grep -q 'setProperty.*"explicitPeers"' "${P227_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_LAUNCHER_SRC} sets router-global explicitPeers (Plan 227 §13.6)" >&2
+    failures=$((failures + 1))
+  fi
+  for required in \
+    '"P227-PEER-ELIGIBILITY"' \
+    '"P227-CLIENT-TUNNELS"' \
+    'P227Probe' \
+    'p227PeerEligibility' \
+    'p227ClientTunnels'; do
+    if ! grep -q -F "${required}" "${P227_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_LAUNCHER_SRC} lacks Plan 227 surface '${required}' (Plan 227 §13.13-14)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P227_DRIVER_TEST}" ]]; then
+  for required in \
+    'fn p227_is_hex64' \
+    'fn p227_parse_eligibility' \
+    'fn p227_parse_tunnels' \
+    'fn p227_collect_eligibility' \
+    'fn p227_collect_tunnels' \
+    'fn p227_tunnel_gate_pass' \
+    'fn p227_eligibility_gate_pass' \
+    'enum P227Terminal' \
+    'fn p227_classify' \
+    'fn record_p227_classification' \
+    'fn record_p227_eligibility' \
+    'fn record_p227_tunnels' \
+    'P227-C-NOT-SELECTABLE' \
+    'P227-EXPLICIT-ONE-HOP-NOT-BUILT' \
+    'P227-OBSERVABILITY-GAP' \
+    'P227-EVIDENCE-CONTRADICTION-ONE-HOP-BUT-ZERO-HOP-UNKNOWN' \
+    'P227-EVIDENCE-CONTRADICTION-CLIENT-DSM-NOT-STORED' \
+    'P227-NEXT-BOUNDARY-B-NOT-QUERIED' \
+    'P227-NEXT-BOUNDARY-A-TO-B-LOOKUP-DELIVERY' \
+    'P227-NEXT-BOUNDARY-B-REPLY-TO-A-CLIENT-TUNNEL' \
+    'P227-REVERSE-DELIVERY-PASSED' \
+    'p227-peer-eligibility' \
+    'p227-client-tunnels' \
+    'p227-explicit-peer-derivation' \
+    'p227-classification'; do
+    if ! grep -q -F "${required}" "${P227_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_DRIVER_TEST} lacks Plan 227 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    p227_c_selectable_passes_eligibility_gate \
+    p227_c_non_selectable_maps_to_not_selectable \
+    p227_exact_c_identity_mismatch_rejected \
+    p227_inbound_only_tunnel_is_insufficient \
+    p227_outbound_only_tunnel_is_insufficient \
+    p227_zero_hop_fallback_is_insufficient \
+    p227_exact_one_hop_both_directions_passes_gate \
+    p227_one_hop_plus_zero_hop_contradiction \
+    p227_one_hop_no_b_query_maps_to_next_boundary \
+    p227_b_query_reply_client_store_downstream \
+    p227_changed_send_status_maps_to_next_boundary \
+    p227_digest_matched_delivery_passes \
+    p227_secret_raw_log_rejected \
+    p227_classification_is_single_and_frozen_payload_wins; do
+    if ! grep -q "fn ${unit_row}" "${P227_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_DRIVER_TEST} lacks Plan 227 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P227-" "${P227_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_DRIVER_TEST} hard-codes a Plan 227 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  # 16. 45-second window frozen.
+  if ! grep -q 'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' "${P227_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_DRIVER_TEST} changed DATAGRAM_WAIT from 45s (Plan 227 §13.16)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P227_HARNESS}" ]]; then
+  for required in \
+    'P227Probe.java' \
+    'P227-PEER-ELIGIBILITY' \
+    'P227-CLIENT-TUNNELS' \
+    'P224-HASH-B64' \
+    'p227-peer-eligibility' \
+    'p227-client-tunnels' \
+    'p227-explicit-peer-derivation' \
+    'p227-classification' \
+    'external-p227-classification' \
+    'external-p227-peer-eligibility' \
+    'external-p227-explicit-peer-derivation' \
+    'external-p227-client-tunnels' \
+    'external-p227-helper-connect' \
+    'helper_connect_elapsed_ms' \
+    'TunnelPeerSelector' \
+    'ClientPeerSelector' \
+    'explicit-peer-option-present' \
+    'I2PR_M6_JAVA_EXPLICIT_PEER_B64'; do
+    if ! grep -q -F "${required}" "${P227_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P227_HARNESS} lacks Plan 227 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 12. No distinct topology in a P227 counted run (baseline only).
+  if ! grep -q 'Plan 227 forbids distinct' "${P227_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_HARNESS} lacks Plan 227 distinct-topology rejection (Plan 227 §13.12)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P227_HARNESS}" "${P227_LAUNCHER_SRC}" "${P227_PROBE_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: Plan 227 enables netDb.alwaysQuery (§13.7)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P227-" "${P227_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_HARNESS} invents a Plan 227 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # 15. Installed one-hop proof required before reverse-send interpretation:
+  # the harness must gate the counted driver on the tunnel snapshot.
+  if ! grep -q 'P227_TUNNEL_GATE_OK' "${P227_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P227_HARNESS} lacks the installed one-hop gate before reverse send (Plan 227 §13.15)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants)"

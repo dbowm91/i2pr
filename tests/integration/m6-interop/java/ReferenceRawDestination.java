@@ -160,22 +160,84 @@ public final class ReferenceRawDestination {
         }
     }
 
+    private static String explicitPeerB64OrNull(String explicitArg) {
+        // Plan 227 WP C — Router-C explicit peer for the genuine one-hop
+        // client tunnel. Scoped strictly to this raw client's inbound/
+        // outbound SessionConfig; never a router-global property. Validated
+        // with Java's own I2P Base64 decoder via `new Hash(decoded)` shape
+        // (exact 32 bytes); any mismatch is a hard argument error.
+        String candidate = null;
+        if (explicitArg != null && !explicitArg.trim().isEmpty()) {
+            candidate = explicitArg.trim();
+        } else {
+            String env = System.getenv("I2PR_M6_JAVA_EXPLICIT_PEER_B64");
+            if (env != null && !env.trim().isEmpty()) {
+                candidate = env.trim();
+            }
+        }
+        if (candidate == null) {
+            return null;
+        }
+        if (candidate.length() != 44) {
+            throw new IllegalArgumentException("explicit peer must be 44-char I2P Base64");
+        }
+        for (int i = 0; i < candidate.length(); i++) {
+            char c = candidate.charAt(i);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '~' || c == '=';
+            if (!ok) {
+                throw new IllegalArgumentException("explicit peer has non-I2P-Base64 character");
+            }
+        }
+        try {
+            byte[] raw = net.i2p.data.Base64.decode(candidate);
+            if (raw == null || raw.length != 32) {
+                throw new IllegalArgumentException("explicit peer must decode to 32 bytes");
+            }
+            new Hash(raw);
+        } catch (RuntimeException re) {
+            throw new IllegalArgumentException("explicit peer is not a valid RouterHash");
+        }
+        return candidate;
+    }
+
     private static Properties options(String host, int port) {
+        return options(host, port, null);
+    }
+
+    private static Properties options(String host, int port, String explicitPeerB64) {
         Properties options = new Properties();
         options.setProperty("i2cp.tcp.host", host);
         options.setProperty("i2cp.tcp.port", Integer.toString(port));
-        // Plan 199: the service router has a distinct publication peer.
-        // The bounded helper keeps the existing zero-hop client profile;
-        // the pre-helper ordinary RouterInfo bootstrap supplies the normal
-        // floodfill publication target without changing tunnel semantics.
-        options.setProperty("inbound.length", "0");
-        options.setProperty("outbound.length", "0");
-        options.setProperty("inbound.quantity", "1");
-        options.setProperty("outbound.quantity", "1");
-        options.setProperty("inbound.backupQuantity", "0");
-        options.setProperty("outbound.backupQuantity", "0");
-        options.setProperty("inbound.allowZeroHop", "true");
-        options.setProperty("outbound.allowZeroHop", "true");
+        if (explicitPeerB64 != null) {
+            // Plan 227 WP C — genuine stock-Java one-hop client tunnel
+            // through controlled Router C. Ordinary public I2CP
+            // SessionConfig options only; no router-global explicitPeers,
+            // no profile/tier mutation, no NetDB injection, no VMComm.
+            options.setProperty("inbound.length", "1");
+            options.setProperty("outbound.length", "1");
+            options.setProperty("inbound.quantity", "1");
+            options.setProperty("outbound.quantity", "1");
+            options.setProperty("inbound.backupQuantity", "0");
+            options.setProperty("outbound.backupQuantity", "0");
+            options.setProperty("inbound.allowZeroHop", "false");
+            options.setProperty("outbound.allowZeroHop", "false");
+            options.setProperty("inbound.explicitPeers", explicitPeerB64);
+            options.setProperty("outbound.explicitPeers", explicitPeerB64);
+        } else {
+            // Plan 199: the service router has a distinct publication peer.
+            // The bounded helper keeps the existing zero-hop client profile;
+            // the pre-helper ordinary RouterInfo bootstrap supplies the normal
+            // floodfill publication target without changing tunnel semantics.
+            options.setProperty("inbound.length", "0");
+            options.setProperty("outbound.length", "0");
+            options.setProperty("inbound.quantity", "1");
+            options.setProperty("outbound.quantity", "1");
+            options.setProperty("inbound.backupQuantity", "0");
+            options.setProperty("outbound.backupQuantity", "0");
+            options.setProperty("inbound.allowZeroHop", "true");
+            options.setProperty("outbound.allowZeroHop", "true");
+        }
         options.setProperty("i2cp.leaseSetType", "3");
         options.setProperty("i2cp.leaseSetEncType", "4");
         options.setProperty("i2cp.dontPublishLeaseSet", "false");
@@ -185,16 +247,17 @@ public final class ReferenceRawDestination {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 4) throw new IllegalArgumentException("usage: host i2cpPort controlPort keyFile");
+        if (args.length != 4 && args.length != 5) throw new IllegalArgumentException("usage: host i2cpPort controlPort keyFile [explicitPeerB64]");
         String host = args[0];
         int i2cpPort = Integer.parseInt(args[1]);
         int controlPort = Integer.parseInt(args[2]);
         File key = new File(args[3]);
+        String explicitPeerB64 = explicitPeerB64OrNull(args.length >= 5 ? args[4] : null);
         I2PClient client = I2PClientFactory.createClient();
         Destination destination = createDestination(client, key);
         I2PSession session;
         try (FileInputStream input = new FileInputStream(key)) {
-            session = client.createSession(input, options(host, i2cpPort));
+            session = client.createSession(input, options(host, i2cpPort, explicitPeerB64));
         }
         ArrayBlockingQueue<byte[]> received = new ArrayBlockingQueue<>(32);
         session.setSessionListener(new I2PSessionListener() {
