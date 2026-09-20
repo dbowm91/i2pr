@@ -1026,7 +1026,7 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     exit 70
   fi
   P227_C_B64_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P224-HASH-B64 ${P227_C_HEX}")"
-  P227_C_B64="$(printf '%s' "${P227_C_B64_LINE}" | grep -oE 'hash_b64=[A-Za-z0-9\-\~=]{44}' | cut -d= -f2 | head -n 1 || true)"
+  P227_C_B64="$(printf '%s' "${P227_C_B64_LINE}" | grep -oE 'hash_b64=[A-Za-z0-9~=\-]{44}' | cut -d= -f2 | head -n 1 || true)"
   if [[ -z "${P227_C_B64}" ]]; then
     echo "Plan 227 Router-C Base64 render failed (P224-HASH-B64)" >&2
     echo "line was: ${P227_C_B64_LINE}" >&2
