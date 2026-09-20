@@ -1,3 +1,13 @@
+# Current dependency amendment — Plan 227 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 227 addresses Java's direct client
+tunnel used by the client-NetDB lookup path and does not require a SAM pivot.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_227 = registered-ready-m6-java-explicit-one-hop-client-tunnel-corrective
+```
+
 # Current dependency amendment — Plan 226 closed; SAM pivot remains deferred
 
 Plan 226 closed with the exact direct Java client-NetDB terminal
