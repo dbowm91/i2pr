@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 225 closed the latest M6 diagnostic pass with exact attribution (`A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`). Plan 226 is now the registered controlled-loopback peer-diversity corrective; neither changes M10 product authority.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 227 closed at `P227-EXPLICIT-ONE-HOP-NOT-BUILT` with Router C selectable but no installed one-hop client tunnel. Plan 228 is now the registered attribution-only client-tunnel build-path investigation; neither changes M10 product authority.
 
 ## 5. Target architecture
 
