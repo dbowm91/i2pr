@@ -1,3 +1,14 @@
+# Current dependency amendment — Plan 226 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 226 targets Java's direct
+client-NetDB iterative-search peer-diversity behavior in the controlled SSU2
+topology. A SAM bridge does not replace this machinery.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_226 = registered-ready-m6-java-loopback-peer-diversity-corrective
+```
+
 # Current dependency amendment — Plan 225 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 225 attributes the open failure to the
