@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 228 closed attribution-only at `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`. Plan 229 closed at `P229-C-NOT-EXPLORATORY-ELIGIBLE` and registered Plan 230 for the profile-population-path attribution; neither changes M10 product authority.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 228 closed attribution-only at `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`. Plan 229 closed at `P229-C-NOT-EXPLORATORY-ELIGIBLE`; revised Plan 230 now owns the reachability-capability/profile-bootstrap corrective and direct continuation through the retained Java gates. Neither changes closed M10 product authority.
 
 ## 5. Target architecture
 
@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 229 closed reference-topology-only at the transit-peer stop and Plan 230 owns the profile-population attribution, neither reopens or downgrades M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 229 closed reference-topology-only at the transit-peer stop and revised Plan 230 owns the capability/profile-bootstrap corrective, neither reopens or downgrades M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` and registered Plan 230 for the profile-population path; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` and revised Plan 230 owns the reachability-capability/profile-bootstrap path; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 230 owns the profile-population-path attribution.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while revised Plan 230 owns the reachability-capability/profile-bootstrap corrective and continuation.
