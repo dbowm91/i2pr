@@ -1,6 +1,8 @@
 # Plan 233 — M6 Java Streaming SYN-ACK corrective after route-derived lease fix
 
-Status: **registered-ready-m6-java-streaming-syn-ack-corrective-after-route-derived-lease-fix**
+Status: **superseded-before-execution-by-plan234-final-closure-authority-corrective**
+
+> Supersession note: Plan 233 was never executed. Its narrow SYN-ACK attribution is carried into Plan 234, which also reconciles the still-required Plan-200/201 Java public-client LeaseSet lifecycle rows before any Java-family/M6 closure claim. See `plans/closure/mixed-router-interop/233-status.md`.
 
 ## 1. Objective
 
