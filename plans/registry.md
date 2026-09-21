@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | M10 product authority is closed; Plan 204 convergence waits on independent M6 Java second-family closure. Plan 231 is the active M6-only reverse-delivery attribution and does not reopen M10 |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 231 closed with the exact target-IBGW boundary; narrow lease-gateway fixture corrective pending | Profile bootstrap + forward delivery are proven. Plan 231 attributed the post-`ACCEPTED` path end to end (A enqueue, C OBEP, exact target-IBGW absence on B, zero i2pr wire) and root-caused the stop to the test-driver lease fixture |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | M10 product authority is closed; Plan 204 convergence waits on independent M6 Java second-family closure. Plan 232 is the active M6-only lease-gateway fixture corrective and does not reopen M10 |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 232 ready: route-derived lease-gateway fixture corrective + Java second-family continuation | Plan 231 proved the local LS2 advertises Router B while the installed inbound gateway is Router A. Plan 232 derives all three Java-driver local leases from the installed route, then reruns raw Destination and, on pass, Streaming. |
 
 ## Current milestone authorities
 
@@ -48,20 +48,20 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts); Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, tier population empty on all 4 counted attempts on `00dc368`/`10d1015`); Plan 230 closed with `P230` reverse-delivery boundary (predicate proven, stock C1+C2 correction, natural bootstrap 2/3, forward delivery digest-matched once, reverse admitted-but-unarrived on `09a2f6e`/`3ef5bac`). Plan 231 closed with `P231-C-TARGET-IBGW-NOT-INSTALLED` (post-`ACCEPTED` attribution complete on `1f5a495`: A enqueue proven, C OBEP processing proven, exact target IBGW on B proven absent twice, i2pr wire counters honestly zero; root-caused to the test-driver lease fixture advertising gateway B vs actual inbound gateway A; no production change). M6 Java remains not-yet-passed.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts); Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, tier population empty on all 4 counted attempts on `00dc368`/`10d1015`); Plan 230 closed with `P230` reverse-delivery boundary (predicate proven, stock C1+C2 correction, natural bootstrap 2/3, forward delivery digest-matched once, reverse admitted-but-unarrived on `09a2f6e`/`3ef5bac`). Plan 231 closed with `P231-C-TARGET-IBGW-NOT-INSTALLED` (post-`ACCEPTED` attribution complete on `1f5a495`: A enqueue proven, C OBEP processing proven, exact target IBGW on B proven absent twice, i2pr wire counters honestly zero; root-caused to the test-driver lease fixture advertising gateway B vs actual inbound gateway A; no production change). Plan 232 is registered-ready to derive all local LS2 lease gateways/tunnel ids from the installed inbound route and continue through raw-Destination + Streaming qualification. M6 Java remains not-yet-passed.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| — | none | — | — | No dependency-ready plan: Plan 231 is closed; the recommended narrow lease-gateway fixture corrective is not registered yet (registers under the M6 lane when approved). |
+| M6 mixed-router interop | 232 route-derived lease-gateway fixture corrective and second-family closure | ready | `plans/implementation/mixed-router-interop/232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure.md` | Correct all three Java-driver local LS2 lease sites from the installed inbound route; preserve Router B as publication target; rerun raw Destination and continue directly to Streaming if reverse delivery passes. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Blocked pending the narrow lease-gateway fixture corrective after Plan 231 target-IBGW attribution |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure (now pending the Plan 231 lease-gateway corrective); closed M10 product authority unchanged |
+| M6 mixed-router interop | 201 | Blocked pending Plan 232 route-derived lease-gateway fixture corrective and Java second-family continuation |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure, now pending Plan 232; closed M10 product authority unchanged |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
@@ -99,7 +99,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 | 162 external-test lane isolation | closed | `plans/closure/ssu2/162-status.md` |
 | SSU2 | 161 independent IPv4 interop | closed | `plans/closure/ssu2/161-status.md` |
 
-Full per-plan history (000–231) lives in the subsystem roadmaps §7 tables.
+Full per-plan history (000–232) lives in the subsystem roadmaps §7 tables.
 
 ## Superseded remote branches (do not merge)
 
@@ -111,8 +111,8 @@ Full per-plan history (000–231) lives in the subsystem roadmaps §7 tables.
 
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
-- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 closed with the exact target-IBGW-not-installed boundary after proving A-enqueue/C-OBEP with zero i2pr wire).
-- `active_plan = none`; `next_executable_plan = none` (narrow M6 lease-gateway fixture corrective recommended by Plan 231; registers under the M6 lane when approved); Plan 201 remains blocked pending that corrective, Plan 204 remains blocked on M6 Java closure, and Plan 205 remains retained/deferred.
+- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231 -> 232` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 closed with the exact target-IBGW-not-installed boundary after proving A-enqueue/C-OBEP with zero i2pr wire; Plan 232 owns the route-derived lease-gateway correction and Java second-family continuation).
+- `active_plan = none`; `next_executable_plan = 232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure`; Plan 201 remains blocked pending Plan 232, Plan 204 remains blocked on M6 Java closure, and Plan 205 remains retained/deferred.
 
 ## Verification policy
 
