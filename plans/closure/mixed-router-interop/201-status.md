@@ -1,3 +1,18 @@
+# Current dependency amendment — Plan 229 registered
+
+Plan 201 remains blocked on Java second-family closure. Plan 228 localized the
+client-build stop to missing non-zero paired tunnels before dispatch. Plan 229
+now owns the bounded stock-Java corrective: restore Router C's intended
+non-floodfill transit role, establish genuine non-zero exploratory paired
+infrastructure on Router A using Java's supported small-router profile, then
+rerun the unchanged client build path.
+
+```text
+plan_201 = blocked-pending-plan229-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+next_executable_plan = 229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
 # Current dependency amendment — Plan 228 closed with NO-PAIRED-TUNNEL boundary
 
 Plan 201 remains blocked on Java second-family closure. Plan 228 closed as
