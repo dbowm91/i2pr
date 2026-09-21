@@ -1,3 +1,13 @@
+# Current dependency amendment — revised Plan 230; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through Plans 213–215 is already closed and is not reopened by this work. The remaining dependency is the independent M6 Java second-family lane. Revised Plan 230 replaces the broad profile-population attribution with an exact reachability-capability/profile-bootstrap corrective: prove Java's `heardAbout()` creation predicate, conditionally repair only the synthetic loopback fixture, then continue through the retained Java qualification gates.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan230
+plan_230 = registered-ready-m6-java-reachability-capability-profile-bootstrap-corrective
+milestone10_final_acceptance = closed
+```
+
 # Current dependency amendment — Plan 229 closed; Plan 230 registered
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family
