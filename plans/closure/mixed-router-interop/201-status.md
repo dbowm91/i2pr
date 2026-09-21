@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 232 closed at Outcome B; Plan 233 owns the Streaming SYN-ACK corrective
+
+Plan 232 closed as
+`passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary`
+(see `232-status.md`): all three Java-driver local leases derive gateway and
+gateway tunnel from the installed inbound route, Router B stays the
+independent NetDB publication target, raw-Destination reverse delivery
+flips to digest-matched `P232-D-REVERSE-DELIVERY-PASSED` (role B → A,
+exact IBGW present), and the Streaming continuation proves initial route
+parity live with the Direction-A SYN sent on two consecutive counted
+runs, both stopping identically at `SYN-ACK never established
+(syn_accepted=false established=false pump_error=0)`.
+
+Plan 233 is the registered narrow Streaming SYN-ACK corrective on the
+corrected fixture. Plan 201 remains blocked pending Plan 233; no 201-lane
+rerun without it would be interpretable.
+
+```text
+plan_201 = blocked-pending-plan233-streaming-syn-ack-corrective-after-plan232-raw-reverse-pass
+plan_232 = passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary
+plan_233 = registered-ready-m6-java-streaming-syn-ack-corrective-after-route-derived-lease-fix
+next_executable_plan = 233-m6-java-streaming-syn-ack-corrective-after-route-derived-lease-fix
+```
+
 # Current dependency amendment — Plan 232 registered for route-derived lease-gateway fixture correction
 
 Plan 231 remains closed at
