@@ -1,3 +1,28 @@
+# Current dependency amendment — Plan 232 registered for route-derived lease-gateway fixture correction
+
+Plan 231 remains closed at
+`passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary`.
+Its exact root cause is now executable: the Java external driver installs the
+local inbound tunnel through `service_hash` (Router A) but advertises
+`java_hash` (Router B) as the local LS2 lease gateway for the same gateway
+tunnel id. The same hard-coded gateway assumption exists at all three current
+local-lease construction sites (raw Destination, initial Streaming, Streaming
+refresh).
+
+Plan 232 owns the narrow fixture correction. It MUST derive the lease gateway
+and gateway tunnel id from the installed inbound route while preserving Router B
+as the independent NetDB publication target. After route parity is proven it
+reruns raw-Destination qualification; if reverse delivery passes it continues
+directly through the retained Java Streaming rows and may close Java second-
+family M6 without another intermediate plan.
+
+```text
+plan_201 = blocked-pending-plan232-route-derived-lease-gateway-fixture-corrective
+plan_231 = passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary
+plan_232 = registered-ready-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure
+next_executable_plan = 232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure
+```
+
 # Current dependency amendment — Plan 231 closed with the exact target-IBGW boundary; narrow lease-gateway corrective pending
 
 Plan 231 closed as
