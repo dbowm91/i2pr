@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 229 closed at the transit-peer stop, Plan 230 is the active profile-population-path attribution |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 229 closed; Plan 230 ready: profile-population-path attribution | Plan 229 proved roles + A-only small-router profile live but stopped at `P229-C-NOT-EXPLORATORY-ELIGIBLE` (tier population empty). Plan 230 attributes the stock profile-population path |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | M10 product authority is closed; Plan 204 convergence waits on independent M6 Java second-family closure. Revised Plan 230 owns the reachability-capability/profile-bootstrap corrective |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 229 closed; revised Plan 230 ready: reachability-capability/profile-bootstrap corrective | Plan 230 first proves the exact Java `heardAbout()` creation predicate (`R` plus bandwidth/congestion caps), conditionally corrects the isolated fixture, then continues directly through P229/P228/P201 gates |
 
 ## Current milestone authorities
 
@@ -48,19 +48,19 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts); Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, tier population empty on all 4 counted attempts on `00dc368`/`10d1015`); Plan 230 is registered-ready for the profile-population-path attribution. M6 Java remains not-yet-passed.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts); Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, tier population empty on all 4 counted attempts on `00dc368`/`10d1015`); Plan 230 is registered-ready for the reachability-capability/profile-bootstrap corrective and direct continuation through the retained tunnel/destination gates. M6 Java remains not-yet-passed.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 230 Java profile-population-path attribution | ready | `plans/implementation/mixed-router-interop/230-m6-java-profile-population-path-attribution.md` | Attribute through ordinary stock-Java activity how the controlled topology populates A's organizer tier population (or prove none does); no profile injection, no helper claim, no lookup lane. |
+| M6 mixed-router interop | 230 Java reachability-capability/profile-bootstrap corrective | ready | `plans/implementation/mixed-router-interop/230-m6-java-reachability-capability-profile-bootstrap-corrective.md` | Correct P229 reachability evidence; prove exact `heardAbout()` eligibility; conditionally apply stock loopback reachability / C bandwidth config; require natural profile creation; then continue P229/P228/P201 without another bootstrap successor. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Blocked pending Plan 230 profile-population-path attribution after Plan 229 NOT-ELIGIBLE stop |
+| M6 mixed-router interop | 201 | Blocked pending revised Plan 230 reachability-capability/profile-bootstrap corrective and continuation |
 | Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 230 is the active reference-topology attribution and does not alter M10 authority |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
@@ -72,7 +72,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 | Subsystem | Plan | State | Closure record |
 |---|---|---|---|
-| M6 mixed-router interop | 229 non-zero exploratory paired-tunnel bootstrap corrective | closed | `plans/closure/mixed-router-interop/229-status.md` (`passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary`; roles + A-only small-router profile proven live, `P229-C-NOT-EXPLORATORY-ELIGIBLE` on all 4 counted attempts on `00dc368`/`10d1015`; Plan 230 registered for the profile-population path) |
+| M6 mixed-router interop | 229 non-zero exploratory paired-tunnel bootstrap corrective | closed | `plans/closure/mixed-router-interop/229-status.md` (`passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary`; roles + A-only small-router profile proven live, `P229-C-NOT-EXPLORATORY-ELIGIBLE` on all 4 counted attempts on `00dc368`/`10d1015`; revised Plan 230 registered for the reachability-capability/profile-bootstrap corrective) |
 | M6 mixed-router interop | 228 client-tunnel build-path attribution | closed | `plans/closure/mixed-router-interop/228-status.md` (`passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary`; `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` on all 4 counted attempts on `8f2167d`/`8990849`) |
 | M6 mixed-router interop | 227 explicit one-hop with selectable-C-but-not-built | closed | `plans/closure/mixed-router-interop/227-status.md` (`passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary`; `P227-EXPLICIT-ONE-HOP-NOT-BUILT` on all 3 counted attempts on `b59bf5b`, C selectable) |
 | M6 mixed-router interop | 223 identity/LS2 separation with NEXT-BOUNDARY | closed | `plans/closure/mixed-router-interop/223-status.md` (`passed-m6-java-destination-identity-crypto-separation-corrective-with-next-boundary-no-leaseset`; type-0/256 + LS2 type-4/32, status 17 gone → `P223-NEXT-BOUNDARY [1,21]` on `0755dc1`) |
@@ -110,7 +110,7 @@ Full per-plan history (000–230) lives in the subsystem roadmaps §7 tables.
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
 - `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary and registered Plan 230).
-- `active_plan = none`; `next_executable_plan = 230-m6-java-profile-population-path-attribution`; Plan 201 and Plan 204 remain blocked, and Plan 205 remains retained/deferred.
+- `active_plan = none`; `next_executable_plan = 230-m6-java-reachability-capability-profile-bootstrap-corrective`; Plan 201 and Plan 204 remain blocked, and Plan 205 remains retained/deferred.
 
 ## Verification policy
 
