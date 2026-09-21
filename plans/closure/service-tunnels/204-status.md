@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 234 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded by M6 work.
+
+Plan 232 retained the raw-Destination Java-family pass and exposed the
+Streaming SYN-ACK boundary. Plan 233 was never executed and is superseded by
+Plan 234 because its family-pass outcome did not reconcile the still-required
+Plan-200/201 client-LS2 lifecycle rows in the fail-closed Java harness.
+
+Plan 234 now owns both the narrow Streaming continuation and the final-closure
+authority reconciliation. Plan 204 remains blocked until Plan 234 either closes
+Java-family M6 on one exact green head or records the next exact remaining
+boundary.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan234
+plan_232 = passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary
+plan_233 = superseded-before-execution-by-plan234-final-closure-authority-corrective
+plan_234 = registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+```
+
 # Current dependency amendment — Plan 232 closed at Outcome B; convergence pending Plan 233; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
