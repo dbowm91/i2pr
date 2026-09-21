@@ -3077,8 +3077,165 @@ if [[ -f "${P231_HARNESS}" ]]; then
   done
 fi
 
+P232_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+if [[ -f "${P232_DRIVER_TEST}" ]]; then
+  # 25a. The Rust driver owns the route-derived lease contract, the
+  # parity/publication/preflight evidence rows, and the earliest-stage
+  # reverse classifier. Every local LS2 lease gateway/tunnel must come
+  # from the installed inbound route object, never from a hard-coded
+  # Java router role or the publication target.
+  for required in \
+    'fn p232_route_derived_lease_source' \
+    'enum P232LeaseError' \
+    'struct P232LeaseParity' \
+    'fn p232_lease_parity' \
+    'struct P232LeaseRecord' \
+    'fn p232_record_lease_route' \
+    'fn p232_record_publication_separation' \
+    'fn p232_target_ibgw_gate' \
+    'fn p232_record_target_ibgw_preflight' \
+    'enum P232Terminal' \
+    'struct P232ReverseInputs' \
+    'fn p232_classify_reverse' \
+    'fn record_p232_classification' \
+    'fn p232_raw_reverse_permits_streaming' \
+    'fn p232_streaming_permits_closure' \
+    'inbound_gateway_route' \
+    'route.gateway_router' \
+    'route.gateway_receive_tunnel' \
+    'p232-destination-lease-route' \
+    'p232-streaming-lease-route' \
+    'p232-publication-separation' \
+    'p232-target-ibgw-preflight' \
+    'p232-streaming-complete' \
+    'p232-classification' \
+    'P232-D-REVERSE-DELIVERY-PASSED' \
+    'P232-D-JAVA-FORWARDING-BOUNDARY' \
+    'P232-D-I2PR-NO-EXPECTED-TUNNELDATA' \
+    'P232-D-I2PR-TUNNEL-RECOVERY-FAILED' \
+    'P232-D-I2PR-GARLIC-DECODE-FAILED' \
+    'P232-D-I2PR-DESTINATION-DISPATCH-MISSED' \
+    'P232-D-I2PR-PAYLOAD-MISMATCH' \
+    'P232-D-OBSERVABILITY-GAP' \
+    'P232-FIXTURE-ROUTE-PARITY-FAILED' \
+    'P232-RAW-REVERSE-PASSED-STREAMING-BOUNDARY' \
+    'P232-JAVA-SECOND-FAMILY-PASSED'; do
+    if ! grep -q -F "${required}" "${P232_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} lacks Plan 232 driver surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 25b. Exactly one direct lease constructor remains: the helper body.
+  # Every Java-driver local lease site must call the helper instead, so
+  # a future site that bypasses the route-derived contract fails here.
+  p232_from_parts_count="$(grep -c -F 'InboundLeaseSource::from_parts' "${P232_DRIVER_TEST}" || true)"
+  if [[ "${p232_from_parts_count}" -ne 1 ]]; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} has ${p232_from_parts_count} InboundLeaseSource::from_parts sites, want exactly 1 (the Plan 232 helper body; Plan 232 §13)" >&2
+    failures=$((failures + 1))
+  fi
+  # 25c. The helper body must derive gateway/tunnel from the route
+  # object and must not name either Java router role directly.
+  p232_helper_body="$(sed -n '/fn p232_route_derived_lease_source/,/^}/p' "${P232_DRIVER_TEST}")"
+  if ! printf '%s\n' "${p232_helper_body}" | grep -q -F 'route.gateway_router'; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} helper does not derive the lease gateway from the installed route (Plan 232 §6)" >&2
+    failures=$((failures + 1))
+  fi
+  if printf '%s\n' "${p232_helper_body}" | grep -q -F 'java_hash'; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} helper names java_hash as a lease source (Plan 232 §6 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+  if printf '%s\n' "${p232_helper_body}" | grep -q -F 'service_hash'; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} helper names service_hash as a lease source (Plan 232 §6 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+  # 25d. All three local lease sites must flow through the helper: the
+  # destination site, the initial Streaming site, and the refresh site.
+  p232_helper_uses="$(grep -c -F 'p232_route_derived_lease_source(' "${P232_DRIVER_TEST}" || true)"
+  if [[ "${p232_helper_uses}" -lt 4 ]]; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} calls the Plan 232 helper ${p232_helper_uses} time(s), want >= 4 (definition + 3 lease sites; Plan 232 §7)" >&2
+    failures=$((failures + 1))
+  fi
+  for site_literal in 'lane: "destination"' 'lane: "streaming"' 'stage: "initial"' 'stage: "refresh"'; do
+    if ! grep -q -F "${site_literal}" "${P232_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} lacks Plan 232 lease-route evidence site '${site_literal}' (Plan 232 §7)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P232-" "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} invents a hard-coded Plan 232 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # 25e. Publication stays on the retained Java floodfill router: the
+  # publication target must remain `java_hash` at every LS2 publication.
+  if ! grep -q -F 'begin_ls2_publication(store_message, RouterHash::from_bytes(*java_hash.as_bytes()))' "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} changed the retained Java publication target (Plan 232 §8)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'begin_ls2_publication(fresh_store, RouterHash::from_bytes(*java_hash.as_bytes()))' "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} changed the retained Java republication target (Plan 232 §8)" >&2
+    failures=$((failures + 1))
+  fi
+  # 25f. Frozen windows stay frozen: 30-second install poll, 45-second
+  # reverse payload acceptance, 70-second status-only observation.
+  if ! grep -q -F 'ACCEPT_TIMEOUT: Duration = Duration::from_secs(30)' "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} changed the frozen 30-second install window (Plan 232 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'DATAGRAM_WAIT: Duration = Duration::from_secs(45)' "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} changed the frozen 45-second reverse window (Plan 232 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'P222_STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(70)' "${P232_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} changed the frozen 70-second status-only window (Plan 232 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  # 25g. No production Rust behavior change is authorized by the
+  # fixture corrective: P232 surface stays inside the external test.
+  for prod_dir in \
+    "${REPO_ROOT}/crates/i2pr-daemon/src" \
+    "${REPO_ROOT}/crates/i2pr-client/src" \
+    "${REPO_ROOT}/crates/i2pr-tunnel/src" \
+    "${REPO_ROOT}/crates/i2pr-runtime/src"; do
+    if grep -rq -F 'p232' "${prod_dir}" 2>/dev/null || grep -rq -F 'P232' "${prod_dir}" 2>/dev/null; then
+      echo "m6 mixed-router evidence check failed: production dir ${prod_dir} carries Plan 232 surface (Plan 232 §4 forbids production changes)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Raw Java logs stay scratch-only: no P232 evidence row carries log
+  # text or log paths.
+  if grep "append_evidence" "${P232_DRIVER_TEST}" | grep -F "log-router" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} promotes raw router logs into P232 evidence (Plan 232 §5)" >&2
+    failures=$((failures + 1))
+  fi
+  # 25h. The 18 required Plan 232 §12 unit rows.
+  for unit_row in \
+    'p232_destination_lease_gateway_matches_installed_inbound_route' \
+    'p232_destination_lease_tunnel_matches_installed_inbound_route' \
+    'p232_destination_publication_target_is_not_lease_gateway_source' \
+    'p232_streaming_initial_gateway_matches_installed_inbound_route' \
+    'p232_streaming_initial_tunnel_matches_installed_inbound_route' \
+    'p232_streaming_refresh_revalidates_installed_inbound_route' \
+    'p232_streaming_refresh_gateway_matches_installed_inbound_route' \
+    'p232_streaming_refresh_tunnel_matches_installed_inbound_route' \
+    'p232_route_derived_helper_rejects_missing_inbound_route' \
+    'p232_route_derived_helper_rejects_slot_route_mismatch' \
+    'p232_java_hash_cannot_be_hardcoded_as_local_lease_gateway' \
+    'p232_all_java_local_lease_sites_use_route_derived_contract' \
+    'p232_corrected_target_router_must_have_exact_ibgw_before_send' \
+    'p232_reverse_pass_requires_exact_tunneldata_and_digest' \
+    'p232_raw_reverse_pass_continues_to_streaming' \
+    'p232_streaming_pass_can_close_java_second_family' \
+    'p232_timeout_windows_remain_frozen' \
+    'p232_no_production_surface_change'; do
+    if ! grep -q "fn ${unit_row}" "${P232_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P232_DRIVER_TEST} lacks Plan 232 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants)"

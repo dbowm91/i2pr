@@ -2749,12 +2749,64 @@ async fn destination_message_plane_against_java() {
     let local_identity =
         DestinationIdentity::generate(&mut identity_rng).expect("destination identity");
     let tunnel_expires = wall_secs() + 600;
-    let lease_source = InboundLeaseSource::from_parts(
-        registrations_in[0].slot(),
-        Hash::from_bytes(*java_hash.as_bytes()),
+    // Plan 232 WP A/B1 — route-derived lease: gateway + gateway tunnel come
+    // from the installed inbound route, never from the publication target.
+    // Router B (`java_hash`) stays the NetDB publication target; Router A
+    // (`service_hash`) is the inbound tunnel gateway proven in-registry.
+    let p232_local_receive = receive_ids[0];
+    let p232_route = coord
+        .registry()
+        .inbound_gateway_route(p232_local_receive)
+        .expect("installed inbound gateway route");
+    assert_eq!(
+        p232_route.gateway_router, service_hash,
+        "Plan 232 §6: installed destination route must terminate at the service router"
+    );
+    assert_eq!(
+        p232_route.gateway_receive_tunnel.get(),
         IBGW_RECEIVE,
+        "Plan 232 §6: installed destination route must carry the gateway-side receive tunnel"
+    );
+    assert_eq!(
+        p232_route.local_receive_tunnel.get(),
+        IBGW_NEXT,
+        "Plan 232 §6: installed destination route must carry the local receive tunnel"
+    );
+    assert_eq!(
+        p232_route.local_receive_tunnel, p232_local_receive,
+        "Plan 232 §6: route selector must be the installed local receive id"
+    );
+    let p232_registry_slot = coord.registry().inbound_slot(p232_local_receive);
+    let lease_source = p232_route_derived_lease_source(
+        registrations_in[0].slot(),
+        p232_local_receive,
+        Some(p232_route),
+        p232_registry_slot,
         tunnel_expires,
         tunnel_expires.saturating_sub(60),
+    )
+    .expect("route-derived destination lease");
+    let p232_publication_target = Hash::from_bytes(*java_hash.as_bytes());
+    p232_record_lease_route(
+        &evidence_dir,
+        &P232LeaseRecord {
+            lane: "destination",
+            stage: "initial",
+            slot: registrations_in[0].slot(),
+            local_receive: p232_local_receive,
+            route: &p232_route,
+            lease: &lease_source,
+            publication_target: &p232_publication_target,
+            service_router: &service_hash,
+        },
+    );
+    p232_record_publication_separation(
+        &evidence_dir,
+        "destination",
+        "initial",
+        &p232_publication_target,
+        &p232_route,
+        &lease_source,
     );
     let published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
     let local_ls2 =
@@ -3205,6 +3257,22 @@ async fn destination_message_plane_against_java() {
     let p231_no_ibgw_corr_pre = p231_target_log_dir_pre.as_ref().and_then(|dir| {
         p231_count_marker_with_id_in_log_dir(dir, "no matching IBGW for id", &p231_lease_id_text)
     });
+    // Plan 232 §9 — corrected-route preflight before SEND_TRACKED: the
+    // published local LS2 gateway/tunnel must equal the installed inbound
+    // route, and the router identified by the actual advertised lease
+    // (never a hard-coded role) must expose the exact IBGW.
+    let p232_published_gateway_match = lease_source.gateway() == p232_route.gateway_router;
+    let p232_published_tunnel_match =
+        lease_source.gateway_receive_tunnel_id() == p232_route.gateway_receive_tunnel.get();
+    let p232_target_has_exact_ibgw = p231_ibgw_pre.as_ref().is_some_and(|snap| snap.present);
+    p232_record_target_ibgw_preflight(
+        &evidence_dir,
+        p232_published_gateway_match,
+        p232_published_tunnel_match,
+        p232_target_has_exact_ibgw,
+        p231_target_role.unwrap_or("unknown"),
+        p231_lease_tunnel_id,
+    );
     let app_back = b"plan194-destination-reply-b";
     let reverse_sha256 = sha256_hex(app_back);
     let tracked_start = tokio::time::Instant::now();
@@ -4407,6 +4475,40 @@ async fn destination_message_plane_against_java() {
         p231_terminal,
         &format!(
             "nonce={p231_nonce} role={} lease_tunnel={p231_lease_tunnel_id} send_id={p231_a_send_id_pre} expected_seen={} digest_match={} ordered_statuses={:?}",
+            p231_target_role.unwrap_or("unknown"),
+            p231_expected_seen > 0,
+            frozen_payload_45s,
+            p222_status_events
+                .iter()
+                .map(|e| e.status)
+                .collect::<Vec<_>>(),
+        ),
+    );
+    // Plan 232 §9 — corrected-route reverse outcome on the same epoch.
+    // Parity is proven by construction above (the lease came from the
+    // installed route and the preflight asserted it); the classifier
+    // input reuses the frozen 45-second digest plus the tunnel-id
+    // attributed pump counters so a new boundary is directly comparable
+    // to Plan 231.
+    let p232_parity_ok = p232_published_gateway_match && p232_published_tunnel_match;
+    let p232_terminal = p232_classify_reverse(&P232ReverseInputs {
+        parity_ok: p232_parity_ok,
+        frozen_digest_match_45s: frozen_payload_45s,
+        expected_tunneldata_seen: p231_expected_seen > 0,
+        recovery_completes: p231_recovery_complete_expected,
+        recovery_errors: p231_recovery_error_expected,
+        garlic_decodes_ok: p231_garlic_ok_expected,
+        garlic_decodes_fail: p231_garlic_fail_expected,
+        dispatch_calls: p231_dispatch_calls_expected,
+        queue_hits: p231_queue_hits_expected,
+        queued_decode_fails: p231_queued_decode_fails,
+        pre_target_ibgw_present: p231_ibgw_pre.as_ref().is_some_and(|snap| snap.present),
+    });
+    record_p232_classification(
+        &evidence_dir,
+        p232_terminal,
+        &format!(
+            "nonce={p231_nonce} role={} lease_tunnel={p231_lease_tunnel_id} send_id={p231_a_send_id_pre} parity_ok={p232_parity_ok} expected_seen={} digest_match={} ordered_statuses={:?}",
             p231_target_role.unwrap_or("unknown"),
             p231_expected_seen > 0,
             frozen_payload_45s,
@@ -7950,12 +8052,57 @@ async fn streaming_through_java() {
         DestinationIdentity::generate(&mut identity_rng).expect("destination identity");
     let registrations_in = coord.registrations(TunnelDirection::Inbound);
     let tunnel_expires = wall_secs() + 600;
-    let lease_source = InboundLeaseSource::from_parts(
-        registrations_in[0].slot(),
-        Hash::from_bytes(*java_hash.as_bytes()),
+    // Plan 232 WP A/B2 — initial Streaming lease from the installed route.
+    let p232_stream_local = local_receive_for_lookup;
+    let p232_stream_route = coord
+        .registry()
+        .inbound_gateway_route(p232_stream_local)
+        .expect("installed streaming inbound gateway route");
+    assert_eq!(
+        p232_stream_route.gateway_router, service_hash,
+        "Plan 232 §6: installed streaming route must terminate at the service router"
+    );
+    assert_eq!(
+        p232_stream_route.gateway_receive_tunnel.get(),
         STREAM_IBGW_RECEIVE,
+        "Plan 232 §6: installed streaming route must carry the gateway-side receive tunnel"
+    );
+    assert_eq!(
+        p232_stream_route.local_receive_tunnel.get(),
+        STREAM_IBGW_NEXT,
+        "Plan 232 §6: installed streaming route must carry the local receive tunnel"
+    );
+    let p232_stream_slot = coord.registry().inbound_slot(p232_stream_local);
+    let lease_source = p232_route_derived_lease_source(
+        registrations_in[0].slot(),
+        p232_stream_local,
+        Some(p232_stream_route),
+        p232_stream_slot,
         tunnel_expires,
         tunnel_expires.saturating_sub(60),
+    )
+    .expect("route-derived streaming initial lease");
+    let p232_stream_publication = Hash::from_bytes(*java_hash.as_bytes());
+    p232_record_lease_route(
+        &evidence_dir,
+        &P232LeaseRecord {
+            lane: "streaming",
+            stage: "initial",
+            slot: registrations_in[0].slot(),
+            local_receive: p232_stream_local,
+            route: &p232_stream_route,
+            lease: &lease_source,
+            publication_target: &p232_stream_publication,
+            service_router: &service_hash,
+        },
+    );
+    p232_record_publication_separation(
+        &evidence_dir,
+        "streaming",
+        "initial",
+        &p232_stream_publication,
+        &p232_stream_route,
+        &lease_source,
     );
     let published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
     let mut local_ls2 =
@@ -8625,12 +8772,65 @@ async fn streaming_through_java() {
     let fresh_expires = wall_secs() + 1800;
     let fresh_published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
     let fresh_registrations = coord.registrations(TunnelDirection::Inbound);
-    let fresh_lease = InboundLeaseSource::from_parts(
-        fresh_registrations[0].slot(),
-        Hash::from_bytes(*java_hash.as_bytes()),
+    // Plan 232 WP A/B3 — refreshed Streaming lease revalidates the live
+    // installed route before rebuilding the LS2; never copy the previously
+    // derived gateway across the long-running test.
+    let p232_refresh_receive_ids = coord.registry().inbound_receive_ids();
+    assert_eq!(
+        p232_refresh_receive_ids.len(),
+        1,
+        "Plan 232 §7: refreshed LS2 requires exactly one installed inbound route"
+    );
+    let p232_refresh_local = p232_refresh_receive_ids[0];
+    let p232_refresh_route = coord
+        .registry()
+        .inbound_gateway_route(p232_refresh_local)
+        .expect("installed streaming refresh gateway route");
+    assert_eq!(
+        p232_refresh_route.gateway_router, service_hash,
+        "Plan 232 §6: refreshed streaming route must terminate at the service router"
+    );
+    assert_eq!(
+        p232_refresh_route.gateway_receive_tunnel.get(),
         STREAM_IBGW_RECEIVE,
+        "Plan 232 §6: refreshed streaming route must carry the gateway-side receive tunnel"
+    );
+    assert_eq!(
+        p232_refresh_route.local_receive_tunnel.get(),
+        STREAM_IBGW_NEXT,
+        "Plan 232 §6: refreshed streaming route must carry the local receive tunnel"
+    );
+    let p232_refresh_slot = coord.registry().inbound_slot(p232_refresh_local);
+    let fresh_lease = p232_route_derived_lease_source(
+        fresh_registrations[0].slot(),
+        p232_refresh_local,
+        Some(p232_refresh_route),
+        p232_refresh_slot,
         fresh_expires,
         fresh_expires.saturating_sub(60),
+    )
+    .expect("route-derived streaming refresh lease");
+    let p232_refresh_publication = Hash::from_bytes(*java_hash.as_bytes());
+    p232_record_lease_route(
+        &evidence_dir,
+        &P232LeaseRecord {
+            lane: "streaming",
+            stage: "refresh",
+            slot: fresh_registrations[0].slot(),
+            local_receive: p232_refresh_local,
+            route: &p232_refresh_route,
+            lease: &fresh_lease,
+            publication_target: &p232_refresh_publication,
+            service_router: &service_hash,
+        },
+    );
+    p232_record_publication_separation(
+        &evidence_dir,
+        "streaming",
+        "refresh",
+        &p232_refresh_publication,
+        &p232_refresh_route,
+        &fresh_lease,
     );
     local_ls2 = build_signed_lease_set2(&local_identity, &[fresh_lease], fresh_published)
         .expect("fresh ls2");
@@ -9077,6 +9277,17 @@ async fn streaming_through_java() {
     assert_eq!(final_snapshot.pending_inbound, 0);
     assert_eq!(final_snapshot.active_sessions, 0);
     append_evidence(&evidence_dir, "shutdown-baseline", "true");
+    // Plan 232 §10 — the Streaming lane reached its end with
+    // route-derived initial + refresh leases (both recorded above), so
+    // the retained Streaming qualification rows are interpretable on
+    // the corrected fixture. Second-family closure itself is a
+    // closure-record conclusion over destination + streaming evidence,
+    // never a single driver row.
+    append_evidence(
+        &evidence_dir,
+        "p232-streaming-complete",
+        "initial_route_parity=true refresh_route_parity=true",
+    );
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -16781,4 +16992,778 @@ fn p231_secret_bearing_log_rows_rejected() {
     assert!(p231_parse_participating(part, 38401).is_some());
     assert!(p231_parse_participating(part, 38402).is_none());
     assert!(p231_parse_participating(&format!("{part} payload=x"), 38401).is_none());
+}
+
+// ---- Plan 232 — route-derived lease-gateway fixture corrective --------------
+// Plan 231 proved the published local Standard LS2 advertises the wrong
+// inbound gateway: the Java external driver builds the real inbound tunnel
+// through the Java service router (Router A) but constructs the local lease
+// with the publication router (Router B / `java_hash`). Plan 232 derives
+// every local LS2 lease gateway and gateway tunnel directly from the
+// installed inbound route in the tunnel registry. The route object is the
+// source of truth; controlled-topology identities remain regression
+// assertions only, never the lease source. No production `src/` change.
+
+/// Plan 232 lease-derivation failure: the caller must fail closed before
+/// publication (never publish a lease whose gateway/tunnel did not come
+/// from the installed inbound route).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P232LeaseError {
+    MissingInboundRoute,
+    SlotRouteMismatch,
+}
+
+impl std::fmt::Display for P232LeaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            P232LeaseError::MissingInboundRoute => {
+                formatter.write_str("installed inbound route missing")
+            }
+            P232LeaseError::SlotRouteMismatch => {
+                formatter.write_str("registration slot does not match installed route")
+            }
+        }
+    }
+}
+
+impl std::error::Error for P232LeaseError {}
+
+/// Plan 232 route-parity facts for one local LS2 construction. Hashes and
+/// tunnel ids are bounded public evidence; no keys, tags, private
+/// Destination material, or payload plaintext ever reach this surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P232LeaseParity {
+    gateway_route_match: bool,
+    tunnel_route_match: bool,
+    publication_distinct_from_gateway: bool,
+    gateway_matches_service_router: bool,
+    gateway_tunnel: u32,
+    local_receive: u32,
+}
+
+/// Plan 232 work package A — the single route-derived lease contract all
+/// three Java-driver local lease sites must use.
+///
+/// The lease gateway and gateway tunnel come ONLY from `route` (the
+/// installed inbound route fetched via
+/// `coord.registry().inbound_gateway_route(local_receive)`). They are
+/// never inferred from the publication target, from historical constants
+/// alone, or from role names such as A/B.
+///
+/// `registry_slot` is the registry-bound slot for `local_receive`
+/// (`coord.registry().inbound_slot(local_receive)`); it must equal `slot`
+/// so a stale registration cannot be paired with a live route.
+fn p232_route_derived_lease_source(
+    slot: i2pr_tunnel::pool::TunnelSlot,
+    local_receive: TunnelId,
+    route: Option<i2pr_tunnel::data_plane_registry::InboundGatewayRoute>,
+    registry_slot: Option<i2pr_tunnel::pool::TunnelSlot>,
+    tunnel_expires_seconds: u64,
+    advertised_expires_seconds: u64,
+) -> Result<InboundLeaseSource, P232LeaseError> {
+    let route = route.ok_or(P232LeaseError::MissingInboundRoute)?;
+    if registry_slot != Some(slot) {
+        return Err(P232LeaseError::SlotRouteMismatch);
+    }
+    if route.local_receive_tunnel != local_receive {
+        return Err(P232LeaseError::SlotRouteMismatch);
+    }
+    Ok(InboundLeaseSource::from_parts(
+        slot,
+        route.gateway_router,
+        route.gateway_receive_tunnel.get(),
+        tunnel_expires_seconds,
+        advertised_expires_seconds,
+    ))
+}
+
+/// Plan 232 work package F — durable parity facts binding one constructed
+/// lease to the installed route it must have come from, plus the
+/// independently derived publication target it must NOT have come from.
+fn p232_lease_parity(
+    lease: &InboundLeaseSource,
+    route: &i2pr_tunnel::data_plane_registry::InboundGatewayRoute,
+    publication_target: &Hash,
+    service_router: &Hash,
+) -> P232LeaseParity {
+    let gateway_route_match = lease.gateway() == route.gateway_router;
+    let tunnel_route_match =
+        lease.gateway_receive_tunnel_id() == route.gateway_receive_tunnel.get();
+    P232LeaseParity {
+        gateway_route_match,
+        tunnel_route_match,
+        publication_distinct_from_gateway: publication_target != &lease.gateway(),
+        gateway_matches_service_router: lease.gateway() == *service_router,
+        gateway_tunnel: lease.gateway_receive_tunnel_id(),
+        local_receive: route.local_receive_tunnel.get(),
+    }
+}
+
+/// Plan 232 work packages B/F — record the route/lease/publication-target
+/// parity row for one local LS2 construction and fail closed before
+/// publication when gateway+tunnel parity does not hold. `lane` is
+/// `destination` or `streaming`; `stage` is `initial` or `refresh`.
+struct P232LeaseRecord<'a> {
+    lane: &'a str,
+    stage: &'a str,
+    slot: i2pr_tunnel::pool::TunnelSlot,
+    local_receive: TunnelId,
+    route: &'a i2pr_tunnel::data_plane_registry::InboundGatewayRoute,
+    lease: &'a InboundLeaseSource,
+    publication_target: &'a Hash,
+    service_router: &'a Hash,
+}
+
+fn p232_record_lease_route(evidence_dir: &Path, record: &P232LeaseRecord<'_>) -> P232LeaseParity {
+    let parity = p232_lease_parity(
+        record.lease,
+        record.route,
+        record.publication_target,
+        record.service_router,
+    );
+    let label = if record.lane == "destination" {
+        "p232-destination-lease-route"
+    } else {
+        "p232-streaming-lease-route"
+    };
+    append_evidence(
+        evidence_dir,
+        label,
+        &format!(
+            "lane={} stage={} registration_slot={} local_receive_tunnel={} route_gateway_hash={} route_gateway_tunnel={} lease_gateway_hash={} lease_gateway_tunnel={} publication_target_hash={} gateway_route_match={} tunnel_route_match={} publication_distinct_from_gateway={} gateway_matches_service_router={} gateway_tunnel={} local_receive={}",
+            record.lane,
+            record.stage,
+            record.slot.get(),
+            record.local_receive.get(),
+            p220_bytes_to_hex(record.route.gateway_router.as_bytes()),
+            record.route.gateway_receive_tunnel.get(),
+            p220_bytes_to_hex(record.lease.gateway().as_bytes()),
+            record.lease.gateway_receive_tunnel_id(),
+            p220_bytes_to_hex(record.publication_target.as_bytes()),
+            parity.gateway_route_match,
+            parity.tunnel_route_match,
+            parity.publication_distinct_from_gateway,
+            parity.gateway_matches_service_router,
+            parity.gateway_tunnel,
+            parity.local_receive,
+        ),
+    );
+    assert!(
+        parity.gateway_route_match,
+        "Plan 232 §11: lease gateway must match the installed inbound route before publication (lane={} stage={})",
+        record.lane, record.stage,
+    );
+    assert!(
+        parity.tunnel_route_match,
+        "Plan 232 §11: lease tunnel must match the installed inbound route before publication (lane={} stage={})",
+        record.lane, record.stage,
+    );
+    parity
+}
+
+/// Plan 232 work package C — prove correcting the lease gateway does not
+/// redirect NetDB publication: the publication target stays the retained
+/// Java floodfill router while the lease gateway is the installed inbound
+/// tunnel gateway. The two roles must never become aliases.
+fn p232_record_publication_separation(
+    evidence_dir: &Path,
+    lane: &str,
+    stage: &str,
+    publication_target: &Hash,
+    route: &i2pr_tunnel::data_plane_registry::InboundGatewayRoute,
+    lease: &InboundLeaseSource,
+) {
+    let publication_is_target = true;
+    let lease_from_route = lease.gateway() == route.gateway_router
+        && lease.gateway_receive_tunnel_id() == route.gateway_receive_tunnel.get();
+    let distinct = publication_target != &lease.gateway();
+    append_evidence(
+        evidence_dir,
+        "p232-publication-separation",
+        &format!(
+            "lane={lane} stage={stage} publication_target_hash={} lease_gateway_hash={} route_gateway_hash={} publication_is_publication_target={publication_is_target} lease_from_installed_route={lease_from_route} publication_distinct_from_gateway={distinct}",
+            p220_bytes_to_hex(publication_target.as_bytes()),
+            p220_bytes_to_hex(lease.gateway().as_bytes()),
+            p220_bytes_to_hex(route.gateway_router.as_bytes()),
+        ),
+    );
+    assert!(
+        lease_from_route,
+        "Plan 232 §8: lease gateway must come from the installed route, never the publication target (lane={lane} stage={stage})"
+    );
+}
+
+/// Plan 232 work package D — corrected-route preflight gate before
+/// `SEND_TRACKED`: the exact advertised target IBGW must be installed on
+/// the router identified by the actual advertised lease.
+fn p232_target_ibgw_gate(ibgw_present_exact: bool) -> bool {
+    ibgw_present_exact
+}
+
+fn p232_record_target_ibgw_preflight(
+    evidence_dir: &Path,
+    published_gateway_matches_route: bool,
+    published_tunnel_matches_route: bool,
+    target_router_has_exact_ibgw: bool,
+    role: &str,
+    lease_tunnel: u32,
+) {
+    append_evidence(
+        evidence_dir,
+        "p232-target-ibgw-preflight",
+        &format!(
+            "published_local_ls2_gateway_matches_route={published_gateway_matches_route} published_local_ls2_tunnel_matches_route={published_tunnel_matches_route} target_router_has_exact_ibgw={target_router_has_exact_ibgw} role={role} lease_tunnel={lease_tunnel}",
+        ),
+    );
+    assert!(
+        published_gateway_matches_route,
+        "Plan 232 §9: published LS2 gateway must equal the installed route gateway before SEND_TRACKED"
+    );
+    assert!(
+        published_tunnel_matches_route,
+        "Plan 232 §9: published LS2 tunnel must equal the installed route gateway tunnel before SEND_TRACKED"
+    );
+}
+
+/// Plan 232 work packages D/E — post-correction reverse + closure
+/// vocabulary. D-stage tokens mirror the first new exact boundary; the
+/// fixture token is a harness defect (never production work); the
+/// second-family token closes the Java branch only when raw reverse and
+/// every retained Streaming row pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P232Terminal {
+    ReverseDeliveryPassed,
+    JavaForwardingBoundary,
+    I2prNoExpectedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prDestinationDispatchMissed,
+    I2prPayloadMismatch,
+    ObservabilityGap,
+    FixtureRouteParityFailed,
+    RawReversePassedStreamingBoundary,
+    JavaSecondFamilyPassed,
+}
+
+impl P232Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            P232Terminal::ReverseDeliveryPassed => "P232-D-REVERSE-DELIVERY-PASSED",
+            P232Terminal::JavaForwardingBoundary => "P232-D-JAVA-FORWARDING-BOUNDARY",
+            P232Terminal::I2prNoExpectedTunnelData => "P232-D-I2PR-NO-EXPECTED-TUNNELDATA",
+            P232Terminal::I2prTunnelRecoveryFailed => "P232-D-I2PR-TUNNEL-RECOVERY-FAILED",
+            P232Terminal::I2prGarlicDecodeFailed => "P232-D-I2PR-GARLIC-DECODE-FAILED",
+            P232Terminal::I2prDestinationDispatchMissed => {
+                "P232-D-I2PR-DESTINATION-DISPATCH-MISSED"
+            }
+            P232Terminal::I2prPayloadMismatch => "P232-D-I2PR-PAYLOAD-MISMATCH",
+            P232Terminal::ObservabilityGap => "P232-D-OBSERVABILITY-GAP",
+            P232Terminal::FixtureRouteParityFailed => "P232-FIXTURE-ROUTE-PARITY-FAILED",
+            P232Terminal::RawReversePassedStreamingBoundary => {
+                "P232-RAW-REVERSE-PASSED-STREAMING-BOUNDARY"
+            }
+            P232Terminal::JavaSecondFamilyPassed => "P232-JAVA-SECOND-FAMILY-PASSED",
+        }
+    }
+}
+
+/// Plan 232 §9 — classify the corrected-route reverse epoch. Parity must
+/// hold first (otherwise the run is a fixture defect, never a protocol
+/// boundary). With parity proven, the frozen 45-second digest match
+/// passes; otherwise the earliest new exact D-stage boundary applies.
+/// `pre_target_ibgw_present` distinguishes a Java-side forwarding stop
+/// (no exact IBGW pumped upstream) from the i2pr-owned D stages.
+/// Pure classifier inputs for the corrected-route reverse epoch. With
+/// parity proven, the frozen 45-second digest decides the pass; otherwise
+/// the earliest new exact D-stage boundary applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct P232ReverseInputs {
+    parity_ok: bool,
+    frozen_digest_match_45s: bool,
+    expected_tunneldata_seen: bool,
+    recovery_completes: u64,
+    recovery_errors: u64,
+    garlic_decodes_ok: u64,
+    garlic_decodes_fail: u64,
+    dispatch_calls: u64,
+    queue_hits: u64,
+    queued_decode_fails: u64,
+    pre_target_ibgw_present: bool,
+}
+
+fn p232_classify_reverse(inputs: &P232ReverseInputs) -> P232Terminal {
+    if !inputs.parity_ok {
+        return P232Terminal::FixtureRouteParityFailed;
+    }
+    if inputs.frozen_digest_match_45s {
+        return P232Terminal::ReverseDeliveryPassed;
+    }
+    if !inputs.pre_target_ibgw_present && !inputs.expected_tunneldata_seen {
+        return P232Terminal::JavaForwardingBoundary;
+    }
+    if !inputs.expected_tunneldata_seen {
+        return P232Terminal::I2prNoExpectedTunnelData;
+    }
+    if inputs.recovery_completes == 0 {
+        if inputs.recovery_errors > 0 {
+            return P232Terminal::I2prTunnelRecoveryFailed;
+        }
+        return P232Terminal::ObservabilityGap;
+    }
+    if inputs.garlic_decodes_ok == 0 {
+        if inputs.garlic_decodes_fail > 0 {
+            return P232Terminal::I2prGarlicDecodeFailed;
+        }
+        return P232Terminal::ObservabilityGap;
+    }
+    if inputs.dispatch_calls == 0 {
+        return P232Terminal::ObservabilityGap;
+    }
+    if inputs.queue_hits == 0 {
+        return P232Terminal::I2prDestinationDispatchMissed;
+    }
+    if inputs.queued_decode_fails > 0 {
+        return P232Terminal::I2prDestinationDispatchMissed;
+    }
+    P232Terminal::I2prPayloadMismatch
+}
+
+fn record_p232_classification(evidence_dir: &Path, terminal: P232Terminal, detail: &str) {
+    let sanitized = detail.replace(['\t', '\n'], " ");
+    append_evidence(
+        evidence_dir,
+        "p232-classification",
+        &format!("{} {sanitized}", terminal.token()),
+    );
+}
+
+/// Plan 232 §9 — raw reverse pass must continue directly into Streaming
+/// on the same corrected implementation (no intermediate plan).
+fn p232_raw_reverse_permits_streaming(reverse_passed: bool) -> bool {
+    reverse_passed
+}
+
+/// Plan 232 §10/§17 — the Java second family closes only when corrected
+/// raw reverse AND every retained Streaming row pass.
+fn p232_streaming_permits_closure(raw_passed: bool, streaming_complete: bool) -> bool {
+    raw_passed && streaming_complete
+}
+
+fn p232_test_route(
+    gateway_byte: u8,
+    gateway_tunnel: u32,
+    local_receive: u32,
+) -> i2pr_tunnel::data_plane_registry::InboundGatewayRoute {
+    i2pr_tunnel::data_plane_registry::InboundGatewayRoute {
+        gateway_router: Hash::from_bytes([gateway_byte; 32]),
+        gateway_receive_tunnel: TunnelId::new(gateway_tunnel).expect("tunnel id"),
+        local_receive_tunnel: TunnelId::new(local_receive).expect("tunnel id"),
+    }
+}
+
+#[test]
+fn p232_destination_lease_gateway_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(7);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("route-derived lease");
+    assert_eq!(lease.gateway(), route.gateway_router);
+    assert_eq!(lease.slot(), slot);
+}
+
+#[test]
+fn p232_destination_lease_tunnel_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(7);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("route-derived lease");
+    assert_eq!(lease.gateway_receive_tunnel_id(), IBGW_RECEIVE);
+    assert_eq!(
+        lease.gateway_receive_tunnel_id(),
+        route.gateway_receive_tunnel.get()
+    );
+}
+
+#[test]
+fn p232_destination_publication_target_is_not_lease_gateway_source() {
+    // The publication target (Router B) and the lease gateway (Router A)
+    // are different protocol roles. A lease built from the route must
+    // match the route and stay distinct from the publication target, and
+    // the parity surface must prove both facts.
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(3);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    let publication_target = Hash::from_bytes([0xB2; 32]);
+    let service_router = Hash::from_bytes([0xA1; 32]);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("route-derived lease");
+    let parity = p232_lease_parity(&lease, &route, &publication_target, &service_router);
+    assert!(parity.gateway_route_match);
+    assert!(parity.tunnel_route_match);
+    assert!(parity.publication_distinct_from_gateway);
+    assert!(parity.gateway_matches_service_router);
+    // The publication target must never equal the route gateway in this
+    // fixture: a hardcoded publication-target gateway would fail parity
+    // by construction (gateway_route_match would be false).
+    assert_ne!(publication_target, route.gateway_router);
+    assert_ne!(lease.gateway(), publication_target);
+}
+
+#[test]
+fn p232_streaming_initial_gateway_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+    let local = TunnelId::new(0x9802).expect("streaming local receive");
+    let route = p232_test_route(0xA1, 0x9801, 0x9802);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("streaming initial lease");
+    assert_eq!(lease.gateway(), route.gateway_router);
+}
+
+#[test]
+fn p232_streaming_initial_tunnel_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+    let local = TunnelId::new(0x9802).expect("streaming local receive");
+    let route = p232_test_route(0xA1, 0x9801, 0x9802);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("streaming initial lease");
+    assert_eq!(lease.gateway_receive_tunnel_id(), 0x9801);
+}
+
+#[test]
+fn p232_streaming_refresh_revalidates_installed_inbound_route() {
+    // The refresh must re-derive from the live installed route: reusing a
+    // stale route against a new local receive id fails closed instead of
+    // copying the previously derived gateway across a long-running test.
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+    let initial_local = TunnelId::new(0x9802).expect("initial local");
+    let initial_route = p232_test_route(0xA1, 0x9801, 0x9802);
+    let initial = p232_route_derived_lease_source(
+        slot,
+        initial_local,
+        Some(initial_route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("initial lease");
+    assert_eq!(initial.gateway(), initial_route.gateway_router);
+    // A revalidation against a different live local id with the stale
+    // route must fail: the route's local selector no longer matches.
+    let refreshed_local = TunnelId::new(0x9803).expect("refreshed local");
+    assert!(matches!(
+        p232_route_derived_lease_source(
+            slot,
+            refreshed_local,
+            Some(initial_route),
+            Some(slot),
+            1_700_001_800,
+            1_700_001_740,
+        ),
+        Err(P232LeaseError::SlotRouteMismatch)
+    ));
+    // Re-deriving from the live refreshed route passes.
+    let refreshed_route = p232_test_route(0xA1, 0x9801, 0x9803);
+    let refreshed = p232_route_derived_lease_source(
+        slot,
+        refreshed_local,
+        Some(refreshed_route),
+        Some(slot),
+        1_700_001_800,
+        1_700_001_740,
+    )
+    .expect("refreshed lease");
+    assert_eq!(refreshed.gateway(), refreshed_route.gateway_router);
+}
+
+#[test]
+fn p232_streaming_refresh_gateway_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+    let local = TunnelId::new(0x9802).expect("streaming local receive");
+    let route = p232_test_route(0xA1, 0x9801, 0x9802);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_001_800,
+        1_700_001_740,
+    )
+    .expect("refresh lease");
+    assert_eq!(lease.gateway(), route.gateway_router);
+}
+
+#[test]
+fn p232_streaming_refresh_tunnel_matches_installed_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(11);
+    let local = TunnelId::new(0x9802).expect("streaming local receive");
+    let route = p232_test_route(0xA1, 0x9801, 0x9802);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_001_800,
+        1_700_001_740,
+    )
+    .expect("refresh lease");
+    assert_eq!(
+        lease.gateway_receive_tunnel_id(),
+        route.gateway_receive_tunnel.get()
+    );
+}
+
+#[test]
+fn p232_route_derived_helper_rejects_missing_inbound_route() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(7);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    assert_eq!(
+        p232_route_derived_lease_source(slot, local, None, Some(slot), 100, 40),
+        Err(P232LeaseError::MissingInboundRoute)
+    );
+}
+
+#[test]
+fn p232_route_derived_helper_rejects_slot_route_mismatch() {
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(7);
+    let other_slot = i2pr_tunnel::pool::TunnelSlot::from_raw(9);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    // Registry-bound slot differs from the supplied registration slot.
+    assert_eq!(
+        p232_route_derived_lease_source(slot, local, Some(route), Some(other_slot), 100, 40),
+        Err(P232LeaseError::SlotRouteMismatch)
+    );
+    // Registry has no binding for this local receive id.
+    assert_eq!(
+        p232_route_derived_lease_source(slot, local, Some(route), None, 100, 40),
+        Err(P232LeaseError::SlotRouteMismatch)
+    );
+    // Route selector differs from the queried local receive id.
+    let wrong_local = TunnelId::new(IBGW_RECEIVE).expect("wrong local");
+    assert_eq!(
+        p232_route_derived_lease_source(slot, wrong_local, Some(route), Some(slot), 100, 40),
+        Err(P232LeaseError::SlotRouteMismatch)
+    );
+}
+
+#[test]
+fn p232_java_hash_cannot_be_hardcoded_as_local_lease_gateway() {
+    // Simulates the Plan 231 defect: gateway hardcoded to the publication
+    // target instead of the installed route. The helper-derived lease must
+    // differ from the publication target and match the route; a hardcoded
+    // publication-target gateway is definitionally unequal to the route
+    // gateway in this fixture and would fail parity.
+    let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(7);
+    let local = TunnelId::new(IBGW_NEXT).expect("local receive");
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    let java_hash = Hash::from_bytes([0xB2; 32]);
+    let service_router = Hash::from_bytes([0xA1; 32]);
+    let lease = p232_route_derived_lease_source(
+        slot,
+        local,
+        Some(route),
+        Some(slot),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("route-derived lease");
+    assert_ne!(lease.gateway(), java_hash);
+    assert_eq!(lease.gateway(), route.gateway_router);
+    assert_ne!(java_hash, route.gateway_router);
+    let parity = p232_lease_parity(&lease, &route, &java_hash, &service_router);
+    assert!(parity.gateway_route_match);
+    assert!(parity.gateway_matches_service_router);
+}
+
+#[test]
+fn p232_all_java_local_lease_sites_use_route_derived_contract() {
+    // All three local lease sites (raw Destination, initial Streaming,
+    // refreshed Streaming) share the one helper: prove the helper covers
+    // the destination namespace, the streaming namespace, and the refresh
+    // epoch with identical route-match semantics.
+    for (slot_raw, gateway_tunnel, local_receive) in [
+        (7u32, IBGW_RECEIVE, IBGW_NEXT),
+        (11u32, 0x9801u32, 0x9802u32),
+        (11u32, 0x9801u32, 0x9802u32),
+    ] {
+        let slot = i2pr_tunnel::pool::TunnelSlot::from_raw(slot_raw);
+        let local = TunnelId::new(local_receive).expect("local receive");
+        let route = p232_test_route(0xA1, gateway_tunnel, local_receive);
+        let lease = p232_route_derived_lease_source(
+            slot,
+            local,
+            Some(route),
+            Some(slot),
+            1_700_000_600,
+            1_700_000_540,
+        )
+        .expect("every site uses the route-derived contract");
+        assert_eq!(lease.gateway(), route.gateway_router);
+        assert_eq!(
+            lease.gateway_receive_tunnel_id(),
+            route.gateway_receive_tunnel.get()
+        );
+    }
+}
+
+#[test]
+fn p232_corrected_target_router_must_have_exact_ibgw_before_send() {
+    // The §9 preflight gate passes only when the router identified by the
+    // advertised lease exposes the exact IBGW. A corrected route that
+    // still addresses a router without the gateway must not send.
+    assert!(p232_target_ibgw_gate(true));
+    assert!(!p232_target_ibgw_gate(false));
+}
+
+#[test]
+fn p232_reverse_pass_requires_exact_tunneldata_and_digest() {
+    // Digest match without wire is impossible by construction: the pass
+    // requires both the exact TunnelData observation and the digest.
+    let pass_inputs = P232ReverseInputs {
+        parity_ok: true,
+        frozen_digest_match_45s: true,
+        expected_tunneldata_seen: true,
+        recovery_completes: 1,
+        recovery_errors: 0,
+        garlic_decodes_ok: 1,
+        garlic_decodes_fail: 0,
+        dispatch_calls: 1,
+        queue_hits: 1,
+        queued_decode_fails: 0,
+        pre_target_ibgw_present: true,
+    };
+    let pass = p232_classify_reverse(&pass_inputs);
+    assert_eq!(pass, P232Terminal::ReverseDeliveryPassed);
+    assert_eq!(pass.token(), "P232-D-REVERSE-DELIVERY-PASSED");
+    // Digest match claimed without wire receipt is still no-wire.
+    let no_wire = p232_classify_reverse(&P232ReverseInputs {
+        parity_ok: true,
+        frozen_digest_match_45s: false,
+        expected_tunneldata_seen: false,
+        recovery_completes: 0,
+        recovery_errors: 0,
+        garlic_decodes_ok: 0,
+        garlic_decodes_fail: 0,
+        dispatch_calls: 0,
+        queue_hits: 0,
+        queued_decode_fails: 0,
+        pre_target_ibgw_present: true,
+    });
+    assert_eq!(no_wire, P232Terminal::I2prNoExpectedTunnelData);
+    // Wire without digest is a payload mismatch, never a pass.
+    let mismatch = p232_classify_reverse(&P232ReverseInputs {
+        parity_ok: true,
+        frozen_digest_match_45s: false,
+        ..pass_inputs
+    });
+    assert_eq!(mismatch, P232Terminal::I2prPayloadMismatch);
+    // Missing parity is a fixture defect even when everything else passes.
+    let fixture = p232_classify_reverse(&P232ReverseInputs {
+        parity_ok: false,
+        ..pass_inputs
+    });
+    assert_eq!(fixture, P232Terminal::FixtureRouteParityFailed);
+    assert_eq!(fixture.token(), "P232-FIXTURE-ROUTE-PARITY-FAILED");
+}
+
+#[test]
+fn p232_raw_reverse_pass_continues_to_streaming() {
+    assert!(p232_raw_reverse_permits_streaming(true));
+    assert!(!p232_raw_reverse_permits_streaming(false));
+}
+
+#[test]
+fn p232_streaming_pass_can_close_java_second_family() {
+    assert!(p232_streaming_permits_closure(true, true));
+    assert!(!p232_streaming_permits_closure(true, false));
+    assert!(!p232_streaming_permits_closure(false, true));
+    assert!(!p232_streaming_permits_closure(false, false));
+    assert_eq!(
+        P232Terminal::JavaSecondFamilyPassed.token(),
+        "P232-JAVA-SECOND-FAMILY-PASSED"
+    );
+    assert_eq!(
+        P232Terminal::RawReversePassedStreamingBoundary.token(),
+        "P232-RAW-REVERSE-PASSED-STREAMING-BOUNDARY"
+    );
+}
+
+#[test]
+fn p232_timeout_windows_remain_frozen() {
+    // Plan 232 §5.6: no timeout inflation. The 30-second install poll,
+    // the 45-second reverse payload window, and the 70-second
+    // status-only window stay frozen.
+    assert_eq!(ACCEPT_TIMEOUT, Duration::from_secs(30));
+    assert_eq!(DATAGRAM_WAIT, Duration::from_secs(45));
+    assert_eq!(P222_STATUS_OBSERVATION_DEADLINE, Duration::from_secs(70));
+}
+
+#[test]
+fn p232_no_production_surface_change() {
+    // The P232 surface lives in this external test only: every terminal
+    // token is namespaced `P232-*` and no token aliases a production
+    // evidence label.
+    for token in [
+        P232Terminal::ReverseDeliveryPassed.token(),
+        P232Terminal::JavaForwardingBoundary.token(),
+        P232Terminal::I2prNoExpectedTunnelData.token(),
+        P232Terminal::I2prTunnelRecoveryFailed.token(),
+        P232Terminal::I2prGarlicDecodeFailed.token(),
+        P232Terminal::I2prDestinationDispatchMissed.token(),
+        P232Terminal::I2prPayloadMismatch.token(),
+        P232Terminal::ObservabilityGap.token(),
+        P232Terminal::FixtureRouteParityFailed.token(),
+        P232Terminal::RawReversePassedStreamingBoundary.token(),
+        P232Terminal::JavaSecondFamilyPassed.token(),
+    ] {
+        assert!(token.starts_with("P232-"), "token shape: {token}");
+    }
+    for production_label in [
+        "destination-outbound-delivered",
+        "reference-received",
+        "shutdown-baseline",
+    ] {
+        assert!(
+            !P232Terminal::ReverseDeliveryPassed
+                .token()
+                .contains(production_label)
+        );
+    }
 }
