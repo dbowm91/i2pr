@@ -391,6 +391,27 @@ public final class ControlledRouter {
         // the lane only counts SSU2; disabling the legacy transports
         // keeps the controlled profile self-consistent.
         props.setProperty("logger.defaultLevel", "DEBUG");
+        // Plan 230 WP C — conditional stock controlled-topology
+        // correction, authorized by the WP B baseline
+        // (`P230-A-PREDICATE-INELIGIBLE reason=compound`: the isolated
+        // loopback fixture never establishes an OK reachability state
+        // on its own, so Router C advertises no `R`; and C sits at the
+        // default low-bandwidth class the floodfill observer rejects).
+        // C1: the stock `i2np.udp.status=ok` override (pinned
+        // `UDPTransport` maps the literal `ok` to `Status.OK`, and an
+        // OK communication-system state emits the `R` capability via
+        // `Router.getCapabilities()`). Fixture-only: every SSU2
+        // listener stays loopback-only and public reseed/network
+        // participation stays disabled by the surrounding controlled
+        // profile. C2: transit Router C only uses real configured
+        // stock bandwidth above the pinned `L` boundary (128 KiB/s
+        // outbound, normal default share); the lying forced-class
+        // override is never used.
+        props.setProperty("i2np.udp.status", "ok");
+        if ("transit".equals(role)) {
+            props.setProperty("i2np.bandwidth.outboundKBytesPerSecond", "128");
+            props.setProperty("i2np.bandwidth.outboundBurstKBytesPerSecond", "128");
+        }
         props.setProperty("i2np.udp.host", ssu2Host);
         props.setProperty("i2np.udp.port", ssu2Port);
         props.setProperty("i2np.udp.internalPort", ssu2Port);
