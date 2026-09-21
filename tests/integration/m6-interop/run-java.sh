@@ -1715,17 +1715,6 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
     cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
   fi
-  # Plan 231 WP F — exactly one p231-classification per counted run.
-  # The Rust driver emits it on every path that reaches the driver
-  # (reverse epoch, install-stalled, lease-stalled). If the driver
-  # binary died before emitting (crash/timeout with no driver TSV),
-  # the shell emits the single honest gap row with the driver exit
-  # as provenance; it never invents a stage attribution.
-  if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
-    if ! grep -Fq $'p231-classification\t' "${DRIVER_DEST_TSV}" 2>/dev/null; then
-      printf 'p231-classification\tP231-A-OBSERVABILITY-GAP reason=driver-evidence-absent driver_rc=%s\n' "${driver_rc:-unknown}" >> "${DRIVER_DEST_TSV}"
-    fi
-  fi
   stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
   # Plan 220 §7 — moment #5 (after reverse-send wait
   # expires) captures the post-deadline RouterInfo
@@ -1936,6 +1925,21 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "bo
   fi
 fi
 # Compose the aggregated driver-evidence.tsv the helpers below read.
+# Plan 231 WP F — exactly one p231-classification per completed
+# counted run. The Rust destination driver emits it on every path
+# that reaches the driver (reverse epoch, install-stalled,
+# lease-stalled). If the destination lane never ran or the driver
+# binary died before emitting (crash/timeout with no driver TSV),
+# the shell emits the single honest gap row with the last P230 word
+# and driver exit as provenance; it never invents a stage
+# attribution. Infrastructure death before aggregation stays VOID
+# (no row, no classification consumed).
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  if ! grep -Fq $'p231-classification\t' "${DRIVER_DEST_TSV}" 2>/dev/null; then
+    P231_STOP_WORD="$(awk -F'\t' '$1 == "p230-classification" { n = split($2, a, " "); if (n > 0) last = a[1] } END { if (last) print last }' "${DRIVER_DEST_TSV}" 2>/dev/null || true)"
+    printf 'p231-classification\tP231-A-OBSERVABILITY-GAP reason=destination-lane-not-entered p230_stop=%s driver_rc=%s\n' "${P231_STOP_WORD:-unknown}" "${driver_rc:-unknown}" >> "${DRIVER_DEST_TSV}"
+  fi
+fi
 : > "${DRIVER_EVIDENCE}/driver-evidence.tsv"
 if [[ -f "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv" ]]; then
   cat "${DRIVER_EVIDENCE}/bootstrap-driver-evidence.tsv" >> "${DRIVER_EVIDENCE}/driver-evidence.tsv"
