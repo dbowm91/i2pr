@@ -1,3 +1,19 @@
+# Current handoff amendment — Plan 229 registered
+
+Plan 218's behavioral stop remains authoritative. Plan 228 localized the
+current pre-lookup failure to stock Java paired-tunnel selection:
+client configs through C exist, but only zero-hop exploratory fallbacks are
+available, so no client build request leaves Router A. Plan 229 is now the
+sole executable corrective and may change only the controlled reference
+topology described in its plan.
+
+```text
+plan_218 = stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary
+plan_228 = passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+next_executable_plan = 229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
 # Current handoff amendment — Plan 228 registered
 
 Plan 218's behavioral stop remains authoritative. Plan 227 proved a valid,
