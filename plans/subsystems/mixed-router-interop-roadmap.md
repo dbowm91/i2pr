@@ -71,7 +71,23 @@ pinned `ExploratoryPeerSelector` selects from. Bytecode review shows
 `isSelectable` is RI-fact based and tier-map independent, so the
 retained selectable-C signal never implied tier membership.
 
-Plan 230 has been replaced in place by the bounded reachability-capability/profile-bootstrap corrective. Exact-pinned source review showed the P229 `unreachable` signal was non-authoritative (`ProfileOrganizer.isFailing()` is deprecated and always false) and that ordinary `heardAbout()` profile creation is capability-gated by `R` plus bandwidth/congestion caps. Plan 230 now proves that exact predicate first, conditionally applies only stock loopback reachability / Router-C bandwidth configuration when baseline evidence requires it, requires natural profile creation through the existing authenticated RI bootstrap, and then continues directly through the retained P229/P228/P201 gates.
+Plan 230 is closed at `passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary`.
+Exact-pinned source review had shown the P229 `unreachable` signal was
+non-authoritative (`ProfileOrganizer.isFailing()` is deprecated and always
+false) and that ordinary `heardAbout()` profile creation is capability-gated
+by `R` plus bandwidth/congestion caps. Plan 230 proved that exact predicate
+first (baseline `P230-A-PREDICATE-INELIGIBLE reason=compound`: missing-`R`
+plus low-bandwidth-`L` on the floodfill observer), applied only the matching
+stock corrections (`i2np.udp.status=ok` fixture-wide plus transit-C-only
+`128/128` bandwidth, never forced-class), and required natural profile
+creation through the existing authenticated RI bootstrap: 3/3 counted runs
+eligible (`R` + tier `N` + comm `OK`), 2/3 bootstrapped naturally with
+RI-identity match, the deepest run passing the retained P229/P228/P201 gates
+through digest-matched forward delivery and stopping at the reverse
+Java→i2pr payload, which reproduces the retained Plan-218 signature (send
+admitted, no payload in 45 s). No new i2pr-visible wire boundary was found;
+the reverse-delivery lane stays owned by Plan 201 with no successor
+registered.
 
 Plan 205 remains retained/deferred.
 
@@ -109,7 +125,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-pending-plan230-reachability-capability-profile-bootstrap-corrective | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 201 | blocked | blocked-pending-reverse-delivery-corrective-after-plan230-profile-bootstrap | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
 | 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 227 localized the active failure below client-tunnel establishment; Plan 228 closed attribution at paired-tunnel selection on the direct Java client build path below SAM) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
 | 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (behavioral stop retained; Plan 227 proved selectable C but no one-hop client tunnel; Plan 228 closed attribution at NO-PAIRED-TUNNEL) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
@@ -124,7 +140,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 227 | closed | passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary | `plans/implementation/mixed-router-interop/227-m6-java-explicit-one-hop-client-tunnel-corrective.md` | `plans/closure/mixed-router-interop/227-status.md` |
 | 228 | closed | passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary | `plans/implementation/mixed-router-interop/228-m6-java-client-tunnel-build-path-attribution.md` | `plans/closure/mixed-router-interop/228-status.md` |
 | 229 | closed | passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary | `plans/implementation/mixed-router-interop/229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective.md` | `plans/closure/mixed-router-interop/229-status.md` |
-| 230 | ready | registered-ready-m6-java-reachability-capability-profile-bootstrap-corrective | `plans/implementation/mixed-router-interop/230-m6-java-profile-population-path-attribution.md` | `plans/closure/mixed-router-interop/230-status.md` |
+| 230 | closed | passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary | `plans/implementation/mixed-router-interop/230-m6-java-profile-population-path-attribution.md` | `plans/closure/mixed-router-interop/230-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -144,7 +160,7 @@ Plan 224 retained every Plan-222/223 invariant and added lookup-path attribution
 - exact distinction between selector membership, actual A→B query, B lookup receipt, B published-LS answer, A inbound-client-tunnel DSM receipt, and A client-subDB post-send presence;
 - the pinned Java DSM store-before-success ordering is treated as source authority and the speculative race explanation is forbidden.
 
-Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs. Plan 229 closed at the transit-peer stop: roles and the A-only small-router profile proven live, tier population empty (`profile_count=0`). Plan 230 is the active reachability-capability/profile-bootstrap corrective and is authorized to continue directly through the retained exploratory/client/destination gates once natural profile bootstrap passes.
+Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs. Plan 229 closed at the transit-peer stop: roles and the A-only small-router profile proven live, tier population empty (`profile_count=0`). Plan 230 closed the reachability-capability/profile-bootstrap corrective (predicate proven, stock C1+C2 correction, natural bootstrap 2/3, forward delivery digest-matched once) at the retained reverse-delivery boundary; no successor is registered.
 
 Raw Java logs never become evidence. The Plan-223 45-second reverse-payload acceptance window stays frozen. External attempts remain limited to three per committed implementation SHA with no tuning.
 
@@ -169,8 +185,8 @@ identified the earliest missing stage as the absence of an actual target lookup
 dispatch from Router A to Router B, emitting exactly
 `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`.
 
-Plan 226 closed without authorizing the controlled-topology correction. Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no tunnels built). Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (configs through C created, paired tunnel unavailable both directions, no dispatch). Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, organizer tier population empty, helper never started). Plan 201 and Plan 204 remain blocked (pending Plan 230); Plan 205 remains retained-deferred.
+Plan 226 closed without authorizing the controlled-topology correction. Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no tunnels built). Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (configs through C created, paired tunnel unavailable both directions, no dispatch). Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, organizer tier population empty, helper never started). Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery. Plan 201 is blocked pending a narrow reverse-delivery corrective; Plan 204 remains blocked; Plan 205 remains retained-deferred.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT`; Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE`; Plan 230 is registered-ready for the reachability-capability/profile-bootstrap corrective and continuation; Plan 201 and Plan 204 remain blocked; Plan 205 remains retained-deferred.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT`; Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE`; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 201 is blocked pending a narrow reverse-delivery corrective; Plan 204 remains blocked; Plan 205 remains retained-deferred.

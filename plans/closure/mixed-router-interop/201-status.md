@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 230 closed with reverse-delivery boundary
+
+Plan 230 closed as
+`passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary`
+(see `230-status.md`): the `heardAbout()` predicate was proven, the matching
+stock C1+C2 fixture correction applied on baseline evidence, natural profile
+bootstrap proven (2/3 counted attempts, RI-identity matched), the exploratory
++ client-tunnel continuation passed, and the frozen destination lane ran once
+end-to-end with digest-matched forward delivery — stopping at the reverse
+Java→i2pr payload, which reproduces the retained Plan-218 signature (send
+admitted, no payload in 45 s, no terminal status). No new i2pr-visible
+wire/protocol boundary was observed. Plan 201's Plan-230 hard dependency is
+therefore closed, but Java second-family closure still requires the
+reverse-delivery boundary, which has no registered corrective. Re-running
+201's lane without one would only reproduce the stop, so no successor is
+registered here; a narrow reverse-delivery corrective may be registered
+separately under this lane when its trigger is identified.
+
+```text
+plan_201 = blocked-pending-reverse-delivery-corrective-after-plan230-profile-bootstrap
+plan_230 = passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary
+next_executable_plan = none (a narrow reverse-delivery corrective may be registered separately)
+```
+
 # Current dependency amendment — Plan 230 replaced by reachability-capability/profile-bootstrap corrective
 
 Exact-pinned Java source review supersedes the original Plan-230 open-ended profile-population attribution. The historical Plan-229 `unreachable=false` fact was derived from `ProfileOrganizer.isFailing()`, which is deprecated and unconditionally false in the pinned Java 2.13.0 source. Ordinary `ProfileManagerImpl.heardAbout()` profile creation is instead gated by the peer RouterInfo capability predicate (`R` plus floodfill/bandwidth/congestion conditions). Revised Plan 230 first proves that predicate, conditionally corrects only the controlled loopback reachability / Router-C bandwidth configuration when justified, requires natural profile creation through the authenticated RI bootstrap, and then continues directly through the retained P229/P228/P201 gates.
