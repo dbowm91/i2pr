@@ -1,3 +1,13 @@
+# Current dependency amendment — Plan 230 replaced by reachability-capability/profile-bootstrap corrective
+
+Exact-pinned Java source review supersedes the original Plan-230 open-ended profile-population attribution. The historical Plan-229 `unreachable=false` fact was derived from `ProfileOrganizer.isFailing()`, which is deprecated and unconditionally false in the pinned Java 2.13.0 source. Ordinary `ProfileManagerImpl.heardAbout()` profile creation is instead gated by the peer RouterInfo capability predicate (`R` plus floodfill/bandwidth/congestion conditions). Revised Plan 230 first proves that predicate, conditionally corrects only the controlled loopback reachability / Router-C bandwidth configuration when justified, requires natural profile creation through the authenticated RI bootstrap, and then continues directly through the retained P229/P228/P201 gates.
+
+```text
+plan_201 = blocked-pending-plan230-reachability-capability-profile-bootstrap-corrective
+plan_230 = registered-ready-m6-java-reachability-capability-profile-bootstrap-corrective
+next_executable_plan = 230-m6-java-reachability-capability-profile-bootstrap-corrective
+```
+
 # Current dependency amendment — Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 registered
 
 Plan 201 remains blocked on Java second-family closure. Plan 229 closed as
