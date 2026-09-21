@@ -179,10 +179,12 @@
 // Plan 231 diagnostic contract (post-`ACCEPTED` tunnel-dispatch
 // attribution only, read-only, no state mutation):
 //   - `P231-GATEWAY` returns the bounded lifetime-event-count snapshot
-//     for the six exact-pinned stat names (`client.dispatchTime`,
+//     for the exact-pinned stat names (`client.dispatchTime`,
 //     `client.dispatchSendTime`, `tunnel.dispatchOutboundTunnel`,
 //     `tunnel.dropGatewayOverflow`, `tunnel.dispatchInbound`,
-//     `tunnel.inboundLookupSuccess`) via `statManager().getRate(name)`
+//     `tunnel.inboundLookupSuccess`, plus `tunnel.dispatchEndpoint`
+//     and `tunnel.dispatchParticipant` for the §7 endpoint context)
+//     via `statManager().getRate(name)`
 //     + `RateStat.getLifetimeEventCount()` (`P231-EV kind=gateway ...`
 //     with -1 for a never-created rate, never zero-as-fact);
 //   - `P231-CLIENT-OUTBOUND <client-dbid-hex>` returns the bounded
@@ -1159,7 +1161,9 @@ public final class ControlledRouter {
                 + " dispatch_outbound_tunnel=" + result.dispatchOutboundTunnel
                 + " drop_gateway_overflow=" + result.dropGatewayOverflow
                 + " dispatch_inbound=" + result.dispatchInbound
-                + " inbound_lookup_success=" + result.inboundLookupSuccess;
+                + " inbound_lookup_success=" + result.inboundLookupSuccess
+                + " dispatch_endpoint=" + result.dispatchEndpoint
+                + " dispatch_participant=" + result.dispatchParticipant;
         }
 
         /**

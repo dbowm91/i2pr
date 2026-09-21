@@ -65,6 +65,8 @@ public final class P231Probe {
         public final long dropGatewayOverflow;
         public final long dispatchInbound;
         public final long inboundLookupSuccess;
+        public final long dispatchEndpoint;
+        public final long dispatchParticipant;
         public final String error;
 
         private GatewayStats(
@@ -74,6 +76,8 @@ public final class P231Probe {
                 long dropGatewayOverflow,
                 long dispatchInbound,
                 long inboundLookupSuccess,
+                long dispatchEndpoint,
+                long dispatchParticipant,
                 String error) {
             this.dispatchTime = dispatchTime;
             this.dispatchSendTime = dispatchSendTime;
@@ -81,13 +85,16 @@ public final class P231Probe {
             this.dropGatewayOverflow = dropGatewayOverflow;
             this.dispatchInbound = dispatchInbound;
             this.inboundLookupSuccess = inboundLookupSuccess;
+            this.dispatchEndpoint = dispatchEndpoint;
+            this.dispatchParticipant = dispatchParticipant;
             this.error = error;
         }
 
         public static GatewayStats unavailable(String reason) {
             return new GatewayStats(
                 COUNT_UNKNOWN, COUNT_UNKNOWN, COUNT_UNKNOWN,
-                COUNT_UNKNOWN, COUNT_UNKNOWN, COUNT_UNKNOWN, reason);
+                COUNT_UNKNOWN, COUNT_UNKNOWN, COUNT_UNKNOWN,
+                COUNT_UNKNOWN, COUNT_UNKNOWN, reason);
         }
 
         public static GatewayStats ok(
@@ -96,10 +103,13 @@ public final class P231Probe {
                 long dispatchOutboundTunnel,
                 long dropGatewayOverflow,
                 long dispatchInbound,
-                long inboundLookupSuccess) {
+                long inboundLookupSuccess,
+                long dispatchEndpoint,
+                long dispatchParticipant) {
             return new GatewayStats(dispatchTime, dispatchSendTime,
                 dispatchOutboundTunnel, dropGatewayOverflow,
-                dispatchInbound, inboundLookupSuccess, null);
+                dispatchInbound, inboundLookupSuccess,
+                dispatchEndpoint, dispatchParticipant, null);
         }
     }
 
@@ -216,9 +226,11 @@ public final class P231Probe {
     }
 
     /**
-     * Read-only lifetime-event-count snapshot for the six exact-pinned
-     * Plan-231 stat names. Observation only; never creates rates, never
-     * mutates counters. A never-created rate reports -1 (unknown).
+     * Read-only lifetime-event-count snapshot for the eight Plan-231
+     * stat names (the six §6/§9 names plus the §7 outbound-endpoint
+     * count and its participating counterpart for context).
+     * Observation only; never creates rates, never mutates counters.
+     * A never-created rate reports -1 (unknown).
      */
     public static GatewayStats snapshotGatewayStats(RouterContext ctx) {
         if (ctx == null) {
@@ -234,9 +246,14 @@ public final class P231Probe {
             long dispatchInbound = lifetimeCount(ctx, "tunnel.dispatchInbound");
             long inboundLookupSuccess =
                 lifetimeCount(ctx, "tunnel.inboundLookupSuccess");
+            long dispatchEndpoint =
+                lifetimeCount(ctx, "tunnel.dispatchEndpoint");
+            long dispatchParticipant =
+                lifetimeCount(ctx, "tunnel.dispatchParticipant");
             return GatewayStats.ok(dispatchTime, dispatchSendTime,
                 dispatchOutboundTunnel, dropGatewayOverflow,
-                dispatchInbound, inboundLookupSuccess);
+                dispatchInbound, inboundLookupSuccess,
+                dispatchEndpoint, dispatchParticipant);
         } catch (RuntimeException e) {
             return GatewayStats.unavailable(
                 "probe-threw-" + e.getClass().getSimpleName());
