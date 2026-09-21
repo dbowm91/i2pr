@@ -2516,8 +2516,14 @@ if [[ -f "${P229_HARNESS}" ]]; then
   fi
   # Bounded exploratory readiness poll only (within the helper ceiling);
   # no helper five-minute ceiling increase, no Java timeout change.
+  # The WP C transit gate likewise polls briefly for in-flight
+  # DatabaseStore processing (never a direct NetDB store).
   if ! grep -q 'seq 1 60' "${P229_HARNESS}"; then
     echo "m6 mixed-router evidence check failed: ${P229_HARNESS} lacks the bounded Plan 229 exploratory poll" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q 'seq 1 12' "${P229_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} lacks the bounded Plan 229 transit-gate wait" >&2
     failures=$((failures + 1))
   fi
   if grep -q -E "record[[:space:]]+[\"']P229-" "${P229_HARNESS}"; then

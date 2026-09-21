@@ -1182,23 +1182,44 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # Plan 229 WP C — ordinary transit-peer proof for Router C on Router
   # A's main NetDB through the existing authenticated wire bootstrap.
   # Read-only; never creates a profile, never stores a RouterInfo.
-  P229_TRANSIT_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-TRANSIT-PEER ${P227_C_HEX}" 2>/dev/null || true)"
+  # Plan 229 §8 MAY-wait: poll briefly for normal DatabaseStore
+  # processing already in flight (bounded: 12 x 5 s, early exit when the
+  # full gate passes). A direct Java NetDB store as compensation is
+  # forbidden; a persistent absence stops below.
+  P229_MAIN_RAW="false"
+  P229_MAIN_VALID="false"
+  P229_PROFILE="false"
+  P229_SELECTABLE="false"
+  P229_BANLISTED="true"
+  P229_UNREACHABLE="true"
+  P229_CAPS_F="true"
+  P229_PROFILE_COUNT="0"
+  P229_NOT_FAILING_COUNT="0"
+  for _ in $(seq 1 12); do
+    P229_TRANSIT_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-TRANSIT-PEER ${P227_C_HEX}" 2>/dev/null || true)"
+    P229_TRANSIT_NORM="$(printf '%s' "${P229_TRANSIT_LINE}" | tr ' ' '\n' || true)"
+    p229_transit() {
+      printf '%s' "${P229_TRANSIT_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+    }
+    P229_MAIN_RAW="$(p229_transit main_raw_present)"
+    P229_MAIN_VALID="$(p229_transit main_valid_present)"
+    P229_PROFILE="$(p229_transit profile_present)"
+    P229_SELECTABLE="$(p229_transit selectable)"
+    P229_BANLISTED="$(p229_transit banlisted)"
+    P229_UNREACHABLE="$(p229_transit unreachable)"
+    P229_CAPS_F="$(p229_transit caps_has_f)"
+    P229_PROFILE_COUNT="$(p229_transit profile_count)"
+    P229_NOT_FAILING_COUNT="$(p229_transit not_failing_count)"
+    if [[ "${P229_MAIN_RAW}" == "true" && "${P229_MAIN_VALID}" == "true" && "${P229_PROFILE}" == "true" && "${P229_SELECTABLE}" == "true" && "${P229_BANLISTED}" == "false" && "${P229_UNREACHABLE}" == "false" && "${P229_CAPS_F}" == "false" ]]; then
+      break
+    fi
+    sleep 5
+  done
   printf '%s\n' "${P229_TRANSIT_LINE}" > "${DRIVER_EVIDENCE}/destination/p229-transit-raw.tsv"
-  P229_TRANSIT_NORM="$(printf '%s' "${P229_TRANSIT_LINE}" | tr ' ' '\n' || true)"
-  p229_transit() {
-    printf '%s' "${P229_TRANSIT_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
-  }
-  P229_MAIN_RAW="$(p229_transit main_raw_present)"
-  P229_MAIN_VALID="$(p229_transit main_valid_present)"
-  P229_PROFILE="$(p229_transit profile_present)"
-  P229_SELECTABLE="$(p229_transit selectable)"
-  P229_BANLISTED="$(p229_transit banlisted)"
-  P229_UNREACHABLE="$(p229_transit unreachable)"
-  P229_CAPS_F="$(p229_transit caps_has_f)"
   printf 'p229-transit-peer\trouter_c_hex=%s main_raw_present=%s main_valid_present=%s profile_present=%s selectable=%s banlisted=%s unreachable=%s caps_has_f=%s profile_count=%s not_failing_count=%s\n' \
     "${P227_C_HEX}" "${P229_MAIN_RAW}" "${P229_MAIN_VALID}" "${P229_PROFILE}" "${P229_SELECTABLE}" \
     "${P229_BANLISTED}" "${P229_UNREACHABLE}" "${P229_CAPS_F}" \
-    "$(p229_transit profile_count)" "$(p229_transit not_failing_count)" \
+    "${P229_PROFILE_COUNT}" "${P229_NOT_FAILING_COUNT}" \
     > "${DRIVER_EVIDENCE}/destination/p229-transit.tsv"
   cat "${DRIVER_EVIDENCE}/destination/p229-transit.tsv" >> "${DRIVER_DEST_TSV}"
   # Plan 229 WP A — counted role proof. The router.config floodfill
