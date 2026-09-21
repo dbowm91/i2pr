@@ -2541,8 +2541,282 @@ if [[ -f "${P229_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 23. Plan 230 reachability-capability/profile-bootstrap corrective --
+# Observation-contract corrective only: capability/predicate evidence for
+# Router C as observed by Router A, the exact pinned
+# ProfileManagerImpl.shouldCreate(caps) predicate evaluated read-only,
+# one baseline run, conditional stock controlled-topology correction
+# (i2np.udp.status=ok fixture-only; C-only real bandwidth 128/128; never
+# router.forceBandwidthClass), natural profile bootstrap through the
+# ordinary authenticated RI path, then direct continuation through the
+# retained P229/P228/P201 gates. No production change, no Java patch, no
+# profile/NetDB/tunnel mutation, no isFailing reachability authority, no
+# VMComm, no alwaysQuery, no public/reseed topology, no timeout change,
+# no frozen-window change.
+P230_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P230Probe.java"
+P230_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P230_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P230_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P230_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 230 probe ${P230_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 23a. The probe exposes the exact capability/predicate surface
+  # read-only (never a creation call).
+  for required in \
+    'snapshotCapability' \
+    'snapshotSelf' \
+    'heardAboutCreationEligible' \
+    'SHARE_BANDWIDTH_FLOOR_BYTES' \
+    'lookupLocallyWithoutValidation' \
+    'lookupRouterInfoLocally' \
+    'selectAllPeers' \
+    'getProfileNonblocking' \
+    'isSelectable' \
+    'countNotFailingPeers' \
+    'isBanlisted' \
+    'getCapabilities' \
+    'getBandwidthTier' \
+    'floodfillEnabled' \
+    'getMaxShareBandwidth' \
+    'getStatus'; do
+    if ! grep -q -F "${required}" "${P230_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_PROBE_SRC} lacks Plan 230 probe surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 23b. Probe-side profile creation, NetDB mutation, tunnel
+  # installation, reflection, and the non-authoritative P229
+  # unreachable/isFailing signal are forbidden. `heardAbout(` with an
+  # open paren matches real creation calls but not the read-only
+  # heardAboutCreationEligible predicate mirror.
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'heardAbout(' \
+    '.store(' \
+    '.publish(' \
+    'buildTunnels' \
+    'addTunnel' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect' \
+    'isFailing'; do
+    if grep -q -F "${forbidden}" "${P230_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_PROBE_SRC} uses forbidden Plan 230 probe call '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'explicitPeers' "${P230_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_PROBE_SRC} mentions explicitPeers (Plan 230 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'vmCommSystem' "${P230_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_PROBE_SRC} enables VMComm (Plan 230 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P230_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_PROBE_SRC} enables netDb.alwaysQuery (Plan 230 §4)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P230_LAUNCHER_SRC}" ]]; then
+  # 23c. The launcher serves the two read-only P230 commands.
+  for required in \
+    '"P230-CAPABILITY"' \
+    '"P230-SELF-VIEW"' \
+    'P230Probe' \
+    'p230Capability' \
+    'p230SelfView' \
+    'heard_about_creation_eligible' \
+    'caps_has_r='; do
+    if ! grep -q -F "${required}" "${P230_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_LAUNCHER_SRC} lacks Plan 230 launcher surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The lying bandwidth-class override is never authorized.
+  if grep -q -F 'forceBandwidthClass' "${P230_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_LAUNCHER_SRC} uses router.forceBandwidthClass (Plan 230 §7 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+  # A reachability override is fixture-only: when present it must be
+  # the stock literal `ok` (pinned UDPTransport maps `ok` to
+  # Status.OK, which emits the `R` capability).
+  if grep -q -F 'i2np.udp.status' "${P230_LAUNCHER_SRC}"; then
+    if ! grep -q -F '"i2np.udp.status", "ok"' "${P230_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_LAUNCHER_SRC} sets a non-stock i2np.udp.status override" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+  # A bandwidth correction applies to transit Router C only: when the
+  # stock bandwidth properties are present, a transit-role guard must
+  # dominate them within the same startup block.
+  if grep -q -F 'i2np.bandwidth.outboundKBytesPerSecond' "${P230_LAUNCHER_SRC}"; then
+    p230_bw_line="$(grep -n -F 'i2np.bandwidth.outboundKBytesPerSecond' "${P230_LAUNCHER_SRC}" | head -n 1 | cut -d: -f1)"
+    p230_bw_floor=$((p230_bw_line - 15))
+    if [[ "${p230_bw_floor}" -lt 1 ]]; then
+      p230_bw_floor=1
+    fi
+    if ! sed -n "${p230_bw_floor},$((p230_bw_line))p" "${P230_LAUNCHER_SRC}" | grep -q -F 'transit'; then
+      echo "m6 mixed-router evidence check failed: ${P230_LAUNCHER_SRC} applies the bandwidth correction outside the transit role (Plan 230 §7 C2)" >&2
+      failures=$((failures + 1))
+    fi
+    if ! grep -q -F '"i2np.bandwidth.outboundBurstKBytesPerSecond", "128"' "${P230_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_LAUNCHER_SRC} lacks the paired outbound-burst bandwidth property (Plan 230 §7 C2)" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+fi
+if [[ -f "${P230_DRIVER_TEST}" ]]; then
+  # 23d. The Rust driver owns the exact predicate mirror, the bounded
+  # reason set, the correction-authorization matrix, and the stage
+  # terminals. No isFailing/unreachable authority may satisfy a gate.
+  for required in \
+    'fn p230_heard_about_eligible' \
+    'fn p230_parse_capability' \
+    'fn p230_parse_self_view' \
+    'fn p230_predicate_agrees' \
+    'fn p230_baseline_blockers' \
+    'fn p230_classify_baseline' \
+    'fn p230_authorized_correction' \
+    'fn p230_reachability_override_permitted' \
+    'fn p230_authorized_launcher_props' \
+    'fn p230_ri_fresh' \
+    'enum P230Terminal' \
+    'fn p230_classify_profile' \
+    'fn p230_classify_tunnel_continuation' \
+    'fn p230_terminal_permits_destination' \
+    'fn record_p230_classification' \
+    'P230-A-PREDICATE-ELIGIBLE' \
+    'P230-A-PREDICATE-INELIGIBLE' \
+    'P230-A-OBSERVABILITY-GAP' \
+    'P230-C-UNEXPECTED-CAPABILITY-EXCLUSION' \
+    'P230-D-OBSERVABILITY-GAP' \
+    'P230-D-RI-NOT-UPDATED' \
+    'P230-D-ELIGIBLE-BUT-NO-PROFILE' \
+    'P230-D-PROFILE-BOOTSTRAP-PASSED' \
+    'P230-E-EXPLORATORY-NOT-INSTALLED' \
+    'P230-E-CLIENT-NOT-BUILT' \
+    'P230-E-PAIRED-TUNNEL-CONTRADICTION' \
+    'P230-E-TUNNEL-CONTINUATION-PASSED' \
+    'p230-capability' \
+    'p230-baseline' \
+    'p230-profile' \
+    'p230-classification' \
+    'low-bandwidth-l-on-floodfill-observer' \
+    'P230_SHARE_BANDWIDTH_FLOOR_BYTES'; do
+    if ! grep -q -F "${required}" "${P230_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_DRIVER_TEST} lacks Plan 230 driver surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P230-" "${P230_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_DRIVER_TEST} invents a hard-coded Plan 230 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # 23e. The 21 required Plan 230 §12 unit rows.
+  for unit_row in \
+    'p230_isfailing_never_authoritative_for_reachability' \
+    'p230_selectable_alone_does_not_imply_creation_eligible' \
+    'p230_missing_r_is_ineligible' \
+    'p230_u_without_r_is_ineligible' \
+    'p230_nonff_l_peer_on_floodfill_observer_is_ineligible' \
+    'p230_nonff_r_non_l_non_e_non_g_is_eligible' \
+    'p230_floodfill_peer_with_r_is_eligible' \
+    'p230_e_is_ineligible_for_nonff_peer' \
+    'p230_g_is_ineligible_for_nonff_peer' \
+    'p230_baseline_ineligible_authorizes_only_matching_fixture_correction' \
+    'p230_reachability_override_is_loopback_fixture_only' \
+    'p230_bandwidth_correction_applies_to_transit_c_only' \
+    'p230_force_bandwidth_class_is_forbidden' \
+    'p230_stale_pre_correction_ri_cannot_pass_post_correction_gate' \
+    'p230_eligible_without_profile_maps_to_d_boundary' \
+    'p230_profile_gate_requires_natural_organizer_membership' \
+    'p230_no_probe_profile_creation_calls' \
+    'p230_profile_pass_continues_into_exploratory_gate' \
+    'p230_tunnel_pass_continues_into_frozen_destination_lane' \
+    'p230_exactly_one_earliest_terminal' \
+    'p230_secret_or_unrelated_rows_rejected'; do
+    if ! grep -q "fn ${unit_row}" "${P230_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_DRIVER_TEST} lacks Plan 230 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P230_HARNESS}" ]]; then
+  # 23f. The harness wires the probe compile, the baseline/predicate
+  # gates, the bounded D poll, the E continuation, and the single
+  # aggregation terminal.
+  for required in \
+    'P230Probe.java' \
+    'P230-CAPABILITY' \
+    'P230-SELF-VIEW' \
+    'p230-capability' \
+    'p230-self-view-c' \
+    'p230-baseline' \
+    'p230-profile' \
+    'p230-classification' \
+    'p230_compute_eligible' \
+    'p230_compute_blockers' \
+    'P230_D_PASS' \
+    'P230_F_ENTERED' \
+    'P230-A-PREDICATE-ELIGIBLE' \
+    'P230-A-PREDICATE-INELIGIBLE' \
+    'P230-A-OBSERVABILITY-GAP' \
+    'P230-C-UNEXPECTED-CAPABILITY-EXCLUSION' \
+    'P230-D-RI-NOT-UPDATED' \
+    'P230-D-ELIGIBLE-BUT-NO-PROFILE' \
+    'P230-D-PROFILE-BOOTSTRAP-PASSED' \
+    'P230-E-EXPLORATORY-NOT-INSTALLED' \
+    'P230-E-CLIENT-NOT-BUILT' \
+    'P230-E-PAIRED-TUNNEL-CONTRADICTION' \
+    'P230-E-TUNNEL-CONTINUATION-PASSED' \
+    'external-p230-classification' \
+    'external-p230-capability' \
+    'external-p230-self-view-c' \
+    'external-p230-baseline' \
+    'external-p230-profile' \
+    'heard_about_creation_eligible' \
+    '131072'; do
+    if ! grep -q -F "${required}" "${P230_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P230_HARNESS} lacks Plan 230 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Bounded D readiness poll only (within the helper ceiling); the old
+  # multi-minute profile-population exploration stays unauthorized.
+  if ! grep -q 'seq 1 6' "${P230_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} lacks the bounded Plan 230 profile poll" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P230-" "${P230_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} invents a Plan 230 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # The historical unreachable/isFailing signal must not satisfy any
+  # Plan 230 row.
+  if grep -q -E 'p230.*unreachable|unreachable.*p230|p230.*isFailing|isFailing.*p230' "${P230_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} consumes isFailing/unreachable on the P230 path (Plan 230 §4.11)" >&2
+    failures=$((failures + 1))
+  fi
+  # Raw Java logs stay scratch-only on the P230 path.
+  if grep -q 'p230.*log-router\|log-router.*p230' "${P230_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} copies raw router logs into P230 evidence (Plan 230 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P230_HARNESS}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} enables netDb.alwaysQuery (Plan 230 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'forceBandwidthClass' "${P230_HARNESS}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P230_HARNESS} uses router.forceBandwidthClass (Plan 230 §7 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants)"

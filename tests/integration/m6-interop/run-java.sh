@@ -225,7 +225,12 @@ P228_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # accessors only; no profile/tier mutation, no NetDB store, no tunnel
 # install, no reflection, no getOrCreateProfile/addProfile).
 P229_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P229Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" ]]; then
+# Plan 230 WP A — test-only read-only reachability-capability /
+# profile-bootstrap observation probe (public accessors only; no
+# profile/tier mutation, no NetDB store, no tunnel install, no
+# reflection, no getOrCreateProfile/addProfile/heardAbout, no isFailing).
+P230_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P230Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -238,7 +243,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -1234,6 +1239,244 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   printf 'p229-role-proof\trole_ok=%s caps_has_f=%s\n' "${P229_ROLE_OK}" "${P229_CAPS_F}" \
     > "${DRIVER_EVIDENCE}/destination/p229-role-proof.tsv"
   cat "${DRIVER_EVIDENCE}/destination/p229-role-proof.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 230 WP B — reachability-capability/predicate baseline
+  # (observation only). Records Router-C-as-observed-by-A capability
+  # bits plus the local shouldCreate inputs and the derived
+  # heard_about_creation_eligible fact. The historical P229
+  # unreachable/isFailing signal is not consumed here (Plan 230 §4.11:
+  # ProfileOrganizer.isFailing is deprecated and unconditionally false
+  # on the exact pin).
+  P230_CAP_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P230-CAPABILITY ${P227_C_HEX}" 2>/dev/null || true)"
+  printf '%s\n' "${P230_CAP_LINE}" > "${DRIVER_EVIDENCE}/destination/p230-capability-raw.tsv"
+  P230_CAP_NORM="$(printf '%s' "${P230_CAP_LINE}" | tr ' ' '\n' || true)"
+  p230_cap() {
+    printf '%s' "${P230_CAP_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  # Exact-pinned ProfileManagerImpl.shouldCreate(caps) predicate, bash
+  # mirror of P230Probe.heardAboutCreationEligible and the Rust
+  # p230_heard_about_eligible gate. Reads P230_CAPS_R/F/L/E/G/U,
+  # P230_LOCAL_FF, P230_SHARE; sets P230_ELIGIBLE (0/1) and
+  # P230_L_EXEMPT (0/1). The 128 KiB/s share floor is exact:
+  # 128*1024 = 131072 bytes.
+  p230_compute_eligible() {
+    P230_ELIGIBLE=0
+    P230_L_EXEMPT=0
+    if [[ "${P230_CAPS_R:-}" == "true" ]]; then
+      if [[ "${P230_CAPS_F:-}" == "true" ]]; then
+        P230_ELIGIBLE=1
+      else
+        if [[ "${P230_CAPS_L:-}" != "true" ]]; then
+          P230_L_EXEMPT=1
+        elif [[ "${P230_LOCAL_FF:-}" != "true" && "${P230_SHARE:-}" =~ ^[0-9]+$ && "${P230_SHARE}" -lt 131072 ]]; then
+          P230_L_EXEMPT=1
+        fi
+        if [[ "${P230_L_EXEMPT}" -eq 1 && "${P230_CAPS_E:-}" != "true" && "${P230_CAPS_G:-}" != "true" ]]; then
+          P230_ELIGIBLE=1
+        fi
+      fi
+    fi
+  }
+  # Bounded baseline reasons (Plan 230 §6): exactly one blocker names
+  # it, several collapse to compound. Sets P230_BLOCKER_REASON and
+  # P230_BLOCKER_COUNT. Call only with complete inputs.
+  p230_compute_blockers() {
+    P230_BLOCKER_REASON="compound"
+    P230_BLOCKER_COUNT=0
+    P230_BLOCKERS=""
+    if [[ "${P230_CAPS_R:-}" != "true" ]]; then
+      if [[ "${P230_CAPS_U:-}" == "true" ]]; then
+        P230_BLOCKERS="${P230_BLOCKERS} has-u"
+      else
+        P230_BLOCKERS="${P230_BLOCKERS} missing-r"
+      fi
+    fi
+    if [[ "${P230_CAPS_L:-}" == "true" && "${P230_L_EXEMPT:-0}" -ne 1 ]]; then
+      P230_BLOCKERS="${P230_BLOCKERS} low-bandwidth-l-on-floodfill-observer"
+    fi
+    if [[ "${P230_CAPS_E:-}" == "true" ]]; then
+      P230_BLOCKERS="${P230_BLOCKERS} has-e"
+    fi
+    if [[ "${P230_CAPS_G:-}" == "true" ]]; then
+      P230_BLOCKERS="${P230_BLOCKERS} has-g"
+    fi
+    P230_BLOCKER_COUNT="$(printf '%s' "${P230_BLOCKERS}" | wc -w | tr -d ' ')"
+    if [[ "${P230_BLOCKER_COUNT}" == "1" ]]; then
+      P230_BLOCKER_REASON="$(printf '%s' "${P230_BLOCKERS}" | tr -d ' ')"
+    fi
+  }
+  P230_OBSERVABLE="$(p230_cap observable)"
+  P230_MAIN_RAW="$(p230_cap main_raw_present)"
+  P230_MAIN_VALID="$(p230_cap main_valid_present)"
+  P230_SELECTABLE="$(p230_cap selectable)"
+  P230_BANLISTED="$(p230_cap banlisted)"
+  P230_CAPS_R="$(p230_cap caps_has_r)"
+  P230_CAPS_U="$(p230_cap caps_has_u)"
+  P230_CAPS_F="$(p230_cap caps_has_f)"
+  P230_CAPS_L="$(p230_cap caps_has_l)"
+  P230_CAPS_E="$(p230_cap caps_has_e)"
+  P230_CAPS_G="$(p230_cap caps_has_g)"
+  P230_TIER="$(p230_cap bandwidth_tier)"
+  P230_C_SHA="$(p230_cap c_ri_sha256)"
+  P230_PROFILE="$(p230_cap profile_present)"
+  P230_PROFILE_COUNT="$(p230_cap profile_count)"
+  P230_NOT_FAILING="$(p230_cap not_failing_count)"
+  P230_LOCAL_FF="$(p230_cap local_floodfill_enabled)"
+  P230_SHARE="$(p230_cap local_max_share_bandwidth)"
+  P230_COMM="$(p230_cap local_comm_status)"
+  P230_PROBE_ELIGIBLE="$(p230_cap heard_about_creation_eligible)"
+  printf 'p230-capability\trouter_c_hex=%s observable=%s main_raw_present=%s main_valid_present=%s selectable=%s banlisted=%s caps_has_r=%s caps_has_u=%s caps_has_f=%s caps_has_l=%s caps_has_e=%s caps_has_g=%s bandwidth_tier=%s c_ri_sha256=%s profile_present=%s profile_count=%s not_failing_count=%s local_floodfill_enabled=%s local_max_share_bandwidth=%s local_comm_status=%s heard_about_creation_eligible=%s\n' \
+    "${P227_C_HEX}" "${P230_OBSERVABLE}" "${P230_MAIN_RAW}" "${P230_MAIN_VALID}" "${P230_SELECTABLE}" \
+    "${P230_BANLISTED}" "${P230_CAPS_R}" "${P230_CAPS_U}" "${P230_CAPS_F}" "${P230_CAPS_L}" \
+    "${P230_CAPS_E}" "${P230_CAPS_G}" "${P230_TIER}" "${P230_C_SHA}" "${P230_PROFILE}" \
+    "${P230_PROFILE_COUNT}" "${P230_NOT_FAILING}" "${P230_LOCAL_FF}" "${P230_SHARE}" \
+    "${P230_COMM}" "${P230_PROBE_ELIGIBLE}" \
+    > "${DRIVER_EVIDENCE}/destination/p230-capability.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p230-capability.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 230 WP A/D — Router-C self view (staleness discriminator: a
+  # pre-correction copy observed by A must not satisfy a
+  # post-correction gate).
+  P230_SELF_C_LINE="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P230-SELF-VIEW" 2>/dev/null || true)"
+  printf '%s\n' "${P230_SELF_C_LINE}" > "${DRIVER_EVIDENCE}/destination/p230-self-view-c-raw.tsv"
+  P230_SELF_C_NORM="$(printf '%s' "${P230_SELF_C_LINE}" | tr ' ' '\n' || true)"
+  p230_self_c() {
+    printf '%s' "${P230_SELF_C_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  P230_SELF_OBSERVABLE="$(p230_self_c observable)"
+  P230_SELF_COMM="$(p230_self_c self_comm_status)"
+  P230_SELF_R="$(p230_self_c self_caps_has_r)"
+  P230_SELF_U="$(p230_self_c self_caps_has_u)"
+  P230_SELF_F="$(p230_self_c self_caps_has_f)"
+  P230_SELF_L="$(p230_self_c self_caps_has_l)"
+  P230_SELF_E="$(p230_self_c self_caps_has_e)"
+  P230_SELF_G="$(p230_self_c self_caps_has_g)"
+  P230_SELF_TIER="$(p230_self_c self_bandwidth_tier)"
+  P230_SELF_SHA="$(p230_self_c self_ri_sha256)"
+  printf 'p230-self-view-c\tself_observable=%s self_comm_status=%s self_caps_has_r=%s self_caps_has_u=%s self_caps_has_f=%s self_caps_has_l=%s self_caps_has_e=%s self_caps_has_g=%s self_bandwidth_tier=%s self_ri_sha256=%s\n' \
+    "${P230_SELF_OBSERVABLE}" "${P230_SELF_COMM}" "${P230_SELF_R}" "${P230_SELF_U}" "${P230_SELF_F}" \
+    "${P230_SELF_L}" "${P230_SELF_E}" "${P230_SELF_G}" "${P230_SELF_TIER}" "${P230_SELF_SHA}" \
+    > "${DRIVER_EVIDENCE}/destination/p230-self-view-c.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p230-self-view-c.tsv" >> "${DRIVER_DEST_TSV}"
+  # Baseline predicate outcome. Fail-closed: every predicate input must
+  # be present and the probe-derived fact must agree with the exact
+  # recomputation, otherwise P230-A-OBSERVABILITY-GAP.
+  P230_INPUTS_COMPLETE=0
+  if [[ "${P230_OBSERVABLE}" == "true" && -n "${P230_MAIN_RAW}" && -n "${P230_MAIN_VALID}" \
+    && -n "${P230_SELECTABLE}" && -n "${P230_BANLISTED}" && -n "${P230_CAPS_R}" && -n "${P230_CAPS_U}" \
+    && -n "${P230_CAPS_F}" && -n "${P230_CAPS_L}" && -n "${P230_CAPS_E}" && -n "${P230_CAPS_G}" \
+    && -n "${P230_TIER}" && -n "${P230_C_SHA}" && -n "${P230_PROFILE}" && -n "${P230_PROFILE_COUNT}" \
+    && -n "${P230_NOT_FAILING}" && -n "${P230_LOCAL_FF}" && "${P230_SHARE}" =~ ^[0-9]+$ \
+    && -n "${P230_COMM}" && -n "${P230_PROBE_ELIGIBLE}" ]]; then
+    P230_INPUTS_COMPLETE=1
+  fi
+  P230_BASELINE="P230-A-OBSERVABILITY-GAP"
+  P230_BASELINE_REASON="none"
+  if [[ "${P230_INPUTS_COMPLETE}" -eq 1 ]]; then
+    p230_compute_eligible
+    P230_COMPUTED="${P230_ELIGIBLE}"
+    if [[ "${P230_PROBE_ELIGIBLE}" == "true" ]]; then
+      P230_PROBE_BIT=1
+    else
+      P230_PROBE_BIT=0
+    fi
+    if [[ "${P230_COMPUTED}" != "${P230_PROBE_BIT}" ]]; then
+      P230_BASELINE="P230-A-OBSERVABILITY-GAP"
+    elif [[ "${P230_ELIGIBLE}" -eq 1 ]]; then
+      P230_BASELINE="P230-A-PREDICATE-ELIGIBLE"
+    else
+      p230_compute_blockers
+      P230_BASELINE="P230-A-PREDICATE-INELIGIBLE"
+      P230_BASELINE_REASON="${P230_BLOCKER_REASON}"
+    fi
+  fi
+  printf 'p230-baseline\t%s reason=%s router_c_hex=%s caps_has_r=%s caps_has_u=%s caps_has_f=%s caps_has_l=%s caps_has_e=%s caps_has_g=%s bandwidth_tier=%s local_floodfill_enabled=%s local_max_share_bandwidth=%s local_comm_status=%s probe_eligible=%s computed_eligible=%s\n' \
+    "${P230_BASELINE}" "${P230_BASELINE_REASON}" "${P227_C_HEX}" "${P230_CAPS_R}" "${P230_CAPS_U}" \
+    "${P230_CAPS_F}" "${P230_CAPS_L}" "${P230_CAPS_E}" "${P230_CAPS_G}" "${P230_TIER}" \
+    "${P230_LOCAL_FF}" "${P230_SHARE}" "${P230_COMM}" "${P230_PROBE_ELIGIBLE}" "${P230_COMPUTED:-?}" \
+    > "${DRIVER_EVIDENCE}/destination/p230-baseline.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p230-baseline.tsv" >> "${DRIVER_DEST_TSV}"
+  # The P230 terminal below is the earliest missing stage only; later
+  # gates overwrite nothing (aggregation consumes the LAST
+  # p230-classification). A/D stops emit now; the D pass defers to WP E.
+  P230_D_PASS=0
+  P230_CLASSIFICATION_EMITTED=0
+  if [[ "${P230_BASELINE}" != "P230-A-PREDICATE-ELIGIBLE" ]]; then
+    printf 'p230-classification\t%s reason=%s\n' \
+      "${P230_BASELINE}" "${P230_BASELINE_REASON}" >> "${DRIVER_DEST_TSV}"
+    P230_CLASSIFICATION_EMITTED=1
+  else
+    # Plan 230 WP D — prove natural profile bootstrap. A short bounded
+    # wait for in-flight DatabaseStore processing only (6 x 5 s) after
+    # eligibility holds; the old multi-minute profile-population
+    # exploration is not authorized. No probe-side creation call, no
+    # direct NetDB store, no tier promotion.
+    for _ in $(seq 1 6); do
+      if [[ "${P230_PROFILE}" == "true" ]]; then
+        break
+      fi
+      sleep 5
+      P230_CAP_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P230-CAPABILITY ${P227_C_HEX}" 2>/dev/null || true)"
+      P230_CAP_NORM="$(printf '%s' "${P230_CAP_LINE}" | tr ' ' '\n' || true)"
+      P230_PROFILE="$(p230_cap profile_present)"
+      P230_PROFILE_COUNT="$(p230_cap profile_count)"
+      P230_NOT_FAILING="$(p230_cap not_failing_count)"
+      P230_MAIN_RAW="$(p230_cap main_raw_present)"
+      P230_MAIN_VALID="$(p230_cap main_valid_present)"
+      P230_SELECTABLE="$(p230_cap selectable)"
+      P230_BANLISTED="$(p230_cap banlisted)"
+      P230_CAPS_R="$(p230_cap caps_has_r)"
+      P230_CAPS_U="$(p230_cap caps_has_u)"
+      P230_CAPS_F="$(p230_cap caps_has_f)"
+      P230_CAPS_L="$(p230_cap caps_has_l)"
+      P230_CAPS_E="$(p230_cap caps_has_e)"
+      P230_CAPS_G="$(p230_cap caps_has_g)"
+      P230_TIER="$(p230_cap bandwidth_tier)"
+      P230_C_SHA="$(p230_cap c_ri_sha256)"
+      P230_LOCAL_FF="$(p230_cap local_floodfill_enabled)"
+      P230_SHARE="$(p230_cap local_max_share_bandwidth)"
+      P230_COMM="$(p230_cap local_comm_status)"
+      P230_PROBE_ELIGIBLE="$(p230_cap heard_about_creation_eligible)"
+    done
+    P230_SELF_C_LINE="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P230-SELF-VIEW" 2>/dev/null || true)"
+    P230_SELF_C_NORM="$(printf '%s' "${P230_SELF_C_LINE}" | tr ' ' '\n' || true)"
+    P230_SELF_SHA="$(p230_self_c self_ri_sha256)"
+    P230_SELF_COMM="$(p230_self_c self_comm_status)"
+    P230_D="P230-D-OBSERVABILITY-GAP"
+    if [[ -n "${P230_PROFILE}" && -n "${P230_CAPS_R}" && -n "${P230_CAPS_F}" && -n "${P230_CAPS_L}" \
+      && -n "${P230_CAPS_E}" && -n "${P230_CAPS_G}" && -n "${P230_LOCAL_FF}" \
+      && "${P230_SHARE}" =~ ^[0-9]+$ && -n "${P230_PROBE_ELIGIBLE}" ]]; then
+      p230_compute_eligible
+      P230_COMPUTED="${P230_ELIGIBLE}"
+      if [[ "${P230_PROBE_ELIGIBLE}" == "true" ]]; then
+        P230_PROBE_BIT=1
+      else
+        P230_PROBE_BIT=0
+      fi
+      if [[ "${P230_ELIGIBLE}" -ne 1 || "${P230_COMPUTED:-0}" != "${P230_PROBE_BIT}" ]]; then
+        P230_D="P230-D-OBSERVABILITY-GAP"
+      elif [[ "${P230_C_SHA}" == "unknown" || "${P230_SELF_SHA}" == "unknown" \
+        || "${P230_C_SHA}" != "${P230_SELF_SHA}" \
+        || ! "${P230_C_SHA}" =~ ^[0-9a-f]{64}$ || ! "${P230_SELF_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
+        P230_D="P230-D-RI-NOT-UPDATED"
+      elif [[ "${P230_PROFILE}" == "true" && "${P230_SELECTABLE}" == "true" \
+        && "${P230_BANLISTED}" == "false" && "${P230_CAPS_F}" == "false" \
+        && "${P230_NOT_FAILING}" =~ ^[0-9]+$ && "${P230_NOT_FAILING}" -ge 1 ]]; then
+        P230_D="P230-D-PROFILE-BOOTSTRAP-PASSED"
+        P230_D_PASS=1
+      else
+        P230_D="P230-D-ELIGIBLE-BUT-NO-PROFILE"
+      fi
+    fi
+    printf 'p230-profile\t%s router_c_hex=%s profile_present=%s profile_count=%s not_failing_count=%s selectable=%s banlisted=%s caps_has_f=%s c_ri_sha256=%s self_ri_sha256=%s self_comm_status=%s\n' \
+      "${P230_D}" "${P227_C_HEX}" "${P230_PROFILE}" "${P230_PROFILE_COUNT}" "${P230_NOT_FAILING}" \
+      "${P230_SELECTABLE}" "${P230_BANLISTED}" "${P230_CAPS_F}" "${P230_C_SHA}" "${P230_SELF_SHA}" \
+      "${P230_SELF_COMM}" \
+      > "${DRIVER_EVIDENCE}/destination/p230-profile.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p230-profile.tsv" >> "${DRIVER_DEST_TSV}"
+    if [[ "${P230_D_PASS}" -ne 1 ]]; then
+      printf 'p230-classification\t%s\n' "${P230_D}" >> "${DRIVER_DEST_TSV}"
+      P230_CLASSIFICATION_EMITTED=1
+    fi
+  fi
   # Plan 229 §19 role/profile/settings stops. Exactly one
   # p229-classification row is emitted per counted run; the Rust P229
   # driver below runs only when no early stop fired.
@@ -1404,7 +1647,17 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # to 0); the P229-CLIENT-TUNNELS-BUILT terminal owns the run. Even when
   # both exact one-hop client tunnels install, the lookup lane is not
   # executed by Plan 229.
-  if [[ "${P227_TUNNEL_GATE_OK}" -eq 1 && "${P229_LOOKUP_DRIVER_ENABLED:-0}" -eq 1 ]]; then
+  # Plan 230 WP F — the frozen destination lane is entered only through
+  # the tunnel-continuation pass: natural profile bootstrap (P230_D_PASS)
+  # plus genuine non-zero exploratory tunnels in both directions plus
+  # installed one-hop client tunnels through C in both directions. The
+  # P230-E terminal itself is emitted after the P228 attribution below;
+  # the destination rows enabled here own the rest of the run.
+  P230_F_ENTERED=0
+  if [[ "${P230_D_PASS:-0}" -eq 1 && "${P229_EXPLORATORY_GATE_OK:-0}" -eq 1 && "${P227_TUNNEL_GATE_OK:-0}" -eq 1 ]]; then
+    P230_F_ENTERED=1
+  fi
+  if [[ "${P227_TUNNEL_GATE_OK}" -eq 1 ]] && [[ "${P229_LOOKUP_DRIVER_ENABLED:-0}" -eq 1 || "${P230_F_ENTERED}" -eq 1 ]]; then
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
      JAVA_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
@@ -1445,6 +1698,8 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   fi
   if [[ "${P229_LOOKUP_DRIVER_ENABLED:-0}" -eq 1 ]]; then
     printf 'p229-lookup-lane\texecuted=true reason=successor-requalification-override\n' >> "${DRIVER_DEST_TSV}"
+  elif [[ "${P230_F_ENTERED:-0}" -eq 1 ]]; then
+    printf 'p229-lookup-lane\texecuted=true reason=p230-f-tunnel-continuation\n' >> "${DRIVER_DEST_TSV}"
   else
     printf 'p229-lookup-lane\texecuted=false reason=plan229-stops-before-lookup-qualification\n' >> "${DRIVER_DEST_TSV}"
   fi
@@ -1535,6 +1790,52 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   else
     echo "    p228 attribution skipped (Router-C hex unavailable)" >>"${DRIVER_LOG}"
   fi
+  fi
+fi
+
+# Plan 230 WP E — single P230 terminal from the earliest missing stage.
+# Runs only when the A/D gates passed without emitting (the D pass
+# defers here). E inputs reuse the retained P229 exploratory poll, the
+# P227 installed-tunnel gate, and the P228 paired-tunnel attribution
+# above; no new observation surface is invented. The aggregation below
+# consumes the LAST p230-classification, so this emission is the final
+# P230 word for the run.
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  if [[ "${P230_D_PASS:-0}" -eq 1 && "${P230_CLASSIFICATION_EMITTED:-0}" -eq 0 ]]; then
+    P230_P228_LAST=""
+    if [[ -f "${DRIVER_DEST_TSV}" ]]; then
+      P230_P228_LAST="$(awk -F'\t' '$1 == "p228-classification" { n = split($2, a, " "); if (n > 0) last = a[1] } END { if (last) print last }' "${DRIVER_DEST_TSV}")"
+    fi
+    P230_E="P230-E-TUNNEL-CONTINUATION-PASSED"
+    if [[ "${P229_EXPL_IN_NONZERO:-0}" =~ ^[1-9][0-9]*$ && "${P229_EXPL_OUT_NONZERO:-0}" =~ ^[1-9][0-9]*$ ]]; then
+      : # both genuine non-zero exploratory directions proven
+    else
+      if [[ "${P229_EXPL_IN_NONZERO:-0}" =~ ^[1-9][0-9]*$ ]]; then
+        P230_E_MISSING_DIR="outbound"
+      elif [[ "${P229_EXPL_OUT_NONZERO:-0}" =~ ^[1-9][0-9]*$ ]]; then
+        P230_E_MISSING_DIR="inbound"
+      else
+        P230_E_MISSING_DIR="both"
+      fi
+      P230_E="P230-E-EXPLORATORY-NOT-INSTALLED direction=${P230_E_MISSING_DIR}"
+    fi
+    if [[ "${P230_E}" == "P230-E-TUNNEL-CONTINUATION-PASSED" ]]; then
+      if [[ "${P227_IN_EXACT:-}" == "true" && "${P227_OUT_EXACT:-}" == "true" && "${P227_IN_ZERO:-}" == "false" && "${P227_OUT_ZERO:-}" == "false" ]]; then
+        P230_E="P230-E-TUNNEL-CONTINUATION-PASSED"
+      elif [[ "${P230_P228_LAST}" == "P228-ATTRIBUTION-NO-PAIRED-TUNNEL" ]]; then
+        P230_E="P230-E-PAIRED-TUNNEL-CONTRADICTION"
+      else
+        if [[ "${P227_IN_EXACT:-}" == "true" ]]; then
+          P230_E_MISSING_CLIENT_DIR="outbound"
+        elif [[ "${P227_OUT_EXACT:-}" == "true" ]]; then
+          P230_E_MISSING_CLIENT_DIR="inbound"
+        else
+          P230_E_MISSING_CLIENT_DIR="both"
+        fi
+        P230_E="P230-E-CLIENT-NOT-BUILT direction=${P230_E_MISSING_CLIENT_DIR}"
+      fi
+    fi
+    printf 'p230-classification\t%s\n' "${P230_E}" >> "${DRIVER_DEST_TSV}"
   fi
 fi
 
@@ -2132,6 +2433,41 @@ m6_key_row "external-p229-exploratory-tunnels" "p229-exploratory-tunnels" \
   "Plan 229 WP D: genuine non-zero exploratory tunnels in both directions before helper start"
 m6_key_row "external-p229-lookup-lane" "p229-lookup-lane" \
   "Plan 229 §10: target lookup/reverse-delivery lane not executed by Plan 229"
+
+# Plan 230 §17 — read the single corrective terminal. The destination TSV
+# may carry it from the WP B baseline stop (P230-A-PREDICATE-INELIGIBLE /
+# P230-A-OBSERVABILITY-GAP), the WP D stop (P230-D-RI-NOT-UPDATED /
+# P230-D-ELIGIBLE-BUT-NO-PROFILE / P230-D-OBSERVABILITY-GAP), the WP C
+# stop (P230-C-UNEXPECTED-CAPABILITY-EXCLUSION), or the WP E continuation
+# outcome (P230-E-EXPLORATORY-NOT-INSTALLED / P230-E-CLIENT-NOT-BUILT /
+# P230-E-PAIRED-TUNNEL-CONTRADICTION / P230-E-TUNNEL-CONTINUATION-PASSED).
+# Consume the LAST occurrence's terminal word so a stage record cannot
+# shadow the final outcome, and record exactly one external row
+# (diagnostic observation, always passed when present). The static
+# checker rejects any literal `record "<P230-X>" passed` line.
+P230_CLASSIFICATION=""
+P230_CLASSIFICATION_REASON="none"
+if [[ -f "${DRIVER_DEST_TSV}" ]]; then
+  P230_LAST_ROW="$(awk -F'\t' '$1 == "p230-classification" { last = $2 } END { if (last) print last }' "${DRIVER_DEST_TSV}")"
+  if [[ -n "${P230_LAST_ROW}" ]]; then
+    P230_CLASSIFICATION="$(printf '%s' "${P230_LAST_ROW}" | awk '{print $1}')"
+    if [[ "${P230_LAST_ROW}" =~ reason=([^[:space:]]+) ]]; then
+      P230_CLASSIFICATION_REASON="${BASH_REMATCH[1]}"
+    fi
+  fi
+fi
+if [[ -z "${P230_CLASSIFICATION}" ]]; then
+  P230_CLASSIFICATION="P230-classification-missing"
+fi
+record "external-p230-classification" passed "Plan 230 §17: ${P230_CLASSIFICATION} reason=${P230_CLASSIFICATION_REASON}"
+m6_key_row "external-p230-capability" "p230-capability" \
+  "Plan 230 WP A: Router-C capability bits plus local shouldCreate inputs and derived eligibility"
+m6_key_row "external-p230-self-view-c" "p230-self-view-c" \
+  "Plan 230 WP A/D: Router-C self communication status and self-RI capabilities (staleness discriminator)"
+m6_key_row "external-p230-baseline" "p230-baseline" \
+  "Plan 230 WP B: one baseline predicate outcome recorded before any fixture correction"
+m6_key_row "external-p230-profile" "p230-profile" \
+  "Plan 230 WP D: natural profile-bootstrap outcome through the ordinary authenticated RI path"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

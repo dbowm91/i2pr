@@ -156,6 +156,26 @@
 //     `router.outboundPool.lengthVariance=1`); no quantity, backup,
 //     allowZeroHop, explicitPeers, timeout, or paired-tunnel property is
 //     ever set here.
+// Plan 230 diagnostic contract (reachability-capability/profile-bootstrap
+// corrective only, read-only, no state mutation):
+//   - `P230-CAPABILITY <router-c-hex>` returns the bounded Router-C
+//     capability snapshot on this router's main NetDB (`P230-EV
+//     kind=capability ...` with raw/validated presence, selectability,
+//     banlist, `caps_has_r/u/f/l/e/g`, bandwidth tier, observed-RI
+//     SHA-256, profile presence via `selectAllPeers` +
+//     `getProfileNonblocking` (never `addProfile` /
+//     `getOrCreateProfile*` / `heardAbout`), profile and not-failing
+//     counts, the local `shouldCreate` inputs `local_floodfill_enabled`
+//     / `local_max_share_bandwidth` / `local_comm_status`, and the
+//     derived `heard_about_creation_eligible` fact). The deprecated
+//     `ProfileOrganizer.isFailing(Hash)` is never called: the historical
+//     P229 `unreachable` signal is non-authoritative;
+//   - `P230-SELF-VIEW` returns this router's own communication-system
+//     status plus its current self RouterInfo capabilities
+//     (`P230-EV kind=self-view ...`), so a stale pre-correction copy
+//     can be distinguished from a newly published RI;
+//   - every P230 response is one bounded `P230-EV ...` line with
+//     booleans, bounded counts, tier/status tokens, and hex hashes only.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -201,6 +221,7 @@ import net.i2p.router.networkdb.kademlia.P224LsProbe;
 import net.i2p.router.networkdb.kademlia.P227Probe;
 import net.i2p.router.networkdb.kademlia.P228Probe;
 import net.i2p.router.networkdb.kademlia.P229Probe;
+import net.i2p.router.networkdb.kademlia.P230Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -723,6 +744,13 @@ public final class ControlledRouter {
                             return p229Error("missing-hash-argument");
                         }
                         return p229ExploratoryTunnels(parts[1]);
+                    case "P230-CAPABILITY":
+                        if (parts.length < 2) {
+                            return p230Error("missing-hash-argument");
+                        }
+                        return p230Capability(parts[1]);
+                    case "P230-SELF-VIEW":
+                        return p230SelfView();
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1045,6 +1073,82 @@ public final class ControlledRouter {
 
         private String p229Error(String reason) {
             return "P229-ERROR " + reason;
+        }
+
+        private String p230Error(String reason) {
+            return "P230-ERROR " + reason;
+        }
+
+        /**
+         * Plan 230 WP A — read-only Router-C capability snapshot on
+         * this router's main NetDB, plus the local observer inputs for
+         * the exact pinned `ProfileManagerImpl.shouldCreate(caps)`
+         * predicate. Uses only public read-only accessors via P230Probe;
+         * never creates a profile, never calls the deprecated
+         * `ProfileOrganizer.isFailing(Hash)`, never promotes tiers,
+         * never forces connections, never stores RouterInfos.
+         */
+        private String p230Capability(String routerCHex) {
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (routerC == null) {
+                return p230Error("invalid-hex-hash");
+            }
+            P230Probe.Capability result =
+                P230Probe.snapshotCapability(context(), mainNetDb(), routerC);
+            if (result.error != null) {
+                return "P230-EV kind=capability"
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P230-EV kind=capability"
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " main_raw_present=" + result.mainRawPresent
+                + " main_valid_present=" + result.mainValidPresent
+                + " selectable=" + result.selectable
+                + " banlisted=" + result.banlisted
+                + " caps_has_r=" + result.capsHasR
+                + " caps_has_u=" + result.capsHasU
+                + " caps_has_f=" + result.capsHasF
+                + " caps_has_l=" + result.capsHasL
+                + " caps_has_e=" + result.capsHasE
+                + " caps_has_g=" + result.capsHasG
+                + " bandwidth_tier=" + result.bandwidthTier
+                + " c_ri_sha256=" + result.cRiSha256Hex
+                + " profile_present=" + result.profilePresent
+                + " profile_count=" + result.profileCount
+                + " not_failing_count=" + result.notFailingCount
+                + " local_floodfill_enabled=" + result.localFloodfillEnabled
+                + " local_max_share_bandwidth=" + result.localMaxShareBandwidth
+                + " local_comm_status=" + result.localCommStatus
+                + " heard_about_creation_eligible=" + result.heardAboutCreationEligible;
+        }
+
+        /**
+         * Plan 230 WP A/D — read-only self view: this router's own
+         * communication-system status plus its current self RouterInfo
+         * capabilities, so a stale pre-correction copy observed by
+         * Router A can be distinguished from a newly published RI.
+         * Observation only; never mutates state.
+         */
+        private String p230SelfView() {
+            P230Probe.SelfView result =
+                P230Probe.snapshotSelf(context(), mainNetDb());
+            if (result.error != null) {
+                return "P230-EV kind=self-view"
+                    + " observable=false reason=" + result.error;
+            }
+            return "P230-EV kind=self-view"
+                + " observable=true"
+                + " self_comm_status=" + result.selfCommStatus
+                + " self_caps_has_r=" + result.selfCapsHasR
+                + " self_caps_has_u=" + result.selfCapsHasU
+                + " self_caps_has_f=" + result.selfCapsHasF
+                + " self_caps_has_l=" + result.selfCapsHasL
+                + " self_caps_has_e=" + result.selfCapsHasE
+                + " self_caps_has_g=" + result.selfCapsHasG
+                + " self_bandwidth_tier=" + result.selfBandwidthTier
+                + " self_ri_sha256=" + result.selfRiSha256Hex;
         }
 
         /**

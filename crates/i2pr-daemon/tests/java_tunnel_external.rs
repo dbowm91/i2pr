@@ -13442,3 +13442,1426 @@ fn p229_secret_raw_log_lines_rejected() {
     );
     assert!(p229_parse_transit_peer(&malformed, &c_hex).is_none());
 }
+
+// ---- Plan 230 reachability-capability/profile-bootstrap corrective ----
+// Observation-contract corrective only: capability/predicate evidence,
+// conditional stock controlled-topology correction, natural profile
+// bootstrap, then direct continuation through the retained P229/P228/P201
+// gates. No production behavior, no Java source patch, no profile/NetDB/
+// tunnel mutation, no VMComm, no alwaysQuery, no public topology, no
+// timeout change. The historical P229 `unreachable` signal (deprecated
+// `ProfileOrganizer.isFailing`, unconditionally false) is never consumed.
+
+/// Exact-pinned `ProfileManagerImpl.shouldCreate(caps)` share floor.
+const P230_SHARE_BANDWIDTH_FLOOR_BYTES: u64 = 128 * 1024;
+
+/// Exact mirror of `P230Probe.heardAboutCreationEligible`: the ordinary
+/// `heardAbout()` profile-creation predicate from the exact Java I2P
+/// 2.13.0 pin. `local_*` are the observer's own
+/// `netDb().floodfillEnabled()` / `bandwidthLimiter()`
+/// `.getMaxShareBandwidth()` inputs.
+#[allow(clippy::too_many_arguments)]
+fn p230_heard_about_eligible(
+    caps_has_r: bool,
+    caps_has_f: bool,
+    caps_has_l: bool,
+    local_floodfill_enabled: bool,
+    local_max_share_bandwidth: u64,
+    caps_has_e: bool,
+    caps_has_g: bool,
+) -> bool {
+    if !caps_has_r {
+        return false;
+    }
+    if caps_has_f {
+        return true;
+    }
+    let low_bandwidth_exempt = !caps_has_l
+        || (!local_floodfill_enabled
+            && local_max_share_bandwidth < P230_SHARE_BANDWIDTH_FLOOR_BYTES);
+    if !low_bandwidth_exempt {
+        return false;
+    }
+    if caps_has_e {
+        return false;
+    }
+    if caps_has_g {
+        return false;
+    }
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P230Capability {
+    main_raw_present: bool,
+    main_valid_present: bool,
+    selectable: bool,
+    banlisted: bool,
+    caps_has_r: bool,
+    caps_has_u: bool,
+    caps_has_f: bool,
+    caps_has_l: bool,
+    caps_has_e: bool,
+    caps_has_g: bool,
+    bandwidth_tier: String,
+    c_ri_sha256: String,
+    profile_present: bool,
+    profile_count: u64,
+    not_failing_count: u64,
+    local_floodfill_enabled: bool,
+    local_max_share_bandwidth: u64,
+    local_comm_status: String,
+    heard_about_creation_eligible: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P230SelfView {
+    self_comm_status: String,
+    self_caps_has_r: bool,
+    self_caps_has_u: bool,
+    self_caps_has_f: bool,
+    self_caps_has_l: bool,
+    self_caps_has_e: bool,
+    self_caps_has_g: bool,
+    self_bandwidth_tier: String,
+    self_ri_sha256: String,
+}
+
+fn p230_parse_token(value: Option<&String>, max_len: usize) -> Option<String> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > max_len {
+        return None;
+    }
+    if !raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some(raw.to_owned())
+}
+
+fn p230_parse_share(value: Option<&String>) -> Option<u64> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > 12 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
+}
+
+fn p230_parse_sha(value: Option<&String>) -> Option<String> {
+    let raw = value?;
+    if raw == "unknown" {
+        return Some(raw.to_owned());
+    }
+    if p227_is_hex64(raw) {
+        return Some(raw.to_owned());
+    }
+    None
+}
+
+/// P230 rows are unquoted `key=value` tokens only: any bare token (a
+/// space-injected value truncated by the kv splitter, a stray log
+/// fragment) rejects the row instead of silently truncating a fact.
+fn p230_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P230-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p230_parse_capability(line: &str, expected_c_hex: &str) -> Option<P230Capability> {
+    if !line.starts_with("P230-EV ") || !line.contains("kind=capability") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p230_strict_shape(line) {
+        return None;
+    }
+    // Plan 230 §4.11: the historical P229 `unreachable` / `isFailing`
+    // signal is non-authoritative and must not appear in Plan 230 rows.
+    if line.contains("unreachable") || line.contains("isFailing") {
+        return None;
+    }
+    // Plan 230 §13: probe-side profile creation calls are forbidden;
+    // a row carrying their markers is corrupt evidence, never a fact.
+    if line.contains("addProfile")
+        || line.contains("getOrCreateProfile")
+        || line.contains("heardAbout")
+    {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P230-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("router_c_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_c_hex) || !p227_is_hex64(&echoed.to_lowercase()) {
+        return None;
+    }
+    Some(P230Capability {
+        main_raw_present: p229_parse_bool(kv.get("main_raw_present"))?,
+        main_valid_present: p229_parse_bool(kv.get("main_valid_present"))?,
+        selectable: p229_parse_bool(kv.get("selectable"))?,
+        banlisted: p229_parse_bool(kv.get("banlisted"))?,
+        caps_has_r: p229_parse_bool(kv.get("caps_has_r"))?,
+        caps_has_u: p229_parse_bool(kv.get("caps_has_u"))?,
+        caps_has_f: p229_parse_bool(kv.get("caps_has_f"))?,
+        caps_has_l: p229_parse_bool(kv.get("caps_has_l"))?,
+        caps_has_e: p229_parse_bool(kv.get("caps_has_e"))?,
+        caps_has_g: p229_parse_bool(kv.get("caps_has_g"))?,
+        bandwidth_tier: p230_parse_token(kv.get("bandwidth_tier"), 8)?,
+        c_ri_sha256: p230_parse_sha(kv.get("c_ri_sha256"))?,
+        profile_present: p229_parse_bool(kv.get("profile_present"))?,
+        profile_count: p229_parse_small_count(kv.get("profile_count"))?,
+        not_failing_count: p229_parse_small_count(kv.get("not_failing_count"))?,
+        local_floodfill_enabled: p229_parse_bool(kv.get("local_floodfill_enabled"))?,
+        local_max_share_bandwidth: p230_parse_share(kv.get("local_max_share_bandwidth"))?,
+        local_comm_status: p230_parse_token(kv.get("local_comm_status"), 32)?,
+        heard_about_creation_eligible: p229_parse_bool(kv.get("heard_about_creation_eligible"))?,
+    })
+}
+
+fn p230_parse_self_view(line: &str) -> Option<P230SelfView> {
+    if !line.starts_with("P230-EV ") || !line.contains("kind=self-view") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p230_strict_shape(line) {
+        return None;
+    }
+    if line.contains("unreachable") || line.contains("isFailing") {
+        return None;
+    }
+    if line.contains("addProfile")
+        || line.contains("getOrCreateProfile")
+        || line.contains("heardAbout")
+    {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P230-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    Some(P230SelfView {
+        self_comm_status: p230_parse_token(kv.get("self_comm_status"), 32)?,
+        self_caps_has_r: p229_parse_bool(kv.get("self_caps_has_r"))?,
+        self_caps_has_u: p229_parse_bool(kv.get("self_caps_has_u"))?,
+        self_caps_has_f: p229_parse_bool(kv.get("self_caps_has_f"))?,
+        self_caps_has_l: p229_parse_bool(kv.get("self_caps_has_l"))?,
+        self_caps_has_e: p229_parse_bool(kv.get("self_caps_has_e"))?,
+        self_caps_has_g: p229_parse_bool(kv.get("self_caps_has_g"))?,
+        self_bandwidth_tier: p230_parse_token(kv.get("self_bandwidth_tier"), 8)?,
+        self_ri_sha256: p230_parse_sha(kv.get("self_ri_sha256"))?,
+    })
+}
+
+/// The probe's derived `heard_about_creation_eligible` fact must agree
+/// with the exact predicate recomputed from the independently durable
+/// inputs (Plan 230 §5). Disagreement is an observability gap, never a
+/// silent pass.
+fn p230_predicate_agrees(cap: &P230Capability) -> bool {
+    p230_heard_about_eligible(
+        cap.caps_has_r,
+        cap.caps_has_f,
+        cap.caps_has_l,
+        cap.local_floodfill_enabled,
+        cap.local_max_share_bandwidth,
+        cap.caps_has_e,
+        cap.caps_has_g,
+    ) == cap.heard_about_creation_eligible
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P230Blocker {
+    MissingR,
+    HasU,
+    LowBandwidthLOnFloodfillObserver,
+    HasE,
+    HasG,
+    Compound,
+}
+
+impl P230Blocker {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::MissingR => "missing-r",
+            Self::HasU => "has-u",
+            Self::LowBandwidthLOnFloodfillObserver => "low-bandwidth-l-on-floodfill-observer",
+            Self::HasE => "has-e",
+            Self::HasG => "has-g",
+            Self::Compound => "compound",
+        }
+    }
+}
+
+/// Collect every applicable creation-predicate blocker in fixed order.
+/// `U` without `R` reports `has-u`; any other missing-`R` reports
+/// `missing-r`. The low-bandwidth branch fires exactly when the pinned
+/// alternate (`!floodfill observer` with sub-floor share) does not hold.
+/// Blockers are observed RouterInfo facts: `L`/`E`/`G` are collected
+/// even when `R` is also missing, so a compound baseline authorizes the
+/// matching correction subset. An eligible capability carries none.
+fn p230_baseline_blockers(cap: &P230Capability) -> Vec<P230Blocker> {
+    if p230_heard_about_eligible(
+        cap.caps_has_r,
+        cap.caps_has_f,
+        cap.caps_has_l,
+        cap.local_floodfill_enabled,
+        cap.local_max_share_bandwidth,
+        cap.caps_has_e,
+        cap.caps_has_g,
+    ) {
+        return Vec::new();
+    }
+    let mut blockers = Vec::new();
+    if !cap.caps_has_r {
+        blockers.push(if cap.caps_has_u {
+            P230Blocker::HasU
+        } else {
+            P230Blocker::MissingR
+        });
+    }
+    let low_bandwidth_exempt = !cap.caps_has_l
+        || (!cap.local_floodfill_enabled
+            && cap.local_max_share_bandwidth < P230_SHARE_BANDWIDTH_FLOOR_BYTES);
+    if cap.caps_has_l && !low_bandwidth_exempt {
+        blockers.push(P230Blocker::LowBandwidthLOnFloodfillObserver);
+    }
+    if cap.caps_has_e {
+        blockers.push(P230Blocker::HasE);
+    }
+    if cap.caps_has_g {
+        blockers.push(P230Blocker::HasG);
+    }
+    blockers
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P230Baseline {
+    Eligible,
+    Ineligible(P230Blocker),
+    ObservabilityGap,
+}
+
+impl P230Baseline {
+    /// Canonical WP B outcome vocabulary, shared with the shell
+    /// `p230-baseline` row. Eligibility never implies the profile
+    /// exists; it only authorizes WP D without the correction.
+    fn token(&self) -> String {
+        match self {
+            Self::Eligible => "P230-A-PREDICATE-ELIGIBLE".to_owned(),
+            Self::Ineligible(reason) => {
+                format!("P230-A-PREDICATE-INELIGIBLE reason={}", reason.reason())
+            }
+            Self::ObservabilityGap => "P230-A-OBSERVABILITY-GAP".to_owned(),
+        }
+    }
+}
+
+/// Plan 230 WP B gate: one baseline predicate outcome. Eligibility never
+/// implies the profile exists; it only authorizes WP D without the
+/// configuration corrective.
+fn p230_classify_baseline(cap: Option<&P230Capability>) -> P230Baseline {
+    let Some(cap) = cap else {
+        return P230Baseline::ObservabilityGap;
+    };
+    if !p230_predicate_agrees(cap) {
+        return P230Baseline::ObservabilityGap;
+    }
+    if cap.heard_about_creation_eligible {
+        return P230Baseline::Eligible;
+    }
+    let blockers = p230_baseline_blockers(cap);
+    if blockers.len() == 1 {
+        return P230Baseline::Ineligible(blockers[0]);
+    }
+    P230Baseline::Ineligible(P230Blocker::Compound)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P230Correction {
+    None,
+    ReachabilityOnly,
+    BandwidthOnly,
+    Both,
+    StopUnexpectedExclusion,
+}
+
+/// Plan 230 WP C authorization: only the correction matching the proven
+/// baseline blocker(s). `E`/`G` stop the correction only when they are
+/// the sole remaining blockers (Plan 230 §7 C3); alongside a proven
+/// reachability or bandwidth blocker the matching C1/C2 correction
+/// applies first. No tuning knob is added in the same implementation
+/// SHA.
+fn p230_authorized_correction(cap: Option<&P230Capability>) -> P230Correction {
+    let Some(cap) = cap else {
+        return P230Correction::None;
+    };
+    if !p230_predicate_agrees(cap) {
+        return P230Correction::None;
+    }
+    if cap.heard_about_creation_eligible {
+        return P230Correction::None;
+    }
+    let blockers = p230_baseline_blockers(cap);
+    if blockers.is_empty() {
+        return P230Correction::None;
+    }
+    let only_exclusions = blockers
+        .iter()
+        .all(|b| matches!(b, P230Blocker::HasE | P230Blocker::HasG));
+    if only_exclusions {
+        return P230Correction::StopUnexpectedExclusion;
+    }
+    let reach = blockers.contains(&P230Blocker::MissingR) || blockers.contains(&P230Blocker::HasU);
+    let bandwidth = blockers.contains(&P230Blocker::LowBandwidthLOnFloodfillObserver);
+    match (reach, bandwidth) {
+        (true, true) => P230Correction::Both,
+        (true, false) => P230Correction::ReachabilityOnly,
+        (false, true) => P230Correction::BandwidthOnly,
+        (false, false) => P230Correction::None,
+    }
+}
+
+/// The stock controlled-topology correction is fixture-only: every SSU2
+/// endpoint stays loopback, reseed stays disabled, VMComm stays disabled.
+/// The harness proves these before any override is honored.
+fn p230_reachability_override_permitted(
+    ssu2_hosts_loopback: bool,
+    reseed_disabled: bool,
+    vmcomm_disabled: bool,
+) -> bool {
+    ssu2_hosts_loopback && reseed_disabled && vmcomm_disabled
+}
+
+/// Exact stock properties the controlled fixture may apply, mirrored by
+/// `ControlledRouter`. Reachability applies to every controlled role;
+/// the bandwidth class correction applies to the transit Router C only.
+/// `router.forceBandwidthClass` is never authorized (Plan 230 §7).
+fn p230_authorized_launcher_props(
+    correction: P230Correction,
+    role: P229Role,
+    scope_permitted: bool,
+) -> Vec<(&'static str, &'static str)> {
+    if !scope_permitted {
+        return Vec::new();
+    }
+    let mut props = Vec::new();
+    if matches!(
+        correction,
+        P230Correction::ReachabilityOnly | P230Correction::Both
+    ) {
+        props.push(("i2np.udp.status", "ok"));
+    }
+    if matches!(
+        correction,
+        P230Correction::BandwidthOnly | P230Correction::Both
+    ) && matches!(role, P229Role::Transit)
+    {
+        props.push(("i2np.bandwidth.outboundKBytesPerSecond", "128"));
+        props.push(("i2np.bandwidth.outboundBurstKBytesPerSecond", "128"));
+    }
+    props
+}
+
+/// Plan 230 WP D staleness discriminator: a pre-correction RouterInfo
+/// observed before a capability change may not satisfy a post-correction
+/// gate. Both identities must be concrete 64-hex SHAs and byte-equal.
+fn p230_ri_fresh(observed_sha: &str, self_sha: &str) -> bool {
+    observed_sha != "unknown"
+        && self_sha != "unknown"
+        && observed_sha == self_sha
+        && p227_is_hex64(observed_sha)
+        && p227_is_hex64(self_sha)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P230Terminal {
+    AObservabilityGap,
+    AIneligible(P230Blocker),
+    CUnexpectedCapabilityExclusion,
+    DObservabilityGap,
+    DRiNotUpdated,
+    DEligibleButNoProfile,
+    EExploratoryNotBuilt(P228Direction),
+    EClientNotBuilt(P228Direction),
+    EPairedTunnelContradiction,
+    ETunnelContinuationPassed,
+}
+
+impl P230Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::AObservabilityGap => "P230-A-OBSERVABILITY-GAP".to_owned(),
+            Self::AIneligible(reason) => {
+                format!("P230-A-PREDICATE-INELIGIBLE reason={}", reason.reason())
+            }
+            Self::CUnexpectedCapabilityExclusion => {
+                "P230-C-UNEXPECTED-CAPABILITY-EXCLUSION".to_owned()
+            }
+            Self::DObservabilityGap => "P230-D-OBSERVABILITY-GAP".to_owned(),
+            Self::DRiNotUpdated => "P230-D-RI-NOT-UPDATED".to_owned(),
+            Self::DEligibleButNoProfile => "P230-D-ELIGIBLE-BUT-NO-PROFILE".to_owned(),
+            Self::EExploratoryNotBuilt(dir) => {
+                format!("P230-E-EXPLORATORY-NOT-INSTALLED direction={}", dir.token())
+            }
+            Self::EClientNotBuilt(dir) => {
+                format!("P230-E-CLIENT-NOT-BUILT direction={}", dir.token())
+            }
+            Self::EPairedTunnelContradiction => "P230-E-PAIRED-TUNNEL-CONTRADICTION".to_owned(),
+            Self::ETunnelContinuationPassed => "P230-E-TUNNEL-CONTINUATION-PASSED".to_owned(),
+        }
+    }
+}
+
+/// Plan 230 WP D gate: natural profile bootstrap through the ordinary
+/// authenticated DatabaseStore path. Requires the exact creation
+/// predicate, a post-correction RI identity match, natural organizer
+/// membership (`selectAllPeers` + non-null `getProfileNonblocking`,
+/// already encoded in `profile_present`), a non-empty not-failing
+/// population, and a selectable, non-banned, non-floodfill record.
+fn p230_classify_profile(
+    cap: Option<&P230Capability>,
+    self_view: Option<&P230SelfView>,
+) -> P230Terminal {
+    let (Some(cap), Some(self_view)) = (cap, self_view) else {
+        return P230Terminal::DObservabilityGap;
+    };
+    if !p230_predicate_agrees(cap) {
+        return P230Terminal::DObservabilityGap;
+    }
+    if !cap.heard_about_creation_eligible {
+        return match p230_classify_baseline(Some(cap)) {
+            P230Baseline::Ineligible(reason) => P230Terminal::AIneligible(reason),
+            _ => P230Terminal::DObservabilityGap,
+        };
+    }
+    if !p230_ri_fresh(&cap.c_ri_sha256, &self_view.self_ri_sha256) {
+        return P230Terminal::DRiNotUpdated;
+    }
+    if cap.profile_present
+        && cap.selectable
+        && !cap.banlisted
+        && !cap.caps_has_f
+        && cap.not_failing_count >= 1
+    {
+        return P230Terminal::ETunnelContinuationPassed;
+    }
+    P230Terminal::DEligibleButNoProfile
+}
+
+/// Plan 230 WP E gate: genuine non-zero exploratory tunnels in both
+/// directions, genuine one-hop client tunnels through C in both
+/// directions, then the retained Plan-228 paired-tunnel disposition.
+/// Returns the E-stage terminal; `ETunnelContinuationPassed` is the only
+/// terminal that permits entering the frozen destination lane (WP F).
+#[allow(clippy::too_many_arguments)]
+fn p230_classify_tunnel_continuation(
+    exploratory: Option<&P229Exploratory>,
+    client_in_exact: bool,
+    client_out_exact: bool,
+    p228: &P228Terminal,
+) -> P230Terminal {
+    let Some(exploratory) = exploratory else {
+        return P230Terminal::EExploratoryNotBuilt(P228Direction::Both);
+    };
+    if !p229_nonzero_gate_pass(exploratory) {
+        return P230Terminal::EExploratoryNotBuilt(p229_nonzero_gate(exploratory));
+    }
+    if client_in_exact && client_out_exact {
+        return P230Terminal::ETunnelContinuationPassed;
+    }
+    if matches!(p228, P228Terminal::NoPairedTunnel(_)) {
+        return P230Terminal::EPairedTunnelContradiction;
+    }
+    let missing = match (client_in_exact, client_out_exact) {
+        (true, false) => P228Direction::Outbound,
+        (false, true) => P228Direction::Inbound,
+        _ => P228Direction::Both,
+    };
+    P230Terminal::EClientNotBuilt(missing)
+}
+
+/// Plan 230 §10 / §15: the frozen destination/Streaming lane is entered
+/// only through the tunnel-continuation pass. No other terminal admits
+/// lookup or reverse-delivery qualification.
+fn p230_terminal_permits_destination(terminal: &P230Terminal) -> bool {
+    matches!(terminal, P230Terminal::ETunnelContinuationPassed)
+}
+
+fn record_p230_capability(
+    evidence_dir: &std::path::Path,
+    cap: Option<&P230Capability>,
+    router_c_hex: &str,
+) {
+    match cap {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p230-capability",
+            &format!(
+                "router_c_hex={router_c_hex} main_raw_present={} main_valid_present={} selectable={} banlisted={} caps_has_r={} caps_has_u={} caps_has_f={} caps_has_l={} caps_has_e={} caps_has_g={} bandwidth_tier={} c_ri_sha256={} profile_present={} profile_count={} not_failing_count={} local_floodfill_enabled={} local_max_share_bandwidth={} local_comm_status={} heard_about_creation_eligible={}",
+                facts.main_raw_present,
+                facts.main_valid_present,
+                facts.selectable,
+                facts.banlisted,
+                facts.caps_has_r,
+                facts.caps_has_u,
+                facts.caps_has_f,
+                facts.caps_has_l,
+                facts.caps_has_e,
+                facts.caps_has_g,
+                facts.bandwidth_tier,
+                facts.c_ri_sha256,
+                facts.profile_present,
+                facts.profile_count,
+                facts.not_failing_count,
+                facts.local_floodfill_enabled,
+                facts.local_max_share_bandwidth,
+                facts.local_comm_status,
+                facts.heard_about_creation_eligible,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p230-capability",
+            &format!("router_c_hex={router_c_hex} observable=false reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+fn record_p230_classification(evidence_dir: &std::path::Path, terminal: &P230Terminal) {
+    append_evidence(evidence_dir, "p230-classification", &terminal.token());
+}
+
+/// Canonical WP D pass outcome, shared with the shell `p230-profile`
+/// row. The pass itself continues into WP E under the
+/// `ETunnelContinuationPassed` terminal; this token names the row.
+const P230_D_PROFILE_BOOTSTRAP_PASSED: &str = "P230-D-PROFILE-BOOTSTRAP-PASSED";
+
+fn record_p230_baseline(
+    evidence_dir: &std::path::Path,
+    baseline: &P230Baseline,
+    cap: Option<&P230Capability>,
+    router_c_hex: &str,
+) {
+    match cap {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p230-baseline",
+            &format!(
+                "router_c_hex={router_c_hex} outcome={} caps_has_r={} caps_has_f={} caps_has_l={} caps_has_e={} caps_has_g={} local_floodfill_enabled={} local_max_share_bandwidth={}",
+                baseline.token(),
+                facts.caps_has_r,
+                facts.caps_has_f,
+                facts.caps_has_l,
+                facts.caps_has_e,
+                facts.caps_has_g,
+                facts.local_floodfill_enabled,
+                facts.local_max_share_bandwidth,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p230-baseline",
+            &format!(
+                "router_c_hex={router_c_hex} outcome={} reason=diagnostic-unreachable",
+                P230Baseline::ObservabilityGap.token(),
+            ),
+        ),
+    }
+}
+
+fn record_p230_profile(
+    evidence_dir: &std::path::Path,
+    outcome: &str,
+    cap: Option<&P230Capability>,
+    self_view: Option<&P230SelfView>,
+    router_c_hex: &str,
+) {
+    match (cap, self_view) {
+        (Some(facts), Some(view)) => append_evidence(
+            evidence_dir,
+            "p230-profile",
+            &format!(
+                "router_c_hex={router_c_hex} outcome={outcome} profile_present={} not_failing_count={} c_ri_sha256={} self_ri_sha256={}",
+                facts.profile_present,
+                facts.not_failing_count,
+                facts.c_ri_sha256,
+                view.self_ri_sha256,
+            ),
+        ),
+        _ => append_evidence(
+            evidence_dir,
+            "p230-profile",
+            &format!("router_c_hex={router_c_hex} outcome={outcome} reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+// ---- Plan 230 focused unit rows (Plan 230 §12) ---------------------------
+
+fn p230_test_cap() -> P230Capability {
+    P230Capability {
+        main_raw_present: true,
+        main_valid_present: true,
+        selectable: true,
+        banlisted: false,
+        caps_has_r: true,
+        caps_has_u: false,
+        caps_has_f: false,
+        caps_has_l: false,
+        caps_has_e: false,
+        caps_has_g: false,
+        bandwidth_tier: "N".to_owned(),
+        c_ri_sha256: "ab".repeat(32),
+        profile_present: false,
+        profile_count: 0,
+        not_failing_count: 0,
+        local_floodfill_enabled: true,
+        local_max_share_bandwidth: 48 * 1024,
+        local_comm_status: "OK".to_owned(),
+        heard_about_creation_eligible: true,
+    }
+}
+
+fn p230_test_self() -> P230SelfView {
+    P230SelfView {
+        self_comm_status: "OK".to_owned(),
+        self_caps_has_r: true,
+        self_caps_has_u: false,
+        self_caps_has_f: false,
+        self_caps_has_l: false,
+        self_caps_has_e: false,
+        self_caps_has_g: false,
+        self_bandwidth_tier: "N".to_owned(),
+        self_ri_sha256: "ab".repeat(32),
+    }
+}
+
+fn p230_test_cap_line(c_hex: &str) -> String {
+    format!(
+        "P230-EV kind=capability observable=true router_c_hex={c_hex} main_raw_present=true main_valid_present=true selectable=true banlisted=false caps_has_r=true caps_has_u=false caps_has_f=false caps_has_l=false caps_has_e=false caps_has_g=false bandwidth_tier=N c_ri_sha256={} profile_present=false profile_count=0 not_failing_count=0 local_floodfill_enabled=true local_max_share_bandwidth=49152 local_comm_status=OK heard_about_creation_eligible=true",
+        "ab".repeat(32),
+    )
+}
+
+#[test]
+fn p230_isfailing_never_authoritative_for_reachability() {
+    // The P230 observation contract has no failing/unreachable input:
+    // selectability and banlist state never affect the creation
+    // predicate, and the deprecated `isFailing` signal is rejected at
+    // the parse boundary.
+    let mut cap = p230_test_cap();
+    cap.selectable = false;
+    cap.banlisted = true;
+    assert!(p230_predicate_agrees(&cap));
+    assert_eq!(p230_classify_baseline(Some(&cap)), P230Baseline::Eligible);
+    let c_hex = p227_test_c_hex();
+    let tainted = p230_test_cap_line(&c_hex) + " unreachable=false";
+    assert!(p230_parse_capability(&tainted, &c_hex).is_none());
+    let tainted =
+        p230_test_cap_line(&c_hex).replace("selectable=true", "selectable=true isFailing=false");
+    assert!(p230_parse_capability(&tainted, &c_hex).is_none());
+}
+
+#[test]
+fn p230_selectable_alone_does_not_imply_creation_eligible() {
+    // Selectable, present, and valid in the main NetDB but missing the
+    // reachability capability: still ineligible.
+    let mut cap = p230_test_cap();
+    cap.caps_has_r = false;
+    cap.caps_has_l = true;
+    cap.heard_about_creation_eligible = false;
+    assert!(cap.selectable);
+    assert!(cap.main_raw_present && cap.main_valid_present);
+    assert!(!p230_heard_about_eligible(
+        cap.caps_has_r,
+        cap.caps_has_f,
+        cap.caps_has_l,
+        cap.local_floodfill_enabled,
+        cap.local_max_share_bandwidth,
+        cap.caps_has_e,
+        cap.caps_has_g,
+    ));
+    assert!(matches!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(_)
+    ));
+}
+
+#[test]
+fn p230_missing_r_is_ineligible() {
+    assert!(!p230_heard_about_eligible(
+        false,
+        false,
+        false,
+        true,
+        48 * 1024,
+        false,
+        false
+    ));
+    assert!(!p230_heard_about_eligible(
+        false,
+        true,
+        false,
+        true,
+        48 * 1024,
+        false,
+        false
+    ));
+    let mut cap = p230_test_cap();
+    cap.caps_has_r = false;
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::MissingR)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&cap)),
+        P230Correction::ReachabilityOnly
+    );
+}
+
+#[test]
+fn p230_u_without_r_is_ineligible() {
+    assert!(!p230_heard_about_eligible(
+        false,
+        false,
+        false,
+        true,
+        48 * 1024,
+        false,
+        false
+    ));
+    let mut cap = p230_test_cap();
+    cap.caps_has_r = false;
+    cap.caps_has_u = true;
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::HasU)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&cap)),
+        P230Correction::ReachabilityOnly
+    );
+}
+
+#[test]
+fn p230_nonff_l_peer_on_floodfill_observer_is_ineligible() {
+    // The exact Plan-230 fixture shape: non-floodfill transit C
+    // advertises the default low-bandwidth class while floodfill
+    // Router A observes. The predicate rejects it; only the C
+    // bandwidth correction is authorized.
+    assert!(!p230_heard_about_eligible(
+        true,
+        false,
+        true,
+        true,
+        48 * 1024,
+        false,
+        false
+    ));
+    let mut cap = p230_test_cap();
+    cap.caps_has_l = true;
+    cap.bandwidth_tier = "L".to_owned();
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::LowBandwidthLOnFloodfillObserver)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&cap)),
+        P230Correction::BandwidthOnly
+    );
+    // A non-floodfill observer with a sub-floor share exempts the same
+    // peer through the exact alternate branch.
+    assert!(p230_heard_about_eligible(
+        true,
+        false,
+        true,
+        false,
+        48 * 1024,
+        false,
+        false
+    ));
+    // ... but not once the observer share reaches the 128 KiB/s floor.
+    assert!(!p230_heard_about_eligible(
+        true,
+        false,
+        true,
+        false,
+        128 * 1024,
+        false,
+        false
+    ));
+}
+
+#[test]
+fn p230_nonff_r_non_l_non_e_non_g_is_eligible() {
+    assert!(p230_heard_about_eligible(
+        true,
+        false,
+        false,
+        true,
+        48 * 1024,
+        false,
+        false
+    ));
+    assert!(p230_heard_about_eligible(
+        true, false, false, false, 0, false, false
+    ));
+    assert_eq!(
+        p230_classify_baseline(Some(&p230_test_cap())),
+        P230Baseline::Eligible
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&p230_test_cap())),
+        P230Correction::None
+    );
+}
+
+#[test]
+fn p230_floodfill_peer_with_r_is_eligible() {
+    // Floodfill peers are eligible regardless of bandwidth/congestion
+    // caps on the exact pinned predicate.
+    for (l, e, g) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        assert!(p230_heard_about_eligible(
+            true,
+            true,
+            l,
+            true,
+            48 * 1024,
+            e,
+            g
+        ));
+    }
+    let mut cap = p230_test_cap();
+    cap.caps_has_f = true;
+    cap.caps_has_l = true;
+    cap.caps_has_e = true;
+    cap.caps_has_g = true;
+    assert_eq!(p230_classify_baseline(Some(&cap)), P230Baseline::Eligible);
+}
+
+#[test]
+fn p230_e_is_ineligible_for_nonff_peer() {
+    assert!(!p230_heard_about_eligible(
+        true,
+        false,
+        false,
+        true,
+        48 * 1024,
+        true,
+        false
+    ));
+    let mut cap = p230_test_cap();
+    cap.caps_has_e = true;
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::HasE)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&cap)),
+        P230Correction::StopUnexpectedExclusion
+    );
+    assert_eq!(
+        P230Terminal::CUnexpectedCapabilityExclusion.token(),
+        "P230-C-UNEXPECTED-CAPABILITY-EXCLUSION"
+    );
+}
+
+#[test]
+fn p230_g_is_ineligible_for_nonff_peer() {
+    assert!(!p230_heard_about_eligible(
+        true,
+        false,
+        false,
+        true,
+        48 * 1024,
+        false,
+        true
+    ));
+    let mut cap = p230_test_cap();
+    cap.caps_has_g = true;
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::HasG)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&cap)),
+        P230Correction::StopUnexpectedExclusion
+    );
+}
+
+#[test]
+fn p230_baseline_ineligible_authorizes_only_matching_fixture_correction() {
+    // missing-R authorizes reachability only, never bandwidth.
+    let mut cap = p230_test_cap();
+    cap.caps_has_r = false;
+    cap.heard_about_creation_eligible = false;
+    let correction = p230_authorized_correction(Some(&cap));
+    assert_eq!(correction, P230Correction::ReachabilityOnly);
+    let props = p230_authorized_launcher_props(correction, P229Role::Transit, true);
+    assert!(props.contains(&("i2np.udp.status", "ok")));
+    assert!(!props.iter().any(|(k, _)| k.contains("bandwidth")));
+    // Low-bandwidth-L authorizes bandwidth only, never reachability.
+    let mut cap = p230_test_cap();
+    cap.caps_has_l = true;
+    cap.heard_about_creation_eligible = false;
+    let correction = p230_authorized_correction(Some(&cap));
+    assert_eq!(correction, P230Correction::BandwidthOnly);
+    let props = p230_authorized_launcher_props(correction, P229Role::Transit, true);
+    assert!(!props.iter().any(|(k, _)| *k == "i2np.udp.status"));
+    assert!(props.contains(&("i2np.bandwidth.outboundKBytesPerSecond", "128")));
+    // Eligible and gap baselines authorize nothing.
+    assert_eq!(
+        p230_authorized_correction(Some(&p230_test_cap())),
+        P230Correction::None
+    );
+    assert_eq!(p230_authorized_correction(None), P230Correction::None);
+    // Compound reachability + bandwidth authorizes exactly both.
+    let mut cap = p230_test_cap();
+    cap.caps_has_r = false;
+    cap.caps_has_u = true;
+    cap.caps_has_l = true;
+    cap.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&cap)),
+        P230Baseline::Ineligible(P230Blocker::Compound)
+    );
+    assert_eq!(p230_authorized_correction(Some(&cap)), P230Correction::Both);
+    // E/G alongside a proven reachability/bandwidth blocker does not
+    // stop the matching correction; the exclusion stop fires only when
+    // E/G is the sole remaining blocker (Plan 230 §7 C3).
+    cap.caps_has_e = true;
+    assert_eq!(p230_authorized_correction(Some(&cap)), P230Correction::Both);
+    let mut sole = p230_test_cap();
+    sole.caps_has_e = true;
+    sole.caps_has_g = true;
+    sole.heard_about_creation_eligible = false;
+    assert_eq!(
+        p230_classify_baseline(Some(&sole)),
+        P230Baseline::Ineligible(P230Blocker::Compound)
+    );
+    assert_eq!(
+        p230_authorized_correction(Some(&sole)),
+        P230Correction::StopUnexpectedExclusion
+    );
+}
+
+#[test]
+fn p230_reachability_override_is_loopback_fixture_only() {
+    assert!(p230_reachability_override_permitted(true, true, true));
+    assert!(!p230_reachability_override_permitted(false, true, true));
+    assert!(!p230_reachability_override_permitted(true, false, true));
+    assert!(!p230_reachability_override_permitted(true, true, false));
+    // Without the fixture scope, no correction materializes as launcher
+    // properties even when the baseline authorizes it.
+    assert!(
+        p230_authorized_launcher_props(P230Correction::Both, P229Role::Transit, false).is_empty()
+    );
+    assert!(
+        !p230_authorized_launcher_props(P230Correction::ReachabilityOnly, P229Role::Service, true)
+            .is_empty()
+    );
+}
+
+#[test]
+fn p230_bandwidth_correction_applies_to_transit_c_only() {
+    for role in [P229Role::Service, P229Role::Publication] {
+        for correction in [
+            P230Correction::BandwidthOnly,
+            P230Correction::Both,
+            P230Correction::ReachabilityOnly,
+            P230Correction::None,
+        ] {
+            let props = p230_authorized_launcher_props(correction, role, true);
+            assert!(
+                !props.iter().any(|(k, _)| k.contains("bandwidth")),
+                "non-transit role must never receive bandwidth props: {role:?} {correction:?}"
+            );
+        }
+    }
+    let props =
+        p230_authorized_launcher_props(P230Correction::BandwidthOnly, P229Role::Transit, true);
+    assert!(props.contains(&("i2np.bandwidth.outboundKBytesPerSecond", "128")));
+    assert!(props.contains(&("i2np.bandwidth.outboundBurstKBytesPerSecond", "128")));
+    // A/B keep their stock exploratory/small-router profile: no
+    // bandwidth props even under `Both`.
+    let props = p230_authorized_launcher_props(P230Correction::Both, P229Role::Service, true);
+    assert_eq!(props, vec![("i2np.udp.status", "ok")]);
+}
+
+#[test]
+fn p230_force_bandwidth_class_is_forbidden() {
+    // No role/correction/scope combination may ever emit the lying
+    // override; the transit bandwidth path uses real configured
+    // bandwidth only.
+    for role in [P229Role::Service, P229Role::Publication, P229Role::Transit] {
+        for correction in [
+            P230Correction::None,
+            P230Correction::ReachabilityOnly,
+            P230Correction::BandwidthOnly,
+            P230Correction::Both,
+            P230Correction::StopUnexpectedExclusion,
+        ] {
+            for scope in [true, false] {
+                let props = p230_authorized_launcher_props(correction, role, scope);
+                assert!(
+                    !props.iter().any(|(k, _)| k.contains("forceBandwidthClass")),
+                    "forceBandwidthClass forbidden: {role:?} {correction:?} {scope}"
+                );
+            }
+        }
+    }
+    let props = p230_authorized_launcher_props(P230Correction::Both, P229Role::Transit, true);
+    assert_eq!(props.len(), 3);
+}
+
+#[test]
+fn p230_stale_pre_correction_ri_cannot_pass_post_correction_gate() {
+    let pre = "00".repeat(32);
+    let post = "ff".repeat(32);
+    assert!(!p230_ri_fresh(&pre, &post));
+    assert!(p230_ri_fresh(&post, &post));
+    assert!(!p230_ri_fresh("unknown", &post));
+    assert!(!p230_ri_fresh(&post, "unknown"));
+    assert!(!p230_ri_fresh("not-hex", &post));
+    assert!(!p230_ri_fresh(&post, &("ff".repeat(31) + "FG")));
+    // A stale observed RI maps the D gate to RI-NOT-UPDATED even when
+    // every other D input passes.
+    let mut cap = p230_test_cap();
+    cap.profile_present = true;
+    cap.not_failing_count = 2;
+    cap.profile_count = 3;
+    cap.c_ri_sha256 = pre.clone();
+    let mut view = p230_test_self();
+    view.self_ri_sha256 = post.clone();
+    assert_eq!(
+        p230_classify_profile(Some(&cap), Some(&view)),
+        P230Terminal::DRiNotUpdated
+    );
+}
+
+#[test]
+fn p230_eligible_without_profile_maps_to_d_boundary() {
+    // Eligible for ordinary creation but absent from the organizer:
+    // the exact WP D stop, not a pass and not an A terminal.
+    let cap = p230_test_cap();
+    assert_eq!(
+        p230_classify_profile(Some(&cap), Some(&p230_test_self())),
+        P230Terminal::DEligibleButNoProfile
+    );
+    assert_eq!(
+        P230Terminal::DEligibleButNoProfile.token(),
+        "P230-D-ELIGIBLE-BUT-NO-PROFILE"
+    );
+    // A missing self view is an observability gap, never a pass.
+    assert_eq!(
+        p230_classify_profile(Some(&p230_test_cap()), None),
+        P230Terminal::DObservabilityGap
+    );
+    assert_eq!(
+        p230_classify_profile(None, Some(&p230_test_self())),
+        P230Terminal::DObservabilityGap
+    );
+}
+
+#[test]
+fn p230_profile_gate_requires_natural_organizer_membership() {
+    // The full natural-bootstrap record passes the D gate into the
+    // tunnel continuation (the E pass terminal owns the run from here).
+    let mut cap = p230_test_cap();
+    cap.profile_present = true;
+    cap.profile_count = 3;
+    cap.not_failing_count = 2;
+    assert_eq!(
+        p230_classify_profile(Some(&cap), Some(&p230_test_self())),
+        P230Terminal::ETunnelContinuationPassed
+    );
+    // Each missing natural-membership input returns to the D boundary.
+    for mutate in [
+        "profile",
+        "selectable",
+        "banlisted",
+        "floodfill",
+        "not_failing",
+    ] {
+        let mut cap = p230_test_cap();
+        cap.profile_present = true;
+        cap.profile_count = 3;
+        cap.not_failing_count = 2;
+        match mutate {
+            "profile" => cap.profile_present = false,
+            "selectable" => cap.selectable = false,
+            "banlisted" => cap.banlisted = true,
+            "floodfill" => cap.caps_has_f = true,
+            _ => cap.not_failing_count = 0,
+        }
+        // A floodfill flip also flips the predicate inputs; keep the
+        // probe-derived fact consistent with the exact recomputation.
+        cap.heard_about_creation_eligible = p230_heard_about_eligible(
+            cap.caps_has_r,
+            cap.caps_has_f,
+            cap.caps_has_l,
+            cap.local_floodfill_enabled,
+            cap.local_max_share_bandwidth,
+            cap.caps_has_e,
+            cap.caps_has_g,
+        );
+        // A floodfill Router C never passes the D gate even when the
+        // predicate accepts it: the transit role is non-floodfill and
+        // the shell role proof stops first. Every mutation below holds
+        // the exact D boundary.
+        assert_eq!(
+            p230_classify_profile(Some(&cap), Some(&p230_test_self())),
+            P230Terminal::DEligibleButNoProfile,
+            "mutation {mutate} must hold the D boundary"
+        );
+    }
+}
+
+#[test]
+fn p230_no_probe_profile_creation_calls() {
+    // No profile fact may be manufactured: observable=false, any
+    // missing field, or a probe/harness-side creation call name in the
+    // row rejects the parse.
+    let c_hex = p227_test_c_hex();
+    let base = p230_test_cap_line(&c_hex);
+    assert!(p230_parse_capability(&base, &c_hex).is_some());
+    for line in [
+        base.replace("observable=true", "observable=false"),
+        base.replace(" profile_present=false", ""),
+        base.replace(" not_failing_count=0", ""),
+        base.replace(" heard_about_creation_eligible=true", ""),
+        base.replace(" local_max_share_bandwidth=49152", ""),
+        format!("{base} addProfile=true"),
+        format!("{base} getOrCreateProfile=true"),
+        format!("{base} heardAbout=true"),
+    ] {
+        assert!(
+            p230_parse_capability(&line, &c_hex).is_none(),
+            "manufactured profile fact must not parse: {line}"
+        );
+    }
+    assert!(p230_parse_self_view("P230-EV kind=self-view observable=false").is_none());
+}
+
+#[test]
+fn p230_profile_pass_continues_into_exploratory_gate() {
+    // The D pass hands off to the E exploratory gate; a missing or
+    // one-sided exploratory pool is the E stop, never an A/D replay.
+    let missing_dir = p230_classify_tunnel_continuation(
+        None,
+        false,
+        false,
+        &P228Terminal::NoPairedTunnel(P228Direction::Both),
+    );
+    assert_eq!(
+        missing_dir,
+        P230Terminal::EExploratoryNotBuilt(P228Direction::Both)
+    );
+    for (in_nonzero, out_nonzero, dir) in [
+        (1, 0, P228Direction::Outbound),
+        (0, 1, P228Direction::Inbound),
+        (0, 0, P228Direction::Both),
+    ] {
+        let terminal = p230_classify_tunnel_continuation(
+            Some(&p229_test_exploratory(in_nonzero, out_nonzero)),
+            false,
+            false,
+            &P228Terminal::NoPairedTunnel(P228Direction::Both),
+        );
+        assert_eq!(terminal, P230Terminal::EExploratoryNotBuilt(dir));
+        assert!(
+            terminal
+                .token()
+                .starts_with("P230-E-EXPLORATORY-NOT-INSTALLED"),
+            "must be the E exploratory terminal: {}",
+            terminal.token()
+        );
+    }
+    // Non-zero exploratory plus the retained NO-PAIRED attribution is
+    // the explicit contradiction, not a silent client stop.
+    let terminal = p230_classify_tunnel_continuation(
+        Some(&p229_test_exploratory(1, 1)),
+        false,
+        false,
+        &P228Terminal::NoPairedTunnel(P228Direction::Both),
+    );
+    assert_eq!(terminal, P230Terminal::EPairedTunnelContradiction);
+    assert_eq!(terminal.token(), "P230-E-PAIRED-TUNNEL-CONTRADICTION");
+}
+
+#[test]
+fn p230_tunnel_pass_continues_into_frozen_destination_lane() {
+    // Installed one-hop client tunnels through C retire every assumed
+    // boundary and admit the frozen destination lane — the only
+    // terminal that permits it.
+    let terminal = p230_classify_tunnel_continuation(
+        Some(&p229_test_exploratory(1, 1)),
+        true,
+        true,
+        &P228Terminal::NextBoundaryClientTunnelsBuilt,
+    );
+    assert_eq!(terminal, P230Terminal::ETunnelContinuationPassed);
+    assert_eq!(terminal.token(), "P230-E-TUNNEL-CONTINUATION-PASSED");
+    assert!(p230_terminal_permits_destination(&terminal));
+    for terminal in [
+        P230Terminal::AObservabilityGap,
+        P230Terminal::AIneligible(P230Blocker::MissingR),
+        P230Terminal::AIneligible(P230Blocker::Compound),
+        P230Terminal::CUnexpectedCapabilityExclusion,
+        P230Terminal::DObservabilityGap,
+        P230Terminal::DRiNotUpdated,
+        P230Terminal::DEligibleButNoProfile,
+        P230Terminal::EExploratoryNotBuilt(P228Direction::Both),
+        P230Terminal::EClientNotBuilt(P228Direction::Inbound),
+        P230Terminal::EPairedTunnelContradiction,
+    ] {
+        assert!(
+            !p230_terminal_permits_destination(&terminal),
+            "terminal must not admit the destination lane: {}",
+            terminal.token()
+        );
+        assert!(
+            !terminal.token().contains("LOOKUP") && !terminal.token().contains("45"),
+            "terminal must not claim lookup/reverse payload: {}",
+            terminal.token()
+        );
+    }
+    // One-sided client installs map to the missing direction.
+    let terminal = p230_classify_tunnel_continuation(
+        Some(&p229_test_exploratory(2, 1)),
+        true,
+        false,
+        &P228Terminal::BuildReplyTimeout(P228Direction::Both),
+    );
+    assert_eq!(
+        terminal,
+        P230Terminal::EClientNotBuilt(P228Direction::Outbound)
+    );
+}
+
+#[test]
+fn p230_exactly_one_earliest_terminal() {
+    let dir = p224_test_tmpdir("p230-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let terminal = P230Terminal::AIneligible(P230Blocker::LowBandwidthLOnFloodfillObserver);
+    record_p230_classification(&evidence_dir, &terminal);
+    let c_hex = p227_test_c_hex();
+    let cap = p230_parse_capability(&p230_test_cap_line(&c_hex), &c_hex).expect("parse capability");
+    record_p230_capability(&evidence_dir, Some(&cap), &c_hex);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p230-classification\t"))
+            .count(),
+        1
+    );
+    assert!(
+        tsv.contains("P230-A-PREDICATE-INELIGIBLE reason=low-bandwidth-l-on-floodfill-observer")
+    );
+    assert_eq!(
+        P230Terminal::AObservabilityGap.token(),
+        "P230-A-OBSERVABILITY-GAP"
+    );
+    // The baseline/profile row vocabulary is shared with the shell
+    // harness rows of the same keys.
+    let c_hex = p227_test_c_hex();
+    let cap = p230_parse_capability(&p230_test_cap_line(&c_hex), &c_hex).expect("parse capability");
+    record_p230_baseline(&evidence_dir, &P230Baseline::Eligible, Some(&cap), &c_hex);
+    record_p230_profile(
+        &evidence_dir,
+        P230_D_PROFILE_BOOTSTRAP_PASSED,
+        Some(&cap),
+        Some(&p230_test_self()),
+        &c_hex,
+    );
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p230-baseline\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P230-A-PREDICATE-ELIGIBLE"));
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p230-profile\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains(P230_D_PROFILE_BOOTSTRAP_PASSED));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p230_secret_or_unrelated_rows_rejected() {
+    let c_hex = p227_test_c_hex();
+    // Wrong prefix never parses.
+    assert!(
+        p230_parse_capability(
+            &p230_test_cap_line(&c_hex).replace("P230-EV ", "P229-EV "),
+            &c_hex
+        )
+        .is_none()
+    );
+    assert!(p230_parse_self_view("P229-EV kind=self-view observable=true").is_none());
+    // Echo mismatch never parses.
+    let other = "cd".repeat(32);
+    assert!(p230_parse_capability(&p230_test_cap_line(&other), &c_hex).is_none());
+    // Secret-bearing diagnostic rows never parse.
+    let secret = p230_test_cap_line(&c_hex) + " session_key=abcd";
+    assert!(p230_parse_capability(&secret, &c_hex).is_none());
+    let secret = p230_test_cap_line(&c_hex) + " payload=deadbeef";
+    assert!(p230_parse_capability(&secret, &c_hex).is_none());
+    let secret = p230_test_cap_line(&c_hex) + " log-router-0.txt";
+    assert!(p230_parse_capability(&secret, &c_hex).is_none());
+    // Malformed fields never parse.
+    let malformed = p230_test_cap_line(&c_hex).replace("caps_has_r=true", "caps_has_r=yes");
+    assert!(p230_parse_capability(&malformed, &c_hex).is_none());
+    let malformed = p230_test_cap_line(&c_hex).replace("profile_count=0", "profile_count=65");
+    assert!(p230_parse_capability(&malformed, &c_hex).is_none());
+    let malformed = p230_test_cap_line(&c_hex).replace(
+        "local_max_share_bandwidth=49152",
+        "local_max_share_bandwidth=-1",
+    );
+    assert!(p230_parse_capability(&malformed, &c_hex).is_none());
+    let malformed =
+        p230_test_cap_line(&c_hex).replace("bandwidth_tier=N", "bandwidth_tier=toolongvalue");
+    assert!(p230_parse_capability(&malformed, &c_hex).is_none());
+    let malformed =
+        p230_test_cap_line(&c_hex).replace("local_comm_status=OK", "local_comm_status=not ok");
+    assert!(p230_parse_capability(&malformed, &c_hex).is_none());
+    // Positive parse requires the exact Router-C echo and recomputable
+    // predicate agreement.
+    let parsed =
+        p230_parse_capability(&p230_test_cap_line(&c_hex), &c_hex).expect("parse capability");
+    assert!(p230_predicate_agrees(&parsed));
+    assert_eq!(
+        p230_classify_baseline(Some(&parsed)),
+        P230Baseline::Eligible
+    );
+    // A probe-reported eligible fact that disagrees with the exact
+    // recomputation is an observability gap, never a pass.
+    let mut skewed = parsed.clone();
+    skewed.caps_has_r = false;
+    assert!(!p230_predicate_agrees(&skewed));
+    assert_eq!(
+        p230_classify_baseline(Some(&skewed)),
+        P230Baseline::ObservabilityGap
+    );
+}
