@@ -1,3 +1,24 @@
+# Current dependency amendment — Plan 232 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded by this M6 work.
+
+Plan 231 closed the Java reverse-delivery attribution at the exact target-IBGW-
+not-installed boundary and root-caused it to the external test driver's local
+LS2 lease fixture. Plan 232 is now the registered-ready M6-only corrective: it
+derives all local lease gateway/tunnel fields from the installed inbound route,
+preserves Router B as the independent NetDB publication target, reruns raw
+Destination qualification, and continues directly to Java Streaming if reverse
+delivery passes.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan232
+plan_231 = passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary
+plan_232 = registered-ready-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure
+milestone10_final_acceptance = closed
+next_executable_plan = 232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure
+```
+
 # Current dependency amendment — Plan 231 closed with boundary; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
