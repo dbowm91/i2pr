@@ -54,14 +54,14 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 230 Java reachability-capability/profile-bootstrap corrective | ready | `plans/implementation/mixed-router-interop/230-m6-java-reachability-capability-profile-bootstrap-corrective.md` | Correct P229 reachability evidence; prove exact `heardAbout()` eligibility; conditionally apply stock loopback reachability / C bandwidth config; require natural profile creation; then continue P229/P228/P201 without another bootstrap successor. |
+| M6 mixed-router interop | 230 Java reachability-capability/profile-bootstrap corrective | ready | `plans/implementation/mixed-router-interop/230-m6-java-profile-population-path-attribution.md` | Correct P229 reachability evidence; prove exact `heardAbout()` eligibility; conditionally apply stock loopback reachability / C bandwidth config; require natural profile creation; then continue P229/P228/P201 without another bootstrap successor. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
 | M6 mixed-router interop | 201 | Blocked pending revised Plan 230 reachability-capability/profile-bootstrap corrective and continuation |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 230 is the active reference-topology attribution and does not alter M10 authority |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; revised Plan 230 owns the reachability-capability/profile-bootstrap corrective and does not alter closed M10 product authority |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
