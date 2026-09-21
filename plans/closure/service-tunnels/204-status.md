@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 229 registered
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 229 changes only the controlled Java test topology needed for
+ordinary paired exploratory/client tunnel construction; it does not alter M10
+product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan229
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
 # Current dependency amendment — Plan 228 closed with NO-PAIRED-TUNNEL boundary
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family
