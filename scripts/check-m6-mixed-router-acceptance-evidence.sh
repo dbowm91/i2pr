@@ -2906,6 +2906,15 @@ if [[ -f "${P231_LAUNCHER_SRC}" ]]; then
       failures=$((failures + 1))
     fi
   done
+  # Plan 231 observability correction: the stock stat.full property
+  # must be enabled so the exact-pinned StatManager actually creates
+  # the tunnel/client lifetime rates (otherwise ignoreStat drops
+  # every createRateStat and the A/D gateway stages stay
+  # unobservable). No other stat/observability mutation is authorized.
+  if ! grep -q -F '"stat.full", "true"' "${P231_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_LAUNCHER_SRC} lacks the Plan 231 stat.full observability correction" >&2
+    failures=$((failures + 1))
+  fi
   if grep -q -F 'forceBandwidthClass' "${P231_LAUNCHER_SRC}"; then
     echo "m6 mixed-router evidence check failed: ${P231_LAUNCHER_SRC} uses router.forceBandwidthClass (Plan 231 §4 forbids it)" >&2
     failures=$((failures + 1))

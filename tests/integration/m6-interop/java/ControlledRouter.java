@@ -417,6 +417,21 @@ public final class ControlledRouter {
         // the lane only counts SSU2; disabling the legacy transports
         // keeps the controlled profile self-consistent.
         props.setProperty("logger.defaultLevel", "DEBUG");
+        // Plan 231 WP B/C/D — stock observability correction. The
+        // exact-pinned `StatManager.createRateStat` creates a rate
+        // ONLY when `stat.full` is true (otherwise `ignoreStat`
+        // drops it and every `addRateData` is a silent no-op), so the
+        // Plan-231 `tunnel.dispatchOutboundTunnel`,
+        // `tunnel.dropGatewayOverflow`, `tunnel.dispatchInbound`,
+        // `tunnel.inboundLookupSuccess`, `tunnel.dispatchEndpoint`
+        // lifetime counts never exist on the stock profile and the
+        // post-`ACCEPTED` enqueue/drop/transit stages stay
+        // unobservable. Setting the stock `stat.full` property retains
+        // the statistics the router already computes call-sites for;
+        // it changes no topology, profile, tunnel, NetDB, timeout,
+        // publication, or protocol behavior (same observability-only
+        // precedent as `logger.defaultLevel=DEBUG` above).
+        props.setProperty("stat.full", "true");
         // Plan 230 WP C — conditional stock controlled-topology
         // correction, authorized by the WP B baseline
         // (`P230-A-PREDICATE-INELIGIBLE reason=compound`: the isolated
