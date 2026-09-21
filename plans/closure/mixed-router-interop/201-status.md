@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 registered
+
+Plan 201 remains blocked on Java second-family closure. Plan 229 closed as
+`passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary`
+(see `229-status.md`): roles restored and the A-only small-router profile
+proven live on all 4 counted attempts, but every run stops at
+`P229-C-NOT-EXPLORATORY-ELIGIBLE` — the ordinary wire bootstrap populates
+NetDB entries without populating Router A's organizer tier population
+(`profile_count=0`). Plan 230 now owns the bounded profile-population-path
+attribution; no profile injection is authorized.
+
+```text
+plan_201 = blocked-pending-plan230-profile-population-path-attribution-after-plan229-not-eligible
+plan_229 = passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary
+plan_230 = registered-ready-m6-java-profile-population-path-attribution
+next_executable_plan = 230-m6-java-profile-population-path-attribution
+```
+
 # Current dependency amendment — Plan 229 registered
 
 Plan 201 remains blocked on Java second-family closure. Plan 228 localized the

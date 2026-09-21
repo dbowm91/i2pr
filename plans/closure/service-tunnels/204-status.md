@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 229 closed; Plan 230 registered
+
+Plan 204 remains convergence-only and blocked on independent M6 Java-family
+closure. Plan 229 closed at `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles and
+A-only small-router profile proven; tier population empty) and registered
+Plan 230 for the profile-population-path attribution. Neither changes M10
+product authority.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan230
+plan_229 = passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary
+plan_230 = registered-ready-m6-java-profile-population-path-attribution
+```
+
 # Current dependency amendment — Plan 229 registered
 
 Plan 204 remains convergence-only and blocked on independent M6 Java-family
