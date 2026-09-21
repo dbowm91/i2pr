@@ -1,3 +1,37 @@
+# Current dependency amendment — Plan 233 superseded; Plan 234 owns Streaming plus final-closure authority reconciliation
+
+Plan 232 remains closed at
+`passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary`.
+Its raw-Destination bidirectional pass is retained.
+
+Plan 233 was never executed and is now
+`superseded-before-execution-by-plan234-final-closure-authority-corrective`.
+Its narrow Streaming SYN-ACK attribution remains part of Plan 234, but Plan 234
+also corrects the closure-authority defect: a Streaming pass alone cannot close
+Java-family M6 while the full Java harness still treats the Plan-200 §C/D
+public-client LeaseSet lifecycle rows as required and exits nonzero for any
+non-passed required row.
+
+Plan 234 therefore owns:
+
+1. exact SYN -> SYN-ACK attribution and the narrow justified test/harness
+   corrective;
+2. Direction A+B Streaming qualification including live refresh;
+3. a row-by-row Plan-200 §C/D pass-or-stronger-external-evidence reconciliation;
+4. full `run-java.sh` exit 0;
+5. the final M6 closure ledger/checker.
+
+No Plan-201 final pass may be recorded before all of those gates agree on one
+exact head.
+
+```text
+plan_201 = blocked-pending-plan234-streaming-and-final-closure-authority-corrective
+plan_232 = passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary
+plan_233 = superseded-before-execution-by-plan234-final-closure-authority-corrective
+plan_234 = registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+next_executable_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+```
+
 # Current dependency amendment — Plan 232 closed at Outcome B; Plan 233 owns the Streaming SYN-ACK corrective
 
 Plan 232 closed as
