@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 228 closed the Java client-tunnel build-path attribution (`P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`) |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 228 closed: Java client-tunnel build-path attribution | Plan 227 proved Router C selectable but no one-hop client tunnel builds. Plan 228 attributed the earliest missing stock-Java build stage to paired-tunnel selection without implementing a workaround |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | Blocked on independent M6 Java second-family closure; Plan 229 is the active non-zero exploratory paired-tunnel bootstrap corrective |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 229 ready: non-zero exploratory paired-tunnel bootstrap corrective | Plan 228 proved both client configs stop before dispatch because only zero-hop exploratory fallbacks exist. Plan 229 restores C's intended transit role and uses Java's stock one-hop small-router exploratory profile on A |
 
 ## Current milestone authorities
 
@@ -48,25 +48,25 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 - **M10 service tunnels**: Plan 215 (hosted Plan 214 re-verification) —
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
-- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts). M6 Java remains not-yet-passed.
+- **M6 mixed-router program**: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected Destination/LS2 separation and moved the tracked send to `ACCEPTED -> NO_LEASESET (21)`; Plan 224 closed with `P224-OBSERVABILITY-GAP-LOOKUP-PATH`; Plan 225 closed with exact `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`; Plan 226 closed with exact `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and did not admit topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (Router C selectable on all 3 counted attempts, no one-hop tunnels built within the five-minute ceiling); Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (client configs through C proven, paired tunnel unavailable in both directions on all 4 counted attempts); Plan 229 is registered-ready to establish ordinary non-zero exploratory paired infrastructure and rerun the unchanged client-build path. M6 Java remains not-yet-passed.
 
 ## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| — | — | — | — | No active executable plan; a narrow paired-tunnel successor may be registered separately (not authorized by the Plan 228 closure) |
+| M6 mixed-router interop | 229 Java non-zero exploratory paired-tunnel bootstrap corrective | ready | `plans/implementation/mixed-router-interop/229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective.md` | Restore C to non-floodfill transit role, apply Java's stock small-router exploratory profile to A only, prove ordinary profile + non-zero paired tunnels, then rerun unchanged Plan-227 client build through C. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Blocked pending paired-tunnel corrective after Plan 228 `NO-PAIRED-TUNNEL direction=both` attribution |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 228 closed attribution-only at `NO-PAIRED-TUNNEL` and does not alter M10 authority |
+| M6 mixed-router interop | 201 | Blocked pending Plan 229 non-zero exploratory paired-tunnel bootstrap corrective and resulting Java second-family requalification |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure; Plan 229 is reference-topology-only and does not alter M10 authority |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
 
-- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 227 localized the active boundary below client-tunnel establishment and Plan 228 closed attribution at paired-tunnel selection on the direct Java build path, so no SAM pivot is authorized.
+- **Plan 205 SAM/helper pivot** — `retained-deferred-conditional-after-plan218-direct-i2cp-requalification`. Plan 229 remains on the direct stock-Java exploratory/client tunnel build path below SAM, so no SAM pivot is authorized.
 
 ## Recently closed work
 
@@ -81,7 +81,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | M6 mixed-router interop | 222 corrected client-NetDB/OCMOSJ narrowing | closed | `plans/closure/mixed-router-interop/222-status.md` (`passed-m6-java-client-netdb-ocmosj-narrowing-corrective`; exact preflight + nonce-tracked send → `P222-CORRECTED-ATTRIBUTION OCMOSJ-UNSUPPORTED-ENCRYPTION` on `cd334f8`) |
 | M6 mixed-router interop | 220 Plan 219 diagnostic-attribution corrective | closed | `plans/closure/mixed-router-interop/220-status.md` (`passed-m6-java-plan219-diagnostic-attribution-corrective-with-selector-equivalence-followup-required`; J219-B refuted; exact RI/PeerManager evidence retained; selector follow-up completed via Plan 222) |
 | M6 mixed-router interop | 221 client-NetDB/OCMOSJ narrowing | superseded | `plans/closure/mixed-router-interop/221-status.md` (registered but not executed; superseded by Plan 222 after selector-equivalence/source review) |
-| M6 mixed-router interop | 218 Java second-family final qualification | stopped | `plans/closure/mixed-router-interop/218-status.md` (reverse-delivery behavioral boundary retained; Plan 227 proved selectable C but no one-hop tunnel; Plan 228 is the registered build-path attribution) |
+| M6 mixed-router interop | 218 Java second-family final qualification | stopped | `plans/closure/mixed-router-interop/218-status.md` (reverse-delivery behavioral boundary retained; Plan 228 localized the build stop to missing paired tunnels; Plan 229 is the registered non-zero exploratory bootstrap corrective) |
 | M6 mixed-router interop | 219 Java reverse-delivery root-cause investigation | superseded | `plans/closure/mixed-router-interop/219-status.md` (instrumentation retained; J219-B attribution superseded by Plan 220) |
 | M6 mixed-router interop | 217 Java closure harness + evidence corrective | closed | `plans/closure/mixed-router-interop/217-status.md` |
 | Service tunnels | 215 hosted Plan 214 re-verification | closed | `plans/closure/service-tunnels/215-status.md` |
@@ -96,7 +96,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SSU2 | 162 external-test lane isolation | closed | `plans/closure/ssu2/162-status.md` |
 | SSU2 | 161 independent IPv4 interop | closed | `plans/closure/ssu2/161-status.md` |
 
-Full per-plan history (000–228) lives in the subsystem roadmaps §7 tables.
+Full per-plan history (000–229) lives in the subsystem roadmaps §7 tables.
 
 ## Superseded remote branches (do not merge)
 
@@ -108,8 +108,8 @@ Full per-plan history (000–228) lives in the subsystem roadmaps §7 tables.
 
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
-- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary).
-- `active_plan = none`; `next_executable_plan = none (narrow paired-tunnel successor may be registered separately; not authorized by the Plan 228 closure)`; Plan 201 and Plan 204 remain blocked, and Plan 205 remains retained/deferred.
+- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary).
+- `active_plan = none`; `next_executable_plan = 229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective`; Plan 201 and Plan 204 remain blocked, and Plan 205 remains retained/deferred.
 
 ## Verification policy
 
