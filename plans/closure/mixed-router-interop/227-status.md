@@ -1,3 +1,18 @@
+# Plan 229 registration follow-up
+
+Plan 227 remains closed at `P227-EXPLICIT-ONE-HOP-NOT-BUILT`. Plan 228
+proved why that helper could not build: client configs through C were valid,
+but no non-zero paired tunnel was available in either direction. Plan 229 is
+the registered corrective for that exact prerequisite and does not reopen
+Plan 227 evidence.
+
+```text
+plan_227 = passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary
+plan_228 = passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+next_executable_plan = 229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
 # Plan 228 registration follow-up
 
 Plan 227 remains closed at
