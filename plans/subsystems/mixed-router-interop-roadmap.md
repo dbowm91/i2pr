@@ -21,7 +21,7 @@ Related ADRs:
 
 Authenticated I2NP preflight, one-hop exploratory tunnels, NetDB lookup/publication, destination/garlic routing, short-build reply + NetDB reply-path + wire-format correctives, i2pd Streaming qualification (33/33), Java second-family qualification (controlled topology, pq tolerance, public-client observability, Branch G corrective framework, harness/evidence corrective).
 
-Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–228 (global i2pr numbers, preserved).
+Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–229 (global i2pr numbers, preserved).
 
 ## 2. Work classification
 
@@ -61,6 +61,8 @@ Exact-pinned source review after Plan 225 identified a narrow controlled-topolog
 
 Pinned/current Java I2P also exposes `explicitPeers` as a client tunnel debugging option carried through ordinary I2CP SessionConfig. Unlike the old Plan-201 one-hop attempt, it can select a valid Router C without waiting for fresh-router fast/high-capacity tier promotion while still constructing a genuine stock-Java tunnel. Plan 227 is closed: it proved C selectable in A's main NetDB on all 3 counted attempts but stock Java built no one-hop client tunnels within the five-minute `I2PSession.connect()` ceiling (`P227-EXPLICIT-ONE-HOP-NOT-BUILT`), so no lookup rerun was interpretable. Plan 228 is closed as attribution-only with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`: client configs through C are created in both directions, but neither direction obtains the paired tunnel Java requires (only zero-hop exploratory tunnels available on all 4 counted attempts), so no build request is ever dispatched. Profile mutation, exploratory/client policy changes, VMComm, `netDb.alwaysQuery`, direct tunnel install, and client-NetDB RI injection remain forbidden.
 
+Plan 229 is registered-ready as the bounded corrective for that paired-tunnel boundary. Exact-pinned source review shows Java's zero-hop exploratory tunnels are startup fallbacks, not the configured target; the bundled small-router profile uses one-hop exploratory pools. The repo also contains a role mismatch: Plan-201 bootstrap comments define Router C as a non-floodfill tunnel participant, while the current launcher makes every A/B/C router floodfill. Plan 229 restores C's intended transit role, applies the pinned small-router exploratory profile to Router A only, proves C entered the ordinary profiled/selectable population through the existing authenticated RouterInfo DatabaseStore bootstrap, requires genuine non-zero exploratory tunnels in both directions, and then reruns the unchanged Plan-227/228 client-build path. Direct profile/NetDB/tunnel mutation remains forbidden.
+
 Plan 205 remains retained/deferred.
 
 ## 5. Target architecture
@@ -71,7 +73,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228. Plan 205 is retained conditional fallback and is not part of the primary sequence.
+183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229. Plan 205 is retained conditional fallback and is not part of the primary sequence.
 ```
 
 ## 7. Milestones
@@ -97,7 +99,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 197 | closed | passed-m6-pq-ssu2-option-support-corrective (parser-only tolerance of the SSU2 `pq` KEM-scheme option Java I2P 2.13.0... | `plans/implementation/mixed-router-interop/197-m6-pq-ssu2-option-support-corrective.md` | `plans/closure/mixed-router-interop/197-status.md` |
 | 198 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/mixed-router-interop/198-m6-java-public-client-final-closure-corrective.md`; `plans/closure/mixed-router-interop/198-status.md` |
 | 200 | closed | passed-m6-java-public-client-publication-observability-and-verified-bootstrap (Java helpers decoupled `leaseset=publi... | `plans/implementation/mixed-router-interop/200-m6-java-public-client-publication-observability-and-verified-bootstrap.md` | `plans/closure/mixed-router-interop/200-status.md` |
-| 201 | blocked | blocked-pending-paired-tunnel-corrective-after-plan228-no-paired-tunnel | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
+| 201 | blocked | blocked-pending-plan229-nonzero-exploratory-paired-tunnel-bootstrap-corrective | — | `plans/closure/mixed-router-interop/201-m6-java-public-client-publication-corrective-and-second-family-closure.md`; `plans/closure/mixed-router-interop/201-status.md` |
 | 205 | retained | retained-deferred-conditional-after-plan218-direct-i2cp-requalification (Plan 227 localized the active failure below client-tunnel establishment; Plan 228 closed attribution at paired-tunnel selection on the direct Java client build path below SAM) | `plans/implementation/mixed-router-interop/205-m6-java-sam-bridge-helper-pivot.md` | `plans/closure/mixed-router-interop/205-status.md` |
 | 217 | closed | passed-m6-java-closure-harness-and-evidence-corrective (transfer-once invariant; positive/negative evidence split; relative Java NetDB dir; disjoint streaming build/tunnel/message-id namespace; `I2PR_M6_JAVA_DRIVER` selector; static-checker invariants) | `plans/implementation/mixed-router-interop/217-m6-java-closure-harness-corrective.md` | `plans/closure/mixed-router-interop/217-status.md` |
 | 218 | stopped | stopped-m6-java-second-family-direct-i2cp-inbound-delivery-boundary (behavioral stop retained; Plan 227 proved selectable C but no one-hop client tunnel; Plan 228 closed attribution at NO-PAIRED-TUNNEL) | `plans/implementation/mixed-router-interop/218-m6-java-second-family-final-qualification.md` | `plans/closure/mixed-router-interop/218-status.md` |
@@ -111,6 +113,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 226 | closed | passed-m6-java-loopback-peer-diversity-corrective-with-exact-baseline-non-ip-pre-dispatch-boundary | `plans/implementation/mixed-router-interop/226-m6-java-loopback-peer-diversity-corrective.md` | `plans/closure/mixed-router-interop/226-status.md` |
 | 227 | closed | passed-m6-java-explicit-one-hop-client-tunnel-corrective-with-selectable-c-but-not-built-boundary | `plans/implementation/mixed-router-interop/227-m6-java-explicit-one-hop-client-tunnel-corrective.md` | `plans/closure/mixed-router-interop/227-status.md` |
 | 228 | closed | passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary | `plans/implementation/mixed-router-interop/228-m6-java-client-tunnel-build-path-attribution.md` | `plans/closure/mixed-router-interop/228-status.md` |
+| 229 | ready | registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective | `plans/implementation/mixed-router-interop/229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective.md` | `plans/closure/mixed-router-interop/229-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -130,7 +133,7 @@ Plan 224 retained every Plan-222/223 invariant and added lookup-path attribution
 - exact distinction between selector membership, actual A→B query, B lookup receipt, B published-LS answer, A inbound-client-tunnel DSM receipt, and A client-subDB post-send presence;
 - the pinned Java DSM store-before-success ordering is treated as source authority and the speculative race explanation is forbidden.
 
-Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs.
+Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs. Plan 229 is the active corrective for producing ordinary non-zero exploratory paired infrastructure in the constrained topology.
 
 Raw Java logs never become evidence. The Plan-223 45-second reverse-payload acceptance window stays frozen. External attempts remain limited to three per committed implementation SHA with no tuning.
 
