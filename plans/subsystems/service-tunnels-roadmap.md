@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 229 closed reference-topology-only at the transit-peer stop and Plan 230 closed the capability/profile-bootstrap corrective at the retained reverse-delivery boundary, neither reopens or downgrades M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 230 closed the capability/profile-bootstrap corrective at the retained reverse-delivery boundary and Plan 231 now owns exact post-`ACCEPTED` attribution. Neither reopens or downgrades M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE`; Plan 230 closed the reachability-capability/profile-bootstrap path at the reverse-delivery boundary; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 230 closed the reachability-capability/profile-bootstrap path at the reverse-delivery boundary; Plan 231 is the registered-ready post-`ACCEPTED` tunnel-dispatch attribution; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 230 stands closed at the reverse-delivery boundary.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure while Plan 231 executes the M6-only reverse-delivery attribution.
