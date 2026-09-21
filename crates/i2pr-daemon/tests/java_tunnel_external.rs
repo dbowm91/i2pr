@@ -2385,6 +2385,10 @@ async fn destination_message_plane_against_java() {
                 &evidence_dir,
                 "authoritative-epoch-never-reached-install-stalled",
             );
+            record_p231_early_stop_gap(
+                &evidence_dir,
+                "authoritative-epoch-never-reached-install-stalled",
+            );
             handle.shutdown();
             let _ = scope.shutdown().await;
             return;
@@ -2694,6 +2698,10 @@ async fn destination_message_plane_against_java() {
             "authoritative-epoch-never-reached-lease-stalled",
         );
         record_p227_early_stop_gap(
+            &evidence_dir,
+            "authoritative-epoch-never-reached-lease-stalled",
+        );
+        record_p231_early_stop_gap(
             &evidence_dir,
             "authoritative-epoch-never-reached-lease-stalled",
         );
@@ -3065,6 +3073,138 @@ async fn destination_message_plane_against_java() {
         &helper_client_dbid_hex,
     )
     .await;
+    // ---- Plan 231 WP A — reverse-epoch contract + pre-send snapshots ---
+    // The single tracked reverse payload correlates from Java A's
+    // outbound client tunnel through C to the selected lease gateway
+    // and i2pr's exact inbound tunnel. All pre-send observations are
+    // read-only; no NetDB/tunnel/queue/profile state is mutated.
+    let diag_c_port: u16 = std::env::var("JAVA_DIAGNOSTIC_C_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let p231_router_c_hex = std::env::var("P227_ROUTER_C_HEX").unwrap_or_default();
+    // Router A's hash comes from Java's own self snapshot on the A
+    // diagnostic port (same P220-SNAPSHOT surface the B cross-check
+    // uses) — never synthesized from local variables, never assumed
+    // from topology comments.
+    let p231_service_hex = p220_query_diagnostic(diag_a_port, "P220-SNAPSHOT")
+        .await
+        .and_then(|line| {
+            let kv = p220_parse_kv(&line);
+            if kv.get("self_ri_present").is_none_or(|v| v != "true") {
+                return None;
+            }
+            kv.get("self_router_hash_hex")
+                .filter(|hex| p227_is_hex64(hex))
+                .cloned()
+        })
+        .unwrap_or_default();
+    // The advertised target lease is the single lease this driver
+    // built into the published local LS2. A multi-lease LS2 would
+    // require exposing Java's exact selected lease; with one lease
+    // the selected lease is exactly this one.
+    let p231_lease_gateway_hex = p220_bytes_to_hex(lease_source.gateway().as_bytes());
+    let p231_lease_tunnel_id = lease_source.gateway_receive_tunnel_id();
+    let p231_target_role = p231_target_role(
+        &p231_lease_gateway_hex,
+        &p231_service_hex,
+        &rust_b_hex,
+        &p231_router_c_hex,
+    );
+    let p231_target_diag_port = match p231_target_role {
+        Some("A") => diag_a_port,
+        Some("B") => diag_b_port,
+        Some("C") => diag_c_port,
+        _ => 0,
+    };
+    let p231_ssu2_before = handle.snapshot();
+    let p231_a_gateway_pre = p231_collect_gateway(diag_a_port).await;
+    let p231_a_client_ob_pre =
+        p231_collect_client_outbound(diag_a_port, &helper_client_dbid_hex).await;
+    // Prove the exact one-hop outbound client tunnel through C is
+    // still installed at the reverse epoch (Plan 230 P227 gate
+    // re-queried at the pre-send instant, not reused from setup).
+    let p231_a_tunnels_pre =
+        if p227_is_hex64(&helper_client_dbid_hex) && p227_is_hex64(&p231_router_c_hex) {
+            p227_collect_tunnels(diag_a_port, &helper_client_dbid_hex, &p231_router_c_hex).await
+        } else {
+            None
+        };
+    let p231_a_send_id_pre: u64 = p231_a_client_ob_pre
+        .as_ref()
+        .map(|ob| ob.single_send_tunnel_id)
+        .unwrap_or(0);
+    let p231_c_obep_pre = if p231_a_send_id_pre != 0 {
+        p231_collect_participating(diag_c_port, p231_a_send_id_pre).await
+    } else {
+        None
+    };
+    let p231_target_gateway_pre = if p231_target_diag_port != 0 {
+        p231_collect_gateway(p231_target_diag_port).await
+    } else {
+        None
+    };
+    let p231_ibgw_pre = if p231_target_diag_port != 0 {
+        p231_collect_participating(p231_target_diag_port, u64::from(p231_lease_tunnel_id)).await
+    } else {
+        None
+    };
+    // Scratch-only pre-send baselines for the windowed marker deltas
+    // (bounded counts only, never lines). Log directories are
+    // scratch-only inputs; `None` stays Unknown, never zero-as-fact.
+    let p231_a_log_dir_pre: Option<PathBuf> =
+        std::env::var("JAVA_A_LOG_DIR").ok().map(PathBuf::from);
+    let p231_b_log_dir_pre: Option<PathBuf> =
+        std::env::var("JAVA_B_LOG_DIR").ok().map(PathBuf::from);
+    let p231_c_log_dir_pre: Option<PathBuf> =
+        std::env::var("JAVA_C_LOG_DIR").ok().map(PathBuf::from);
+    let p231_ocmosj_pre = p231_a_log_dir_pre
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "Dispatching message to"));
+    let p231_no_ob_pre = p231_a_log_dir_pre
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "no matching OB tunnel for id"));
+    let p231_obep_drops_pre = p231_c_log_dir_pre.as_ref().and_then(|dir| {
+        let mut total: Option<u64> = Some(0);
+        for marker in ["dropping at OBEP", "Dropping msg at OBEP", "Dropping DSM"] {
+            match (total, p231_count_marker_in_log_dir(dir, marker)) {
+                (Some(acc), Some(count)) => total = Some(acc.saturating_add(count)),
+                _ => total = None,
+            }
+        }
+        total
+    });
+    let p231_target_log_dir_pre: Option<PathBuf> = match p231_target_role {
+        Some("A") => p231_a_log_dir_pre.clone(),
+        Some("B") => p231_b_log_dir_pre.clone(),
+        Some("C") => p231_c_log_dir_pre.clone(),
+        _ => None,
+    };
+    let p231_no_ibgw_pre = p231_target_log_dir_pre
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "no matching IBGW for id"));
+    // Id-correlated pre-send baselines: the no-matching-gateway rows
+    // carry the queried tunnel id, so the windowed delta attributes
+    // the receipt to the exact target tunnel, never background.
+    let p231_send_id_text = p231_a_send_id_pre.to_string();
+    let p231_lease_id_text = p231_lease_tunnel_id.to_string();
+    // A zero send id means no exact tunnel to correlate: the
+    // correlated count stays Unknown instead of matching the digit
+    // "0" against unrelated lines.
+    let p231_no_ob_corr_pre = if p231_a_send_id_pre != 0 {
+        p231_a_log_dir_pre.as_ref().and_then(|dir| {
+            p231_count_marker_with_id_in_log_dir(
+                dir,
+                "no matching OB tunnel for id",
+                &p231_send_id_text,
+            )
+        })
+    } else {
+        None
+    };
+    let p231_no_ibgw_corr_pre = p231_target_log_dir_pre.as_ref().and_then(|dir| {
+        p231_count_marker_with_id_in_log_dir(dir, "no matching IBGW for id", &p231_lease_id_text)
+    });
     let app_back = b"plan194-destination-reply-b";
     let reverse_sha256 = sha256_hex(app_back);
     let tracked_start = tokio::time::Instant::now();
@@ -3082,6 +3222,19 @@ async fn destination_message_plane_against_java() {
         );
     }
     p220_facts.reverse_java_send_admitted = P220Observed::Known(reverse_admitted);
+    // Plan 231 WP B: the isolated target-send epoch closes the moment
+    // the tracked send returns (ACCEPTED was emitted after the inline
+    // dispatch call returned). A post-send-immediate gateway snapshot
+    // bounds any enqueue attribution to this micro-epoch.
+    let p231_accepted_ms = wall_ms();
+    let p231_tracked_send_start_ms = wall_ms().saturating_sub(
+        tracked_start
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+    );
+    let p231_a_gateway_post_imm = p231_collect_gateway(diag_a_port).await;
     let inbound_send_status = if reverse_admitted {
         "public-send-accepted"
     } else {
@@ -3117,6 +3270,30 @@ async fn destination_message_plane_against_java() {
     let mut last_status_poll = tokio::time::Instant::now()
         .checked_sub(Duration::from_secs(10))
         .unwrap_or_else(tokio::time::Instant::now);
+    // Plan 231 WP E — bounded per-stage counters for the reverse
+    // epoch. Every TunnelData cell is attributed by tunnel id against
+    // the exact owned inbound tunnel receive id; unrelated cells are
+    // context only and never satisfy target progress. Silent
+    // continues become stage counts; legacy acceptance semantics
+    // (exact digest match inside the frozen window) are unchanged.
+    let mut p231_tunneldata_seen: u64 = 0;
+    let mut p231_expected_seen: u64 = 0;
+    let mut p231_unexpected_seen: u64 = 0;
+    let mut p231_decode_failures: u64 = 0;
+    let mut p231_recovery_complete_expected: u64 = 0;
+    let mut p231_recovery_error_expected: u64 = 0;
+    let mut p231_recovery_error_unknown_tunnel: u64 = 0;
+    let mut p231_recovery_error_incomplete: u64 = 0;
+    let mut p231_recovery_error_unexpected_body: u64 = 0;
+    let mut p231_recovery_error_inbound: u64 = 0;
+    let mut p231_recovery_complete_unexpected: u64 = 0;
+    let mut p231_recovery_error_unexpected: u64 = 0;
+    let mut p231_garlic_ok_expected: u64 = 0;
+    let mut p231_garlic_fail_expected: u64 = 0;
+    let mut p231_dispatch_calls_expected: u64 = 0;
+    let mut p231_queue_hits_expected: u64 = 0;
+    let mut p231_queued_decode_fails: u64 = 0;
+    let p231_expected_tunnel_id: u32 = receive_ids[0].get();
     while tokio::time::Instant::now() < reply_deadline && inbound_payload.is_none() {
         // Periodic status poll (every ~2 s) without delaying the pump:
         // the poll uses the bounded helper map and short control RTT;
@@ -3141,23 +3318,89 @@ async fn destination_message_plane_against_java() {
             Ok(message) => message,
             Err(_) => {
                 reply_pump_error += 1;
+                p231_decode_failures += 1;
                 continue;
             }
         };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => {
                 p220_tunneldata_observed = true;
+                p231_tunneldata_seen += 1;
+                if cell.tunnel_id == p231_expected_tunnel_id {
+                    p231_expected_seen += 1;
+                } else {
+                    p231_unexpected_seen += 1;
+                }
                 cell.clone()
             }
             _ => continue,
         };
+        let cell_is_expected = cell.tunnel_id == p231_expected_tunnel_id;
         let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
+            Ok(bytes) => {
+                if cell_is_expected {
+                    p231_recovery_complete_expected += 1;
+                } else {
+                    p231_recovery_complete_unexpected += 1;
+                }
+                bytes
+            }
+            Err(error) => {
+                if cell_is_expected {
+                    p231_recovery_error_expected += 1;
+                    match &error {
+                        i2pr_daemon::destination_tunnels::DestinationTunnelError::UnknownInboundTunnel(_) => {
+                            p231_recovery_error_unknown_tunnel += 1;
+                        }
+                        i2pr_daemon::destination_tunnels::DestinationTunnelError::CellIncomplete => {
+                            p231_recovery_error_incomplete += 1;
+                        }
+                        i2pr_daemon::destination_tunnels::DestinationTunnelError::UnexpectedBodyType { .. } => {
+                            p231_recovery_error_unexpected_body += 1;
+                        }
+                        _ => {
+                            p231_recovery_error_inbound += 1;
+                        }
+                    }
+                } else {
+                    p231_recovery_error_unexpected += 1;
+                }
+                continue;
+            }
         };
-        let envelope =
-            I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode garlic");
+        // Unrelated completions still traverse the legacy pump (never
+        // synthesized, never dropped) but are never attributed to the
+        // target stages.
+        if !cell_is_expected {
+            if let Ok(unrelated_envelope) =
+                I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE)
+            {
+                let unrelated_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+                dispatcher.dispatch_garlic_envelope(
+                    &mut session,
+                    local_identity.id(),
+                    local_identity.static_secret_bytes(),
+                    &local_identity.static_public_bytes(),
+                    unrelated_secs,
+                    &unrelated_envelope,
+                    routing.lease_set2_store_mut(),
+                );
+                let _ = dispatcher.pop_payload(local_identity.id());
+            }
+            continue;
+        }
+        let envelope = match I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) {
+            Ok(envelope) => {
+                p231_garlic_ok_expected += 1;
+                envelope
+            }
+            Err(_) => {
+                p231_garlic_fail_expected += 1;
+                continue;
+            }
+        };
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
+        p231_dispatch_calls_expected += 1;
         dispatcher.dispatch_garlic_envelope(
             &mut session,
             local_identity.id(),
@@ -3168,27 +3411,56 @@ async fn destination_message_plane_against_java() {
             routing.lease_set2_store_mut(),
         );
         if let Some(queued) = dispatcher.pop_payload(local_identity.id()) {
+            p231_queue_hits_expected += 1;
             // Plan 192: parse both the 9-byte short-transport Data
             // envelope and the I2CP-style Data body Java writes
-            // inside its Garlic clove.
-            let decoded = decode_inbound_i2np(queued.bytes()).expect("decode queued");
+            // inside its Garlic clove. Undecodable queue hits are
+            // counted, never panicked: only a digest match passes.
+            let decoded = match decode_inbound_i2np(queued.bytes()) {
+                Ok(decoded) => decoded,
+                Err(_) => {
+                    p231_queued_decode_fails += 1;
+                    continue;
+                }
+            };
             if let I2npBody::Data(body) = decoded.body() {
-                let i2cp_body = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
-                    .expect("decode I2CP Data body");
-                inbound_payload = Some(i2cp_body.payload);
+                match i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes()) {
+                    Ok(i2cp_body) => {
+                        inbound_payload = Some(i2cp_body.payload);
+                    }
+                    Err(_) => {
+                        p231_queued_decode_fails += 1;
+                    }
+                }
+            } else {
+                p231_queued_decode_fails += 1;
             }
         }
     }
     if let Some(reply) = inbound_payload.clone() {
-        assert_eq!(reply, app_back, "inbound payload mismatch");
-        append_evidence(
-            &evidence_dir,
-            "destination-inbound-received",
-            &format!(
-                "payload_len={} match=true pump_error={reply_pump_error}",
-                reply.len()
-            ),
-        );
+        // The pass still requires byte-exact equality; a decodable
+        // mismatch is recorded (never panicked) so Plan 231 can
+        // classify PAYLOAD-MISMATCH instead of aborting the run.
+        if reply == app_back {
+            append_evidence(
+                &evidence_dir,
+                "destination-inbound-received",
+                &format!(
+                    "payload_len={} match=true pump_error={reply_pump_error}",
+                    reply.len()
+                ),
+            );
+        } else {
+            append_evidence(
+                &evidence_dir,
+                "destination-inbound-payload-mismatch",
+                &format!(
+                    "expected_len={} observed_len={} pump_error={reply_pump_error}",
+                    app_back.len(),
+                    reply.len()
+                ),
+            );
+        }
     } else {
         append_evidence(
             &evidence_dir,
@@ -3737,6 +4009,383 @@ async fn destination_message_plane_against_java() {
         frozen_payload_45s,
     );
     record_p227_classification(&evidence_dir, &p227_terminal);
+    // ---- Plan 231 WP B/C/D/E/F — post-window attribution ----------------
+    // Post-`ACCEPTED` tunnel-dispatch attribution across the exact
+    // stage chain: Java A outbound gateway / enqueue (isolated
+    // pre-vs-post-immediate epoch) -> Router C one-hop outbound
+    // endpoint / forward (pre-vs-post-window on the exact OBEP
+    // config) -> selected target lease gateway / inbound gateway
+    // (pre-vs-post-window on the exact IBGW config) -> i2pr exact
+    // inbound TunnelData / recovery / Garlic / Destination delivery
+    // (tunnel-id-attributed pump counters). Exactly one
+    // `p231-classification` row is emitted below.
+    let p231_local_hex = p220_bytes_to_hex(local_hash.as_bytes());
+    let p231_a_gateway_post = p231_collect_gateway(diag_a_port).await;
+    let p231_c_obep_post = if p231_a_send_id_pre != 0 {
+        p231_collect_participating(diag_c_port, p231_a_send_id_pre).await
+    } else {
+        None
+    };
+    let p231_target_gateway_post = if p231_target_diag_port != 0 {
+        p231_collect_gateway(p231_target_diag_port).await
+    } else {
+        None
+    };
+    let p231_ibgw_post = if p231_target_diag_port != 0 {
+        p231_collect_participating(p231_target_diag_port, u64::from(p231_lease_tunnel_id)).await
+    } else {
+        None
+    };
+    // Scratch-only log correlation (bounded counts only, never lines):
+    // OCMOSJ dispatch + no-matching-OB on A, OBEP drop markers on C,
+    // no-matching-IBGW on the target router.
+    let p231_b_log_dir: Option<PathBuf> = std::env::var("JAVA_B_LOG_DIR").ok().map(PathBuf::from);
+    let p231_c_log_dir: Option<PathBuf> = std::env::var("JAVA_C_LOG_DIR").ok().map(PathBuf::from);
+    let p231_a_log_dir: Option<PathBuf> = std::env::var("JAVA_A_LOG_DIR").ok().map(PathBuf::from);
+    let p231_ocmosj_post = p231_a_log_dir
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "Dispatching message to"));
+    let p231_no_ob_post = p231_a_log_dir
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "no matching OB tunnel for id"));
+    let p231_obep_drop_post = p231_c_log_dir.as_ref().and_then(|dir| {
+        let mut total: Option<u64> = Some(0);
+        for marker in ["dropping at OBEP", "Dropping msg at OBEP", "Dropping DSM"] {
+            match (total, p231_count_marker_in_log_dir(dir, marker)) {
+                (Some(acc), Some(count)) => total = Some(acc.saturating_add(count)),
+                _ => total = None,
+            }
+        }
+        total
+    });
+    let p231_target_log_dir: Option<PathBuf> = match p231_target_role {
+        Some("A") => p231_a_log_dir.clone(),
+        Some("B") => p231_b_log_dir.clone(),
+        Some("C") => p231_c_log_dir.clone(),
+        _ => None,
+    };
+    let p231_no_ibgw_post = p231_target_log_dir
+        .as_ref()
+        .and_then(|dir| p231_count_marker_in_log_dir(dir, "no matching IBGW for id"));
+    // Id-correlated post-window counts for the exact target tunnel.
+    let p231_no_ob_corr_post = if p231_a_send_id_pre != 0 {
+        p231_a_log_dir.as_ref().and_then(|dir| {
+            p231_count_marker_with_id_in_log_dir(
+                dir,
+                "no matching OB tunnel for id",
+                &p231_a_send_id_pre.to_string(),
+            )
+        })
+    } else {
+        None
+    };
+    let p231_no_ibgw_corr_post = p231_target_log_dir.as_ref().and_then(|dir| {
+        p231_count_marker_with_id_in_log_dir(
+            dir,
+            "no matching IBGW for id",
+            &p231_lease_tunnel_id.to_string(),
+        )
+    });
+    let p231_count_delta = |post: Option<u64>, pre: Option<u64>| -> Option<i64> {
+        match (post, pre) {
+            (Some(after), Some(before)) => Some(after.saturating_sub(before) as i64),
+            _ => None,
+        }
+    };
+    // Isolated A-epoch deltas (pre vs post-immediate, microseconds
+    // after ACCEPTED); transit deltas (pre vs post-window).
+    let p231_pre_dispatch = p231_a_gateway_pre
+        .as_ref()
+        .map(|stats| stats.dispatch_outbound_tunnel)
+        .unwrap_or(-1);
+    let p231_imm_dispatch = p231_a_gateway_post_imm
+        .as_ref()
+        .map(|stats| stats.dispatch_outbound_tunnel)
+        .unwrap_or(-1);
+    let p231_dispatch_delta = p231_delta(p231_imm_dispatch, p231_pre_dispatch);
+    let p231_pre_overflow = p231_a_gateway_pre
+        .as_ref()
+        .map(|stats| stats.drop_gateway_overflow)
+        .unwrap_or(-1);
+    let p231_imm_overflow = p231_a_gateway_post_imm
+        .as_ref()
+        .map(|stats| stats.drop_gateway_overflow)
+        .unwrap_or(-1);
+    let p231_overflow_delta = p231_delta(p231_imm_overflow, p231_pre_overflow);
+    let p231_c_processed_delta = match (&p231_c_obep_pre, &p231_c_obep_post) {
+        (Some(pre), Some(post)) => p231_delta(post.processed, pre.processed),
+        _ => None,
+    };
+    let p231_c_obep_exact = p231_c_obep_post.as_ref().is_some_and(|post| {
+        post.present
+            && post
+                .receive_from_hex
+                .eq_ignore_ascii_case(&p231_service_hex)
+            && p231_c_obep_pre.as_ref().is_some_and(|pre| {
+                pre.present && pre.receive_from_hex.eq_ignore_ascii_case(&p231_service_hex)
+            })
+    });
+    let p231_c_observable =
+        p231_c_obep_pre.is_some() && p231_c_obep_post.is_some() && diag_c_port != 0;
+    let p231_target_dispatch_delta = match (&p231_target_gateway_pre, &p231_target_gateway_post) {
+        (Some(pre), Some(post)) => p231_delta(post.dispatch_inbound, pre.dispatch_inbound),
+        _ => None,
+    };
+    let p231_target_ibgw_processed_delta = match (&p231_ibgw_pre, &p231_ibgw_post) {
+        (Some(pre), Some(post)) => p231_delta(post.processed, pre.processed),
+        _ => None,
+    };
+    let p231_ibgw_overflow_delta = match (&p231_target_gateway_pre, &p231_target_gateway_post) {
+        (Some(pre), Some(post)) => {
+            p231_delta(post.drop_gateway_overflow, pre.drop_gateway_overflow)
+        }
+        _ => None,
+    };
+    let p231_lookup_success_delta = match (&p231_target_gateway_pre, &p231_target_gateway_post) {
+        (Some(pre), Some(post)) => {
+            p231_delta(post.inbound_lookup_success, pre.inbound_lookup_success)
+        }
+        _ => None,
+    };
+    let p231_target_observable = p231_target_diag_port != 0
+        && p231_target_gateway_pre.is_some()
+        && p231_target_gateway_post.is_some()
+        && p231_ibgw_pre.is_some()
+        && p231_ibgw_post.is_some();
+    let p231_ibgw_exact = p231_ibgw_post.as_ref().is_some_and(|post| {
+        post.present
+            && post.send_to_hex.eq_ignore_ascii_case(&p231_local_hex)
+            && p231_ibgw_pre.as_ref().is_some_and(|pre| pre.present)
+    });
+    // Reverse-epoch contract row (WP A): nonce, lengths, digests, and
+    // the exact selected lease / installed tunnel identities only.
+    let p231_nonce = tracked.as_ref().map(|t| t.nonce).unwrap_or(0);
+    let p231_payload_len = tracked.as_ref().map(|t| t.payload_len).unwrap_or(0);
+    let p231_payload_digest = tracked
+        .as_ref()
+        .map(|t| t.digest.clone())
+        .unwrap_or_else(|| "unknown".to_owned());
+    append_evidence(
+        &evidence_dir,
+        "p231-reverse-epoch",
+        &format!(
+            "nonce={p231_nonce} payload_len={p231_payload_len} payload_sha256={p231_payload_digest} tracked_send_start_ms={p231_tracked_send_start_ms} accepted_observed={reverse_admitted} accepted_observed_ms={p231_accepted_ms} target_ls_hash={reverse_lookup_target_hex} target_lease_gateway_hash={p231_lease_gateway_hex} target_lease_tunnel_id={p231_lease_tunnel_id} java_outbound_client_send_tunnel_id={p231_a_send_id_pre} java_outbound_client_first_hop_hash={p231_router_c_hex}",
+        ),
+    );
+    let p231_gateway_detail = |stage: &str, stats: &Option<P231GatewayStats>| -> String {
+        match stats {
+            Some(s) => format!(
+                "stage={stage} observable=true dispatch_time={} dispatch_send_time={} dispatch_outbound_tunnel={} drop_gateway_overflow={} dispatch_inbound={} inbound_lookup_success={} dispatch_endpoint={} dispatch_participant={}",
+                s.dispatch_time,
+                s.dispatch_send_time,
+                s.dispatch_outbound_tunnel,
+                s.drop_gateway_overflow,
+                s.dispatch_inbound,
+                s.inbound_lookup_success,
+                s.dispatch_endpoint,
+                s.dispatch_participant,
+            ),
+            None => format!("stage={stage} observable=false"),
+        }
+    };
+    append_evidence(
+        &evidence_dir,
+        "p231-a-gateway",
+        &p231_gateway_detail("pre", &p231_a_gateway_pre),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-a-gateway",
+        &p231_gateway_detail("post-immediate", &p231_a_gateway_post_imm),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-a-gateway",
+        &p231_gateway_detail("post-window", &p231_a_gateway_post),
+    );
+    let p231_still_installed = p231_a_tunnels_pre.as_ref().is_some_and(|tunnels| {
+        tunnels.client_resolved && tunnels.outbound_exact_one_remote_hop_via_c
+    });
+    append_evidence(
+        &evidence_dir,
+        "p231-a-client-outbound",
+        &match &p231_a_client_ob_pre {
+            Some(ob) => format!(
+                "stage=pre observable=true client_resolved={} outbound_tunnel_count={} single_send_tunnel_id={} still_installed_exact_via_c={p231_still_installed}",
+                ob.client_resolved, ob.outbound_tunnel_count, ob.single_send_tunnel_id,
+            ),
+            None => format!(
+                "stage=pre observable=false still_installed_exact_via_c={p231_still_installed}"
+            ),
+        },
+    );
+    let p231_participating_detail = |stage: &str,
+                                     role: &str,
+                                     snap: &Option<P231Participating>|
+     -> String {
+        match snap {
+            Some(p) => format!(
+                "stage={stage} role={role} observable=true present={} match_count={} receive_id={} send_id={} receive_from={} send_to={} processed={}",
+                p.present,
+                p.match_count,
+                p.receive_id,
+                p.send_id,
+                p.receive_from_hex,
+                p.send_to_hex,
+                p.processed,
+            ),
+            None => format!("stage={stage} role={role} observable=false"),
+        }
+    };
+    append_evidence(
+        &evidence_dir,
+        "p231-c-obep",
+        &p231_participating_detail("pre", "C", &p231_c_obep_pre),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-c-obep",
+        &p231_participating_detail("post-window", "C", &p231_c_obep_post),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-target-gateway",
+        &p231_gateway_detail(
+            &format!("pre role={}", p231_target_role.unwrap_or("unknown")),
+            &p231_target_gateway_pre,
+        ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-target-gateway",
+        &p231_gateway_detail(
+            &format!("post-window role={}", p231_target_role.unwrap_or("unknown")),
+            &p231_target_gateway_post,
+        ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-ibgw",
+        &p231_participating_detail("pre", p231_target_role.unwrap_or("unknown"), &p231_ibgw_pre),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-ibgw",
+        &p231_participating_detail(
+            "post-window",
+            p231_target_role.unwrap_or("unknown"),
+            &p231_ibgw_post,
+        ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-ocmosj-scratch",
+        &format!(
+            "dispatch_log_pre={} dispatch_log_post={} no_matching_ob_pre={} no_matching_ob_post={} no_matching_ob_corr_pre={} no_matching_ob_corr_post={}",
+            p231_ocmosj_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_ocmosj_post.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ob_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ob_post.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ob_corr_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ob_corr_post.map_or("unknown".to_owned(), |count| count.to_string()),
+        ),
+    );
+    append_evidence(
+        &evidence_dir,
+        "p231-c-scratch",
+        &format!(
+            "obep_drop_markers_pre={} obep_drop_markers_post={} no_matching_ibgw_pre={} no_matching_ibgw_post={} no_matching_ibgw_corr_pre={} no_matching_ibgw_corr_post={}",
+            p231_obep_drops_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_obep_drop_post.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ibgw_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ibgw_post.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ibgw_corr_pre.map_or("unknown".to_owned(), |count| count.to_string()),
+            p231_no_ibgw_corr_post.map_or("unknown".to_owned(), |count| count.to_string()),
+        ),
+    );
+    // WP E i2pr reverse-epoch counters with SSU2 transport deltas.
+    let p231_ssu2_after = handle.snapshot();
+    append_evidence(
+        &evidence_dir,
+        "p231-i2pr-reverse",
+        &format!(
+            "ssu2_datagrams_received_delta={} i2np_messages_received_delta={} tunneldata_messages_seen={p231_tunneldata_seen} expected_inbound_tunneldata_seen={p231_expected_seen} unexpected_tunneldata_seen={p231_unexpected_seen} tunneldata_decode_failures={p231_decode_failures} tunnel_recovery_successes={p231_recovery_complete_expected} tunnel_recovery_failures={p231_recovery_error_expected} recovery_fail_unknown_tunnel={p231_recovery_error_unknown_tunnel} recovery_fail_incomplete={p231_recovery_error_incomplete} recovery_fail_unexpected_body={p231_recovery_error_unexpected_body} recovery_fail_inbound={p231_recovery_error_inbound} garlic_decode_successes={p231_garlic_ok_expected} garlic_decode_failures={p231_garlic_fail_expected} destination_dispatch_calls={p231_dispatch_calls_expected} destination_payload_queue_hits={p231_queue_hits_expected} destination_queued_decode_fails={p231_queued_decode_fails} destination_payload_digest_match={} unexpected_recovery_complete={p231_recovery_complete_unexpected} unexpected_recovery_error={p231_recovery_error_unexpected}",
+            p231_ssu2_after
+                .datagrams_received
+                .saturating_sub(p231_ssu2_before.datagrams_received),
+            p231_ssu2_after
+                .i2np_received
+                .saturating_sub(p231_ssu2_before.i2np_received),
+            frozen_payload_45s,
+        ),
+    );
+    // Assemble the pure classifier inputs from the isolated-epoch
+    // deltas, exact tunnel matches, and tunnel-id-attributed i2pr
+    // outcomes. Global counters support but never independently
+    // satisfy a target-specific stage.
+    let p231_inputs = P231Inputs {
+        accepted_observed: reverse_admitted,
+        outbound_send_id_known: p231_a_send_id_pre != 0,
+        outbound_still_installed: p231_still_installed,
+        dispatch_outbound_delta: p231_dispatch_delta,
+        overflow_delta_a: p231_overflow_delta,
+        no_matching_ob_correlated: p231_count_delta(p231_no_ob_corr_post, p231_no_ob_corr_pre)
+            .is_some_and(|delta| delta > 0),
+        c_obep_observable: p231_c_observable,
+        c_obep_present_exact: p231_c_obep_exact,
+        c_obep_processed_delta: p231_c_processed_delta,
+        c_drop_markers_delta: p231_count_delta(p231_obep_drop_post, p231_obep_drops_pre),
+        target_observable: p231_target_observable,
+        b_gateway_receipt_correlated: p231_count_delta(
+            p231_no_ibgw_corr_post,
+            p231_no_ibgw_corr_pre,
+        )
+        .is_some_and(|delta| delta > 0),
+        target_dispatch_inbound_delta: p231_target_dispatch_delta,
+        target_ibgw_processed_delta: p231_target_ibgw_processed_delta,
+        ibgw_present_exact: p231_ibgw_exact,
+        ibgw_overflow_delta: p231_ibgw_overflow_delta,
+        ibgw_lookup_attempted_in_window: p231_lookup_success_delta.is_some_and(|delta| delta > 0),
+        expected_tunnel_id_known: true,
+        expected_tunneldata_seen: p231_expected_seen > 0,
+        expected_recovery_completes: p231_recovery_complete_expected,
+        expected_recovery_errors: p231_recovery_error_expected,
+        expected_garlic_decodes_ok: p231_garlic_ok_expected,
+        expected_garlic_decodes_fail: p231_garlic_fail_expected,
+        expected_dispatch_calls: p231_dispatch_calls_expected,
+        expected_queue_hits: p231_queue_hits_expected,
+        expected_queued_decode_fails: p231_queued_decode_fails,
+        expected_digest_match_45s: frozen_payload_45s,
+    };
+    let p231_a_enqueued = p231_positive(&p231_inputs.dispatch_outbound_delta)
+        && !p231_positive(&p231_inputs.overflow_delta_a);
+    let p231_b_forward_proven = p231_positive(&p231_inputs.target_dispatch_inbound_delta)
+        || p231_positive(&p231_inputs.target_ibgw_processed_delta);
+    let p231_c_emitted_proven = p231_positive(&p231_inputs.target_ibgw_processed_delta)
+        && !p231_inputs.ibgw_lookup_attempted_in_window;
+    append_evidence(
+        &evidence_dir,
+        "p231-stages",
+        &format!(
+            "stage_a_enqueued={p231_a_enqueued} stage_b_forward_proven={p231_b_forward_proven} stage_c_emitted_proven={p231_c_emitted_proven} role={} lease_tunnel={p231_lease_tunnel_id} send_id={p231_a_send_id_pre}",
+            p231_target_role.unwrap_or("unknown"),
+        ),
+    );
+    let p231_terminal = p231_classify(&p231_inputs);
+    record_p231_classification(
+        &evidence_dir,
+        p231_terminal,
+        &format!(
+            "nonce={p231_nonce} role={} lease_tunnel={p231_lease_tunnel_id} send_id={p231_a_send_id_pre} expected_seen={} digest_match={} ordered_statuses={:?}",
+            p231_target_role.unwrap_or("unknown"),
+            p231_expected_seen > 0,
+            frozen_payload_45s,
+            p222_status_events
+                .iter()
+                .map(|e| e.status)
+                .collect::<Vec<_>>(),
+        ),
+    );
     let _ = PeerId::from_hash(java_hash);
 }
 
@@ -14864,4 +15513,1177 @@ fn p230_secret_or_unrelated_rows_rejected() {
         p230_classify_baseline(Some(&skewed)),
         P230Baseline::ObservabilityGap
     );
+}
+
+// ---- Plan 231 — M6 Java reverse-delivery tunnel-dispatch attribution -----
+// Exact-pinned Java I2P 2.13.0 source-order lock (stronger than the
+// retained Plan-218 wording):
+//
+// ```text
+// ACCEPTED => distributeMessage returned
+// distributeMessage returned => inline OCMOSJ returned
+// inline OCMOSJ returned => DispatchJob.runJob returned
+// DispatchJob.runJob returned => dispatchOutbound call returned
+// ```
+//
+// `ClientMessageEventListener.handleSendMessage()` calls
+// `ClientConnectionRunner.distributeMessage()` first (which runs the
+// `ClientMessagePool` OCMOSJ inline); OCMOSJ runs its `DispatchJob`
+// inline; `DispatchJob.runJob()` calls
+// `tunnelDispatcher().dispatchOutbound(_msg, _outTunnel.getSendTunnelId(0),
+// _lease.getTunnelId(), _lease.getGateway())` before returning. Only
+// after `distributeMessage()` returns does `handleSendMessage()` call
+// `ackSendMessage(...)`, which emits `STATUS_SEND_ACCEPTED`.
+//
+// Therefore a nonce-correlated `ACCEPTED` is downstream of the OCMOSJ
+// `dispatchOutbound()` call returning. Plan 231 MUST NOT classify the
+// failure as OCMOSJ-not-entered. The lock proves only call
+// ordering — never queue acceptance, pumper progress, transit, or
+// delivery. The earliest Java-side distinctions are: gateway not found,
+// enqueue-then-drop/expire, or enqueue without downstream progress.
+//
+// Additional pinned anchors consumed below:
+// - `dispatchOutbound` increments `tunnel.dispatchOutboundTunnel` only
+//   after `gw.add(...)` on a matching outbound gateway;
+// - `PumpedTunnelGateway.add()` enqueues into its prequeue and increments
+//   `tunnel.dropGatewayOverflow` on queue overflow;
+// - Router C's one-hop outbound endpoint path is
+//   `OutboundTunnelEndpoint.dispatch()`; its `HopConfig` increments
+//   `getProcessedMessagesCount()` before decrypt/reassembly;
+// - the destination lease gateway accepts a `TunnelGatewayMessage`
+//   through `TunnelDispatcher.dispatch(TunnelGatewayMessage)`; on a
+//   matching inbound gateway it calls `gw.add(msg)` and increments
+//   `tunnel.dispatchInbound`;
+// - `InboundGatewayReceiver.receiveEncrypted()` increments the config's
+//   processed-message count before constructing and enqueueing the
+//   next-hop `TunnelDataMessage`; when the next-hop RouterInfo is
+//   unknown it defers through `ReceiveJob` and records a zero-valued
+//   `tunnel.inboundLookupSuccess` event (a one-valued event on success).
+//
+// All Java facts below arrive through the read-only `P231-*` diagnostic
+// commands (`P231Probe`: `statManager().getRate()` lifetime counts,
+// installed outbound client-tunnel hop-0 send id, single participating
+// `HopConfig` filtered by the exact receive tunnel id). Raw Java logs
+// remain scratch-only: only bounded booleans/counts reach evidence.
+
+/// Plan 231 source-order lock: on the exact-pinned source a
+/// nonce-correlated `ACCEPTED` is emitted only after the inline OCMOSJ
+/// `DispatchJob` has called `TunnelDispatcher.dispatchOutbound(...)`
+/// and returned. The boolean passes straight through so the classifier
+/// must consume it explicitly; it MUST NOT be treated as delivery
+/// proof, and `ACCEPTED` alone MUST NOT prove gateway enqueue.
+fn p231_accepted_implies_dispatch_called(accepted_observed: bool) -> bool {
+    accepted_observed
+}
+
+/// Bounded signed lifetime count: -1 is unknown (rate never created),
+/// otherwise a non-negative event count.
+fn p231_parse_count_signed(value: Option<&String>) -> Option<i64> {
+    let raw = value?;
+    if raw == "-1" {
+        return Some(-1);
+    }
+    if raw.is_empty() || raw.len() > 19 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed: i64 = raw.parse().ok()?;
+    if parsed < -1 {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn p231_parse_count(value: Option<&String>) -> Option<u64> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > 19 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
+}
+
+fn p231_parse_hex_or_none(value: Option<&String>) -> Option<String> {
+    let raw = value?;
+    if raw == "none" {
+        return Some(raw.to_owned());
+    }
+    if p227_is_hex64(raw) {
+        return Some(raw.to_owned());
+    }
+    None
+}
+
+/// P231 rows are unquoted `key=value` tokens only, exactly like the
+/// P230 contract: any bare token rejects the row instead of silently
+/// truncating a fact.
+fn p231_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P231-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P231GatewayStats {
+    dispatch_time: i64,
+    dispatch_send_time: i64,
+    dispatch_outbound_tunnel: i64,
+    drop_gateway_overflow: i64,
+    dispatch_inbound: i64,
+    inbound_lookup_success: i64,
+    dispatch_endpoint: i64,
+    dispatch_participant: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P231ClientOutbound {
+    client_dbid_hex: String,
+    client_resolved: bool,
+    outbound_tunnel_count: u64,
+    single_send_tunnel_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P231Participating {
+    receive_id: u64,
+    present: bool,
+    match_count: u64,
+    send_id: u64,
+    receive_from_hex: String,
+    send_to_hex: String,
+    processed: i64,
+}
+
+fn p231_parse_bool(value: Option<&String>) -> Option<bool> {
+    match value?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn p231_parse_gateway(line: &str) -> Option<P231GatewayStats> {
+    if !line.starts_with("P231-EV ") || !line.contains("kind=gateway") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p231_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P231-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    Some(P231GatewayStats {
+        dispatch_time: p231_parse_count_signed(kv.get("dispatch_time"))?,
+        dispatch_send_time: p231_parse_count_signed(kv.get("dispatch_send_time"))?,
+        dispatch_outbound_tunnel: p231_parse_count_signed(kv.get("dispatch_outbound_tunnel"))?,
+        drop_gateway_overflow: p231_parse_count_signed(kv.get("drop_gateway_overflow"))?,
+        dispatch_inbound: p231_parse_count_signed(kv.get("dispatch_inbound"))?,
+        inbound_lookup_success: p231_parse_count_signed(kv.get("inbound_lookup_success"))?,
+        dispatch_endpoint: p231_parse_count_signed(kv.get("dispatch_endpoint"))?,
+        dispatch_participant: p231_parse_count_signed(kv.get("dispatch_participant"))?,
+    })
+}
+
+fn p231_parse_client_outbound(line: &str, expected_dbid_hex: &str) -> Option<P231ClientOutbound> {
+    if !line.starts_with("P231-EV ") || !line.contains("kind=client-outbound") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p231_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P231-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("client_dbid_hex")?;
+    if echoed.to_lowercase() != expected_dbid_hex.to_lowercase() {
+        return None;
+    }
+    Some(P231ClientOutbound {
+        client_dbid_hex: echoed.to_owned(),
+        client_resolved: p231_parse_bool(kv.get("client_resolved"))?,
+        outbound_tunnel_count: p231_parse_count(kv.get("outbound_tunnel_count"))?,
+        single_send_tunnel_id: p231_parse_count(kv.get("single_send_tunnel_id"))?,
+    })
+}
+
+fn p231_parse_participating(line: &str, expected_receive_id: u64) -> Option<P231Participating> {
+    if !line.starts_with("P231-EV ") || !line.contains("kind=participating") {
+        return None;
+    }
+    if line.len() > 2048 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p231_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P231-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let receive_id: u64 = kv.get("receive_id")?.parse().ok()?;
+    if receive_id != expected_receive_id || receive_id == 0 {
+        return None;
+    }
+    Some(P231Participating {
+        receive_id,
+        present: p231_parse_bool(kv.get("present"))?,
+        match_count: p231_parse_count(kv.get("match_count"))?,
+        send_id: p231_parse_count(kv.get("send_id"))?,
+        receive_from_hex: p231_parse_hex_or_none(kv.get("receive_from"))?,
+        send_to_hex: p231_parse_hex_or_none(kv.get("send_to"))?,
+        processed: p231_parse_count_signed(kv.get("processed"))?,
+    })
+}
+
+async fn p231_collect_gateway(diag_port: u16) -> Option<P231GatewayStats> {
+    if diag_port == 0 {
+        return None;
+    }
+    let line = p220_query_diagnostic(diag_port, "P231-GATEWAY").await?;
+    p231_parse_gateway(&line)
+}
+
+async fn p231_collect_client_outbound(
+    diag_port: u16,
+    client_dbid_hex: &str,
+) -> Option<P231ClientOutbound> {
+    if diag_port == 0 || !p227_is_hex64(client_dbid_hex) {
+        return None;
+    }
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P231-CLIENT-OUTBOUND {client_dbid_hex}"),
+    )
+    .await?;
+    p231_parse_client_outbound(&line, client_dbid_hex)
+}
+
+async fn p231_collect_participating(diag_port: u16, receive_id: u64) -> Option<P231Participating> {
+    if diag_port == 0 || receive_id == 0 {
+        return None;
+    }
+    let line =
+        p220_query_diagnostic(diag_port, &format!("P231-PARTICIPATING {receive_id}")).await?;
+    p231_parse_participating(&line, receive_id)
+}
+
+/// Plan 231 isolated-epoch delta: both endpoints must be known
+/// (non-negative) lifetime counts from the same router. Either
+/// endpoint unknown (-1) yields `None` — a global delta alone can
+/// never satisfy a target-specific stage without the exact tunnel
+/// match the caller additionally requires.
+fn p231_delta(post: i64, pre: i64) -> Option<i64> {
+    if pre < 0 || post < 0 {
+        return None;
+    }
+    Some(post.saturating_sub(pre))
+}
+
+/// Plan 231 WP D: the target lease gateway hash resolves to the
+/// controlled Java router role. The role comes from the exact
+/// selected lease — never from historical topology comments, never
+/// assumed to be Router B.
+fn p231_target_role(
+    lease_gateway_hex: &str,
+    a_hex: &str,
+    b_hex: &str,
+    c_hex: &str,
+) -> Option<&'static str> {
+    if lease_gateway_hex.eq_ignore_ascii_case(a_hex) && p227_is_hex64(a_hex) {
+        return Some("A");
+    }
+    if lease_gateway_hex.eq_ignore_ascii_case(b_hex) && p227_is_hex64(b_hex) {
+        return Some("B");
+    }
+    if lease_gateway_hex.eq_ignore_ascii_case(c_hex) && p227_is_hex64(c_hex) {
+        return Some("C");
+    }
+    None
+}
+
+/// Bounded scratch-only marker count in one Java log directory.
+/// Fixed-substring matching only; only the bounded count reaches
+/// evidence, never matched lines, keys, tags, or payloads. `None`
+/// when the directory is unavailable (Unknown, never zero-as-fact).
+fn p231_count_marker_in_log_dir(dir: &Path, marker: &str) -> Option<u64> {
+    let mut log_dirs = vec![dir.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let is_logs_dir =
+                entry.file_name() == "logs" && entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if is_logs_dir {
+                log_dirs.push(entry.path());
+            }
+        }
+    }
+    let mut count: u64 = 0;
+    let mut files_seen = false;
+    for log_dir in log_dirs {
+        let entries = std::fs::read_dir(&log_dir).ok()?;
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("log-router-") || !name.ends_with(".txt") {
+                continue;
+            }
+            files_seen = true;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            if bytes.len() > 32 * 1024 * 1024 {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines() {
+                if line.contains(marker) {
+                    count = count.saturating_add(1);
+                    if count >= 9999 {
+                        return Some(count);
+                    }
+                }
+            }
+        }
+    }
+    if files_seen { Some(count) } else { None }
+}
+
+/// Bounded scratch-only marker-plus-id count in one Java log
+/// directory. Counts lines containing both the fixed marker substring
+/// and the exact decimal tunnel-id text (e.g. the
+/// `no matching IBGW for id <tunnel>` WARN correlates C's forward to
+/// the selected lease tunnel). Only the bounded count reaches
+/// evidence, never matched lines. `None` when the directory is
+/// unavailable (Unknown, never zero-as-fact).
+fn p231_count_marker_with_id_in_log_dir(dir: &Path, marker: &str, id_text: &str) -> Option<u64> {
+    let mut log_dirs = vec![dir.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(Result::ok) {
+            let is_logs_dir =
+                entry.file_name() == "logs" && entry.file_type().is_ok_and(|kind| kind.is_dir());
+            if is_logs_dir {
+                log_dirs.push(entry.path());
+            }
+        }
+    }
+    let mut count: u64 = 0;
+    let mut files_seen = false;
+    for log_dir in log_dirs {
+        let entries = std::fs::read_dir(&log_dir).ok()?;
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("log-router-") || !name.ends_with(".txt") {
+                continue;
+            }
+            files_seen = true;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            if bytes.len() > 32 * 1024 * 1024 {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines() {
+                if line.contains(marker) && line.contains(id_text) {
+                    count = count.saturating_add(1);
+                    if count >= 9999 {
+                        return Some(count);
+                    }
+                }
+            }
+        }
+    }
+    if files_seen { Some(count) } else { None }
+}
+
+/// Plan 231 WP F: exactly one earliest-stage terminal per counted
+/// attempt. Pass-through stage outcomes (`ENQUEUED`, `FORWARD-PASSED`,
+/// `TUNNELDATA-EMITTED`) are recorded in supporting `p231-stage-*`
+/// rows; the single `p231-classification` row carries the first
+/// failing stage in A -> B -> C -> D order, or the digest-matched
+/// reverse-delivery pass. Vocabulary is limited to the §6–9 tokens
+/// plus `P231-REVERSE-DELIVERY-PASSED`; no root-cause label is ever
+/// emitted from free-form logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P231Terminal {
+    AOutboundGatewayNotFound,
+    AOutboundGatewayEnqueueDrop,
+    AObservabilityGap,
+    BFirstHopNotReceivedByC,
+    BCObepReassemblyFailed,
+    BObservabilityGap,
+    CTargetIbgwNotInstalled,
+    CTunnelGatewayNotReceived,
+    CIbgwEnqueueOrPumpBoundary,
+    CIbgwNextHopLookupFailed,
+    DI2prNoExpectedTunnelData,
+    DI2prTunnelRecoveryFailed,
+    DI2prGarlicDecodeFailed,
+    DI2prDestinationDispatchMissed,
+    DI2prPayloadMismatch,
+    DObservabilityGap,
+    ReverseDeliveryPassed,
+}
+
+impl P231Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            P231Terminal::AOutboundGatewayNotFound => "P231-A-OUTBOUND-GATEWAY-NOT-FOUND",
+            P231Terminal::AOutboundGatewayEnqueueDrop => "P231-A-OUTBOUND-GATEWAY-ENQUEUE-DROP",
+            P231Terminal::AObservabilityGap => "P231-A-OBSERVABILITY-GAP",
+            P231Terminal::BFirstHopNotReceivedByC => "P231-B-FIRST-HOP-NOT-RECEIVED-BY-C",
+            P231Terminal::BCObepReassemblyFailed => "P231-B-C-OBEP-REASSEMBLY-FAILED",
+            P231Terminal::BObservabilityGap => "P231-B-OBSERVABILITY-GAP",
+            P231Terminal::CTargetIbgwNotInstalled => "P231-C-TARGET-IBGW-NOT-INSTALLED",
+            P231Terminal::CTunnelGatewayNotReceived => "P231-C-TUNNEL-GATEWAY-NOT-RECEIVED",
+            P231Terminal::CIbgwEnqueueOrPumpBoundary => "P231-C-IBGW-ENQUEUE-OR-PUMP-BOUNDARY",
+            P231Terminal::CIbgwNextHopLookupFailed => "P231-C-IBGW-NEXT-HOP-LOOKUP-FAILED",
+            P231Terminal::DI2prNoExpectedTunnelData => "P231-D-I2PR-NO-EXPECTED-TUNNELDATA",
+            P231Terminal::DI2prTunnelRecoveryFailed => "P231-D-I2PR-TUNNEL-RECOVERY-FAILED",
+            P231Terminal::DI2prGarlicDecodeFailed => "P231-D-I2PR-GARLIC-DECODE-FAILED",
+            P231Terminal::DI2prDestinationDispatchMissed => {
+                "P231-D-I2PR-DESTINATION-DISPATCH-MISSED"
+            }
+            P231Terminal::DI2prPayloadMismatch => "P231-D-I2PR-PAYLOAD-MISMATCH",
+            P231Terminal::DObservabilityGap => "P231-D-OBSERVABILITY-GAP",
+            P231Terminal::ReverseDeliveryPassed => "P231-REVERSE-DELIVERY-PASSED",
+        }
+    }
+}
+
+/// Pure classifier inputs. Deltas are isolated-epoch `post - pre`
+/// lifetime-count differences (`None` when either endpoint is
+/// unknown); tunnel-identity matches are exact (send id, lease
+/// gateway/tunnel, IBGW send-to); i2pr outcomes are attributed by the
+/// exact owned inbound tunnel id only.
+#[derive(Clone, Debug, Default)]
+struct P231Inputs {
+    accepted_observed: bool,
+    outbound_send_id_known: bool,
+    outbound_still_installed: bool,
+    dispatch_outbound_delta: Option<i64>,
+    overflow_delta_a: Option<i64>,
+    no_matching_ob_correlated: bool,
+    c_obep_observable: bool,
+    c_obep_present_exact: bool,
+    c_obep_processed_delta: Option<i64>,
+    c_drop_markers_delta: Option<i64>,
+    target_observable: bool,
+    b_gateway_receipt_correlated: bool,
+    target_dispatch_inbound_delta: Option<i64>,
+    target_ibgw_processed_delta: Option<i64>,
+    ibgw_present_exact: bool,
+    ibgw_overflow_delta: Option<i64>,
+    ibgw_lookup_attempted_in_window: bool,
+    expected_tunnel_id_known: bool,
+    expected_tunneldata_seen: bool,
+    expected_recovery_completes: u64,
+    expected_recovery_errors: u64,
+    expected_garlic_decodes_ok: u64,
+    expected_garlic_decodes_fail: u64,
+    expected_dispatch_calls: u64,
+    expected_queue_hits: u64,
+    expected_queued_decode_fails: u64,
+    expected_digest_match_45s: bool,
+}
+
+fn p231_positive(delta: &Option<i64>) -> bool {
+    delta.is_some_and(|d| d > 0)
+}
+
+fn p231_classify(inputs: &P231Inputs) -> P231Terminal {
+    // The source-order lock passes through explicitly: ACCEPTED proves
+    // only that the inline dispatch call returned, never delivery.
+    if !p231_accepted_implies_dispatch_called(inputs.accepted_observed) {
+        return P231Terminal::AObservabilityGap;
+    }
+    // WP A: the target send must be attributable to exactly one
+    // installed outbound client tunnel; never assume the first lease
+    // or any tunnel.
+    if !inputs.outbound_send_id_known || !inputs.outbound_still_installed {
+        return P231Terminal::AObservabilityGap;
+    }
+    // WP B gateway stage: overflow in the isolated epoch maps to
+    // ENQUEUE-DROP; a dispatchOutboundTunnel advance proves the
+    // matching gateway accepted gw.add(...). ACCEPTED alone never
+    // proves enqueue; without positive stat evidence only the
+    // scratch "no matching OB tunnel" row proves NOT-FOUND.
+    if p231_positive(&inputs.overflow_delta_a) {
+        return P231Terminal::AOutboundGatewayEnqueueDrop;
+    }
+    if p231_positive(&inputs.dispatch_outbound_delta) {
+        // ENQUEUED: continue to stage B.
+    } else if inputs.no_matching_ob_correlated {
+        // Only the id-correlated scratch no-matching-gateway row
+        // proves NOT-FOUND: ACCEPTED plus no correlation at all is an
+        // observability gap, never "not dispatched".
+        return P231Terminal::AOutboundGatewayNotFound;
+    } else {
+        return P231Terminal::AObservabilityGap;
+    }
+    // WP C first-hop stage: the exact C outbound-endpoint config
+    // (receive id == A send id, receive-from == A) must remain present
+    // and its processed-message count must increase after the target
+    // enqueue. Global counters alone never satisfy this stage.
+    if !inputs.c_obep_observable {
+        return P231Terminal::BObservabilityGap;
+    }
+    if !inputs.c_obep_present_exact {
+        return P231Terminal::BFirstHopNotReceivedByC;
+    }
+    match inputs.c_obep_processed_delta {
+        Some(d) if d > 0 => {}
+        _ => return P231Terminal::BFirstHopNotReceivedByC,
+    }
+    // Forward evidence lives on the target router: its dispatchInbound
+    // advance, its exact IBGW processed advance, or its id-correlated
+    // no-matching-IBGW receipt row proves C reassembled and forwarded
+    // toward the selected lease gateway. The receipt row proves the
+    // forward reached B even when B had no matching gateway to
+    // dispatch through.
+    if !inputs.target_observable {
+        return P231Terminal::BObservabilityGap;
+    }
+    let forward_proven = p231_positive(&inputs.target_dispatch_inbound_delta)
+        || p231_positive(&inputs.target_ibgw_processed_delta)
+        || inputs.b_gateway_receipt_correlated;
+    if !forward_proven {
+        if p231_positive(&inputs.c_drop_markers_delta) {
+            return P231Terminal::BCObepReassemblyFailed;
+        }
+        return P231Terminal::BObservabilityGap;
+    }
+    // WP D target-IBGW stage: the exact inbound-gateway config (receive
+    // id == lease tunnel id, send-to == i2pr) must be installed.
+    if !inputs.ibgw_present_exact {
+        return P231Terminal::CTargetIbgwNotInstalled;
+    }
+    match inputs.target_ibgw_processed_delta {
+        Some(d) if d > 0 => {}
+        _ => {
+            // The exact gateway never pumped the message. A quiet
+            // dispatcher with an id-correlated B receipt row means C's
+            // forward reached B but no matching gateway dispatched it:
+            // TUNNEL-GATEWAY-NOT-RECEIVED. A dispatcher acceptance (or
+            // queue overflow) without exact pumping is the
+            // enqueue-or-pump boundary instead.
+            if inputs.b_gateway_receipt_correlated
+                && !p231_positive(&inputs.target_dispatch_inbound_delta)
+                && !p231_positive(&inputs.ibgw_overflow_delta)
+            {
+                return P231Terminal::CTunnelGatewayNotReceived;
+            }
+            if p231_positive(&inputs.target_dispatch_inbound_delta)
+                || p231_positive(&inputs.ibgw_overflow_delta)
+            {
+                return P231Terminal::CIbgwEnqueueOrPumpBoundary;
+            }
+            return P231Terminal::CTunnelGatewayNotReceived;
+        }
+    }
+    // The exact IBGW pumped the message (receiveEncrypted ran, so the
+    // next-hop TunnelData was constructed). A deferred next-hop lookup
+    // attempted in the window without wire receipt is the lookup
+    // boundary; otherwise the message was emitted toward i2pr.
+    if inputs.ibgw_lookup_attempted_in_window && !inputs.expected_tunneldata_seen {
+        return P231Terminal::CIbgwNextHopLookupFailed;
+    }
+    // WP E i2pr stage, attributed by the exact owned inbound tunnel id
+    // only; unrelated TunnelData never satisfies target progress.
+    if !inputs.expected_tunnel_id_known {
+        return P231Terminal::DObservabilityGap;
+    }
+    if !inputs.expected_tunneldata_seen {
+        return P231Terminal::DI2prNoExpectedTunnelData;
+    }
+    if inputs.expected_recovery_completes == 0 {
+        if inputs.expected_recovery_errors > 0 {
+            return P231Terminal::DI2prTunnelRecoveryFailed;
+        }
+        return P231Terminal::DObservabilityGap;
+    }
+    if inputs.expected_garlic_decodes_ok == 0 {
+        if inputs.expected_garlic_decodes_fail > 0 {
+            return P231Terminal::DI2prGarlicDecodeFailed;
+        }
+        return P231Terminal::DObservabilityGap;
+    }
+    if inputs.expected_dispatch_calls == 0 {
+        return P231Terminal::DObservabilityGap;
+    }
+    if inputs.expected_queue_hits == 0 {
+        return P231Terminal::DI2prDestinationDispatchMissed;
+    }
+    // A queue hit passes only on digest match inside the frozen
+    // 45-second window; the later status-only window can never
+    // retroactively pass payload delivery.
+    if inputs.expected_digest_match_45s {
+        return P231Terminal::ReverseDeliveryPassed;
+    }
+    if inputs.expected_queued_decode_fails > 0 {
+        return P231Terminal::DI2prDestinationDispatchMissed;
+    }
+    P231Terminal::DI2prPayloadMismatch
+}
+
+fn record_p231_classification(evidence_dir: &Path, terminal: P231Terminal, detail: &str) {
+    let sanitized = detail.replace(['\t', '\n'], " ");
+    append_evidence(
+        evidence_dir,
+        "p231-classification",
+        &format!("{} {sanitized}", terminal.token()),
+    );
+}
+
+/// Plan 231 early-stop gap: the driver stopped before the reverse
+/// epoch (install-stalled or lease-stalled), so no post-`ACCEPTED`
+/// attribution exists. Exactly one `p231-classification` row is still
+/// emitted so every counted run closes the loop, honestly staged at
+/// the earliest unknown point — never a root-cause attribution.
+fn record_p231_early_stop_gap(evidence_dir: &Path, reason: &'static str) {
+    append_evidence(
+        evidence_dir,
+        "p231-classification",
+        &format!("P231-A-OBSERVABILITY-GAP reason={reason}"),
+    );
+}
+
+fn p231_test_inputs_pass() -> P231Inputs {
+    // A fully passing reverse epoch: ACCEPTED, exact installed tunnel,
+    // gateway enqueue, C first-hop processing, forward evidence, exact
+    // IBGW processing without lookup deferral, expected wire receipt
+    // with recovery/Garlic/dispatch/queue success and digest match.
+    P231Inputs {
+        accepted_observed: true,
+        outbound_send_id_known: true,
+        outbound_still_installed: true,
+        dispatch_outbound_delta: Some(1),
+        overflow_delta_a: Some(0),
+        no_matching_ob_correlated: false,
+        c_obep_observable: true,
+        c_obep_present_exact: true,
+        c_obep_processed_delta: Some(1),
+        c_drop_markers_delta: Some(0),
+        target_observable: true,
+        b_gateway_receipt_correlated: false,
+        target_dispatch_inbound_delta: Some(1),
+        target_ibgw_processed_delta: Some(1),
+        ibgw_present_exact: true,
+        ibgw_overflow_delta: Some(0),
+        ibgw_lookup_attempted_in_window: false,
+        expected_tunnel_id_known: true,
+        expected_tunneldata_seen: true,
+        expected_recovery_completes: 1,
+        expected_recovery_errors: 0,
+        expected_garlic_decodes_ok: 1,
+        expected_garlic_decodes_fail: 0,
+        expected_dispatch_calls: 1,
+        expected_queue_hits: 1,
+        expected_queued_decode_fails: 0,
+        expected_digest_match_45s: true,
+    }
+}
+
+#[test]
+fn p231_accepted_is_ordered_after_inline_dispatch_call() {
+    // Exact-pinned source lock: ACCEPTED is emitted only after
+    // distributeMessage returned, which ran OCMOSJ inline, which ran
+    // DispatchJob inline, which called dispatchOutbound before
+    // returning. The classifier consumes the lock explicitly.
+    assert!(p231_accepted_implies_dispatch_called(true));
+    assert!(!p231_accepted_implies_dispatch_called(false));
+    let mut inputs = p231_test_inputs_pass();
+    inputs.accepted_observed = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AObservabilityGap,
+        "a send that was never admitted cannot enter attribution"
+    );
+}
+
+#[test]
+fn p231_accepted_alone_does_not_prove_gateway_enqueue() {
+    // ACCEPTED proves only that the inline dispatch call returned —
+    // never queue acceptance. Without a dispatchOutboundTunnel advance
+    // in the isolated epoch and without the scratch no-matching
+    // gateway row, the stage is an observability gap, never a pass
+    // and never a NOT-FOUND claim.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.dispatch_outbound_delta = Some(0);
+    inputs.overflow_delta_a = Some(0);
+    inputs.no_matching_ob_correlated = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
+    // Unknown endpoints are equally a gap, never manufactured proof.
+    inputs.dispatch_outbound_delta = None;
+    inputs.overflow_delta_a = None;
+    assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
+}
+
+#[test]
+fn p231_gateway_stat_delta_requires_target_epoch() {
+    // Either endpoint unknown (-1) yields no delta: a global counter
+    // alone can never satisfy the target-specific stage without the
+    // exact installed-tunnel match the classifier additionally
+    // requires.
+    assert_eq!(p231_delta(5, 4), Some(1));
+    assert_eq!(p231_delta(4, 4), Some(0));
+    assert_eq!(p231_delta(0, 0), Some(0));
+    assert_eq!(p231_delta(5, -1), None);
+    assert_eq!(p231_delta(-1, 4), None);
+    assert_eq!(p231_delta(-1, -1), None);
+    // The exact installed tunnel is required alongside the delta.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.outbound_send_id_known = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AObservabilityGap,
+        "a stat delta without the exact send tunnel proves nothing"
+    );
+    inputs = p231_test_inputs_pass();
+    inputs.outbound_still_installed = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AObservabilityGap,
+        "a stat delta without the still-installed proof proves nothing"
+    );
+}
+
+#[test]
+fn p231_gateway_overflow_maps_to_enqueue_drop() {
+    // Any dropGatewayOverflow increment attributable to the isolated
+    // epoch maps to ENQUEUE-DROP, even ahead of dispatch evidence.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.overflow_delta_a = Some(1);
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AOutboundGatewayEnqueueDrop
+    );
+    assert_eq!(
+        P231Terminal::AOutboundGatewayEnqueueDrop.token(),
+        "P231-A-OUTBOUND-GATEWAY-ENQUEUE-DROP"
+    );
+    // No overflow and no dispatch advance but an id-correlated
+    // scratch no-matching-OB row proves NOT-FOUND (and only that
+    // proves it).
+    inputs = p231_test_inputs_pass();
+    inputs.dispatch_outbound_delta = Some(0);
+    inputs.overflow_delta_a = Some(0);
+    inputs.no_matching_ob_correlated = true;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AOutboundGatewayNotFound
+    );
+}
+
+#[test]
+fn p231_c_obep_requires_exact_installed_tunnel() {
+    // The C stage requires the exact outbound-endpoint config
+    // (receive id == A send id with receive-from == A). An
+    // unobservable C surface is a gap; a missing/non-exact config is
+    // FIRST-HOP-NOT-RECEIVED-BY-C, never a later stage claim.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.c_obep_observable = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::BObservabilityGap);
+    inputs = p231_test_inputs_pass();
+    inputs.c_obep_present_exact = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::BFirstHopNotReceivedByC
+    );
+    assert_eq!(
+        P231Terminal::BFirstHopNotReceivedByC.token(),
+        "P231-B-FIRST-HOP-NOT-RECEIVED-BY-C"
+    );
+}
+
+#[test]
+fn p231_c_obep_count_delta_proves_first_hop_processing() {
+    // Both the exact config presence and its processed-message
+    // increase are required; a present-but-unmoved config is still
+    // FIRST-HOP-NOT-RECEIVED-BY-C.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.c_obep_processed_delta = Some(0);
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::BFirstHopNotReceivedByC
+    );
+    inputs.c_obep_processed_delta = None;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::BFirstHopNotReceivedByC
+    );
+    // Processing without forward evidence and without drop markers is
+    // a gap, never a forward claim.
+    inputs = p231_test_inputs_pass();
+    inputs.target_dispatch_inbound_delta = Some(0);
+    inputs.target_ibgw_processed_delta = Some(0);
+    inputs.c_drop_markers_delta = Some(0);
+    assert_eq!(p231_classify(&inputs), P231Terminal::BObservabilityGap);
+    // Processing with OBEP drop markers and no forward evidence is
+    // the reassembly boundary.
+    inputs.c_drop_markers_delta = Some(2);
+    assert_eq!(p231_classify(&inputs), P231Terminal::BCObepReassemblyFailed);
+}
+
+#[test]
+fn p231_target_gateway_role_comes_from_selected_lease() {
+    // The role resolves from the exact selected lease gateway hash —
+    // never from historical topology comments, never assumed to be B.
+    let a_hex = "aa".repeat(32);
+    let b_hex = "bb".repeat(32);
+    let c_hex = "cc".repeat(32);
+    assert_eq!(p231_target_role(&a_hex, &a_hex, &b_hex, &c_hex), Some("A"));
+    assert_eq!(p231_target_role(&b_hex, &a_hex, &b_hex, &c_hex), Some("B"));
+    assert_eq!(p231_target_role(&c_hex, &a_hex, &b_hex, &c_hex), Some("C"));
+    assert_eq!(
+        p231_target_role(&"dd".repeat(32), &a_hex, &b_hex, &c_hex),
+        None
+    );
+    assert_eq!(p231_target_role("not-hex", &a_hex, &b_hex, &c_hex), None);
+    // An unresolvable target makes even the forward leg unobservable:
+    // the earliest unknown stage maps to the B gap.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.target_observable = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::BObservabilityGap);
+}
+
+#[test]
+fn p231_ibgw_requires_exact_target_tunnel_id() {
+    // The target IBGW claim requires the exact lease gateway +
+    // tunnel-id match (receive id == lease tunnel id with send-to ==
+    // i2pr). A missing/non-exact gateway is NOT-INSTALLED even when
+    // global dispatchInbound advanced elsewhere (background gateways
+    // never satisfy the target stage).
+    let mut inputs = p231_test_inputs_pass();
+    inputs.ibgw_present_exact = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::CTargetIbgwNotInstalled
+    );
+    assert_eq!(
+        P231Terminal::CTargetIbgwNotInstalled.token(),
+        "P231-C-TARGET-IBGW-NOT-INSTALLED"
+    );
+    // Exact gateway present but never pumped, with a quiet
+    // dispatcher and an id-correlated B receipt row, is
+    // NOT-RECEIVED for the target: C's forward reached B (which had
+    // no matching gateway to dispatch through) while background
+    // gateways never satisfy the target stage.
+    inputs.ibgw_present_exact = true;
+    inputs.target_dispatch_inbound_delta = Some(0);
+    inputs.target_ibgw_processed_delta = Some(0);
+    inputs.ibgw_overflow_delta = Some(0);
+    inputs.b_gateway_receipt_correlated = true;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::CTunnelGatewayNotReceived
+    );
+    // A dispatcher advance for the target epoch without exact pumping
+    // is the enqueue-or-pump boundary (accepted into the gateway
+    // queue but never pumped) — never target progress: the run stops
+    // here and never reaches the D stages or PASS.
+    inputs.target_dispatch_inbound_delta = Some(3);
+    inputs.target_ibgw_processed_delta = Some(0);
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::CIbgwEnqueueOrPumpBoundary
+    );
+    // Dispatcher acceptance of the exact gateway without pumping (or
+    // queue overflow) is the enqueue-or-pump boundary.
+    inputs.target_ibgw_processed_delta = Some(0);
+    inputs.ibgw_overflow_delta = Some(1);
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::CIbgwEnqueueOrPumpBoundary
+    );
+}
+
+#[test]
+fn p231_ibgw_processed_delta_precedes_tunneldata_emitted() {
+    // The IBGW processed advance proves receiveEncrypted ran, which
+    // constructs the next-hop TunnelData before enqueueing it. A
+    // deferred next-hop lookup attempted in the window without wire
+    // receipt is the lookup boundary.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.ibgw_lookup_attempted_in_window = true;
+    inputs.expected_tunneldata_seen = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::CIbgwNextHopLookupFailed
+    );
+    assert_eq!(
+        P231Terminal::CIbgwNextHopLookupFailed.token(),
+        "P231-C-IBGW-NEXT-HOP-LOOKUP-FAILED"
+    );
+    // Lookup deferral that still reaches the wire proceeds to the
+    // i2pr stages instead.
+    inputs.expected_tunneldata_seen = true;
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
+}
+
+#[test]
+fn p231_unrelated_tunneldata_cannot_satisfy_i2pr_stage() {
+    // i2pr target progress requires the exact owned inbound tunnel id;
+    // unrelated TunnelData is context only. With no expected-tunnel
+    // receipt the stage is NO-EXPECTED-TUNNELDATA even when the
+    // upstream IBGW demonstrably pumped the message.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_tunneldata_seen = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prNoExpectedTunnelData
+    );
+    assert_eq!(
+        P231Terminal::DI2prNoExpectedTunnelData.token(),
+        "P231-D-I2PR-NO-EXPECTED-TUNNELDATA"
+    );
+}
+
+#[test]
+fn p231_expected_tunnel_id_required_for_recovery_stage() {
+    // Without the exact owned inbound tunnel id the recovery stage
+    // cannot be evaluated at all: D gap, never a wire claim.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_tunnel_id_known = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::DObservabilityGap);
+    assert_eq!(
+        P231Terminal::DObservabilityGap.token(),
+        "P231-D-OBSERVABILITY-GAP"
+    );
+}
+
+#[test]
+fn p231_tunnel_recovery_failure_is_distinct_from_no_wire_receive() {
+    // Expected wire receipt with zero completions and recovery errors
+    // is RECOVERY-FAILED — distinct from NO-EXPECTED-TUNNELDATA (no
+    // wire at all).
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_recovery_completes = 0;
+    inputs.expected_recovery_errors = 2;
+    inputs.expected_garlic_decodes_ok = 0;
+    inputs.expected_garlic_decodes_fail = 0;
+    inputs.expected_dispatch_calls = 0;
+    inputs.expected_queue_hits = 0;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prTunnelRecoveryFailed
+    );
+    assert_eq!(
+        P231Terminal::DI2prTunnelRecoveryFailed.token(),
+        "P231-D-I2PR-TUNNEL-RECOVERY-FAILED"
+    );
+    assert_ne!(
+        P231Terminal::DI2prTunnelRecoveryFailed.token(),
+        P231Terminal::DI2prNoExpectedTunnelData.token()
+    );
+}
+
+#[test]
+fn p231_garlic_failure_is_distinct_from_tunnel_recovery_failure() {
+    // Completed recoveries whose envelope decode all fail are
+    // GARLIC-FAILED — distinct from RECOVERY-FAILED (no completions).
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_garlic_decodes_ok = 0;
+    inputs.expected_garlic_decodes_fail = 1;
+    inputs.expected_dispatch_calls = 0;
+    inputs.expected_queue_hits = 0;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prGarlicDecodeFailed
+    );
+    assert_eq!(
+        P231Terminal::DI2prGarlicDecodeFailed.token(),
+        "P231-D-I2PR-GARLIC-DECODE-FAILED"
+    );
+    assert_ne!(
+        P231Terminal::DI2prGarlicDecodeFailed.token(),
+        P231Terminal::DI2prTunnelRecoveryFailed.token()
+    );
+    // Decoded envelopes that never reach the destination queue are
+    // DISPATCH-MISSED.
+    inputs = p231_test_inputs_pass();
+    inputs.expected_queue_hits = 0;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prDestinationDispatchMissed
+    );
+}
+
+#[test]
+fn p231_destination_queue_hit_requires_digest_match_for_pass() {
+    // A queue hit passes only on digest match. Decoded-but-wrong
+    // content is PAYLOAD-MISMATCH; undecodable queue hits are
+    // DISPATCH-MISSED.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_digest_match_45s = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::DI2prPayloadMismatch);
+    assert_eq!(
+        P231Terminal::DI2prPayloadMismatch.token(),
+        "P231-D-I2PR-PAYLOAD-MISMATCH"
+    );
+    inputs.expected_queued_decode_fails = 3;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prDestinationDispatchMissed
+    );
+    inputs = p231_test_inputs_pass();
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
+    assert_eq!(
+        P231Terminal::ReverseDeliveryPassed.token(),
+        "P231-REVERSE-DELIVERY-PASSED"
+    );
+}
+
+#[test]
+fn p231_status_only_after_45s_cannot_pass_payload_delivery() {
+    // The 45-second payload acceptance window is frozen: a later
+    // status-only success (70-second diagnostic deadline) can never
+    // retroactively pass delivery. The classifier takes only the
+    // frozen digest result — there is no status input at all.
+    let mut inputs = p231_test_inputs_pass();
+    inputs.expected_digest_match_45s = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::DI2prPayloadMismatch,
+        "a later status success must not pass the frozen payload row"
+    );
+    // The frozen pass requires the digest match and nothing else.
+    inputs.expected_digest_match_45s = true;
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
+}
+
+#[test]
+fn p231_first_unknown_stage_maps_to_observability_gap() {
+    // Unknown at an earlier stage is an observability gap and prevents
+    // any later stage from being claimed as root cause: knock out each
+    // stage in order and check the earliest gap wins.
+    let base = p231_test_inputs_pass();
+    let mut inputs = base.clone();
+    inputs.accepted_observed = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
+    inputs = base.clone();
+    inputs.dispatch_outbound_delta = None;
+    inputs.overflow_delta_a = None;
+    assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
+    inputs = base.clone();
+    inputs.c_obep_observable = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::BObservabilityGap);
+    inputs = base.clone();
+    inputs.target_observable = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::BObservabilityGap,
+        "an unobservable target collapses the forward leg to the B gap"
+    );
+    inputs = base.clone();
+    inputs.expected_tunnel_id_known = false;
+    assert_eq!(p231_classify(&inputs), P231Terminal::DObservabilityGap);
+    // Later failures never shadow an earlier gap.
+    inputs = base.clone();
+    inputs.dispatch_outbound_delta = Some(0);
+    inputs.expected_digest_match_45s = false;
+    assert_eq!(
+        p231_classify(&inputs),
+        P231Terminal::AObservabilityGap,
+        "the earliest unknown stage wins over a later payload mismatch"
+    );
+}
+
+#[test]
+fn p231_exactly_one_terminal_per_counted_run() {
+    // The driver emits exactly one p231-classification row per counted
+    // run. Record twice into a scratch evidence dir and prove the
+    // second emission is detectable (the driver path emits once; this
+    // locks the row shape the uniqueness check consumes).
+    let dir = p224_test_tmpdir("p231-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    record_p231_classification(
+        &evidence_dir,
+        P231Terminal::CTargetIbgwNotInstalled,
+        "role=B receive_id=38401",
+    );
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p231-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P231-C-TARGET-IBGW-NOT-INSTALLED role=B receive_id=38401"));
+    // Every terminal token is stable and unique.
+    let tokens = [
+        P231Terminal::AOutboundGatewayNotFound.token(),
+        P231Terminal::AOutboundGatewayEnqueueDrop.token(),
+        P231Terminal::AObservabilityGap.token(),
+        P231Terminal::BFirstHopNotReceivedByC.token(),
+        P231Terminal::BCObepReassemblyFailed.token(),
+        P231Terminal::BObservabilityGap.token(),
+        P231Terminal::CTargetIbgwNotInstalled.token(),
+        P231Terminal::CTunnelGatewayNotReceived.token(),
+        P231Terminal::CIbgwEnqueueOrPumpBoundary.token(),
+        P231Terminal::CIbgwNextHopLookupFailed.token(),
+        P231Terminal::DI2prNoExpectedTunnelData.token(),
+        P231Terminal::DI2prTunnelRecoveryFailed.token(),
+        P231Terminal::DI2prGarlicDecodeFailed.token(),
+        P231Terminal::DI2prDestinationDispatchMissed.token(),
+        P231Terminal::DI2prPayloadMismatch.token(),
+        P231Terminal::DObservabilityGap.token(),
+        P231Terminal::ReverseDeliveryPassed.token(),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for token in tokens {
+        assert!(token.starts_with("P231-"), "token shape: {token}");
+        assert!(seen.insert(token), "duplicate terminal token: {token}");
+    }
+    assert_eq!(seen.len(), 17);
+    // The early-stop gap emits the A gap exactly once.
+    record_p231_early_stop_gap(&evidence_dir, "authoritative-epoch-never-reached-test");
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p231-classification\t"))
+            .count(),
+        2
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p231_secret_bearing_log_rows_rejected() {
+    // Secret-bearing diagnostic rows never parse: keys, seeds, tags,
+    // payloads, and raw log paths are rejected before they can satisfy
+    // any Plan-231 fact.
+    let gateway = "P231-EV kind=gateway observable=true dispatch_time=3 dispatch_send_time=1 dispatch_outbound_tunnel=2 drop_gateway_overflow=0 dispatch_inbound=0 inbound_lookup_success=0 dispatch_endpoint=1 dispatch_participant=0";
+    assert!(p231_parse_gateway(gateway).is_some());
+    for secret in [
+        format!("{gateway} session_key=abcd"),
+        format!("{gateway} seed=deadbeef"),
+        format!("{gateway} tag=1234"),
+        format!("{gateway} payload=deadbeef"),
+        format!("{gateway} log-router-0.txt"),
+        format!("{gateway} PRIV=1"),
+    ] {
+        assert!(
+            p231_parse_gateway(&secret).is_none(),
+            "secret-bearing gateway row must not parse"
+        );
+    }
+    assert!(p231_parse_gateway("P230-EV kind=gateway observable=true").is_none());
+    assert!(p231_parse_gateway(&gateway.replace("dispatch_time=3", "dispatch_time=yes")).is_none());
+    let dbid = p227_test_c_hex();
+    let outbound = format!(
+        "P231-EV kind=client-outbound client_dbid_hex={dbid} observable=true client_resolved=true outbound_tunnel_count=1 single_send_tunnel_id=12345"
+    );
+    assert!(p231_parse_client_outbound(&outbound, &dbid).is_some());
+    assert!(p231_parse_client_outbound(&format!("{outbound} priv=1"), &dbid).is_none());
+    let other = "dd".repeat(32);
+    assert!(p231_parse_client_outbound(&outbound, &other).is_none());
+    let part = "P231-EV kind=participating receive_id=38401 observable=true present=true match_count=1 send_id=0 receive_from=none send_to=none processed=4";
+    assert!(p231_parse_participating(part, 38401).is_some());
+    assert!(p231_parse_participating(part, 38402).is_none());
+    assert!(p231_parse_participating(&format!("{part} payload=x"), 38401).is_none());
 }

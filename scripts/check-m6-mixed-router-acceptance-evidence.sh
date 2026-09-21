@@ -2815,8 +2815,261 @@ if [[ -f "${P230_HARNESS}" ]]; then
   fi
 fi
 
+P231_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P231Probe.java"
+P231_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P231_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P231_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P231_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 231 probe ${P231_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 24a. The probe exposes the exact post-ACCEPTED attribution surface
+  # read-only: StatManager lifetime counts, the installed outbound
+  # client-tunnel hop-0 send id, and the single participating HopConfig
+  # filtered by the exact receive tunnel id.
+  for required in \
+    'snapshotGatewayStats' \
+    'snapshotClientOutbound' \
+    'snapshotParticipating' \
+    'statManager().getRate' \
+    'getLifetimeEventCount' \
+    'tunnelDispatcher().listParticipatingTunnels' \
+    'getReceiveTunnelId' \
+    'getSendTunnelId' \
+    'getReceiveFrom' \
+    'getSendTo' \
+    'getProcessedMessagesCount' \
+    'getOutboundPool' \
+    'listTunnels' \
+    'client.dispatchTime' \
+    'client.dispatchSendTime' \
+    'tunnel.dispatchOutboundTunnel' \
+    'tunnel.dropGatewayOverflow' \
+    'tunnel.dispatchInbound' \
+    'tunnel.inboundLookupSuccess'; do
+    if ! grep -q -F "${required}" "${P231_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_PROBE_SRC} lacks Plan 231 probe surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 24b. Probe-side mutation, NetDB/tunnel/queue/profile writes,
+  # reflection, private-field access, and mainline creation calls are
+  # forbidden. Tunnel-id setters would let a probe fabricate the very
+  # identities it must observe read-only.
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'heardAbout(' \
+    '.store(' \
+    '.publish(' \
+    'buildTunnels' \
+    'addTunnel' \
+    'setSendTunnelId' \
+    'setReceiveTunnelId' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P231_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_PROBE_SRC} uses forbidden Plan 231 probe call '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'explicitPeers' "${P231_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_PROBE_SRC} mentions explicitPeers (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'vmCommSystem' "${P231_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_PROBE_SRC} enables VMComm (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P231_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_PROBE_SRC} enables netDb.alwaysQuery (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P231_LAUNCHER_SRC}" ]]; then
+  # 24c. The launcher serves the three read-only P231 commands.
+  for required in \
+    '"P231-GATEWAY"' \
+    '"P231-CLIENT-OUTBOUND"' \
+    '"P231-PARTICIPATING"' \
+    'P231Probe' \
+    'p231Gateway' \
+    'p231ClientOutbound' \
+    'p231Participating' \
+    'kind=gateway' \
+    'kind=client-outbound' \
+    'kind=participating' \
+    'present=false'; do
+    if ! grep -q -F "${required}" "${P231_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_LAUNCHER_SRC} lacks Plan 231 launcher surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'forceBandwidthClass' "${P231_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_LAUNCHER_SRC} uses router.forceBandwidthClass (Plan 231 §4 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P231_DRIVER_TEST}" ]]; then
+  # 24d. The Rust driver owns the reverse-epoch contract, the
+  # isolated-epoch deltas, the exact tunnel matches, the i2pr
+  # tunnel-id-attributed counters, and the earliest-stage classifier.
+  for required in \
+    'fn p231_accepted_implies_dispatch_called' \
+    'fn p231_parse_gateway' \
+    'fn p231_parse_client_outbound' \
+    'fn p231_parse_participating' \
+    'fn p231_collect_gateway' \
+    'fn p231_collect_client_outbound' \
+    'fn p231_collect_participating' \
+    'fn p231_delta' \
+    'fn p231_target_role' \
+    'fn p231_count_marker_in_log_dir' \
+    'fn p231_count_marker_with_id_in_log_dir' \
+    'enum P231Terminal' \
+    'fn p231_classify' \
+    'fn record_p231_classification' \
+    'fn record_p231_early_stop_gap' \
+    'P231-A-OUTBOUND-GATEWAY-NOT-FOUND' \
+    'P231-A-OUTBOUND-GATEWAY-ENQUEUE-DROP' \
+    'P231-A-OBSERVABILITY-GAP' \
+    'P231-B-FIRST-HOP-NOT-RECEIVED-BY-C' \
+    'P231-B-C-OBEP-REASSEMBLY-FAILED' \
+    'P231-B-OBSERVABILITY-GAP' \
+    'P231-C-TARGET-IBGW-NOT-INSTALLED' \
+    'P231-C-TUNNEL-GATEWAY-NOT-RECEIVED' \
+    'P231-C-IBGW-ENQUEUE-OR-PUMP-BOUNDARY' \
+    'P231-C-IBGW-NEXT-HOP-LOOKUP-FAILED' \
+    'P231-D-I2PR-NO-EXPECTED-TUNNELDATA' \
+    'P231-D-I2PR-TUNNEL-RECOVERY-FAILED' \
+    'P231-D-I2PR-GARLIC-DECODE-FAILED' \
+    'P231-D-I2PR-DESTINATION-DISPATCH-MISSED' \
+    'P231-D-I2PR-PAYLOAD-MISMATCH' \
+    'P231-D-OBSERVABILITY-GAP' \
+    'P231-REVERSE-DELIVERY-PASSED' \
+    'p231-reverse-epoch' \
+    'p231-a-gateway' \
+    'p231-c-obep' \
+    'p231-ibgw' \
+    'p231-i2pr-reverse' \
+    'p231-classification' \
+    'ibgw_present_exact' \
+    'c_obep_present_exact' \
+    'expected_inbound_tunneldata_seen' \
+    'p231_expected_tunnel_id'; do
+    if ! grep -q -F "${required}" "${P231_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} lacks Plan 231 driver surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P231-" "${P231_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} invents a hard-coded Plan 231 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # ACCEPTED must never be treated as delivery proof, and OCMOSJ must
+  # never be claimed as not-entered after a nonce-correlated ACCEPTED.
+  if grep -qi "never dispatched" "${P231_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} claims OCMOSJ never dispatched after ACCEPTED (Plan 231 §3 source-order lock)" >&2
+    failures=$((failures + 1))
+  fi
+  # The frozen windows stay frozen: 45-second reverse payload
+  # acceptance, 70-second status-only observation.
+  if ! grep -q -F 'DATAGRAM_WAIT: Duration = Duration::from_secs(45)' "${P231_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} changed the frozen 45-second reverse window (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'P222_STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(70)' "${P231_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} changed the frozen 70-second status-only window (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  # No production Rust behavior change is authorized by the
+  # attribution phase: P231 surface stays inside the external test.
+  for prod_dir in \
+    "${REPO_ROOT}/crates/i2pr-daemon/src" \
+    "${REPO_ROOT}/crates/i2pr-client/src" \
+    "${REPO_ROOT}/crates/i2pr-tunnel/src" \
+    "${REPO_ROOT}/crates/i2pr-runtime/src"; do
+    if grep -rq -F 'p231' "${prod_dir}" 2>/dev/null || grep -rq -F 'P231' "${prod_dir}" 2>/dev/null; then
+      echo "m6 mixed-router evidence check failed: production dir ${prod_dir} carries Plan 231 surface (Plan 231 §4 forbids production changes)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Raw Java logs stay scratch-only: no P231 evidence row carries log
+  # text or log paths.
+  if grep "append_evidence" "${P231_DRIVER_TEST}" | grep -F "log-router" >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} promotes raw router logs into P231 evidence (Plan 231 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  # 24e. The 18 required Plan 231 §12 unit rows.
+  for unit_row in \
+    'p231_accepted_is_ordered_after_inline_dispatch_call' \
+    'p231_accepted_alone_does_not_prove_gateway_enqueue' \
+    'p231_gateway_stat_delta_requires_target_epoch' \
+    'p231_gateway_overflow_maps_to_enqueue_drop' \
+    'p231_c_obep_requires_exact_installed_tunnel' \
+    'p231_c_obep_count_delta_proves_first_hop_processing' \
+    'p231_target_gateway_role_comes_from_selected_lease' \
+    'p231_ibgw_requires_exact_target_tunnel_id' \
+    'p231_ibgw_processed_delta_precedes_tunneldata_emitted' \
+    'p231_unrelated_tunneldata_cannot_satisfy_i2pr_stage' \
+    'p231_expected_tunnel_id_required_for_recovery_stage' \
+    'p231_tunnel_recovery_failure_is_distinct_from_no_wire_receive' \
+    'p231_garlic_failure_is_distinct_from_tunnel_recovery_failure' \
+    'p231_destination_queue_hit_requires_digest_match_for_pass' \
+    'p231_status_only_after_45s_cannot_pass_payload_delivery' \
+    'p231_first_unknown_stage_maps_to_observability_gap' \
+    'p231_exactly_one_terminal_per_counted_run' \
+    'p231_secret_bearing_log_rows_rejected'; do
+    if ! grep -q "fn ${unit_row}" "${P231_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_DRIVER_TEST} lacks Plan 231 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P231_HARNESS}" ]]; then
+  # 24f. The harness wires the probe compile, the C-port/C-log
+  # inputs to the destination driver, and the single-terminal guard.
+  # (The P231-GATEWAY/P231-CLIENT-OUTBOUND/P231-PARTICIPATING command
+  # strings live in the launcher and are pinned by 24c above.)
+  for required in \
+    'P231Probe.java' \
+    'JAVA_DIAGNOSTIC_C_PORT' \
+    'JAVA_C_LOG_DIR' \
+    'p231-classification'; do
+    if ! grep -q -F "${required}" "${P231_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_HARNESS} lacks Plan 231 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P231-" "${P231_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P231_HARNESS} invents a Plan 231 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # No P231 row may carry topology/profile/tunnel-policy changes,
+  # timeout overrides, public-I2P/reseed/VMComm/alwaysQuery escapes,
+  # or raw log promotion relative to Plan 230.
+  p231_harness_lines="$(grep -n -E 'p231|P231' "${P231_HARNESS}" || true)"
+  for forbidden in \
+    'explicitPeers' \
+    'forceBandwidthClass' \
+    'netDb.alwaysQuery' \
+    'vmCommSystem' \
+    'reseed' \
+    'floodfillParticipant' \
+    'Pool.length' \
+    'DRIVER_TIMEOUT=' \
+    'DATAGRAM' \
+    'log-router'; do
+    if printf '%s\n' "${p231_harness_lines}" | grep -q -F "${forbidden}"; then
+      echo "m6 mixed-router evidence check failed: ${P231_HARNESS} P231 row carries forbidden surface '${forbidden}' (Plan 231 §4/§13)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants)"

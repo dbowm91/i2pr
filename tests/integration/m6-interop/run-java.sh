@@ -230,7 +230,13 @@ P229_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # profile/tier mutation, no NetDB store, no tunnel install, no
 # reflection, no getOrCreateProfile/addProfile/heardAbout, no isFailing).
 P230_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P230Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" ]]; then
+# Plan 231 WP B/C/D — test-only read-only post-ACCEPTED tunnel-dispatch
+# attribution probe (StatManager lifetime counts + installed outbound
+# client-tunnel send id + single participating HopConfig filtered by the
+# exact receive tunnel id; public accessors only, no state mutation,
+# no reflection, no queue access).
+P231_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P231Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" || ! -f "${P231_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -243,7 +249,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" "${P231_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -1678,6 +1684,7 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
      JAVA_DIAGNOSTIC_C_PORT="${JAVA_DIAGNOSTIC_C_PORT}" \
      JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
      JAVA_B_LOG_DIR="${JAVA_PUBLICATION_DATA}/logs" \
+     JAVA_C_LOG_DIR="${JAVA_TUNNEL_PARTICIPANT_DATA}/logs" \
      P227_ROUTER_C_HEX="${P227_C_HEX}" \
      P227_ROUTER_C_B64="${P227_C_B64}" \
      P227_CLIENT_DBID_HEX="${P227_CLIENT_DBID_HEX}" \
@@ -1707,6 +1714,17 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # Concatenate the destination driver's evidence into the destination TSV
   if [[ -f "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" ]]; then
     cat "${DRIVER_EVIDENCE}/destination/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
+  fi
+  # Plan 231 WP F — exactly one p231-classification per counted run.
+  # The Rust driver emits it on every path that reaches the driver
+  # (reverse epoch, install-stalled, lease-stalled). If the driver
+  # binary died before emitting (crash/timeout with no driver TSV),
+  # the shell emits the single honest gap row with the driver exit
+  # as provenance; it never invents a stage attribution.
+  if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+    if ! grep -Fq $'p231-classification\t' "${DRIVER_DEST_TSV}" 2>/dev/null; then
+      printf 'p231-classification\tP231-A-OBSERVABILITY-GAP reason=driver-evidence-absent driver_rc=%s\n' "${driver_rc:-unknown}" >> "${DRIVER_DEST_TSV}"
+    fi
   fi
   stop_reference_helper "${RAW_HELPER_PID}" "${JAVA_RAW_CONTROL_PORT}"
   # Plan 220 §7 — moment #5 (after reverse-send wait

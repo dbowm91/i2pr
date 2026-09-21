@@ -176,6 +176,29 @@
 //     can be distinguished from a newly published RI;
 //   - every P230 response is one bounded `P230-EV ...` line with
 //     booleans, bounded counts, tier/status tokens, and hex hashes only.
+// Plan 231 diagnostic contract (post-`ACCEPTED` tunnel-dispatch
+// attribution only, read-only, no state mutation):
+//   - `P231-GATEWAY` returns the bounded lifetime-event-count snapshot
+//     for the six exact-pinned stat names (`client.dispatchTime`,
+//     `client.dispatchSendTime`, `tunnel.dispatchOutboundTunnel`,
+//     `tunnel.dropGatewayOverflow`, `tunnel.dispatchInbound`,
+//     `tunnel.inboundLookupSuccess`) via `statManager().getRate(name)`
+//     + `RateStat.getLifetimeEventCount()` (`P231-EV kind=gateway ...`
+//     with -1 for a never-created rate, never zero-as-fact);
+//   - `P231-CLIENT-OUTBOUND <client-dbid-hex>` returns the bounded
+//     installed outbound client-tunnel snapshot for one helper client
+//     DBID (`P231-EV kind=client-outbound ...` with the hop-0 send
+//     tunnel id only when exactly one outbound tunnel is installed,
+//     otherwise 0, never a guessed id);
+//   - `P231-PARTICIPATING <receive-tunnel-id>` returns the single
+//     matching `HopConfig` snapshot from
+//     `tunnelDispatcher().listParticipatingTunnels()` filtered by the
+//     exact receive tunnel id (`P231-EV kind=participating ...` with
+//     receive/send ids, receive-from/send-to lowercase hex, `none`
+//     when null, and the processed-message count);
+//   - every P231 response is one bounded `P231-EV ...` line with
+//     booleans, counts, tunnel ids, and hex hashes only; no peer
+//     paths, keys, tags, payloads, queue contents, or raw log text.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -222,6 +245,7 @@ import net.i2p.router.networkdb.kademlia.P227Probe;
 import net.i2p.router.networkdb.kademlia.P228Probe;
 import net.i2p.router.networkdb.kademlia.P229Probe;
 import net.i2p.router.networkdb.kademlia.P230Probe;
+import net.i2p.router.networkdb.kademlia.P231Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -772,6 +796,18 @@ public final class ControlledRouter {
                         return p230Capability(parts[1]);
                     case "P230-SELF-VIEW":
                         return p230SelfView();
+                    case "P231-GATEWAY":
+                        return p231Gateway();
+                    case "P231-CLIENT-OUTBOUND":
+                        if (parts.length < 2) {
+                            return p231Error("missing-hash-argument");
+                        }
+                        return p231ClientOutbound(parts[1]);
+                    case "P231-PARTICIPATING":
+                        if (parts.length < 2) {
+                            return p231Error("missing-tunnel-argument");
+                        }
+                        return p231Participating(parts[1]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1098,6 +1134,109 @@ public final class ControlledRouter {
 
         private String p230Error(String reason) {
             return "P230-ERROR " + reason;
+        }
+
+        private String p231Error(String reason) {
+            return "P231-ERROR " + reason;
+        }
+
+        /**
+         * Plan 231 WP B/D — read-only lifetime-event-count snapshot for
+         * the six exact-pinned stat names. Observation only via
+         * P231Probe; never creates rates, never mutates counters.
+         */
+        private String p231Gateway() {
+            P231Probe.GatewayStats result =
+                P231Probe.snapshotGatewayStats(context());
+            if (result.error != null) {
+                return "P231-EV kind=gateway"
+                    + " observable=false reason=" + result.error;
+            }
+            return "P231-EV kind=gateway"
+                + " observable=true"
+                + " dispatch_time=" + result.dispatchTime
+                + " dispatch_send_time=" + result.dispatchSendTime
+                + " dispatch_outbound_tunnel=" + result.dispatchOutboundTunnel
+                + " drop_gateway_overflow=" + result.dropGatewayOverflow
+                + " dispatch_inbound=" + result.dispatchInbound
+                + " inbound_lookup_success=" + result.inboundLookupSuccess;
+        }
+
+        /**
+         * Plan 231 WP A — read-only installed outbound client-tunnel
+         * snapshot for one helper client DBID. Exposes the hop-0 send
+         * tunnel id only when exactly one outbound tunnel is installed;
+         * otherwise 0 (unknown, never guessed). Observation only via
+         * P231Probe; never installs, builds, or mutates tunnels.
+         */
+        private String p231ClientOutbound(String clientDbidHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            if (clientDbid == null) {
+                return p231Error("invalid-hex-hash");
+            }
+            P231Probe.ClientOutbound result =
+                P231Probe.snapshotClientOutbound(context(), clientDbid);
+            if (result.error != null) {
+                return "P231-EV kind=client-outbound"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P231-EV kind=client-outbound"
+                + " client_dbid_hex=" + clientDbidHex
+                + " observable=true"
+                + " client_resolved=" + result.clientResolved
+                + " outbound_tunnel_count=" + result.outboundTunnelCount
+                + " single_send_tunnel_id=" + result.singleSendTunnelId;
+        }
+
+        /**
+         * Plan 231 WP C/D — read-only single participating-tunnel
+         * snapshot filtered by the exact receive tunnel id. Observation
+         * only via P231Probe; never mutates tunnel state.
+         */
+        private String p231Participating(String receiveIdText) {
+            long receiveId = 0;
+            try {
+                receiveId = Long.parseLong(receiveIdText);
+            } catch (NumberFormatException nfe) {
+                return p231Error("invalid-tunnel-id");
+            }
+            if (receiveId <= 0) {
+                return p231Error("invalid-tunnel-id");
+            }
+            P231Probe.Participating result =
+                P231Probe.snapshotParticipating(context(), receiveId);
+            if (result.error != null) {
+                // A missing config is a first-class observation
+                // (present=false), never conflated with a query
+                // failure: only the exact not-found reason maps to
+                // the present=false row; every other error stays a
+                // query failure so the harness reports Unknown
+                // instead of manufacturing absence.
+                if ("not-found".equals(result.error)) {
+                    return "P231-EV kind=participating"
+                        + " receive_id=" + receiveId
+                        + " observable=true"
+                        + " present=false"
+                        + " match_count=0"
+                        + " send_id=0"
+                        + " receive_from=none"
+                        + " send_to=none"
+                        + " processed=-1";
+                }
+                return "P231-EV kind=participating"
+                    + " receive_id=" + receiveId
+                    + " observable=false reason=" + result.error;
+            }
+            return "P231-EV kind=participating"
+                + " receive_id=" + receiveId
+                + " observable=true"
+                + " present=" + result.present
+                + " match_count=" + result.matchCount
+                + " send_id=" + result.sendTunnelId
+                + " receive_from=" + result.receiveFromHex
+                + " send_to=" + result.sendToHex
+                + " processed=" + result.processedMessages;
         }
 
         /**
