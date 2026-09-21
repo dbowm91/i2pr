@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 231 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded by the M6 Java
+work. Plan 231 is now the registered-ready attribution for the remaining
+Java→i2pr reverse-delivery boundary after Plan 230: it traces the exact
+post-`ACCEPTED` path from Java A's outbound gateway through Router C and the
+selected target inbound gateway to i2pr's exact TunnelData/recovery/Garlic/
+Destination stages.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan231
+plan_230 = passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary
+plan_231 = registered-ready-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 231-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective
+```
+
 # Current dependency amendment — Plan 230 closed; convergence still blocked on the reverse-delivery boundary
 
 Plan 204 remains convergence-only. M10 product/application authority through Plans 213–215 is already closed and is not reopened by this work. Plan 230 closed as `passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary` (see `plans/closure/mixed-router-interop/230-status.md`): predicate proven, stock fixture corrected, natural bootstrap proven, forward destination delivery digest-matched — with the reverse Java→i2pr payload reproducing the retained Plan-218 signature. The remaining dependency is therefore narrowed from generic Plan-230 pendency to that exact reverse-delivery boundary; no reverse-delivery corrective is registered yet.
