@@ -1,3 +1,28 @@
+# Current dependency amendment — Plan 231 registered for post-ACCEPT reverse-delivery attribution
+
+Plan 230 remains closed at
+`passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary`.
+Exact-pinned Java I2P 2.13.0 source ordering now narrows the retained stop:
+`ClientMessageEventListener.handleSendMessage()` calls `distributeMessage()`;
+the client message pool runs OCMOSJ inline; OCMOSJ runs its `DispatchJob`
+inline; and that job calls `TunnelDispatcher.dispatchOutbound(...)` before
+returning. Only after `distributeMessage()` returns does
+`ackSendMessage()` emit `STATUS_SEND_ACCEPTED`.
+
+Plan 231 therefore owns the remaining post-`ACCEPTED` path, not another
+lookup/bootstrap pass: Java A outbound-gateway enqueue -> Router C exact one-hop
+OBEP processing -> selected target LeaseSet gateway/inbound-gateway processing
+-> TunnelData emission -> exact i2pr inbound TunnelData -> tunnel recovery ->
+Garlic decode -> Destination payload. Plan-230 topology, fixture corrections,
+and timing windows remain frozen.
+
+```text
+plan_201 = blocked-pending-plan231-reverse-delivery-tunnel-dispatch-attribution-corrective
+plan_230 = passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary
+plan_231 = registered-ready-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective
+next_executable_plan = 231-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective
+```
+
 # Current dependency amendment — Plan 230 closed with reverse-delivery boundary
 
 Plan 230 closed as
