@@ -1,3 +1,15 @@
+# Current dependency amendment — Plan 229 remains below SAM
+
+Plan 205 stays retained/deferred. Plan 228 proved the active stop is paired
+tunnel infrastructure below client-tunnel establishment. Plan 229 remains on
+the direct stock-Java exploratory/client build path, so a SAM bridge does not
+replace the missing machinery.
+
+```text
+plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
 # Current dependency amendment — Plan 228 remains below SAM
 
 Plan 205 stays retained/deferred. Plan 227 stopped below client-tunnel
