@@ -98,6 +98,7 @@ mandatory_java = {
 java_keys = set(java_evidence.get("driver_evidence_keys", []))
 missing = sorted(mandatory_java - java_keys)
 bad = [row.get("label") for row in java_rows if row.get("status") != "passed"]
+driver_tsv = java_path.parent / "driver" / "driver-evidence.tsv"
 driver_tsv_text = driver_tsv.read_text(encoding="utf-8") if driver_tsv.exists() else ""
 p234_passed = any(
     line.startswith("p234-classification\t")

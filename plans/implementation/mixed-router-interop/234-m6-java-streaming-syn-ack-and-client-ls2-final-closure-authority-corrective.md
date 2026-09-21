@@ -1,6 +1,6 @@
 # Plan 234 — M6 Java Streaming SYN-ACK and client-LS2 final-closure authority corrective
 
-Status: **in-progress-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective**
+Status: **passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary**
 
 ## 1. Objective
 
@@ -648,13 +648,14 @@ corrective. Plan 234 itself makes no production fix.
 ```text
 plan_232 = passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary
 plan_233 = superseded-before-execution-by-plan234-final-closure-authority-corrective
-plan_234 = registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
+plan_235 = registered-ready-m6-java-streaming-post-accept-response-boundary-corrective
 
-plan_201 = blocked-pending-plan234-streaming-and-final-closure-authority-corrective
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan234
+plan_201 = blocked-pending-plan235-java-streaming-post-accept-response-boundary-corrective
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan235
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 
-next_executable_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+next_executable_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
 milestone6_java_mixed_router_interop = not-yet-passed
 milestone6_interoperable = not-yet-claimed
 

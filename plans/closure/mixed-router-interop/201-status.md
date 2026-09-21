@@ -1,3 +1,23 @@
+# Current dependency amendment — Plan 234 closed; Plan 235 owns the remaining Streaming response boundary
+
+Plan 234 is formally closed at Outcome B:
+`passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary`.
+Three same-SHA counted attempts emitted
+`P234-B-JAVA-ACCEPTED-NO-RESPONSE-OBSERVED`: the Java accept worker returned
+and stored the socket, but i2pr observed no inbound TunnelData in the frozen
+SYN epoch. Plan 232's raw-Destination reverse pass remains authoritative.
+
+Plan 235 is the registered-ready successor for the exact post-accept/
+pre-i2pr-inbound response boundary. Plan 201 remains blocked; no final
+publication/LeaseSet2 authority claim is unblocked by Plan 234.
+
+```text
+plan_201 = blocked-pending-plan235-java-streaming-post-accept-response-boundary-corrective
+plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
+plan_235 = registered-ready-m6-java-streaming-post-accept-response-boundary-corrective
+next_executable_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
+```
+
 # Current dependency amendment — Plan 233 superseded; Plan 234 owns Streaming plus final-closure authority reconciliation
 
 Plan 232 remains closed at

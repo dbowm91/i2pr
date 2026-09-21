@@ -1,3 +1,22 @@
+# Current dependency amendment — Plan 234 closed; Plan 235 owns the remaining M6 dependency
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 234 closed at
+`passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary`.
+Plan 235 is registered-ready for the exact post-accept/pre-i2pr-inbound
+Streaming response boundary. Plan 204 therefore remains blocked until the
+independent M6 Java second-family closure gates are satisfied.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan235
+plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
+plan_235 = registered-ready-m6-java-streaming-post-accept-response-boundary-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
+```
+
 # Current dependency amendment — Plan 234 registered; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
