@@ -1,3 +1,34 @@
+# Plan 229 registration follow-up
+
+Plan 228 remains closed at:
+
+```text
+P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both
+```
+
+Pinned-source review after closure shows the zero-hop exploratory tunnels are
+stock startup fallbacks, while Java's client builder requires non-zero paired
+infrastructure. Java's bundled small-router profile supplies a supported
+one-hop exploratory configuration, and the repo's current launcher incorrectly
+makes Router C floodfill despite Plan-201 defining it as a non-floodfill
+transit participant.
+
+Plan 229 is therefore registered as the bounded corrective: restore C's
+transit role, apply the stock one-hop exploratory profile to A only, prove C
+entered the ordinary profiled/selectable population through the existing
+authenticated RouterInfo DatabaseStore bootstrap, require real non-zero
+exploratory tunnels, and rerun the unchanged Plan-227/228 client build path.
+
+```text
+plan_228 = passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary
+plan_229 = registered-ready-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+next_executable_plan = 229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective
+```
+
+No direct profile/NetDB/tunnel mutation, Java patch, VMComm,
+`netDb.alwaysQuery`, public I2P, timeout increase, exploratory
+`explicitPeers`, or Plan-227 client-profile change is authorized.
+
 # Plan 228 status — M6 Java client-tunnel build-path attribution
 
 Status: **`passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary`**.
