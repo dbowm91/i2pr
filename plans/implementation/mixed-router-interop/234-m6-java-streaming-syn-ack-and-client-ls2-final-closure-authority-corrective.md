@@ -1,6 +1,6 @@
 # Plan 234 — M6 Java Streaming SYN-ACK and client-LS2 final-closure authority corrective
 
-Status: **registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective**
+Status: **in-progress-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective**
 
 ## 1. Objective
 

@@ -103,7 +103,7 @@ identically at `SYN-ACK never established
 
 Plan 233 is superseded-before-execution. Its narrow Streaming SYN-ACK attribution remains valid, but its family-pass outcome did not reconcile the still-required Plan-200/201 client-LS2 lifecycle rows in the fail-closed Java harness.
 
-Plan 234 is registered-ready. It inherits the corrected Plan-232 fixture and the narrow Streaming SYN-ACK attribution, then requires a row-by-row Plan-200 §C/D final-closure authority reconciliation plus a full `run-java.sh` exit 0 and final M6 closure checker before Java-family M6 may pass.
+Plan 234 is in progress. It inherits the corrected Plan-232 fixture and the narrow Streaming SYN-ACK attribution, then requires a row-by-row Plan-200 §C/D final-closure authority reconciliation plus a full `run-java.sh` exit 0 and final M6 closure checker before Java-family M6 may pass.
 
 Plan 205 remains retained/deferred.
 
@@ -160,7 +160,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 231 | closed | passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary | `plans/implementation/mixed-router-interop/231-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective.md` | `plans/closure/mixed-router-interop/231-status.md` |
 | 232 | closed | passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary | `plans/implementation/mixed-router-interop/232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure.md` | `plans/closure/mixed-router-interop/232-status.md` |
 | 233 | superseded | superseded-before-execution-by-plan234-final-closure-authority-corrective | `plans/implementation/mixed-router-interop/233-m6-java-streaming-syn-ack-corrective-after-route-derived-lease-fix.md` | `plans/closure/mixed-router-interop/233-status.md` |
-| 234 | ready | registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective | `plans/implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md` | `plans/closure/mixed-router-interop/234-status.md` |
+| 234 | active | in-progress-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective | `plans/implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md` | `plans/closure/mixed-router-interop/234-status.md` |
 
 ## 8. Cross-cutting requirements
 

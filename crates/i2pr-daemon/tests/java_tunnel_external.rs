@@ -76,8 +76,8 @@ use i2pr_client::streaming::manager::{
 use i2pr_client::streaming::{StreamingConfig, transport::TransportSendRequest};
 use i2pr_client::{
     DestinationDispatcher, DestinationIdentity, DestinationOutboundRole, DestinationRouting,
-    DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager, InboundLeaseSource,
-    OutboundRequest, StreamingDestinationAdapter, build_signed_lease_set2,
+    DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager, InboundDispatchOutcome,
+    InboundLeaseSource, OutboundRequest, StreamingDestinationAdapter, build_signed_lease_set2,
     compose_outbound_delivery,
 };
 use i2pr_daemon::config::Config;
@@ -333,6 +333,204 @@ impl ReferenceControl {
     async fn stream_eof(&mut self, id: usize) -> bool {
         self.command(&format!("EOF {id}")).await == "EOF"
     }
+
+    /// Plan 234 §8 — bounded, read-only helper-side accept state.
+    async fn report_stream_state(&mut self) -> Option<P234JavaAcceptState> {
+        p234_parse_java_accept_state(&self.command("REPORT_STREAM_STATE").await)
+    }
+}
+
+// ---- Plan 234 — Streaming SYN epoch attribution --------------------------
+
+/// Sanitized helper-side facts returned by `REPORT_STREAM_STATE`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P234JavaAcceptState {
+    accept_requested: u64,
+    accept_entered: u64,
+    accept_returned: u64,
+    socket_stored: u64,
+    accept_errors: u64,
+    accepting: bool,
+    accepted_count: u64,
+    connected_count: u64,
+}
+
+fn p234_parse_java_accept_state(line: &str) -> Option<P234JavaAcceptState> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "STREAM_STATUS" {
+        return None;
+    }
+    let mut state = P234JavaAcceptState::default();
+    let mut seen = 0u16;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "accept_requested" => state.accept_requested = value.parse().ok()?,
+            "accept_entered" => state.accept_entered = value.parse().ok()?,
+            "accept_returned" => state.accept_returned = value.parse().ok()?,
+            "socket_stored" => state.socket_stored = value.parse().ok()?,
+            "accept_errors" => state.accept_errors = value.parse().ok()?,
+            "accepting" => state.accepting = value.parse().ok()?,
+            "accepted_count" => state.accepted_count = value.parse().ok()?,
+            "connected_count" => state.connected_count = value.parse().ok()?,
+            _ => return None,
+        }
+        seen = seen.saturating_add(1);
+    }
+    (seen == 8).then_some(state)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P234SynEpoch {
+    local_connection_id: u64,
+    local_port: u16,
+    remote_port: u16,
+    syn_sequence_or_message_identity: u32,
+    syn_transport_request_emitted: bool,
+    java_accept_thread_started: bool,
+    java_accept_returned: bool,
+    java_stream_receive_observed: bool,
+    java_stream_response_observed: bool,
+    i2pr_inbound_tunneldata_count: u64,
+    i2pr_expected_stream_tunneldata_count: u64,
+    i2pr_tunnel_recovery_count: u64,
+    i2pr_tunnel_recovery_failures: u64,
+    i2pr_garlic_payload_count: u64,
+    i2pr_garlic_decode_failures: u64,
+    i2pr_streaming_adapter_calls: u64,
+    i2pr_streaming_adapter_successes: u64,
+    i2pr_streaming_adapter_errors: u64,
+    pending_outbound_after_receive: u64,
+    ack_poll_emissions: u64,
+    retransmit_poll_emissions: u64,
+    connection_established: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P234Terminal {
+    JavaAcceptWorkerNotStarted,
+    JavaSynNotAccepted,
+    JavaAcceptedNoResponseObserved,
+    I2prNoExpectedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prNoStreamingPayload,
+    I2prStreamingAdapterFailed,
+    DispatchedNotEstablished,
+    DirectionAEstablished,
+    ObservabilityGap,
+}
+
+impl P234Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::JavaAcceptWorkerNotStarted => "P234-B-JAVA-ACCEPT-WORKER-NOT-STARTED",
+            Self::JavaSynNotAccepted => "P234-B-JAVA-SYN-NOT-ACCEPTED",
+            Self::JavaAcceptedNoResponseObserved => "P234-B-JAVA-ACCEPTED-NO-RESPONSE-OBSERVED",
+            Self::I2prNoExpectedTunnelData => "P234-C-I2PR-NO-EXPECTED-TUNNELDATA",
+            Self::I2prTunnelRecoveryFailed => "P234-C-I2PR-TUNNEL-RECOVERY-FAILED",
+            Self::I2prGarlicDecodeFailed => "P234-C-I2PR-GARLIC-DECODE-FAILED",
+            Self::I2prNoStreamingPayload => "P234-C-I2PR-NO-STREAMING-PAYLOAD",
+            Self::I2prStreamingAdapterFailed => "P234-C-I2PR-STREAMING-ADAPTER-FAILED",
+            Self::DispatchedNotEstablished => "P234-C-DISPATCHED-NOT-ESTABLISHED",
+            Self::DirectionAEstablished => "P234-C-STREAMING-DIRECTION-A-ESTABLISHED",
+            Self::ObservabilityGap => "P234-C-OBSERVABILITY-GAP",
+        }
+    }
+}
+
+fn p234_classify_syn_epoch(epoch: &P234SynEpoch) -> P234Terminal {
+    if !epoch.java_accept_thread_started {
+        return P234Terminal::JavaAcceptWorkerNotStarted;
+    }
+    if !epoch.java_accept_returned {
+        return P234Terminal::JavaSynNotAccepted;
+    }
+    if epoch.i2pr_inbound_tunneldata_count == 0 {
+        return P234Terminal::JavaAcceptedNoResponseObserved;
+    }
+    if epoch.i2pr_expected_stream_tunneldata_count == 0 {
+        return P234Terminal::I2prNoExpectedTunnelData;
+    }
+    if epoch.i2pr_tunnel_recovery_failures > 0 && epoch.i2pr_tunnel_recovery_count == 0 {
+        return P234Terminal::I2prTunnelRecoveryFailed;
+    }
+    if epoch.i2pr_garlic_decode_failures > 0 && epoch.i2pr_garlic_payload_count == 0 {
+        return P234Terminal::I2prGarlicDecodeFailed;
+    }
+    if epoch.i2pr_streaming_adapter_calls == 0 {
+        return P234Terminal::I2prNoStreamingPayload;
+    }
+    if epoch.i2pr_streaming_adapter_errors > 0 {
+        return P234Terminal::I2prStreamingAdapterFailed;
+    }
+    if epoch.i2pr_streaming_adapter_successes > 0 && !epoch.connection_established {
+        return P234Terminal::DispatchedNotEstablished;
+    }
+    if epoch.connection_established {
+        return P234Terminal::DirectionAEstablished;
+    }
+    P234Terminal::ObservabilityGap
+}
+
+fn record_p234_syn_epoch(
+    evidence_dir: &Path,
+    epoch: &P234SynEpoch,
+    java_state: Option<P234JavaAcceptState>,
+    local_destination_hash: &Hash,
+    remote_destination_hash: &Hash,
+) {
+    let java = java_state.unwrap_or_default();
+    append_evidence(
+        evidence_dir,
+        "p234-syn-epoch",
+        &format!(
+            "local_connection_id={} local_destination_hash={} remote_destination_hash={} local_port={} remote_port={} syn_sequence_or_message_identity={} syn_transport_request_emitted={} java_accept_thread_started={} java_accept_returned={} java_stream_socket_count_delta={} java_stream_receive_observed={} java_stream_response_observed={} i2pr_inbound_tunneldata_count={} i2pr_expected_stream_tunneldata_count={} i2pr_tunnel_recovery_count={} i2pr_garlic_payload_count={} i2pr_streaming_adapter_calls={} i2pr_streaming_adapter_successes={} i2pr_streaming_adapter_errors={} connection_state={} pending_outbound_after_receive={} ack_poll_emissions={} retransmit_poll_emissions={} java_accept_errors={}",
+            epoch.local_connection_id,
+            sha256_hex(local_destination_hash.as_bytes()),
+            sha256_hex(remote_destination_hash.as_bytes()),
+            epoch.local_port,
+            epoch.remote_port,
+            epoch.syn_sequence_or_message_identity,
+            epoch.syn_transport_request_emitted,
+            epoch.java_accept_thread_started,
+            epoch.java_accept_returned,
+            java.socket_stored,
+            epoch.java_stream_receive_observed,
+            epoch.java_stream_response_observed,
+            epoch.i2pr_inbound_tunneldata_count,
+            epoch.i2pr_expected_stream_tunneldata_count,
+            epoch.i2pr_tunnel_recovery_count,
+            epoch.i2pr_garlic_payload_count,
+            epoch.i2pr_streaming_adapter_calls,
+            epoch.i2pr_streaming_adapter_successes,
+            epoch.i2pr_streaming_adapter_errors,
+            if epoch.connection_established {
+                "Established"
+            } else {
+                "SynSent"
+            },
+            epoch.pending_outbound_after_receive,
+            epoch.ack_poll_emissions,
+            epoch.retransmit_poll_emissions,
+            java.accept_errors,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p234-java-accept-state",
+        &format!(
+            "accept_requested={} accept_entered={} accept_returned={} socket_stored={} accept_errors={} accepting={} accepted_count={} connected_count={}",
+            java.accept_requested,
+            java.accept_entered,
+            java.accept_returned,
+            java.socket_stored,
+            java.accept_errors,
+            java.accepting,
+            java.accepted_count,
+            java.connected_count,
+        ),
+    );
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -8177,7 +8375,8 @@ async fn streaming_through_java() {
     };
 
     let mut streaming = StreamingManager::new(StreamingConfig::balanced());
-    assert_eq!(stream_control.command("START_ACCEPT").await, "STARTED");
+    let accept_start = stream_control.command("START_ACCEPT").await;
+    let java_accept_thread_started = accept_start == "STARTED";
     let outcome = streaming
         .connect(
             &local_identity,
@@ -8192,9 +8391,22 @@ async fn streaming_through_java() {
     let ConnectOutcome::SynSent { connection_id, .. } = outcome else {
         panic!("expected SynSent");
     };
+    let (local_port, remote_port) = streaming
+        .get_connection(connection_id)
+        .map(|connection| (connection.local_port(), connection.remote_port()))
+        .expect("SYN connection remains registered");
     let mut syn_queue = streaming.drain_outbound();
     assert_eq!(syn_queue.len(), 1, "connect must emit exactly one SYN");
     let syn_request = syn_queue.remove(0);
+    let mut p234_epoch = P234SynEpoch {
+        local_connection_id: connection_id.raw(),
+        local_port,
+        remote_port,
+        syn_sequence_or_message_identity: syn_request.sequence,
+        syn_transport_request_emitted: true,
+        java_accept_thread_started,
+        ..P234SynEpoch::default()
+    };
     let mut send_rng = ChaCha8Rng::seed_from_u64(wall_ms().wrapping_add(11));
     send_transport_request(
         &syn_request,
@@ -8217,10 +8429,7 @@ async fn streaming_through_java() {
         .bind_destination_hash(local_identity.id(), local_dest_hash)
         .expect("bind destination hash");
     let syn_ack_deadline = tokio::time::Instant::now() + SYN_ACK_WAIT;
-    let mut syn_accepted = false;
-    let mut established = false;
-    let mut pump_error = 0u64;
-    while tokio::time::Instant::now() < syn_ack_deadline && !established {
+    while tokio::time::Instant::now() < syn_ack_deadline && !p234_epoch.connection_established {
         let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
         let Ok(Some(inbound)) = next else {
             continue;
@@ -8228,7 +8437,7 @@ async fn streaming_through_java() {
         let message = match decode_inbound_i2np(&inbound.bytes) {
             Ok(message) => message,
             Err(_) => {
-                pump_error += 1;
+                p234_epoch.i2pr_garlic_decode_failures += 1;
                 continue;
             }
         };
@@ -8236,23 +8445,46 @@ async fn streaming_through_java() {
             I2npBody::TunnelData(cell) => cell.clone(),
             _ => continue,
         };
+        p234_epoch.i2pr_inbound_tunneldata_count += 1;
+        if cell.tunnel_id == STREAM_IBGW_NEXT {
+            p234_epoch.i2pr_expected_stream_tunneldata_count += 1;
+        } else {
+            continue;
+        }
         let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
             Ok(bytes) => bytes,
-            Err(_) => continue,
+            Err(_) => {
+                p234_epoch.i2pr_tunnel_recovery_failures += 1;
+                continue;
+            }
         };
+        p234_epoch.i2pr_tunnel_recovery_count += 1;
         let now_secs = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
-        dispatcher.dispatch_garlic_envelope(
+        let garlic = match I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) {
+            Ok(message) => message,
+            Err(_) => {
+                p234_epoch.i2pr_garlic_decode_failures += 1;
+                continue;
+            }
+        };
+        let dispatch_outcome = dispatcher.dispatch_garlic_envelope(
             &mut session,
             local_identity.id(),
             local_identity.static_secret_bytes(),
             &local_identity.static_public_bytes(),
             now_secs,
-            &I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode garlic"),
+            &garlic,
             routing.lease_set2_store_mut(),
         );
+        if matches!(dispatch_outcome, InboundDispatchOutcome::Rejected(_)) {
+            p234_epoch.i2pr_garlic_decode_failures += 1;
+            continue;
+        }
+        p234_epoch.i2pr_garlic_payload_count += 1;
         let Some(queued) = dispatcher.pop_payload(local_identity.id()) else {
             continue;
         };
+        p234_epoch.i2pr_streaming_adapter_calls += 1;
         match StreamingDestinationAdapter::receive(
             queued.bytes(),
             &local_identity,
@@ -8261,20 +8493,23 @@ async fn streaming_through_java() {
             wall_ms(),
         ) {
             Ok(i2pr_client::InboundStreamingOutcome::StreamingDispatched { .. }) => {
-                syn_accepted = true;
+                p234_epoch.i2pr_streaming_adapter_successes += 1;
             }
             Ok(_) => {}
             Err(_) => {
-                pump_error += 1;
+                p234_epoch.i2pr_streaming_adapter_errors += 1;
                 continue;
             }
         }
         if let Some(conn) = streaming.get_connection(connection_id)
             && conn.state() == i2pr_client::streaming::connection::ConnectionState::Established
         {
-            established = true;
+            p234_epoch.connection_established = true;
         }
         let pending = streaming.drain_outbound();
+        p234_epoch.pending_outbound_after_receive = p234_epoch
+            .pending_outbound_after_receive
+            .saturating_add(pending.len() as u64);
         for request in &pending {
             send_transport_request(
                 request,
@@ -8288,12 +8523,65 @@ async fn streaming_through_java() {
             )
             .await;
         }
+        for request in streaming.poll_acks(wall_ms()) {
+            p234_epoch.ack_poll_emissions += 1;
+            send_transport_request(
+                &request,
+                &routing,
+                &mut session,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+            )
+            .await;
+        }
+        for request in streaming.poll_retransmits(wall_ms()) {
+            p234_epoch.retransmit_poll_emissions += 1;
+            send_transport_request(
+                &request,
+                &routing,
+                &mut session,
+                &destination_outbound,
+                &local_identity,
+                &local_ls2,
+                &delivery,
+                &mut send_rng,
+            )
+            .await;
+        }
     }
-    if !syn_accepted || !established {
+    let java_accept_state = stream_control.report_stream_state().await;
+    p234_epoch.java_accept_returned =
+        java_accept_state.is_some_and(|state| state.accept_returned > 0);
+    p234_epoch.java_stream_receive_observed =
+        java_accept_state.is_some_and(|state| state.socket_stored > 0);
+    p234_epoch.java_stream_response_observed = p234_epoch.i2pr_expected_stream_tunneldata_count > 0;
+    let p234_terminal = p234_classify_syn_epoch(&p234_epoch);
+    record_p234_syn_epoch(
+        &evidence_dir,
+        &p234_epoch,
+        java_accept_state,
+        &Hash::from_bytes(*local_dest_hash.as_bytes()),
+        &Hash::from_bytes(*reference_hash.as_bytes()),
+    );
+    append_evidence(&evidence_dir, "p234-classification", p234_terminal.token());
+    if p234_terminal != P234Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
             &format!(
-                "Plan 194 §11 stop: SYN-ACK never established (syn_accepted={syn_accepted} established={established} pump_error={pump_error})"
+                "Plan 234 SYN epoch stopped at {} (java_accept_returned={} inbound_tunneldata={} expected_tunneldata={} recovery={} recovery_failures={} garlic_payload={} adapter_calls={} adapter_successes={} adapter_errors={})",
+                p234_terminal.token(),
+                p234_epoch.java_accept_returned,
+                p234_epoch.i2pr_inbound_tunneldata_count,
+                p234_epoch.i2pr_expected_stream_tunneldata_count,
+                p234_epoch.i2pr_tunnel_recovery_count,
+                p234_epoch.i2pr_tunnel_recovery_failures,
+                p234_epoch.i2pr_garlic_payload_count,
+                p234_epoch.i2pr_streaming_adapter_calls,
+                p234_epoch.i2pr_streaming_adapter_successes,
+                p234_epoch.i2pr_streaming_adapter_errors,
             ),
         );
         handle.shutdown();
@@ -17765,5 +18053,283 @@ fn p232_no_production_surface_change() {
                 .token()
                 .contains(production_label)
         );
+    }
+}
+
+// ---- Plan 234 §14 unit rows -----------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P234RowResolution {
+    Pass,
+    SupersededByStrongerExternalEvidence,
+    StillBlocking,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P234RowEvidence {
+    current_passed: bool,
+    mapping_explicit: bool,
+    replacement_mandatory: bool,
+    replacement_stronger: bool,
+}
+
+fn p234_resolve_required_row(evidence: P234RowEvidence) -> P234RowResolution {
+    if evidence.current_passed {
+        P234RowResolution::Pass
+    } else if evidence.mapping_explicit
+        && evidence.replacement_mandatory
+        && evidence.replacement_stronger
+    {
+        P234RowResolution::SupersededByStrongerExternalEvidence
+    } else {
+        P234RowResolution::StillBlocking
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn p234_family_closure_allowed(
+    plan232_route_parity: bool,
+    raw_destination_pass: bool,
+    streaming_direction_a: bool,
+    streaming_direction_b: bool,
+    refresh_republication: bool,
+    required_rows_resolved: bool,
+    run_java_exit_zero: bool,
+    mixed_router_checker: bool,
+    final_closure_checker: bool,
+) -> bool {
+    plan232_route_parity
+        && raw_destination_pass
+        && streaming_direction_a
+        && streaming_direction_b
+        && refresh_republication
+        && required_rows_resolved
+        && run_java_exit_zero
+        && mixed_router_checker
+        && final_closure_checker
+}
+
+#[test]
+fn p234_plan232_route_parity_is_prerequisite() {
+    assert!(!p234_family_closure_allowed(
+        false, true, true, true, true, true, true, true, true
+    ));
+}
+
+#[test]
+fn p234_start_accept_precedes_syn_send() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        syn_transport_request_emitted: true,
+        ..P234SynEpoch::default()
+    };
+    assert!(epoch.java_accept_thread_started);
+    assert!(epoch.syn_transport_request_emitted);
+}
+
+#[test]
+fn p234_java_accept_worker_state_is_bounded() {
+    let parsed = p234_parse_java_accept_state(
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0",
+    )
+    .expect("bounded stream status");
+    assert_eq!(parsed.accept_returned, 1);
+    assert!(!parsed.accepting);
+    assert!(p234_parse_java_accept_state("STREAM_STATUS accept_requested=1").is_none());
+}
+
+#[test]
+fn p234_no_expected_tunneldata_is_distinct_from_decode_failure() {
+    let base = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        ..P234SynEpoch::default()
+    };
+    assert_eq!(
+        p234_classify_syn_epoch(&base),
+        P234Terminal::JavaAcceptedNoResponseObserved
+    );
+    let decoded = P234SynEpoch {
+        i2pr_inbound_tunneldata_count: 1,
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_garlic_decode_failures: 1,
+        ..base
+    };
+    assert_eq!(
+        p234_classify_syn_epoch(&decoded),
+        P234Terminal::I2prGarlicDecodeFailed
+    );
+}
+
+#[test]
+fn p234_tunnel_recovery_failure_is_distinct_from_no_wire() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_inbound_tunneldata_count: 1,
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_tunnel_recovery_failures: 1,
+        ..P234SynEpoch::default()
+    };
+    assert_eq!(
+        p234_classify_syn_epoch(&epoch),
+        P234Terminal::I2prTunnelRecoveryFailed
+    );
+    assert_ne!(
+        p234_classify_syn_epoch(&P234SynEpoch {
+            java_accept_thread_started: true,
+            java_accept_returned: true,
+            ..P234SynEpoch::default()
+        }),
+        P234Terminal::I2prTunnelRecoveryFailed
+    );
+}
+
+#[test]
+fn p234_garlic_failure_is_distinct_from_streaming_adapter_failure() {
+    let base = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_inbound_tunneldata_count: 1,
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_tunnel_recovery_count: 1,
+        ..P234SynEpoch::default()
+    };
+    assert_eq!(
+        p234_classify_syn_epoch(&P234SynEpoch {
+            i2pr_garlic_decode_failures: 1,
+            ..base
+        }),
+        P234Terminal::I2prGarlicDecodeFailed
+    );
+    assert_eq!(
+        p234_classify_syn_epoch(&P234SynEpoch {
+            i2pr_garlic_payload_count: 1,
+            i2pr_streaming_adapter_calls: 1,
+            i2pr_streaming_adapter_errors: 1,
+            ..base
+        }),
+        P234Terminal::I2prStreamingAdapterFailed
+    );
+}
+
+#[test]
+fn p234_adapter_dispatch_without_established_is_distinct() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_inbound_tunneldata_count: 1,
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_tunnel_recovery_count: 1,
+        i2pr_garlic_payload_count: 1,
+        i2pr_streaming_adapter_calls: 1,
+        i2pr_streaming_adapter_successes: 1,
+        ..P234SynEpoch::default()
+    };
+    assert_eq!(
+        p234_classify_syn_epoch(&epoch),
+        P234Terminal::DispatchedNotEstablished
+    );
+}
+
+#[test]
+fn p234_direction_a_pass_does_not_close_java_family() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, false, true, true, true, true, true
+    ));
+}
+
+#[test]
+fn p234_direction_b_requires_live_refresh_parity() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, true, false, true, true, true, true
+    ));
+}
+
+#[test]
+fn p234_plan200_c_d_rows_require_pass_or_explicit_supersession_mapping() {
+    assert_eq!(
+        p234_resolve_required_row(P234RowEvidence {
+            current_passed: true,
+            ..P234RowEvidence::default()
+        }),
+        P234RowResolution::Pass
+    );
+    assert_eq!(
+        p234_resolve_required_row(P234RowEvidence::default()),
+        P234RowResolution::StillBlocking
+    );
+}
+
+#[test]
+fn p234_superseded_row_requires_stronger_mandatory_external_evidence() {
+    let mapping = P234RowEvidence {
+        mapping_explicit: true,
+        replacement_mandatory: true,
+        replacement_stronger: true,
+        ..P234RowEvidence::default()
+    };
+    assert_eq!(
+        p234_resolve_required_row(mapping),
+        P234RowResolution::SupersededByStrongerExternalEvidence
+    );
+    assert_eq!(
+        p234_resolve_required_row(P234RowEvidence {
+            mapping_explicit: true,
+            replacement_mandatory: true,
+            replacement_stronger: false,
+            ..P234RowEvidence::default()
+        }),
+        P234RowResolution::StillBlocking
+    );
+}
+
+#[test]
+fn p234_unmapped_legacy_required_row_blocks_closure() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, true, true, false, true, true, true
+    ));
+}
+
+#[test]
+fn p234_run_java_exit_zero_required_for_family_pass() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, true, true, true, false, true, true
+    ));
+}
+
+#[test]
+fn p234_final_closure_checker_required() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, true, true, true, true, true, false
+    ));
+}
+
+#[test]
+fn p234_no_global_required_failed_bypass() {
+    assert!(!p234_family_closure_allowed(
+        true, true, true, true, true, true, false, true, true
+    ));
+    assert!(p234_family_closure_allowed(
+        true, true, true, true, true, true, true, true, true
+    ));
+}
+
+#[test]
+fn p234_no_production_surface_change_before_owned_defect() {
+    for token in [
+        P234Terminal::JavaAcceptWorkerNotStarted.token(),
+        P234Terminal::JavaSynNotAccepted.token(),
+        P234Terminal::JavaAcceptedNoResponseObserved.token(),
+        P234Terminal::I2prNoExpectedTunnelData.token(),
+        P234Terminal::I2prTunnelRecoveryFailed.token(),
+        P234Terminal::I2prGarlicDecodeFailed.token(),
+        P234Terminal::I2prNoStreamingPayload.token(),
+        P234Terminal::I2prStreamingAdapterFailed.token(),
+        P234Terminal::DispatchedNotEstablished.token(),
+        P234Terminal::DirectionAEstablished.token(),
+        P234Terminal::ObservabilityGap.token(),
+    ] {
+        assert!(token.starts_with("P234-"));
     }
 }

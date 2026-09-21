@@ -1,6 +1,6 @@
 # Plan 234 status — M6 Java Streaming SYN-ACK and client-LS2 final-closure authority corrective
 
-Status: **registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective**.
+Status: **in-progress-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective**.
 
 Plan of record:
 [`234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md`](../../implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md).
@@ -39,13 +39,13 @@ final-closure authority reconciliation.
 ```text
 plan_232 = passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary
 plan_233 = superseded-before-execution-by-plan234-final-closure-authority-corrective
-plan_234 = registered-ready-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+plan_234 = in-progress-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
 
 plan_201 = blocked-pending-plan234-streaming-and-final-closure-authority-corrective
 plan_204 = blocked-on-m6-java-second-family-closure-pending-plan234
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 
-next_executable_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
+active_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective
 milestone6_java_mixed_router_interop = not-yet-passed
 milestone6_interoperable = not-yet-claimed
 

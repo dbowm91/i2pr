@@ -21,6 +21,9 @@ evidence_dir = Path(sys.argv[1])
 repo_root = Path(sys.argv[2])
 expected_i2pd = sys.argv[3]
 expected_java = sys.argv[4]
+java_harness = repo_root / "tests/integration/m6-interop/run-java.sh"
+if not java_harness.is_file():
+    raise SystemExit(f"missing authoritative Java harness: {java_harness}")
 root_file = evidence_dir / "evidence.json"
 if not root_file.is_file():
     raise SystemExit(f"missing cross-family evidence: {root_file}")
@@ -90,11 +93,18 @@ mandatory_java = {
     "streaming-sibling-isolated", "streaming-b-established", "streaming-b-data-digest",
     "streaming-b-reverse-data-digest", "streaming-b-close", "manager-cleanup",
     "direct-rejected", "liveness-first-test", "shutdown-baseline",
+    "p234-classification", "p234-syn-epoch", "p234-java-accept-state",
 }
 java_keys = set(java_evidence.get("driver_evidence_keys", []))
 missing = sorted(mandatory_java - java_keys)
 bad = [row.get("label") for row in java_rows if row.get("status") != "passed"]
-if missing or bad or java_evidence.get("m6_java") != "passed-via-java-2.13.0":
+driver_tsv_text = driver_tsv.read_text(encoding="utf-8") if driver_tsv.exists() else ""
+p234_passed = any(
+    line.startswith("p234-classification\t")
+    and "P234-C-STREAMING-DIRECTION-A-ESTABLISHED" in line
+    for line in driver_tsv_text.splitlines()
+)
+if missing or bad or not p234_passed or java_evidence.get("m6_java") != "passed-via-java-2.13.0":
     raise SystemExit(f"Java public-client ledger is not all-pass: missing={missing} bad={bad} status={java_evidence.get('m6_java')}")
 
 print(f"mandatory_i2pd: {len(families['i2pd'])}/{len(generic)} passed, 0 blocked, 0 failed, 0 missing")

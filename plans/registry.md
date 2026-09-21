@@ -54,7 +54,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 234 Streaming SYN-ACK + client-LS2 final-closure authority corrective | ready | `plans/implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md` | Retain Plan-232 raw pass; attribute/fix the Streaming SYN-ACK boundary; then require full `run-java.sh` + Plan-200/201 §C/D pass-or-stronger-evidence reconciliation before Java-family/M6 closure. |
+| M6 mixed-router interop | 234 Streaming SYN-ACK + client-LS2 final-closure authority corrective | active | `plans/implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md` | Retain Plan-232 raw pass; attribute/fix the Streaming SYN-ACK boundary; then require full `run-java.sh` + Plan-200/201 §C/D pass-or-stronger-evidence reconciliation before Java-family/M6 closure. |
 
 ## Blocked work
 
@@ -114,7 +114,7 @@ Full per-plan history (000–234) lives in the subsystem roadmaps §7 tables.
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
 - `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231 -> 232 -> 233 -> 234` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 closed with the exact target-IBGW-not-installed boundary after proving A-enqueue/C-OBEP with zero i2pr wire; Plan 232 closed at Outcome B (raw reverse passed, Streaming SYN-ACK boundary) on `236ccb6`; Plan 233 was superseded-before-execution; Plan 234 owns the Streaming SYN-ACK corrective plus final client-LS2 authority reconciliation).
-- `active_plan = none`; `next_executable_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective`; Plan 201 remains blocked pending Plan 234, Plan 204 remains blocked on M6 Java closure, and Plan 205 remains retained/deferred.
+- `active_plan = 234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective`; Plan 201 remains blocked pending Plan 234, Plan 204 remains blocked on M6 Java closure, and Plan 205 remains retained/deferred.
 
 ## Verification policy
 

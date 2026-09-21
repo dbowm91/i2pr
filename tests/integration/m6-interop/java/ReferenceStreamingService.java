@@ -55,7 +55,20 @@ public final class ReferenceStreamingService {
     private static final List<Integer> ACCEPTED = Collections.synchronizedList(new ArrayList<>());
     private static final List<Integer> CONNECTED = Collections.synchronizedList(new ArrayList<>());
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
+    // Plan 234 §8 — helper-local accept observability.  These counters are
+    // deliberately bounded and expose only control-flow facts; they never
+    // expose packet contents, keys, tags, or router internals.
+    private static final int MAX_OBSERVATIONS = 1024;
+    private static final AtomicInteger ACCEPT_REQUESTED = new AtomicInteger();
+    private static final AtomicInteger ACCEPT_ENTERED = new AtomicInteger();
+    private static final AtomicInteger ACCEPT_RETURNED = new AtomicInteger();
+    private static final AtomicInteger ACCEPT_STORED = new AtomicInteger();
+    private static final AtomicInteger ACCEPT_ERRORS = new AtomicInteger();
     private static volatile boolean accepting;
+
+    private static int incrementBounded(AtomicInteger counter) {
+        return counter.updateAndGet(value -> value < MAX_OBSERVATIONS ? value + 1 : value);
+    }
 
     private static String hex(byte[] bytes) {
         StringBuilder out = new StringBuilder(bytes.length * 2);
@@ -109,13 +122,17 @@ public final class ReferenceStreamingService {
     }
 
     private static int acceptOne(I2PServerSocket server) {
+        incrementBounded(ACCEPT_ENTERED);
         try {
             I2PSocket socket = server.accept();
+            incrementBounded(ACCEPT_RETURNED);
             int id = NEXT_ID.getAndIncrement();
             SOCKETS.put(id, socket);
             ACCEPTED.add(id);
+            incrementBounded(ACCEPT_STORED);
             return id;
         } catch (Throwable error) {
+            incrementBounded(ACCEPT_ERRORS);
             return -1;
         }
     }
@@ -172,10 +189,33 @@ public final class ReferenceStreamingService {
                                 + " publications_observed=no");
                             break;
                         }
+                        case "REPORT_STREAM_STATE": {
+                            // Plan 234 §8 — the response is a bounded,
+                            // read-only accept epoch.  `accept_returned`
+                            // means only that the public Java Streaming API
+                            // returned an I2PSocket; wire-stage attribution
+                            // remains the Rust driver's responsibility.
+                            output.println("STREAM_STATUS accept_requested=" + ACCEPT_REQUESTED.get()
+                                + " accept_entered=" + ACCEPT_ENTERED.get()
+                                + " accept_returned=" + ACCEPT_RETURNED.get()
+                                + " socket_stored=" + ACCEPT_STORED.get()
+                                + " accept_errors=" + ACCEPT_ERRORS.get()
+                                + " accepting=" + accepting
+                                + " accepted_count=" + ACCEPTED.size()
+                                + " connected_count=" + CONNECTED.size());
+                            break;
+                        }
                         case "START_ACCEPT":
                             if (!accepting) {
                                 accepting = true;
-                                Thread thread = new Thread(() -> { acceptOne(server); accepting = false; }, "plan198-accept");
+                                incrementBounded(ACCEPT_REQUESTED);
+                                Thread thread = new Thread(() -> {
+                                    try {
+                                        acceptOne(server);
+                                    } finally {
+                                        accepting = false;
+                                    }
+                                }, "plan234-accept");
                                 thread.setDaemon(true);
                                 thread.start();
                             }

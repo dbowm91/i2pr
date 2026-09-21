@@ -3234,6 +3234,117 @@ if [[ -f "${P232_DRIVER_TEST}" ]]; then
   done
 fi
 
+# Plan 234 §15 — bounded Streaming SYN epoch attribution and final-authority
+# guards.  The surface must stay in the external driver/helper; no production
+# crate may acquire Plan-234 tokens before an independently registered
+# production corrective proves an i2pr-owned defect.
+P234_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P234_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P234_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+P234_FINAL_CHECKER="${REPO_ROOT}/scripts/check-m6-final-closure-evidence.sh"
+if [[ -f "${P234_DRIVER_TEST}" ]]; then
+  for required in \
+    'struct P234JavaAcceptState' \
+    'fn p234_parse_java_accept_state' \
+    'struct P234SynEpoch' \
+    'enum P234Terminal' \
+    'fn p234_classify_syn_epoch' \
+    'fn record_p234_syn_epoch' \
+    'p234-syn-epoch' \
+    'p234-java-accept-state' \
+    'p234-classification' \
+    'P234-B-JAVA-ACCEPT-WORKER-NOT-STARTED' \
+    'P234-B-JAVA-SYN-NOT-ACCEPTED' \
+    'P234-B-JAVA-ACCEPTED-NO-RESPONSE-OBSERVED' \
+    'P234-C-I2PR-NO-EXPECTED-TUNNELDATA' \
+    'P234-C-I2PR-TUNNEL-RECOVERY-FAILED' \
+    'P234-C-I2PR-GARLIC-DECODE-FAILED' \
+    'P234-C-I2PR-NO-STREAMING-PAYLOAD' \
+    'P234-C-I2PR-STREAMING-ADAPTER-FAILED' \
+    'P234-C-DISPATCHED-NOT-ESTABLISHED' \
+    'P234-C-STREAMING-DIRECTION-A-ESTABLISHED' \
+    'P234-C-OBSERVABILITY-GAP'; do
+    if ! grep -q -F "${required}" "${P234_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P234_DRIVER_TEST} lacks Plan 234 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    'p234_plan232_route_parity_is_prerequisite' \
+    'p234_start_accept_precedes_syn_send' \
+    'p234_java_accept_worker_state_is_bounded' \
+    'p234_no_expected_tunneldata_is_distinct_from_decode_failure' \
+    'p234_tunnel_recovery_failure_is_distinct_from_no_wire' \
+    'p234_garlic_failure_is_distinct_from_streaming_adapter_failure' \
+    'p234_adapter_dispatch_without_established_is_distinct' \
+    'p234_direction_a_pass_does_not_close_java_family' \
+    'p234_direction_b_requires_live_refresh_parity' \
+    'p234_plan200_c_d_rows_require_pass_or_explicit_supersession_mapping' \
+    'p234_superseded_row_requires_stronger_mandatory_external_evidence' \
+    'p234_unmapped_legacy_required_row_blocks_closure' \
+    'p234_run_java_exit_zero_required_for_family_pass' \
+    'p234_final_closure_checker_required' \
+    'p234_no_global_required_failed_bypass' \
+    'p234_no_production_surface_change_before_owned_defect'; do
+    if ! grep -q "fn ${unit_row}" "${P234_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P234_DRIVER_TEST} lacks Plan 234 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'p234' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'P234' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 234 surface before an owned production corrective" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P234-" "${P234_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P234_DRIVER_TEST} invents a hard-coded Plan 234 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'SYN_ACK_WAIT: Duration = Duration::from_secs(45)' "${P234_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: Plan 234 changed the frozen SYN-ACK window" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P234_HELPER_SRC}" ]]; then
+  for required in \
+    'REPORT_STREAM_STATE' \
+    'ACCEPT_REQUESTED' \
+    'ACCEPT_ENTERED' \
+    'ACCEPT_RETURNED' \
+    'ACCEPT_STORED' \
+    'ACCEPT_ERRORS' \
+    'STREAM_STATUS accept_requested=' \
+    'Plan 234 §8'; do
+    if ! grep -q -F "${required}" "${P234_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P234_HELPER_SRC} lacks Plan 234 helper surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E 'packet|private key|secret|payload' <(grep -F 'STREAM_STATUS' "${P234_HELPER_SRC}"); then
+    echo "m6 mixed-router evidence check failed: Plan 234 helper status exposes non-bounded data" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P234_HARNESS}" ]]; then
+  for required in \
+    'REQUIRED_FAILED=0' \
+    '[[ "${REQUIRED_FAILED}" -ne 0 ]]' \
+    'I2PR_M6_JAVA_DRIVER'; do
+    if ! grep -q -F "${required}" "${P234_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P234_HARNESS} lacks fail-closed Plan 234 harness invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P234_FINAL_CHECKER}" ]]; then
+  for required in 'p234-classification' 'run-java.sh' 'm6_final_closure: passed'; do
+    if ! grep -q -F "${required}" "${P234_FINAL_CHECKER}"; then
+      echo "m6 mixed-router evidence check failed: final closure checker lacks Plan 234 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
