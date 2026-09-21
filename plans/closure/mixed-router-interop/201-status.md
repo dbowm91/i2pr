@@ -1,3 +1,35 @@
+# Current dependency amendment — Plan 231 closed with the exact target-IBGW boundary; narrow lease-gateway corrective pending
+
+Plan 231 closed as
+`passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary`
+(see `231-status.md`): the tracked reverse send's post-`ACCEPTED` path
+is fully attributed — Java A outbound-gateway enqueue proven
+(`client.dispatchTime` +1 with a window gateway accept and no
+correlated no-matching row), Router C exact one-hop OBEP processing
+proven (receive == A send id, processed 1→5), and the selected target
+IBGW on Router B for the exact lease tunnel proven absent pre and
+post, with i2pr's exact-TunnelData/recovery/Garlic/Destination
+counters honestly zero. The closure root-causes the stop to the
+test-driver fixture (not to Java internals and not to i2pr
+production): the published local LS2 advertises gateway Router B
+while the inbound tunnel was built via Router A, so reverse traffic
+is addressed to a router holding no inbound gateway for the tunnel.
+
+Plan 201's Plan-231 hard dependency is therefore closed, but Java
+second-family closure still requires actual reverse delivery, which
+needs the narrow lease-gateway fixture corrective (advertise the
+inbound peer's hash in the driver's lease source; no production
+change). Re-running 201's lane without it would only reproduce the
+stop, so no successor is registered here; the corrective registers
+under this lane when approved.
+
+```text
+plan_201 = blocked-pending-lease-gateway-corrective-after-plan231-target-ibgw-attribution
+plan_230 = passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary
+plan_231 = passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary
+next_executable_plan = none (narrow lease-gateway fixture corrective recommended)
+```
+
 # Current dependency amendment — Plan 231 registered for post-ACCEPT reverse-delivery attribution
 
 Plan 230 remains closed at
