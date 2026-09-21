@@ -2220,8 +2220,323 @@ if [[ -f "${P228_HARNESS}" ]]; then
   done
 fi
 
+# ---- 22. Plan 229 non-zero exploratory paired-tunnel bootstrap corrective -
+# Reference-topology corrective only: explicit A/B/C roles with C as the
+# non-floodfill transit participant, Java's stock small-router exploratory
+# profile on Router A only, ordinary-profile transit gate for Router C,
+# genuine non-zero exploratory gate in both directions, then the unchanged
+# Plan-227 client profile through the reused Plan-228 attribution. No
+# production change, no Java patch, no profile/NetDB/tunnel mutation, no
+# exploratory explicitPeers, no VMComm, no alwaysQuery, no public/reseed
+# topology, no timeout change, no helper profile change, no Streaming
+# execution, no lookup/reverse-delivery qualification.
+P229_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P229Probe.java"
+P229_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P229_RAW_HELPER_SRC="${JAVA_RAW_HELPER_SRC}"
+P229_STREAM_HELPER_SRC="${JAVA_STREAM_HELPER_SRC}"
+P229_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P229_HARNESS="${JAVA_HARNESS}"
+if [[ ! -f "${P229_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 229 probe ${P229_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 22a. Read-only probe surface (exact pinned accessors).
+  for required in \
+    'snapshotTransitPeer' \
+    'snapshotExploratorySettings' \
+    'snapshotExploratoryTunnels' \
+    'lookupLocallyWithoutValidation' \
+    'lookupRouterInfoLocally' \
+    'selectAllPeers' \
+    'getProfileNonblocking' \
+    'isSelectable' \
+    'countNotFailingPeers' \
+    'isFailing' \
+    'isBanlisted' \
+    'getCapabilities' \
+    'getInboundSettings' \
+    'getOutboundSettings' \
+    'getLength()' \
+    'getLengthVariance()' \
+    'getQuantity()' \
+    'getInboundExploratoryPool' \
+    'getOutboundExploratoryPool' \
+    'listTunnels' \
+    'getPeer('; do
+    if ! grep -q -F "${required}" "${P229_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_PROBE_SRC} lacks Plan 229 read-only surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 22b. The probe must never create/mutate profiles, NetDB entries,
+  # tunnels, or settings, and must never use reflection. `getPeer(`
+  # above is the read-only hop check; the dotted-call mutators below
+  # are forbidden (bare words appear in the file's own MUST-NOT
+  # documentation by design, so only call sites are rejected).
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    '.setLength(' \
+    '.setQuantity(' \
+    '.setInboundSettings(' \
+    '.setOutboundSettings(' \
+    'buildTunnels' \
+    'addTunnel' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P229_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_PROBE_SRC} mutates Java state via '${forbidden}' (Plan 229 invariants 6-9)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 22c. Exploratory explicitPeers is not available (pinned
+  # shouldSelectExplicit rejects exploratory settings).
+  if grep -q -F 'explicitPeers' "${P229_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_PROBE_SRC} carries exploratory explicitPeers (Plan 229 §3.3 forbidden)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'vmCommSystem' "${P229_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_PROBE_SRC} references VMComm (Plan 229 invariant 10)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P229_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_PROBE_SRC} enables netDb.alwaysQuery (Plan 229 invariant 11)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P229_LAUNCHER_SRC}" ]]; then
+  # 22d. Role-aware startup configuration (normal public properties only).
+  for required in \
+    '"service"' \
+    '"publication"' \
+    '"transit"' \
+    'router.floodfillParticipant' \
+    'router.inboundPool.length' \
+    'router.inboundPool.lengthVariance' \
+    'router.outboundPool.length' \
+    'router.outboundPool.lengthVariance' \
+    '"P229-TRANSIT-PEER"' \
+    '"P229-EXPLORATORY-SETTINGS"' \
+    '"P229-EXPLORATORY-TUNNELS"' \
+    'P229Probe' \
+    'p229TransitPeer' \
+    'p229ExploratorySettings' \
+    'p229ExploratoryTunnels'; do
+    if ! grep -q -F "${required}" "${P229_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_LAUNCHER_SRC} lacks Plan 229 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Unknown roles must fail closed; only service receives the four
+  # small-router properties; no quantity/backup/allowZeroHop/
+  # explicitPeers/timeout/paired-tunnel property may be set (bare words
+  # appear in the file's own documentation by design, so only
+  # setProperty call sites are rejected).
+  if ! grep -q 'unknown role' "${P229_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_LAUNCHER_SRC} lacks the Plan 229 unknown-role fail-closed branch" >&2
+    failures=$((failures + 1))
+  fi
+  for forbidden in \
+    'setProperty[^;]*inboundPool\.quantity' \
+    'setProperty[^;]*outboundPool\.quantity' \
+    'setProperty[^;]*backupQuantity' \
+    'setProperty[^;]*allowZeroHop' \
+    'setProperty[^;]*usePairedTunnels' \
+    'netDb\.alwaysQuery'; do
+    if grep -q -E "${forbidden}" "${P229_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_LAUNCHER_SRC} carries forbidden Plan 229 property '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q 'setProperty.*"explicitPeers"' "${P229_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_LAUNCHER_SRC} sets router-global explicitPeers (Plan 229 forbids exploratory explicitPeers)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n -E "^[[:space:]]*([^/#].*setProperty\([^)]*\"i2p\.vmCommSystem\"[^)]*\"(true|1)\"|[^/#].*i2p\.vmCommSystem[[:space:]]*[:=][[:space:]]*(true|1)\b)" "${P229_LAUNCHER_SRC}" 2>/dev/null >/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P229_LAUNCHER_SRC} enables forbidden 'i2p.vmCommSystem' (Plan 229 invariant 10)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P229_STREAM_HELPER_SRC}" ]]; then
+  # 22e. Streaming helper stays frozen and is never executed on the
+  # Plan 229 destination-only counted lane.
+  if grep -q 'explicitPeers' "${P229_STREAM_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: streaming helper carries explicitPeers (Plan 229 invariant 17)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P229_DRIVER_TEST}" ]]; then
+  # 22f. The driver owns the P229 gates, the §11 next-boundary mapping,
+  # and the single terminal; it never enters the lookup lane.
+  for required in \
+    'fn p229_parse_role' \
+    'fn p229_role_floodfill' \
+    'fn p229_role_applies_small_exploratory' \
+    'fn p229_parse_transit_peer' \
+    'fn p229_collect_transit_peer' \
+    'fn p229_transit_gate' \
+    'fn p229_parse_exploratory_settings' \
+    'fn p229_collect_exploratory_settings' \
+    'fn p229_settings_match' \
+    'fn p229_parse_exploratory' \
+    'fn p229_collect_exploratory' \
+    'fn p229_nonzero_gate' \
+    'fn p229_nonzero_gate_pass' \
+    'enum P229Terminal' \
+    'fn p229_classify' \
+    'fn record_p229_classification' \
+    'fn p229_terminal_permits_lookup' \
+    'p229_nonzero_exploratory_bootstrap' \
+    'P229-C-ROLE-MISMATCH' \
+    'P229-EXPLORATORY-SETTINGS-MISMATCH' \
+    'P229-C-NOT-EXPLORATORY-ELIGIBLE' \
+    'P229-EXPLORATORY-NONZERO-NOT-BUILT' \
+    'P229-EVIDENCE-CONTRADICTION-NONZERO-EXPLORATORY-BUT-NO-PAIRED' \
+    'P229-NEXT-BOUNDARY-BUILD-MESSAGE-CREATE' \
+    'P229-NEXT-BOUNDARY-A-DISPATCH' \
+    'P229-NEXT-BOUNDARY-FIRST-HOP-DELIVERY' \
+    'P229-NEXT-BOUNDARY-C-DECRYPT' \
+    'P229-NEXT-BOUNDARY-C-REJECT' \
+    'P229-NEXT-BOUNDARY-REPLY-RETURN' \
+    'P229-NEXT-BOUNDARY-REPLY-DECRYPT' \
+    'P229-NEXT-BOUNDARY-REMOTE-REJECT' \
+    'P229-NEXT-BOUNDARY-LOCAL-JOIN' \
+    'P229-NEXT-BOUNDARY-BUILD-REPLY-TIMEOUT' \
+    'P229-CLIENT-TUNNELS-BUILT' \
+    'P229-OBSERVABILITY-GAP' \
+    'p229-transit-peer' \
+    'p229-exploratory-settings' \
+    'p229-exploratory-tunnels' \
+    'p229-classification'; do
+    if ! grep -q -F "${required}" "${P229_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_DRIVER_TEST} lacks Plan 229 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 22g. The P229 path never consumes the frozen payload window and
+  # never invents a terminal literal.
+  if grep -q 'p229.*frozen_payload_45s\|frozen_payload_45s.*p229' "${P229_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_DRIVER_TEST} lets the P229 path touch the frozen 45s window (Plan 229 invariant 20)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P229-" "${P229_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_DRIVER_TEST} hard-codes a Plan 229 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  for forbidden in 'usePairedTunnels' 'netDb.alwaysQuery' 'BUILD_MSG_TIMEOUT' 'FIRST_HOP_TIMEOUT'; do
+    if grep -q -F "${forbidden}" "${P229_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_DRIVER_TEST} carries forbidden Plan 229 policy '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 22h. The 25 focused unit rows lock the gates and the mapping.
+  for unit_row in \
+    p229_unknown_launcher_role_fails_closed \
+    p229_service_role_keeps_floodfill_true \
+    p229_publication_role_keeps_floodfill_true \
+    p229_transit_role_sets_floodfill_false \
+    p229_only_service_role_receives_small_exploratory_profile \
+    p229_no_explicit_peers_on_exploratory_settings \
+    p229_no_exploratory_quantity_backup_timeout_override \
+    p229_c_advertising_f_maps_to_role_mismatch \
+    p229_c_no_profile_maps_to_not_eligible \
+    p229_c_profile_but_not_selectable_maps_to_not_eligible \
+    p229_zero_hop_only_exploratory_is_insufficient \
+    p229_inbound_only_nonzero_is_insufficient \
+    p229_outbound_only_nonzero_is_insufficient \
+    p229_both_nonzero_admits_helper_start \
+    p229_nonzero_plus_no_paired_maps_to_contradiction \
+    p229_paired_without_create_maps_to_create_boundary \
+    p229_create_without_dispatch_maps_to_dispatch_boundary \
+    p229_dispatch_without_c_receive_maps_to_first_hop_boundary \
+    p229_c_reject_retained_with_bounded_code \
+    p229_reply_decrypt_join_failures_retain_earliest_ordering \
+    p229_both_client_tunnels_install_maps_only_to_built \
+    p229_no_lookup_or_reverse_send_after_terminal \
+    p229_exactly_one_terminal_per_attempt \
+    p229_unrelated_logs_cannot_satisfy_facts \
+    p229_secret_raw_log_lines_rejected; do
+    if ! grep -q "fn ${unit_row}" "${P229_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_DRIVER_TEST} lacks Plan 229 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P229_HARNESS}" ]]; then
+  # 22i. The harness wires roles, gates, the bounded exploratory poll,
+  # the P229 driver, and the single-terminal aggregation.
+  for required in \
+    'P229Probe.java' \
+    '"service"' \
+    '"publication"' \
+    '"transit"' \
+    'router.floodfillParticipant=false' \
+    'router.inboundPool.length=1' \
+    'router.inboundPool.lengthVariance=1' \
+    'router.outboundPool.length=1' \
+    'router.outboundPool.lengthVariance=1' \
+    'P229-TRANSIT-PEER' \
+    'P229-EXPLORATORY-SETTINGS' \
+    'P229-EXPLORATORY-TUNNELS' \
+    'p229-roles' \
+    'p229-exploratory-settings' \
+    'p229-transit-peer' \
+    'p229-exploratory-tunnels' \
+    'p229-role-proof' \
+    'P229-C-ROLE-MISMATCH' \
+    'P229-EXPLORATORY-SETTINGS-MISMATCH' \
+    'P229-C-NOT-EXPLORATORY-ELIGIBLE' \
+    'P229-EXPLORATORY-NONZERO-NOT-BUILT' \
+    'p229_nonzero_exploratory_bootstrap' \
+    'p229-classification' \
+    'external-p229-classification' \
+    'external-p229-roles' \
+    'external-p229-exploratory-settings' \
+    'external-p229-transit-peer' \
+    'external-p229-exploratory-tunnels' \
+    'external-p229-lookup-lane' \
+    'p229-lookup-lane' \
+    'P229_LOOKUP_DRIVER_ENABLED'; do
+    if ! grep -q -F "${required}" "${P229_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P229_HARNESS} lacks Plan 229 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # The counted lookup driver stays disabled on the Plan 229 path
+  # (default-0 gate); the successor requalification pass owns it.
+  if ! grep -q 'P229_LOOKUP_DRIVER_ENABLED:-0' "${P229_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} lacks the Plan 229 default-0 lookup-driver gate" >&2
+    failures=$((failures + 1))
+  fi
+  # Bounded exploratory readiness poll only (within the helper ceiling);
+  # no helper five-minute ceiling increase, no Java timeout change.
+  if ! grep -q 'seq 1 60' "${P229_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} lacks the bounded Plan 229 exploratory poll" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -E "record[[:space:]]+[\"']P229-" "${P229_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} invents a Plan 229 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # Raw Java logs stay scratch-only on the P229 path.
+  if grep -q 'p229.*log-router\|log-router.*p229' "${P229_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} copies raw router logs into P229 evidence (Plan 229 invariant 21)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P229_HARNESS}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P229_HARNESS} enables netDb.alwaysQuery (Plan 229 invariant 11)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants)"

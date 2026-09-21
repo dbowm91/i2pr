@@ -220,7 +220,12 @@ P224_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # mutation, no NetDB store, no tunnel install, no reflection).
 P227_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P227Probe.java"
 P228_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P228Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" ]]; then
+# Plan 229 WP B/C/D — test-only read-only transit-peer eligibility,
+# exploratory-settings, and exploratory-tunnel snapshot probe (public
+# accessors only; no profile/tier mutation, no NetDB store, no tunnel
+# install, no reflection, no getOrCreateProfile/addProfile).
+P229_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P229Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -233,7 +238,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -293,6 +298,10 @@ CACHE_FINGERPRINT_BEFORE="$(find "${JAVA_CACHE}" -type f -name '*.config' -o -na
 
 # ---- Plan 196 §5.4 start Java through the controlled launcher -----------
 : > "${JAVA_LOG}"
+# Plan 229 WP A — explicit controlled-topology roles. Router A is the
+# service/public-client owner, Router B the publication/floodfill target,
+# Router C the non-floodfill transit/tunnel participant. The role argument
+# drives only normal public Router(Properties) startup configuration.
 JAVA_CMD=(
   java
   -Djava.net.preferIPv4Stack=true
@@ -310,6 +319,7 @@ JAVA_CMD=(
   "${JAVA_SAM_PORT}"
   "${JAVA_I2CP_PORT}"
   "${JAVA_DIAGNOSTIC_A_PORT}"
+  "service"
 )
 setsid "${JAVA_CMD[@]}" >/dev/null 2>"${JAVA_LOG}" < /dev/null &
 JAVA_PID=$!
@@ -332,6 +342,7 @@ JAVA_PUBLICATION_CMD=(
   "${JAVA_PUBLICATION_SAM_PORT}"
   "${JAVA_PUBLICATION_I2CP_PORT}"
   "${JAVA_DIAGNOSTIC_B_PORT}"
+  "publication"
 )
 setsid "${JAVA_PUBLICATION_CMD[@]}" >/dev/null 2>"${JAVA_PUBLICATION_LOG}" < /dev/null &
 JAVA_PUBLICATION_PID=$!
@@ -360,6 +371,7 @@ JAVA_TUNNEL_PARTICIPANT_CMD=(
   "0"
   "0"
   "${JAVA_DIAGNOSTIC_C_PORT}"
+  "transit"
 )
 setsid "${JAVA_TUNNEL_PARTICIPANT_CMD[@]}" >/dev/null 2>"${JAVA_TUNNEL_PARTICIPANT_LOG}" < /dev/null &
 JAVA_TUNNEL_PARTICIPANT_PID=$!
@@ -657,6 +669,33 @@ if [[ -s "${JAVA_DATA}/router.config" ]]; then
     TOPOLOGY_OK=0
     TOPOLOGY_REASON="${TOPOLOGY_REASON} floodfill-not-enabled"
   fi
+  # Plan 229 WP B — Router A (service role) carries exactly Java's stock
+  # small-router exploratory profile; no quantity, backup, allowZeroHop,
+  # explicitPeers, timeout, or paired-tunnel property may appear.
+  for p229_prop in \
+    'router.inboundPool.length=1' \
+    'router.inboundPool.lengthVariance=1' \
+    'router.outboundPool.length=1' \
+    'router.outboundPool.lengthVariance=1'; do
+    if ! grep -q "^${p229_prop}$" "${JAVA_DATA}/router.config"; then
+      TOPOLOGY_OK=0
+      TOPOLOGY_REASON="${TOPOLOGY_REASON} p229-small-exploratory-missing:${p229_prop}"
+    fi
+  done
+  for p229_forbidden in \
+    'router.inboundPool.quantity' \
+    'router.outboundPool.quantity' \
+    'router.inboundPool.backupQuantity' \
+    'router.outboundPool.backupQuantity' \
+    'router.inboundPool.allowZeroHop' \
+    'router.outboundPool.allowZeroHop' \
+    'explicitPeers' \
+    'usePairedTunnels'; do
+    if grep -q "${p229_forbidden}" "${JAVA_DATA}/router.config"; then
+      TOPOLOGY_OK=0
+      TOPOLOGY_REASON="${TOPOLOGY_REASON} p229-exploratory-override-present:${p229_forbidden}"
+    fi
+  done
   if ! grep -q '^i2np.ntcp.enable=false$' "${JAVA_DATA}/router.config"; then
     TOPOLOGY_OK=0
     TOPOLOGY_REASON="${TOPOLOGY_REASON} ntcp-not-disabled"
@@ -730,17 +769,34 @@ if ! grep -q "^i2np.udp.host=${JAVA_SSU2_HOST_B}$" "${JAVA_PUBLICATION_DATA}/rou
   sed -n '1,80p' "${JAVA_PUBLICATION_DATA}/logs/log-router-0.txt" >&2 || true
   exit 3
 fi
+# Plan 229 WP A/B — Router B (publication role) keeps floodfill and its
+# ordinary exploratory settings; the small-router profile is A-only.
+if grep -q 'router\.\(inbound\|outbound\)Pool\.length' "${JAVA_PUBLICATION_DATA}/router.config"; then
+  echo "controlled Java publication router carries unexpected exploratory length profile (Plan 229 A-only)" >&2
+  exit 3
+fi
 
-# Router C is a tunnel participant — no SAM/I2CP required, no floodfill required.
+# Router C is a non-floodfill transit tunnel participant — no SAM/I2CP,
+# no floodfill, ordinary exploratory settings (Plan 229 WP A/B).
 if ! grep -q "^i2np.udp.host=${JAVA_SSU2_HOST_C}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    ! grep -q "^i2np.udp.port=${JAVA_TUNNEL_PARTICIPANT_SSU2_PORT}$" "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    ! grep -q '^router.reseedDisable=true$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
+   ! grep -q '^router.floodfillParticipant=false$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    ! grep -q '^i2np.ntcp.enable=false$' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config" ||
    [[ ! -f "${JAVA_TUNNEL_PARTICIPANT_DATA}/noreseed.i2p" ]]; then
   echo "controlled Java tunnel-participant topology invariants failed" >&2
   sed -n '1,80p' "${JAVA_TUNNEL_PARTICIPANT_DATA}/logs/log-router-0.txt" >&2 || true
   exit 3
 fi
+if grep -q 'router\.\(inbound\|outbound\)Pool\.length' "${JAVA_TUNNEL_PARTICIPANT_DATA}/router.config"; then
+  echo "controlled Java tunnel-participant router carries unexpected exploratory length profile (Plan 229 A-only)" >&2
+  exit 3
+fi
+# Plan 229 WP A — durable counted role proof (config-file facts only;
+# live RouterInfo caps are proven by the P229 transit-peer probe).
+printf 'p229-roles\tA role=service floodfill=true\n' > "${EVIDENCE_DIR}/p229-roles.tsv"
+printf 'p229-roles\tB role=publication floodfill=true\n' >> "${EVIDENCE_DIR}/p229-roles.tsv"
+printf 'p229-roles\tC role=transit floodfill=false\n' >> "${EVIDENCE_DIR}/p229-roles.tsv"
 
 # ---- Plan 199 public-client reference helpers ----------------------------
 # These helpers are compiled out-of-tree against the staged public jars. The
@@ -1021,6 +1077,11 @@ streaming_rc=0
 # (Plan 217 §6.D), so each sub-run is independent and may be
 # executed alone for diagnosis.
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  # Plan 229 WP A — carry the counted role proof into the destination TSV
+  # so the aggregated driver evidence binds A/B/C roles.
+  if [[ -f "${EVIDENCE_DIR}/p229-roles.tsv" ]]; then
+    cat "${EVIDENCE_DIR}/p229-roles.tsv" >> "${DRIVER_DEST_TSV}"
+  fi
   # Plan 227 §12 / invariant 12 — the distinct-loopback topology remains
   # unadmitted. A P227 counted run MUST use the baseline topology; the
   # harness rejects a distinct invocation by construction.
@@ -1095,6 +1156,132 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   P228_LOGGER_A_PRE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-LOGGER-CONFIG" 2>/dev/null || true)"
   printf 'p228-logger-config-a\t%s\n' "${P228_LOGGER_A_PRE}" > "${DRIVER_EVIDENCE}/destination/p228-logger-a-pre.tsv"
   cat "${DRIVER_EVIDENCE}/destination/p228-logger-a-pre.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 229 WP B — Router-A effective exploratory settings proof.
+  # Read-only diagnostic; the four values must match Java's stock
+  # small-router profile exactly. Quantities are diagnostic only.
+  P229_SETTINGS_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-EXPLORATORY-SETTINGS" 2>/dev/null || true)"
+  printf '%s\n' "${P229_SETTINGS_LINE}" > "${DRIVER_EVIDENCE}/destination/p229-settings-raw.tsv"
+  P229_SETTINGS_NORM="$(printf '%s' "${P229_SETTINGS_LINE}" | tr ' ' '\n' || true)"
+  p229_setting() {
+    printf '%s' "${P229_SETTINGS_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  P229_IN_LEN="$(p229_setting inbound_length)"
+  P229_IN_VAR="$(p229_setting inbound_variance)"
+  P229_OUT_LEN="$(p229_setting outbound_length)"
+  P229_OUT_VAR="$(p229_setting outbound_variance)"
+  printf 'p229-exploratory-settings\tobservable=%s inbound_length=%s inbound_variance=%s outbound_length=%s outbound_variance=%s inbound_quantity=%s outbound_quantity=%s\n' \
+    "$(p229_setting observable)" "${P229_IN_LEN}" "${P229_IN_VAR}" "${P229_OUT_LEN}" "${P229_OUT_VAR}" \
+    "$(p229_setting inbound_quantity)" "$(p229_setting outbound_quantity)" \
+    > "${DRIVER_EVIDENCE}/destination/p229-settings.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p229-settings.tsv" >> "${DRIVER_DEST_TSV}"
+  if [[ "${P229_IN_LEN}" == "1" && "${P229_IN_VAR}" == "1" && "${P229_OUT_LEN}" == "1" && "${P229_OUT_VAR}" == "1" ]]; then
+    P229_SETTINGS_OK=1
+  else
+    P229_SETTINGS_OK=0
+  fi
+  # Plan 229 WP C — ordinary transit-peer proof for Router C on Router
+  # A's main NetDB through the existing authenticated wire bootstrap.
+  # Read-only; never creates a profile, never stores a RouterInfo.
+  P229_TRANSIT_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-TRANSIT-PEER ${P227_C_HEX}" 2>/dev/null || true)"
+  printf '%s\n' "${P229_TRANSIT_LINE}" > "${DRIVER_EVIDENCE}/destination/p229-transit-raw.tsv"
+  P229_TRANSIT_NORM="$(printf '%s' "${P229_TRANSIT_LINE}" | tr ' ' '\n' || true)"
+  p229_transit() {
+    printf '%s' "${P229_TRANSIT_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+  }
+  P229_MAIN_RAW="$(p229_transit main_raw_present)"
+  P229_MAIN_VALID="$(p229_transit main_valid_present)"
+  P229_PROFILE="$(p229_transit profile_present)"
+  P229_SELECTABLE="$(p229_transit selectable)"
+  P229_BANLISTED="$(p229_transit banlisted)"
+  P229_UNREACHABLE="$(p229_transit unreachable)"
+  P229_CAPS_F="$(p229_transit caps_has_f)"
+  printf 'p229-transit-peer\trouter_c_hex=%s main_raw_present=%s main_valid_present=%s profile_present=%s selectable=%s banlisted=%s unreachable=%s caps_has_f=%s profile_count=%s not_failing_count=%s\n' \
+    "${P227_C_HEX}" "${P229_MAIN_RAW}" "${P229_MAIN_VALID}" "${P229_PROFILE}" "${P229_SELECTABLE}" \
+    "${P229_BANLISTED}" "${P229_UNREACHABLE}" "${P229_CAPS_F}" \
+    "$(p229_transit profile_count)" "$(p229_transit not_failing_count)" \
+    > "${DRIVER_EVIDENCE}/destination/p229-transit.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p229-transit.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 229 WP A — counted role proof. The router.config floodfill
+  # values (A/B true, C false) and the A-only small-router profile were
+  # already enforced by the topology invariants above; the live Router-C
+  # RouterInfo must omit `f`. Any mismatch stops before helper execution.
+  if [[ "${P229_CAPS_F}" == "false" ]]; then
+    P229_ROLE_OK=1
+  else
+    P229_ROLE_OK=0
+  fi
+  printf 'p229-role-proof\trole_ok=%s caps_has_f=%s\n' "${P229_ROLE_OK}" "${P229_CAPS_F}" \
+    > "${DRIVER_EVIDENCE}/destination/p229-role-proof.tsv"
+  cat "${DRIVER_EVIDENCE}/destination/p229-role-proof.tsv" >> "${DRIVER_DEST_TSV}"
+  # Plan 229 §19 role/profile/settings stops. Exactly one
+  # p229-classification row is emitted per counted run; the Rust P229
+  # driver below runs only when no early stop fired.
+  P229_EARLY_STOP=0
+  if [[ "${P229_ROLE_OK}" -ne 1 ]]; then
+    echo "P229-C-ROLE-MISMATCH caps_has_f=${P229_CAPS_F}" >&2
+    printf 'p229-classification\tP229-C-ROLE-MISMATCH caps_has_f=%s\n' \
+      "${P229_CAPS_F}" >> "${DRIVER_DEST_TSV}"
+    P229_EARLY_STOP=1
+  elif [[ "${P229_SETTINGS_OK}" -ne 1 ]]; then
+    echo "P229-EXPLORATORY-SETTINGS-MISMATCH in=${P229_IN_LEN}/${P229_IN_VAR} out=${P229_OUT_LEN}/${P229_OUT_VAR}" >&2
+    printf 'p229-classification\tP229-EXPLORATORY-SETTINGS-MISMATCH inbound_length=%s inbound_variance=%s outbound_length=%s outbound_variance=%s\n' \
+      "${P229_IN_LEN}" "${P229_IN_VAR}" "${P229_OUT_LEN}" "${P229_OUT_VAR}" >> "${DRIVER_DEST_TSV}"
+    P229_EARLY_STOP=1
+  elif [[ "${P229_MAIN_RAW}" != "true" || "${P229_MAIN_VALID}" != "true" || "${P229_PROFILE}" != "true" || "${P229_SELECTABLE}" != "true" || "${P229_BANLISTED}" != "false" || "${P229_UNREACHABLE}" != "false" || "${P229_CAPS_F}" != "false" ]]; then
+    echo "P229-C-NOT-EXPLORATORY-ELIGIBLE main_raw=${P229_MAIN_RAW} main_valid=${P229_MAIN_VALID} profile=${P229_PROFILE} selectable=${P229_SELECTABLE} banlisted=${P229_BANLISTED} unreachable=${P229_UNREACHABLE} caps_f=${P229_CAPS_F}" >&2
+    printf 'p229-classification\tP229-C-NOT-EXPLORATORY-ELIGIBLE main_raw_present=%s main_valid_present=%s profile_present=%s selectable=%s banlisted=%s unreachable=%s caps_has_f=%s\n' \
+      "${P229_MAIN_RAW}" "${P229_MAIN_VALID}" "${P229_PROFILE}" "${P229_SELECTABLE}" \
+      "${P229_BANLISTED}" "${P229_UNREACHABLE}" "${P229_CAPS_F}" >> "${DRIVER_DEST_TSV}"
+    P229_EARLY_STOP=1
+  fi
+  if [[ "${P229_EARLY_STOP}" -eq 0 ]]; then
+    # Plan 229 WP D — poll Router A's exploratory pools for genuine
+    # non-zero tunnels in both directions before starting the raw helper.
+    # Bounded readiness budget within the existing helper ceiling; the
+    # loop exits early as soon as both directions exist. Read-only
+    # snapshots only; builds are never triggered by private call.
+    P229_EXPL_IN_NONZERO=0
+    P229_EXPL_OUT_NONZERO=0
+    P229_EXPL_IN_C="false"
+    P229_EXPL_OUT_C="false"
+    P229_EXPL_ZERO="false"
+    for _ in $(seq 1 60); do
+      P229_POLL_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-EXPLORATORY-TUNNELS ${P227_C_HEX}" 2>/dev/null || true)"
+      P229_POLL_NORM="$(printf '%s' "${P229_POLL_LINE}" | tr ' ' '\n' || true)"
+      p229_poll() {
+        printf '%s' "${P229_POLL_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+      }
+      P229_EXPL_IN_NONZERO="$(p229_poll inbound_nonzero_count)"
+      P229_EXPL_OUT_NONZERO="$(p229_poll outbound_nonzero_count)"
+      P229_EXPL_IN_C="$(p229_poll inbound_c_present)"
+      P229_EXPL_OUT_C="$(p229_poll outbound_c_present)"
+      P229_EXPL_ZERO="$(p229_poll zero_hop_fallback_present)"
+      if [[ "${P229_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ && "${P229_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+        break
+      fi
+      sleep 5
+    done
+    printf 'p229-exploratory-tunnels\trouter_c_hex=%s inbound_nonzero_count=%s outbound_nonzero_count=%s inbound_c_present=%s outbound_c_present=%s zero_hop_fallback_present=%s\n' \
+      "${P227_C_HEX}" "${P229_EXPL_IN_NONZERO}" "${P229_EXPL_OUT_NONZERO}" \
+      "${P229_EXPL_IN_C}" "${P229_EXPL_OUT_C}" "${P229_EXPL_ZERO}" \
+      > "${DRIVER_EVIDENCE}/destination/p229-exploratory.tsv"
+    cat "${DRIVER_EVIDENCE}/destination/p229-exploratory.tsv" >> "${DRIVER_DEST_TSV}"
+    if [[ "${P229_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ && "${P229_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+      P229_EXPLORATORY_GATE_OK=1
+    else
+      if [[ "${P229_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+        P229_MISSING_DIR="outbound"
+      elif [[ "${P229_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+        P229_MISSING_DIR="inbound"
+      else
+        P229_MISSING_DIR="both"
+      fi
+      echo "P229-EXPLORATORY-NONZERO-NOT-BUILT direction=${P229_MISSING_DIR} in_nonzero=${P229_EXPL_IN_NONZERO} out_nonzero=${P229_EXPL_OUT_NONZERO}" >&2
+      printf 'p229-classification\tP229-EXPLORATORY-NONZERO-NOT-BUILT direction=%s inbound_nonzero_count=%s outbound_nonzero_count=%s\n' \
+        "${P229_MISSING_DIR}" "${P229_EXPL_IN_NONZERO}" "${P229_EXPL_OUT_NONZERO}" >> "${DRIVER_DEST_TSV}"
+      P229_EARLY_STOP=1
+    fi
+  fi
   if [[ "${P227_MAIN_RAW}" != "true" || "${P227_MAIN_VALID}" != "true" || "${P227_SELECTABLE}" != "true" ]]; then
     echo "P227-C-NOT-SELECTABLE main_raw=${P227_MAIN_RAW} main_valid=${P227_MAIN_VALID} selectable=${P227_SELECTABLE}" >&2
     printf 'p227-classification\tP227-C-NOT-SELECTABLE main_raw_present=%s main_valid_present=%s selectable=%s\n' \
@@ -1105,7 +1292,9 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   else
     P227_EARLY_STOP=0
   fi
-  if [[ "${P227_EARLY_STOP}" -eq 0 ]]; then
+  # Plan 229 WP D gate: the unchanged Plan-227 raw helper starts only
+  # after both genuine non-zero exploratory directions exist.
+  if [[ "${P227_EARLY_STOP}" -eq 0 && "${P229_EARLY_STOP}" -eq 0 && "${P229_EXPLORATORY_GATE_OK:-0}" -eq 1 ]]; then
   : > "${DRIVER_EVIDENCE}/p227-helper-connect.tsv"
   # Plan 227 §8/§14 — a five-minute I2PSession.connect() failure is a
   # counted build outcome, not a harness error. Do not exit on it;
@@ -1186,7 +1375,15 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   # peer-selection path. History only; the driver takes its own
   # authoritative P220 snapshot at its post-bootstrap epoch.
   j219_record_timed_snapshot "immediately-before-reverse-helper-send"
-  if [[ "${P227_TUNNEL_GATE_OK}" -eq 1 ]]; then
+  # Plan 229 §10/§15 — the target LS lookup, tracked reverse send, and
+  # frozen 45-second payload acceptance are owned by the successor
+  # requalification pass, never by Plan 229. The counted lookup driver
+  # invocation below is retained for the checker lineage but stays
+  # disabled on the Plan 229 path (`P229_LOOKUP_DRIVER_ENABLED` defaults
+  # to 0); the P229-CLIENT-TUNNELS-BUILT terminal owns the run. Even when
+  # both exact one-hop client tunnels install, the lookup lane is not
+  # executed by Plan 229.
+  if [[ "${P227_TUNNEL_GATE_OK}" -eq 1 && "${P229_LOOKUP_DRIVER_ENABLED:-0}" -eq 1 ]]; then
   if /usr/bin/env JAVA_ROUTER_INFO="${JAVA_PUBLICATION_RI}" \
      JAVA_SSU2_ENDPOINT="${JAVA_SSU2_HOST_B}:${JAVA_PUBLICATION_SSU2_PORT}" \
      JAVA_SERVICE_ROUTER_INFO="${JAVA_RI}" \
@@ -1219,11 +1416,16 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     driver_rc=$?
   fi
   else
-    # Tunnel gate failed: skip the counted lookup driver; the
-    # P227-EXPLICIT-ONE-HOP-NOT-BUILT row above is the terminal.
-    # Still emit the driver-evidence concatenation guard below.
+    # Tunnel gate failed, or the Plan 229 lookup lane is disabled: skip
+    # the counted lookup driver; the P227/P229 terminal row above owns
+    # the run.
     driver_rc=0
-    echo "    destination driver skipped (P227 tunnel gate failed)" >>"${DRIVER_LOG}"
+    echo "    destination driver skipped (P227 tunnel gate failed or Plan 229 lookup lane disabled)" >>"${DRIVER_LOG}"
+  fi
+  if [[ "${P229_LOOKUP_DRIVER_ENABLED:-0}" -eq 1 ]]; then
+    printf 'p229-lookup-lane\texecuted=true reason=successor-requalification-override\n' >> "${DRIVER_DEST_TSV}"
+  else
+    printf 'p229-lookup-lane\texecuted=false reason=plan229-stops-before-lookup-qualification\n' >> "${DRIVER_DEST_TSV}"
   fi
   echo "    destination driver exit=${driver_rc}" >>"${DRIVER_LOG}"
   # Concatenate the destination driver's evidence into the destination TSV
@@ -1249,6 +1451,12 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
   P228_C_HEX="${P227_C_HEX:-}"
   P228_C_B64="${P227_C_B64:-}"
   P228_CLIENT_HEX="${P227_CLIENT_DBID_HEX:-}"
+  # Plan 229 WP E runs only when the helper ran (no early stop); the
+  # P228 trace below is the supporting build-path evidence the P229
+  # classifier consumes.
+  if [[ "${P229_EARLY_STOP:-0}" -ne 0 ]]; then
+    echo "    p228 attribution skipped (Plan 229 early stop owns the terminal)" >>"${DRIVER_LOG}"
+  else
   if [[ -n "${P228_C_HEX}" ]]; then
     # Post-helper tunnel-infrastructure snapshot (helper-timeout epoch).
     P228_INFRA_POST_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P228-TUNNEL-INFRA" 2>/dev/null || true)"
@@ -1305,6 +1513,45 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
     fi
   else
     echo "    p228 attribution skipped (Router-C hex unavailable)" >>"${DRIVER_LOG}"
+  fi
+  fi
+fi
+
+# Plan 229 WP E — rerun the unchanged Plan-227 client helper outcome
+# through the reused Plan-228 attribution into exactly one
+# p229-classification terminal. Runs only when the role, settings,
+# transit-peer, and non-zero exploratory gates all passed and the helper
+# ran; early-stop paths already emitted the single terminal above.
+if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
+  if [[ "${P229_EARLY_STOP:-0}" -eq 0 && -n "${P227_C_HEX:-}" ]]; then
+    P229_ROLE_ENV="false"
+    if [[ "${P229_ROLE_OK:-0}" -eq 1 ]]; then
+      P229_ROLE_ENV="true"
+    fi
+    P229_DRIVER_RC=0
+    mkdir -p "${DRIVER_EVIDENCE}/p229"
+    if /usr/bin/env P229_ROUTER_C_HEX="${P227_C_HEX}" \
+       P229_ROUTER_C_B64="${P227_C_B64:-}" \
+       P229_CLIENT_DBID_HEX="${P227_CLIENT_DBID_HEX:-}" \
+       P229_ROLE_OK="${P229_ROLE_ENV}" \
+       JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
+       JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
+       JAVA_C_LOG_DIR="${JAVA_TUNNEL_PARTICIPANT_DATA}/logs" \
+       EVIDENCE_DIR="${DRIVER_EVIDENCE}/p229" \
+       timeout --foreground "${DRIVER_TIMEOUT}" \
+       cargo test --locked -p i2pr-daemon --test java_tunnel_external \
+       p229_nonzero_exploratory_bootstrap -- --ignored --exact --nocapture --test-threads=1 \
+       >>"${DRIVER_LOG}" 2>&1; then
+      P229_DRIVER_RC=0
+    else
+      P229_DRIVER_RC=$?
+    fi
+    echo "    p229 bootstrap driver exit=${P229_DRIVER_RC}" >>"${DRIVER_LOG}"
+    if [[ -f "${DRIVER_EVIDENCE}/p229/driver-evidence.tsv" ]]; then
+      cat "${DRIVER_EVIDENCE}/p229/driver-evidence.tsv" >> "${DRIVER_DEST_TSV}"
+    fi
+  else
+    echo "    p229 bootstrap driver skipped (Plan 229 early stop owns the terminal)" >>"${DRIVER_LOG}"
   fi
 fi
 
@@ -1836,6 +2083,34 @@ m6_key_row "external-p228-client-pools" "p228-client-pools" \
   "Plan 228 WP B/G: client-pool presence/counts at helper timeout"
 m6_key_row "external-p228-trace" "p228-trace" \
   "Plan 228 WP B-G: sanitized build-path trace (selector/paired/dispatch/reply) correlated to Router C"
+
+# Plan 229 §18 — read the single corrective terminal. The destination TSV
+# may carry it from a shell early-stop path (P229-C-ROLE-MISMATCH /
+# P229-EXPLORATORY-SETTINGS-MISMATCH / P229-C-NOT-EXPLORATORY-ELIGIBLE /
+# P229-EXPLORATORY-NONZERO-NOT-BUILT) or from the P229 bootstrap driver
+# (contradiction / next-boundary / built). Consume the LAST occurrence so
+# an early gate row cannot shadow the authoritative driver outcome, and
+# record exactly one external row (diagnostic observation, always passed
+# when present). The static checker rejects any literal
+# `record "<P229-X>" passed` line.
+P229_CLASSIFICATION=""
+if [[ -f "${DRIVER_DEST_TSV}" ]]; then
+  P229_CLASSIFICATION="$(awk -F'\t' '$1 == "p229-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${DRIVER_DEST_TSV}")"
+fi
+if [[ -z "${P229_CLASSIFICATION}" ]]; then
+  P229_CLASSIFICATION="P229-classification-missing"
+fi
+record "external-p229-classification" passed "Plan 229 §18: ${P229_CLASSIFICATION}"
+m6_key_row "external-p229-roles" "p229-roles" \
+  "Plan 229 WP A: counted A=service B=publication C=transit roles with C non-floodfill"
+m6_key_row "external-p229-exploratory-settings" "p229-exploratory-settings" \
+  "Plan 229 WP B: Router-A effective small-router exploratory settings proof"
+m6_key_row "external-p229-transit-peer" "p229-transit-peer" \
+  "Plan 229 WP C: Router-C ordinary profile/selectability proof through the wire bootstrap"
+m6_key_row "external-p229-exploratory-tunnels" "p229-exploratory-tunnels" \
+  "Plan 229 WP D: genuine non-zero exploratory tunnels in both directions before helper start"
+m6_key_row "external-p229-lookup-lane" "p229-lookup-lane" \
+  "Plan 229 §10: target lookup/reverse-delivery lane not executed by Plan 229"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

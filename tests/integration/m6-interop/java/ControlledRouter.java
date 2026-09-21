@@ -126,6 +126,36 @@
 //   - every P228 response is one bounded `P228-EV ...` line with booleans,
 //     bounded counts, and response/status codes only, never peer paths,
 //     keys, tags, payloads, or raw log text.
+// Plan 229 diagnostic contract (reference-topology corrective only,
+// read-only, no state mutation):
+//   - `P229-TRANSIT-PEER <router-c-hex>` returns the bounded ordinary
+//     profile/selectability snapshot for Router C on this router's main
+//     NetDB (`P229-EV kind=transit-peer ...` with raw/validated presence,
+//     profile presence via `selectAllPeers` + `getProfileNonblocking`
+//     (never `addProfile` / `getOrCreateProfile*`), selectability,
+//     banlist, `wasUnreachable`, caps `f` membership, profile and
+//     not-failing counts);
+//   - `P229-EXPLORATORY-SETTINGS` returns the effective exploratory pool
+//     settings (`P229-EV kind=exploratory-settings ...` with lengths,
+//     variances, quantities; observation only, never `set*Settings`);
+//   - `P229-EXPLORATORY-TUNNELS <router-c-hex>` returns the bounded
+//     exploratory install snapshot (`P229-EV kind=exploratory-tunnels ...`
+//     with per-direction counts, nonzero counts, C presence, zero-hop
+//     fallback presence; no peer paths);
+//   - every P229 response is one bounded `P229-EV ...` line with booleans,
+//     bounded counts, and hex hashes only.
+// Plan 229 role contract (startup configuration only, never private state):
+//   - optional 7th launcher argument selects the controlled-topology role
+//     (`service` / `publication` / `transit`; unknown values fail closed);
+//   - `service` and `publication` keep `router.floodfillParticipant=true`,
+//     `transit` sets `router.floodfillParticipant=false`;
+//   - `service` additionally applies Java's stock small-router exploratory
+//     profile (`router.inboundPool.length=1`,
+//     `router.inboundPool.lengthVariance=1`,
+//     `router.outboundPool.length=1`,
+//     `router.outboundPool.lengthVariance=1`); no quantity, backup,
+//     allowZeroHop, explicitPeers, timeout, or paired-tunnel property is
+//     ever set here.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -170,6 +200,7 @@ import net.i2p.router.networkdb.kademlia.P223BranchProbe;
 import net.i2p.router.networkdb.kademlia.P224LsProbe;
 import net.i2p.router.networkdb.kademlia.P227Probe;
 import net.i2p.router.networkdb.kademlia.P228Probe;
+import net.i2p.router.networkdb.kademlia.P229Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -179,9 +210,9 @@ public final class ControlledRouter {
     };
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 5 && args.length != 6) {
+        if (args.length != 5 && args.length != 6 && args.length != 7) {
             System.err.println(
-                "usage: ControlledRouter <java-data-dir> <ssu2-host> <ssu2-port> <sam-port> <i2cp-port> [j219-control-port]");
+                "usage: ControlledRouter <java-data-dir> <ssu2-host> <ssu2-port> <sam-port> <i2cp-port> [j219-control-port] [role]");
             System.exit(64);
         }
 
@@ -193,6 +224,24 @@ public final class ControlledRouter {
         // Plan 219 — optional diagnostic port; "0" or absent
         // disables the read-only J219 control server.
         final String j219ControlPort = args.length >= 6 ? args[5] : "0";
+        // Plan 229 — optional controlled-topology role; absent preserves
+        // the legacy invocation (floodfill enabled, stock exploratory
+        // settings). Unknown values fail closed.
+        final String roleArg = args.length >= 7 ? args[6] : "";
+        final String role;
+        if (roleArg == null || roleArg.isEmpty()) {
+            role = "legacy";
+        } else if ("service".equals(roleArg)
+                || "publication".equals(roleArg)
+                || "transit".equals(roleArg)) {
+            role = roleArg;
+        } else {
+            System.err.println(
+                "ControlledRouter: unknown role '" + roleArg
+                    + "' (expected service|publication|transit)");
+            System.exit(64);
+            return;
+        }
 
         for (String forbidden : FORBIDDEN_VMCOMM_KEYS) {
             String v = System.getProperty(forbidden);
@@ -280,7 +329,30 @@ public final class ControlledRouter {
         // obsolete Plan 194 keys (which the static checker now
         // rejects) are NOT used.
         props.setProperty("router.reseedDisable", "true");
-        props.setProperty("router.floodfillParticipant", "true");
+        // Plan 229 WP A — role-aware floodfill startup configuration.
+        // Router C is a non-floodfill transit participant; A (service)
+        // and B (publication) retain floodfill for compatibility with
+        // earlier controlled-topology evidence. Legacy invocations
+        // (no role argument) retain floodfill enabled.
+        if ("transit".equals(role)) {
+            props.setProperty("router.floodfillParticipant", "false");
+        } else {
+            props.setProperty("router.floodfillParticipant", "true");
+        }
+        // Plan 229 WP B — Router A only uses Java's stock small-router
+        // exploratory profile (pinned
+        // `installer/resources/small/router.config`). Ordinary public
+        // router configuration properties consumed by
+        // `TunnelPoolSettings.readFromProperties()`; not a tunnel-policy
+        // patch. No quantity, backup quantity, allowZeroHop,
+        // explicitPeers, random key, timeout, or paired-tunnel property
+        // is set here.
+        if ("service".equals(role)) {
+            props.setProperty("router.inboundPool.length", "1");
+            props.setProperty("router.inboundPool.lengthVariance", "1");
+            props.setProperty("router.outboundPool.length", "1");
+            props.setProperty("router.outboundPool.lengthVariance", "1");
+        }
         props.setProperty("router.rebuildKeys", "false");
         props.setProperty("router.rejectStartupTime", "0");
         props.setProperty("router.newsRefreshFrequency", "0");
@@ -398,6 +470,7 @@ public final class ControlledRouter {
             + " i2cp=127.0.0.1:" + i2cpPort
             + " sam=127.0.0.1:" + samPort
             + " datadir=" + dataDir.getAbsolutePath()
+            + " role=" + role
             + " j219-control-port=" + j219ControlPort);
 
         router.runRouter();
@@ -638,6 +711,18 @@ public final class ControlledRouter {
                         return p228ClientPools(parts[1]);
                     case "P228-LOGGER-CONFIG":
                         return p228LoggerConfig();
+                    case "P229-TRANSIT-PEER":
+                        if (parts.length < 2) {
+                            return p229Error("missing-hash-argument");
+                        }
+                        return p229TransitPeer(parts[1]);
+                    case "P229-EXPLORATORY-SETTINGS":
+                        return p229ExploratorySettings();
+                    case "P229-EXPLORATORY-TUNNELS":
+                        if (parts.length < 2) {
+                            return p229Error("missing-hash-argument");
+                        }
+                        return p229ExploratoryTunnels(parts[1]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -956,6 +1041,94 @@ public final class ControlledRouter {
 
         private String p228Error(String reason) {
             return "P228-ERROR " + reason;
+        }
+
+        private String p229Error(String reason) {
+            return "P229-ERROR " + reason;
+        }
+
+        /**
+         * Plan 229 WP C — read-only Router-C transit-peer snapshot on
+         * this router's main NetDB. Uses only public read-only accessors
+         * via P229Probe; never creates a profile, never promotes tiers,
+         * never forces connections, never stores RouterInfos.
+         */
+        private String p229TransitPeer(String routerCHex) {
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (routerC == null) {
+                return p229Error("invalid-hex-hash");
+            }
+            P229Probe.TransitPeer result =
+                P229Probe.snapshotTransitPeer(context(), mainNetDb(), routerC);
+            if (result.error != null) {
+                return "P229-EV kind=transit-peer"
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P229-EV kind=transit-peer"
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " main_raw_present=" + result.mainRawPresent
+                + " main_valid_present=" + result.mainValidPresent
+                + " profile_present=" + result.profilePresent
+                + " selectable=" + result.selectable
+                + " banlisted=" + result.banlisted
+                + " unreachable=" + result.unreachable
+                + " caps_has_f=" + result.capsHasF
+                + " profile_count=" + result.profileCount
+                + " not_failing_count=" + result.notFailingCount;
+        }
+
+        /**
+         * Plan 229 WP B — read-only effective exploratory-pool settings.
+         * Observation only via `getInboundSettings` /
+         * `getOutboundSettings`; never mutates pool settings.
+         */
+        private String p229ExploratorySettings() {
+            P229Probe.ExploratorySettings result =
+                P229Probe.snapshotExploratorySettings(context());
+            if (result.error != null) {
+                return "P229-EV kind=exploratory-settings"
+                    + " observable=false reason=" + result.error;
+            }
+            return "P229-EV kind=exploratory-settings"
+                + " observable=true"
+                + " inbound_length=" + result.inboundLength
+                + " inbound_variance=" + result.inboundVariance
+                + " inbound_quantity=" + result.inboundQuantity
+                + " outbound_length=" + result.outboundLength
+                + " outbound_variance=" + result.outboundVariance
+                + " outbound_quantity=" + result.outboundQuantity;
+        }
+
+        /**
+         * Plan 229 WP D — read-only exploratory-tunnel install snapshot.
+         * Counts genuine non-zero tunnels and records Router-C membership
+         * read-only; no peer paths exposed. Never builds, installs, or
+         * mutates tunnels.
+         */
+        private String p229ExploratoryTunnels(String routerCHex) {
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (routerC == null) {
+                return p229Error("invalid-hex-hash");
+            }
+            P229Probe.ExploratoryTunnels result =
+                P229Probe.snapshotExploratoryTunnels(context(), routerC);
+            if (result.error != null) {
+                return "P229-EV kind=exploratory-tunnels"
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P229-EV kind=exploratory-tunnels"
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " inbound_exploratory_count=" + result.inboundExploratoryCount
+                + " outbound_exploratory_count=" + result.outboundExploratoryCount
+                + " inbound_nonzero_count=" + result.inboundNonzeroCount
+                + " outbound_nonzero_count=" + result.outboundNonzeroCount
+                + " inbound_c_present=" + result.inboundCPresent
+                + " outbound_c_present=" + result.outboundCPresent
+                + " zero_hop_fallback_present=" + result.zeroHopFallbackPresent;
         }
 
         /**

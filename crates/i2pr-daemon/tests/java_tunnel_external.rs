@@ -12278,3 +12278,1167 @@ fn p228_earliest_stage_precedence_is_deterministic() {
         P228Terminal::BuildCreatedNotDispatched(P228Direction::Both)
     );
 }
+
+// ---- Plan 229 non-zero exploratory paired-tunnel bootstrap corrective ----
+// Reference-topology corrective only: role-aware launcher proof, stock
+// small-router exploratory profile on Router A, ordinary-profile transit
+// gate for Router C, genuine non-zero exploratory gate in both directions,
+// then the unchanged Plan-227 client profile through the reused Plan-228
+// build-path attribution. No production behavior, no Java source patch,
+// no profile/NetDB/tunnel mutation, no VMComm, no alwaysQuery, no public
+// topology, no timeout change, no lookup/reverse-delivery qualification.
+
+/// Plan 229 counted launcher roles. Unknown values fail closed (`None`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P229Role {
+    Service,
+    Publication,
+    Transit,
+}
+
+fn p229_parse_role(value: &str) -> Option<P229Role> {
+    match value {
+        "service" => Some(P229Role::Service),
+        "publication" => Some(P229Role::Publication),
+        "transit" => Some(P229Role::Transit),
+        _ => None,
+    }
+}
+
+/// Plan 229 WP A: service and publication retain floodfill; the transit
+/// tunnel participant must be non-floodfill.
+fn p229_role_floodfill(role: P229Role) -> bool {
+    match role {
+        P229Role::Service | P229Role::Publication => true,
+        P229Role::Transit => false,
+    }
+}
+
+/// Plan 229 WP B: only the service role receives Java's stock small-router
+/// exploratory profile.
+fn p229_role_applies_small_exploratory(role: P229Role) -> bool {
+    matches!(role, P229Role::Service)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P229TransitPeer {
+    observable: bool,
+    main_raw_present: bool,
+    main_valid_present: bool,
+    profile_present: bool,
+    selectable: bool,
+    banlisted: bool,
+    unreachable: bool,
+    caps_has_f: bool,
+    profile_count: u64,
+    not_failing_count: u64,
+}
+
+fn p229_parse_small_count(value: Option<&String>) -> Option<u64> {
+    let raw = value?;
+    if raw.is_empty() || raw.len() > 2 || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parsed: u64 = raw.parse().ok()?;
+    (parsed <= 64).then_some(parsed)
+}
+
+fn p229_parse_bool(value: Option<&String>) -> Option<bool> {
+    match value.map(String::as_str) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn p229_parse_transit_peer(line: &str, expected_c_hex: &str) -> Option<P229TransitPeer> {
+    if !line.starts_with("P229-EV ") || !line.contains("kind=transit-peer") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P229-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("router_c_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_c_hex) || !p227_is_hex64(&echoed.to_lowercase()) {
+        return None;
+    }
+    Some(P229TransitPeer {
+        observable: true,
+        main_raw_present: p229_parse_bool(kv.get("main_raw_present"))?,
+        main_valid_present: p229_parse_bool(kv.get("main_valid_present"))?,
+        profile_present: p229_parse_bool(kv.get("profile_present"))?,
+        selectable: p229_parse_bool(kv.get("selectable"))?,
+        banlisted: p229_parse_bool(kv.get("banlisted"))?,
+        unreachable: p229_parse_bool(kv.get("unreachable"))?,
+        caps_has_f: p229_parse_bool(kv.get("caps_has_f"))?,
+        profile_count: p229_parse_small_count(kv.get("profile_count"))?,
+        not_failing_count: p229_parse_small_count(kv.get("not_failing_count"))?,
+    })
+}
+
+async fn p229_collect_transit_peer(diag_port: u16, router_c_hex: &str) -> Option<P229TransitPeer> {
+    let line =
+        p220_query_diagnostic(diag_port, &format!("P229-TRANSIT-PEER {router_c_hex}")).await?;
+    p229_parse_transit_peer(&line, router_c_hex)
+}
+
+/// Plan 229 WP C gate: ordinary authenticated-bootstrap profile that is
+/// present, selectable, non-banned, reachable, and non-floodfill.
+fn p229_transit_gate(peer: &P229TransitPeer) -> bool {
+    peer.observable
+        && peer.main_raw_present
+        && peer.main_valid_present
+        && peer.profile_present
+        && peer.selectable
+        && !peer.banlisted
+        && !peer.unreachable
+        && !peer.caps_has_f
+}
+
+fn record_p229_transit_peer(
+    evidence_dir: &std::path::Path,
+    peer: Option<&P229TransitPeer>,
+    router_c_hex: &str,
+) {
+    match peer {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p229-transit-peer",
+            &format!(
+                "router_c_hex={router_c_hex} observable={} main_raw_present={} main_valid_present={} profile_present={} selectable={} banlisted={} unreachable={} caps_has_f={} profile_count={} not_failing_count={} gate={}",
+                facts.observable,
+                facts.main_raw_present,
+                facts.main_valid_present,
+                facts.profile_present,
+                facts.selectable,
+                facts.banlisted,
+                facts.unreachable,
+                facts.caps_has_f,
+                facts.profile_count,
+                facts.not_failing_count,
+                p229_transit_gate(facts),
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p229-transit-peer",
+            &format!("router_c_hex={router_c_hex} observable=false reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P229ExploratorySettings {
+    observable: bool,
+    inbound_length: u64,
+    inbound_variance: u64,
+    inbound_quantity: u64,
+    outbound_length: u64,
+    outbound_variance: u64,
+    outbound_quantity: u64,
+}
+
+fn p229_parse_exploratory_settings(line: &str) -> Option<P229ExploratorySettings> {
+    if !line.starts_with("P229-EV ") || !line.contains("kind=exploratory-settings") {
+        return None;
+    }
+    // Fail-closed: exploratory explicitPeers is not available for the
+    // exploratory pools (pinned TunnelPeerSelector.shouldSelectExplicit);
+    // any such row is rejected from evidence.
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) || line.contains("explicitPeers") {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P229-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    Some(P229ExploratorySettings {
+        observable: true,
+        inbound_length: p229_parse_small_count(kv.get("inbound_length"))?,
+        inbound_variance: p229_parse_small_count(kv.get("inbound_variance"))?,
+        inbound_quantity: p229_parse_small_count(kv.get("inbound_quantity"))?,
+        outbound_length: p229_parse_small_count(kv.get("outbound_length"))?,
+        outbound_variance: p229_parse_small_count(kv.get("outbound_variance"))?,
+        outbound_quantity: p229_parse_small_count(kv.get("outbound_quantity"))?,
+    })
+}
+
+async fn p229_collect_exploratory_settings(diag_port: u16) -> Option<P229ExploratorySettings> {
+    let line = p220_query_diagnostic(diag_port, "P229-EXPLORATORY-SETTINGS").await?;
+    p229_parse_exploratory_settings(&line)
+}
+
+/// Plan 229 WP B gate: exactly Java's stock small-router exploratory
+/// profile on Router A. Quantities are diagnostic only and never gated.
+fn p229_settings_match(settings: &P229ExploratorySettings) -> bool {
+    settings.observable
+        && settings.inbound_length == 1
+        && settings.inbound_variance == 1
+        && settings.outbound_length == 1
+        && settings.outbound_variance == 1
+}
+
+fn record_p229_exploratory_settings(
+    evidence_dir: &std::path::Path,
+    settings: Option<&P229ExploratorySettings>,
+) {
+    match settings {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p229-exploratory-settings",
+            &format!(
+                "observable={} inbound_length={} inbound_variance={} outbound_length={} outbound_variance={} inbound_quantity={} outbound_quantity={} match={}",
+                facts.observable,
+                facts.inbound_length,
+                facts.inbound_variance,
+                facts.outbound_length,
+                facts.outbound_variance,
+                facts.inbound_quantity,
+                facts.outbound_quantity,
+                p229_settings_match(facts),
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p229-exploratory-settings",
+            "observable=false reason=diagnostic-unreachable",
+        ),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct P229Exploratory {
+    observable: bool,
+    inbound_count: u64,
+    outbound_count: u64,
+    inbound_nonzero: u64,
+    outbound_nonzero: u64,
+    inbound_c_present: bool,
+    outbound_c_present: bool,
+    zero_hop_fallback_present: bool,
+}
+
+fn p229_parse_exploratory(line: &str, expected_c_hex: &str) -> Option<P229Exploratory> {
+    if !line.starts_with("P229-EV ") || !line.contains("kind=exploratory-tunnels") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P229-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("router_c_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_c_hex) || !p227_is_hex64(&echoed.to_lowercase()) {
+        return None;
+    }
+    Some(P229Exploratory {
+        observable: true,
+        inbound_count: p229_parse_small_count(kv.get("inbound_exploratory_count"))?,
+        outbound_count: p229_parse_small_count(kv.get("outbound_exploratory_count"))?,
+        inbound_nonzero: p229_parse_small_count(kv.get("inbound_nonzero_count"))?,
+        outbound_nonzero: p229_parse_small_count(kv.get("outbound_nonzero_count"))?,
+        inbound_c_present: p229_parse_bool(kv.get("inbound_c_present"))?,
+        outbound_c_present: p229_parse_bool(kv.get("outbound_c_present"))?,
+        zero_hop_fallback_present: p229_parse_bool(kv.get("zero_hop_fallback_present"))?,
+    })
+}
+
+async fn p229_collect_exploratory(diag_port: u16, router_c_hex: &str) -> Option<P229Exploratory> {
+    let line = p220_query_diagnostic(
+        diag_port,
+        &format!("P229-EXPLORATORY-TUNNELS {router_c_hex}"),
+    )
+    .await?;
+    p229_parse_exploratory(&line, router_c_hex)
+}
+
+/// Plan 229 WP D authoritative gate: genuine non-zero exploratory tunnels
+/// in both directions. C presence is recorded but not required; only the
+/// non-zero paired-tunnel property gates helper start. The returned
+/// direction names the missing scope (`both` when neither direction has a
+/// non-zero tunnel), mirroring the Plan-228 direction convention.
+fn p229_nonzero_gate(exploratory: &P229Exploratory) -> P228Direction {
+    match (
+        exploratory.observable && exploratory.inbound_nonzero >= 1,
+        exploratory.observable && exploratory.outbound_nonzero >= 1,
+    ) {
+        (true, true) => P228Direction::Both,
+        (true, false) => P228Direction::Outbound,
+        (false, true) => P228Direction::Inbound,
+        (false, false) => P228Direction::Both,
+    }
+}
+
+fn p229_nonzero_gate_pass(exploratory: &P229Exploratory) -> bool {
+    exploratory.observable && exploratory.inbound_nonzero >= 1 && exploratory.outbound_nonzero >= 1
+}
+
+fn record_p229_exploratory(
+    evidence_dir: &std::path::Path,
+    exploratory: Option<&P229Exploratory>,
+    router_c_hex: &str,
+) {
+    match exploratory {
+        Some(facts) => append_evidence(
+            evidence_dir,
+            "p229-exploratory-tunnels",
+            &format!(
+                "router_c_hex={router_c_hex} observable={} inbound_exploratory_count={} outbound_exploratory_count={} inbound_nonzero_count={} outbound_nonzero_count={} inbound_c_present={} outbound_c_present={} zero_hop_fallback_present={} gate={}",
+                facts.observable,
+                facts.inbound_count,
+                facts.outbound_count,
+                facts.inbound_nonzero,
+                facts.outbound_nonzero,
+                facts.inbound_c_present,
+                facts.outbound_c_present,
+                facts.zero_hop_fallback_present,
+                p229_nonzero_gate_pass(facts),
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            "p229-exploratory-tunnels",
+            &format!("router_c_hex={router_c_hex} observable=false reason=diagnostic-unreachable"),
+        ),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P229Terminal {
+    RoleMismatch,
+    ExploratorySettingsMismatch,
+    CNotExploratoryEligible,
+    ExploratoryNonzeroNotBuilt(P228Direction),
+    ContradictionNonzeroButNoPaired,
+    NextBoundaryBuildMessageCreate,
+    NextBoundaryADispatch,
+    NextBoundaryFirstHopDelivery,
+    NextBoundaryCDecrypt,
+    NextBoundaryCReject(i32),
+    NextBoundaryReplyReturn,
+    NextBoundaryReplyDecrypt,
+    NextBoundaryRemoteReject(i32),
+    NextBoundaryLocalJoin,
+    NextBoundaryBuildReplyTimeout,
+    ClientTunnelsBuilt,
+    ObservabilityGap,
+}
+
+impl P229Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::RoleMismatch => "P229-C-ROLE-MISMATCH".to_owned(),
+            Self::ExploratorySettingsMismatch => "P229-EXPLORATORY-SETTINGS-MISMATCH".to_owned(),
+            Self::CNotExploratoryEligible => "P229-C-NOT-EXPLORATORY-ELIGIBLE".to_owned(),
+            Self::ExploratoryNonzeroNotBuilt(dir) => {
+                format!(
+                    "P229-EXPLORATORY-NONZERO-NOT-BUILT direction={}",
+                    dir.token()
+                )
+            }
+            Self::ContradictionNonzeroButNoPaired => {
+                "P229-EVIDENCE-CONTRADICTION-NONZERO-EXPLORATORY-BUT-NO-PAIRED".to_owned()
+            }
+            Self::NextBoundaryBuildMessageCreate => {
+                "P229-NEXT-BOUNDARY-BUILD-MESSAGE-CREATE".to_owned()
+            }
+            Self::NextBoundaryADispatch => "P229-NEXT-BOUNDARY-A-DISPATCH".to_owned(),
+            Self::NextBoundaryFirstHopDelivery => {
+                "P229-NEXT-BOUNDARY-FIRST-HOP-DELIVERY".to_owned()
+            }
+            Self::NextBoundaryCDecrypt => "P229-NEXT-BOUNDARY-C-DECRYPT".to_owned(),
+            Self::NextBoundaryCReject(code) => {
+                format!("P229-NEXT-BOUNDARY-C-REJECT code={code}")
+            }
+            Self::NextBoundaryReplyReturn => "P229-NEXT-BOUNDARY-REPLY-RETURN".to_owned(),
+            Self::NextBoundaryReplyDecrypt => "P229-NEXT-BOUNDARY-REPLY-DECRYPT".to_owned(),
+            Self::NextBoundaryRemoteReject(code) => {
+                format!("P229-NEXT-BOUNDARY-REMOTE-REJECT code={code}")
+            }
+            Self::NextBoundaryLocalJoin => "P229-NEXT-BOUNDARY-LOCAL-JOIN".to_owned(),
+            Self::NextBoundaryBuildReplyTimeout => {
+                "P229-NEXT-BOUNDARY-BUILD-REPLY-TIMEOUT".to_owned()
+            }
+            Self::ClientTunnelsBuilt => "P229-CLIENT-TUNNELS-BUILT".to_owned(),
+            Self::ObservabilityGap => "P229-OBSERVABILITY-GAP".to_owned(),
+        }
+    }
+}
+
+/// Plan 229 earliest-proven-missing-stage order. The role/profile/settings
+/// and non-zero exploratory gates precede the reused build-path
+/// attribution; once both non-zero directions are proven, the Plan-228
+/// `NO-PAIRED-TUNNEL` terminal becomes an explicit contradiction and every
+/// later build stage maps to its §11 next-boundary terminal. Installed
+/// one-hop client tunnels through C retire every assumed boundary.
+#[allow(clippy::too_many_arguments)]
+fn p229_classify(
+    role_ok: bool,
+    settings: Option<&P229ExploratorySettings>,
+    transit: Option<&P229TransitPeer>,
+    exploratory: Option<&P229Exploratory>,
+    p228: &P228Terminal,
+) -> P229Terminal {
+    if !role_ok {
+        return P229Terminal::RoleMismatch;
+    }
+    let Some(settings) = settings else {
+        return P229Terminal::ExploratorySettingsMismatch;
+    };
+    if !p229_settings_match(settings) {
+        return P229Terminal::ExploratorySettingsMismatch;
+    }
+    let Some(transit) = transit else {
+        return P229Terminal::CNotExploratoryEligible;
+    };
+    if !p229_transit_gate(transit) {
+        // A transit Router C that still advertises floodfill is the
+        // Plan-229 role mismatch, not a profile-eligibility stop.
+        if transit.observable && transit.caps_has_f {
+            return P229Terminal::RoleMismatch;
+        }
+        return P229Terminal::CNotExploratoryEligible;
+    }
+    let Some(exploratory) = exploratory else {
+        return P229Terminal::ObservabilityGap;
+    };
+    if !exploratory.observable {
+        return P229Terminal::ObservabilityGap;
+    }
+    if !p229_nonzero_gate_pass(exploratory) {
+        return P229Terminal::ExploratoryNonzeroNotBuilt(p229_nonzero_gate(exploratory));
+    }
+    // Both non-zero directions proven: continue through the already
+    // instrumented stock-Java build path.
+    match p228 {
+        P228Terminal::NoPairedTunnel(_) => P229Terminal::ContradictionNonzeroButNoPaired,
+        P228Terminal::BuildMessageCreateFailure(_) => P229Terminal::NextBoundaryBuildMessageCreate,
+        P228Terminal::BuildCreatedNotDispatched(_) => P229Terminal::NextBoundaryADispatch,
+        P228Terminal::FirstHopDeliveryFailure | P228Terminal::ADispatchedCNotReceived => {
+            P229Terminal::NextBoundaryFirstHopDelivery
+        }
+        P228Terminal::CDecryptFailure => P229Terminal::NextBoundaryCDecrypt,
+        P228Terminal::CRejected(code) => P229Terminal::NextBoundaryCReject(*code),
+        P228Terminal::ReplyNotReturned => P229Terminal::NextBoundaryReplyReturn,
+        P228Terminal::ReplyDecryptFailure => P229Terminal::NextBoundaryReplyDecrypt,
+        P228Terminal::RemoteReject(code) => P229Terminal::NextBoundaryRemoteReject(*code),
+        P228Terminal::LocalJoinFailure => P229Terminal::NextBoundaryLocalJoin,
+        P228Terminal::BuildReplyTimeout(_) => P229Terminal::NextBoundaryBuildReplyTimeout,
+        P228Terminal::NextBoundaryClientTunnelsBuilt => P229Terminal::ClientTunnelsBuilt,
+        P228Terminal::NoRouterTunnelInfra
+        | P228Terminal::NoClientConfig(_)
+        | P228Terminal::ObservabilityGapBuildPath => P229Terminal::ObservabilityGap,
+    }
+}
+
+fn record_p229_classification(evidence_dir: &std::path::Path, terminal: &P229Terminal) {
+    append_evidence(evidence_dir, "p229-classification", &terminal.token());
+}
+
+/// Plan 229 invariant 20 / §15: no Plan-226 lookup or reverse-delivery
+/// evidence is permitted after the Plan-229 terminal. The frozen 45-second
+/// window is untouched and never entered here.
+fn p229_terminal_permits_lookup(_terminal: &P229Terminal) -> bool {
+    false
+}
+
+/// Plan 229 WP E driver. Runs only after the shell proved the role,
+/// settings, transit-peer, and non-zero exploratory gates and started the
+/// unchanged Plan-227 raw helper. Re-verifies every gate at the
+/// attribution epoch, reuses the Plan-228 whitelist-only build-path trace
+/// correlated to Router C, and emits exactly one terminal.
+#[tokio::test]
+#[ignore = "Plan 229: requires the exact-pinned triple Java router environment"]
+async fn p229_nonzero_exploratory_bootstrap() {
+    let evidence_dir = std::env::var("EVIDENCE_DIR").expect("EVIDENCE_DIR");
+    let evidence_dir = std::path::PathBuf::from(evidence_dir);
+    let router_c_hex = std::env::var("P229_ROUTER_C_HEX").unwrap_or_default();
+    let router_c_b64 = std::env::var("P229_ROUTER_C_B64").unwrap_or_default();
+    let client_hex = std::env::var("P229_CLIENT_DBID_HEX").unwrap_or_default();
+    let role_ok = std::env::var("P229_ROLE_OK")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let diag_a: u16 = std::env::var("JAVA_DIAGNOSTIC_A_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let log_a = std::env::var("JAVA_A_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok();
+    let log_c = std::env::var("JAVA_C_LOG_DIR")
+        .map(std::path::PathBuf::from)
+        .ok();
+    let c_hex_known = p227_is_hex64(&router_c_hex);
+    let client_known = p227_is_hex64(&client_hex);
+
+    // Re-verify every Plan-229 gate at the attribution epoch.
+    let settings = if diag_a != 0 {
+        p229_collect_exploratory_settings(diag_a).await
+    } else {
+        None
+    };
+    record_p229_exploratory_settings(&evidence_dir, settings.as_ref());
+
+    let transit = if diag_a != 0 && c_hex_known {
+        p229_collect_transit_peer(diag_a, &router_c_hex).await
+    } else {
+        None
+    };
+    record_p229_transit_peer(&evidence_dir, transit.as_ref(), &router_c_hex);
+
+    let exploratory = if diag_a != 0 && c_hex_known {
+        p229_collect_exploratory(diag_a, &router_c_hex).await
+    } else {
+        None
+    };
+    record_p229_exploratory(&evidence_dir, exploratory.as_ref(), &router_c_hex);
+
+    // Reused Plan-228 attribution inputs at the same epoch.
+    let infra = if diag_a != 0 {
+        p228_collect_infra(diag_a).await
+    } else {
+        None
+    };
+    let logger_a_ok = log_a
+        .as_ref()
+        .is_some_and(|path| p228_logger_config_installed(path.as_path()));
+    let logger_c_ok = log_c
+        .as_ref()
+        .is_some_and(|path| p228_logger_config_installed(path.as_path()));
+    let mut trace = P228Trace {
+        logger_config_ok: logger_a_ok,
+        c_log_observable: logger_c_ok,
+        ..P228Trace::default()
+    };
+    if c_hex_known && !router_c_b64.is_empty() {
+        let mut any_a = false;
+        let mut any_c = false;
+        if let Some(log_a) = log_a.as_ref()
+            && let Some(scan_a) = p228_scan_log_dir(log_a, &router_c_b64, false)
+        {
+            any_a = scan_a.files_read_a > 0;
+            trace.files_read_a = scan_a.files_read_a;
+            trace.selector_activity_seen |= scan_a.selector_activity_seen;
+            trace.explicit_not_selectable_seen |= scan_a.explicit_not_selectable_seen;
+            trace.zero_hop_fallback_seen |= scan_a.zero_hop_fallback_seen;
+            trace.peers_for_inbound_seen |= scan_a.peers_for_inbound_seen;
+            trace.peers_for_outbound_seen |= scan_a.peers_for_outbound_seen;
+            trace.config_contains_c |= scan_a.config_contains_c;
+            trace.configuring_new_tunnel_seen |= scan_a.configuring_new_tunnel_seen;
+            trace.no_tunnel_to_build_with_seen |= scan_a.no_tunnel_to_build_with_seen;
+            trace.paired_missing_seen |= scan_a.paired_missing_seen;
+            trace.paired_exploratory_fallback_seen |= scan_a.paired_exploratory_fallback_seen;
+            trace.build_message_create_fail_seen |= scan_a.build_message_create_fail_seen;
+            trace.inbound_dispatch_seen |= scan_a.inbound_dispatch_seen;
+            trace.outbound_dispatch_seen |= scan_a.outbound_dispatch_seen;
+            trace.outbound_dispatch_to_c |= scan_a.outbound_dispatch_to_c;
+            trace.inbound_dispatch_to_c |= scan_a.inbound_dispatch_to_c;
+            trace.next_hop_missing_seen |= scan_a.next_hop_missing_seen;
+            trace.a_reply_handling_seen |= scan_a.a_reply_handling_seen;
+            trace.a_peer_status_seen |= scan_a.a_peer_status_seen;
+            if trace.a_remote_status_code.is_none() {
+                trace.a_remote_status_code = scan_a.a_remote_status_code;
+            }
+            trace.a_reply_decrypt_fail_seen |= scan_a.a_reply_decrypt_fail_seen;
+            trace.a_reply_no_match_seen |= scan_a.a_reply_no_match_seen;
+            trace.a_dup_id_seen |= scan_a.a_dup_id_seen;
+            trace.build_timeout_seen |= scan_a.build_timeout_seen;
+        }
+        if let Some(log_c) = log_c.as_ref()
+            && let Some(scan_c) = p228_scan_log_dir(log_c, &router_c_b64, true)
+        {
+            any_c = scan_c.files_read_c > 0;
+            trace.files_read_c = scan_c.files_read_c;
+            trace.c_read_slot_seen |= scan_c.c_read_slot_seen;
+            if trace.c_response_code.is_none() {
+                trace.c_response_code = scan_c.c_response_code;
+            }
+            trace.c_decrypt_failure_seen |= scan_c.c_decrypt_failure_seen;
+        }
+        trace.observable = any_a && logger_a_ok;
+        trace.c_log_observable = any_c && logger_c_ok;
+    }
+
+    let mut helper_connected = false;
+    if client_known
+        && diag_a != 0
+        && let Some(tunnels) = p227_collect_tunnels(diag_a, &client_hex, &router_c_hex).await
+    {
+        helper_connected = true;
+        trace.inbound_installed =
+            tunnels.inbound_exact_one_remote_hop_via_c && !tunnels.inbound_zero_hop_present;
+        trace.outbound_installed =
+            tunnels.outbound_exact_one_remote_hop_via_c && !tunnels.outbound_zero_hop_present;
+    }
+
+    let p228 = p228_classify(infra.as_ref(), &trace, c_hex_known, helper_connected);
+    let terminal = p229_classify(
+        role_ok,
+        settings.as_ref(),
+        transit.as_ref(),
+        exploratory.as_ref(),
+        &p228,
+    );
+    // The target lookup / reverse-delivery lane is never entered here.
+    debug_assert!(!p229_terminal_permits_lookup(&terminal));
+    record_p229_classification(&evidence_dir, &terminal);
+}
+
+// ---- Plan 229 focused unit rows (Plan 229 §14) ----------------------------
+
+fn p229_test_settings() -> P229ExploratorySettings {
+    P229ExploratorySettings {
+        observable: true,
+        inbound_length: 1,
+        inbound_variance: 1,
+        inbound_quantity: 2,
+        outbound_length: 1,
+        outbound_variance: 1,
+        outbound_quantity: 2,
+    }
+}
+
+fn p229_test_transit_ok() -> P229TransitPeer {
+    P229TransitPeer {
+        observable: true,
+        main_raw_present: true,
+        main_valid_present: true,
+        profile_present: true,
+        selectable: true,
+        banlisted: false,
+        unreachable: false,
+        caps_has_f: false,
+        profile_count: 3,
+        not_failing_count: 2,
+    }
+}
+
+fn p229_test_exploratory(inbound_nonzero: u64, outbound_nonzero: u64) -> P229Exploratory {
+    P229Exploratory {
+        observable: true,
+        inbound_count: 2,
+        outbound_count: 2,
+        inbound_nonzero,
+        outbound_nonzero,
+        inbound_c_present: true,
+        outbound_c_present: true,
+        zero_hop_fallback_present: true,
+    }
+}
+
+fn p229_test_p228_paired_missing() -> P228Terminal {
+    P228Terminal::NoPairedTunnel(P228Direction::Both)
+}
+
+#[test]
+fn p229_unknown_launcher_role_fails_closed() {
+    assert_eq!(p229_parse_role("service"), Some(P229Role::Service));
+    assert_eq!(p229_parse_role("publication"), Some(P229Role::Publication));
+    assert_eq!(p229_parse_role("transit"), Some(P229Role::Transit));
+    assert_eq!(p229_parse_role(""), None);
+    assert_eq!(p229_parse_role("floodfill"), None);
+    assert_eq!(p229_parse_role("SERVICE"), None);
+    assert_eq!(p229_parse_role("routerC"), None);
+    assert_eq!(p229_parse_role("transit "), None);
+}
+
+#[test]
+fn p229_service_role_keeps_floodfill_true() {
+    assert!(p229_role_floodfill(P229Role::Service));
+}
+
+#[test]
+fn p229_publication_role_keeps_floodfill_true() {
+    assert!(p229_role_floodfill(P229Role::Publication));
+}
+
+#[test]
+fn p229_transit_role_sets_floodfill_false() {
+    assert!(!p229_role_floodfill(P229Role::Transit));
+}
+
+#[test]
+fn p229_only_service_role_receives_small_exploratory_profile() {
+    assert!(p229_role_applies_small_exploratory(P229Role::Service));
+    assert!(!p229_role_applies_small_exploratory(P229Role::Publication));
+    assert!(!p229_role_applies_small_exploratory(P229Role::Transit));
+    // The four small-router properties match exactly; quantities stay
+    // diagnostic-only (any stock quantity passes).
+    let mut high_quantity = p229_test_settings();
+    high_quantity.inbound_quantity = 8;
+    high_quantity.outbound_quantity = 8;
+    assert!(p229_settings_match(&p229_test_settings()));
+    assert!(p229_settings_match(&high_quantity));
+    let mut wrong_length = p229_test_settings();
+    wrong_length.inbound_length = 2;
+    assert!(!p229_settings_match(&wrong_length));
+    let mut wrong_variance = p229_test_settings();
+    wrong_variance.outbound_variance = 0;
+    assert!(!p229_settings_match(&wrong_variance));
+}
+
+#[test]
+fn p229_no_explicit_peers_on_exploratory_settings() {
+    // Any exploratory explicitPeers mention invalidates the settings row.
+    let line = "P229-EV kind=exploratory-settings observable=true inbound_length=1 inbound_variance=1 inbound_quantity=2 outbound_length=1 outbound_variance=1 outbound_quantity=2 explicitPeers=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    assert!(p229_parse_exploratory_settings(line).is_none());
+    let clean = "P229-EV kind=exploratory-settings observable=true inbound_length=1 inbound_variance=1 inbound_quantity=2 outbound_length=1 outbound_variance=1 outbound_quantity=2";
+    assert!(p229_parse_exploratory_settings(clean).is_some());
+}
+
+#[test]
+fn p229_no_exploratory_quantity_backup_timeout_override() {
+    // Quantities are observed but never gated: stock/current values pass.
+    let mut settings = p229_test_settings();
+    settings.inbound_quantity = 0;
+    settings.outbound_quantity = 64;
+    assert!(p229_settings_match(&settings));
+    // Length overrides outside the small-router profile fail the match.
+    settings.inbound_length = 3;
+    assert!(!p229_settings_match(&settings));
+}
+
+#[test]
+fn p229_c_advertising_f_maps_to_role_mismatch() {
+    // Router C still advertising floodfill is the role mismatch, even
+    // when every other gate input passes.
+    let mut transit = p229_test_transit_ok();
+    transit.caps_has_f = true;
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&transit),
+        Some(&p229_test_exploratory(1, 1)),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(terminal, P229Terminal::RoleMismatch);
+    // Shell role proof failing also maps to the mismatch terminal.
+    let terminal = p229_classify(
+        false,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(terminal, P229Terminal::RoleMismatch);
+}
+
+#[test]
+fn p229_c_no_profile_maps_to_not_eligible() {
+    let mut transit = p229_test_transit_ok();
+    transit.profile_present = false;
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&transit),
+        Some(&p229_test_exploratory(1, 1)),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(terminal, P229Terminal::CNotExploratoryEligible);
+    // Missing diagnostic is the same eligibility stop, not a role claim.
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        None,
+        Some(&p229_test_exploratory(1, 1)),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(terminal, P229Terminal::CNotExploratoryEligible);
+}
+
+#[test]
+fn p229_c_profile_but_not_selectable_maps_to_not_eligible() {
+    for transit in [
+        {
+            let mut peer = p229_test_transit_ok();
+            peer.selectable = false;
+            peer
+        },
+        {
+            let mut peer = p229_test_transit_ok();
+            peer.banlisted = true;
+            peer
+        },
+        {
+            let mut peer = p229_test_transit_ok();
+            peer.unreachable = true;
+            peer
+        },
+        {
+            let mut peer = p229_test_transit_ok();
+            peer.main_valid_present = false;
+            peer
+        },
+    ] {
+        assert!(!p229_transit_gate(&transit));
+        let terminal = p229_classify(
+            true,
+            Some(&p229_test_settings()),
+            Some(&transit),
+            Some(&p229_test_exploratory(1, 1)),
+            &p229_test_p228_paired_missing(),
+        );
+        assert_eq!(terminal, P229Terminal::CNotExploratoryEligible);
+    }
+    assert!(p229_transit_gate(&p229_test_transit_ok()));
+}
+
+#[test]
+fn p229_zero_hop_only_exploratory_is_insufficient() {
+    let exploratory = p229_test_exploratory(0, 0);
+    assert!(!p229_nonzero_gate_pass(&exploratory));
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&exploratory),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(
+        terminal,
+        P229Terminal::ExploratoryNonzeroNotBuilt(P228Direction::Both)
+    );
+}
+
+#[test]
+fn p229_inbound_only_nonzero_is_insufficient() {
+    let exploratory = p229_test_exploratory(1, 0);
+    assert!(!p229_nonzero_gate_pass(&exploratory));
+    assert_eq!(p229_nonzero_gate(&exploratory), P228Direction::Outbound);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&exploratory),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(
+        terminal,
+        P229Terminal::ExploratoryNonzeroNotBuilt(P228Direction::Outbound)
+    );
+}
+
+#[test]
+fn p229_outbound_only_nonzero_is_insufficient() {
+    let exploratory = p229_test_exploratory(0, 2);
+    assert!(!p229_nonzero_gate_pass(&exploratory));
+    assert_eq!(p229_nonzero_gate(&exploratory), P228Direction::Inbound);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&exploratory),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(
+        terminal,
+        P229Terminal::ExploratoryNonzeroNotBuilt(P228Direction::Inbound)
+    );
+}
+
+#[test]
+fn p229_both_nonzero_admits_helper_start() {
+    let exploratory = p229_test_exploratory(1, 1);
+    assert!(p229_nonzero_gate_pass(&exploratory));
+    // The gate passing moves classification past the exploratory stop
+    // into the build-path continuation (contradiction here because the
+    // stubbed P228 trace still reports no paired tunnel).
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&exploratory),
+        &p229_test_p228_paired_missing(),
+    );
+    assert_eq!(terminal, P229Terminal::ContradictionNonzeroButNoPaired);
+}
+
+#[test]
+fn p229_nonzero_plus_no_paired_maps_to_contradiction() {
+    // Plan 228's terminal must disappear once both non-zero exploratory
+    // directions are proven; its persistence is an explicit contradiction.
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(2, 1)),
+        &P228Terminal::NoPairedTunnel(P228Direction::Both),
+    );
+    assert_eq!(terminal, P229Terminal::ContradictionNonzeroButNoPaired);
+    assert_eq!(
+        terminal.token(),
+        "P229-EVIDENCE-CONTRADICTION-NONZERO-EXPLORATORY-BUT-NO-PAIRED"
+    );
+}
+
+#[test]
+fn p229_paired_without_create_maps_to_create_boundary() {
+    let mut trace = p228_test_trace_full();
+    trace.paired_missing_seen = false;
+    trace.build_message_create_fail_seen = true;
+    trace.inbound_dispatch_seen = false;
+    trace.outbound_dispatch_seen = false;
+    let infra = p228_test_infra(2, 2);
+    let p228 = p228_classify(Some(&infra), &trace, true, false);
+    assert_eq!(
+        p228,
+        P228Terminal::BuildMessageCreateFailure(P228Direction::Both)
+    );
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &p228,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryBuildMessageCreate);
+}
+
+#[test]
+fn p229_create_without_dispatch_maps_to_dispatch_boundary() {
+    let mut trace = p228_test_trace_full();
+    trace.paired_missing_seen = false;
+    trace.inbound_dispatch_seen = false;
+    trace.outbound_dispatch_seen = false;
+    let infra = p228_test_infra(2, 2);
+    let p228 = p228_classify(Some(&infra), &trace, true, false);
+    assert_eq!(
+        p228,
+        P228Terminal::BuildCreatedNotDispatched(P228Direction::Both)
+    );
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &p228,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryADispatch);
+}
+
+#[test]
+fn p229_dispatch_without_c_receive_maps_to_first_hop_boundary() {
+    for p228 in [
+        P228Terminal::FirstHopDeliveryFailure,
+        P228Terminal::ADispatchedCNotReceived,
+    ] {
+        let terminal = p229_classify(
+            true,
+            Some(&p229_test_settings()),
+            Some(&p229_test_transit_ok()),
+            Some(&p229_test_exploratory(1, 1)),
+            &p228,
+        );
+        assert_eq!(terminal, P229Terminal::NextBoundaryFirstHopDelivery);
+    }
+}
+
+#[test]
+fn p229_c_reject_retained_with_bounded_code() {
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::CRejected(10),
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryCReject(10));
+    assert_eq!(terminal.token(), "P229-NEXT-BOUNDARY-C-REJECT code=10");
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::RemoteReject(20),
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryRemoteReject(20));
+    assert_eq!(terminal.token(), "P229-NEXT-BOUNDARY-REMOTE-REJECT code=20");
+    // Out-of-range codes never reach the P229 boundary: the P228 parser
+    // rejects them first.
+    assert_eq!(
+        p228_parse_response_code("replied with status 9999", "replied with status"),
+        None
+    );
+}
+
+#[test]
+fn p229_reply_decrypt_join_failures_retain_earliest_ordering() {
+    // Reply-decrypt failure precedes join: earliest proven stage wins.
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::ReplyDecryptFailure,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryReplyDecrypt);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::LocalJoinFailure,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryLocalJoin);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::ReplyNotReturned,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryReplyReturn);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::BuildReplyTimeout(P228Direction::Both),
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryBuildReplyTimeout);
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::CDecryptFailure,
+    );
+    assert_eq!(terminal, P229Terminal::NextBoundaryCDecrypt);
+}
+
+#[test]
+fn p229_both_client_tunnels_install_maps_only_to_built() {
+    let terminal = p229_classify(
+        true,
+        Some(&p229_test_settings()),
+        Some(&p229_test_transit_ok()),
+        Some(&p229_test_exploratory(1, 1)),
+        &P228Terminal::NextBoundaryClientTunnelsBuilt,
+    );
+    assert_eq!(terminal, P229Terminal::ClientTunnelsBuilt);
+    assert_eq!(terminal.token(), "P229-CLIENT-TUNNELS-BUILT");
+    // The built terminal stops before lookup qualification.
+    assert!(!p229_terminal_permits_lookup(&terminal));
+}
+
+#[test]
+fn p229_no_lookup_or_reverse_send_after_terminal() {
+    // No Plan-229 terminal may admit the Plan-226 lookup or the frozen
+    // reverse-delivery lane.
+    for terminal in [
+        P229Terminal::RoleMismatch,
+        P229Terminal::ExploratorySettingsMismatch,
+        P229Terminal::CNotExploratoryEligible,
+        P229Terminal::ExploratoryNonzeroNotBuilt(P228Direction::Both),
+        P229Terminal::ContradictionNonzeroButNoPaired,
+        P229Terminal::NextBoundaryBuildMessageCreate,
+        P229Terminal::NextBoundaryADispatch,
+        P229Terminal::NextBoundaryFirstHopDelivery,
+        P229Terminal::NextBoundaryCDecrypt,
+        P229Terminal::NextBoundaryCReject(0),
+        P229Terminal::NextBoundaryReplyReturn,
+        P229Terminal::NextBoundaryReplyDecrypt,
+        P229Terminal::NextBoundaryRemoteReject(0),
+        P229Terminal::NextBoundaryLocalJoin,
+        P229Terminal::NextBoundaryBuildReplyTimeout,
+        P229Terminal::ClientTunnelsBuilt,
+        P229Terminal::ObservabilityGap,
+    ] {
+        assert!(
+            !p229_terminal_permits_lookup(&terminal),
+            "terminal must not permit lookup: {}",
+            terminal.token()
+        );
+        assert!(
+            !terminal.token().contains("LOOKUP") && !terminal.token().contains("45"),
+            "terminal must not claim lookup/reverse payload: {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p229_exactly_one_terminal_per_attempt() {
+    let dir = p224_test_tmpdir("p229-record-once");
+    let evidence_dir = dir.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let terminal = P229Terminal::ContradictionNonzeroButNoPaired;
+    record_p229_classification(&evidence_dir, &terminal);
+    let tsv = std::fs::read_to_string(evidence_dir.join("driver-evidence.tsv")).expect("read tsv");
+    assert_eq!(
+        tsv.lines()
+            .filter(|line| line.starts_with("p229-classification\t"))
+            .count(),
+        1
+    );
+    assert!(tsv.contains("P229-EVIDENCE-CONTRADICTION-NONZERO-EXPLORATORY-BUT-NO-PAIRED"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn p229_unrelated_logs_cannot_satisfy_facts() {
+    let c_hex = p227_test_c_hex();
+    // Wrong prefix never parses.
+    assert!(
+        p229_parse_transit_peer(
+            &format!("P228-EV kind=transit-peer observable=true router_c_hex={c_hex}"),
+            &c_hex
+        )
+        .is_none()
+    );
+    assert!(
+        p229_parse_exploratory_settings("P228-EV kind=exploratory-settings observable=true")
+            .is_none()
+    );
+    assert!(
+        p229_parse_exploratory(
+            &format!("P227-EV kind=exploratory-tunnels observable=true router_c_hex={c_hex}"),
+            &c_hex
+        )
+        .is_none()
+    );
+    // Echo mismatch never parses.
+    let other = "cd".repeat(32);
+    let line = format!(
+        "P229-EV kind=transit-peer observable=true router_c_hex={other} main_raw_present=true main_valid_present=true profile_present=true selectable=true banlisted=false unreachable=false caps_has_f=false profile_count=3 not_failing_count=2"
+    );
+    assert!(p229_parse_transit_peer(&line, &c_hex).is_none());
+    // Positive parse requires the exact Router-C echo.
+    let line = format!(
+        "P229-EV kind=transit-peer observable=true router_c_hex={c_hex} main_raw_present=true main_valid_present=true profile_present=true selectable=true banlisted=false unreachable=false caps_has_f=false profile_count=3 not_failing_count=2"
+    );
+    let parsed = p229_parse_transit_peer(&line, &c_hex).expect("parse transit");
+    assert!(p229_transit_gate(&parsed));
+    let exp_line = format!(
+        "P229-EV kind=exploratory-tunnels observable=true router_c_hex={c_hex} inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_nonzero_count=1 outbound_nonzero_count=1 inbound_c_present=true outbound_c_present=true zero_hop_fallback_present=true"
+    );
+    let exp = p229_parse_exploratory(&exp_line, &c_hex).expect("parse exploratory");
+    assert!(p229_nonzero_gate_pass(&exp));
+}
+
+#[test]
+fn p229_secret_raw_log_lines_rejected() {
+    let c_hex = p227_test_c_hex();
+    // Secret-bearing diagnostic rows never parse.
+    let secret = format!(
+        "P229-EV kind=transit-peer observable=true router_c_hex={c_hex} main_raw_present=true main_valid_present=true profile_present=true selectable=true banlisted=false unreachable=false caps_has_f=false profile_count=3 not_failing_count=2 session_key=abcd"
+    );
+    assert!(p229_parse_transit_peer(&secret, &c_hex).is_none());
+    let secret_settings = "P229-EV kind=exploratory-settings observable=true inbound_length=1 inbound_variance=1 inbound_quantity=2 outbound_length=1 outbound_variance=1 outbound_quantity=2 payload=deadbeef";
+    assert!(p229_parse_exploratory_settings(secret_settings).is_none());
+    let secret_exp = format!(
+        "P229-EV kind=exploratory-tunnels observable=true router_c_hex={c_hex} inbound_exploratory_count=2 outbound_exploratory_count=2 inbound_nonzero_count=1 outbound_nonzero_count=1 inbound_c_present=true outbound_c_present=true zero_hop_fallback_present=false log-router-0.txt"
+    );
+    assert!(p229_parse_exploratory(&secret_exp, &c_hex).is_none());
+    // Malformed booleans/counts never parse.
+    let malformed = format!(
+        "P229-EV kind=transit-peer observable=true router_c_hex={c_hex} main_raw_present=yes main_valid_present=true profile_present=true selectable=true banlisted=false unreachable=false caps_has_f=false profile_count=3 not_failing_count=2"
+    );
+    assert!(p229_parse_transit_peer(&malformed, &c_hex).is_none());
+}
