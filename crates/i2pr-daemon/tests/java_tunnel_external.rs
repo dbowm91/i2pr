@@ -4112,6 +4112,31 @@ async fn destination_message_plane_against_java() {
         .map(|stats| stats.drop_gateway_overflow)
         .unwrap_or(-1);
     let p231_overflow_delta = p231_delta(p231_imm_overflow, p231_pre_overflow);
+    // Window attribution (pre-send vs post-window): the helper
+    // returns before the router dispatches, so the micro-epoch above
+    // systematically misses the enqueue. The window deltas below are
+    // target-attributable only through the lane-quiet premises in the
+    // classifier (exactly one client message; missing gateways always
+    // log their id-correlated row).
+    let p231_post_dispatch = p231_a_gateway_post
+        .as_ref()
+        .map(|stats| stats.dispatch_outbound_tunnel)
+        .unwrap_or(-1);
+    let p231_post_overflow = p231_a_gateway_post
+        .as_ref()
+        .map(|stats| stats.drop_gateway_overflow)
+        .unwrap_or(-1);
+    let p231_pre_client_time = p231_a_gateway_pre
+        .as_ref()
+        .map(|stats| stats.dispatch_time)
+        .unwrap_or(-1);
+    let p231_post_client_time = p231_a_gateway_post
+        .as_ref()
+        .map(|stats| stats.dispatch_time)
+        .unwrap_or(-1);
+    let p231_dispatch_window_delta = p231_delta(p231_post_dispatch, p231_pre_dispatch);
+    let p231_overflow_window_delta = p231_delta(p231_post_overflow, p231_pre_overflow);
+    let p231_client_time_delta = p231_delta(p231_post_client_time, p231_pre_client_time);
     let p231_c_processed_delta = match (&p231_c_obep_pre, &p231_c_obep_post) {
         (Some(pre), Some(post)) => p231_delta(post.processed, pre.processed),
         _ => None,
@@ -4329,6 +4354,9 @@ async fn destination_message_plane_against_java() {
         outbound_still_installed: p231_still_installed,
         dispatch_outbound_delta: p231_dispatch_delta,
         overflow_delta_a: p231_overflow_delta,
+        client_dispatch_time_delta: p231_client_time_delta,
+        dispatch_outbound_window_delta: p231_dispatch_window_delta,
+        overflow_window_delta: p231_overflow_window_delta,
         no_matching_ob_correlated: p231_count_delta(p231_no_ob_corr_post, p231_no_ob_corr_pre)
             .is_some_and(|delta| delta > 0),
         c_obep_observable: p231_c_observable,
@@ -4357,8 +4385,10 @@ async fn destination_message_plane_against_java() {
         expected_queued_decode_fails: p231_queued_decode_fails,
         expected_digest_match_45s: frozen_payload_45s,
     };
-    let p231_a_enqueued = p231_positive(&p231_inputs.dispatch_outbound_delta)
-        && !p231_positive(&p231_inputs.overflow_delta_a);
+    let p231_a_enqueued = !p231_inputs.no_matching_ob_correlated
+        && (p231_positive(&p231_inputs.dispatch_outbound_delta)
+            || (p231_inputs.client_dispatch_time_delta == Some(1)
+                && p231_positive(&p231_inputs.dispatch_outbound_window_delta)));
     let p231_b_forward_proven = p231_positive(&p231_inputs.target_dispatch_inbound_delta)
         || p231_positive(&p231_inputs.target_ibgw_processed_delta);
     let p231_c_emitted_proven = p231_positive(&p231_inputs.target_ibgw_processed_delta)
@@ -15964,9 +15994,21 @@ struct P231Inputs {
     accepted_observed: bool,
     outbound_send_id_known: bool,
     outbound_still_installed: bool,
+    // Isolated micro-epoch (pre-send vs post-immediate): bounds only
+    // dispatches fast enough to beat the post-send diagnostic query.
     dispatch_outbound_delta: Option<i64>,
     overflow_delta_a: Option<i64>,
     no_matching_ob_correlated: bool,
+    // Window attribution (pre-send vs post-window): the helper
+    // returns before the router dispatches, so the micro-epoch
+    // systematically misses the enqueue. The window deltas below are
+    // target-attributable only through the lane-quiet premises
+    // documented on the classifier: exactly one client message exists
+    // in the lane, and a missing gateway always logs its
+    // id-correlated no-matching row at WARN.
+    client_dispatch_time_delta: Option<i64>,
+    dispatch_outbound_window_delta: Option<i64>,
+    overflow_window_delta: Option<i64>,
     c_obep_observable: bool,
     c_obep_present_exact: bool,
     c_obep_processed_delta: Option<i64>,
@@ -16006,21 +16048,35 @@ fn p231_classify(inputs: &P231Inputs) -> P231Terminal {
     if !inputs.outbound_send_id_known || !inputs.outbound_still_installed {
         return P231Terminal::AObservabilityGap;
     }
-    // WP B gateway stage: overflow in the isolated epoch maps to
-    // ENQUEUE-DROP; a dispatchOutboundTunnel advance proves the
-    // matching gateway accepted gw.add(...). ACCEPTED alone never
-    // proves enqueue; without positive stat evidence only the
-    // scratch "no matching OB tunnel" row proves NOT-FOUND.
-    if p231_positive(&inputs.overflow_delta_a) {
-        return P231Terminal::AOutboundGatewayEnqueueDrop;
+    // WP B gateway stage. The id-correlated no-matching-gateway row
+    // is target-specific proof of NOT-FOUND and wins over every
+    // global counter (a missing gateway always logs at WARN, so its
+    // absence alongside ACCEPTED rules NOT-FOUND out). Otherwise an
+    // isolated micro-epoch dispatch advance proves the matching
+    // gateway accepted gw.add(...). Failing that, the window
+    // attribution applies: the helper returns before the router
+    // dispatches, so only the window can contain the enqueue; with
+    // exactly one client dispatch in the lane
+    // (client.dispatchTime +1) and a gateway accept (window
+    // dispatchOutboundTunnel >= +1) the enqueue is the tracked
+    // message. ACCEPTED alone never proves enqueue.
+    if inputs.no_matching_ob_correlated {
+        return P231Terminal::AOutboundGatewayNotFound;
     }
     if p231_positive(&inputs.dispatch_outbound_delta) {
-        // ENQUEUED: continue to stage B.
-    } else if inputs.no_matching_ob_correlated {
-        // Only the id-correlated scratch no-matching-gateway row
-        // proves NOT-FOUND: ACCEPTED plus no correlation at all is an
-        // observability gap, never "not dispatched".
-        return P231Terminal::AOutboundGatewayNotFound;
+        // ENQUEUED (isolated micro-epoch): continue to stage B.
+    } else if inputs.client_dispatch_time_delta == Some(1)
+        && p231_positive(&inputs.dispatch_outbound_window_delta)
+    {
+        // ENQUEUED (window attribution under the lane-quiet
+        // premises): continue to stage B. Background gateway overflow
+        // alongside a proven enqueue is background context, never the
+        // tracked message's fate.
+    } else if inputs.client_dispatch_time_delta == Some(1)
+        && inputs.dispatch_outbound_window_delta == Some(0)
+        && p231_positive(&inputs.overflow_window_delta)
+    {
+        return P231Terminal::AOutboundGatewayEnqueueDrop;
     } else {
         return P231Terminal::AObservabilityGap;
     }
@@ -16163,6 +16219,9 @@ fn p231_test_inputs_pass() -> P231Inputs {
         dispatch_outbound_delta: Some(1),
         overflow_delta_a: Some(0),
         no_matching_ob_correlated: false,
+        client_dispatch_time_delta: Some(1),
+        dispatch_outbound_window_delta: Some(1),
+        overflow_window_delta: Some(0),
         c_obep_observable: true,
         c_obep_present_exact: true,
         c_obep_processed_delta: Some(1),
@@ -16207,18 +16266,37 @@ fn p231_accepted_is_ordered_after_inline_dispatch_call() {
 #[test]
 fn p231_accepted_alone_does_not_prove_gateway_enqueue() {
     // ACCEPTED proves only that the inline dispatch call returned —
-    // never queue acceptance. Without a dispatchOutboundTunnel advance
-    // in the isolated epoch and without the scratch no-matching
-    // gateway row, the stage is an observability gap, never a pass
-    // and never a NOT-FOUND claim.
+    // never queue acceptance. Without a micro-epoch dispatch advance,
+    // without the window attribution (exactly one client dispatch
+    // plus a window gateway accept), and without the correlated
+    // no-matching row, the stage is an observability gap, never a
+    // pass and never a NOT-FOUND claim.
     let mut inputs = p231_test_inputs_pass();
     inputs.dispatch_outbound_delta = Some(0);
     inputs.overflow_delta_a = Some(0);
     inputs.no_matching_ob_correlated = false;
+    inputs.client_dispatch_time_delta = None;
+    inputs.dispatch_outbound_window_delta = None;
+    inputs.overflow_window_delta = None;
     assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
+    // A micro-epoch advance alone still proves enqueue even when the
+    // window inputs are unknown (the fast path needs no window).
+    inputs = p231_test_inputs_pass();
+    inputs.client_dispatch_time_delta = None;
+    inputs.dispatch_outbound_window_delta = None;
+    inputs.overflow_window_delta = None;
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
+    // The window path proves enqueue when the micro-epoch misses it
+    // (the helper returns before the router dispatches).
+    inputs = p231_test_inputs_pass();
+    inputs.dispatch_outbound_delta = Some(0);
+    inputs.overflow_delta_a = Some(0);
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
     // Unknown endpoints are equally a gap, never manufactured proof.
     inputs.dispatch_outbound_delta = None;
     inputs.overflow_delta_a = None;
+    inputs.client_dispatch_time_delta = None;
+    inputs.dispatch_outbound_window_delta = None;
     assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
 }
 
@@ -16253,10 +16331,15 @@ fn p231_gateway_stat_delta_requires_target_epoch() {
 
 #[test]
 fn p231_gateway_overflow_maps_to_enqueue_drop() {
-    // Any dropGatewayOverflow increment attributable to the isolated
-    // epoch maps to ENQUEUE-DROP, even ahead of dispatch evidence.
+    // Exactly one client dispatch with no window gateway accept but a
+    // window queue overflow maps to ENQUEUE-DROP: the tracked message
+    // ran OCMOSJ, reached no gateway, and something overflowed.
     let mut inputs = p231_test_inputs_pass();
-    inputs.overflow_delta_a = Some(1);
+    inputs.dispatch_outbound_delta = Some(0);
+    inputs.overflow_delta_a = Some(0);
+    inputs.client_dispatch_time_delta = Some(1);
+    inputs.dispatch_outbound_window_delta = Some(0);
+    inputs.overflow_window_delta = Some(1);
     assert_eq!(
         p231_classify(&inputs),
         P231Terminal::AOutboundGatewayEnqueueDrop
@@ -16265,12 +16348,19 @@ fn p231_gateway_overflow_maps_to_enqueue_drop() {
         P231Terminal::AOutboundGatewayEnqueueDrop.token(),
         "P231-A-OUTBOUND-GATEWAY-ENQUEUE-DROP"
     );
+    // Background overflow alongside a proven enqueue is background
+    // context, never the tracked message's fate.
+    inputs = p231_test_inputs_pass();
+    inputs.overflow_window_delta = Some(2);
+    assert_eq!(p231_classify(&inputs), P231Terminal::ReverseDeliveryPassed);
     // No overflow and no dispatch advance but an id-correlated
     // scratch no-matching-OB row proves NOT-FOUND (and only that
-    // proves it).
+    // proves it); the correlated row wins over every counter.
     inputs = p231_test_inputs_pass();
     inputs.dispatch_outbound_delta = Some(0);
     inputs.overflow_delta_a = Some(0);
+    inputs.client_dispatch_time_delta = Some(1);
+    inputs.dispatch_outbound_window_delta = Some(3);
     inputs.no_matching_ob_correlated = true;
     assert_eq!(
         p231_classify(&inputs),
@@ -16567,6 +16657,9 @@ fn p231_first_unknown_stage_maps_to_observability_gap() {
     inputs = base.clone();
     inputs.dispatch_outbound_delta = None;
     inputs.overflow_delta_a = None;
+    inputs.client_dispatch_time_delta = None;
+    inputs.dispatch_outbound_window_delta = None;
+    inputs.overflow_window_delta = None;
     assert_eq!(p231_classify(&inputs), P231Terminal::AObservabilityGap);
     inputs = base.clone();
     inputs.c_obep_observable = false;
@@ -16584,6 +16677,8 @@ fn p231_first_unknown_stage_maps_to_observability_gap() {
     // Later failures never shadow an earlier gap.
     inputs = base.clone();
     inputs.dispatch_outbound_delta = Some(0);
+    inputs.client_dispatch_time_delta = None;
+    inputs.dispatch_outbound_window_delta = None;
     inputs.expected_digest_match_45s = false;
     assert_eq!(
         p231_classify(&inputs),
