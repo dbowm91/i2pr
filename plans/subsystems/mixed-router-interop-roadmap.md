@@ -21,7 +21,7 @@ Related ADRs:
 
 Authenticated I2NP preflight, one-hop exploratory tunnels, NetDB lookup/publication, destination/garlic routing, short-build reply + NetDB reply-path + wire-format correctives, i2pd Streaming qualification (33/33), Java second-family qualification (controlled topology, pq tolerance, public-client observability, Branch G corrective framework, harness/evidence corrective).
 
-Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–230 (global i2pr numbers, preserved).
+Historic/registered plans: 183–194, 196–198, 200, 201, 205, 217–231 (global i2pr numbers, preserved).
 
 ## 2. Work classification
 
@@ -85,9 +85,9 @@ eligible (`R` + tier `N` + comm `OK`), 2/3 bootstrapped naturally with
 RI-identity match, the deepest run passing the retained P229/P228/P201 gates
 through digest-matched forward delivery and stopping at the reverse
 Java→i2pr payload, which reproduces the retained Plan-218 signature (send
-admitted, no payload in 45 s). No new i2pr-visible wire boundary was found;
-the reverse-delivery lane stays owned by Plan 201 with no successor
-registered.
+admitted, no payload in 45 s). No new i2pr-visible wire boundary was found.
+
+Plan 231 is registered-ready as the narrow post-`ACCEPTED` attribution. Exact-pinned source ordering proves `STATUS_SEND_ACCEPTED` is emitted only after the inline OCMOSJ `DispatchJob` has called `TunnelDispatcher.dispatchOutbound(...)` and returned. Plan 231 therefore starts downstream of that call and correlates the single tracked reverse message through Java A's outbound gateway, Router C's exact one-hop outbound endpoint, the selected target LeaseSet inbound gateway, emitted TunnelData, and i2pr's exact TunnelData/recovery/Garlic/Destination stages. Plan-230 topology, profile policy, tunnel settings, and timing windows stay frozen.
 
 Plan 205 remains retained/deferred.
 
@@ -99,7 +99,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230. Plan 205 is retained conditional fallback and is not part of the primary sequence.
+183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231. Plan 205 is retained conditional fallback and is not part of the primary sequence.
 ```
 
 ## 7. Milestones
@@ -141,6 +141,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 228 | closed | passed-m6-java-client-tunnel-build-path-attribution-with-no-paired-tunnel-boundary | `plans/implementation/mixed-router-interop/228-m6-java-client-tunnel-build-path-attribution.md` | `plans/closure/mixed-router-interop/228-status.md` |
 | 229 | closed | passed-m6-java-nonzero-exploratory-bootstrap-corrective-with-not-exploratory-eligible-boundary | `plans/implementation/mixed-router-interop/229-m6-java-nonzero-exploratory-paired-tunnel-bootstrap-corrective.md` | `plans/closure/mixed-router-interop/229-status.md` |
 | 230 | closed | passed-m6-java-reachability-capability-profile-bootstrap-corrective-with-reverse-delivery-boundary | `plans/implementation/mixed-router-interop/230-m6-java-profile-population-path-attribution.md` | `plans/closure/mixed-router-interop/230-status.md` |
+| 231 | ready | registered-ready-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective | `plans/implementation/mixed-router-interop/231-m6-java-reverse-delivery-tunnel-dispatch-attribution-corrective.md` | `plans/closure/mixed-router-interop/231-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -160,7 +161,7 @@ Plan 224 retained every Plan-222/223 invariant and added lookup-path attribution
 - exact distinction between selector membership, actual A→B query, B lookup receipt, B published-LS answer, A inbound-client-tunnel DSM receipt, and A client-subDB post-send presence;
 - the pinned Java DSM store-before-success ordering is treated as source authority and the speculative race explanation is forbidden.
 
-Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs. Plan 229 closed at the transit-peer stop: roles and the A-only small-router profile proven live, tier population empty (`profile_count=0`). Plan 230 closed the reachability-capability/profile-bootstrap corrective (predicate proven, stock C1+C2 correction, natural bootstrap 2/3, forward delivery digest-matched once) at the retained reverse-delivery boundary; no successor is registered.
+Plan 225 is closed as a diagnostic corrective. Plan 226 is closed as the bounded harness corrective: its exact target job proved a non-IP zero-hop rejection, so no pairwise-distinct loopback /24 topology was admitted. Plan 227 is closed at selectable-C-but-not-built. Plan 228 is closed at the paired-tunnel attribution: configs through C are created, no paired tunnel is available in either direction, and no dispatch ever occurs. Plan 229 closed at the transit-peer stop: roles and the A-only small-router profile proven live, tier population empty (`profile_count=0`). Plan 230 closed the reachability-capability/profile-bootstrap corrective (predicate proven, stock C1+C2 correction, natural bootstrap 2/3, forward delivery digest-matched once) at the retained reverse-delivery boundary. Plan 231 is registered for exact post-`ACCEPTED` attribution from Java A outbound-gateway enqueue through C/target-IBGW forwarding to i2pr TunnelData/recovery/Garlic/Destination delivery.
 
 Raw Java logs never become evidence. The Plan-223 45-second reverse-payload acceptance window stays frozen. External attempts remain limited to three per committed implementation SHA with no tuning.
 
@@ -185,8 +186,8 @@ identified the earliest missing stage as the absence of an actual target lookup
 dispatch from Router A to Router B, emitting exactly
 `P225-ATTRIBUTION-A-SEARCH-EXHAUSTED-WITHOUT-QUERYING-B`.
 
-Plan 226 closed without authorizing the controlled-topology correction. Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no tunnels built). Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (configs through C created, paired tunnel unavailable both directions, no dispatch). Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, organizer tier population empty, helper never started). Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery. Plan 201 is blocked pending a narrow reverse-delivery corrective; Plan 204 remains blocked; Plan 205 remains retained-deferred.
+Plan 226 closed without authorizing the controlled-topology correction. Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT` (selectable C, no tunnels built). Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both` (configs through C created, paired tunnel unavailable both directions, no dispatch). Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE` (roles + A-only small-router profile proven live, organizer tier population empty, helper never started). Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery. Plan 231 is the registered-ready reverse-delivery tunnel-dispatch attribution corrective; Plan 201 is blocked pending Plan 231; Plan 204 remains blocked on Java second-family closure; Plan 205 remains retained-deferred.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT`; Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE`; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 201 is blocked pending a narrow reverse-delivery corrective; Plan 204 remains blocked; Plan 205 remains retained-deferred.
+Full row history is §7. Current authority: Plan 217 closed the harness corrective; Plan 218 retains the reverse-delivery behavioral stop; Plan 219 attribution is superseded; Plan 220 refuted J219-B; Plan 221 is superseded-before-execution; Plan 222 narrowed OCMOSJ to status 17; Plan 223 corrected identity/LS2 separation and moved the tracked send to ACCEPTED→NO_LEASESET; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with `P226-BASELINE-B-ZERO-HOP-UNKNOWN` and no topology correction; Plan 227 closed with `P227-EXPLICIT-ONE-HOP-NOT-BUILT`; Plan 228 closed with `P228-ATTRIBUTION-NO-PAIRED-TUNNEL direction=both`; Plan 229 closed with `P229-C-NOT-EXPLORATORY-ELIGIBLE`; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 is registered-ready for exact post-`ACCEPTED` attribution; Plan 201 is blocked pending Plan 231; Plan 204 remains blocked; Plan 205 remains retained-deferred.
