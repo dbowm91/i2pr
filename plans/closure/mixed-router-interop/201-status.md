@@ -1,3 +1,26 @@
+# Current dependency amendment — Plan 238 closed at Client-Message-Not-Admitted; Plan 239 registered
+
+Plan 238 is now closed at
+`passed-m6-java-streaming-router-a-admission-observer-with-client-message-not-admitted-boundary`
+(see `238-status.md`): three identical counted executions on `08df6ea`
+proved Router-A I2CP admission (distribute delta exactly 3, matching
+the helper sendMessage delta 3) with proven dispatch absence
+(dispatch deltas 0 with rates known) from real stock Router-A
+observations, stopping at the second D stage. No Java source or
+production Rust changed.
+
+Plan 201's streaming axis therefore consumed its `pending-plan238`
+hard dependency, but Plan 201 stays blocked: the streaming axis now
+needs the Plan 239 narrow Router-A dispatch observer, and the
+publication/final-closure axis is unchanged.
+
+```text
+plan_201 = blocked-after-plan238-client-message-not-admitted-pending-router-a-dispatch-observer-and-publication-closure
+plan_238 = passed-m6-java-streaming-router-a-admission-observer-with-client-message-not-admitted-boundary
+plan_239 = registered-ready-m6-java-streaming-router-a-dispatch-observer
+next_executable_plan = 239-m6-java-streaming-router-a-dispatch-observer
+```
+
 # Current dependency amendment — Plan 237 closed at Router-A I2CP-not-observed; Plan 238 registered
 
 Plan 237 is now closed at

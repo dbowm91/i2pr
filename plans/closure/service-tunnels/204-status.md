@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 238 closed at dispatch boundary; Plan 239 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 238 closed at `P237-D-CLIENT-MESSAGE-NOT-ADMITTED` on `08df6ea`
+(three identical counted executions; distribute delta exactly 3 with
+dispatch deltas 0 and rates known; full serial workspace floor green:
+2710 passed, 18 ignored, 103 suites). Router-A dispatch on the
+streaming response path remains unobserved, so M6 Java second-family
+closure is still outstanding. Plan 239 is registered-ready for the
+narrow Router-A dispatch observer.
+
+Plan 204 therefore remains blocked until the independent M6 Java
+second-family closure gates are satisfied (now pending Plan 239).
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan239
+plan_238 = passed-m6-java-streaming-router-a-admission-observer-with-client-message-not-admitted-boundary
+plan_239 = registered-ready-m6-java-streaming-router-a-dispatch-observer
+milestone10_final_acceptance = closed
+next_executable_plan = 239-m6-java-streaming-router-a-dispatch-observer
+```
+
 # Current dependency amendment — Plan 237 closed at Router-A boundary; Plan 238 registered; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
