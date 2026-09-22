@@ -256,7 +256,14 @@ P231_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # lifetime counts only, public accessors, no state mutation, no
 # reflection, no queue access).
 P238_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P238Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" || ! -f "${P231_PROBE_SRC}" || ! -f "${P238_PROBE_SRC}" ]]; then
+# Plan 239 WP — test-only read-only Router-A pre-dispatch / OCMOSJ
+# attribution probe for the streaming response epoch (local target-LS
+# vs remote lookup, installed inbound/outbound tunnels, dispatch
+# lifetime events, exact-source OCMOSJ log counts; public accessors
+# only, no state mutation, no reflection, no queue access, no raw-log
+# promotion).
+P239_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P239Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" || ! -f "${P231_PROBE_SRC}" || ! -f "${P238_PROBE_SRC}" || ! -f "${P239_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -269,7 +276,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" "${P231_PROBE_SRC}" "${P238_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" "${P231_PROBE_SRC}" "${P238_PROBE_SRC}" "${P239_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -306,6 +313,7 @@ write_p224_logger_config() {
 logger.defaultLevel=ERROR
 logger.minimumOnScreenLevel=CRIT
 logger.flushInterval=1
+logger.consoleBufferSize=512
 logger.record.net.i2p.router.networkdb.kademlia.IterativeSearchJob=INFO
 logger.record.net.i2p.router.networkdb.HandleDatabaseLookupMessageJob=DEBUG
 logger.record.net.i2p.router.tunnel.InboundMessageDistributor=INFO
@@ -317,6 +325,7 @@ logger.record.net.i2p.router.tunnel.pool.BuildRequestor=DEBUG
 logger.record.net.i2p.router.tunnel.pool.BuildHandler=DEBUG
 logger.record.net.i2p.router.tunnel.pool.BuildMessageProcessor=DEBUG
 logger.record.net.i2p.router.tunnel.pool.BuildReplyHandler=DEBUG
+logger.record.net.i2p.router.message.OutboundClientMessageOneShotJob=DEBUG
 LOGGER_EOF
 }
 write_p224_logger_config "${JAVA_DATA}"
@@ -2541,6 +2550,18 @@ m6_key_row "external-p238-admission-deltas" "p238-admission-deltas" \
   "Plan 238 §7: isolated-epoch Router-A admission deltas (distribute/dispatch/handoff)"
 m6_key_row "external-p238-admission-post" "p238-admission-post" \
   "Plan 238 §7: Router-A admission snapshot with rate-existence proof (-1 = unknown)"
+# Plan 239 §19 — read the Router-A pre-dispatch deltas the streaming
+# driver recorded alongside the retained P237/P238 terminals. Consume
+# the LAST occurrence so an early branch cannot shadow the
+# authoritative outcome, and record exactly one external row per key
+# (diagnostic observation, always passed when present). The static
+# checker rejects any literal `record "<P239-X>" passed` line.
+m6_key_row "external-p239-dispatch-deltas" "p239-dispatch-deltas" \
+  "Plan 239 §6: isolated-epoch Router-A pre-dispatch deltas (lookup/tunnel/dispatch)"
+m6_key_row "external-p239-dispatch-post" "p239-dispatch-post" \
+  "Plan 239 §5: Router-A pre-dispatch snapshot with rate-existence proof (-1 = unknown)"
+m6_key_row "external-p239-classification" "p239-classification" \
+  "Plan 239 §7: ordered OCMOSJ attribution terminal (earliest D/E/F stage)"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

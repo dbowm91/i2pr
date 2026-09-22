@@ -107,6 +107,38 @@ required = {
     "OCMOSJ.dispatch_send_stat": (router_ocmosj, '"client.dispatchSendTime"'),
     "OCMOSJ.dispatch_outbound_call": (router_ocmosj, "dispatchOutbound("),
     "TunnelDispatcher.dispatch_outbound_stat": (router_dispatcher, '"tunnel.dispatchOutboundTunnel"'),
+    # Plan 239 §3/§9 — exact-pinned OCMOSJ pre-dispatch / dispatch
+    # ordering the P239 observer counts. The constructor performs a
+    # local `lookupLeaseSetLocally(toHash)` before any remote lookup,
+    # so a zero `leaseSetFoundRemoteTime` delta never proves no target
+    # LS. Remote success/failure record `leaseSetFoundRemoteTime` /
+    # `leaseSetFailedRemoteTime`; tunnel/garlic preparation failures
+    # record `dispatchNoTunnels` on two distinct stock branches;
+    # successful preparation runs `DispatchJob` inline via
+    # `tunnelDispatcher().dispatchOutbound(...)`, then records
+    # `dispatchTime` / `dispatchSendTime`, and returns to `send()` to
+    # record `dispatchPrepareTime`. A source upgrade that renames any
+    # of these must fail the lane before an external attempt.
+    "OCMOSJ.constructor_local_lookup": (router_ocmosj, "ctx.clientNetDb(_from.calculateHash()).lookupLeaseSetLocally(toHash)"),
+    "OCMOSJ.lease_found_remote_stat": (router_ocmosj, '"client.leaseSetFoundRemoteTime"'),
+    "OCMOSJ.lease_failed_remote_stat": (router_ocmosj, '"client.leaseSetFailedRemoteTime"'),
+    "OCMOSJ.dispatch_no_tunnels_stat": (router_ocmosj, '"client.dispatchNoTunnels"'),
+    "OCMOSJ.no_outbound_tunnel_log": (router_ocmosj, "Could not find any outbound tunnels to send the payload through"),
+    "OCMOSJ.garlic_no_tunnel_log": (router_ocmosj, "Unable to create the garlic message (no tunnels left or too lagged)"),
+    "OCMOSJ.dispatch_prepare_stat": (router_ocmosj, '"client.dispatchPrepareTime"'),
+    "OCMOSJ.dispatch_outbound_full": (router_ocmosj, "tunnelDispatcher().dispatchOutbound"),
+    # Plan 239 §3.3/§5 — exact-pinned local-LS rejection logs the
+    # P239-DISPATCH log counters distinguish. `getNextLease()` warns
+    # when the constructor/local lookup left no LS, when only an
+    # unacceptable received-as-published LS is present, and when the
+    # selected lease cannot be sent (failure code path covering
+    # bad/unsupported/encryption-key cases); empty lease lists log
+    # `No leases found`. These are source facts only; execution raw
+    # log lines never enter durable evidence.
+    "OCMOSJ.local_ls_missing_log": (router_ocmosj, "Lookup locally didn\'t find the leaseSet for "),
+    "OCMOSJ.only_rap_ls_log": (router_ocmosj, "Only have RAP LS for "),
+    "OCMOSJ.lease_send_failure_log": (router_ocmosj, "Got the lease but can\'t send to it, failure code "),
+    "OCMOSJ.no_leases_log": (router_ocmosj, "No leases found from: "),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -157,6 +189,20 @@ output.write_text(
         "java_router_distribute_stat\tclient.distributeTime (ClientMessageEventListener.handleSendMessage after distributeMessage)\n",
         "java_router_dispatch_stats\tclient.dispatchTime | client.dispatchSendTime (OCMOSJ dispatch path after dispatchOutbound)\n",
         "java_router_tunnel_handoff_stat\ttunnel.dispatchOutboundTunnel (TunnelDispatcher context only)\n",
+        # Plan 239 §3/§9 — pinned OCMOSJ pre-dispatch / dispatch
+        # ordering the P239-DISPATCH observer counts. Retained
+        # Plan-236/237/238 rows above stay frozen; these rows are
+        # additive. Log signals are source facts only; execution raw
+        # log lines never enter durable evidence.
+        "java_ocmosj_constructor_local_lookup\tctx.clientNetDb(_from.calculateHash()).lookupLeaseSetLocally(toHash) (OCMOSJ constructor, before runJob remote lookup)\n",
+        "java_lease_lookup_remote_stats\tclient.leaseSetFoundRemoteTime | client.leaseSetFailedRemoteTime (OCMOSJ remote lookup success/failure)\n",
+        "java_dispatch_no_tunnels_stat\tclient.dispatchNoTunnels (OCMOSJ tunnel/garlic preparation failure, two distinct branches)\n",
+        "java_no_outbound_tunnel_log\tCould not find any outbound tunnels to send the payload through (OCMOSJ selectOutboundTunnel branch)\n",
+        "java_garlic_no_tunnel_log\tUnable to create the garlic message (no tunnels left or too lagged) (OCMOSJ garlic-construction branch)\n",
+        "java_dispatch_prepare_stat\tclient.dispatchPrepareTime (OCMOSJ send() after inline DispatchJob returns)\n",
+        "java_dispatch_outbound_call\ttunnelDispatcher().dispatchOutbound (DispatchJob.runJob inline, before dispatchTime/dispatchSendTime)\n",
+        "java_local_ls_rejection_logs\tLookup locally didn't find the leaseSet for <dest> | Only have RAP LS for <dest> (getNextLease local-LS rejection)\n",
+        "java_lease_send_failure_logs\tGot the lease but can't send to it, failure code <rc> | No leases found from: <ls> (getNextLease bad/unsupported/no-lease paths)\n",
     ]),
     encoding="utf-8",
 )

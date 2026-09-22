@@ -3893,8 +3893,307 @@ if [[ -f "${P238_HARNESS}" ]]; then
   done
 fi
 
+# ---- 28. Plan 239 Router-A pre-dispatch / OCMOSJ attribution ------------
+# Plan 239 attributes the first post-admission OCMOSJ stages of the
+# Plan-238 proven sendMessage epoch with a read-only stock StatManager
+# + client-subDB + tunnel-pool + LogManager-buffer snapshot
+# (`client.leaseSetFoundRemoteTime` / `client.leaseSetFailedRemoteTime`
+# lookup, `client.dispatchNoTunnels` / `client.dispatchPrepareTime` /
+# `client.dispatchTime` / `client.dispatchSendTime` dispatch, local LS
+# vs remote lookup, installed inbound/outbound tunnels, exact-source
+# OCMOSJ log counts for the two `dispatchNoTunnels` branches and
+# pre-dispatch LeaseSet failures) through one tiny public
+# `P239-DISPATCH` diagnostic command, feeds the isolated-epoch deltas
+# into the ordered D1/D2/D3 classifier with §8 continuation only after
+# dispatch is proven, and stops at the earliest proven D/E/F stage. No
+# production Rust change, no Java source patch, no
+# topology/profile/timing/pin change, no raw-log promotion.
+P239_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P239Probe.java"
+P239_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P239_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P239_HARNESS="${JAVA_HARNESS}"
+P239_SOURCE_LOCK="${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh"
+if [[ ! -f "${P239_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 239 probe ${P239_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 28a. Read-only pre-dispatch surface (exact pinned accessors).
+  for required in \
+    'snapshotDispatch' \
+    'statManager().getRate' \
+    'getLifetimeEventCount' \
+    'client.leaseSetFoundRemoteTime' \
+    'client.leaseSetFailedRemoteTime' \
+    'client.dispatchNoTunnels' \
+    'client.dispatchPrepareTime' \
+    'client.dispatchTime' \
+    'client.dispatchSendTime' \
+    'Could not find any outbound tunnels to send the payload through' \
+    'Unable to create the garlic message (no tunnels left or too lagged)' \
+    'Lookup locally didn' \
+    'Only have RAP LS for ' \
+    'Got the lease but can' \
+    'No leases found from: ' \
+    'getOutboundPool' \
+    'getInboundPool' \
+    'listTunnels' \
+    'getSendTunnelId' \
+    'getReceiveTunnelId' \
+    'getBuffer' \
+    'getMostRecentMessages' \
+    'COUNT_UNKNOWN'; do
+    if ! grep -q -F "${required}" "${P239_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_PROBE_SRC} lacks Plan 239 probe surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 28b. Probe-side mutation, NetDB/tunnel/queue/profile/stat writes,
+  # reflection, private-field access, and mainline creation calls are
+  # forbidden. Rate creation would let a probe fabricate the very
+  # counts it must observe read-only.
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'heardAbout(' \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'buildTunnels' \
+    'addTunnel' \
+    'createRateStat' \
+    'createRequiredRateStat' \
+    'createFrequencyStat' \
+    'addRateData' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P239_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_PROBE_SRC} uses forbidden Plan 239 probe call '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'explicitPeers' "${P239_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_PROBE_SRC} mentions explicitPeers (Plan 239 §4 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'vmCommSystem' "${P239_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_PROBE_SRC} enables VMComm (Plan 239 §4 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P239_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_PROBE_SRC} enables netDb.alwaysQuery (Plan 239 §4 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P239_LAUNCHER_SRC}" ]]; then
+  # 28c. The launcher serves the single read-only P239 command.
+  for required in \
+    '"P239-DISPATCH"' \
+    'P239Probe' \
+    'p239Dispatch' \
+    'kind=dispatch' \
+    'observable=true' \
+    'target_ls_local_present=' \
+    'lease_lookup_found_remote_events=' \
+    'lease_lookup_failed_remote_events=' \
+    'client_outbound_tunnel_count=' \
+    'client_inbound_tunnel_count=' \
+    'dispatch_no_tunnels_events=' \
+    'dispatch_prepare_events=' \
+    'dispatch_time_events=' \
+    'dispatch_send_time_events=' \
+    'log_no_outbound_tunnel_count=' \
+    'log_garlic_no_tunnel_count=' \
+    'log_local_ls_missing_count=' \
+    'log_only_rap_ls_count=' \
+    'log_bad_or_unsupported_ls_count='; do
+    if ! grep -q -F "${required}" "${P239_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_LAUNCHER_SRC} lacks Plan 239 launcher surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'forceBandwidthClass' "${P239_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_LAUNCHER_SRC} uses router.forceBandwidthClass (Plan 239 §4 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P239_DRIVER_TEST}" ]]; then
+  # 28d. The Rust driver owns the dispatch parse/collect/delta/stage
+  # mapping plus additive evidence rows. Admission (Plan 238) is a
+  # prerequisite; later stages never skip earlier Unknown.
+  for required in \
+    'struct P239Dispatch' \
+    'fn p239_parse_dispatch' \
+    'fn p239_collect_dispatch' \
+    'struct P239Deltas' \
+    'fn p239_count_delta' \
+    'fn p239_deltas' \
+    'fn p239_admission_is_proven' \
+    'fn p239_local_leaseset_path' \
+    'fn p239_dispatch_proven' \
+    'enum P239Terminal' \
+    'fn p239_classify_dispatch' \
+    'fn record_p239_dispatch_epoch' \
+    'P239-DISPATCH' \
+    'p239-dispatch-pre' \
+    'p239-dispatch-post' \
+    'p239-dispatch-deltas' \
+    'p239-classification' \
+    'P239-A-ROUTER-A-EPOCH-NOT-ISOLATABLE' \
+    'P239-D-TARGET-LEASESET-LOOKUP-FAILED' \
+    'P239-D-TARGET-LEASESET-UNUSABLE' \
+    'P239-D-TARGET-LEASESET-DECISION-UNKNOWN' \
+    'P239-D-NO-OUTBOUND-TUNNEL' \
+    'P239-D-GARLIC-TUNNEL-MATERIAL-UNAVAILABLE' \
+    'P239-D-NO-TUNNELS-BRANCH-AMBIGUOUS' \
+    'P239-D-DISPATCH-OUTBOUND-PROVEN' \
+    'P239-D-PRE-DISPATCH-OBSERVABILITY-GAP' \
+    'P239-E-OUTBOUND-GATEWAY-NOT-ENQUEUED' \
+    'P239-E-I2PR-NO-EXPECTED-TUNNELDATA' \
+    'P239-F-I2PR-TUNNEL-RECOVERY-FAILED' \
+    'P239-F-I2PR-GARLIC-DECODE-FAILED' \
+    'P239-F-I2PR-STREAMING-ADAPTER-FAILED' \
+    'P239-F-DIRECTION-A-ESTABLISHED' \
+    'JAVA_DIAGNOSTIC_A_PORT'; do
+    if ! grep -q -F "${required}" "${P239_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} lacks Plan 239 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 28e. Admission prerequisite: the classifier must gate on
+  # `p239_admission_is_proven`, and dispatch must require both
+  # dispatch deltas (prepare alone never proves dispatch).
+  if ! grep -q -F 'p239_admission_is_proven' "${P239_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} lets P239 claim without Plan 238 admission (Plan 239 §7 prerequisite)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -n 'fn p239_dispatch_proven' "${P239_DRIVER_TEST}" >/dev/null 2>&1; then
+    p239_dispatch_body="$(awk '/fn p239_dispatch_proven/,/^}/' "${P239_DRIVER_TEST}")"
+    if ! printf '%s' "${p239_dispatch_body}" | grep -q 'dispatch_time_delta'; then
+      echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} proves dispatch without dispatch_time_delta (Plan 239 §7 D3)" >&2
+      failures=$((failures + 1))
+    fi
+    if ! printf '%s' "${p239_dispatch_body}" | grep -q 'dispatch_send_delta'; then
+      echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} proves dispatch without dispatch_send_delta (Plan 239 §7 D3)" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+  # No Router-A claim before admission: the live mapper must gate
+  # dispatch stages on admission, and the classifier must return the
+  # A boundary when admission is missing.
+  if ! grep -q -F 'P239-A-ROUTER-A-EPOCH-NOT-ISOLATABLE' "${P239_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} lacks the Plan 239 A epoch boundary" >&2
+    failures=$((failures + 1))
+  fi
+  # No invented P239 terminals: Router-A rows flow only through the
+  # typed `p239-classification` plus additive `p239-dispatch-*` keys.
+  if rg -n "^[[:space:]]*record[[:space:]]+[\"']P239-" "${P239_DRIVER_TEST}" >/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} hard-codes a Plan 239 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  # Frozen acceptance windows stay frozen on the streaming path.
+  for frozen in \
+    'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const STREAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const SYN_ACK_WAIT: Duration = Duration::from_secs(45)'; do
+    if ! grep -q -F "${frozen}" "${P239_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} changed frozen window '${frozen}' (Plan 239 §2 retained)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'P239' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'p239' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 239 surface" >&2
+    failures=$((failures + 1))
+  fi
+  # 28f. The 11 required Plan 239 §10 unit rows.
+  for unit_row in \
+    p239_plan238_admission_is_prerequisite \
+    p239_zero_remote_lookup_delta_does_not_mean_no_leaseset \
+    p239_local_leaseset_path_precedes_remote_lookup_interpretation \
+    p239_remote_lookup_failure_precedes_tunnel_attribution \
+    p239_unknown_rate_is_not_zero \
+    p239_dispatch_no_tunnels_requires_branch_discriminator \
+    p239_outbound_tunnel_failure_distinct_from_garlic_tunnel_failure \
+    p239_dispatch_time_proves_dispatch_outbound_returned \
+    p239_dispatch_prepare_is_corroboration_not_primary_dispatch_proof \
+    p239_post_dispatch_stages_require_dispatch_outbound \
+    p239_no_production_change; do
+    if ! grep -q "fn ${unit_row}" "${P239_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_DRIVER_TEST} lacks Plan 239 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# 28g. The streaming helper stays frozen: the Router-A observer lives
+# in the ControlledRouter diagnostic, never in the client helper.
+if grep -q -F 'P239' "${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java" 2>/dev/null; then
+  echo "m6 mixed-router evidence check failed: ReferenceStreamingService.java carries Plan 239 surface (Plan 239 §4: observer lives on Router A)" >&2
+  failures=$((failures + 1))
+fi
+if [[ -f "${P239_SOURCE_LOCK}" ]]; then
+  for required in \
+    'ctx.clientNetDb(_from.calculateHash()).lookupLeaseSetLocally(toHash)' \
+    '"client.leaseSetFoundRemoteTime"' \
+    '"client.leaseSetFailedRemoteTime"' \
+    '"client.dispatchNoTunnels"' \
+    'Could not find any outbound tunnels to send the payload through' \
+    'Unable to create the garlic message (no tunnels left or too lagged)' \
+    '"client.dispatchPrepareTime"' \
+    'tunnelDispatcher().dispatchOutbound' \
+    '"client.dispatchTime"' \
+    '"client.dispatchSendTime"'; do
+    if ! grep -q -F "${required}" "${P239_SOURCE_LOCK}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_SOURCE_LOCK} lacks Plan 239 pinned signal '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P239_HARNESS}" ]]; then
+  for required in \
+    'P239Probe.java' \
+    'JAVA_DIAGNOSTIC_A_PORT' \
+    'p239-dispatch-deltas' \
+    'p239-dispatch-post' \
+    'p239-classification' \
+    'external-p239-dispatch-deltas' \
+    'external-p239-dispatch-post' \
+    'external-p239-classification'; do
+    if ! grep -q -F "${required}" "${P239_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_HARNESS} lacks Plan 239 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P239-" "${P239_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P239_HARNESS} invents a Plan 239 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # No P239 row may carry topology/profile/tunnel-policy changes,
+  # timeout overrides, public-I2P/reseed/VMComm/alwaysQuery escapes,
+  # or raw log promotion relative to Plan 238.
+  p239_harness_lines="$(grep -n -E 'p239|P239' "${P239_HARNESS}" || true)"
+  for forbidden in \
+    'explicitPeers' \
+    'forceBandwidthClass' \
+    'netDb.alwaysQuery' \
+    'vmCommSystem' \
+    'reseed' \
+    'floodfillParticipant' \
+    'Pool.length' \
+    'DRIVER_TIMEOUT=' \
+    'DATAGRAM' \
+    'log-router'; do
+    if printf '%s\n' "${p239_harness_lines}" | grep -q -F "${forbidden}"; then
+      echo "m6 mixed-router evidence check failed: ${P239_HARNESS} P239 row carries forbidden surface '${forbidden}' (Plan 239 §4/§8)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants)"

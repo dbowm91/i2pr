@@ -1566,6 +1566,415 @@ fn record_p238_admission_epoch(
     );
 }
 
+// ---- Plan 239 §5–§8 Router-A pre-dispatch / OCMOSJ attribution ---------
+// Attribution-only observer for the Plan-238 proven I2CP admission epoch.
+// Plan 238 proved `client.distributeTime` admission; Plan 239 attributes
+// the first post-admission OCMOSJ stages in order: local target-LS vs
+// remote lookup (D1), outbound-tunnel / garlic preparation with
+// branch-specific `dispatchNoTunnels` discrimination (D2), then
+// `dispatchOutbound` return via `dispatchTime` / `dispatchSendTime`
+// (D3), with continuation into the retained Plan-231/232 tunnel stages
+// only after dispatch is proven (§8). No production Rust change, no Java
+// source patch, no topology/profile/timing/pin change, no raw-log
+// promotion. Unknown (`-1`) is never zero-as-fact; a zero remote-lookup
+// delta never proves no target LS (constructor local path bypasses the
+// remote stat); `dispatchNoTunnels` alone never proves which branch
+// failed; `dispatchPrepareTime` corroborates but never proves dispatch;
+// post-dispatch stages require proven dispatch; i2pr-owned terminals
+// require expected TunnelData.
+
+/// Bounded Router-A pre-dispatch snapshot from `P239-DISPATCH`.
+/// Signed lifetime counts (`-1` = rate never created / Unknown, never
+/// zero-as-fact). Tunnel counts are instantaneous installed counts;
+/// log counts are bounded console-buffer window counts (`-1` =
+/// unreadable, never zero-as-fact).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P239Dispatch {
+    target_ls_local_present: bool,
+    target_ls_current: Option<bool>,
+    target_ls_type: i64,
+    target_ls_rap: Option<bool>,
+    target_ls_rar: Option<bool>,
+    found_remote_events: i64,
+    failed_remote_events: i64,
+    outbound_tunnel_count: i64,
+    inbound_tunnel_count: i64,
+    outbound_send_id: i64,
+    inbound_receive_id: i64,
+    no_tunnels_events: i64,
+    prepare_events: i64,
+    dispatch_time_events: i64,
+    dispatch_send_events: i64,
+    log_no_outbound: i64,
+    log_garlic_no_tunnel: i64,
+    log_local_missing: i64,
+    log_only_rap: i64,
+    log_bad_unsupported: i64,
+}
+
+fn p239_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P239-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p239_parse_tri_state(value: Option<&String>) -> Option<Option<bool>> {
+    let value = value?;
+    match value.as_str() {
+        "true" => Some(Some(true)),
+        "false" => Some(Some(false)),
+        "unknown" => Some(None),
+        _ => None,
+    }
+}
+
+fn p239_parse_bool(value: Option<&String>) -> Option<bool> {
+    let value = value?;
+    match value.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn p239_parse_dispatch(line: &str) -> Option<P239Dispatch> {
+    if !line.starts_with("P239-EV ") || !line.contains("kind=dispatch") {
+        return None;
+    }
+    if line.len() > 2048 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p239_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P239-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    // Hex echoes are required to bind the snapshot to the exact
+    // client/target pair; values are not decoded here (no hash promotion).
+    kv.get("client_dbid_hex")?;
+    kv.get("target_hash_hex")?;
+    Some(P239Dispatch {
+        target_ls_local_present: p239_parse_bool(kv.get("target_ls_local_present"))?,
+        target_ls_current: p239_parse_tri_state(kv.get("target_ls_current"))?,
+        target_ls_type: p231_parse_count_signed(kv.get("target_ls_type"))?,
+        target_ls_rap: p239_parse_tri_state(kv.get("target_ls_received_as_published"))?,
+        target_ls_rar: p239_parse_tri_state(kv.get("target_ls_received_as_reply"))?,
+        found_remote_events: p231_parse_count_signed(kv.get("lease_lookup_found_remote_events"))?,
+        failed_remote_events: p231_parse_count_signed(kv.get("lease_lookup_failed_remote_events"))?,
+        outbound_tunnel_count: p231_parse_count_signed(kv.get("client_outbound_tunnel_count"))?,
+        inbound_tunnel_count: p231_parse_count_signed(kv.get("client_inbound_tunnel_count"))?,
+        outbound_send_id: p231_parse_count_signed(kv.get("client_outbound_send_id_if_unique"))?,
+        inbound_receive_id: p231_parse_count_signed(kv.get("client_inbound_receive_id_if_unique"))?,
+        no_tunnels_events: p231_parse_count_signed(kv.get("dispatch_no_tunnels_events"))?,
+        prepare_events: p231_parse_count_signed(kv.get("dispatch_prepare_events"))?,
+        dispatch_time_events: p231_parse_count_signed(kv.get("dispatch_time_events"))?,
+        dispatch_send_events: p231_parse_count_signed(kv.get("dispatch_send_time_events"))?,
+        log_no_outbound: p231_parse_count_signed(kv.get("log_no_outbound_tunnel_count"))?,
+        log_garlic_no_tunnel: p231_parse_count_signed(kv.get("log_garlic_no_tunnel_count"))?,
+        log_local_missing: p231_parse_count_signed(kv.get("log_local_ls_missing_count"))?,
+        log_only_rap: p231_parse_count_signed(kv.get("log_only_rap_ls_count"))?,
+        log_bad_unsupported: p231_parse_count_signed(kv.get("log_bad_or_unsupported_ls_count"))?,
+    })
+}
+
+async fn p239_collect_dispatch(
+    diag_port: u16,
+    client_hex: &str,
+    target_hex: &str,
+) -> Option<P239Dispatch> {
+    if diag_port == 0 {
+        return None;
+    }
+    if client_hex.len() != 64 || target_hex.len() != 64 {
+        return None;
+    }
+    let command = format!("P239-DISPATCH {client_hex} {target_hex}");
+    let line = p220_query_diagnostic(diag_port, &command).await?;
+    p239_parse_dispatch(&line)
+}
+
+/// Isolated-epoch deltas for cumulative Router-A lifetime counts.
+/// Either endpoint unknown (`< 0`) yields `None` (Unknown); a known
+/// zero delta with both endpoints known is proven absence, not Unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P239Deltas {
+    found_remote_delta: Option<u64>,
+    failed_remote_delta: Option<u64>,
+    no_tunnels_delta: Option<u64>,
+    prepare_delta: Option<u64>,
+    dispatch_time_delta: Option<u64>,
+    dispatch_send_delta: Option<u64>,
+}
+
+fn p239_count_delta(post: i64, pre: i64) -> Option<u64> {
+    if pre < 0 || post < 0 {
+        return None;
+    }
+    let pre = u64::try_from(pre).ok()?;
+    let post = u64::try_from(post).ok()?;
+    Some(post.saturating_sub(pre))
+}
+
+fn p239_deltas(pre: &P239Dispatch, post: &P239Dispatch) -> P239Deltas {
+    P239Deltas {
+        found_remote_delta: p239_count_delta(post.found_remote_events, pre.found_remote_events),
+        failed_remote_delta: p239_count_delta(post.failed_remote_events, pre.failed_remote_events),
+        no_tunnels_delta: p239_count_delta(post.no_tunnels_events, pre.no_tunnels_events),
+        prepare_delta: p239_count_delta(post.prepare_events, pre.prepare_events),
+        dispatch_time_delta: p239_count_delta(post.dispatch_time_events, pre.dispatch_time_events),
+        dispatch_send_delta: p239_count_delta(post.dispatch_send_events, pre.dispatch_send_events),
+    }
+}
+
+/// Plan 238 admission is a prerequisite for any P239 D/E/F claim.
+/// A positive `client.distributeTime` delta proves Router-A I2CP
+/// admission of the response; without it the epoch cannot advance
+/// past the retained P237 boundary.
+fn p239_admission_is_proven(distribute_delta: Option<u64>) -> bool {
+    distribute_delta.is_some_and(|delta| delta > 0)
+}
+
+/// A current usable local target LS is present when the validated
+/// local lookup is present and current. Either endpoint may prove it;
+/// Unknown is never present-as-fact.
+fn p239_local_leaseset_path(snapshot: &P239Dispatch) -> bool {
+    snapshot.target_ls_local_present && snapshot.target_ls_current == Some(true)
+}
+
+/// Dispatch is proven only when both `dispatchTime` and
+/// `dispatchSendTime` advance (proving `dispatchOutbound(...)`
+/// returned). `dispatchPrepareTime` alone corroborates but never
+/// proves dispatch.
+fn p239_dispatch_proven(deltas: &P239Deltas) -> bool {
+    deltas.dispatch_time_delta.is_some_and(|delta| delta > 0)
+        && deltas.dispatch_send_delta.is_some_and(|delta| delta > 0)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P239Terminal {
+    EpochNotIsolatable,
+    TargetLeasesetLookupFailed,
+    TargetLeasesetUnusable,
+    TargetLeasesetDecisionUnknown,
+    NoOutboundTunnel,
+    GarlicTunnelMaterialUnavailable,
+    NoTunnelsBranchAmbiguous,
+    DispatchOutboundProven,
+    PreDispatchObservabilityGap,
+    OutboundGatewayNotEnqueued,
+    TransitNotProcessed,
+    TargetIbgwNotPresent,
+    TargetIbgwNoDispatch,
+    I2prNoExpectedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prStreamingAdapterFailed,
+    DirectionAEstablished,
+}
+
+impl P239Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::EpochNotIsolatable => "P239-A-ROUTER-A-EPOCH-NOT-ISOLATABLE",
+            Self::TargetLeasesetLookupFailed => "P239-D-TARGET-LEASESET-LOOKUP-FAILED",
+            Self::TargetLeasesetUnusable => "P239-D-TARGET-LEASESET-UNUSABLE",
+            Self::TargetLeasesetDecisionUnknown => "P239-D-TARGET-LEASESET-DECISION-UNKNOWN",
+            Self::NoOutboundTunnel => "P239-D-NO-OUTBOUND-TUNNEL",
+            Self::GarlicTunnelMaterialUnavailable => "P239-D-GARLIC-TUNNEL-MATERIAL-UNAVAILABLE",
+            Self::NoTunnelsBranchAmbiguous => "P239-D-NO-TUNNELS-BRANCH-AMBIGUOUS",
+            Self::DispatchOutboundProven => "P239-D-DISPATCH-OUTBOUND-PROVEN",
+            Self::PreDispatchObservabilityGap => "P239-D-PRE-DISPATCH-OBSERVABILITY-GAP",
+            Self::OutboundGatewayNotEnqueued => "P239-E-OUTBOUND-GATEWAY-NOT-ENQUEUED",
+            Self::TransitNotProcessed => "P239-E-TRANSIT-NOT-PROCESSED",
+            Self::TargetIbgwNotPresent => "P239-E-TARGET-IBGW-NOT-PRESENT",
+            Self::TargetIbgwNoDispatch => "P239-E-TARGET-IBGW-NO-DISPATCH",
+            Self::I2prNoExpectedTunnelData => "P239-E-I2PR-NO-EXPECTED-TUNNELDATA",
+            Self::I2prTunnelRecoveryFailed => "P239-F-I2PR-TUNNEL-RECOVERY-FAILED",
+            Self::I2prGarlicDecodeFailed => "P239-F-I2PR-GARLIC-DECODE-FAILED",
+            Self::I2prStreamingAdapterFailed => "P239-F-I2PR-STREAMING-ADAPTER-FAILED",
+            Self::DirectionAEstablished => "P239-F-DIRECTION-A-ESTABLISHED",
+        }
+    }
+}
+
+/// Plan 239 §7–§8 ordered classifier. Admission (`admission_proven`)
+/// is a prerequisite; without it the caller must stay at the retained
+/// P237 boundary (this function returns `EpochNotIsolatable` so no D
+/// stage is ever claimed). D1 distinguishes local-LS vs remote lookup;
+/// D2 requires a branch discriminator for any `dispatchNoTunnels`
+/// event; D3 requires both dispatch deltas; §8 continuation requires
+/// proven dispatch before any E/F stage and requires expected
+/// TunnelData before any i2pr-owned terminal.
+fn p239_classify_dispatch(
+    admission_proven: bool,
+    pre: Option<P239Dispatch>,
+    post: Option<P239Dispatch>,
+    epoch: &P234SynEpoch,
+) -> P239Terminal {
+    if !admission_proven {
+        return P239Terminal::EpochNotIsolatable;
+    }
+    let (Some(pre), Some(post)) = (pre, post) else {
+        return P239Terminal::EpochNotIsolatable;
+    };
+    let deltas = p239_deltas(&pre, &post);
+    // D1 — target LeaseSet decision. Local path precedes any remote
+    // lookup interpretation; a zero remote delta never means no LS.
+    let local_path = p239_local_leaseset_path(&pre) || p239_local_leaseset_path(&post);
+    if !local_path {
+        if deltas.found_remote_delta.is_some_and(|delta| delta > 0) {
+            // Remote-LS-success path: continue to D2 below.
+        } else if deltas.failed_remote_delta.is_some_and(|delta| delta > 0) {
+            return P239Terminal::TargetLeasesetLookupFailed;
+        } else if post.log_local_missing > 0
+            || post.log_only_rap > 0
+            || post.log_bad_unsupported > 0
+        {
+            return P239Terminal::TargetLeasesetUnusable;
+        } else {
+            return P239Terminal::TargetLeasesetDecisionUnknown;
+        }
+    }
+    // D2 — outbound tunnel / garlic preparation. Never infer the
+    // branch from installed-tunnel counts alone.
+    match deltas.no_tunnels_delta {
+        Some(delta) if delta > 0 => {
+            let outbound_branch = post.log_no_outbound > 0;
+            let garlic_branch = post.log_garlic_no_tunnel > 0;
+            match (outbound_branch, garlic_branch) {
+                (true, false) => return P239Terminal::NoOutboundTunnel,
+                (false, true) => return P239Terminal::GarlicTunnelMaterialUnavailable,
+                _ => return P239Terminal::NoTunnelsBranchAmbiguous,
+            }
+        }
+        Some(0) => {}
+        _ => return P239Terminal::NoTunnelsBranchAmbiguous,
+    }
+    // D3 — dispatch. Both dispatch deltas prove `dispatchOutbound`
+    // returned; prepare alone never does.
+    if !p239_dispatch_proven(&deltas) {
+        return P239Terminal::PreDispatchObservabilityGap;
+    }
+    // §8 continuation — only after dispatch is proven. The live
+    // streaming driver has no post-dispatch gateway/transit/IBGW probe
+    // yet, so the first E stage is the honest stop until a successor
+    // observes it; unit tests cover the full ordering synthetically.
+    // No i2pr-owned terminal is legal before expected TunnelData.
+    if epoch.i2pr_expected_stream_tunneldata_count == 0 {
+        // Distinguish pre-gateway from no-wire: without a gateway
+        // observation the earliest proven missing stage is the gateway.
+        // When the epoch proves no gateway observation is possible yet,
+        // this remains the fail-closed stop (never an F terminal).
+        return P239Terminal::OutboundGatewayNotEnqueued;
+    }
+    if epoch.i2pr_tunnel_recovery_failures > 0 && epoch.i2pr_tunnel_recovery_count == 0 {
+        return P239Terminal::I2prTunnelRecoveryFailed;
+    }
+    if epoch.i2pr_garlic_decode_failures > 0 && epoch.i2pr_garlic_payload_count == 0 {
+        return P239Terminal::I2prGarlicDecodeFailed;
+    }
+    if epoch.i2pr_streaming_adapter_errors > 0 || epoch.i2pr_streaming_adapter_successes == 0 {
+        return P239Terminal::I2prStreamingAdapterFailed;
+    }
+    if epoch.connection_established {
+        return P239Terminal::DirectionAEstablished;
+    }
+    P239Terminal::I2prStreamingAdapterFailed
+}
+
+fn record_p239_dispatch_epoch(
+    evidence_dir: &Path,
+    pre: Option<P239Dispatch>,
+    post: Option<P239Dispatch>,
+    terminal: P239Terminal,
+) {
+    let pre_default = P239Dispatch::default();
+    let post_default = P239Dispatch::default();
+    let pre_ref = pre.as_ref().unwrap_or(&pre_default);
+    let post_ref = post.as_ref().unwrap_or(&post_default);
+    let deltas = p239_deltas(pre_ref, post_ref);
+    append_evidence(
+        evidence_dir,
+        "p239-dispatch-pre",
+        &format!(
+            "target_ls_local_present={} target_ls_current={:?} target_ls_type={} target_ls_received_as_published={:?} target_ls_received_as_reply={:?} lease_lookup_found_remote_events={} lease_lookup_failed_remote_events={} client_outbound_tunnel_count={} client_inbound_tunnel_count={} client_outbound_send_id_if_unique={} client_inbound_receive_id_if_unique={} dispatch_no_tunnels_events={} dispatch_prepare_events={} dispatch_time_events={} dispatch_send_time_events={} log_no_outbound_tunnel_count={} log_garlic_no_tunnel_count={} log_local_ls_missing_count={} log_only_rap_ls_count={} log_bad_or_unsupported_ls_count={}",
+            pre_ref.target_ls_local_present,
+            pre_ref.target_ls_current,
+            pre_ref.target_ls_type,
+            pre_ref.target_ls_rap,
+            pre_ref.target_ls_rar,
+            pre_ref.found_remote_events,
+            pre_ref.failed_remote_events,
+            pre_ref.outbound_tunnel_count,
+            pre_ref.inbound_tunnel_count,
+            pre_ref.outbound_send_id,
+            pre_ref.inbound_receive_id,
+            pre_ref.no_tunnels_events,
+            pre_ref.prepare_events,
+            pre_ref.dispatch_time_events,
+            pre_ref.dispatch_send_events,
+            pre_ref.log_no_outbound,
+            pre_ref.log_garlic_no_tunnel,
+            pre_ref.log_local_missing,
+            pre_ref.log_only_rap,
+            pre_ref.log_bad_unsupported,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p239-dispatch-post",
+        &format!(
+            "target_ls_local_present={} target_ls_current={:?} target_ls_type={} target_ls_received_as_published={:?} target_ls_received_as_reply={:?} lease_lookup_found_remote_events={} lease_lookup_failed_remote_events={} client_outbound_tunnel_count={} client_inbound_tunnel_count={} client_outbound_send_id_if_unique={} client_inbound_receive_id_if_unique={} dispatch_no_tunnels_events={} dispatch_prepare_events={} dispatch_time_events={} dispatch_send_time_events={} log_no_outbound_tunnel_count={} log_garlic_no_tunnel_count={} log_local_ls_missing_count={} log_only_rap_ls_count={} log_bad_or_unsupported_ls_count={}",
+            post_ref.target_ls_local_present,
+            post_ref.target_ls_current,
+            post_ref.target_ls_type,
+            post_ref.target_ls_rap,
+            post_ref.target_ls_rar,
+            post_ref.found_remote_events,
+            post_ref.failed_remote_events,
+            post_ref.outbound_tunnel_count,
+            post_ref.inbound_tunnel_count,
+            post_ref.outbound_send_id,
+            post_ref.inbound_receive_id,
+            post_ref.no_tunnels_events,
+            post_ref.prepare_events,
+            post_ref.dispatch_time_events,
+            post_ref.dispatch_send_events,
+            post_ref.log_no_outbound,
+            post_ref.log_garlic_no_tunnel,
+            post_ref.log_local_missing,
+            post_ref.log_only_rap,
+            post_ref.log_bad_unsupported,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p239-dispatch-deltas",
+        &format!(
+            "found_remote_delta={:?} failed_remote_delta={:?} no_tunnels_delta={:?} prepare_delta={:?} dispatch_time_delta={:?} dispatch_send_delta={:?}",
+            deltas.found_remote_delta,
+            deltas.failed_remote_delta,
+            deltas.no_tunnels_delta,
+            deltas.prepare_delta,
+            deltas.dispatch_time_delta,
+            deltas.dispatch_send_delta,
+        ),
+    );
+    append_evidence(evidence_dir, "p239-classification", terminal.token());
+}
+
+fn p239_production_change_allowed_before_owned_defect(
+    production_changed: bool,
+    expected_tunneldata_seen: bool,
+) -> bool {
+    !production_changed || expected_tunneldata_seen
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -9486,6 +9895,15 @@ async fn streaming_through_java() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     let p238_pre = p238_collect_admission(p238_diag_port).await;
+    // Plan 239 §6 — baseline Router-A pre-dispatch snapshot immediately
+    // before the Direction-A SYN. The helper process is fresh per counted
+    // attempt and the lane is quiet for other client sends during the
+    // epoch, so cumulative-counter deltas isolate the SYN epoch;
+    // absolutes never attribute. A missing/unreachable diagnostic port
+    // yields `None` (Unknown), never a protocol fact.
+    let p239_client_hex = p220_bytes_to_hex(reference_hash.as_bytes());
+    let p239_target_hex = p220_bytes_to_hex(local_dest_hash.as_bytes());
+    let p239_pre = p239_collect_dispatch(p238_diag_port, &p239_client_hex, &p239_target_hex).await;
     let outcome = streaming
         .connect(
             &local_identity,
@@ -9711,6 +10129,10 @@ async fn streaming_through_java() {
     // the frozen response window; the earliest D stage is classified
     // from the isolated-epoch delta (never absolutes).
     let p238_post = p238_collect_admission(p238_diag_port).await;
+    // Plan 239 §6 — second Router-A pre-dispatch snapshot at the end of
+    // the frozen 45 s response window. Deltas isolate the response
+    // epoch; the helper stays fresh and the lane stays quiet.
+    let p239_post = p239_collect_dispatch(p238_diag_port, &p239_client_hex, &p239_target_hex).await;
     let p237_baseline_ok = p235_plan234_baseline_ok
         && !matches!(
             p235_terminal,
@@ -9744,6 +10166,26 @@ async fn streaming_through_java() {
         &p237_router,
         p237_terminal,
     );
+    // Plan 239 §7–§8 — Router-A pre-dispatch attribution from the
+    // isolated-epoch P239 deltas. Admission (Plan 238 distribute delta)
+    // is a prerequisite; without it no D/E/F stage is claimed and the
+    // epoch stays at the retained P237 boundary. The retained
+    // Plan-234/235/236/237/238 baselines and frozen windows stay intact;
+    // this row is additive diagnostic attribution only.
+    let p239_admission_proven = match (p238_pre, p238_post) {
+        (Some(pre), Some(post)) => {
+            let deltas = p238_deltas(&pre, &post);
+            p239_admission_is_proven(deltas.distribute_delta)
+        }
+        _ => false,
+    };
+    let p239_terminal = p239_classify_dispatch(
+        p239_admission_proven,
+        p239_pre.clone(),
+        p239_post.clone(),
+        &p234_epoch,
+    );
+    record_p239_dispatch_epoch(&evidence_dir, p239_pre, p239_post, p239_terminal);
     if p236_terminal != P236Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -20486,4 +20928,390 @@ fn p238_no_production_change() {
     assert!(p237_production_change_allowed_before_owned_defect(
         true, true
     ));
+}
+
+// ---- Plan 239 §10 unit rows ------------------------------------------------
+// Focused local rows locking the Router-A pre-dispatch / OCMOSJ
+// attribution. They run in the ordinary workspace floor (no external
+// environment). Full `p236_`, `p237_`, and `p238_` suites remain green.
+
+#[allow(clippy::too_many_arguments)]
+fn p239_snapshot(
+    local_present: bool,
+    current: Option<bool>,
+    found_remote: i64,
+    failed_remote: i64,
+    no_tunnels: i64,
+    prepare: i64,
+    dispatch_time: i64,
+    dispatch_send: i64,
+    log_no_outbound: i64,
+    log_garlic: i64,
+    log_local: i64,
+    log_rap: i64,
+    log_bad: i64,
+) -> P239Dispatch {
+    P239Dispatch {
+        target_ls_local_present: local_present,
+        target_ls_current: current,
+        target_ls_type: 4,
+        target_ls_rap: Some(false),
+        target_ls_rar: Some(false),
+        found_remote_events: found_remote,
+        failed_remote_events: failed_remote,
+        outbound_tunnel_count: 1,
+        inbound_tunnel_count: 1,
+        outbound_send_id: 7,
+        inbound_receive_id: 9,
+        no_tunnels_events: no_tunnels,
+        prepare_events: prepare,
+        dispatch_time_events: dispatch_time,
+        dispatch_send_events: dispatch_send,
+        log_no_outbound,
+        log_garlic_no_tunnel: log_garlic,
+        log_local_missing: log_local,
+        log_only_rap: log_rap,
+        log_bad_unsupported: log_bad,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn p239_local_pair(
+    no_tunnels_pre: i64,
+    no_tunnels_post: i64,
+    prepare_pre: i64,
+    prepare_post: i64,
+    dispatch_pre: i64,
+    dispatch_post: i64,
+    send_pre: i64,
+    send_post: i64,
+) -> (P239Dispatch, P239Dispatch) {
+    (
+        p239_snapshot(
+            true,
+            Some(true),
+            5,
+            2,
+            no_tunnels_pre,
+            prepare_pre,
+            dispatch_pre,
+            send_pre,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
+        p239_snapshot(
+            true,
+            Some(true),
+            5,
+            2,
+            no_tunnels_post,
+            prepare_post,
+            dispatch_post,
+            send_post,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
+    )
+}
+
+#[test]
+fn p239_plan238_admission_is_prerequisite() {
+    // Without proven admission no D/E/F stage is ever claimed: the
+    // classifier stays at the A epoch boundary even with dispatch
+    // deltas, local LS, and tunnel preparation present.
+    let (pre, post) = p239_local_pair(1, 1, 3, 4, 4, 5, 4, 5);
+    assert!(p239_admission_is_proven(Some(1)));
+    assert!(!p239_admission_is_proven(Some(0)));
+    assert!(!p239_admission_is_proven(None));
+    assert_eq!(
+        p239_classify_dispatch(
+            false,
+            Some(pre.clone()),
+            Some(post.clone()),
+            &p237_complete_epoch()
+        ),
+        P239Terminal::EpochNotIsolatable
+    );
+    // With admission proven the same snapshots advance past A.
+    assert_ne!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::EpochNotIsolatable
+    );
+}
+
+#[test]
+fn p239_zero_remote_lookup_delta_does_not_mean_no_leaseset() {
+    // Local LS present + current with zero remote deltas: D1 takes the
+    // local path (constructor local lookup bypasses the remote stat),
+    // never LOOKUP-FAILED or DECISION-UNKNOWN.
+    let (pre, post) = p239_local_pair(1, 1, 3, 3, 4, 4, 4, 4);
+    let deltas = p239_deltas(&pre, &post);
+    assert_eq!(deltas.found_remote_delta, Some(0));
+    assert_eq!(deltas.failed_remote_delta, Some(0));
+    // No tunnel failure and no dispatch: stops at D3 gap, proving D1
+    // was passed via the local path.
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::PreDispatchObservabilityGap
+    );
+}
+
+#[test]
+fn p239_local_leaseset_path_precedes_remote_lookup_interpretation() {
+    // Local present + current wins over a concurrent remote-failure
+    // delta: the epoch must not stop at LOOKUP-FAILED.
+    let pre = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post = p239_snapshot(true, Some(true), 5, 3, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let deltas = p239_deltas(&pre, &post);
+    assert_eq!(deltas.failed_remote_delta, Some(1));
+    assert_ne!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::TargetLeasesetLookupFailed
+    );
+}
+
+#[test]
+fn p239_remote_lookup_failure_precedes_tunnel_attribution() {
+    // No local LS, remote failure delta, plus a tunnel-failure delta
+    // with branch logs: D1 failure wins over any D2 tunnel terminal.
+    let pre = p239_snapshot(false, None, 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post = p239_snapshot(false, None, 5, 3, 2, 3, 4, 4, 1, 0, 0, 0, 0);
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::TargetLeasesetLookupFailed
+    );
+}
+
+#[test]
+fn p239_unknown_rate_is_not_zero() {
+    // Never-created rates (`-1` on either endpoint) yield Unknown
+    // deltas, never zero-as-fact. Unknown lookup state is
+    // DECISION-UNKNOWN, never FAILED; unknown tunnel state is
+    // BRANCH-AMBIGUOUS, never proven preparation.
+    assert_eq!(p239_count_delta(5, -1), None);
+    assert_eq!(p239_count_delta(-1, 5), None);
+    assert_eq!(p239_count_delta(5, 5), Some(0));
+    let pre = p239_snapshot(false, None, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+    let post = p239_snapshot(false, None, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0);
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::TargetLeasesetDecisionUnknown
+    );
+    let pre_known_ls = p239_snapshot(true, Some(true), 5, 2, -1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post_known_ls = p239_snapshot(true, Some(true), 5, 2, -1, 3, 4, 4, 0, 0, 0, 0, 0);
+    assert_eq!(
+        p239_classify_dispatch(
+            true,
+            Some(pre_known_ls),
+            Some(post_known_ls),
+            &p237_complete_epoch()
+        ),
+        P239Terminal::NoTunnelsBranchAmbiguous
+    );
+}
+
+#[test]
+fn p239_dispatch_no_tunnels_requires_branch_discriminator() {
+    // A `dispatchNoTunnels` delta without a branch discriminator (both
+    // log counts zero, or both set, or unreadable) is AMBIGUOUS — never
+    // attributed to a single branch, never inferred from tunnel counts.
+    let (pre, post) = p239_local_pair(1, 2, 3, 3, 4, 4, 4, 4);
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::NoTunnelsBranchAmbiguous
+    );
+    // Installed-tunnel counts alone never discriminate: same delta with
+    // populated counts but no logs is still ambiguous.
+    let pre_counts = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post_counts = p239_snapshot(true, Some(true), 5, 2, 2, 3, 4, 4, 0, 0, 0, 0, 0);
+    assert_eq!(post_counts.outbound_tunnel_count, 1);
+    assert_eq!(
+        p239_classify_dispatch(
+            true,
+            Some(pre_counts),
+            Some(post_counts),
+            &p237_complete_epoch()
+        ),
+        P239Terminal::NoTunnelsBranchAmbiguous
+    );
+}
+
+#[test]
+fn p239_outbound_tunnel_failure_distinct_from_garlic_tunnel_failure() {
+    // The two `dispatchNoTunnels` branches have distinct stock logs and
+    // distinct terminals; they must never be conflated.
+    let pre = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post_outbound = p239_snapshot(true, Some(true), 5, 2, 2, 3, 4, 4, 1, 0, 0, 0, 0);
+    assert_eq!(
+        p239_classify_dispatch(
+            true,
+            Some(pre.clone()),
+            Some(post_outbound),
+            &p237_complete_epoch()
+        ),
+        P239Terminal::NoOutboundTunnel
+    );
+    let post_garlic = p239_snapshot(true, Some(true), 5, 2, 2, 3, 4, 4, 0, 1, 0, 0, 0);
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post_garlic), &p237_complete_epoch()),
+        P239Terminal::GarlicTunnelMaterialUnavailable
+    );
+}
+
+#[test]
+fn p239_dispatch_time_proves_dispatch_outbound_returned() {
+    // Both dispatch deltas prove `dispatchOutbound(...)` returned and
+    // the epoch continues past D3 (here to the first E stop with no
+    // wire yet). A single dispatch delta alone does not.
+    let pre = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post = p239_snapshot(true, Some(true), 5, 2, 1, 4, 5, 5, 0, 0, 0, 0, 0);
+    let deltas = p239_deltas(&pre, &post);
+    assert!(p239_dispatch_proven(&deltas));
+    let mut epoch_no_wire = p237_complete_epoch();
+    epoch_no_wire.i2pr_expected_stream_tunneldata_count = 0;
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre.clone()), Some(post), &epoch_no_wire),
+        P239Terminal::OutboundGatewayNotEnqueued
+    );
+    // Only dispatchTime without dispatchSendTime: still a gap.
+    let post_half = p239_snapshot(true, Some(true), 5, 2, 1, 4, 5, 4, 0, 0, 0, 0, 0);
+    assert!(!p239_dispatch_proven(&p239_deltas(&pre, &post_half)));
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post_half), &epoch_no_wire),
+        P239Terminal::PreDispatchObservabilityGap
+    );
+}
+
+#[test]
+fn p239_dispatch_prepare_is_corroboration_not_primary_dispatch_proof() {
+    // `dispatchPrepareTime` advancing without dispatch deltas is
+    // corroboration that inline `DispatchJob` returned to `send()`,
+    // never primary dispatch proof.
+    let pre = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post = p239_snapshot(true, Some(true), 5, 2, 1, 4, 4, 4, 0, 0, 0, 0, 0);
+    let deltas = p239_deltas(&pre, &post);
+    assert_eq!(deltas.prepare_delta, Some(1));
+    assert!(!p239_dispatch_proven(&deltas));
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &p237_complete_epoch()),
+        P239Terminal::PreDispatchObservabilityGap
+    );
+}
+
+#[test]
+fn p239_post_dispatch_stages_require_dispatch_outbound() {
+    // Without proven dispatch no post-dispatch stage is reachable even
+    // with expected TunnelData present: the epoch stops at the D gap,
+    // never at an E/F terminal.
+    let pre = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let post = p239_snapshot(true, Some(true), 5, 2, 1, 3, 4, 4, 0, 0, 0, 0, 0);
+    let mut epoch_wire = p237_complete_epoch();
+    epoch_wire.i2pr_expected_stream_tunneldata_count = 1;
+    epoch_wire.i2pr_tunnel_recovery_count = 1;
+    assert_eq!(
+        p239_classify_dispatch(true, Some(pre), Some(post), &epoch_wire),
+        P239Terminal::PreDispatchObservabilityGap
+    );
+}
+
+#[test]
+fn p239_no_production_change() {
+    // Same fail-closed production gate as Plans 237/238: no production
+    // change without exact expected TunnelData at an i2pr-owned stage.
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+}
+
+#[test]
+fn p239_terminal_tokens_are_canonical() {
+    // Locks the exact P239 §7–§8 terminal vocabulary. Post-dispatch
+    // E/F stages beyond the live gateway stop are unit-locked here so
+    // the enum stays honest about the full ordered continuation a
+    // successor will observe live; the live classifier stops at the
+    // earliest proven stage and never skips.
+    assert_eq!(
+        P239Terminal::EpochNotIsolatable.token(),
+        "P239-A-ROUTER-A-EPOCH-NOT-ISOLATABLE"
+    );
+    assert_eq!(
+        P239Terminal::TargetLeasesetLookupFailed.token(),
+        "P239-D-TARGET-LEASESET-LOOKUP-FAILED"
+    );
+    assert_eq!(
+        P239Terminal::TargetLeasesetUnusable.token(),
+        "P239-D-TARGET-LEASESET-UNUSABLE"
+    );
+    assert_eq!(
+        P239Terminal::TargetLeasesetDecisionUnknown.token(),
+        "P239-D-TARGET-LEASESET-DECISION-UNKNOWN"
+    );
+    assert_eq!(
+        P239Terminal::NoOutboundTunnel.token(),
+        "P239-D-NO-OUTBOUND-TUNNEL"
+    );
+    assert_eq!(
+        P239Terminal::GarlicTunnelMaterialUnavailable.token(),
+        "P239-D-GARLIC-TUNNEL-MATERIAL-UNAVAILABLE"
+    );
+    assert_eq!(
+        P239Terminal::NoTunnelsBranchAmbiguous.token(),
+        "P239-D-NO-TUNNELS-BRANCH-AMBIGUOUS"
+    );
+    assert_eq!(
+        P239Terminal::DispatchOutboundProven.token(),
+        "P239-D-DISPATCH-OUTBOUND-PROVEN"
+    );
+    assert_eq!(
+        P239Terminal::PreDispatchObservabilityGap.token(),
+        "P239-D-PRE-DISPATCH-OBSERVABILITY-GAP"
+    );
+    assert_eq!(
+        P239Terminal::OutboundGatewayNotEnqueued.token(),
+        "P239-E-OUTBOUND-GATEWAY-NOT-ENQUEUED"
+    );
+    assert_eq!(
+        P239Terminal::TransitNotProcessed.token(),
+        "P239-E-TRANSIT-NOT-PROCESSED"
+    );
+    assert_eq!(
+        P239Terminal::TargetIbgwNotPresent.token(),
+        "P239-E-TARGET-IBGW-NOT-PRESENT"
+    );
+    assert_eq!(
+        P239Terminal::TargetIbgwNoDispatch.token(),
+        "P239-E-TARGET-IBGW-NO-DISPATCH"
+    );
+    assert_eq!(
+        P239Terminal::I2prNoExpectedTunnelData.token(),
+        "P239-E-I2PR-NO-EXPECTED-TUNNELDATA"
+    );
+    assert_eq!(
+        P239Terminal::I2prTunnelRecoveryFailed.token(),
+        "P239-F-I2PR-TUNNEL-RECOVERY-FAILED"
+    );
+    assert_eq!(
+        P239Terminal::I2prGarlicDecodeFailed.token(),
+        "P239-F-I2PR-GARLIC-DECODE-FAILED"
+    );
+    assert_eq!(
+        P239Terminal::I2prStreamingAdapterFailed.token(),
+        "P239-F-I2PR-STREAMING-ADAPTER-FAILED"
+    );
+    assert_eq!(
+        P239Terminal::DirectionAEstablished.token(),
+        "P239-F-DIRECTION-A-ESTABLISHED"
+    );
 }

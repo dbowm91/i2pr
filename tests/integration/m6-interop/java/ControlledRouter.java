@@ -217,6 +217,25 @@
 //   - every P238 response is one bounded `P238-EV ...` line with
 //     counts only; no peer paths, keys, tags, payloads, destinations,
 //     hashes, queue contents, or raw log text.
+// Plan 239 diagnostic contract (streaming response Router-A pre-dispatch
+// OCMOSJ attribution only, read-only, no state mutation):
+//   - `P239-DISPATCH <client-dbid-hex> <target-hash-hex>` returns the
+//     bounded pre-dispatch snapshot for one helper client DBID and one
+//     target hash: local target-LS presence/current/type/RAP/RAR via the
+//     retained P224 client-subDB semantics, remote lookup success/failure
+//     lifetime events (`client.leaseSetFoundRemoteTime` /
+//     `client.leaseSetFailedRemoteTime`), installed inbound/outbound
+//     client-tunnel counts + single ids, dispatch lifetime events
+//     (`client.dispatchNoTunnels` / `client.dispatchPrepareTime` /
+//     `client.dispatchTime` / `client.dispatchSendTime`), and sanitized
+//     exact-source OCMOSJ log counts distinguishing the two
+//     `dispatchNoTunnels` branches and pre-dispatch LeaseSet failures
+//     (`P239-EV kind=dispatch ...` with -1 for a never-created rate or
+//     unreadable log buffer, never zero-as-fact, never raw log text);
+//   - every P239 response is one bounded `P239-EV ...` line with
+//     booleans, counts, type codes, and tunnel ids only; no peer paths,
+//     keys, tags, payloads, destinations, hashes, queue contents, or raw
+//     log text.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -265,6 +284,7 @@ import net.i2p.router.networkdb.kademlia.P229Probe;
 import net.i2p.router.networkdb.kademlia.P230Probe;
 import net.i2p.router.networkdb.kademlia.P231Probe;
 import net.i2p.router.networkdb.kademlia.P238Probe;
+import net.i2p.router.networkdb.kademlia.P239Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -844,6 +864,11 @@ public final class ControlledRouter {
                         return p231Participating(parts[1]);
                     case "P238-ADMISSION":
                         return p238Admission();
+                    case "P239-DISPATCH":
+                        if (parts.length < 3) {
+                            return p239Error("missing-hash-arguments");
+                        }
+                        return p239Dispatch(parts[1], parts[2]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1178,6 +1203,57 @@ public final class ControlledRouter {
 
         private String p238Error(String reason) {
             return "P238-ERROR " + reason;
+        }
+
+        private String p239Error(String reason) {
+            return "P239-ERROR " + reason;
+        }
+
+        /**
+         * Plan 239 WP — read-only Router-A pre-dispatch snapshot for one
+         * helper client DBID and one target hash. Observation only via
+         * P239Probe; never creates rates, never mutates counters, never
+         * primes the client sub-DB, never installs tunnels, never
+         * promotes raw log text.
+         */
+        private String p239Dispatch(String clientDbidHex, String targetHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash target = p220ParseHexHash(targetHex);
+            if (clientDbid == null || target == null) {
+                return p239Error("invalid-hex-hash");
+            }
+            P239Probe.Dispatch result =
+                P239Probe.snapshotDispatch(context(), clientDbid, target);
+            if (result.error != null) {
+                return "P239-EV kind=dispatch"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " target_hash_hex=" + targetHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P239-EV kind=dispatch"
+                + " client_dbid_hex=" + clientDbidHex
+                + " target_hash_hex=" + targetHex
+                + " observable=true"
+                + " target_ls_local_present=" + result.targetLsLocalPresent
+                + " target_ls_current=" + result.targetLsCurrent
+                + " target_ls_type=" + result.targetLsType
+                + " target_ls_received_as_published=" + result.targetLsRap
+                + " target_ls_received_as_reply=" + result.targetLsRar
+                + " lease_lookup_found_remote_events=" + result.foundRemoteEvents
+                + " lease_lookup_failed_remote_events=" + result.failedRemoteEvents
+                + " client_outbound_tunnel_count=" + result.outboundTunnelCount
+                + " client_inbound_tunnel_count=" + result.inboundTunnelCount
+                + " client_outbound_send_id_if_unique=" + result.outboundSendId
+                + " client_inbound_receive_id_if_unique=" + result.inboundReceiveId
+                + " dispatch_no_tunnels_events=" + result.noTunnelsEvents
+                + " dispatch_prepare_events=" + result.prepareEvents
+                + " dispatch_time_events=" + result.dispatchTimeEvents
+                + " dispatch_send_time_events=" + result.dispatchSendEvents
+                + " log_no_outbound_tunnel_count=" + result.logNoOutbound
+                + " log_garlic_no_tunnel_count=" + result.logGarlicNoTunnel
+                + " log_local_ls_missing_count=" + result.logLocalMissing
+                + " log_only_rap_ls_count=" + result.logOnlyRap
+                + " log_bad_or_unsupported_ls_count=" + result.logBadUnsupported;
         }
 
         /**
