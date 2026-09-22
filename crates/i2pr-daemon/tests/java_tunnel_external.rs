@@ -1038,6 +1038,21 @@ fn record_p236_response_epoch(
 // driver snapshots before the Direction-A SYN and at the end of the frozen
 // response window, then classifies from deltas (never absolutes). Plan-236
 // `REPORT_STREAM_STATE` booleans are never consumed here.
+//
+// Corrective (counted attempt 1 on 7506d06): pinned-source review proved
+// two observer defects in the first implementation, both fixed without
+// touching Java source or production Rust:
+// (a) `SchedulerReceived.eventOccurred()` logs via the superclass
+//     `SchedulerImpl` logger, so DEBUG is enabled for `SchedulerImpl`
+//     (actual) alongside the plan-named `SchedulerReceived`;
+// (b) `Connection.ackImmediately()` ("sending new ack") fires only on
+//     duplicate/fast-ack/close paths, never on the fresh SYN -> SYN-ACK
+//     response path (SchedulerReceived -> sendAvailable -> sendPacket).
+//     The active stock signal inside the source-locked
+//     `Connection.sendPacket(PacketLocal)` on a first-time response send
+//     is its retransmit-timer log ("Resend in ...", unique to sendPacket
+//     in the exact-pinned streaming implementation), which the helper
+//     counts as response-packet construction.
 
 /// Bounded stock helper-JVM facts from `REPORT_RESPONSE_STATS`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

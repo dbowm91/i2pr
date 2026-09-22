@@ -3589,8 +3589,9 @@ if [[ -f "${P237_HELPER_SRC}" ]]; then
     'getMostRecentMessages' \
     'setLimits' \
     'setConsoleBufferSize' \
+    'SchedulerImpl' \
     'received con... ' \
-    'sending new ack: ' \
+    'Resend in ' \
     'Send failed for ' \
     'Unable to send the packet' \
     'Plan 237 §'; do
@@ -3627,7 +3628,8 @@ if [[ -f "${P237_SOURCE_LOCK}" ]]; then
   for required in \
     'received con... send a packet' \
     'received con... time till next send: ' \
-    'sending new ack: ' \
+    'getLog(SchedulerImpl.class)' \
+    'Resend in ' \
     'stream.con.sendMessageSize' \
     'Unable to send the packet' \
     'Send failed for ' \

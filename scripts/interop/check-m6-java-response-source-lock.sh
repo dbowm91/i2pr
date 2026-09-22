@@ -28,6 +28,7 @@ for file in \
   "${STREAMING_ROOT}/ConnectionPacketHandler.java" \
   "${STREAMING_ROOT}/Connection.java" \
   "${STREAMING_ROOT}/SchedulerReceived.java" \
+  "${STREAMING_ROOT}/SchedulerImpl.java" \
   "${STREAMING_ROOT}/PacketQueue.java" \
   "${I2CP_SESSION}"; do
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
@@ -48,6 +49,7 @@ def read(name: str) -> str:
 packet_handler = read("ConnectionPacketHandler.java")
 connection = read("Connection.java")
 scheduler = read("SchedulerReceived.java")
+scheduler_impl = read("SchedulerImpl.java")
 queue = read("PacketQueue.java")
 session = i2cp_session.read_text(encoding="utf-8")
 
@@ -68,7 +70,12 @@ required = {
     # of these must fail the lane before an external attempt.
     "SchedulerReceived.send_branch_log": (scheduler, "received con... send a packet"),
     "SchedulerReceived.reschedule_branch_log": (scheduler, "received con... time till next send: "),
-    "Connection.ack_construction_log": (connection, "sending new ack: "),
+    # Corrective (counted attempt 1): SchedulerReceived events log via
+    # the SchedulerImpl logger, and ackImmediately ("sending new ack")
+    # fires only on dup/fast-ack paths, never on the fresh SYN-ACK path.
+    # The active construction signal is the sendPacket timer log below.
+    "SchedulerImpl.scheduler_logger": (scheduler_impl, "getLog(SchedulerImpl.class)"),
+    "Connection.sendpacket_construction_log": (connection, '" Resend in "'),
     "PacketQueue.sendmessage_stat": (queue, '"stream.con.sendMessageSize"'),
     "PacketQueue.send_exception_log": (queue, "Unable to send the packet"),
     "PacketQueue.send_failed_log": (queue, "Send failed for "),
@@ -109,8 +116,12 @@ output.write_text(
         "java_i2psession_send_method\tboolean_sendMessage_SendMessageOptions\n",
         "java_i2psession_status_listener_overload\tconditional-only\n",
         # Plan 237 §4 — pinned stock signals the helper observer counts.
+        # Corrective: scheduler events log via SchedulerImpl; response
+        # construction is the active sendPacket timer log (ackImmediately
+        # fires only on dup/fast-ack paths, never on fresh SYN-ACK).
         "java_scheduler_log_signals\treceived con... send a packet | received con... time till next send: <n>\n",
-        "java_ack_log_signal\tsending new ack: <PacketLocal>\n",
+        "java_scheduler_logger_class\tnet.i2p.client.streaming.impl.SchedulerImpl\n",
+        "java_sendpacket_log_signal\tResend in <timeout> for <packet> (Connection.sendPacket first-send timer)\n",
         "java_sendmessage_stat\tstream.con.sendMessageSize\n",
         "java_send_failure_signals\tUnable to send the packet | Send failed for <PacketLocal> | Took <n>ms to sendMessage(...)\n",
     ]),

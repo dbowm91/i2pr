@@ -100,6 +100,14 @@ public final class ReferenceStreamingService {
     // state. Counts are bounded by the console buffer size (512) and
     // MAX_OBSERVATIONS.
     private static final int P237_CONSOLE_BUFFER_SIZE = 512;
+    // Plan 237 §9 corrective (counted attempt 1 finding): the pinned
+    // `SchedulerReceived.eventOccurred()` source emits its DEBUG strings
+    // through the superclass logger (`SchedulerImpl._log =
+    // logManager().getLog(SchedulerImpl.class)`), so DEBUG must be
+    // enabled for `SchedulerImpl` (actual) as well as the plan-named
+    // `SchedulerReceived` (harmless, documents intent).
+    private static final String P237_SCHEDULER_IMPL_CLASS =
+        "net.i2p.client.streaming.impl.SchedulerImpl";
     private static final String P237_SCHEDULER_CLASS =
         "net.i2p.client.streaming.impl.SchedulerReceived";
     private static final String P237_CONNECTION_CLASS =
@@ -107,7 +115,15 @@ public final class ReferenceStreamingService {
     private static final String P237_PACKETQUEUE_CLASS =
         "net.i2p.client.streaming.impl.PacketQueue";
     private static final String P237_SCHEDULER_SIGNAL = "received con... ";
-    private static final String P237_ACK_SIGNAL = "sending new ack: ";
+    // Plan 237 §4.2 corrective (counted attempt 1 finding): the pinned
+    // `Connection.ackImmediately()` "sending new ack" log fires only on
+    // duplicate/fast-ack/close paths, never on the fresh SYN -> SYN-ACK
+    // response path (which runs SchedulerReceived -> sendAvailable ->
+    // sendPacket). The active stock signal inside the source-locked
+    // `Connection.sendPacket(PacketLocal)` on a first-time response send
+    // is the retransmit-timer log below (unique to sendPacket in the
+    // exact-pinned streaming implementation).
+    private static final String P237_SENDPACKET_SIGNAL = "Resend in ";
     private static final String P237_SEND_FAILED_SIGNAL = "Send failed for ";
     private static final String P237_SEND_EXCEPTION_SIGNAL = "Unable to send the packet";
     private static final String P237_SENDMESSAGE_STAT = "stream.con.sendMessageSize";
@@ -118,6 +134,7 @@ public final class ReferenceStreamingService {
             if (context == null || context.logManager() == null) return;
             context.logManager().setConsoleBufferSize(P237_CONSOLE_BUFFER_SIZE);
             Properties limits = new Properties();
+            limits.setProperty(P237_SCHEDULER_IMPL_CLASS, "DEBUG");
             limits.setProperty(P237_SCHEDULER_CLASS, "DEBUG");
             limits.setProperty(P237_CONNECTION_CLASS, "DEBUG");
             limits.setProperty(P237_PACKETQUEUE_CLASS, "DEBUG");
@@ -168,6 +185,12 @@ public final class ReferenceStreamingService {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    private static boolean p237SchedulerObserverEnabled() {
+        // The actual scheduler logger is SchedulerImpl (see above); the
+        // plan-named SchedulerReceived entry is retained for intent.
+        return p237IsDebugEnabledFor(P237_SCHEDULER_IMPL_CLASS);
     }
 
     private static int incrementBounded(AtomicInteger counter) {
@@ -363,13 +386,13 @@ public final class ReferenceStreamingService {
                             int schedulerCount =
                                 p237CountBufferSubstring(P237_SCHEDULER_SIGNAL);
                             int ackCount =
-                                p237CountBufferSubstring(P237_ACK_SIGNAL);
+                                p237CountBufferSubstring(P237_SENDPACKET_SIGNAL);
                             int sendFail =
                                 p237CountBufferSubstring(P237_SEND_FAILED_SIGNAL);
                             int sendException =
                                 p237CountBufferSubstring(P237_SEND_EXCEPTION_SIGNAL);
                             boolean schedulerDebug =
-                                p237IsDebugEnabledFor(P237_SCHEDULER_CLASS);
+                                p237SchedulerObserverEnabled();
                             boolean connectionDebug =
                                 p237IsDebugEnabledFor(P237_CONNECTION_CLASS);
                             boolean packetqueueDebug =
