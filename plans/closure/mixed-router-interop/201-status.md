@@ -1,3 +1,30 @@
+# Current dependency amendment — Plan 236 registered for exact Java response-emission attribution
+
+Plan 235 remains closed at
+`passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound`.
+Its three same-SHA attempts proved Java socket-surface readiness and i2pr
+outbound admission/dispatch, but no inbound TunnelData.
+
+Plan 236 is now the dependency-ready continuation. It owns only the exact
+missing interval from the pinned Java Streaming response scheduler through
+`Connection.sendPacket`, `PacketQueue.enqueue`,
+`I2PSession.sendMessage`, Router-A client-message admission/dispatch, the
+route-derived target IBGW, and i2pr exact TunnelData.
+
+A returned Java `I2PSocket` is not treated as proof that a response was
+emitted. No production corrective is authorized until exact expected response
+TunnelData reaches an i2pr-owned failing stage.
+
+Plan-200/201 client-LS2 publication/final-closure rows remain fail-closed and
+are not superseded by this diagnostic registration.
+
+```text
+plan_201 = blocked-pending-plan236-java-streaming-response-emission-attribution
+plan_235 = passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound
+plan_236 = registered-ready-m6-java-streaming-response-emission-and-i2cp-send-attribution
+next_executable_plan = 236-m6-java-streaming-response-emission-and-i2cp-send-attribution
+```
+
 # Current dependency amendment — Plan 235 closed at the Java socket-surface boundary
 
 Plan 234 is formally closed at Outcome B:
