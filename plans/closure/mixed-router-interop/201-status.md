@@ -1,4 +1,4 @@
-# Current dependency amendment — Plan 234 closed; Plan 235 owns the remaining Streaming response boundary
+# Current dependency amendment — Plan 235 closed at the Java socket-surface boundary
 
 Plan 234 is formally closed at Outcome B:
 `passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary`.
@@ -7,15 +7,17 @@ Three same-SHA counted attempts emitted
 and stored the socket, but i2pr observed no inbound TunnelData in the frozen
 SYN epoch. Plan 232's raw-Destination reverse pass remains authoritative.
 
-Plan 235 is the registered-ready successor for the exact post-accept/
-pre-i2pr-inbound response boundary. Plan 201 remains blocked; no final
-publication/LeaseSet2 authority claim is unblocked by Plan 234.
+Plan 235 is now closed at
+`passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound`.
+It proved Java's public socket surface ready and i2pr outbound admission, but
+no inbound TunnelData. Plan 201 remains blocked; no final publication/LeaseSet2
+authority claim is unblocked.
 
 ```text
-plan_201 = blocked-pending-plan235-java-streaming-post-accept-response-boundary-corrective
+plan_201 = blocked-after-plan235-java-socket-surface-ready-no-i2pr-inbound
 plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
-plan_235 = registered-ready-m6-java-streaming-post-accept-response-boundary-corrective
-next_executable_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
+plan_235 = passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound
+next_executable_plan = none
 ```
 
 # Current dependency amendment — Plan 233 superseded; Plan 234 owns Streaming plus final-closure authority reconciliation

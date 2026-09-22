@@ -334,11 +334,6 @@ impl ReferenceControl {
         self.command(&format!("EOF {id}")).await == "EOF"
     }
 
-    /// Plan 234 §8 — bounded, read-only helper-side accept state.
-    async fn report_stream_state(&mut self) -> Option<P234JavaAcceptState> {
-        p234_parse_java_accept_state(&self.command("REPORT_STREAM_STATE").await)
-    }
-
     /// Plan 235 §B — the same bounded control response, parsed as the
     /// helper-side public socket surface state. It never claims wire delivery.
     async fn report_stream_response_state(&mut self) -> Option<P235JavaResponseState> {

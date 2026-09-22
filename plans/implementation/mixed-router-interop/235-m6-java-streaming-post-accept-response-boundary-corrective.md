@@ -1,6 +1,6 @@
 # Plan 235 — M6 Java Streaming post-accept response boundary corrective
 
-Status: **in-progress-m6-java-streaming-post-accept-response-boundary-corrective**
+Status: **passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound**
 
 ## 1. Objective
 
