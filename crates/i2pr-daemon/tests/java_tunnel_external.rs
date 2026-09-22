@@ -10283,6 +10283,87 @@ async fn streaming_through_java() {
     let p240_b_pre = p240_collect_router_b(p238_diag_port, &p240_router_b_hex).await;
     let p240_logger_a_pre = p225_collect_logger_config(p238_diag_port).await;
     let p240_logger_b_pre = p225_collect_logger_config(p240_diag_b_port).await;
+    // Plan 241 §5/§7/§8 — one-hop lane context. The shell starts the
+    // corrected helper with explicit Router C only after the P241-A/B
+    // gates pass and hard-fails on a non-one-hop helper profile, so
+    // driver-reached plus valid env is the gate claim. The driver
+    // re-proves the helper profile pre-SYN (deterministic fixture
+    // fact) and records main-vs-client B-RI visibility at the lookup
+    // epoch. Missing env or an unreachable diagnostic port yields
+    // Unknown, never a protocol fact.
+    let p241_c_hex: String = std::env::var("P241_ROUTER_C_HEX").unwrap_or_default();
+    let p241_c_b64: String = std::env::var("P241_ROUTER_C_B64").unwrap_or_default();
+    let p241_client_env: String = std::env::var("P241_CLIENT_DBID_HEX").unwrap_or_default();
+    let p241_client_hex = if p227_is_hex64(&p241_client_env) {
+        p241_client_env.clone()
+    } else {
+        p239_client_hex.clone()
+    };
+    append_evidence(
+        &evidence_dir,
+        "p241-lane-context",
+        &format!(
+            "router_c_hex_present={} router_c_b64_len={} client_dbid_source={} client_dbid_hex={} shell_gates_claimed={}",
+            p227_is_hex64(&p241_c_hex),
+            p241_c_b64.len(),
+            if p227_is_hex64(&p241_client_env) {
+                "env"
+            } else {
+                "derived"
+            },
+            p241_client_hex,
+            p241_shell_gates_claimed(&p241_c_hex, &p241_client_hex),
+        ),
+    );
+    let p241_profile_line = stream_control.command("REPORT_TUNNEL_PROFILE").await;
+    let p241_profile = p241_parse_tunnel_profile(&p241_profile_line);
+    append_evidence(
+        &evidence_dir,
+        "p241-helper-profile",
+        &format!(
+            "observable={} one_hop={} legacy_zero_hop={} raw_line_len={}",
+            p241_profile.is_some(),
+            p241_profile
+                .as_ref()
+                .is_some_and(p241_tunnel_profile_is_one_hop),
+            p241_profile
+                .as_ref()
+                .is_some_and(p241_tunnel_profile_is_legacy_zero_hop),
+            p241_profile_line.len(),
+        ),
+    );
+    if !p241_profile
+        .as_ref()
+        .is_some_and(p241_tunnel_profile_is_one_hop)
+    {
+        // Deterministic fixture defect (the shell hard-fails on this
+        // path before the driver; reaching here means the shell check
+        // was bypassed). Stop the epoch rather than continuing into a
+        // non-one-hop lookup; never fall back to zero-hop.
+        let p241_inputs = P241Inputs {
+            bootstrap_gate_passed: p241_shell_gates_claimed(&p241_c_hex, &p241_client_hex),
+            client_pair_built: false,
+            missing_direction: P241Direction::Both,
+            outbound_pool_zero_hop_present: None,
+            lookup: P240Inputs::default(),
+        };
+        let p241_terminal = p241_classify(&p241_inputs);
+        record_p241_classification(
+            &evidence_dir,
+            &p241_terminal,
+            &p241_inputs,
+            &p239_target_hex,
+        );
+        record_stop(
+            &evidence_dir,
+            "Plan 241 helper profile is not the corrected one-hop profile",
+        );
+        handle.shutdown();
+        let _ = scope.shutdown().await;
+        return;
+    }
+    let p241_b_ri_pre =
+        p241_collect_b_ri(p238_diag_port, &p240_router_b_hex, &p241_client_hex).await;
     let outcome = streaming
         .connect(
             &local_identity,
@@ -10798,6 +10879,94 @@ async fn streaming_through_java() {
     );
     let p240_terminal = p240_classify(&p240_inputs);
     record_p240_classification(&evidence_dir, p240_terminal, &p240_inputs, &p239_target_hex);
+    // Plan 241 §7/§8/§9 — one-hop lookup continuation. Re-record B-RI
+    // visibility at the post-epoch, re-query the authoritative client
+    // pool at the lookup epoch (installed state may have churned since
+    // the shell gate), then run the ordered P241 classifier. Exactly
+    // one `p241-classification` row per streaming run.
+    let p241_b_ri_post =
+        p241_collect_b_ri(p238_diag_port, &p240_router_b_hex, &p241_client_hex).await;
+    record_p241_b_ri(
+        &evidence_dir,
+        "p241-b-ri-pre",
+        p241_b_ri_pre.as_ref(),
+        &p240_router_b_hex,
+        &p241_client_hex,
+    );
+    record_p241_b_ri(
+        &evidence_dir,
+        "p241-b-ri-post",
+        p241_b_ri_post.as_ref(),
+        &p240_router_b_hex,
+        &p241_client_hex,
+    );
+    let p241_pool = if p227_is_hex64(&p241_client_hex) && p227_is_hex64(&p241_c_hex) {
+        p227_collect_tunnels(p238_diag_port, &p241_client_hex, &p241_c_hex).await
+    } else {
+        None
+    };
+    match p241_pool.as_ref() {
+        Some(pool) => append_evidence(
+            &evidence_dir,
+            "p241-pool-epoch",
+            &format!(
+                "observable={} client_resolved={} inbound_pool_present={} outbound_pool_present={} inbound_tunnel_count={} outbound_tunnel_count={} inbound_exact_one_remote_hop_via_c={} outbound_exact_one_remote_hop_via_c={} inbound_zero_hop_present={} outbound_zero_hop_present={} gate_pass={}",
+                pool.observable,
+                pool.client_resolved,
+                pool.inbound_pool_present,
+                pool.outbound_pool_present,
+                pool.inbound_tunnel_count,
+                pool.outbound_tunnel_count,
+                pool.inbound_exact_one_remote_hop_via_c,
+                pool.outbound_exact_one_remote_hop_via_c,
+                pool.inbound_zero_hop_present,
+                pool.outbound_zero_hop_present,
+                p227_tunnel_gate_pass(pool),
+            ),
+        ),
+        None => append_evidence(
+            &evidence_dir,
+            "p241-pool-epoch",
+            "observable=false reason=diagnostic-unreachable-or-lane-context-invalid",
+        ),
+    }
+    if p240_job_trace.query_to_b {
+        append_evidence(
+            &evidence_dir,
+            "p241-b-query-milestone",
+            &format!(
+                "P241-C-B-QUERY-DISPATCHED target_hash_hex={} lookup_terminal={}",
+                p239_target_hex,
+                p240_terminal.token(),
+            ),
+        );
+    }
+    let p241_shell_claimed = p241_shell_gates_claimed(&p241_c_hex, &p241_client_hex);
+    let (p241_pair_built, p241_missing_direction, p241_pool_zero) = match p241_pool.as_ref() {
+        Some(pool) if pool.observable => (
+            p227_tunnel_gate_pass(pool),
+            p241_missing_direction(
+                pool.inbound_exact_one_remote_hop_via_c,
+                pool.outbound_exact_one_remote_hop_via_c,
+            ),
+            Some(pool.outbound_zero_hop_present),
+        ),
+        _ => (p241_shell_claimed, P241Direction::Both, None),
+    };
+    let p241_inputs = P241Inputs {
+        bootstrap_gate_passed: p241_shell_claimed,
+        client_pair_built: p241_pair_built,
+        missing_direction: p241_missing_direction,
+        outbound_pool_zero_hop_present: p241_pool_zero,
+        lookup: p240_inputs.clone(),
+    };
+    let p241_terminal = p241_classify(&p241_inputs);
+    record_p241_classification(
+        &evidence_dir,
+        &p241_terminal,
+        &p241_inputs,
+        &p239_target_hex,
+    );
     if p236_terminal != P236Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -22358,5 +22527,927 @@ fn p240_terminal_tokens_are_canonical() {
     assert_eq!(
         P240Terminal::LookupSucceeded.token(),
         "P240-D-LOOKUP-SUCCEEDED"
+    );
+}
+
+// ---- Plan 241 §5–§11 unit -----------------------------------------------
+// One-hop Streaming client-tunnel fixture corrective + exact lookup
+// continuation. The Plan-240 zero-hop fixture (hard-coded
+// `inbound.length=0` / `outbound.length=0` / `allowZeroHop=true` in
+// `ReferenceStreamingService`) is replaced on the counted lane by the
+// already-proven raw-helper one-hop SessionConfig (`length=1`,
+// `allowZeroHop=false`, `explicitPeers=<Router-C>`). The shell proves
+// the Plan-230 transit bootstrap (P241-A) and the installed one-hop
+// client pair (P241-B) before the driver runs; the driver re-proves the
+// helper profile pre-SYN, records main-vs-client B-RI visibility (§8),
+// re-queries the authoritative pool at the lookup epoch, then continues
+// the exact Plan-240 lookup chain with P241 tokens (§9/§10/§11).
+// Diagnostic-only: no production change, no Java patching, no topology,
+// profile, publication, or timing change is authorized here.
+
+/// Bounded Router-B RI visibility snapshot from `P241-B-RI`: main-NetDB
+/// raw/valid presence plus helper-client raw/valid presence with
+/// explicit client-facade resolution state. `None` is Unknown
+/// (diagnostic unreachable), never zero-as-fact. Main-vs-client facts
+/// are independent by construction (Plan 241 §4/§8): the pinned
+/// `sendQuery()` reads main-NetDB RI for send preparation but guards
+/// on the client-facade lookup, so main-present + client-absent is the
+/// allowed/expected shape, never a contradiction.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P241Bri {
+    main_raw_present: Option<bool>,
+    main_valid_present: Option<bool>,
+    client_resolved: Option<bool>,
+    client_raw_present: Option<bool>,
+    client_valid_present: Option<bool>,
+}
+
+fn p241_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P241-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p241_parse_b_ri(line: &str, expected_b_hex: &str, expected_client_hex: &str) -> Option<P241Bri> {
+    if !line.starts_with("P241-EV ") || !line.contains("kind=b-ri") {
+        return None;
+    }
+    if line.len() > 2048 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p241_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P241-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echo_b = kv.get("router_b_hex")?;
+    let echo_client = kv.get("client_dbid_hex")?;
+    if !echo_b.eq_ignore_ascii_case(expected_b_hex)
+        || !echo_client.eq_ignore_ascii_case(expected_client_hex)
+    {
+        return None;
+    }
+    if !p227_is_hex64(&echo_b.to_lowercase()) || !p227_is_hex64(&echo_client.to_lowercase()) {
+        return None;
+    }
+    for forbidden in ["priv", "seed", "session_key", "payload", "log-router"] {
+        if line.to_lowercase().contains(forbidden) {
+            return None;
+        }
+    }
+    Some(P241Bri {
+        main_raw_present: p227_parse_bool(kv.get("router_a_main_b_ri_raw_present")),
+        main_valid_present: p227_parse_bool(kv.get("router_a_main_b_ri_valid_present")),
+        client_resolved: p227_parse_bool(kv.get("helper_client_db_resolved")),
+        client_raw_present: p227_parse_bool(kv.get("helper_client_b_ri_raw_present")),
+        client_valid_present: p227_parse_bool(kv.get("helper_client_b_ri_valid_present")),
+    })
+}
+
+async fn p241_collect_b_ri(
+    diag_port: u16,
+    router_b_hex: &str,
+    client_dbid_hex: &str,
+) -> Option<P241Bri> {
+    if diag_port == 0 {
+        return None;
+    }
+    if !p227_is_hex64(router_b_hex) || !p227_is_hex64(client_dbid_hex) {
+        return None;
+    }
+    let command = format!("P241-B-RI {router_b_hex} {client_dbid_hex}");
+    let line = p220_query_diagnostic(diag_port, &command).await?;
+    p241_parse_b_ri(&line, router_b_hex, client_dbid_hex)
+}
+
+fn record_p241_b_ri(
+    evidence_dir: &Path,
+    label: &str,
+    snapshot: Option<&P241Bri>,
+    router_b_hex: &str,
+    client_dbid_hex: &str,
+) {
+    match snapshot {
+        Some(snapshot) => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=true router_b_hex={router_b_hex} client_dbid_hex={client_dbid_hex} router_a_main_b_ri_raw_present={:?} router_a_main_b_ri_valid_present={:?} helper_client_db_resolved={:?} helper_client_b_ri_raw_present={:?} helper_client_b_ri_valid_present={:?}",
+                snapshot.main_raw_present,
+                snapshot.main_valid_present,
+                snapshot.client_resolved,
+                snapshot.client_raw_present,
+                snapshot.client_valid_present,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=false router_b_hex={router_b_hex} client_dbid_hex={client_dbid_hex} reason=diagnostic-unreachable-or-malformed"
+            ),
+        ),
+    }
+}
+
+/// Bounded Streaming helper tunnel-profile facts from the test-only
+/// `REPORT_TUNNEL_PROFILE` control command. Lengths are the exact
+/// SessionConfig strings (`0`/`1`); allow-zero-hop and explicit-peer
+/// presence are strict booleans. Never carries the peer value, keys,
+/// tags, or payloads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P241TunnelProfile {
+    inbound_length: String,
+    outbound_length: String,
+    inbound_allow_zero_hop: Option<bool>,
+    outbound_allow_zero_hop: Option<bool>,
+    explicit_peers_set: Option<bool>,
+}
+
+fn p241_parse_tunnel_profile(line: &str) -> Option<P241TunnelProfile> {
+    if !line.starts_with("TUNNEL_PROFILE ") {
+        return None;
+    }
+    if line.len() > 512 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !line
+        .split(' ')
+        .skip(1)
+        .all(|t| t.is_empty() || t.contains('='))
+    {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("TUNNEL_PROFILE ", "P220-EV "));
+    let inbound_length = kv.get("inbound_length")?.to_owned();
+    let outbound_length = kv.get("outbound_length")?.to_owned();
+    if !matches!(inbound_length.as_str(), "0" | "1")
+        || !matches!(outbound_length.as_str(), "0" | "1")
+    {
+        return None;
+    }
+    Some(P241TunnelProfile {
+        inbound_length,
+        outbound_length,
+        inbound_allow_zero_hop: p227_parse_bool(kv.get("inbound_allow_zero_hop")),
+        outbound_allow_zero_hop: p227_parse_bool(kv.get("outbound_allow_zero_hop")),
+        explicit_peers_set: p227_parse_bool(kv.get("explicit_peers_set")),
+    })
+}
+
+/// Plan 241 §5/§7 — the counted lane requires the corrected one-hop
+/// profile: length 1, allowZeroHop false, explicit peer set, both
+/// directions. The legacy zero-hop shape is the retained raw-helper
+/// default for non-explicit runs; on the Streaming lane it is
+/// forbidden (shell hard-fails before the driver; the driver stops
+/// the epoch rather than continuing into a zero-hop lookup).
+fn p241_tunnel_profile_is_one_hop(profile: &P241TunnelProfile) -> bool {
+    profile.inbound_length == "1"
+        && profile.outbound_length == "1"
+        && profile.inbound_allow_zero_hop == Some(false)
+        && profile.outbound_allow_zero_hop == Some(false)
+        && profile.explicit_peers_set == Some(true)
+}
+
+/// Plan 241 §13 legacy-zero-hop shape detector: the exact profile the
+/// unchanged raw helper still emits for non-explicit runs. Used only
+/// to forbid that shape on the Streaming lane; never to change the
+/// raw helper.
+fn p241_tunnel_profile_is_legacy_zero_hop(profile: &P241TunnelProfile) -> bool {
+    profile.inbound_length == "0"
+        && profile.outbound_length == "0"
+        && profile.inbound_allow_zero_hop == Some(true)
+        && profile.outbound_allow_zero_hop == Some(true)
+        && profile.explicit_peers_set == Some(false)
+}
+
+/// Plan 241 §5 — the Streaming explicit peer must be exactly Router C:
+/// byte-identical I2P Base64 (43–44 chars, I2P alphabet), never another
+/// peer, never empty.
+fn p241_explicit_peer_matches_router_c(explicit_b64: &str, router_c_b64: &str) -> bool {
+    if explicit_b64 != router_c_b64 {
+        return false;
+    }
+    if explicit_b64.len() != 44 && explicit_b64.len() != 43 {
+        return false;
+    }
+    explicit_b64
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'~' || c == b'=')
+}
+
+/// Plan 241 §6/§7 shell-gate provenance the driver consumes: valid
+/// Router-C hex plus valid helper client DBID hex. The shell runs the
+/// driver only after both gates pass, so driver-reached plus valid env
+/// is the gate claim; anything else stops at P241-A.
+fn p241_shell_gates_claimed(router_c_hex: &str, client_dbid_hex: &str) -> bool {
+    p227_is_hex64(router_c_hex) && p227_is_hex64(client_dbid_hex)
+}
+
+/// Missing-direction discriminator for `P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P241Direction {
+    Inbound,
+    Outbound,
+    Both,
+}
+
+fn p241_missing_direction(inbound_exact: bool, outbound_exact: bool) -> P241Direction {
+    match (inbound_exact, outbound_exact) {
+        (true, false) => P241Direction::Outbound,
+        (false, true) => P241Direction::Inbound,
+        _ => P241Direction::Both,
+    }
+}
+
+/// Plan 241 terminal taxonomy (§6/§7/§9/§10/§11). A/B own the fixture
+/// gates (shell-emitted on the counted lane; the driver re-emits them
+/// only when its own re-proof fails). C owns the lookup continuation:
+/// the two new contradiction/pool terminals plus `P241-C-B-QUERY-DISPATCHED`;
+/// any other exact pre-query guard reuses the earliest supported P240
+/// terminal verbatim. D owns the retained post-query chain with P241
+/// tokens, in P225 order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P241Terminal {
+    ATransitBootstrapNotReady,
+    BOneHopClientTunnelNotBuilt(P241Direction),
+    CZeroHopGuardContradiction,
+    CZeroHopStillInPool,
+    CBQueryDispatched,
+    CEarlierGuard(P240Terminal),
+    DBLookupNotReceived,
+    DBTargetLsNotQueryAnswerable,
+    DBAnswerNotEmitted,
+    DAClientTunnelDsmNotReceived,
+    DAClientSubdbNotInstalled,
+    DLookupSucceeded,
+}
+
+impl P241Terminal {
+    fn token(self) -> String {
+        match self {
+            Self::ATransitBootstrapNotReady => "P241-A-TRANSIT-BOOTSTRAP-NOT-READY".to_owned(),
+            Self::BOneHopClientTunnelNotBuilt(direction) => {
+                let direction = match direction {
+                    P241Direction::Inbound => "inbound",
+                    P241Direction::Outbound => "outbound",
+                    P241Direction::Both => "both",
+                };
+                format!("P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction={direction}")
+            }
+            Self::CZeroHopGuardContradiction => "P241-C-ZERO-HOP-GUARD-CONTRADICTION".to_owned(),
+            Self::CZeroHopStillInPool => "P241-C-ZERO-HOP-STILL-IN-POOL".to_owned(),
+            Self::CBQueryDispatched => "P241-C-B-QUERY-DISPATCHED".to_owned(),
+            Self::CEarlierGuard(inner) => inner.token().to_owned(),
+            Self::DBLookupNotReceived => "P241-D-B-LOOKUP-NOT-RECEIVED".to_owned(),
+            Self::DBTargetLsNotQueryAnswerable => {
+                "P241-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE".to_owned()
+            }
+            Self::DBAnswerNotEmitted => "P241-D-B-ANSWER-NOT-EMITTED".to_owned(),
+            Self::DAClientTunnelDsmNotReceived => {
+                "P241-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED".to_owned()
+            }
+            Self::DAClientSubdbNotInstalled => "P241-D-A-CLIENT-SUBDB-NOT-INSTALLED".to_owned(),
+            Self::DLookupSucceeded => "P241-D-LOOKUP-SUCCEEDED".to_owned(),
+        }
+    }
+}
+
+/// Ordered Plan 241 classifier inputs. Gate facts first (§6/§7), then
+/// the authoritative-pool zero-hop fact at the lookup epoch (§9),
+/// then the exact Plan-240 lookup inputs (§9/§10/§11) by value.
+#[derive(Clone, Debug)]
+struct P241Inputs {
+    bootstrap_gate_passed: bool,
+    client_pair_built: bool,
+    missing_direction: P241Direction,
+    outbound_pool_zero_hop_present: Option<bool>,
+    lookup: P240Inputs,
+}
+
+/// Plan 241 §9 ordered classifier. Bootstrap (§6) precedes pair (§7),
+/// which precedes the authoritative-pool zero-hop check, which
+/// precedes the retained Plan-240 exact ordering. The old
+/// zero-hop-unknown guard splits on proven pool state: with a proven
+/// non-zero outbound pool it is a contradiction; with an unproven
+/// pool the retained P240 terminal is reused verbatim. The dispatched
+/// milestone maps onto the retained D chain with P241 tokens (§10).
+fn p241_classify(inputs: &P241Inputs) -> P241Terminal {
+    if !inputs.bootstrap_gate_passed {
+        return P241Terminal::ATransitBootstrapNotReady;
+    }
+    if !inputs.client_pair_built {
+        return P241Terminal::BOneHopClientTunnelNotBuilt(inputs.missing_direction);
+    }
+    if inputs.outbound_pool_zero_hop_present == Some(true) {
+        return P241Terminal::CZeroHopStillInPool;
+    }
+    match p240_classify(&inputs.lookup) {
+        P240Terminal::BZeroHopUnknownRi => {
+            if inputs.outbound_pool_zero_hop_present == Some(false) {
+                P241Terminal::CZeroHopGuardContradiction
+            } else {
+                P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi)
+            }
+        }
+        P240Terminal::BQueryDispatched => P241Terminal::CBQueryDispatched,
+        P240Terminal::BLookupNotReceived => P241Terminal::DBLookupNotReceived,
+        P240Terminal::BTargetLsNotQueryAnswerable => P241Terminal::DBTargetLsNotQueryAnswerable,
+        P240Terminal::BAnswerNotEmitted => P241Terminal::DBAnswerNotEmitted,
+        P240Terminal::AClientTunnelDsmNotReceived => P241Terminal::DAClientTunnelDsmNotReceived,
+        P240Terminal::AClientSubdbNotInstalled => P241Terminal::DAClientSubdbNotInstalled,
+        P240Terminal::LookupSucceeded => P241Terminal::DLookupSucceeded,
+        other => P241Terminal::CEarlierGuard(other),
+    }
+}
+
+fn record_p241_classification(
+    evidence_dir: &Path,
+    terminal: &P241Terminal,
+    inputs: &P241Inputs,
+    target_hash_hex: &str,
+) {
+    append_evidence(
+        evidence_dir,
+        "p241-classification",
+        &format!(
+            "{} target_hash_hex={} bootstrap_gate_passed={} client_pair_built={} missing_direction={:?} outbound_pool_zero_hop_present={:?} lookup_terminal={}",
+            terminal.token(),
+            target_hash_hex,
+            inputs.bootstrap_gate_passed,
+            inputs.client_pair_built,
+            inputs.missing_direction,
+            inputs.outbound_pool_zero_hop_present,
+            p240_classify(&inputs.lookup).token(),
+        ),
+    );
+}
+
+/// Plan 241 §11 — OCMOSJ/resume ordering may continue only after
+/// `P241-D-LOOKUP-SUCCEEDED`. Any earlier terminal (including the
+/// dispatched milestone) keeps the epoch at the lookup boundary.
+fn p241_ocmosj_resume_allowed(terminal: &P241Terminal) -> bool {
+    matches!(terminal, P241Terminal::DLookupSucceeded)
+}
+
+/// Plan 241 §12 — no P241 terminal closes M6. Direction-A success,
+/// lookup success, and every earlier boundary all leave final
+/// bidirectional/publication closure with Plan 201.
+fn p241_m6_closure_claimable(_terminal: &P241Terminal) -> bool {
+    false
+}
+
+/// Plan 241 §14 — no P241 terminal authorizes a production `src/`
+/// change. Only exact expected TunnelData at an i2pr-owned stage
+/// (proven by a successor) could ever authorize one.
+fn p241_authorizes_production_change(_terminal: &P241Terminal) -> bool {
+    false
+}
+
+fn p241_passing_inputs() -> P241Inputs {
+    P241Inputs {
+        bootstrap_gate_passed: true,
+        client_pair_built: true,
+        missing_direction: P241Direction::Both,
+        outbound_pool_zero_hop_present: Some(false),
+        lookup: P240Inputs {
+            streaming_job_correlated: true,
+            negative_cached: false,
+            b_ri_present: Some(true),
+            b_floodfill_indexed: Some(true),
+            b_banlisted_forever: Some(false),
+            b_in_totry: Some(true),
+            b_ip_close_skipped: false,
+            b_old_router_rejected: false,
+            b_no_outbound_tunnel: false,
+            b_no_ib_client_tunnel: false,
+            b_no_reply_crypto: false,
+            b_zero_hop_self: false,
+            b_zero_hop_unknown: false,
+            b_encrypted_prep_failed: false,
+            b_query_dispatched: true,
+            trace_observable: true,
+            search_failed: false,
+            b_lookup_received: true,
+            b_target_answerable: Some(true),
+            b_answered: true,
+            a_dsm_received: true,
+            a_subdb_installed: Some(true),
+        },
+    }
+}
+
+#[test]
+fn p241_streaming_helper_requires_one_hop_profile() {
+    // The counted lane requires the corrected one-hop SessionConfig:
+    // length 1, allowZeroHop false, explicit peer set, both
+    // directions. Anything else cannot continue into the lookup.
+    let one_hop = p241_parse_tunnel_profile(
+        "TUNNEL_PROFILE inbound_length=1 outbound_length=1 inbound_allow_zero_hop=false outbound_allow_zero_hop=false explicit_peers_set=true",
+    )
+    .expect("one-hop profile parses");
+    assert!(p241_tunnel_profile_is_one_hop(&one_hop));
+    // Malformed or partial profiles are Unknown, never one-hop.
+    assert!(p241_parse_tunnel_profile("TUNNEL_PROFILE inbound_length=1").is_none());
+    assert!(p241_parse_tunnel_profile("READY foo=1").is_none());
+    assert!(!p241_tunnel_profile_is_one_hop(
+        &P241TunnelProfile::default()
+    ));
+}
+
+#[test]
+fn p241_streaming_helper_zero_hop_is_forbidden() {
+    // The legacy zero-hop shape (retained raw-helper default) parses
+    // but is forbidden on the Streaming lane: it is detected, never
+    // continued.
+    let zero_hop = p241_parse_tunnel_profile(
+        "TUNNEL_PROFILE inbound_length=0 outbound_length=0 inbound_allow_zero_hop=true outbound_allow_zero_hop=true explicit_peers_set=false",
+    )
+    .expect("legacy profile parses");
+    assert!(p241_tunnel_profile_is_legacy_zero_hop(&zero_hop));
+    assert!(!p241_tunnel_profile_is_one_hop(&zero_hop));
+    // A zero-hop outbound pool at the lookup epoch stops the run even
+    // when every lookup fact passes.
+    let mut inputs = p241_passing_inputs();
+    inputs.outbound_pool_zero_hop_present = Some(true);
+    assert_eq!(p241_classify(&inputs), P241Terminal::CZeroHopStillInPool);
+}
+
+#[test]
+fn p241_raw_helper_is_unchanged() {
+    // The corrective is scoped to the Streaming helper. The raw helper
+    // keeps its Plan-227 optional explicit-peer contract, so its legacy
+    // zero-hop default shape must still parse as legacy (not one-hop),
+    // and the Streaming lane gate must reject it. The static counterpart
+    // (checker) asserts `ReferenceRawDestination.java` carries no P241
+    // surface and retains its Plan-227 contract.
+    let legacy = p241_parse_tunnel_profile(
+        "TUNNEL_PROFILE inbound_length=0 outbound_length=0 inbound_allow_zero_hop=true outbound_allow_zero_hop=true explicit_peers_set=false",
+    )
+    .expect("raw default shape parses");
+    assert!(p241_tunnel_profile_is_legacy_zero_hop(&legacy));
+    assert!(!p241_tunnel_profile_is_one_hop(&legacy));
+    // The lane config validator never accepts an empty explicit peer:
+    // the Streaming helper must carry Router C, exactly like the raw
+    // helper's explicit 5th argument.
+    assert!(!p241_explicit_peer_matches_router_c(
+        "",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    ));
+}
+
+#[test]
+fn p241_explicit_peer_must_match_router_c() {
+    // Byte-identical Router-C I2P Base64 only: another peer, a
+    // truncated value, or a non-alphabet character never matches.
+    let router_c = "W9sdK2vjF3hG7xL1mN4pQ6rT8uV0wX2yZ4aB6cD8eF0=";
+    assert!(p241_explicit_peer_matches_router_c(router_c, router_c));
+    assert!(!p241_explicit_peer_matches_router_c(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        router_c
+    ));
+    assert!(!p241_explicit_peer_matches_router_c(
+        &router_c[..40],
+        router_c
+    ));
+    assert!(!p241_explicit_peer_matches_router_c(
+        "W9sdK2vjF3hG7xL1mN4pQ6rT8uV0wX2yZ4aB6cD8eF0!",
+        router_c
+    ));
+    assert!(!p241_shell_gates_claimed(
+        "zzzz",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    ));
+    assert!(p241_shell_gates_claimed(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    ));
+}
+
+#[test]
+fn p241_bootstrap_gate_precedes_helper_start() {
+    // §6 ordering: without the transit bootstrap gate nothing later
+    // matters — even a fully dispatched lookup cannot pass. The shell
+    // never starts the corrected helper on this path.
+    let mut inputs = p241_passing_inputs();
+    inputs.bootstrap_gate_passed = false;
+    assert_eq!(
+        p241_classify(&inputs),
+        P241Terminal::ATransitBootstrapNotReady
+    );
+    assert_eq!(
+        P241Terminal::ATransitBootstrapNotReady.token(),
+        "P241-A-TRANSIT-BOOTSTRAP-NOT-READY"
+    );
+}
+
+#[test]
+fn p241_client_pair_requires_nonzero_both_directions() {
+    // §7 ordering: the pair gate precedes the lookup. The missing
+    // direction names the exact build-stage terminal.
+    let mut inbound_missing = p241_passing_inputs();
+    inbound_missing.client_pair_built = false;
+    inbound_missing.missing_direction = P241Direction::Inbound;
+    assert_eq!(
+        p241_classify(&inbound_missing),
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Inbound)
+    );
+    assert_eq!(
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Inbound).token(),
+        "P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=inbound"
+    );
+    let mut outbound_missing = p241_passing_inputs();
+    outbound_missing.client_pair_built = false;
+    outbound_missing.missing_direction = P241Direction::Outbound;
+    assert_eq!(
+        p241_classify(&outbound_missing),
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Outbound)
+    );
+    assert_eq!(
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Outbound).token(),
+        "P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=outbound"
+    );
+    let mut both_missing = p241_passing_inputs();
+    both_missing.client_pair_built = false;
+    both_missing.missing_direction = P241Direction::Both;
+    assert_eq!(
+        p241_classify(&both_missing),
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both)
+    );
+    assert_eq!(
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both).token(),
+        "P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=both"
+    );
+    // Direction derivation from exact-via-C facts.
+    assert_eq!(p241_missing_direction(true, false), P241Direction::Outbound);
+    assert_eq!(p241_missing_direction(false, true), P241Direction::Inbound);
+    assert_eq!(p241_missing_direction(false, false), P241Direction::Both);
+}
+
+#[test]
+fn p241_zero_hop_pool_cannot_continue() {
+    // §9 ordering: any zero-hop outbound remaining in the authoritative
+    // pool stops the run before the lookup chain is evaluated — even a
+    // dispatched query cannot pass through a poisoned pool.
+    let mut inputs = p241_passing_inputs();
+    inputs.outbound_pool_zero_hop_present = Some(true);
+    inputs.lookup.b_query_dispatched = true;
+    inputs.lookup.b_lookup_received = true;
+    assert_eq!(p241_classify(&inputs), P241Terminal::CZeroHopStillInPool);
+    assert_eq!(
+        P241Terminal::CZeroHopStillInPool.token(),
+        "P241-C-ZERO-HOP-STILL-IN-POOL"
+    );
+}
+
+#[test]
+fn p241_main_ri_and_client_ri_are_distinct_facts() {
+    // §8: main-NetDB B-RI and helper-client B-RI parse independently.
+    // The allowed/expected shape is main present + client absent.
+    let expected_b = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let expected_client = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    let split = p241_parse_b_ri(
+        &format!(
+            "P241-EV kind=b-ri router_b_hex={expected_b} client_dbid_hex={expected_client} observable=true router_a_main_b_ri_raw_present=true router_a_main_b_ri_valid_present=true helper_client_db_resolved=true helper_client_b_ri_raw_present=false helper_client_b_ri_valid_present=false"
+        ),
+        expected_b,
+        expected_client,
+    )
+    .expect("split shape parses");
+    assert_eq!(split.main_raw_present, Some(true));
+    assert_eq!(split.main_valid_present, Some(true));
+    assert_eq!(split.client_resolved, Some(true));
+    assert_eq!(split.client_raw_present, Some(false));
+    assert_eq!(split.client_valid_present, Some(false));
+    // The converse shape is equally expressible: facts never collapse.
+    let converse = p241_parse_b_ri(
+        &format!(
+            "P241-EV kind=b-ri router_b_hex={expected_b} client_dbid_hex={expected_client} observable=true router_a_main_b_ri_raw_present=false router_a_main_b_ri_valid_present=false helper_client_db_resolved=true helper_client_b_ri_raw_present=true helper_client_b_ri_valid_present=true"
+        ),
+        expected_b,
+        expected_client,
+    )
+    .expect("converse shape parses");
+    assert_eq!(converse.main_valid_present, Some(false));
+    assert_eq!(converse.client_valid_present, Some(true));
+    // Unobservable and mismatched rows are Unknown, never facts.
+    assert!(
+        p241_parse_b_ri(
+            &format!(
+                "P241-EV kind=b-ri router_b_hex={expected_b} client_dbid_hex={expected_client} observable=false reason=client-db-unresolved"
+            ),
+            expected_b,
+            expected_client,
+        )
+        .is_none()
+    );
+    assert!(
+        p241_parse_b_ri(
+            &format!(
+                "P241-EV kind=b-ri router_b_hex=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff client_dbid_hex={expected_client} observable=true router_a_main_b_ri_raw_present=true router_a_main_b_ri_valid_present=true helper_client_db_resolved=true helper_client_b_ri_raw_present=false helper_client_b_ri_valid_present=false"
+            ),
+            expected_b,
+            expected_client,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn p241_client_ri_absence_does_not_fail_nonzero_lookup() {
+    // §8 diagnostic note: helper-client B-RI absence is expected with a
+    // non-zero-hop client tunnel (the guard only fires for selected
+    // zero-hop tunnels). Client-RI absence is not a classifier input,
+    // so it can never fail a non-zero lookup: the passing epoch below
+    // carries an explicit absent client B-RI alongside.
+    let bri = P241Bri {
+        main_raw_present: Some(true),
+        main_valid_present: Some(true),
+        client_resolved: Some(true),
+        client_raw_present: Some(false),
+        client_valid_present: Some(false),
+    };
+    assert_eq!(bri.client_valid_present, Some(false));
+    let inputs = p241_passing_inputs();
+    assert_eq!(p241_classify(&inputs), P241Terminal::DLookupSucceeded);
+}
+
+#[test]
+fn p241_zero_hop_guard_requires_selected_zero_hop() {
+    // §9 split: the old zero-hop-unknown guard with a proven non-zero
+    // outbound pool is a contradiction. With an unproven pool the
+    // retained P240 terminal is reused verbatim (never inferred).
+    let mut contradiction = p241_passing_inputs();
+    contradiction.lookup.b_zero_hop_unknown = true;
+    contradiction.lookup.b_query_dispatched = false;
+    contradiction.outbound_pool_zero_hop_present = Some(false);
+    assert_eq!(
+        p241_classify(&contradiction),
+        P241Terminal::CZeroHopGuardContradiction
+    );
+    assert_eq!(
+        P241Terminal::CZeroHopGuardContradiction.token(),
+        "P241-C-ZERO-HOP-GUARD-CONTRADICTION"
+    );
+    let mut retained = p241_passing_inputs();
+    retained.lookup.b_zero_hop_unknown = true;
+    retained.lookup.b_query_dispatched = false;
+    retained.outbound_pool_zero_hop_present = None;
+    assert_eq!(
+        p241_classify(&retained),
+        P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi)
+    );
+    assert_eq!(
+        P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi).token(),
+        "P240-C-B-ZERO-HOP-UNKNOWN-RI"
+    );
+}
+
+#[test]
+fn p241_b_query_requires_exact_streaming_job() {
+    // §9: dispatch without exact streaming-job correlation is not a
+    // query — stale destination-lane jobs can never satisfy it.
+    let mut inputs = p241_passing_inputs();
+    inputs.lookup.streaming_job_correlated = false;
+    assert_eq!(
+        p241_classify(&inputs),
+        P241Terminal::CEarlierGuard(P240Terminal::StreamingLookupJobNotCorrelated)
+    );
+    assert_eq!(
+        P241Terminal::CEarlierGuard(P240Terminal::StreamingLookupJobNotCorrelated).token(),
+        "P240-A-STREAMING-LOOKUP-JOB-NOT-CORRELATED"
+    );
+    // Correlated dispatch reaches the D chain, never an earlier guard.
+    let dispatched = p241_passing_inputs();
+    assert_eq!(p241_classify(&dispatched), P241Terminal::DLookupSucceeded);
+    assert_eq!(
+        P241Terminal::CBQueryDispatched.token(),
+        "P241-C-B-QUERY-DISPATCHED"
+    );
+}
+
+#[test]
+fn p241_b_receipt_requires_query() {
+    // §10 order: dispatched but never received stops at the first D
+    // stage; later stages are never inferred from dispatch alone.
+    let mut inputs = p241_passing_inputs();
+    inputs.lookup.b_lookup_received = false;
+    assert_eq!(p241_classify(&inputs), P241Terminal::DBLookupNotReceived);
+    assert_eq!(
+        P241Terminal::DBLookupNotReceived.token(),
+        "P241-D-B-LOOKUP-NOT-RECEIVED"
+    );
+}
+
+#[test]
+fn p241_client_subdb_install_requires_a_dsm() {
+    // §10 order: a client-subDB presence claim without an inbound
+    // client-tunnel DSM is rejected at the DSM stage; a DSM without
+    // installation stops at the subDB stage.
+    let mut no_dsm = p241_passing_inputs();
+    no_dsm.lookup.a_dsm_received = false;
+    no_dsm.lookup.a_subdb_installed = Some(true);
+    assert_eq!(
+        p241_classify(&no_dsm),
+        P241Terminal::DAClientTunnelDsmNotReceived
+    );
+    assert_eq!(
+        P241Terminal::DAClientTunnelDsmNotReceived.token(),
+        "P241-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED"
+    );
+    let mut no_install = p241_passing_inputs();
+    no_install.lookup.a_dsm_received = true;
+    no_install.lookup.a_subdb_installed = Some(false);
+    assert_eq!(
+        p241_classify(&no_install),
+        P241Terminal::DAClientSubdbNotInstalled
+    );
+    assert_eq!(
+        P241Terminal::DAClientSubdbNotInstalled.token(),
+        "P241-D-A-CLIENT-SUBDB-NOT-INSTALLED"
+    );
+}
+
+#[test]
+fn p241_ocmosj_resume_requires_lookup_success() {
+    // §11: only P241-D-LOOKUP-SUCCEEDED resumes the Plan-239 ordering.
+    // The dispatched milestone, every D boundary, and every earlier
+    // terminal all keep the epoch at the lookup boundary.
+    assert!(p241_ocmosj_resume_allowed(&P241Terminal::DLookupSucceeded));
+    for terminal in [
+        P241Terminal::ATransitBootstrapNotReady,
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both),
+        P241Terminal::CZeroHopGuardContradiction,
+        P241Terminal::CZeroHopStillInPool,
+        P241Terminal::CBQueryDispatched,
+        P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P241Terminal::DBLookupNotReceived,
+        P241Terminal::DBTargetLsNotQueryAnswerable,
+        P241Terminal::DBAnswerNotEmitted,
+        P241Terminal::DAClientTunnelDsmNotReceived,
+        P241Terminal::DAClientSubdbNotInstalled,
+    ] {
+        assert!(
+            !p241_ocmosj_resume_allowed(&terminal),
+            "resume must stay closed at {}",
+            terminal.token()
+        );
+    }
+    assert_eq!(
+        P241Terminal::DBTargetLsNotQueryAnswerable.token(),
+        "P241-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE"
+    );
+    assert_eq!(
+        P241Terminal::DBAnswerNotEmitted.token(),
+        "P241-D-B-ANSWER-NOT-EMITTED"
+    );
+    assert_eq!(
+        P241Terminal::DLookupSucceeded.token(),
+        "P241-D-LOOKUP-SUCCEEDED"
+    );
+}
+
+#[test]
+fn p241_i2pr_terminal_requires_expected_tunneldata() {
+    // §11/§14: no production-i2pr defect is authorized before exact
+    // expected TunnelData arrives at i2pr. The shared fail-closed gate
+    // stays green for diagnostics, red for production change without
+    // owned-defect proof.
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+    // No P241 terminal authorizes production change on its own.
+    for terminal in [
+        P241Terminal::ATransitBootstrapNotReady,
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both),
+        P241Terminal::CZeroHopGuardContradiction,
+        P241Terminal::CZeroHopStillInPool,
+        P241Terminal::CBQueryDispatched,
+        P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P241Terminal::DBLookupNotReceived,
+        P241Terminal::DBTargetLsNotQueryAnswerable,
+        P241Terminal::DBAnswerNotEmitted,
+        P241Terminal::DAClientTunnelDsmNotReceived,
+        P241Terminal::DAClientSubdbNotInstalled,
+        P241Terminal::DLookupSucceeded,
+    ] {
+        assert!(
+            !p241_authorizes_production_change(&terminal),
+            "no production change at {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p241_direction_a_pass_does_not_close_m6() {
+    // §12: even full lookup success (the prerequisite for any
+    // Direction-A continuation) never closes M6. Final
+    // bidirectional/publication closure stays with Plan 201, and the
+    // Plan-200/201 client-LS2 lifecycle rows are untouched by P241.
+    for terminal in [
+        P241Terminal::ATransitBootstrapNotReady,
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both),
+        P241Terminal::CZeroHopGuardContradiction,
+        P241Terminal::CZeroHopStillInPool,
+        P241Terminal::CBQueryDispatched,
+        P241Terminal::CEarlierGuard(P240Terminal::StreamingLookupJobNotCorrelated),
+        P241Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P241Terminal::DBLookupNotReceived,
+        P241Terminal::DBTargetLsNotQueryAnswerable,
+        P241Terminal::DBAnswerNotEmitted,
+        P241Terminal::DAClientTunnelDsmNotReceived,
+        P241Terminal::DAClientSubdbNotInstalled,
+        P241Terminal::DLookupSucceeded,
+    ] {
+        assert!(
+            !p241_m6_closure_claimable(&terminal),
+            "M6 stays open at {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p241_no_production_change() {
+    // Same fail-closed production gate as Plans 237/238/239/240: Plan
+    // 241 is diagnostic-only (test-only helpers, probes, shell, and
+    // driver evidence). Only exact expected TunnelData at an i2pr-owned
+    // stage, proven by a successor, could ever authorize production
+    // change.
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+}
+
+#[test]
+fn p241_terminal_tokens_are_canonical() {
+    // Locks the exact Plan 241 §6/§7/§9/§10/§11 terminal vocabulary.
+    // Pre-query guards other than the zero-hop split reuse the exact
+    // Plan-240 tokens verbatim (delegation, not duplication).
+    assert_eq!(
+        P241Terminal::ATransitBootstrapNotReady.token(),
+        "P241-A-TRANSIT-BOOTSTRAP-NOT-READY"
+    );
+    assert_eq!(
+        P241Terminal::BOneHopClientTunnelNotBuilt(P241Direction::Both).token(),
+        "P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=both"
+    );
+    assert_eq!(
+        P241Terminal::CZeroHopGuardContradiction.token(),
+        "P241-C-ZERO-HOP-GUARD-CONTRADICTION"
+    );
+    assert_eq!(
+        P241Terminal::CZeroHopStillInPool.token(),
+        "P241-C-ZERO-HOP-STILL-IN-POOL"
+    );
+    assert_eq!(
+        P241Terminal::CBQueryDispatched.token(),
+        "P241-C-B-QUERY-DISPATCHED"
+    );
+    assert_eq!(
+        P241Terminal::CEarlierGuard(P240Terminal::BNoOutboundLookupTunnel).token(),
+        "P240-C-B-NO-OUTBOUND-LOOKUP-TUNNEL"
+    );
+    assert_eq!(
+        P241Terminal::DBLookupNotReceived.token(),
+        "P241-D-B-LOOKUP-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P241Terminal::DBTargetLsNotQueryAnswerable.token(),
+        "P241-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE"
+    );
+    assert_eq!(
+        P241Terminal::DBAnswerNotEmitted.token(),
+        "P241-D-B-ANSWER-NOT-EMITTED"
+    );
+    assert_eq!(
+        P241Terminal::DAClientTunnelDsmNotReceived.token(),
+        "P241-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P241Terminal::DAClientSubdbNotInstalled.token(),
+        "P241-D-A-CLIENT-SUBDB-NOT-INSTALLED"
+    );
+    assert_eq!(
+        P241Terminal::DLookupSucceeded.token(),
+        "P241-D-LOOKUP-SUCCEEDED"
     );
 }

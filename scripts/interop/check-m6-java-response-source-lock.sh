@@ -24,6 +24,8 @@ ROUTER_DISPATCHER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/TunnelDi
 ROUTER_ISJ="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/IterativeSearchJob.java"
 ROUTER_FPS="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/FloodfillPeerSelector.java"
 ROUTER_STOREJOB="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/StoreJob.java"
+ROUTER_TUNNEL_POOL_MANAGER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPoolManager.java"
+ROUTER_TUNNEL_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPool.java"
 
 [[ -d "${SOURCE_ROOT}/.git" ]] || { echo "Java source is not a Git checkout" >&2; exit 1; }
 [[ "$(git -C "${SOURCE_ROOT}" rev-parse HEAD)" == "${EXPECTED_PIN}" ]] || {
@@ -48,7 +50,13 @@ for file in \
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" <<'PY'
+for file in \
+   "${ROUTER_TUNNEL_POOL_MANAGER}" \
+   "${ROUTER_TUNNEL_POOL}"; do
+  [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
+done
+
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -63,6 +71,8 @@ router_dispatcher = Path(sys.argv[8]).read_text(encoding="utf-8")
 router_isj = Path(sys.argv[9]).read_text(encoding="utf-8")
 router_fps = Path(sys.argv[10]).read_text(encoding="utf-8")
 router_storejob = Path(sys.argv[11]).read_text(encoding="utf-8")
+router_tunnel_pool_manager = Path(sys.argv[12]).read_text(encoding="utf-8")
+router_tunnel_pool = Path(sys.argv[13]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -185,6 +195,29 @@ required = {
     "FPS.bad_db": (router_fps, "Bad (DB): "),
     "FPS.bad_no_hist": (router_fps, "Bad (no hist): "),
     "FPS.bad_no_prof": (router_fps, "Bad (no prof): "),
+    # Plan 241 §4/§15 — exact-pinned one-hop client-tunnel selection
+    # the P241 lane corrects into. `selectOutboundTunnel(destination,
+    # closestTo)` serves the destination client pool when one exists
+    # (no exploratory fallback); `selectTunnel(closestTo)` sorts with
+    # `TunnelInfoComparator(target, avoidZeroHop)`, which puts
+    # zero-hop tunnels last when `allowZeroHop=false`. The
+    # `sendQuery()` split reads main-NetDB RI for send preparation
+    # but guards on the client-facade lookup for selected zero-hop
+    # tunnels (`outTunnel.getLength() <= 1`), then dispatches via
+    # `dispatchOutbound(outMsg, outTunnel.getSendTunnelId(0), peer)`.
+    # A source upgrade that renames any of these must fail the lane
+    # before an external attempt.
+    "TunnelPoolManager.select_outbound_tunnel": (router_tunnel_pool_manager, "public TunnelInfo selectOutboundTunnel(Hash destination, Hash closestTo)"),
+    "TunnelPoolManager.client_outbound_pool": (router_tunnel_pool_manager, "_clientOutboundPools.get(destination)"),
+    "TunnelPoolManager.pool_select_tunnel": (router_tunnel_pool_manager, "return pool.selectTunnel(closestTo);"),
+    "TunnelPool.select_tunnel_closest": (router_tunnel_pool, "TunnelInfo selectTunnel(Hash closestTo)"),
+    "TunnelPool.avoid_zero_hop": (router_tunnel_pool, "boolean avoidZeroHop = !_settings.getAllowZeroHop()"),
+    "TunnelPool.comparator_order": (router_tunnel_pool, "new TunnelInfoComparator(closestTo, avoidZeroHop)"),
+    "TunnelPool.comparator_zero_last": (router_tunnel_pool, "if true, zero-hop tunnels will be put last"),
+    "ISJ.main_netdb_ri_lookup": (router_isj, "RouterInfo ri = ctx.netDb().lookupRouterInfoLocally(peer);"),
+    "ISJ.client_facade_lookup": (router_isj, "_facade.lookupLocallyWithoutValidation(peer)"),
+    "ISJ.zero_hop_length_guard": (router_isj, "outTunnel.getLength() <= 1"),
+    "ISJ.dispatch_outbound": (router_isj, "dispatchOutbound(outMsg, outTunnel.getSendTunnelId(0), peer)"),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -261,6 +294,13 @@ output.write_text(
         "java_isj_dispatch_proof\tISJ try <n> for LS <target> to <peer> | Encrypted DLM for <target> to <peer> (query-dispatch preparation vs authoritative dispatch)\n",
         "java_fps_capability_source\tgetPeersByCapability(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL) | isBanlistedForever(h) (selector candidate source + forever-banlist exclusion)\n",
         "java_fps_classification\tSame /16, family, or port | Old | Bad country | Slow | Bad (new) | Good | OK | Bad (DB) | Bad (no hist) | Bad (no prof) (FloodfillPeerSelector ranking family)\n",
+        # Plan 241 §4/§15 — pinned one-hop client-tunnel selection the
+        # P241 lane corrects into. Retained Plan-236/237/238/239/240
+        # rows above stay frozen; these rows are additive. Source facts
+        # only; execution raw log lines never enter durable evidence.
+        "java_tunnelpool_selection\tselectOutboundTunnel(destination, closestTo) | _clientOutboundPools.get(destination) | pool.selectTunnel(closestTo) (destination client pool served when present, no exploratory fallback)\n",
+        "java_tunnelpool_zero_hop_last\tselectTunnel(Hash closestTo) | avoidZeroHop = !getAllowZeroHop() | TunnelInfoComparator(closestTo, avoidZeroHop) zero-hop-last (genuine non-zero-hop client tunnel bypasses the ISJ guard)\n",
+        "java_isj_sendquery_split\tctx.netDb().lookupRouterInfoLocally(peer) (main-NetDB send preparation) vs _facade.lookupLocallyWithoutValidation(peer) (client-facade zero-hop guard) | outTunnel.getLength() <= 1 | dispatchOutbound(outMsg, outTunnel.getSendTunnelId(0), peer) (authoritative dispatch)\n",
     ]),
     encoding="utf-8",
 )

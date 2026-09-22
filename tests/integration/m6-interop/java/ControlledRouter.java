@@ -249,6 +249,14 @@
 //   - every P240 response is one bounded `P240-EV ...` line with
 //     booleans, buckets, and tier only; no peer paths, keys, tags,
 //     payloads, destinations, hashes, queue contents, or raw log text.
+// Plan 241 diagnostic contract (Streaming one-hop lane Router-B RI
+// visibility only, read-only, no state mutation):
+//   - `P241-B-RI <router-b-hex> <client-dbid-hex>` returns the bounded
+//     main-vs-helper-client B-RI visibility snapshot: main raw/valid
+//     presence plus helper-client raw/valid presence with explicit
+//     client-facade resolution state (`P241-EV kind=b-ri ...` with
+//     `observable=false reason=<token>` when unobservable, never
+//     zero-as-fact, never raw state, never a client-DB store);
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -299,6 +307,7 @@ import net.i2p.router.networkdb.kademlia.P231Probe;
 import net.i2p.router.networkdb.kademlia.P238Probe;
 import net.i2p.router.networkdb.kademlia.P239Probe;
 import net.i2p.router.networkdb.kademlia.P240Probe;
+import net.i2p.router.networkdb.kademlia.P241Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -888,6 +897,11 @@ public final class ControlledRouter {
                             return p240Error("missing-hash-argument");
                         }
                         return p240RouterB(parts[1]);
+                    case "P241-B-RI":
+                        if (parts.length < 3) {
+                            return p241Error("missing-hash-arguments");
+                        }
+                        return p241Bri(parts[1], parts[2]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1230,6 +1244,42 @@ public final class ControlledRouter {
 
         private String p240Error(String reason) {
             return "P240-ERROR " + reason;
+        }
+
+        private String p241Error(String reason) {
+            return "P241-ERROR " + reason;
+        }
+
+        /**
+         * Plan 241 §8 — read-only Router-B RI visibility snapshot across
+         * the main NetDB and the helper client NetDB for one Router-B
+         * hash and one helper client DBID. Observation only via P241Probe;
+         * local reads only, never stores B RI into the helper client DB,
+         * never mutates NetDB/profile/tunnel/banlist/queue/stat state.
+         */
+        private String p241Bri(String routerBHex, String clientDbidHex) {
+            Hash routerB = p220ParseHexHash(routerBHex);
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            if (routerB == null || clientDbid == null) {
+                return p241Error("invalid-hex-hash");
+            }
+            P241Probe.Bri result =
+                P241Probe.snapshotBri(context(), routerB, clientDbid);
+            if (result.error != null) {
+                return "P241-EV kind=b-ri"
+                    + " router_b_hex=" + routerBHex
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P241-EV kind=b-ri"
+                + " router_b_hex=" + routerBHex
+                + " client_dbid_hex=" + clientDbidHex
+                + " observable=true"
+                + " router_a_main_b_ri_raw_present=" + result.mainRawPresent
+                + " router_a_main_b_ri_valid_present=" + result.mainValidPresent
+                + " helper_client_db_resolved=" + result.clientResolved
+                + " helper_client_b_ri_raw_present=" + result.clientRawPresent
+                + " helper_client_b_ri_valid_present=" + result.clientValidPresent;
         }
 
         /**

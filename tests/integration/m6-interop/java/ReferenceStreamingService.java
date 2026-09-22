@@ -89,6 +89,15 @@ public final class ReferenceStreamingService {
     private static final String JAVA_I2PSESSION_SEND_METHOD =
         "boolean_sendMessage_SendMessageOptions";
     private static volatile boolean accepting;
+    // Plan 241 §7 — active SessionConfig tunnel profile facts. Bounded
+    // small integers and booleans only; never the explicit-peer value,
+    // keys, tags, or payloads. Lets the lane prove the corrected
+    // one-hop settings are active before the client-pair gate.
+    private static volatile String PROFILE_INBOUND_LENGTH = "unknown";
+    private static volatile String PROFILE_OUTBOUND_LENGTH = "unknown";
+    private static volatile String PROFILE_INBOUND_ALLOW_ZERO_HOP = "unknown";
+    private static volatile String PROFILE_OUTBOUND_ALLOW_ZERO_HOP = "unknown";
+    private static volatile boolean PROFILE_EXPLICIT_PEERS_SET = false;
 
     // Plan 237 §4–§5 — stock helper-JVM response observation. All facts
     // are bounded public counts from the exact-pinned implementation:
@@ -214,20 +223,86 @@ public final class ReferenceStreamingService {
         return hex(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
+    private static String explicitPeerB64OrNull(String explicitArg) {        // Plan 241 WP — Router-C explicit peer for the genuine one-hop
+        // Streaming client tunnel. Mirrors the already-proven optional
+        // explicit-peer contract in ReferenceRawDestination: scoped
+        // strictly to this Streaming client's inbound/outbound
+        // SessionConfig; never a router-global property. Validated with
+        // Java's own I2P Base64 decoder via `new Hash(decoded)` shape
+        // (exact 32 bytes); any mismatch is a hard argument error.
+        String candidate = null;
+        if (explicitArg != null && !explicitArg.trim().isEmpty()) {
+            candidate = explicitArg.trim();
+        } else {
+            String env = System.getenv("I2PR_M6_JAVA_EXPLICIT_PEER_B64");
+            if (env != null && !env.trim().isEmpty()) {
+                candidate = env.trim();
+            }
+        }
+        if (candidate == null) {
+            return null;
+        }
+        if (candidate.length() != 44 && candidate.length() != 43) {
+            throw new IllegalArgumentException("explicit peer must be 43-44 char I2P Base64");
+        }
+        for (int i = 0; i < candidate.length(); i++) {
+            char c = candidate.charAt(i);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                || (c >= '0' && c <= '9') || c == '-' || c == '~' || c == '=';
+            if (!ok) {
+                throw new IllegalArgumentException("explicit peer has non-I2P-Base64 character");
+            }
+        }
+        try {
+            byte[] raw = net.i2p.data.Base64.decode(candidate);
+            if (raw == null || raw.length != 32) {
+                throw new IllegalArgumentException("explicit peer must decode to 32 bytes");
+            }
+            new net.i2p.data.Hash(raw);
+        } catch (RuntimeException re) {
+            throw new IllegalArgumentException("explicit peer is not a valid RouterHash");
+        }
+        return candidate;
+    }
+
     private static Properties options(String host, int port) {
+        return options(host, port, null);
+    }
+
+    private static Properties options(String host, int port, String explicitPeerB64) {
         Properties options = new Properties();
         options.setProperty("i2cp.tcp.host", host);
         options.setProperty("i2cp.tcp.port", Integer.toString(port));
-        // Match the public raw destination helper and retain the existing
-        // bounded zero-hop client profile after the RouterInfo bootstrap.
-        options.setProperty("inbound.length", "0");
-        options.setProperty("outbound.length", "0");
-        options.setProperty("inbound.quantity", "1");
-        options.setProperty("outbound.quantity", "1");
-        options.setProperty("inbound.backupQuantity", "0");
-        options.setProperty("outbound.backupQuantity", "0");
-        options.setProperty("inbound.allowZeroHop", "true");
-        options.setProperty("outbound.allowZeroHop", "true");
+        if (explicitPeerB64 != null) {
+            // Plan 241 WP — genuine stock-Java one-hop Streaming client
+            // tunnel through controlled Router C. Ordinary public I2CP
+            // SessionConfig options only; no router-global explicitPeers,
+            // no profile/tier mutation, no NetDB injection, no VMComm.
+            // Lease-set type, encryption type, publication flags, message
+            // reliability, Destination generation, Streaming behavior, and
+            // response scheduling are unchanged from the zero-hop profile.
+            options.setProperty("inbound.length", "1");
+            options.setProperty("outbound.length", "1");
+            options.setProperty("inbound.quantity", "1");
+            options.setProperty("outbound.quantity", "1");
+            options.setProperty("inbound.backupQuantity", "0");
+            options.setProperty("outbound.backupQuantity", "0");
+            options.setProperty("inbound.allowZeroHop", "false");
+            options.setProperty("outbound.allowZeroHop", "false");
+            options.setProperty("inbound.explicitPeers", explicitPeerB64);
+            options.setProperty("outbound.explicitPeers", explicitPeerB64);
+        } else {
+            // Match the public raw destination helper and retain the existing
+            // bounded zero-hop client profile after the RouterInfo bootstrap.
+            options.setProperty("inbound.length", "0");
+            options.setProperty("outbound.length", "0");
+            options.setProperty("inbound.quantity", "1");
+            options.setProperty("outbound.quantity", "1");
+            options.setProperty("inbound.backupQuantity", "0");
+            options.setProperty("outbound.backupQuantity", "0");
+            options.setProperty("inbound.allowZeroHop", "true");
+            options.setProperty("outbound.allowZeroHop", "true");
+        }
         options.setProperty("i2cp.leaseSetType", "3");
         options.setProperty("i2cp.leaseSetEncType", "4");
         options.setProperty("i2cp.dontPublishLeaseSet", "false");
@@ -274,16 +349,23 @@ public final class ReferenceStreamingService {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 4) throw new IllegalArgumentException("usage: host i2cpPort controlPort keyFile");
+        if (args.length != 4 && args.length != 5) throw new IllegalArgumentException("usage: host i2cpPort controlPort keyFile [explicitPeerB64]");
         String host = args[0];
         int i2cpPort = Integer.parseInt(args[1]);
         int controlPort = Integer.parseInt(args[2]);
         File key = new File(args[3]);
+        String explicitPeerB64 = explicitPeerB64OrNull(args.length >= 5 ? args[4] : null);
         I2PClient client = I2PClientFactory.createClient();
         createDestination(client, key);
+        Properties sessionOptions = options(host, i2cpPort, explicitPeerB64);
+        PROFILE_INBOUND_LENGTH = sessionOptions.getProperty("inbound.length", "unknown");
+        PROFILE_OUTBOUND_LENGTH = sessionOptions.getProperty("outbound.length", "unknown");
+        PROFILE_INBOUND_ALLOW_ZERO_HOP = sessionOptions.getProperty("inbound.allowZeroHop", "unknown");
+        PROFILE_OUTBOUND_ALLOW_ZERO_HOP = sessionOptions.getProperty("outbound.allowZeroHop", "unknown");
+        PROFILE_EXPLICIT_PEERS_SET = explicitPeerB64 != null;
         I2PSocketManager manager;
         try (FileInputStream input = new FileInputStream(key)) {
-            manager = I2PSocketManagerFactory.createDisconnectedManager(input, host, i2cpPort, options(host, i2cpPort));
+            manager = I2PSocketManagerFactory.createDisconnectedManager(input, host, i2cpPort, sessionOptions);
         }
         I2PSession session = manager.getSession();
         session.connect();
@@ -315,8 +397,24 @@ public final class ReferenceStreamingService {
                     String[] values = line.split(" ");
                     switch (values[0]) {
                         case "PING": output.println("PONG"); break;
-                        case "REPORT_STATUS": {
-                            // Plan 200 §A.2 — explicit, bounded status
+                        case "REPORT_TUNNEL_PROFILE": {
+                            // Plan 241 §7 — active SessionConfig tunnel
+                            // profile facts. Bounded lengths/booleans only;
+                            // never the explicit-peer value, keys, tags, or
+                            // payloads. The lane requires the one-hop
+                            // profile (length 1, allowZeroHop false,
+                            // explicit peer set) before the client-pair
+                            // gate; a zero-hop report on the counted lane
+                            // is a deterministic fixture defect, never a
+                            // counted build terminal.
+                            output.println("TUNNEL_PROFILE inbound_length=" + PROFILE_INBOUND_LENGTH
+                                + " outbound_length=" + PROFILE_OUTBOUND_LENGTH
+                                + " inbound_allow_zero_hop=" + PROFILE_INBOUND_ALLOW_ZERO_HOP
+                                + " outbound_allow_zero_hop=" + PROFILE_OUTBOUND_ALLOW_ZERO_HOP
+                                + " explicit_peers_set=" + PROFILE_EXPLICIT_PEERS_SET);
+                            break;
+                        }
+                        case "REPORT_STATUS": {                            // Plan 200 §A.2 — explicit, bounded status
                             // report. Asserts ONLY helper-local facts;
                             // never asserts publication or network
                             // visibility (those are external questions
