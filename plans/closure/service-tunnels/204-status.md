@@ -1,3 +1,24 @@
+# Current dependency amendment — Plan 236 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 235 closed at the Java socket-surface-ready / no-i2pr-inbound boundary.
+Plan 236 is now registered-ready to determine whether stock Java actually
+constructs/queues/submits the Streaming response and, only after that is
+proven, whether Router A and the controlled tunnel path deliver it to i2pr.
+
+Plan 204 therefore remains blocked until the independent M6 Java second-family
+closure gates are satisfied.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan236
+plan_235 = passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound
+plan_236 = registered-ready-m6-java-streaming-response-emission-and-i2cp-send-attribution
+milestone10_final_acceptance = closed
+next_executable_plan = 236-m6-java-streaming-response-emission-and-i2cp-send-attribution
+```
+
 # Current dependency amendment — Plan 235 closed; M6 dependency remains unresolved
 
 Plan 204 remains convergence-only. M10 product/application authority through
