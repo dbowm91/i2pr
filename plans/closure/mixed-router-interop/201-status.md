@@ -1,3 +1,26 @@
+# Current dependency amendment — Plan 237 registered for real stock-Java response observation
+
+Plan 236 remains closed at
+`passed-m6-java-streaming-response-emission-observability-gap`.
+Its exact source lock is retained, but its response-stage booleans were literal
+Unknown placeholders rather than executed observations.
+
+Plan 237 is now dependency-ready. It must replace those placeholders with
+real isolated-epoch stock Java observations, preferring the pinned
+`SchedulerReceived` / ACK DEBUG events and the public
+`stream.con.sendMessageSize` `RateStat.getLifetimeEventCount()` delta.
+Router-A attribution may resume only after `I2PSession.sendMessage` return is
+proven.
+
+Plan-200/201 publication and final-closure rows remain fail-closed.
+
+```text
+plan_201 = blocked-pending-plan237-stock-response-observability-corrective
+plan_236 = passed-m6-java-streaming-response-emission-observability-gap
+plan_237 = registered-ready-m6-java-streaming-stock-response-observability-corrective
+next_executable_plan = 237-m6-java-streaming-stock-response-observability-corrective
+```
+
 # Current dependency amendment — Plan 236 closed at exact Java response-emission observability gap
 
 Plan 236 is now closed at
