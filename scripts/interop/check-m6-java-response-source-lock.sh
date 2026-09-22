@@ -21,6 +21,9 @@ ROUTER_CLIENT="${SOURCE_ROOT}/router/java/src/net/i2p/router/client/ClientMessag
 ROUTER_OCMOSJ="${SOURCE_ROOT}/router/java/src/net/i2p/router/message/OutboundClientMessageOneShotJob.java"
 ROUTER_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/ClientMessagePool.java"
 ROUTER_DISPATCHER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/TunnelDispatcher.java"
+ROUTER_ISJ="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/IterativeSearchJob.java"
+ROUTER_FPS="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/FloodfillPeerSelector.java"
+ROUTER_STOREJOB="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/StoreJob.java"
 
 [[ -d "${SOURCE_ROOT}/.git" ]] || { echo "Java source is not a Git checkout" >&2; exit 1; }
 [[ "$(git -C "${SOURCE_ROOT}" rev-parse HEAD)" == "${EXPECTED_PIN}" ]] || {
@@ -35,14 +38,17 @@ for file in \
   "${STREAMING_ROOT}/SchedulerImpl.java" \
   "${STREAMING_ROOT}/PacketQueue.java" \
   "${I2CP_SESSION}" \
-  "${ROUTER_CLIENT}" \
-  "${ROUTER_OCMOSJ}" \
-  "${ROUTER_POOL}" \
-  "${ROUTER_DISPATCHER}"; do
+   "${ROUTER_CLIENT}" \
+   "${ROUTER_OCMOSJ}" \
+   "${ROUTER_POOL}" \
+   "${ROUTER_DISPATCHER}" \
+   "${ROUTER_ISJ}" \
+   "${ROUTER_FPS}" \
+   "${ROUTER_STOREJOB}"; do
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" <<'PY'
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -54,6 +60,9 @@ router_client = Path(sys.argv[5]).read_text(encoding="utf-8")
 router_ocmosj = Path(sys.argv[6]).read_text(encoding="utf-8")
 router_pool = Path(sys.argv[7]).read_text(encoding="utf-8")
 router_dispatcher = Path(sys.argv[8]).read_text(encoding="utf-8")
+router_isj = Path(sys.argv[9]).read_text(encoding="utf-8")
+router_fps = Path(sys.argv[10]).read_text(encoding="utf-8")
+router_storejob = Path(sys.argv[11]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -139,6 +148,43 @@ required = {
     "OCMOSJ.only_rap_ls_log": (router_ocmosj, "Only have RAP LS for "),
     "OCMOSJ.lease_send_failure_log": (router_ocmosj, "Got the lease but can\'t send to it, failure code "),
     "OCMOSJ.no_leases_log": (router_ocmosj, "No leases found from: "),
+    # Plan 240 §4/§14 — exact-pinned streaming-epoch lookup sequence
+    # the P240 observer attributes. `runJob()` checks negative cache
+    # before selection, selects floodfill peers through the main DB
+    # selector, removes self/target, registers the job, logs the
+    # source-locked `New ISJ ... toTry:` row, then `retry()` picks in
+    # routing-key order with IP-close diversity before `sendQuery()`
+    # applies the pre-dispatch guards (old-router, outbound/client
+    # tunnels, reply-encryption, zero-hop, encrypted-prep) and only
+    # then emits `ISJ try ...` / `Encrypted DLM for ...`. A source
+    # upgrade that renames any of these must fail the lane before an
+    # external attempt.
+    "ISJ.negative_cache_check": (router_isj, "isNegativeCached(_key)"),
+    "ISJ.negative_cached_log": (router_isj, "Negative cached, not searching: "),
+    "ISJ.select_floodfill": (router_isj, "selectFloodfillParticipants(_rkey, _totalSearchLimit + EXTRA_PEERS, ks)"),
+    "ISJ.new_isj_totry": (router_isj, "New ISJ for "),
+    "ISJ.new_isj_totry_list": (router_isj, "toTry: "),
+    "ISJ.ip_close_skip": (router_isj, "Skipping query w/ router too close to others "),
+    "ISJ.should_store_to": (router_isj, "StoreJob.shouldStoreTo(ri)"),
+    "ISJ.old_router_log": (router_isj, "not sending query to old router: "),
+    "ISJ.no_ib_client_tunnel_log": (router_isj, " failed, no IB client tunnel to receive reply"),
+    "ISJ.no_ratchet_elg_log": (router_isj, " skipped, no ratchet/elg support"),
+    "ISJ.zero_hop_self_log": (router_isj, "not doing zero-hop self-lookup of "),
+    "ISJ.zero_hop_unknown_log": (router_isj, "not doing zero-hop lookup to unknown "),
+    "ISJ.try_log": (router_isj, "ISJ try "),
+    "ISJ.encrypted_dlm": (router_isj, "Encrypted DLM for "),
+    "FPS.capability_source": (router_fps, "getPeersByCapability(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL)"),
+    "FPS.banlist_forever": (router_fps, "isBanlistedForever(h)"),
+    "FPS.same_16": (router_fps, "Same /16, family, or port: "),
+    "FPS.old": (router_fps, "Old: "),
+    "FPS.bad_country": (router_fps, "Bad country: "),
+    "FPS.slow": (router_fps, "Slow: "),
+    "FPS.bad_new": (router_fps, "Bad (new): "),
+    "FPS.good": (router_fps, "Good: "),
+    "FPS.ok": (router_fps, "OK: "),
+    "FPS.bad_db": (router_fps, "Bad (DB): "),
+    "FPS.bad_no_hist": (router_fps, "Bad (no hist): "),
+    "FPS.bad_no_prof": (router_fps, "Bad (no prof): "),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -203,6 +249,18 @@ output.write_text(
         "java_dispatch_outbound_call\ttunnelDispatcher().dispatchOutbound (DispatchJob.runJob inline, before dispatchTime/dispatchSendTime)\n",
         "java_local_ls_rejection_logs\tLookup locally didn't find the leaseSet for <dest> | Only have RAP LS for <dest> (getNextLease local-LS rejection)\n",
         "java_lease_send_failure_logs\tGot the lease but can't send to it, failure code <rc> | No leases found from: <ls> (getNextLease bad/unsupported/no-lease paths)\n",
+        # Plan 240 §4/§14 — pinned streaming-epoch lookup sequence the
+        # P240-ROUTER-B + P240 exact-job observer attributes. Retained
+        # Plan-236/237/238/239 rows above stay frozen; these rows are
+        # additive. Log signals are source facts only; execution raw
+        # log lines never enter durable evidence.
+        "java_isj_negative_cache\tisNegativeCached(_key) | Negative cached, not searching: <key> (IterativeSearchJob.runJob pre-selection guard)\n",
+        "java_isj_selection\tselectFloodfillParticipants(_rkey, _totalSearchLimit + EXTRA_PEERS, ks) | New ISJ for LS <target> ... toTry: [...] (exact target-job candidate set)\n",
+        "java_isj_retry_guards\tSkipping query w/ router too close to others <peer> (retry IP-close diversity, IP_CLOSE_BYTES = 3)\n",
+        "java_isj_sendquery_guards\tStoreJob.shouldStoreTo(ri) | not sending query to old router | failed, no IB client tunnel to receive reply | skipped, no ratchet/elg support | not doing zero-hop self-lookup | not doing zero-hop lookup to unknown (sendQuery pre-dispatch guards)\n",
+        "java_isj_dispatch_proof\tISJ try <n> for LS <target> to <peer> | Encrypted DLM for <target> to <peer> (query-dispatch preparation vs authoritative dispatch)\n",
+        "java_fps_capability_source\tgetPeersByCapability(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL) | isBanlistedForever(h) (selector candidate source + forever-banlist exclusion)\n",
+        "java_fps_classification\tSame /16, family, or port | Old | Bad country | Slow | Bad (new) | Good | OK | Bad (DB) | Bad (no hist) | Bad (no prof) (FloodfillPeerSelector ranking family)\n",
     ]),
     encoding="utf-8",
 )

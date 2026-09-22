@@ -263,7 +263,15 @@ P238_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/ne
 # only, no state mutation, no reflection, no queue access, no raw-log
 # promotion).
 P239_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P239Probe.java"
-if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" || ! -f "${P231_PROBE_SRC}" || ! -f "${P238_PROBE_SRC}" || ! -f "${P239_PROBE_SRC}" ]]; then
+# Plan 240 WP — test-only read-only Router-B lookup-candidate readiness
+# probe for the streaming response epoch (RI presence, floodfill
+# capability in RI, peer-manager `f`-capability index membership,
+# forever-banlist state, RI age bucket, bandwidth tier, profile
+# presence, recent-send-failure state, comm established; public
+# accessors only, no state mutation, no reflection, no profile
+# creation, no raw-state promotion).
+P240_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P240Probe.java"
+if [[ ! -f "${LAUNCHER_SRC}" || ! -f "${RAW_HELPER_SRC}" || ! -f "${STREAM_HELPER_SRC}" || ! -f "${SELECTOR_PROBE_SRC}" || ! -f "${P222_PROBE_SRC}" || ! -f "${P223_PROBE_SRC}" || ! -f "${P224_PROBE_SRC}" || ! -f "${P227_PROBE_SRC}" || ! -f "${P228_PROBE_SRC}" || ! -f "${P229_PROBE_SRC}" || ! -f "${P230_PROBE_SRC}" || ! -f "${P231_PROBE_SRC}" || ! -f "${P238_PROBE_SRC}" || ! -f "${P239_PROBE_SRC}" || ! -f "${P240_PROBE_SRC}" ]]; then
   echo "Java launcher source missing: ${LAUNCHER_SRC}" >&2
   exit 1
 fi
@@ -276,7 +284,7 @@ for jar in "${JAVA_CACHE}"/*.jar "${JAVA_CACHE}"/lib/*.jar; do
   fi
 done
 if ! javac -d "${LAUNCHER_BUILD}" -cp "${JAVA_CP}" \
-   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" "${P231_PROBE_SRC}" "${P238_PROBE_SRC}" "${P239_PROBE_SRC}" \
+   "${LAUNCHER_SRC}" "${RAW_HELPER_SRC}" "${STREAM_HELPER_SRC}" "${SELECTOR_PROBE_SRC}" "${P222_PROBE_SRC}" "${P223_PROBE_SRC}" "${P224_PROBE_SRC}" "${P227_PROBE_SRC}" "${P228_PROBE_SRC}" "${P229_PROBE_SRC}" "${P230_PROBE_SRC}" "${P231_PROBE_SRC}" "${P238_PROBE_SRC}" "${P239_PROBE_SRC}" "${P240_PROBE_SRC}" \
    >"${SCRATCH}/javac.log" 2>&1; then
   echo "Java launcher compile failed; see ${SCRATCH}/javac.log" >&2
   tail -n 60 "${SCRATCH}/javac.log" >&2 || true
@@ -1936,10 +1944,13 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "bo
      JAVA_PEER_TOPOLOGY="${JAVA_PEER_TOPOLOGY}" \
      JAVA_I2CP_ENDPOINT="127.0.0.1:${JAVA_I2CP_PORT}" \
      JAVA_STREAM_CONTROL_ENDPOINT="127.0.0.1:${JAVA_STREAM_CONTROL_PORT}" \
-     JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
-     JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
-     I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
-     EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
+      JAVA_STREAM_REFERENCE_DESTINATION_B64="${STREAM_REFERENCE_DESTINATION_B64}" \
+      JAVA_DIAGNOSTIC_A_PORT="${JAVA_DIAGNOSTIC_A_PORT}" \
+      JAVA_DIAGNOSTIC_B_PORT="${JAVA_DIAGNOSTIC_B_PORT}" \
+      JAVA_A_LOG_DIR="${JAVA_DATA}/logs" \
+      JAVA_B_LOG_DIR="${JAVA_PUBLICATION_DATA}/logs" \
+      I2PR_SSU2_BIND="127.0.0.1:${I2PR_STREAM_PORT}" \
+      EVIDENCE_DIR="${DRIVER_EVIDENCE}/streaming" \
      timeout --foreground "${DRIVER_TIMEOUT}" \
      cargo test --locked -p i2pr-daemon --test java_tunnel_external \
      streaming_through_java -- --ignored --exact --nocapture --test-threads=1 \
@@ -2562,6 +2573,22 @@ m6_key_row "external-p239-dispatch-post" "p239-dispatch-post" \
   "Plan 239 §5: Router-A pre-dispatch snapshot with rate-existence proof (-1 = unknown)"
 m6_key_row "external-p239-classification" "p239-classification" \
   "Plan 239 §7: ordered OCMOSJ attribution terminal (earliest D/E/F stage)"
+# Plan 240 §18 — read the streaming-epoch lookup-failure attribution
+# the streaming driver recorded alongside the retained P237/P238/P239
+# terminals. Consume the LAST occurrence so an early branch cannot
+# shadow the authoritative outcome, and record exactly one external row
+# per key (diagnostic observation, always passed when present). The
+# static checker rejects any literal `record "<P240-X>" passed` line.
+m6_key_row "external-p240-router-b" "p240-router-b-pre" \
+  "Plan 240 §5: pre-epoch Router-B lookup-candidate readiness facts (read-only)"
+m6_key_row "external-p240-target-context" "p240-target-context" \
+  "Plan 240 §6: exact streaming target/job correlation context (helper DBID + target + B)"
+m6_key_row "external-p240-target-job-trace" "p240-target-job-trace" \
+  "Plan 240 §6: exact streaming ISJ job trace with toTry/negative-cache/zero-hop facts"
+m6_key_row "external-p240-lookup-trace" "p240-lookup-trace" \
+  "Plan 240 §9: retained P225-ordered post-query lookup trace for the streaming target"
+m6_key_row "external-p240-classification" "p240-classification" \
+  "Plan 240 §7/§8/§9/§10/§11: ordered lookup-failure attribution terminal (earliest missing stage)"
 
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding

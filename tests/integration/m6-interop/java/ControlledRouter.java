@@ -236,6 +236,19 @@
 //     booleans, counts, type codes, and tunnel ids only; no peer paths,
 //     keys, tags, payloads, destinations, hashes, queue contents, or raw
 //     log text.
+// Plan 240 diagnostic contract (streaming response Router-B
+// lookup-candidate readiness only, read-only, no state mutation):
+//   - `P240-ROUTER-B <router-b-hex>` returns the bounded readiness
+//     snapshot for one Router-B hash: RI presence, floodfill capability
+//     in the RI, peer-manager `f`-capability index membership (the exact
+//     pinned selector source), forever-banlist state, RI age bucket,
+//     bandwidth tier, profile presence, recent-send-failure state, and
+//     comm-system established state (`P240-EV kind=router-b ...` with
+//     `observable=false reason=<token>` when unobservable, never
+//     zero-as-fact, never raw state);
+//   - every P240 response is one bounded `P240-EV ...` line with
+//     booleans, buckets, and tier only; no peer paths, keys, tags,
+//     payloads, destinations, hashes, queue contents, or raw log text.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -285,6 +298,7 @@ import net.i2p.router.networkdb.kademlia.P230Probe;
 import net.i2p.router.networkdb.kademlia.P231Probe;
 import net.i2p.router.networkdb.kademlia.P238Probe;
 import net.i2p.router.networkdb.kademlia.P239Probe;
+import net.i2p.router.networkdb.kademlia.P240Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -869,6 +883,11 @@ public final class ControlledRouter {
                             return p239Error("missing-hash-arguments");
                         }
                         return p239Dispatch(parts[1], parts[2]);
+                    case "P240-ROUTER-B":
+                        if (parts.length < 2) {
+                            return p240Error("missing-hash-argument");
+                        }
+                        return p240RouterB(parts[1]);
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1207,6 +1226,43 @@ public final class ControlledRouter {
 
         private String p239Error(String reason) {
             return "P239-ERROR " + reason;
+        }
+
+        private String p240Error(String reason) {
+            return "P240-ERROR " + reason;
+        }
+
+        /**
+         * Plan 240 WP — read-only Router-B lookup-candidate readiness
+         * snapshot for one Router-B hash. Observation only via P240Probe;
+         * never mutates NetDB/peer-manager/banlist/profile/comm/stat
+         * state, never creates profiles or rates, never promotes raw
+         * state.
+         */
+        private String p240RouterB(String routerBHex) {
+            Hash routerB = p220ParseHexHash(routerBHex);
+            if (routerB == null) {
+                return p240Error("invalid-hex-hash");
+            }
+            P240Probe.RouterB result =
+                P240Probe.snapshotRouterB(context(), routerB);
+            if (result.error != null) {
+                return "P240-EV kind=router-b"
+                    + " router_b_hex=" + routerBHex
+                    + " observable=false reason=" + result.error;
+            }
+            return "P240-EV kind=router-b"
+                + " router_b_hex=" + routerBHex
+                + " observable=true"
+                + " b_ri_present=" + result.riPresent
+                + " b_floodfill_capability_in_ri=" + result.floodfillCapabilityInRi
+                + " b_peer_manager_f_capability_indexed=" + result.peerManagerFCapabilityIndexed
+                + " b_banlisted_forever=" + result.banlistedForever
+                + " b_ri_age_bucket=" + result.riAgeBucket
+                + " b_bandwidth_tier=" + result.bandwidthTier
+                + " b_profile_present=" + result.profilePresent
+                + " b_last_send_failed_recent=" + result.lastSendFailedRecent
+                + " b_comm_established=" + result.commEstablished;
         }
 
         /**

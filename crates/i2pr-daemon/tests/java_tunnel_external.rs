@@ -1975,6 +1975,345 @@ fn p239_production_change_allowed_before_owned_defect(
     !production_changed || expected_tunneldata_seen
 }
 
+// ---- Plan 240 §5–§11 unit -----------------------------------------------
+// Bounded Router-B lookup-candidate readiness snapshot from
+// `P240-ROUTER-B`. All readiness facts are booleans/buckets/tier only;
+// `None` is Unknown (diagnostic unreachable), never zero-as-fact.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P240RouterB {
+    ri_present: Option<bool>,
+    floodfill_capability_in_ri: Option<bool>,
+    peer_manager_f_capability_indexed: Option<bool>,
+    banlisted_forever: Option<bool>,
+    ri_age_bucket: String,
+    bandwidth_tier: String,
+    profile_present: Option<bool>,
+    last_send_failed_recent: Option<bool>,
+    comm_established: Option<bool>,
+}
+
+fn p240_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P240-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p240_parse_opt_bool(value: Option<&String>) -> Option<Option<bool>> {
+    let value = value?;
+    match value.as_str() {
+        "true" => Some(Some(true)),
+        "false" => Some(Some(false)),
+        _ => None,
+    }
+}
+
+fn p240_parse_router_b(line: &str, expected_b_hex: &str) -> Option<P240RouterB> {
+    if !line.starts_with("P240-EV ") || !line.contains("kind=router-b") {
+        return None;
+    }
+    if line.len() > 2048 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p240_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P240-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echoed = kv.get("router_b_hex")?;
+    if !echoed.eq_ignore_ascii_case(expected_b_hex) {
+        return None;
+    }
+    let bucket = kv.get("b_ri_age_bucket")?.to_owned();
+    if bucket.len() > 16 || !matches!(bucket.as_str(), "fresh" | "recent" | "old" | "unknown") {
+        return None;
+    }
+    let tier = kv.get("b_bandwidth_tier")?.to_owned();
+    if tier.len() > 8 {
+        return None;
+    }
+    Some(P240RouterB {
+        ri_present: p240_parse_opt_bool(kv.get("b_ri_present"))?,
+        floodfill_capability_in_ri: p240_parse_opt_bool(kv.get("b_floodfill_capability_in_ri"))?,
+        peer_manager_f_capability_indexed: p240_parse_opt_bool(
+            kv.get("b_peer_manager_f_capability_indexed"),
+        )?,
+        banlisted_forever: p240_parse_opt_bool(kv.get("b_banlisted_forever"))?,
+        ri_age_bucket: bucket,
+        bandwidth_tier: tier,
+        profile_present: p240_parse_opt_bool(kv.get("b_profile_present"))?,
+        last_send_failed_recent: p240_parse_opt_bool(kv.get("b_last_send_failed_recent"))?,
+        comm_established: p240_parse_opt_bool(kv.get("b_comm_established"))?,
+    })
+}
+
+async fn p240_collect_router_b(diag_port: u16, router_b_hex: &str) -> Option<P240RouterB> {
+    if diag_port == 0 {
+        return None;
+    }
+    if router_b_hex.len() != 64 {
+        return None;
+    }
+    let command = format!("P240-ROUTER-B {router_b_hex}");
+    let line = p220_query_diagnostic(diag_port, &command).await?;
+    p240_parse_router_b(&line, router_b_hex)
+}
+
+fn record_p240_router_b(evidence_dir: &Path, label: &str, snapshot: Option<&P240RouterB>) {
+    match snapshot {
+        Some(snapshot) => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=true b_ri_present={:?} b_floodfill_capability_in_ri={:?} b_peer_manager_f_capability_indexed={:?} b_banlisted_forever={:?} b_ri_age_bucket={} b_bandwidth_tier={} b_profile_present={:?} b_last_send_failed_recent={:?} b_comm_established={:?}",
+                snapshot.ri_present,
+                snapshot.floodfill_capability_in_ri,
+                snapshot.peer_manager_f_capability_indexed,
+                snapshot.banlisted_forever,
+                snapshot.ri_age_bucket,
+                snapshot.bandwidth_tier,
+                snapshot.profile_present,
+                snapshot.last_send_failed_recent,
+                snapshot.comm_established,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            label,
+            "observable=false reason=diagnostic-unreachable-or-malformed",
+        ),
+    }
+}
+
+/// Plan 240 terminal taxonomy (Plan 240 §7/§8/§9/§10/§11). Exactly one
+/// terminal per streaming epoch, in earliest-proven-missing-stage order:
+/// job correlation (§11) precedes negative cache (§10), which precedes
+/// candidate selection (§7), which precedes pre-query guards (§8, pinned
+/// source order), which precede the retained post-query chain (§9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P240Terminal {
+    StreamingLookupJobNotCorrelated,
+    TargetNegativeCached,
+    BBNotFloodfillCandidate,
+    BBEligibleNotInInitialSelection,
+    BIpDiversitySkipped,
+    BNotReachedBeforeSearchExhaustion,
+    BOldOrUnsupportedRouter,
+    BNoOutboundLookupTunnel,
+    BNoInboundClientReplyTunnel,
+    BNoCompatibleReplyEncryption,
+    BZeroHopSelfLookup,
+    BZeroHopUnknownRi,
+    BEncryptedLookupPrepFailed,
+    BQueryDispatched,
+    BPrequeryObservabilityGap,
+    BLookupNotReceived,
+    BTargetLsNotQueryAnswerable,
+    BAnswerNotEmitted,
+    AClientTunnelDsmNotReceived,
+    AClientSubdbNotInstalled,
+    LookupSucceeded,
+}
+
+impl P240Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::StreamingLookupJobNotCorrelated => "P240-A-STREAMING-LOOKUP-JOB-NOT-CORRELATED",
+            Self::TargetNegativeCached => "P240-B-TARGET-NEGATIVE-CACHED",
+            Self::BBNotFloodfillCandidate => "P240-B-B-NOT-FLOODFILL-CANDIDATE",
+            Self::BBEligibleNotInInitialSelection => "P240-B-B-ELIGIBLE-NOT-IN-INITIAL-SELECTION",
+            Self::BIpDiversitySkipped => "P240-C-B-IP-DIVERSITY-SKIPPED",
+            Self::BNotReachedBeforeSearchExhaustion => {
+                "P240-C-B-NOT-REACHED-BEFORE-SEARCH-EXHAUSTION"
+            }
+            Self::BOldOrUnsupportedRouter => "P240-C-B-OLD-OR-UNSUPPORTED-ROUTER",
+            Self::BNoOutboundLookupTunnel => "P240-C-B-NO-OUTBOUND-LOOKUP-TUNNEL",
+            Self::BNoInboundClientReplyTunnel => "P240-C-B-NO-INBOUND-CLIENT-REPLY-TUNNEL",
+            Self::BNoCompatibleReplyEncryption => "P240-C-B-NO-COMPATIBLE-REPLY-ENCRYPTION",
+            Self::BZeroHopSelfLookup => "P240-C-B-ZERO-HOP-SELF-LOOKUP",
+            Self::BZeroHopUnknownRi => "P240-C-B-ZERO-HOP-UNKNOWN-RI",
+            Self::BEncryptedLookupPrepFailed => "P240-C-B-ENCRYPTED-LOOKUP-PREP-FAILED",
+            Self::BQueryDispatched => "P240-C-B-QUERY-DISPATCHED",
+            Self::BPrequeryObservabilityGap => "P240-C-B-PREQUERY-OBSERVABILITY-GAP",
+            Self::BLookupNotReceived => "P240-D-B-LOOKUP-NOT-RECEIVED",
+            Self::BTargetLsNotQueryAnswerable => "P240-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE",
+            Self::BAnswerNotEmitted => "P240-D-B-ANSWER-NOT-EMITTED",
+            Self::AClientTunnelDsmNotReceived => "P240-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED",
+            Self::AClientSubdbNotInstalled => "P240-D-A-CLIENT-SUBDB-NOT-INSTALLED",
+            Self::LookupSucceeded => "P240-D-LOOKUP-SUCCEEDED",
+        }
+    }
+}
+
+/// Ordered Plan 240 classifier inputs. Every boolean below is an exact
+/// streaming-target job-correlated fact (or a read-only Router-B fact);
+/// generic search-wide counts without B correlation must enter as false.
+#[derive(Clone, Debug, Default)]
+struct P240Inputs {
+    streaming_job_correlated: bool,
+    negative_cached: bool,
+    b_ri_present: Option<bool>,
+    b_floodfill_indexed: Option<bool>,
+    b_banlisted_forever: Option<bool>,
+    b_in_totry: Option<bool>,
+    b_ip_close_skipped: bool,
+    b_old_router_rejected: bool,
+    b_no_outbound_tunnel: bool,
+    b_no_ib_client_tunnel: bool,
+    b_no_reply_crypto: bool,
+    b_zero_hop_self: bool,
+    b_zero_hop_unknown: bool,
+    b_encrypted_prep_failed: bool,
+    b_query_dispatched: bool,
+    trace_observable: bool,
+    search_failed: bool,
+    b_lookup_received: bool,
+    b_target_answerable: Option<bool>,
+    b_answered: bool,
+    a_dsm_received: bool,
+    a_subdb_installed: Option<bool>,
+}
+
+fn p240_b_not_floodfill_candidate(inputs: &P240Inputs) -> bool {
+    inputs.b_banlisted_forever == Some(true) || inputs.b_floodfill_indexed == Some(false)
+}
+
+fn p240_b_eligible(inputs: &P240Inputs) -> bool {
+    inputs.b_ri_present == Some(true)
+        && inputs.b_floodfill_indexed == Some(true)
+        && inputs.b_banlisted_forever == Some(false)
+}
+
+/// Plan 240 §7/§8/§9/§10/§11 ordered classifier. Correlation (§11)
+/// precedes negative cache (§10), which precedes candidate selection
+/// (§7, readiness-gated), which precedes pre-query guards (§8, pinned
+/// source order: IP-close in `retry()`, then old-router, outbound,
+/// inbound-client, reply-crypto, zero-hop-self, zero-hop-unknown,
+/// encrypted-prep, then dispatch), which precede the retained post-query
+/// chain (§9, P225 semantic order). A generic search failure without
+/// B-specific correlation never satisfies a B-specific terminal; an
+/// absent `toTry` without readiness facts is a pre-query gap, never a
+/// B-specific selection claim.
+fn p240_classify(inputs: &P240Inputs) -> P240Terminal {
+    if !inputs.streaming_job_correlated {
+        return P240Terminal::StreamingLookupJobNotCorrelated;
+    }
+    if inputs.negative_cached {
+        return P240Terminal::TargetNegativeCached;
+    }
+    if p240_b_not_floodfill_candidate(inputs) {
+        return P240Terminal::BBNotFloodfillCandidate;
+    }
+    match inputs.b_in_totry {
+        Some(true) => {}
+        Some(false) => {
+            if p240_b_eligible(inputs) {
+                return P240Terminal::BBEligibleNotInInitialSelection;
+            }
+            return P240Terminal::BPrequeryObservabilityGap;
+        }
+        None => return P240Terminal::BPrequeryObservabilityGap,
+    }
+    if inputs.b_ip_close_skipped {
+        return P240Terminal::BIpDiversitySkipped;
+    }
+    if inputs.b_old_router_rejected {
+        return P240Terminal::BOldOrUnsupportedRouter;
+    }
+    if inputs.b_no_outbound_tunnel {
+        return P240Terminal::BNoOutboundLookupTunnel;
+    }
+    if inputs.b_no_ib_client_tunnel {
+        return P240Terminal::BNoInboundClientReplyTunnel;
+    }
+    if inputs.b_no_reply_crypto {
+        return P240Terminal::BNoCompatibleReplyEncryption;
+    }
+    if inputs.b_zero_hop_self {
+        return P240Terminal::BZeroHopSelfLookup;
+    }
+    if inputs.b_zero_hop_unknown {
+        return P240Terminal::BZeroHopUnknownRi;
+    }
+    if inputs.b_encrypted_prep_failed {
+        return P240Terminal::BEncryptedLookupPrepFailed;
+    }
+    if inputs.b_query_dispatched {
+        if !inputs.b_lookup_received {
+            return P240Terminal::BLookupNotReceived;
+        }
+        match inputs.b_target_answerable {
+            Some(false) | None => {
+                if !inputs.b_answered {
+                    return P240Terminal::BTargetLsNotQueryAnswerable;
+                }
+            }
+            Some(true) => {
+                if !inputs.b_answered {
+                    return P240Terminal::BAnswerNotEmitted;
+                }
+            }
+        }
+        if !inputs.a_dsm_received {
+            return P240Terminal::AClientTunnelDsmNotReceived;
+        }
+        match inputs.a_subdb_installed {
+            Some(true) => return P240Terminal::LookupSucceeded,
+            _ => return P240Terminal::AClientSubdbNotInstalled,
+        }
+    }
+    if !inputs.trace_observable {
+        return P240Terminal::BPrequeryObservabilityGap;
+    }
+    if inputs.search_failed {
+        return P240Terminal::BNotReachedBeforeSearchExhaustion;
+    }
+    P240Terminal::BPrequeryObservabilityGap
+}
+
+fn record_p240_classification(
+    evidence_dir: &Path,
+    terminal: P240Terminal,
+    inputs: &P240Inputs,
+    target_hash_hex: &str,
+) {
+    append_evidence(
+        evidence_dir,
+        "p240-classification",
+        &format!(
+            "{} target_hash_hex={} streaming_job_correlated={} negative_cached={} b_ri_present={:?} b_floodfill_indexed={:?} b_banlisted_forever={:?} b_in_totry={:?} b_ip_close_skipped={} b_old_router_rejected={} b_no_outbound_tunnel={} b_no_ib_client_tunnel={} b_no_reply_crypto={} b_zero_hop_self={} b_zero_hop_unknown={} b_encrypted_prep_failed={} b_query_dispatched={} trace_observable={} search_failed={} b_lookup_received={} b_target_answerable={:?} b_answered={} a_dsm_received={} a_subdb_installed={:?}",
+            terminal.token(),
+            target_hash_hex,
+            inputs.streaming_job_correlated,
+            inputs.negative_cached,
+            inputs.b_ri_present,
+            inputs.b_floodfill_indexed,
+            inputs.b_banlisted_forever,
+            inputs.b_in_totry,
+            inputs.b_ip_close_skipped,
+            inputs.b_old_router_rejected,
+            inputs.b_no_outbound_tunnel,
+            inputs.b_no_ib_client_tunnel,
+            inputs.b_no_reply_crypto,
+            inputs.b_zero_hop_self,
+            inputs.b_zero_hop_unknown,
+            inputs.b_encrypted_prep_failed,
+            inputs.b_query_dispatched,
+            inputs.trace_observable,
+            inputs.search_failed,
+            inputs.b_lookup_received,
+            inputs.b_target_answerable,
+            inputs.b_answered,
+            inputs.a_dsm_received,
+            inputs.a_subdb_installed,
+        ),
+    );
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -7605,6 +7944,11 @@ struct P224LogScan {
     p226_peer_try_count: u64,
     p226_query_to_b: u64,
     p226_search_failed: u64,
+    // Plan 240 exact streaming-epoch facts. Bounded typed counters only;
+    // no log line or job identifier is exported verbatim.
+    p240_target_new_isj_with_b_in_totry: u64,
+    p240_negative_cached: u64,
+    p240_zero_hop_self: u64,
 }
 
 fn p226_new_isj_job_id(line: &str, target_b64: &str) -> Option<u64> {
@@ -7803,6 +8147,28 @@ fn p224_scan_log_dir_with_b32(
             }
             if target_job(": ISJ for ") && line.contains(target_b64) && line.contains(" failed") {
                 scan.p226_search_failed += 1;
+            }
+            // Plan 240 §7/§10/§8 — exact streaming-epoch facts bound to
+            // the target job set. `toTry` membership is proven only when
+            // the exact-target `New ISJ` line carries the `toTry:` peer
+            // list with Router B in it (B appears on that line only via
+            // the list); negative-cache and zero-hop-self use their exact
+            // pinned needles with target/job correlation.
+            if line.contains("New ISJ for LS ")
+                && line.contains("toTry:")
+                && line_has_target(line)
+                && line_has_router_b(line)
+            {
+                scan.p240_target_new_isj_with_b_in_totry += 1;
+            }
+            if target_job(": not doing zero-hop self-lookup of ")
+                && p226_token_after(line, ": not doing zero-hop self-lookup of ")
+                    .is_some_and(|token| p226_hash_token_matches(token, router_b_b64))
+            {
+                scan.p240_zero_hop_self += 1;
+            }
+            if line.contains("Negative cached, not searching") && line_has_target(line) {
+                scan.p240_negative_cached += 1;
             }
             if line.contains("New ISJ for LS ") && line_has_target(line) {
                 scan.isj_new += 1;
@@ -9904,6 +10270,19 @@ async fn streaming_through_java() {
     let p239_client_hex = p220_bytes_to_hex(reference_hash.as_bytes());
     let p239_target_hex = p220_bytes_to_hex(local_dest_hash.as_bytes());
     let p239_pre = p239_collect_dispatch(p238_diag_port, &p239_client_hex, &p239_target_hex).await;
+    // Plan 240 §5/§6 — pre-SYN Router-B readiness + streaming lookup
+    // context. Read-only; the class-scoped lookup loggers were installed
+    // by the harness before router startup, so these snapshots prove the
+    // exact pre-epoch state. A missing/unreachable diagnostic port
+    // yields `None` (Unknown), never a protocol fact.
+    let p240_diag_b_port: u16 = std::env::var("JAVA_DIAGNOSTIC_B_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let p240_router_b_hex = p220_bytes_to_hex(java_hash.as_bytes());
+    let p240_b_pre = p240_collect_router_b(p238_diag_port, &p240_router_b_hex).await;
+    let p240_logger_a_pre = p225_collect_logger_config(p238_diag_port).await;
+    let p240_logger_b_pre = p225_collect_logger_config(p240_diag_b_port).await;
     let outcome = streaming
         .connect(
             &local_identity,
@@ -10186,6 +10565,239 @@ async fn streaming_through_java() {
         &p234_epoch,
     );
     record_p239_dispatch_epoch(&evidence_dir, p239_pre, p239_post, p239_terminal);
+    // Plan 240 §6–§11 — streaming-epoch target-LeaseSet lookup-failure
+    // attribution. Reuses the retained P224/P225/P226 surfaces bound to
+    // the exact streaming target job (helper DBID + target hash + ISJ job
+    // ID). Stale destination-lane jobs carry a different target hash and
+    // can never satisfy the correlation. Read-only; no Java patching, no
+    // production change, no topology/profile/timing change. Exactly one
+    // `p240-classification` row per streaming run.
+    let p240_b_post = p240_collect_router_b(p238_diag_port, &p240_router_b_hex).await;
+    record_p240_router_b(&evidence_dir, "p240-router-b-pre", p240_b_pre.as_ref());
+    record_p240_router_b(&evidence_dir, "p240-router-b-post", p240_b_post.as_ref());
+    let p240_logger_a_post = p225_collect_logger_config(p238_diag_port).await;
+    let p240_logger_b_post = p225_collect_logger_config(p240_diag_b_port).await;
+    record_p225_logger_config(
+        &evidence_dir,
+        "p240-logger-config-a-pre",
+        p240_logger_a_pre.as_ref(),
+    );
+    record_p225_logger_config(
+        &evidence_dir,
+        "p240-logger-config-b-pre",
+        p240_logger_b_pre.as_ref(),
+    );
+    record_p225_logger_config(
+        &evidence_dir,
+        "p240-logger-config-a-post",
+        p240_logger_a_post.as_ref(),
+    );
+    record_p225_logger_config(
+        &evidence_dir,
+        "p240-logger-config-b-post",
+        p240_logger_b_post.as_ref(),
+    );
+    let p240_target_b64 = p224_collect_hash_b64(p238_diag_port, &p239_target_hex).await;
+    let p240_router_b_b64 = p224_collect_hash_b64(p238_diag_port, &p240_router_b_hex).await;
+    let p240_helper_b64 = p224_collect_hash_b64(p238_diag_port, &p239_client_hex).await;
+    let p240_helper_b32 = p225_collect_hash_b32(p238_diag_port, &p239_client_hex).await;
+    append_evidence(
+        &evidence_dir,
+        "p240-target-context",
+        &format!(
+            "target_hash_hex={} target_hash_b64={} router_b_hash_hex={} router_b_hash_b64={} helper_dbid_hex={} helper_dbid_b64={} helper_dbid_b32={}",
+            p239_target_hex,
+            p240_target_b64.as_deref().unwrap_or("unknown"),
+            p240_router_b_hex,
+            p240_router_b_b64.as_deref().unwrap_or("unknown"),
+            p239_client_hex,
+            p240_helper_b64.as_deref().unwrap_or("unknown"),
+            p240_helper_b32.as_deref().unwrap_or("unknown"),
+        ),
+    );
+    let p240_b_main_after = p224_collect_main_ls(p240_diag_b_port, &p239_target_hex).await;
+    record_p224_main_snapshot(
+        &evidence_dir,
+        "p240-b-main-after",
+        p240_b_main_after.as_ref(),
+    );
+    let p240_a_client_after =
+        p224_collect_client_ls(p238_diag_port, &p239_client_hex, &p239_target_hex).await;
+    record_p224_client_snapshot(
+        &evidence_dir,
+        "p240-a-client-after",
+        p240_a_client_after.as_ref(),
+    );
+    let p240_a_log_dir: Option<PathBuf> = std::env::var("JAVA_A_LOG_DIR").ok().map(PathBuf::from);
+    let p240_b_log_dir: Option<PathBuf> = std::env::var("JAVA_B_LOG_DIR").ok().map(PathBuf::from);
+    let p240_scan_a = p240_a_log_dir.as_ref().and_then(|dir| {
+        p240_target_b64.as_ref().and_then(|target_b64| {
+            p240_router_b_b64.as_ref().and_then(|b_b64| {
+                p240_helper_b64.as_deref().and_then(|helper_b64| {
+                    p224_scan_log_dir_with_b32(
+                        dir,
+                        target_b64,
+                        b_b64,
+                        Some(helper_b64),
+                        p240_helper_b32.as_deref(),
+                    )
+                })
+            })
+        })
+    });
+    let p240_scan_b = p240_b_log_dir.as_ref().and_then(|dir| {
+        p240_target_b64.as_ref().and_then(|target_b64| {
+            p240_router_b_b64.as_ref().and_then(|b_b64| {
+                p240_helper_b64.as_deref().and_then(|helper_b64| {
+                    p224_scan_log_dir_with_b32(
+                        dir,
+                        target_b64,
+                        b_b64,
+                        Some(helper_b64),
+                        p240_helper_b32.as_deref(),
+                    )
+                })
+            })
+        })
+    });
+    let p240_logger_a_ok = p240_a_log_dir
+        .as_ref()
+        .is_some_and(|dir| p224_logger_config_installed(dir))
+        && p240_logger_a_pre
+            .as_ref()
+            .is_some_and(|config| config.effective);
+    let p240_logger_b_ok = p240_b_log_dir
+        .as_ref()
+        .is_some_and(|dir| p224_logger_config_installed(dir))
+        && p240_logger_b_pre
+            .as_ref()
+            .is_some_and(|config| config.effective);
+    let p240_trace = p224_build_trace_with_b32(
+        &p239_target_hex,
+        p240_target_b64.as_deref(),
+        p240_router_b_b64.as_deref(),
+        p240_helper_b64.as_deref(),
+        p240_helper_b32.as_deref(),
+        p240_scan_a.as_ref(),
+        p240_scan_b.as_ref(),
+        p240_logger_a_ok,
+        p240_logger_b_ok,
+    );
+    append_evidence(
+        &evidence_dir,
+        "p240-lookup-trace",
+        &format!(
+            "observable={} target_hash_hex={} query_started={} query_to_b={} query_via_client_reply_tunnel={} no_ib_client_tunnel={} no_ratchet_or_elg_support={} search_success={} search_failed={} b_lookup_received={} b_published_ls_answered={} b_dlm_proven_live={} a_client_tunnel_ls_received={} reply_encryption_error_seen={}",
+            p240_trace.observable,
+            p239_target_hex,
+            p240_trace.query_started,
+            p240_trace.query_to_b,
+            p240_trace.query_via_client_reply_tunnel,
+            p240_trace.no_ib_client_tunnel,
+            p240_trace.no_ratchet_or_elg_support,
+            p240_trace.search_success,
+            p240_trace.search_failed,
+            p240_trace.b_lookup_received,
+            p240_trace.b_published_ls_answered,
+            p240_trace.b_dlm_proven_live,
+            p240_trace.a_client_tunnel_ls_received,
+            p240_trace.reply_encryption_error_seen,
+        ),
+    );
+    let p240_job_trace = p226_build_trace(p240_scan_a.as_ref(), p240_scan_b.as_ref());
+    append_evidence(
+        &evidence_dir,
+        "p240-target-job-trace",
+        &format!(
+            "observable={} target_job_count={} target_job_id_overflow={} b_ip_close_skipped={} b_old_router_rejected={} b_zero_hop_unknown_rejected={} b_encrypted_lookup_unsupported={} no_ib_client_tunnel={} no_reply_crypto={} peer_try_count={} query_to_b={} search_failed={} totry_contains_b={} negative_cached={} zero_hop_self={}",
+            p240_job_trace.observable,
+            p240_job_trace.target_job_count,
+            p240_job_trace.target_job_id_overflow,
+            p240_job_trace.b_ip_close_skipped,
+            p240_job_trace.b_old_router_rejected,
+            p240_job_trace.b_zero_hop_unknown_rejected,
+            p240_job_trace.b_encrypted_lookup_unsupported,
+            p240_job_trace.no_ib_client_tunnel,
+            p240_job_trace.no_reply_crypto,
+            p240_job_trace.peer_try_count,
+            p240_job_trace.query_to_b,
+            p240_job_trace.search_failed,
+            p240_scan_a
+                .as_ref()
+                .map(|scan| scan.p240_target_new_isj_with_b_in_totry)
+                .unwrap_or(0),
+            p240_scan_a
+                .as_ref()
+                .map(|scan| scan.p240_negative_cached)
+                .unwrap_or(0),
+            p240_scan_a
+                .as_ref()
+                .map(|scan| scan.p240_zero_hop_self)
+                .unwrap_or(0),
+        ),
+    );
+    let p240_inputs = P240Inputs {
+        streaming_job_correlated: p240_job_trace.target_job_count >= 1
+            && !p240_job_trace.target_job_id_overflow,
+        negative_cached: p240_scan_a
+            .as_ref()
+            .is_some_and(|scan| scan.p240_negative_cached > 0),
+        b_ri_present: p240_b_pre.as_ref().and_then(|snap| snap.ri_present),
+        b_floodfill_indexed: p240_b_pre
+            .as_ref()
+            .and_then(|snap| snap.peer_manager_f_capability_indexed),
+        b_banlisted_forever: p240_b_pre.as_ref().and_then(|snap| snap.banlisted_forever),
+        b_in_totry: if p240_job_trace.target_job_count >= 1
+            && !p240_job_trace.target_job_id_overflow
+        {
+            Some(
+                p240_scan_a
+                    .as_ref()
+                    .is_some_and(|scan| scan.p240_target_new_isj_with_b_in_totry > 0),
+            )
+        } else {
+            None
+        },
+        b_ip_close_skipped: p240_job_trace.b_ip_close_skipped,
+        b_old_router_rejected: p240_job_trace.b_old_router_rejected,
+        // The pinned ISJ `outTunnel == null || replyTunnel == null`
+        // branch records no log line, so a live run can never prove
+        // this guard; the classifier arm stays unit-locked only.
+        b_no_outbound_tunnel: false,
+        b_no_ib_client_tunnel: p240_job_trace.no_ib_client_tunnel,
+        b_no_reply_crypto: p240_job_trace.no_reply_crypto,
+        b_zero_hop_self: p240_scan_a
+            .as_ref()
+            .is_some_and(|scan| scan.p240_zero_hop_self > 0),
+        b_zero_hop_unknown: p240_job_trace.b_zero_hop_unknown_rejected,
+        b_encrypted_prep_failed: p240_job_trace.b_encrypted_lookup_unsupported,
+        b_query_dispatched: p240_job_trace.query_to_b,
+        trace_observable: p240_trace.observable,
+        search_failed: p240_job_trace.search_failed,
+        b_lookup_received: p240_trace.b_lookup_received,
+        b_target_answerable: p240_b_main_after.as_ref().map(p224_b_answerable),
+        b_answered: p240_trace.b_published_ls_answered,
+        a_dsm_received: p240_trace.a_client_tunnel_ls_received,
+        a_subdb_installed: p240_a_client_after
+            .as_ref()
+            .map(|snap| snap.validated_present),
+    };
+    append_evidence(
+        &evidence_dir,
+        "p240-totry",
+        &format!(
+            "target_job_count={} target_job_id_overflow={} totry_contains_b_count={} b_in_totry={:?}",
+            p240_job_trace.target_job_count,
+            p240_job_trace.target_job_id_overflow,
+            p240_scan_a
+                .as_ref()
+                .map(|scan| scan.p240_target_new_isj_with_b_in_totry)
+                .unwrap_or(0),
+            p240_inputs.b_in_totry,
+        ),
+    );
+    let p240_terminal = p240_classify(&p240_inputs);
+    record_p240_classification(&evidence_dir, p240_terminal, &p240_inputs, &p239_target_hex);
     if p236_terminal != P236Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -21313,5 +21925,438 @@ fn p239_terminal_tokens_are_canonical() {
     assert_eq!(
         P239Terminal::DirectionAEstablished.token(),
         "P239-F-DIRECTION-A-ESTABLISHED"
+    );
+}
+
+// ---- Plan 240 §15 unit rows ------------------------------------------------
+// Focused local rows locking the streaming-epoch target-LeaseSet
+// lookup-failure attribution. They run in the ordinary workspace floor
+// (no external environment). Full `p225_`, `p226_`, `p237_`, `p238_`,
+// and `p239_` suites remain green.
+
+fn p240_correlated_inputs() -> P240Inputs {
+    // A correlated streaming job with B in `toTry`, no guard firing, no
+    // query yet, and an unobservable trace: the pre-query gap. Every
+    // row below starts here and proves one ordering rule.
+    P240Inputs {
+        streaming_job_correlated: true,
+        negative_cached: false,
+        b_ri_present: Some(true),
+        b_floodfill_indexed: Some(true),
+        b_banlisted_forever: Some(false),
+        b_in_totry: Some(true),
+        trace_observable: false,
+        ..P240Inputs::default()
+    }
+}
+
+#[test]
+fn p240_requires_exact_streaming_isj_correlation() {
+    // Without an exact streaming-target ISJ (helper DBID + target hash +
+    // job ID), no B/C/D stage is ever claimed — even with B readiness,
+    // `toTry` membership, guards, and query facts present (those would
+    // be uncorrelated background without the job key).
+    let mut inputs = p240_correlated_inputs();
+    inputs.streaming_job_correlated = false;
+    inputs.b_query_dispatched = true;
+    inputs.b_lookup_received = true;
+    inputs.b_target_answerable = Some(true);
+    inputs.b_answered = true;
+    inputs.a_dsm_received = true;
+    inputs.a_subdb_installed = Some(true);
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::StreamingLookupJobNotCorrelated
+    );
+    // A stale destination-lane job for a different target hash never
+    // satisfies the streaming correlation: the driver binds the job set
+    // to the exact streaming target before classifying.
+    let uncorrelated = P240Inputs {
+        streaming_job_correlated: false,
+        ..P240Inputs::default()
+    };
+    assert_eq!(
+        p240_classify(&uncorrelated),
+        P240Terminal::StreamingLookupJobNotCorrelated
+    );
+}
+
+#[test]
+fn p240_negative_cache_precedes_candidate_selection() {
+    // Exact `runJob()` checks negative cache before selection: a
+    // negative-cached target stops at B even when B is floodfill-ready
+    // and in `toTry` with a dispatched query behind it.
+    let mut inputs = p240_correlated_inputs();
+    inputs.negative_cached = true;
+    inputs.b_query_dispatched = true;
+    assert_eq!(p240_classify(&inputs), P240Terminal::TargetNegativeCached);
+}
+
+#[test]
+fn p240_candidate_membership_does_not_equal_query() {
+    // Selector/`toTry` membership alone never proves a query: B present
+    // in the initial set with no `Encrypted DLM` line and no guard is
+    // the pre-query gap, never dispatch.
+    let inputs = p240_correlated_inputs();
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+    // A status-style observation (search failed) without B-specific
+    // correlation still cannot promote past the gap when the trace is
+    // unobservable.
+    let mut failed_unobservable = p240_correlated_inputs();
+    failed_unobservable.search_failed = true;
+    assert_eq!(
+        p240_classify(&failed_unobservable),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+}
+
+#[test]
+fn p240_b_absent_from_totry_requires_candidate_readiness_facts() {
+    // B absent from `toTry` with readiness Unknown (diagnostic
+    // unreachable) is a pre-query gap — never a B-specific selection
+    // claim in either direction.
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_ri_present = None;
+    inputs.b_floodfill_indexed = None;
+    inputs.b_banlisted_forever = None;
+    inputs.b_in_totry = Some(false);
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+    // Partial readiness (indexed but banlist unknown) is still
+    // insufficient for either B-specific §7 terminal.
+    let mut partial = p240_correlated_inputs();
+    partial.b_floodfill_indexed = Some(true);
+    partial.b_banlisted_forever = None;
+    partial.b_in_totry = Some(false);
+    assert_eq!(
+        p240_classify(&partial),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+}
+
+#[test]
+fn p240_b_eligible_not_selected_is_distinct_from_not_floodfill() {
+    // Floodfill-indexed, not banlisted, RI present, but absent from the
+    // exact job's `toTry`: eligible-not-selected.
+    let mut eligible = p240_correlated_inputs();
+    eligible.b_in_totry = Some(false);
+    assert_eq!(
+        p240_classify(&eligible),
+        P240Terminal::BBEligibleNotInInitialSelection
+    );
+    // Not floodfill-indexed wins over eligibility: the candidate gate
+    // (§7.1) precedes the selection gate (§7.2).
+    let mut not_candidate = p240_correlated_inputs();
+    not_candidate.b_floodfill_indexed = Some(false);
+    not_candidate.b_in_totry = Some(false);
+    assert_eq!(
+        p240_classify(&not_candidate),
+        P240Terminal::BBNotFloodfillCandidate
+    );
+    // Forever-banlisted likewise proves not-a-candidate even with the
+    // RI present and floodfill-indexed.
+    let mut banlisted = p240_correlated_inputs();
+    banlisted.b_banlisted_forever = Some(true);
+    banlisted.b_in_totry = Some(false);
+    assert_eq!(
+        p240_classify(&banlisted),
+        P240Terminal::BBNotFloodfillCandidate
+    );
+}
+
+#[test]
+fn p240_ip_close_requires_exact_b_job_correlation() {
+    // A generic search-wide IP-close count without exact B-job
+    // correlation must enter as false; only the job-correlated flag
+    // proves the skip. Here the correlated flag is set, so the skip
+    // wins over every later guard including a dispatched query.
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_ip_close_skipped = true;
+    inputs.b_old_router_rejected = true;
+    inputs.b_query_dispatched = true;
+    assert_eq!(p240_classify(&inputs), P240Terminal::BIpDiversitySkipped);
+    // Without the correlated flag, the same run is the gap.
+    let mut uncorrelated = p240_correlated_inputs();
+    uncorrelated.b_ip_close_skipped = false;
+    assert_eq!(
+        p240_classify(&uncorrelated),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+}
+
+#[test]
+fn p240_old_router_guard_precedes_query_dispatch() {
+    // `StoreJob.shouldStoreTo` rejection precedes dispatch: an old or
+    // unsupported Router B stops here even with a later query line
+    // present (the line would be uncorrelated background).
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_old_router_rejected = true;
+    inputs.b_query_dispatched = true;
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::BOldOrUnsupportedRouter
+    );
+}
+
+#[test]
+fn p240_no_client_reply_tunnel_precedes_query_dispatch() {
+    // No inbound **client** reply tunnel precedes dispatch: without a
+    // client tunnel the reply would land in the main DB where the
+    // helper cannot find it.
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_no_ib_client_tunnel = true;
+    inputs.b_query_dispatched = true;
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::BNoInboundClientReplyTunnel
+    );
+}
+
+#[test]
+fn p240_reply_encryption_guard_precedes_query_dispatch() {
+    // No compatible reply-encryption keys precedes dispatch: without
+    // ratchet/ElGamal support no ECIES-tagged reply can be requested.
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_no_reply_crypto = true;
+    inputs.b_query_dispatched = true;
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::BNoCompatibleReplyEncryption
+    );
+}
+
+#[test]
+fn p240_zero_hop_unknown_guard_precedes_query_dispatch() {
+    // Zero-hop lookup to an unknown RI precedes dispatch; the
+    // zero-hop-self variant is ordered before it (both precede
+    // encrypted-prep and dispatch).
+    let mut unknown = p240_correlated_inputs();
+    unknown.b_zero_hop_unknown = true;
+    unknown.b_encrypted_prep_failed = true;
+    unknown.b_query_dispatched = true;
+    assert_eq!(p240_classify(&unknown), P240Terminal::BZeroHopUnknownRi);
+    let mut zelf = p240_correlated_inputs();
+    zelf.b_zero_hop_self = true;
+    zelf.b_zero_hop_unknown = true;
+    assert_eq!(p240_classify(&zelf), P240Terminal::BZeroHopSelfLookup);
+}
+
+#[test]
+fn p240_query_dispatch_required_before_b_receipt() {
+    // `Encrypted DLM for <target> to <B>` is the authoritative dispatch
+    // fact: with it and no B receipt, the chain stops at B receipt —
+    // never deeper. Without it, the same trace is the pre-query gap
+    // (membership alone never dispatches).
+    let mut dispatched = p240_correlated_inputs();
+    dispatched.b_query_dispatched = true;
+    dispatched.trace_observable = true;
+    assert_eq!(p240_classify(&dispatched), P240Terminal::BLookupNotReceived);
+    let undispatched = p240_correlated_inputs();
+    assert_eq!(
+        p240_classify(&undispatched),
+        P240Terminal::BPrequeryObservabilityGap
+    );
+}
+
+#[test]
+fn p240_b_receipt_required_before_b_answer() {
+    // B receipt with no answer and an unanswerable target LS stops at
+    // not-query-answerable; an answerable-but-unanswered target stops
+    // at answer-not-emitted instead.
+    let mut unanswerable = p240_correlated_inputs();
+    unanswerable.b_query_dispatched = true;
+    unanswerable.b_lookup_received = true;
+    unanswerable.b_target_answerable = Some(false);
+    assert_eq!(
+        p240_classify(&unanswerable),
+        P240Terminal::BTargetLsNotQueryAnswerable
+    );
+    let mut unanswered = p240_correlated_inputs();
+    unanswered.b_query_dispatched = true;
+    unanswered.b_lookup_received = true;
+    unanswered.b_target_answerable = Some(true);
+    assert_eq!(p240_classify(&unanswered), P240Terminal::BAnswerNotEmitted);
+}
+
+#[test]
+fn p240_b_answer_required_before_a_dsm() {
+    // B answered but no inbound-client-tunnel DSM on A stops at the
+    // DSM stage — never at sub-DB install or success.
+    let mut inputs = p240_correlated_inputs();
+    inputs.b_query_dispatched = true;
+    inputs.b_lookup_received = true;
+    inputs.b_target_answerable = Some(true);
+    inputs.b_answered = true;
+    assert_eq!(
+        p240_classify(&inputs),
+        P240Terminal::AClientTunnelDsmNotReceived
+    );
+}
+
+#[test]
+fn p240_a_dsm_required_before_client_subdb_install() {
+    // DSM received but the helper client sub-DB still lacks the target
+    // LS stops at not-installed; an installed sub-DB closes the chain
+    // at lookup-succeeded (which resumes OCMOSJ attribution, never M6
+    // closure alone).
+    let mut not_installed = p240_correlated_inputs();
+    not_installed.b_query_dispatched = true;
+    not_installed.b_lookup_received = true;
+    not_installed.b_target_answerable = Some(true);
+    not_installed.b_answered = true;
+    not_installed.a_dsm_received = true;
+    not_installed.a_subdb_installed = Some(false);
+    assert_eq!(
+        p240_classify(&not_installed),
+        P240Terminal::AClientSubdbNotInstalled
+    );
+    let mut succeeded = p240_correlated_inputs();
+    succeeded.b_query_dispatched = true;
+    succeeded.b_lookup_received = true;
+    succeeded.b_target_answerable = Some(true);
+    succeeded.b_answered = true;
+    succeeded.a_dsm_received = true;
+    succeeded.a_subdb_installed = Some(true);
+    assert_eq!(p240_classify(&succeeded), P240Terminal::LookupSucceeded);
+}
+
+#[test]
+fn p240_stale_destination_lookup_job_does_not_classify_streaming() {
+    // A generic search failure (e.g. a stale destination-lane timeout
+    // job firing inside the streaming window, the Plan-239 4-vs-3
+    // mismatch) without exact streaming-job correlation never leaves
+    // the A boundary — it cannot satisfy any B/C/D stage.
+    let stale = P240Inputs {
+        search_failed: true,
+        ..P240Inputs::default()
+    };
+    assert_eq!(
+        p240_classify(&stale),
+        P240Terminal::StreamingLookupJobNotCorrelated
+    );
+    // Even with B in `toTry` recorded generically, correlation stays
+    // mandatory: uncorrelated membership is not membership.
+    let stale_member = P240Inputs {
+        b_in_totry: Some(true),
+        search_failed: true,
+        ..P240Inputs::default()
+    };
+    assert_eq!(
+        p240_classify(&stale_member),
+        P240Terminal::StreamingLookupJobNotCorrelated
+    );
+}
+
+#[test]
+fn p240_no_production_change() {
+    // Same fail-closed production gate as Plans 237/238/239: Plan 240
+    // is diagnostic-only and authorizes no production i2pr change on
+    // its own; only exact expected TunnelData at an i2pr-owned stage
+    // (proven by a successor) could ever authorize one.
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+}
+
+#[test]
+fn p240_terminal_tokens_are_canonical() {
+    // Locks the exact Plan 240 §7/§8/§9/§10/§11 terminal vocabulary.
+    // Selector membership alone is insufficient for any query claim;
+    // a status-style observation alone is insufficient for any
+    // lookup-path stage claim.
+    assert_eq!(
+        P240Terminal::StreamingLookupJobNotCorrelated.token(),
+        "P240-A-STREAMING-LOOKUP-JOB-NOT-CORRELATED"
+    );
+    assert_eq!(
+        P240Terminal::TargetNegativeCached.token(),
+        "P240-B-TARGET-NEGATIVE-CACHED"
+    );
+    assert_eq!(
+        P240Terminal::BBNotFloodfillCandidate.token(),
+        "P240-B-B-NOT-FLOODFILL-CANDIDATE"
+    );
+    assert_eq!(
+        P240Terminal::BBEligibleNotInInitialSelection.token(),
+        "P240-B-B-ELIGIBLE-NOT-IN-INITIAL-SELECTION"
+    );
+    assert_eq!(
+        P240Terminal::BIpDiversitySkipped.token(),
+        "P240-C-B-IP-DIVERSITY-SKIPPED"
+    );
+    assert_eq!(
+        P240Terminal::BNotReachedBeforeSearchExhaustion.token(),
+        "P240-C-B-NOT-REACHED-BEFORE-SEARCH-EXHAUSTION"
+    );
+    assert_eq!(
+        P240Terminal::BOldOrUnsupportedRouter.token(),
+        "P240-C-B-OLD-OR-UNSUPPORTED-ROUTER"
+    );
+    assert_eq!(
+        P240Terminal::BNoOutboundLookupTunnel.token(),
+        "P240-C-B-NO-OUTBOUND-LOOKUP-TUNNEL"
+    );
+    assert_eq!(
+        P240Terminal::BNoInboundClientReplyTunnel.token(),
+        "P240-C-B-NO-INBOUND-CLIENT-REPLY-TUNNEL"
+    );
+    assert_eq!(
+        P240Terminal::BNoCompatibleReplyEncryption.token(),
+        "P240-C-B-NO-COMPATIBLE-REPLY-ENCRYPTION"
+    );
+    assert_eq!(
+        P240Terminal::BZeroHopSelfLookup.token(),
+        "P240-C-B-ZERO-HOP-SELF-LOOKUP"
+    );
+    assert_eq!(
+        P240Terminal::BZeroHopUnknownRi.token(),
+        "P240-C-B-ZERO-HOP-UNKNOWN-RI"
+    );
+    assert_eq!(
+        P240Terminal::BEncryptedLookupPrepFailed.token(),
+        "P240-C-B-ENCRYPTED-LOOKUP-PREP-FAILED"
+    );
+    assert_eq!(
+        P240Terminal::BQueryDispatched.token(),
+        "P240-C-B-QUERY-DISPATCHED"
+    );
+    assert_eq!(
+        P240Terminal::BPrequeryObservabilityGap.token(),
+        "P240-C-B-PREQUERY-OBSERVABILITY-GAP"
+    );
+    assert_eq!(
+        P240Terminal::BLookupNotReceived.token(),
+        "P240-D-B-LOOKUP-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P240Terminal::BTargetLsNotQueryAnswerable.token(),
+        "P240-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE"
+    );
+    assert_eq!(
+        P240Terminal::BAnswerNotEmitted.token(),
+        "P240-D-B-ANSWER-NOT-EMITTED"
+    );
+    assert_eq!(
+        P240Terminal::AClientTunnelDsmNotReceived.token(),
+        "P240-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P240Terminal::AClientSubdbNotInstalled.token(),
+        "P240-D-A-CLIENT-SUBDB-NOT-INSTALLED"
+    );
+    assert_eq!(
+        P240Terminal::LookupSucceeded.token(),
+        "P240-D-LOOKUP-SUCCEEDED"
     );
 }

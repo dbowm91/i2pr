@@ -4192,8 +4192,301 @@ if [[ -f "${P239_HARNESS}" ]]; then
   done
 fi
 
+# ---- 29. Plan 240 Streaming target-LeaseSet lookup-failure attribution --
+# Plan 240 attributes the exact reason the Plan-239 Streaming response
+# cannot resolve the i2pr target LeaseSet from Router A's helper client
+# NetDB. It reuses the retained P224/P225/P226 surfaces inside the
+# proven Streaming response epoch: a read-only Router-B readiness
+# snapshot (`P240-ROUTER-B`), the exact streaming target-job correlation
+# (helper DBID + target hash + ISJ job ID), the source-locked
+# `New ISJ ... toTry:` membership for B, the exact-job pre-query guard
+# ordering (IP-close, old-router, tunnels, reply-crypto, zero-hop,
+# encrypted-prep), and the retained P225 post-query chain. No Java
+# source patch, no production Rust change, no topology/profile/timing/
+# pin change, no raw-log promotion, no standalone lookup.
+P240_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P240Probe.java"
+P240_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P240_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P240_HARNESS="${JAVA_HARNESS}"
+P240_SOURCE_LOCK="${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh"
+if [[ ! -f "${P240_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 240 probe ${P240_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 29a. Read-only Router-B readiness surface (exact pinned accessors).
+  for required in \
+    'snapshotRouterB' \
+    'lookupRouterInfoLocally' \
+    'CAPABILITY_FLOODFILL' \
+    'getPeersByCapability' \
+    'isBanlistedForever' \
+    'getProfileNonblocking' \
+    'getLastSendFailed' \
+    'isEstablished' \
+    'getBandwidthTier' \
+    'getPublished' \
+    'SEND_FAILED_RECENT_MS'; do
+    if ! grep -q -F "${required}" "${P240_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_PROBE_SRC} lacks Plan 240 probe surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 29b. Probe-side mutation, profile creation, NetDB/tunnel/queue/stat
+  # writes, reflection, and private-field access are forbidden. Profile
+  # creation would let a probe fabricate the readiness it observes.
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'heardAbout(' \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'buildTunnels' \
+    'addTunnel' \
+    'createRateStat' \
+    'createRequiredRateStat' \
+    'createFrequencyStat' \
+    'addRateData' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P240_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_PROBE_SRC} uses forbidden Plan 240 probe call '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'explicitPeers' "${P240_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_PROBE_SRC} mentions explicitPeers (Plan 240 §12 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'vmCommSystem' "${P240_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_PROBE_SRC} enables VMComm (Plan 240 §12 out of scope)" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q -F 'netDb.alwaysQuery' "${P240_PROBE_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_PROBE_SRC} enables netDb.alwaysQuery (Plan 240 §12 forbidden)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P240_LAUNCHER_SRC}" ]]; then
+  # 29c. The launcher serves the single read-only P240 command.
+  for required in \
+    '"P240-ROUTER-B"' \
+    'P240Probe' \
+    'p240RouterB' \
+    'kind=router-b' \
+    'observable=true' \
+    'b_ri_present=' \
+    'b_floodfill_capability_in_ri=' \
+    'b_peer_manager_f_capability_indexed=' \
+    'b_banlisted_forever=' \
+    'b_ri_age_bucket=' \
+    'b_bandwidth_tier=' \
+    'b_profile_present=' \
+    'b_last_send_failed_recent=' \
+    'b_comm_established='; do
+    if ! grep -q -F "${required}" "${P240_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_LAUNCHER_SRC} lacks Plan 240 launcher surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'forceBandwidthClass' "${P240_LAUNCHER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_LAUNCHER_SRC} uses router.forceBandwidthClass (Plan 240 §12 forbids it)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P240_DRIVER_TEST}" ]]; then
+  # 29d. The Rust driver owns the Router-B parse/collect, the exact-job
+  # log-scan extension, the ordered A/B/C/D classifier, plus additive
+  # evidence rows. Correlation (§11) precedes negative cache (§10),
+  # candidate selection (§7), pre-query guards (§8), and the retained
+  # post-query chain (§9); membership never equals query; stale
+  # destination jobs never classify streaming.
+  for required in \
+    'struct P240RouterB' \
+    'fn p240_parse_router_b' \
+    'fn p240_collect_router_b' \
+    'fn record_p240_router_b' \
+    'enum P240Terminal' \
+    'struct P240Inputs' \
+    'fn p240_classify' \
+    'fn record_p240_classification' \
+    'P240-ROUTER-B' \
+    'p240-router-b-pre' \
+    'p240-router-b-post' \
+    'p240-target-context' \
+    'p240-target-job-trace' \
+    'p240-lookup-trace' \
+    'p240-totry' \
+    'p240-classification' \
+    'p240_target_new_isj_with_b_in_totry' \
+    'p240_negative_cached' \
+    'p240_zero_hop_self' \
+    'P240-A-STREAMING-LOOKUP-JOB-NOT-CORRELATED' \
+    'P240-B-TARGET-NEGATIVE-CACHED' \
+    'P240-B-B-NOT-FLOODFILL-CANDIDATE' \
+    'P240-B-B-ELIGIBLE-NOT-IN-INITIAL-SELECTION' \
+    'P240-C-B-IP-DIVERSITY-SKIPPED' \
+    'P240-C-B-NOT-REACHED-BEFORE-SEARCH-EXHAUSTION' \
+    'P240-C-B-OLD-OR-UNSUPPORTED-ROUTER' \
+    'P240-C-B-NO-OUTBOUND-LOOKUP-TUNNEL' \
+    'P240-C-B-NO-INBOUND-CLIENT-REPLY-TUNNEL' \
+    'P240-C-B-NO-COMPATIBLE-REPLY-ENCRYPTION' \
+    'P240-C-B-ZERO-HOP-SELF-LOOKUP' \
+    'P240-C-B-ZERO-HOP-UNKNOWN-RI' \
+    'P240-C-B-ENCRYPTED-LOOKUP-PREP-FAILED' \
+    'P240-C-B-QUERY-DISPATCHED' \
+    'P240-C-B-PREQUERY-OBSERVABILITY-GAP' \
+    'P240-D-B-LOOKUP-NOT-RECEIVED' \
+    'P240-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE' \
+    'P240-D-B-ANSWER-NOT-EMITTED' \
+    'P240-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED' \
+    'P240-D-A-CLIENT-SUBDB-NOT-INSTALLED' \
+    'P240-D-LOOKUP-SUCCEEDED' \
+    'JAVA_DIAGNOSTIC_B_PORT' \
+    'JAVA_A_LOG_DIR' \
+    'JAVA_B_LOG_DIR'; do
+    if ! grep -q -F "${required}" "${P240_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_DRIVER_TEST} lacks Plan 240 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 29e. Correlation is mandatory: the classifier must gate every stage
+  # on the exact streaming job, negative cache must precede candidate
+  # selection, and candidate membership must never equal query dispatch.
+  if ! grep -q -F 'streaming_job_correlated' "${P240_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_DRIVER_TEST} classifies without exact streaming-job correlation (Plan 240 §11)" >&2
+    failures=$((failures + 1))
+  fi
+  if rg -n "^[[:space:]]*record[[:space:]]+[\"']P240-" "${P240_DRIVER_TEST}" >/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P240_DRIVER_TEST} hard-codes a Plan 240 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  # Frozen acceptance windows stay frozen on the streaming path.
+  for frozen in \
+    'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const STREAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const SYN_ACK_WAIT: Duration = Duration::from_secs(45)'; do
+    if ! grep -q -F "${frozen}" "${P240_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_DRIVER_TEST} changed frozen window '${frozen}' (Plan 240 §3 retained)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'P240' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'p240' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 240 surface" >&2
+    failures=$((failures + 1))
+  fi
+  # 29f. The 16 required Plan 240 §15 unit rows.
+  for unit_row in \
+    p240_requires_exact_streaming_isj_correlation \
+    p240_negative_cache_precedes_candidate_selection \
+    p240_candidate_membership_does_not_equal_query \
+    p240_b_absent_from_totry_requires_candidate_readiness_facts \
+    p240_b_eligible_not_selected_is_distinct_from_not_floodfill \
+    p240_ip_close_requires_exact_b_job_correlation \
+    p240_old_router_guard_precedes_query_dispatch \
+    p240_no_client_reply_tunnel_precedes_query_dispatch \
+    p240_reply_encryption_guard_precedes_query_dispatch \
+    p240_zero_hop_unknown_guard_precedes_query_dispatch \
+    p240_query_dispatch_required_before_b_receipt \
+    p240_b_receipt_required_before_b_answer \
+    p240_b_answer_required_before_a_dsm \
+    p240_a_dsm_required_before_client_subdb_install \
+    p240_stale_destination_lookup_job_does_not_classify_streaming \
+    p240_no_production_change; do
+    if ! grep -q "fn ${unit_row}" "${P240_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_DRIVER_TEST} lacks Plan 240 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# 29g. The streaming helper stays frozen: the Router-B observer lives
+# in the ControlledRouter diagnostic, never in the client helper.
+if grep -q -F 'P240' "${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java" 2>/dev/null; then
+  echo "m6 mixed-router evidence check failed: ReferenceStreamingService.java carries Plan 240 surface (Plan 240 §13: observer lives on Router A)" >&2
+  failures=$((failures + 1))
+fi
+if [[ -f "${P240_SOURCE_LOCK}" ]]; then
+  for required in \
+    'isNegativeCached(_key)' \
+    'Negative cached, not searching: ' \
+    'selectFloodfillParticipants(_rkey, _totalSearchLimit + EXTRA_PEERS, ks)' \
+    'New ISJ for ' \
+    'toTry: ' \
+    'Skipping query w/ router too close to others ' \
+    'StoreJob.shouldStoreTo(ri)' \
+    'not sending query to old router: ' \
+    ' failed, no IB client tunnel to receive reply' \
+    ' skipped, no ratchet/elg support' \
+    'not doing zero-hop self-lookup of ' \
+    'not doing zero-hop lookup to unknown ' \
+    'ISJ try ' \
+    'Encrypted DLM for ' \
+    'getPeersByCapability(FloodfillNetworkDatabaseFacade.CAPABILITY_FLOODFILL)' \
+    'isBanlistedForever(h)' \
+    'Same /16, family, or port: ' \
+    'Good: ' \
+    'OK: ' \
+    'Bad (DB): ' \
+    'Bad (no hist): ' \
+    'Bad (no prof): '; do
+    if ! grep -q -F "${required}" "${P240_SOURCE_LOCK}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_SOURCE_LOCK} lacks Plan 240 pinned signal '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P240_HARNESS}" ]]; then
+  for required in \
+    'P240Probe.java' \
+    'JAVA_DIAGNOSTIC_B_PORT' \
+    'JAVA_A_LOG_DIR' \
+    'p240-router-b-pre' \
+    'p240-target-context' \
+    'p240-target-job-trace' \
+    'p240-lookup-trace' \
+    'p240-classification' \
+    'external-p240-router-b' \
+    'external-p240-target-context' \
+    'external-p240-target-job-trace' \
+    'external-p240-lookup-trace' \
+    'external-p240-classification'; do
+    if ! grep -q -F "${required}" "${P240_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_HARNESS} lacks Plan 240 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P240-" "${P240_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P240_HARNESS} invents a Plan 240 terminal" >&2
+    failures=$((failures + 1))
+  fi
+  # No P240 row may carry topology/profile/tunnel-policy changes,
+  # timeout overrides, public-I2P/reseed/VMComm/alwaysQuery escapes,
+  # or raw log promotion relative to Plan 239.
+  p240_harness_lines="$(grep -n -E 'p240|P240' "${P240_HARNESS}" || true)"
+  for forbidden in \
+    'explicitPeers' \
+    'forceBandwidthClass' \
+    'netDb.alwaysQuery' \
+    'vmCommSystem' \
+    'reseed' \
+    'floodfillParticipant' \
+    'Pool.length' \
+    'DRIVER_TIMEOUT=' \
+    'DATAGRAM' \
+    'log-router'; do
+    if printf '%s\n' "${p240_harness_lines}" | grep -q -F "${forbidden}"; then
+      echo "m6 mixed-router evidence check failed: ${P240_HARNESS} P240 row carries forbidden surface '${forbidden}' (Plan 240 §12)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants)"
