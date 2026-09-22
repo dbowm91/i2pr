@@ -1,3 +1,23 @@
+# Current dependency amendment — Plan 237 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 236 closed at the Java response-emission observability gap. Plan 237 is
+registered-ready to replace the literal response placeholders with measured
+stock-Java scheduler/ACK/sendMessage evidence and continue only from the first
+proven stage.
+
+Plan 204 remains blocked until independent M6 Java second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan237
+plan_236 = passed-m6-java-streaming-response-emission-observability-gap
+plan_237 = registered-ready-m6-java-streaming-stock-response-observability-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 237-m6-java-streaming-stock-response-observability-corrective
+```
+
 # Current dependency amendment — Plan 236 closed at response-emission observability gap; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
