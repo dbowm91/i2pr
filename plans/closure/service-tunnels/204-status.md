@@ -1,3 +1,19 @@
+# Current dependency amendment — Plan 243 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 242 closed the corrected stock selector/bootstrap/pair-gate harness semantics, but its closure host lacked the Java reference cache plus i2pr daemon pair, so live counted external attempts remain outstanding.
+
+Plan 243 is registered-ready to qualify a capable execution host and run the frozen Plan-242 Streaming lane three times on one SHA with no tuning. It pre-authorizes no topology, selector, publication, timing, Java-source, or production-i2pr corrective.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure.
+
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan243
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
+plan_243 = registered-ready-m6-java-streaming-hosted-stock-client-build-qualification
+milestone10_final_acceptance = closed
+next_executable_plan = 243-m6-java-streaming-hosted-stock-client-build-qualification
+
 # Current dependency amendment — Plan 242 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
