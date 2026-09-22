@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 237 closed at Router-A boundary; Plan 238 registered; M10 product authority remains closed
+
+Plan 204 remains convergence-only. M10 product/application authority through
+Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 237 closed at `P237-D-ROUTER-I2CP-NOT-OBSERVED` on `a1065d1` (three
+identical counted executions; scheduler/construction/sendMessage proven
+with deltas 2/1/3, zero failures; full serial workspace floor green
+including `sam_stream_final_acceptance` 10/10). Router-A admission on the
+streaming response path remains unobserved, so M6 Java second-family
+closure is still outstanding. Plan 238 is registered-ready for the narrow
+Router-A admission observer.
+
+Plan 204 therefore remains blocked until the independent M6 Java
+second-family closure gates are satisfied (now pending Plan 238).
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan238
+plan_237 = passed-m6-java-streaming-stock-response-observability-corrective-with-router-i2cp-not-observed-boundary
+plan_238 = registered-ready-m6-java-streaming-router-a-admission-observer
+milestone10_final_acceptance = closed
+next_executable_plan = 238-m6-java-streaming-router-a-admission-observer
+```
+
 # Current dependency amendment — Plan 237 registered; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through

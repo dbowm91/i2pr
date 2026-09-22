@@ -1,3 +1,26 @@
+# Current dependency amendment — Plan 237 closed at Router-A I2CP-not-observed; Plan 238 registered
+
+Plan 237 is now closed at
+`passed-m6-java-streaming-stock-response-observability-corrective-with-router-i2cp-not-observed-boundary`
+(see `237-status.md`): three identical counted executions on `a1065d1`
+proved scheduler action (delta 2), response-packet construction (delta 1),
+and `I2PSession.sendMessage` return (lifetime-event delta 3, zero failures)
+from real stock helper-JVM observations, then stopped at the first Router-A
+stage, for which no probe exists yet. The Plan-236 literal placeholders are
+real observations now; no Java source or production Rust changed.
+
+Plan 201's `blocked-pending-plan237` hard dependency is therefore closed,
+but Plan 201 stays blocked: the streaming axis needs the Plan 238 narrow
+Router-A admission observer, and the publication/final-closure axis is
+unchanged.
+
+```text
+plan_201 = blocked-after-plan237-router-i2cp-not-observed-pending-router-a-observer-and-publication-closure
+plan_237 = passed-m6-java-streaming-stock-response-observability-corrective-with-router-i2cp-not-observed-boundary
+plan_238 = registered-ready-m6-java-streaming-router-a-admission-observer
+next_executable_plan = 238-m6-java-streaming-router-a-admission-observer
+```
+
 # Current dependency amendment — Plan 237 registered for real stock-Java response observation
 
 Plan 236 remains closed at
