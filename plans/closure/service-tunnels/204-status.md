@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 240 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 239 closed the current Streaming branch at
+`P239-D-TARGET-LEASESET-LOOKUP-FAILED`: Router A admits the Java response
+client messages, but the helper client NetDB has no local target LS and the
+remote lookup fails before OCMOSJ can select a target lease or dispatch.
+
+Plan 240 is registered-ready to reuse the existing Plan-225/226 exact
+target-job lookup trace in the Streaming epoch and identify the earliest
+Router-B selection/query/reply/install boundary.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan240
+plan_240 = registered-ready-m6-java-streaming-target-leaseset-lookup-failure-attribution
+milestone10_final_acceptance = closed
+next_executable_plan = 240-m6-java-streaming-target-leaseset-lookup-failure-attribution
+```
+
 # Current dependency amendment — Plan 239 tightened; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed.
