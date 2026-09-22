@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 232 closed the M6-only route-derived lease correction at Outcome B (raw reverse passed, Streaming SYN-ACK boundary). Plan 233 was superseded-before-execution; Plan 234 closed at `P234-B-JAVA-ACCEPTED-NO-RESPONSE-OBSERVED`; Plan 235 closed at `P235-B-JAVA-SOCKET-SURFACE-READY-NO-I2PR-INBOUND`; Plan 236 is registered-ready for exact Java response-emission/I2CP attribution. None of Plans 231-236 changes closed M10 product authority.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 232 closed the M6-only route-derived lease correction at Outcome B (raw reverse passed, Streaming SYN-ACK boundary). Plan 233 was superseded-before-execution; Plan 234 closed at `P234-B-JAVA-ACCEPTED-NO-RESPONSE-OBSERVED`; Plan 235 closed at `P235-B-JAVA-SOCKET-SURFACE-READY-NO-I2PR-INBOUND`; Plan 236 closed at `P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. None of Plans 231-236 changes closed M10 product authority.
 
 ## 5. Target architecture
 
@@ -104,8 +104,8 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 232 closed the route-derived lease correction at Outcome B; Plan 233 is superseded-before-execution; Plan 234 closed at the Java-accepted/no-response boundary; Plan 235 closed at the post-accept/pre-i2pr-inbound boundary; Plan 236 is registered-ready for exact response-emission/I2CP attribution; convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 232 closed the route-derived lease correction at Outcome B; Plan 233 is superseded-before-execution; Plan 234 closed at the Java-accepted/no-response boundary; Plan 235 closed at the post-accept/pre-i2pr-inbound boundary; Plan 236 closed at the response-emission observability gap; convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure pending Plan 236 response-emission/I2CP attribution.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure after the Plan 236 response-emission observability gap.

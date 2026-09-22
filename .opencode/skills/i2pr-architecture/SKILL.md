@@ -22,6 +22,12 @@ Load this skill whenever an agent needs to:
 - Audit doc-vs-source drift before editing
 - Write or update a deep-dive consistent with the rest of the surface
 
+For the current M6 Java second-family boundary, use
+`plans/closure/mixed-router-interop/236-status.md` and
+`docs/architecture/interop-apparatus.md`: Plan 236 source-locks the pinned
+Java response path and closes at an observability gap, without claiming
+Router-A or i2pr delivery.
+
 ## Documentation surface
 
 ```text

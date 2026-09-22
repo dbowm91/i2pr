@@ -1,5 +1,20 @@
 # Plan 040/041/043/044 interoperability apparatus
 
+## Current M6 Java second-family boundary
+
+The historical apparatus below is not the authority for current M6 Java
+Streaming evidence. Plan 236 is the current bounded diagnostic authority:
+`scripts/interop/check-m6-java-response-source-lock.sh` validates the exact
+Java I2P 2.13.0 source path
+`ConnectionPacketHandler.receivePacket` → `Connection.eventOccurred` →
+`SchedulerReceived.eventOccurred` → `Connection.sendPacket` →
+`PacketQueue.enqueue` → `I2PSession.sendMessage`. The source lock and the
+sanitized Plan-236 terminal are durable facts; a returned `I2PSocket` does not
+prove response emission, Router-A I2CP admission, tunnel dispatch, or i2pr
+delivery. Plan 236 closed at
+`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`, so Java-family M6 remains
+unclaimed and no production corrective is authorized.
+
 The Ubuntu reference-router harness is preparation infrastructure, not a
 runtime plane and not an interoperability claim. Preparation runs on the
 supported Ubuntu 24.04 amd64 host and may fetch only the lock-listed source,

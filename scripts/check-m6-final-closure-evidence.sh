@@ -95,6 +95,7 @@ mandatory_java = {
     "direct-rejected", "liveness-first-test", "shutdown-baseline",
     "p234-classification", "p234-syn-epoch", "p234-java-accept-state",
     "p235-classification", "p235-syn-epoch", "p235-java-response-state",
+    "p236-classification", "p236-response-epoch",
 }
 java_keys = set(java_evidence.get("driver_evidence_keys", []))
 missing = sorted(mandatory_java - java_keys)
@@ -111,8 +112,13 @@ p235_passed = any(
     and "P235-JAVA-STREAMING-PASSED" in line
     for line in driver_tsv_text.splitlines()
 )
-if missing or bad or not (p234_passed or p235_passed) or java_evidence.get("m6_java") != "passed-via-java-2.13.0":
-    raise SystemExit(f"Java public-client ledger is not all-pass: missing={missing} bad={bad} p234_passed={p234_passed} p235_passed={p235_passed} status={java_evidence.get('m6_java')}")
+p236_passed = any(
+    line.startswith("p236-classification\t")
+    and "P236-F-DIRECTION-A-ESTABLISHED" in line
+    for line in driver_tsv_text.splitlines()
+)
+if missing or bad or not (p234_passed or p235_passed) or not p236_passed or java_evidence.get("m6_java") != "passed-via-java-2.13.0":
+    raise SystemExit(f"Java public-client ledger is not all-pass: missing={missing} bad={bad} p234_passed={p234_passed} p235_passed={p235_passed} p236_passed={p236_passed} status={java_evidence.get('m6_java')}")
 
 print(f"mandatory_i2pd: {len(families['i2pd'])}/{len(generic)} passed, 0 blocked, 0 failed, 0 missing")
 print(f"mandatory_java: {len(mandatory_java)}/{len(mandatory_java)} passed, 0 blocked, 0 failed, 0 missing")

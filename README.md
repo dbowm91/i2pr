@@ -17,9 +17,14 @@ evidence.
 | M8 SSU2 v2 | Direct-session interop against exact-pinned i2pd over loopback UDP | Closed (bounded scope) |
 | M9 I2CP | Loopback server product plus independent LeaseSet2 lifecycle | Closed |
 | M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed (hosted double-pass; docs normalization pending) |
-| M6 mixed-router | i2pd first-family Streaming | Closed; Java second family open |
+| M6 mixed-router | i2pd first-family Streaming | Closed; Java second family remains blocked at the Plan 236 response-emission observability gap |
 
 Interoperability beyond the rows above is not claimed.
+
+The Java second-family diagnostic is closed at
+`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. The exact Java I2P 2.13.0
+response path is source-locked, but response emission was not observable on
+two same-SHA attempts; no Router-A or i2pr-owned conclusion is claimed.
 
 ## Workspace
 

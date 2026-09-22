@@ -1,11 +1,18 @@
-# Current dependency amendment — Plan 236 registered for exact Java response-emission attribution
+# Current dependency amendment — Plan 236 closed at exact Java response-emission observability gap
+
+Plan 236 is now closed at
+`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`: the exact pinned Java
+response path was source-locked, but stock helper/router observations did not
+prove scheduler/packet construction/PacketQueue/I2PSession emission on two
+same-SHA attempts. Plan 201 remains blocked; Router-A and i2pr-owned stages
+were not attributed.
 
 Plan 235 remains closed at
 `passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound`.
 Its three same-SHA attempts proved Java socket-surface readiness and i2pr
 outbound admission/dispatch, but no inbound TunnelData.
 
-Plan 236 is now the dependency-ready continuation. It owns only the exact
+Plan 236 was the bounded continuation. It owned only the exact
 missing interval from the pinned Java Streaming response scheduler through
 `Connection.sendPacket`, `PacketQueue.enqueue`,
 `I2PSession.sendMessage`, Router-A client-message admission/dispatch, the
@@ -19,10 +26,10 @@ Plan-200/201 client-LS2 publication/final-closure rows remain fail-closed and
 are not superseded by this diagnostic registration.
 
 ```text
-plan_201 = blocked-pending-plan236-java-streaming-response-emission-attribution
+plan_201 = blocked-after-plan236-java-response-emission-observability-gap
 plan_235 = passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound
-plan_236 = registered-ready-m6-java-streaming-response-emission-and-i2cp-send-attribution
-next_executable_plan = 236-m6-java-streaming-response-emission-and-i2cp-send-attribution
+plan_236 = passed-m6-java-streaming-response-emission-observability-gap
+next_executable_plan = none-registered
 ```
 
 # Current dependency amendment — Plan 235 closed at the Java socket-surface boundary
@@ -41,7 +48,7 @@ no inbound TunnelData. Plan 201 remains blocked; no final publication/LeaseSet2
 authority claim is unblocked.
 
 ```text
-plan_201 = blocked-after-plan235-java-socket-surface-ready-no-i2pr-inbound
+plan_201 = blocked-after-plan236-java-response-emission-observability-gap
 plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
 plan_235 = passed-m6-java-streaming-post-accept-response-boundary-attributed-no-i2pr-inbound
 next_executable_plan = none
