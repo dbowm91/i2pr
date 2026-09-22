@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 239 closed at `P239-D-TARGET-LEASESET-LOOKUP-FAILED` on `d82cf06` x3; a narrow lookup-failure follow-up needs its own plan-of-record. None of Plans 231-239 changes closed M10 product authority.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure. Plan 239 closed at `P239-D-TARGET-LEASESET-LOOKUP-FAILED` on `d82cf06` x3; Plan 240 is registered-ready for the narrow Streaming lookup-failure attribution. None of Plans 231-240 changes closed M10 product authority.
 
 ## 5. Target architecture
 
@@ -70,7 +70,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 199 | superseded | superseded-execution-decomposed-and-closed-via-plans200-204. | — | `plans/closure/service-tunnels/199-m10-unified-final-closure.md`; `plans/closure/service-tunnels/199-status.md` |
 | 202 | superseded | partial-m10-remote-routing-capability-surface-superseded-by-plan206 (Plan 206 §5 promoted the marker/counter capabili... | `plans/implementation/service-tunnels/202-m10-production-remote-destination-and-streaming-composition.md` | `plans/closure/service-tunnels/202-status.md` |
 | 203 | superseded | retained-partial-m10-remote-application-evidence-scaffolding-superseded-by-plan207 (the `m10_positive_remote_http_and... | `plans/implementation/service-tunnels/203-m10-positive-remote-http-and-irc-application-interop.md` | `plans/closure/service-tunnels/203-status.md` |
-| 204 | blocked | blocked-on-m6-java-second-family-closure-pending-lookup-failure-followup-after-plan239 | — | `plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`; `plans/closure/service-tunnels/204-status.md` |
+| 204 | blocked | blocked-on-m6-java-second-family-closure-pending-plan240 | — | `plans/closure/service-tunnels/204-m10-final-closure-evidence-authority-and-documentation-normalization.md`; `plans/closure/service-tunnels/204-status.md` |
 | 206 | superseded | retained-partial-executable-backend-seams-superseded-by-plan208 (the executable `ServiceDestinationDelivery` backend ... | `plans/implementation/service-tunnels/206-m10-production-remote-delivery-composition-corrective.md` | `plans/closure/service-tunnels/206-status.md` |
 | 207 | superseded | passed-m10-genuine-remote-http-and-irc-application-interop-superseded-by-plan209 (introduced real system `curl` + exa... | `plans/implementation/service-tunnels/207-m10-genuine-remote-http-and-irc-application-interop-corrective.md` | `plans/closure/service-tunnels/207-status.md` |
 | 208 | closed | passed-m10-production-delivery-driver-remote-route-integration (`crates/i2pr-daemon/src/service_tunnels.rs::deliver_o... | `plans/implementation/service-tunnels/208-m10-production-delivery-driver-remote-route-integration-corrective.md` | `plans/closure/service-tunnels/208-status.md` |
@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 239 closed at `P239-D-TARGET-LEASESET-LOOKUP-FAILED` with admission and dispatch-absence proven. A narrow lookup-failure follow-up needs its own plan-of-record. None reopens or downgrades M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 239 closed at `P239-D-TARGET-LEASESET-LOOKUP-FAILED` with admission and dispatch-absence proven, and Plan 240 now owns the narrow lookup-failure attribution. None reopens or downgrades M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 239 closed at the Target-Leaseset-Lookup-Failed boundary with admission proven. Convergence remains blocked until Java-family qualification closes M6 via a lookup-failure follow-up plan-of-record.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 239 closed at the Target-Leaseset-Lookup-Failed boundary with admission proven; Plan 240 is registered-ready for exact lookup-failure attribution. Convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure pending lookup-failure follow-up after Plan 239.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure pending Plan 240.
