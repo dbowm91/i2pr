@@ -1383,6 +1383,189 @@ fn p237_production_change_allowed_before_owned_defect(
     !production_changed || expected_tunneldata_seen
 }
 
+// ---- Plan 238 §5–§7 Router-A admission observer ---------------------------
+// Read-only Router-A observation for the streaming response epoch. The
+// streaming helper's `REPORT_RESPONSE_STATS` proves scheduler action,
+// response-packet construction, and `I2PSession.sendMessage` return;
+// the narrowest useful Router-A successor is a single I2CP-admission
+// boolean (`client.distributeTime` lifetime-event delta on Router A,
+// added in `ClientMessageEventListener.handleSendMessage` after
+// `distributeMessage`) with `client.dispatchTime` /
+// `client.dispatchSendTime` as the immediate dispatch-admission
+// corroboration. `tunnel.dispatchOutboundTunnel` is recorded as
+// tunnel-handoff context but never satisfies a stage alone in this
+// plan (claiming it would skip the lease/tunnel selection stages).
+// Later D/E-transit/IBGW stages stay false (Unknown) until a successor
+// observes them; the Plan-237 B/C ordering and the
+// no-later-terminal-while-earlier-Unknown rule are retained unchanged.
+
+/// Bounded Router-A admission snapshot from `P238-ADMISSION`.
+/// Counts are signed lifetime event counts (`-1` = rate never created,
+/// i.e. Unknown, never zero-as-fact).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P238Admission {
+    distribute_time: i64,
+    dispatch_time: i64,
+    dispatch_send_time: i64,
+    dispatch_outbound_tunnel: i64,
+}
+
+fn p238_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P238-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p238_parse_admission(line: &str) -> Option<P238Admission> {
+    if !line.starts_with("P238-EV ") || !line.contains("kind=admission") {
+        return None;
+    }
+    if line.len() > 1024 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p238_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P238-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    Some(P238Admission {
+        distribute_time: p231_parse_count_signed(kv.get("distribute_time"))?,
+        dispatch_time: p231_parse_count_signed(kv.get("dispatch_time"))?,
+        dispatch_send_time: p231_parse_count_signed(kv.get("dispatch_send_time"))?,
+        dispatch_outbound_tunnel: p231_parse_count_signed(kv.get("dispatch_outbound_tunnel"))?,
+    })
+}
+
+async fn p238_collect_admission(diag_port: u16) -> Option<P238Admission> {
+    if diag_port == 0 {
+        return None;
+    }
+    let line = p220_query_diagnostic(diag_port, "P238-ADMISSION").await?;
+    p238_parse_admission(&line)
+}
+
+/// Isolated-epoch deltas for cumulative Router-A lifetime counts.
+/// Either endpoint unknown (`< 0`) yields `None` (Unknown); a known
+/// zero delta with both endpoints known is proven absence, not Unknown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P238Deltas {
+    distribute_delta: Option<u64>,
+    dispatch_delta: Option<u64>,
+    dispatch_send_delta: Option<u64>,
+    dispatch_outbound_tunnel_delta: Option<u64>,
+}
+
+fn p238_count_delta(post: i64, pre: i64) -> Option<u64> {
+    if pre < 0 || post < 0 {
+        return None;
+    }
+    let pre = u64::try_from(pre).ok()?;
+    let post = u64::try_from(post).ok()?;
+    Some(post.saturating_sub(pre))
+}
+
+fn p238_deltas(pre: &P238Admission, post: &P238Admission) -> P238Deltas {
+    P238Deltas {
+        distribute_delta: p238_count_delta(post.distribute_time, pre.distribute_time),
+        dispatch_delta: p238_count_delta(post.dispatch_time, pre.dispatch_time),
+        dispatch_send_delta: p238_count_delta(post.dispatch_send_time, pre.dispatch_send_time),
+        dispatch_outbound_tunnel_delta: p238_count_delta(
+            post.dispatch_outbound_tunnel,
+            pre.dispatch_outbound_tunnel,
+        ),
+    }
+}
+
+/// Maps real Router-A admission observations onto the Plan-237 D-stage
+/// input. Only the first two D stages are attributable in this plan:
+/// `router_i2cp_observed` from a positive `client.distributeTime`
+/// delta, `client_message_admitted` from a positive
+/// `client.dispatchTime` or `client.dispatchSendTime` delta. Every
+/// later stage stays false (Unknown). A later true can never skip an
+/// earlier Unknown: callers MUST NOT set a later stage true while an
+/// earlier stage is false, and `p237_classify_response` enforces the
+/// same ordering independently.
+fn p238_router_stages_from_admission(
+    pre: Option<P238Admission>,
+    post: Option<P238Admission>,
+) -> P237RouterStages {
+    let (Some(pre), Some(post)) = (pre, post) else {
+        return P237RouterStages::default();
+    };
+    let deltas = p238_deltas(&pre, &post);
+    let router_i2cp_observed = deltas.distribute_delta.is_some_and(|delta| delta > 0);
+    // Dispatch admission corroboration: either dispatch rate advancing
+    // proves the OCMOSJ dispatch path ran. It never fires without the
+    // I2CP admission above, and the classifier below stops at the
+    // first Unknown regardless.
+    let dispatch_observed = deltas.dispatch_delta.is_some_and(|delta| delta > 0)
+        || deltas.dispatch_send_delta.is_some_and(|delta| delta > 0);
+    let client_message_admitted = router_i2cp_observed && dispatch_observed;
+    P237RouterStages {
+        router_i2cp_observed,
+        client_message_admitted,
+        ..P237RouterStages::default()
+    }
+}
+
+fn record_p238_admission_epoch(
+    evidence_dir: &Path,
+    pre: Option<P238Admission>,
+    post: Option<P238Admission>,
+) {
+    let pre = pre.unwrap_or(P238Admission {
+        distribute_time: -1,
+        dispatch_time: -1,
+        dispatch_send_time: -1,
+        dispatch_outbound_tunnel: -1,
+    });
+    let post = post.unwrap_or(P238Admission {
+        distribute_time: -1,
+        dispatch_time: -1,
+        dispatch_send_time: -1,
+        dispatch_outbound_tunnel: -1,
+    });
+    let deltas = p238_deltas(&pre, &post);
+    append_evidence(
+        evidence_dir,
+        "p238-admission-pre",
+        &format!(
+            "distribute_time={} dispatch_time={} dispatch_send_time={} dispatch_outbound_tunnel={}",
+            pre.distribute_time,
+            pre.dispatch_time,
+            pre.dispatch_send_time,
+            pre.dispatch_outbound_tunnel,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p238-admission-post",
+        &format!(
+            "distribute_time={} dispatch_time={} dispatch_send_time={} dispatch_outbound_tunnel={}",
+            post.distribute_time,
+            post.dispatch_time,
+            post.dispatch_send_time,
+            post.dispatch_outbound_tunnel,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p238-admission-deltas",
+        &format!(
+            "distribute_delta={:?} dispatch_delta={:?} dispatch_send_delta={:?} dispatch_outbound_tunnel_delta={:?}",
+            deltas.distribute_delta,
+            deltas.dispatch_delta,
+            deltas.dispatch_send_delta,
+            deltas.dispatch_outbound_tunnel_delta,
+        ),
+    );
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -9292,6 +9475,17 @@ async fn streaming_through_java() {
     // (run-java.sh starts one streaming helper per counted attempt with
     // no other Streaming traffic), so deltas isolate the SYN epoch.
     let p237_pre = stream_control.report_plan237_response_stats().await;
+    // Plan 238 §7 — baseline Router-A admission snapshot immediately
+    // before the Direction-A SYN. Router A is long-lived across the
+    // destination + streaming sub-runs (Plan 217 §6.D), so only the
+    // isolated-epoch delta attributes the SYN epoch; absolutes never
+    // do. A missing/unreachable diagnostic port yields `None`
+    // (Unknown), never a protocol fact.
+    let p238_diag_port: u16 = std::env::var("JAVA_DIAGNOSTIC_A_PORT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let p238_pre = p238_collect_admission(p238_diag_port).await;
     let outcome = streaming
         .connect(
             &local_identity,
@@ -9513,6 +9707,10 @@ async fn streaming_through_java() {
     // stage from the Plan-236 literal placeholders, `accept_returned`,
     // or `socket_surface_ready` alone.
     let p237_post = stream_control.report_plan237_response_stats().await;
+    // Plan 238 §7 — second Router-A admission snapshot at the end of
+    // the frozen response window; the earliest D stage is classified
+    // from the isolated-epoch delta (never absolutes).
+    let p238_post = p238_collect_admission(p238_diag_port).await;
     let p237_baseline_ok = p235_plan234_baseline_ok
         && !matches!(
             p235_terminal,
@@ -9522,11 +9720,15 @@ async fn streaming_through_java() {
                 | P235Terminal::JavaSocketSurfaceNotReady
                 | P235Terminal::I2prOutboundAdmissionFailed
         );
-    // No Router-A/C/B probe exists on the streaming path in Plan 237;
-    // D/E-transit/IBGW stages stay false (Unknown). A proven sendMessage
-    // therefore stops at `P237-D-ROUTER-I2CP-NOT-OBSERVED` with a narrow
-    // Router-A-observer successor registered — never a later terminal.
-    let p237_router = P237RouterStages::default();
+    // Plan 238 §7 — Router-A D stages from real stock observations.
+    // The P237 B/C ordering and the no-later-terminal-while-earlier-
+    // Unknown rule are retained: a proven sendMessage with no Router-A
+    // delta still stops at `P237-D-ROUTER-I2CP-NOT-OBSERVED`; a
+    // distribute delta stops at `P237-D-CLIENT-MESSAGE-NOT-ADMITTED`;
+    // distribute + dispatch deltas stop at `P237-D-NO-TARGET-LEASESET`.
+    // E-transit/IBGW and i2pr stages stay Unknown until a successor
+    // observes them — never a later terminal.
+    let p237_router = p238_router_stages_from_admission(p238_pre, p238_post);
     let p237_terminal = p237_classify_response(
         p237_baseline_ok,
         p237_pre,
@@ -9534,6 +9736,7 @@ async fn streaming_through_java() {
         &p237_router,
         &p234_epoch,
     );
+    record_p238_admission_epoch(&evidence_dir, p238_pre, p238_post);
     record_p237_response_epoch(
         &evidence_dir,
         p237_pre,
@@ -20003,6 +20206,277 @@ fn p237_socket_surface_ready_does_not_satisfy_response_stage() {
 
 #[test]
 fn p237_no_production_change() {
+    assert!(p237_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p237_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p237_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+}
+
+// ---- Plan 238 §9 unit rows ------------------------------------------------
+// Focused local rows locking the Router-A admission observer. They run
+// in the ordinary workspace floor (no external environment).
+
+fn p238_admission(
+    distribute: i64,
+    dispatch: i64,
+    dispatch_send: i64,
+    outbound_tunnel: i64,
+) -> P238Admission {
+    P238Admission {
+        distribute_time: distribute,
+        dispatch_time: dispatch,
+        dispatch_send_time: dispatch_send,
+        dispatch_outbound_tunnel: outbound_tunnel,
+    }
+}
+
+fn p238_proven_stats() -> (P237ResponseStats, P237ResponseStats) {
+    (p237_stats(0, 0, 3, 0, 0), p237_stats(2, 2, 4, 0, 0))
+}
+
+#[test]
+fn p238_admission_parser_accepts_valid_and_rejects_malformed() {
+    let valid = "P238-EV kind=admission observable=true distribute_time=12 dispatch_time=9 dispatch_send_time=9 dispatch_outbound_tunnel=7";
+    let parsed = p238_parse_admission(valid).expect("valid admission parses");
+    assert_eq!(parsed.distribute_time, 12);
+    assert_eq!(parsed.dispatch_time, 9);
+    assert_eq!(parsed.dispatch_send_time, 9);
+    assert_eq!(parsed.dispatch_outbound_tunnel, 7);
+    let unknown = "P238-EV kind=admission observable=true distribute_time=-1 dispatch_time=-1 dispatch_send_time=-1 dispatch_outbound_tunnel=-1";
+    let parsed_unknown = p238_parse_admission(unknown).expect("unknown admission parses");
+    assert_eq!(parsed_unknown.distribute_time, -1);
+    // Wrong prefix, missing kind, unobservable, and secret-bearing
+    // rows never parse as admission observations.
+    assert_eq!(
+        p238_parse_admission("P231-EV kind=gateway observable=true dispatch_time=1"),
+        None
+    );
+    assert_eq!(
+        p238_parse_admission(
+            "P238-EV observable=true distribute_time=1 dispatch_time=1 dispatch_send_time=1 dispatch_outbound_tunnel=1"
+        ),
+        None
+    );
+    assert_eq!(
+        p238_parse_admission(
+            "P238-EV kind=admission observable=false reason=probe-threw-RuntimeException"
+        ),
+        None
+    );
+    assert_eq!(
+        p238_parse_admission("P238-EV kind=admission observable=true distribute_time=1"),
+        None
+    );
+}
+
+#[test]
+fn p238_unknown_admission_stays_at_router_i2cp() {
+    // No Router-A probe (missing diagnostic port): stages stay Unknown
+    // and a proven sendMessage stops at the first D stage — never a
+    // later terminal, never Established.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(None, None);
+    assert_eq!(router, P237RouterStages::default());
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::RouterI2cpNotObserved
+    );
+    // A never-created rate (-1 on either endpoint) is Unknown too.
+    let router_unknown = p238_router_stages_from_admission(
+        Some(p238_admission(-1, -1, -1, -1)),
+        Some(p238_admission(-1, -1, -1, -1)),
+    );
+    assert_eq!(router_unknown, P237RouterStages::default());
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &router_unknown,
+            &p237_complete_epoch()
+        ),
+        P237Terminal::RouterI2cpNotObserved
+    );
+}
+
+#[test]
+fn p238_zero_delta_with_enabled_stat_is_proven_absence_not_promotion() {
+    // Both endpoints known (>= 0) but zero delta: proven Router-A
+    // absence for the epoch (stat enablement proven by known counts),
+    // still the first D terminal — absence never promotes.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(12, 9, 9, 7)),
+    );
+    assert!(!router.router_i2cp_observed);
+    assert!(!router.client_message_admitted);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::RouterI2cpNotObserved
+    );
+}
+
+#[test]
+fn p238_distribute_delta_proves_router_i2cp() {
+    // Proven sendMessage + positive distribute delta with no dispatch
+    // delta: first D observed, stops at the second D stage.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(13, 9, 9, 7)),
+    );
+    assert!(router.router_i2cp_observed);
+    assert!(!router.client_message_admitted);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::ClientMessageNotAdmitted
+    );
+}
+
+#[test]
+fn p238_dispatch_delta_proves_client_admission() {
+    // Distribute + dispatch deltas: first two D stages observed, stops
+    // at the first unobserved D stage (no target LeaseSet in this
+    // plan) — never a later E/F terminal.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(13, 10, 10, 7)),
+    );
+    assert!(router.router_i2cp_observed);
+    assert!(router.client_message_admitted);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::NoTargetLeaseSet
+    );
+    // dispatch_send_time alone corroborates the same stage.
+    let router_send = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(13, 9, 10, 7)),
+    );
+    assert!(router_send.client_message_admitted);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &router_send,
+            &p237_complete_epoch()
+        ),
+        P237Terminal::NoTargetLeaseSet
+    );
+}
+
+#[test]
+fn p238_router_admission_requires_sendmessage_returned() {
+    // Router-A deltas without a sendMessage delta never reach D: the
+    // epoch stops at C even when admission advanced (stale or
+    // unrelated Router-A traffic cannot promote the epoch).
+    let pre = p237_stats(0, 0, 5, 0, 0);
+    let post = p237_stats(2, 2, 5, 0, 0);
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(13, 10, 10, 8)),
+    );
+    assert!(router.router_i2cp_observed);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::AckConstructedNoSendMessage
+    );
+}
+
+#[test]
+fn p238_later_stage_cannot_skip_earlier_unknown() {
+    // Dispatch delta without distribute delta: the later observation
+    // cannot skip the earlier Unknown — still the first D terminal.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(12, 10, 10, 7)),
+    );
+    assert!(!router.router_i2cp_observed);
+    assert!(!router.client_message_admitted);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::RouterI2cpNotObserved
+    );
+}
+
+#[test]
+fn p238_send_failure_precedes_router_admission() {
+    // Stock failure evidence wins over any Router-A stage: a failed
+    // send never continues into D attribution even with admission
+    // deltas present.
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(2, 2, 1, 1, 0);
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(13, 10, 10, 8)),
+    );
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch(),),
+        P237Terminal::SendMessageFailed
+    );
+}
+
+#[test]
+fn p238_outbound_tunnel_context_never_satisfies_stage_alone() {
+    // Tunnel-handoff context without admission/dispatch deltas never
+    // satisfies a D stage alone in this plan.
+    let (pre, post) = p238_proven_stats();
+    let router = p238_router_stages_from_admission(
+        Some(p238_admission(12, 9, 9, 7)),
+        Some(p238_admission(12, 9, 9, 8)),
+    );
+    assert!(!router.router_i2cp_observed);
+    assert!(!router.client_message_admitted);
+    assert_eq!(router, P237RouterStages::default());
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch()),
+        P237Terminal::RouterI2cpNotObserved
+    );
+}
+
+#[test]
+fn p238_i2pr_owned_terminal_requires_expected_tunneldata() {
+    // All Java/D stages pass (synthetic full pass) but no expected
+    // TunnelData reached i2pr: stops at E-I2PR, never at an F
+    // owned-defect terminal.
+    let (pre, post) = p238_proven_stats();
+    let mut epoch = p237_complete_epoch();
+    epoch.i2pr_expected_stream_tunneldata_count = 0;
+    epoch.i2pr_tunnel_recovery_count = 0;
+    epoch.i2pr_tunnel_recovery_failures = 1;
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &p237_router_all_pass(), &epoch,),
+        P237Terminal::I2prNoExpectedTunnelData
+    );
+}
+
+#[test]
+fn p238_accept_socket_surface_satisfy_nothing() {
+    // Accept returned + socket surface ready (baseline ok) but zero
+    // stock deltas and no Router-A observation: still B. Surface
+    // readiness never promotes the epoch.
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(0, 0, 0, 0, 0);
+    let router = p238_router_stages_from_admission(None, None);
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &router, &p237_complete_epoch(),),
+        P237Terminal::SchedulerNotObserved
+    );
+}
+
+#[test]
+fn p238_no_production_change() {
+    // Same fail-closed production gate as Plan 237: no production
+    // change without exact expected TunnelData at an i2pr-owned stage.
     assert!(p237_production_change_allowed_before_owned_defect(
         false, false
     ));

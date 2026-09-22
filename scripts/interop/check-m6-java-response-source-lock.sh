@@ -17,6 +17,10 @@ OUTPUT="$2"
 EXPECTED_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
 STREAMING_ROOT="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl"
 I2CP_SESSION="${SOURCE_ROOT}/core/java/src/net/i2p/client/I2PSession.java"
+ROUTER_CLIENT="${SOURCE_ROOT}/router/java/src/net/i2p/router/client/ClientMessageEventListener.java"
+ROUTER_OCMOSJ="${SOURCE_ROOT}/router/java/src/net/i2p/router/message/OutboundClientMessageOneShotJob.java"
+ROUTER_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/ClientMessagePool.java"
+ROUTER_DISPATCHER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/TunnelDispatcher.java"
 
 [[ -d "${SOURCE_ROOT}/.git" ]] || { echo "Java source is not a Git checkout" >&2; exit 1; }
 [[ "$(git -C "${SOURCE_ROOT}" rev-parse HEAD)" == "${EXPECTED_PIN}" ]] || {
@@ -30,11 +34,15 @@ for file in \
   "${STREAMING_ROOT}/SchedulerReceived.java" \
   "${STREAMING_ROOT}/SchedulerImpl.java" \
   "${STREAMING_ROOT}/PacketQueue.java" \
-  "${I2CP_SESSION}"; do
+  "${I2CP_SESSION}" \
+  "${ROUTER_CLIENT}" \
+  "${ROUTER_OCMOSJ}" \
+  "${ROUTER_POOL}" \
+  "${ROUTER_DISPATCHER}"; do
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" <<'PY'
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -42,6 +50,10 @@ streaming_root = Path(sys.argv[1])
 i2cp_session = Path(sys.argv[2])
 output = Path(sys.argv[3])
 pin = sys.argv[4]
+router_client = Path(sys.argv[5]).read_text(encoding="utf-8")
+router_ocmosj = Path(sys.argv[6]).read_text(encoding="utf-8")
+router_pool = Path(sys.argv[7]).read_text(encoding="utf-8")
+router_dispatcher = Path(sys.argv[8]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -80,6 +92,21 @@ required = {
     "PacketQueue.send_exception_log": (queue, "Unable to send the packet"),
     "PacketQueue.send_failed_log": (queue, "Send failed for "),
     "PacketQueue.slow_send_log": (queue, "ms to sendMessage(...)"),
+    # Plan 238 §6 — exact-pinned Router-A I2CP-admission signals the
+    # P238 observer counts. `client.distributeTime` is added on every
+    # `handleSendMessage` after `distributeMessage` (first Router-A
+    # stage, works for best-effort Streaming); `client.dispatchTime` /
+    # `client.dispatchSendTime` are added in the OCMOSJ dispatch path
+    # after `dispatchOutbound`; `tunnel.dispatchOutboundTunnel` is the
+    # tunnel-handoff context. A source upgrade that renames any of
+    # these must fail the lane before an external attempt.
+    "ClientMessageEventListener.handleSendMessage": (router_client, "void handleSendMessage(SendMessageMessage message)"),
+    "ClientMessageEventListener.distribute_stat": (router_client, '"client.distributeTime"'),
+    "ClientMessagePool.ocmosj_init": (router_pool, "OutboundClientMessageOneShotJob.init"),
+    "OCMOSJ.dispatch_stat": (router_ocmosj, '"client.dispatchTime"'),
+    "OCMOSJ.dispatch_send_stat": (router_ocmosj, '"client.dispatchSendTime"'),
+    "OCMOSJ.dispatch_outbound_call": (router_ocmosj, "dispatchOutbound("),
+    "TunnelDispatcher.dispatch_outbound_stat": (router_dispatcher, '"tunnel.dispatchOutboundTunnel"'),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -124,6 +151,12 @@ output.write_text(
         "java_sendpacket_log_signal\tResend in <timeout> for <packet> (Connection.sendPacket first-send timer)\n",
         "java_sendmessage_stat\tstream.con.sendMessageSize\n",
         "java_send_failure_signals\tUnable to send the packet | Send failed for <PacketLocal> | Took <n>ms to sendMessage(...)\n",
+        # Plan 238 §6 — pinned Router-A admission signals the P238
+        # observer counts (I2CP admission first, dispatch second,
+        # tunnel handoff as context only).
+        "java_router_distribute_stat\tclient.distributeTime (ClientMessageEventListener.handleSendMessage after distributeMessage)\n",
+        "java_router_dispatch_stats\tclient.dispatchTime | client.dispatchSendTime (OCMOSJ dispatch path after dispatchOutbound)\n",
+        "java_router_tunnel_handoff_stat\ttunnel.dispatchOutboundTunnel (TunnelDispatcher context only)\n",
     ]),
     encoding="utf-8",
 )

@@ -201,6 +201,22 @@
 //   - every P231 response is one bounded `P231-EV ...` line with
 //     booleans, counts, tunnel ids, and hex hashes only; no peer
 //     paths, keys, tags, payloads, queue contents, or raw log text.
+// Plan 238 diagnostic contract (streaming response Router-A admission
+// observer only, read-only, no state mutation):
+//   - `P238-ADMISSION` returns the bounded Router-A I2CP-admission
+//     lifetime-event-count snapshot for the first response stage
+//     (`client.distributeTime` added in
+//     `ClientMessageEventListener.handleSendMessage` after
+//     `distributeMessage`, `client.dispatchTime` /
+//     `client.dispatchSendTime` added in the OCMOSJ dispatch path
+//     after `tunnelDispatcher().dispatchOutbound(...)`, plus
+//     `tunnel.dispatchOutboundTunnel` as tunnel-handoff context)
+//     via `statManager().getRate(name)`
+//     + `RateStat.getLifetimeEventCount()` (`P238-EV kind=admission ...`
+//     with -1 for a never-created rate, never zero-as-fact);
+//   - every P238 response is one bounded `P238-EV ...` line with
+//     counts only; no peer paths, keys, tags, payloads, destinations,
+//     hashes, queue contents, or raw log text.
 // Plan 227 diagnostic contract (reference-harness corrective only,
 // read-only, no state mutation):
 //   - `P227-PEER-ELIGIBILITY <router-c-hex>` returns bounded main-NetDB
@@ -248,6 +264,7 @@ import net.i2p.router.networkdb.kademlia.P228Probe;
 import net.i2p.router.networkdb.kademlia.P229Probe;
 import net.i2p.router.networkdb.kademlia.P230Probe;
 import net.i2p.router.networkdb.kademlia.P231Probe;
+import net.i2p.router.networkdb.kademlia.P238Probe;
 import net.i2p.util.Log;
 
 public final class ControlledRouter {
@@ -825,6 +842,8 @@ public final class ControlledRouter {
                             return p231Error("missing-tunnel-argument");
                         }
                         return p231Participating(parts[1]);
+                    case "P238-ADMISSION":
+                        return p238Admission();
                     case "PING":
                         return "PONG";
                     case "QUIT":
@@ -1155,6 +1174,30 @@ public final class ControlledRouter {
 
         private String p231Error(String reason) {
             return "P231-ERROR " + reason;
+        }
+
+        private String p238Error(String reason) {
+            return "P238-ERROR " + reason;
+        }
+
+        /**
+         * Plan 238 WP B — read-only Router-A I2CP-admission snapshot for
+         * the streaming response epoch. Observation only via P238Probe;
+         * never creates rates, never mutates counters.
+         */
+        private String p238Admission() {
+            P238Probe.Admission result =
+                P238Probe.snapshotAdmission(context());
+            if (result.error != null) {
+                return "P238-EV kind=admission"
+                    + " observable=false reason=" + result.error;
+            }
+            return "P238-EV kind=admission"
+                + " observable=true"
+                + " distribute_time=" + result.distributeTime
+                + " dispatch_time=" + result.dispatchTime
+                + " dispatch_send_time=" + result.dispatchSendTime
+                + " dispatch_outbound_tunnel=" + result.dispatchOutboundTunnel;
         }
 
         /**
