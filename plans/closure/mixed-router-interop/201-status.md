@@ -1,3 +1,21 @@
+# Current dependency amendment — Plan 242 registered for stock one-hop selector-semantics correction
+
+Plan 241 is closed at
+passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary.
+
+Its decisive run proved the corrected Streaming helper can install one inbound and one outbound non-zero-hop client tunnel with zero-hop absent, but the harness stopped because neither tunnel was exact-via-C.
+
+Exact-pinned Java source review now proves that explicitPeers is not deterministic: TunnelPeerSelector.shouldSelectExplicit() honors it only when random.nextInt(4) == 0. Otherwise ClientPeerSelector uses ordinary stock fast-peer selection. Therefore exact-via-C is diagnostic, not a valid lookup prerequisite.
+
+Plan 242 is dependency-ready to correct that harness gate, replace the C-specific profile prerequisite with actual stock candidate/pool readiness, accept any controlled non-zero-hop client pair, and resume the exact Plan-240/241 lookup continuation.
+
+The publication/final-closure axis remains independently unresolved.
+
+plan_201 = blocked-after-plan241-a-b-build-stage-pending-plan242-and-publication-closure
+plan_241 = passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary
+plan_242 = registered-ready-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+next_executable_plan = 242-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+
 # Current dependency amendment — Plan 241 closed at the A/B build-stage boundary; §20 successor pending
 
 Plan 241 closed as
