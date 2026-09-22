@@ -1,3 +1,26 @@
+# Current dependency amendment — Plan 241 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 240 proved the exact Streaming response lookup stops in stock Java before
+query dispatch because the controlled Streaming helper forces a zero-hop client
+pool and the client-facade unknown-RI guard rejects Router B.
+
+Plan 241 is registered-ready to correct only that test fixture using the
+already-proven one-hop-via-C public SessionConfig, require genuine non-zero
+client tunnels, and resume the exact lookup/reply/OCMOSJ chain.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan241
+plan_241 = registered-ready-m6-java-streaming-one-hop-client-tunnel-fixture-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 241-m6-java-streaming-one-hop-client-tunnel-fixture-corrective
+```
+
 # Current dependency amendment — Plan 240 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is
