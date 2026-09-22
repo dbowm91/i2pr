@@ -1,6 +1,6 @@
 # Plan 235 — M6 Java Streaming post-accept response boundary corrective
 
-Status: **registered-ready-m6-java-streaming-post-accept-response-boundary-corrective**
+Status: **in-progress-m6-java-streaming-post-accept-response-boundary-corrective**
 
 ## 1. Objective
 
@@ -139,4 +139,3 @@ The closing implementation SHA must run the repository routine floor from
 `AGENTS.md`, the M6 static/final closure checkers, focused Plan-232/234/235
 tests, Java helper compilation against the exact pinned jars, and the full
 `tests/integration/m6-interop/run-java.sh` lane when claiming final closure.
-

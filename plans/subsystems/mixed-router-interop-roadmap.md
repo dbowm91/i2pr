@@ -161,7 +161,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 232 | closed | passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary | `plans/implementation/mixed-router-interop/232-m6-java-route-derived-lease-gateway-fixture-corrective-and-second-family-closure.md` | `plans/closure/mixed-router-interop/232-status.md` |
 | 233 | superseded | superseded-before-execution-by-plan234-final-closure-authority-corrective | `plans/implementation/mixed-router-interop/233-m6-java-streaming-syn-ack-corrective-after-route-derived-lease-fix.md` | `plans/closure/mixed-router-interop/233-status.md` |
 | 234 | closed | passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary | `plans/implementation/mixed-router-interop/234-m6-java-streaming-syn-ack-and-client-ls2-final-closure-authority-corrective.md` | `plans/closure/mixed-router-interop/234-status.md` |
-| 235 | ready | registered-ready-m6-java-streaming-post-accept-response-boundary-corrective | `plans/implementation/mixed-router-interop/235-m6-java-streaming-post-accept-response-boundary-corrective.md` | `plans/closure/mixed-router-interop/235-status.md` |
+| 235 | active | in-progress-m6-java-streaming-post-accept-response-boundary-corrective | `plans/implementation/mixed-router-interop/235-m6-java-streaming-post-accept-response-boundary-corrective.md` | `plans/closure/mixed-router-interop/235-status.md` |
 
 ## 8. Cross-cutting requirements
 

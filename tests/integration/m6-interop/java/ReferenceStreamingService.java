@@ -55,7 +55,7 @@ public final class ReferenceStreamingService {
     private static final List<Integer> ACCEPTED = Collections.synchronizedList(new ArrayList<>());
     private static final List<Integer> CONNECTED = Collections.synchronizedList(new ArrayList<>());
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
-    // Plan 234 §8 — helper-local accept observability.  These counters are
+    // Plan 234/235 — helper-local accept observability.  These counters are
     // deliberately bounded and expose only control-flow facts; they never
     // expose packet contents, keys, tags, or router internals.
     private static final int MAX_OBSERVATIONS = 1024;
@@ -64,6 +64,13 @@ public final class ReferenceStreamingService {
     private static final AtomicInteger ACCEPT_RETURNED = new AtomicInteger();
     private static final AtomicInteger ACCEPT_STORED = new AtomicInteger();
     private static final AtomicInteger ACCEPT_ERRORS = new AtomicInteger();
+    // Plan 235 §B — public I2PSocket surface only.  These counters do not
+    // claim that a SYN-ACK reached the Rust peer; they record whether the
+    // socket returned by the stock public accept API exposed its public
+    // input/output streams without a helper-side exception.
+    private static final AtomicInteger SOCKET_SURFACE_ENTERED = new AtomicInteger();
+    private static final AtomicInteger SOCKET_SURFACE_READY = new AtomicInteger();
+    private static final AtomicInteger SOCKET_SURFACE_ERRORS = new AtomicInteger();
     private static volatile boolean accepting;
 
     private static int incrementBounded(AtomicInteger counter) {
@@ -123,9 +130,15 @@ public final class ReferenceStreamingService {
 
     private static int acceptOne(I2PServerSocket server) {
         incrementBounded(ACCEPT_ENTERED);
+        boolean surfaceEntered = false;
         try {
             I2PSocket socket = server.accept();
             incrementBounded(ACCEPT_RETURNED);
+            incrementBounded(SOCKET_SURFACE_ENTERED);
+            surfaceEntered = true;
+            socket.getInputStream();
+            socket.getOutputStream();
+            incrementBounded(SOCKET_SURFACE_READY);
             int id = NEXT_ID.getAndIncrement();
             SOCKETS.put(id, socket);
             ACCEPTED.add(id);
@@ -133,6 +146,9 @@ public final class ReferenceStreamingService {
             return id;
         } catch (Throwable error) {
             incrementBounded(ACCEPT_ERRORS);
+            if (surfaceEntered) {
+                incrementBounded(SOCKET_SURFACE_ERRORS);
+            }
             return -1;
         }
     }
@@ -190,7 +206,7 @@ public final class ReferenceStreamingService {
                             break;
                         }
                         case "REPORT_STREAM_STATE": {
-                            // Plan 234 §8 — the response is a bounded,
+                            // Plan 234 §8 / Plan 235 §B — the response is a bounded,
                             // read-only accept epoch.  `accept_returned`
                             // means only that the public Java Streaming API
                             // returned an I2PSocket; wire-stage attribution
@@ -200,6 +216,9 @@ public final class ReferenceStreamingService {
                                 + " accept_returned=" + ACCEPT_RETURNED.get()
                                 + " socket_stored=" + ACCEPT_STORED.get()
                                 + " accept_errors=" + ACCEPT_ERRORS.get()
+                                + " socket_surface_entered=" + SOCKET_SURFACE_ENTERED.get()
+                                + " socket_surface_ready=" + SOCKET_SURFACE_READY.get()
+                                + " socket_surface_errors=" + SOCKET_SURFACE_ERRORS.get()
                                 + " accepting=" + accepting
                                 + " accepted_count=" + ACCEPTED.size()
                                 + " connected_count=" + CONNECTED.size());

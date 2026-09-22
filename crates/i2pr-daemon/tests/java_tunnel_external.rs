@@ -338,6 +338,12 @@ impl ReferenceControl {
     async fn report_stream_state(&mut self) -> Option<P234JavaAcceptState> {
         p234_parse_java_accept_state(&self.command("REPORT_STREAM_STATE").await)
     }
+
+    /// Plan 235 §B — the same bounded control response, parsed as the
+    /// helper-side public socket surface state. It never claims wire delivery.
+    async fn report_stream_response_state(&mut self) -> Option<P235JavaResponseState> {
+        p235_parse_java_response_state(&self.command("REPORT_STREAM_STATE").await)
+    }
 }
 
 // ---- Plan 234 — Streaming SYN epoch attribution --------------------------
@@ -353,6 +359,9 @@ struct P234JavaAcceptState {
     accepting: bool,
     accepted_count: u64,
     connected_count: u64,
+    socket_surface_entered: u64,
+    socket_surface_ready: u64,
+    socket_surface_errors: u64,
 }
 
 fn p234_parse_java_accept_state(line: &str) -> Option<P234JavaAcceptState> {
@@ -373,11 +382,20 @@ fn p234_parse_java_accept_state(line: &str) -> Option<P234JavaAcceptState> {
             "accepting" => state.accepting = value.parse().ok()?,
             "accepted_count" => state.accepted_count = value.parse().ok()?,
             "connected_count" => state.connected_count = value.parse().ok()?,
+            "socket_surface_entered" => state.socket_surface_entered = value.parse().ok()?,
+            "socket_surface_ready" => state.socket_surface_ready = value.parse().ok()?,
+            "socket_surface_errors" => state.socket_surface_errors = value.parse().ok()?,
             _ => return None,
         }
         seen = seen.saturating_add(1);
     }
-    (seen == 8).then_some(state)
+    (seen == 11).then_some(state)
+}
+
+type P235JavaResponseState = P234JavaAcceptState;
+
+fn p235_parse_java_response_state(line: &str) -> Option<P235JavaResponseState> {
+    p234_parse_java_accept_state(line)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -404,6 +422,11 @@ struct P234SynEpoch {
     ack_poll_emissions: u64,
     retransmit_poll_emissions: u64,
     connection_established: bool,
+    i2pr_transport_request_accepted: u64,
+    i2pr_outbound_dispatch_attempts: u64,
+    i2pr_outbound_dispatch_accepted: u64,
+    i2pr_outbound_dispatch_rejections: u64,
+    i2pr_unrelated_inbound_tunneldata_count: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -520,7 +543,7 @@ fn record_p234_syn_epoch(
         evidence_dir,
         "p234-java-accept-state",
         &format!(
-            "accept_requested={} accept_entered={} accept_returned={} socket_stored={} accept_errors={} accepting={} accepted_count={} connected_count={}",
+            "accept_requested={} accept_entered={} accept_returned={} socket_stored={} accept_errors={} accepting={} accepted_count={} connected_count={} socket_surface_entered={} socket_surface_ready={} socket_surface_errors={}",
             java.accept_requested,
             java.accept_entered,
             java.accept_returned,
@@ -529,8 +552,155 @@ fn record_p234_syn_epoch(
             java.accepting,
             java.accepted_count,
             java.connected_count,
+            java.socket_surface_entered,
+            java.socket_surface_ready,
+            java.socket_surface_errors,
         ),
     );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P235Terminal {
+    Plan234BaselineRegression,
+    JavaAcceptWorkerNotStarted,
+    JavaAcceptNotReturned,
+    JavaSocketSurfaceNotReady,
+    I2prOutboundAdmissionFailed,
+    JavaSocketSurfaceReadyNoI2prInbound,
+    I2prUnrelatedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prNoStreamingPayload,
+    I2prStreamingAdapterFailed,
+    DispatchedNotEstablished,
+    JavaStreamingPassed,
+    ObservabilityGap,
+}
+
+impl P235Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Plan234BaselineRegression => "P235-A-PLAN234-BASELINE-REGRESSION",
+            Self::JavaAcceptWorkerNotStarted => "P235-B-JAVA-ACCEPT-WORKER-NOT-STARTED",
+            Self::JavaAcceptNotReturned => "P235-B-JAVA-ACCEPT-NOT-RETURNED",
+            Self::JavaSocketSurfaceNotReady => "P235-B-JAVA-SOCKET-SURFACE-NOT-READY",
+            Self::I2prOutboundAdmissionFailed => "P235-C-I2PR-OUTBOUND-ADMISSION-FAILED",
+            Self::JavaSocketSurfaceReadyNoI2prInbound => {
+                "P235-B-JAVA-SOCKET-SURFACE-READY-NO-I2PR-INBOUND"
+            }
+            Self::I2prUnrelatedTunnelData => "P235-C-I2PR-UNRELATED-TUNNELDATA",
+            Self::I2prTunnelRecoveryFailed => "P235-C-I2PR-TUNNEL-RECOVERY-FAILED",
+            Self::I2prGarlicDecodeFailed => "P235-C-I2PR-GARLIC-DECODE-FAILED",
+            Self::I2prNoStreamingPayload => "P235-C-I2PR-NO-STREAMING-PAYLOAD",
+            Self::I2prStreamingAdapterFailed => "P235-C-I2PR-STREAMING-ADAPTER-FAILED",
+            Self::DispatchedNotEstablished => "P235-C-DISPATCHED-NOT-ESTABLISHED",
+            Self::JavaStreamingPassed => "P235-JAVA-STREAMING-PASSED",
+            Self::ObservabilityGap => "P235-C-OBSERVABILITY-GAP",
+        }
+    }
+}
+
+fn p235_classify_syn_epoch(
+    plan234_baseline_ok: bool,
+    epoch: &P234SynEpoch,
+    java_state: Option<P235JavaResponseState>,
+) -> P235Terminal {
+    if !plan234_baseline_ok {
+        return P235Terminal::Plan234BaselineRegression;
+    }
+    if !epoch.java_accept_thread_started {
+        return P235Terminal::JavaAcceptWorkerNotStarted;
+    }
+    let Some(java) = java_state else {
+        return P235Terminal::ObservabilityGap;
+    };
+    if java.accept_returned == 0 {
+        return P235Terminal::JavaAcceptNotReturned;
+    }
+    if java.socket_surface_errors > 0 || java.socket_surface_ready == 0 {
+        return P235Terminal::JavaSocketSurfaceNotReady;
+    }
+    if epoch.i2pr_transport_request_accepted == 0 || epoch.i2pr_outbound_dispatch_rejections > 0 {
+        return P235Terminal::I2prOutboundAdmissionFailed;
+    }
+    if epoch.i2pr_inbound_tunneldata_count == 0 {
+        return P235Terminal::JavaSocketSurfaceReadyNoI2prInbound;
+    }
+    if epoch.i2pr_expected_stream_tunneldata_count == 0 {
+        return P235Terminal::I2prUnrelatedTunnelData;
+    }
+    if epoch.i2pr_tunnel_recovery_failures > 0 && epoch.i2pr_tunnel_recovery_count == 0 {
+        return P235Terminal::I2prTunnelRecoveryFailed;
+    }
+    if epoch.i2pr_garlic_decode_failures > 0 && epoch.i2pr_garlic_payload_count == 0 {
+        return P235Terminal::I2prGarlicDecodeFailed;
+    }
+    if epoch.i2pr_streaming_adapter_calls == 0 {
+        return P235Terminal::I2prNoStreamingPayload;
+    }
+    if epoch.i2pr_streaming_adapter_errors > 0 {
+        return P235Terminal::I2prStreamingAdapterFailed;
+    }
+    if epoch.i2pr_streaming_adapter_successes > 0 && !epoch.connection_established {
+        return P235Terminal::DispatchedNotEstablished;
+    }
+    if epoch.connection_established {
+        return P235Terminal::JavaStreamingPassed;
+    }
+    P235Terminal::ObservabilityGap
+}
+
+fn record_p235_syn_epoch(
+    evidence_dir: &Path,
+    epoch: &P234SynEpoch,
+    java_state: Option<P235JavaResponseState>,
+    baseline_ok: bool,
+    terminal: P235Terminal,
+) {
+    let java = java_state.unwrap_or_default();
+    append_evidence(
+        evidence_dir,
+        "p235-syn-epoch",
+        &format!(
+            "plan234_baseline_ok={} syn_transport_request_emitted={} transport_request_accepted={} outbound_dispatch_attempts={} outbound_dispatch_accepted={} outbound_dispatch_rejections={} inbound_tunneldata={} expected_tunneldata={} unrelated_tunneldata={} recovery={} recovery_failures={} garlic_payload={} garlic_decode_failures={} adapter_calls={} adapter_successes={} adapter_errors={} connection_established={}",
+            baseline_ok,
+            epoch.syn_transport_request_emitted,
+            epoch.i2pr_transport_request_accepted,
+            epoch.i2pr_outbound_dispatch_attempts,
+            epoch.i2pr_outbound_dispatch_accepted,
+            epoch.i2pr_outbound_dispatch_rejections,
+            epoch.i2pr_inbound_tunneldata_count,
+            epoch.i2pr_expected_stream_tunneldata_count,
+            epoch.i2pr_unrelated_inbound_tunneldata_count,
+            epoch.i2pr_tunnel_recovery_count,
+            epoch.i2pr_tunnel_recovery_failures,
+            epoch.i2pr_garlic_payload_count,
+            epoch.i2pr_garlic_decode_failures,
+            epoch.i2pr_streaming_adapter_calls,
+            epoch.i2pr_streaming_adapter_successes,
+            epoch.i2pr_streaming_adapter_errors,
+            epoch.connection_established,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p235-java-response-state",
+        &format!(
+            "accept_requested={} accept_entered={} accept_returned={} socket_stored={} accept_errors={} socket_surface_entered={} socket_surface_ready={} socket_surface_errors={} accepting={} accepted_count={} connected_count={}",
+            java.accept_requested,
+            java.accept_entered,
+            java.accept_returned,
+            java.socket_stored,
+            java.accept_errors,
+            java.socket_surface_entered,
+            java.socket_surface_ready,
+            java.socket_surface_errors,
+            java.accepting,
+            java.accepted_count,
+            java.connected_count,
+        ),
+    );
+    append_evidence(evidence_dir, "p235-classification", terminal.token());
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -1775,7 +1945,37 @@ async fn send_transport_request(
     delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
     rng: &mut ChaCha8Rng,
 ) {
-    let plan = StreamingDestinationAdapter::send(
+    let mut epoch = P234SynEpoch::default();
+    assert!(
+        send_transport_request_observed(
+            request,
+            routing,
+            session,
+            outbound,
+            local_identity,
+            local_ls2,
+            delivery,
+            rng,
+            &mut epoch,
+        )
+        .await,
+        "streaming transport request must be admitted",
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_transport_request_observed(
+    request: &TransportSendRequest,
+    routing: &DestinationRouting,
+    session: &mut EciesSessionManager,
+    outbound: &DestinationOutboundRole,
+    local_identity: &DestinationIdentity,
+    local_ls2: &i2pr_proto::LeaseSet2,
+    delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
+    rng: &mut ChaCha8Rng,
+    epoch: &mut P234SynEpoch,
+) -> bool {
+    let plan = match StreamingDestinationAdapter::send(
         request,
         routing,
         session,
@@ -1786,27 +1986,46 @@ async fn send_transport_request(
         u32::try_from(wall_secs()).unwrap_or(u32::MAX),
         wall_ms(),
         rng,
-    )
-    .expect("adapter send");
-    let cell_dispatch = deliver_outbound_cells(
+    ) {
+        Ok(plan) => {
+            epoch.i2pr_transport_request_accepted =
+                epoch.i2pr_transport_request_accepted.saturating_add(1);
+            plan
+        }
+        Err(_) => return false,
+    };
+    let cell_dispatch = match deliver_outbound_cells(
         &plan.cells,
         wall_ms() + 60_000,
         Deadline::new(Duration::from_secs(60)).expect("deadline"),
         rng,
-    )
-    .expect("encode streaming cells");
+    ) {
+        Ok(dispatch) => dispatch,
+        Err(_) => return false,
+    };
+    let mut all_admitted = true;
     for cell_delivery in &cell_dispatch.deliveries {
+        epoch.i2pr_outbound_dispatch_attempts =
+            epoch.i2pr_outbound_dispatch_attempts.saturating_add(1);
         let send = RouterDeliveryRequest::new(
             cell_delivery.target(),
             cell_delivery.message_bytes().to_vec(),
             DELIVERY_TIMEOUT,
         )
         .expect("delivery request");
-        assert_eq!(
-            delivery.deliver(send, &CancellationToken::new()),
-            RouterDeliveryOutcome::Accepted
-        );
+        match delivery.deliver(send, &CancellationToken::new()) {
+            RouterDeliveryOutcome::Accepted => {
+                epoch.i2pr_outbound_dispatch_accepted =
+                    epoch.i2pr_outbound_dispatch_accepted.saturating_add(1);
+            }
+            _ => {
+                epoch.i2pr_outbound_dispatch_rejections =
+                    epoch.i2pr_outbound_dispatch_rejections.saturating_add(1);
+                all_admitted = false;
+            }
+        }
     }
+    all_admitted
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8302,6 +8521,17 @@ async fn streaming_through_java() {
         &p232_stream_route,
         &lease_source,
     );
+    // Plan 235 §A — the route-derived Plan-232 prerequisites are already
+    // asserted above. This bounded fact records the exact prerequisites that
+    // the new response-boundary classifier is allowed to rely on; the shell
+    // harness remains responsible for retaining the independent raw-
+    // Destination pass.
+    let p235_plan234_baseline_ok = true;
+    append_evidence(
+        &evidence_dir,
+        "p235-plan234-baseline",
+        "route_parity=true publication_separation=true raw_destination_pass=retained-by-harness",
+    );
     let published = u32::try_from(wall_secs()).unwrap_or(u32::MAX);
     let mut local_ls2 =
         build_signed_lease_set2(&local_identity, &[lease_source], published).expect("local ls2");
@@ -8408,7 +8638,7 @@ async fn streaming_through_java() {
         ..P234SynEpoch::default()
     };
     let mut send_rng = ChaCha8Rng::seed_from_u64(wall_ms().wrapping_add(11));
-    send_transport_request(
+    let syn_admitted = send_transport_request_observed(
         &syn_request,
         &routing,
         &mut session,
@@ -8417,6 +8647,7 @@ async fn streaming_through_java() {
         &local_ls2,
         &delivery,
         &mut send_rng,
+        &mut p234_epoch,
     )
     .await;
     append_evidence(&evidence_dir, "streaming-syn-sent", "true");
@@ -8429,7 +8660,10 @@ async fn streaming_through_java() {
         .bind_destination_hash(local_identity.id(), local_dest_hash)
         .expect("bind destination hash");
     let syn_ack_deadline = tokio::time::Instant::now() + SYN_ACK_WAIT;
-    while tokio::time::Instant::now() < syn_ack_deadline && !p234_epoch.connection_established {
+    while syn_admitted
+        && tokio::time::Instant::now() < syn_ack_deadline
+        && !p234_epoch.connection_established
+    {
         let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
         let Ok(Some(inbound)) = next else {
             continue;
@@ -8449,6 +8683,7 @@ async fn streaming_through_java() {
         if cell.tunnel_id == STREAM_IBGW_NEXT {
             p234_epoch.i2pr_expected_stream_tunneldata_count += 1;
         } else {
+            p234_epoch.i2pr_unrelated_inbound_tunneldata_count += 1;
             continue;
         }
         let bytes = match dest.recover_garlic_bytes(coord.registry_mut(), &cell, wall_ms()) {
@@ -8511,7 +8746,7 @@ async fn streaming_through_java() {
             .pending_outbound_after_receive
             .saturating_add(pending.len() as u64);
         for request in &pending {
-            send_transport_request(
+            let _ = send_transport_request_observed(
                 request,
                 &routing,
                 &mut session,
@@ -8520,12 +8755,13 @@ async fn streaming_through_java() {
                 &local_ls2,
                 &delivery,
                 &mut send_rng,
+                &mut p234_epoch,
             )
             .await;
         }
         for request in streaming.poll_acks(wall_ms()) {
             p234_epoch.ack_poll_emissions += 1;
-            send_transport_request(
+            let _ = send_transport_request_observed(
                 &request,
                 &routing,
                 &mut session,
@@ -8534,12 +8770,13 @@ async fn streaming_through_java() {
                 &local_ls2,
                 &delivery,
                 &mut send_rng,
+                &mut p234_epoch,
             )
             .await;
         }
         for request in streaming.poll_retransmits(wall_ms()) {
             p234_epoch.retransmit_poll_emissions += 1;
-            send_transport_request(
+            let _ = send_transport_request_observed(
                 &request,
                 &routing,
                 &mut session,
@@ -8548,11 +8785,12 @@ async fn streaming_through_java() {
                 &local_ls2,
                 &delivery,
                 &mut send_rng,
+                &mut p234_epoch,
             )
             .await;
         }
     }
-    let java_accept_state = stream_control.report_stream_state().await;
+    let java_accept_state = stream_control.report_stream_response_state().await;
     p234_epoch.java_accept_returned =
         java_accept_state.is_some_and(|state| state.accept_returned > 0);
     p234_epoch.java_stream_receive_observed =
@@ -8567,6 +8805,37 @@ async fn streaming_through_java() {
         &Hash::from_bytes(*reference_hash.as_bytes()),
     );
     append_evidence(&evidence_dir, "p234-classification", p234_terminal.token());
+    let p235_terminal =
+        p235_classify_syn_epoch(p235_plan234_baseline_ok, &p234_epoch, java_accept_state);
+    record_p235_syn_epoch(
+        &evidence_dir,
+        &p234_epoch,
+        java_accept_state,
+        p235_plan234_baseline_ok,
+        p235_terminal,
+    );
+    if p235_terminal != P235Terminal::JavaStreamingPassed {
+        record_stop(
+            &evidence_dir,
+            &format!(
+                "Plan 235 response epoch stopped at {} (transport_accepted={} dispatch_attempts={} dispatch_accepted={} dispatch_rejections={} inbound_tunneldata={} expected_tunneldata={} unrelated_tunneldata={} recovery={} recovery_failures={} socket_surface_ready={})",
+                p235_terminal.token(),
+                p234_epoch.i2pr_transport_request_accepted,
+                p234_epoch.i2pr_outbound_dispatch_attempts,
+                p234_epoch.i2pr_outbound_dispatch_accepted,
+                p234_epoch.i2pr_outbound_dispatch_rejections,
+                p234_epoch.i2pr_inbound_tunneldata_count,
+                p234_epoch.i2pr_expected_stream_tunneldata_count,
+                p234_epoch.i2pr_unrelated_inbound_tunneldata_count,
+                p234_epoch.i2pr_tunnel_recovery_count,
+                p234_epoch.i2pr_tunnel_recovery_failures,
+                java_accept_state.is_some_and(|state| state.socket_surface_ready > 0),
+            ),
+        );
+        handle.shutdown();
+        let _ = scope.shutdown().await;
+        return;
+    }
     if p234_terminal != P234Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -18130,10 +18399,11 @@ fn p234_start_accept_precedes_syn_send() {
 #[test]
 fn p234_java_accept_worker_state_is_bounded() {
     let parsed = p234_parse_java_accept_state(
-        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0",
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0",
     )
     .expect("bounded stream status");
     assert_eq!(parsed.accept_returned, 1);
+    assert_eq!(parsed.socket_surface_ready, 1);
     assert!(!parsed.accepting);
     assert!(p234_parse_java_accept_state("STREAM_STATUS accept_requested=1").is_none());
 }
@@ -18331,5 +18601,104 @@ fn p234_no_production_surface_change_before_owned_defect() {
         P234Terminal::ObservabilityGap.token(),
     ] {
         assert!(token.starts_with("P234-"));
+    }
+}
+
+// ---- Plan 235 §D unit rows -----------------------------------------------
+
+#[test]
+fn p235_baseline_regression_wins_before_response_attribution() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_transport_request_accepted: 1,
+        ..P234SynEpoch::default()
+    };
+    let state = p235_parse_java_response_state(
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0",
+    );
+    assert_eq!(
+        p235_classify_syn_epoch(false, &epoch, state),
+        P235Terminal::Plan234BaselineRegression
+    );
+}
+
+#[test]
+fn p235_socket_surface_ready_without_wire_is_exact_boundary() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_transport_request_accepted: 1,
+        i2pr_outbound_dispatch_attempts: 1,
+        i2pr_outbound_dispatch_accepted: 1,
+        ..P234SynEpoch::default()
+    };
+    let state = p235_parse_java_response_state(
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0",
+    );
+    assert_eq!(
+        p235_classify_syn_epoch(true, &epoch, state),
+        P235Terminal::JavaSocketSurfaceReadyNoI2prInbound
+    );
+}
+
+#[test]
+fn p235_outbound_rejection_precedes_no_wire() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_transport_request_accepted: 1,
+        i2pr_outbound_dispatch_rejections: 1,
+        ..P234SynEpoch::default()
+    };
+    let state = p235_parse_java_response_state(
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0",
+    );
+    assert_eq!(
+        p235_classify_syn_epoch(true, &epoch, state),
+        P235Terminal::I2prOutboundAdmissionFailed
+    );
+}
+
+#[test]
+fn p235_unrelated_tunneldata_is_distinct_from_no_wire() {
+    let epoch = P234SynEpoch {
+        java_accept_thread_started: true,
+        java_accept_returned: true,
+        i2pr_transport_request_accepted: 1,
+        i2pr_outbound_dispatch_attempts: 1,
+        i2pr_outbound_dispatch_accepted: 1,
+        i2pr_inbound_tunneldata_count: 1,
+        i2pr_unrelated_inbound_tunneldata_count: 1,
+        ..P234SynEpoch::default()
+    };
+    let state = p235_parse_java_response_state(
+        "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 accepting=false accepted_count=1 connected_count=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0",
+    );
+    assert_eq!(
+        p235_classify_syn_epoch(true, &epoch, state),
+        P235Terminal::I2prUnrelatedTunnelData
+    );
+}
+
+#[test]
+fn p235_terminal_tokens_are_bounded_and_scoped() {
+    for token in [
+        P235Terminal::Plan234BaselineRegression,
+        P235Terminal::JavaAcceptWorkerNotStarted,
+        P235Terminal::JavaAcceptNotReturned,
+        P235Terminal::JavaSocketSurfaceNotReady,
+        P235Terminal::I2prOutboundAdmissionFailed,
+        P235Terminal::JavaSocketSurfaceReadyNoI2prInbound,
+        P235Terminal::I2prUnrelatedTunnelData,
+        P235Terminal::I2prTunnelRecoveryFailed,
+        P235Terminal::I2prGarlicDecodeFailed,
+        P235Terminal::I2prNoStreamingPayload,
+        P235Terminal::I2prStreamingAdapterFailed,
+        P235Terminal::DispatchedNotEstablished,
+        P235Terminal::JavaStreamingPassed,
+        P235Terminal::ObservabilityGap,
+    ] {
+        assert!(token.token().starts_with("P235-"));
     }
 }

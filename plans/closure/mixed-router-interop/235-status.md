@@ -1,6 +1,6 @@
 # Plan 235 status — M6 Java Streaming post-accept response boundary corrective
 
-Status: **registered-ready-m6-java-streaming-post-accept-response-boundary-corrective**.
+Status: **in-progress-m6-java-streaming-post-accept-response-boundary-corrective**.
 
 Plan of record:
 [`235-m6-java-streaming-post-accept-response-boundary-corrective.md`](../../implementation/mixed-router-interop/235-m6-java-streaming-post-accept-response-boundary-corrective.md).
@@ -16,14 +16,14 @@ follow-up at that post-accept / pre-i2pr-inbound boundary.
 
 ```text
 plan_234 = passed-m6-java-streaming-syn-ack-attributed-with-java-accepted-no-response-boundary
-plan_235 = registered-ready-m6-java-streaming-post-accept-response-boundary-corrective
+plan_235 = in-progress-m6-java-streaming-post-accept-response-boundary-corrective
 plan_201 = blocked-pending-plan235-java-streaming-post-accept-response-boundary-corrective
 plan_204 = blocked-on-m6-java-second-family-closure-pending-plan235
 plan_205 = retained-deferred-conditional-after-plan218-direct-i2cp-requalification
 milestone6_java_mixed_router_interop = not-yet-passed
 milestone6_interoperable = not-yet-claimed
 milestone10_final_acceptance = closed
-next_executable_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
+active_plan = 235-m6-java-streaming-post-accept-response-boundary-corrective
 ```
 
 Plan 235 must not change production Rust behavior without a separately proven

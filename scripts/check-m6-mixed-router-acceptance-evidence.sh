@@ -3337,9 +3337,69 @@ if [[ -f "${P234_HARNESS}" ]]; then
   done
 fi
 if [[ -f "${P234_FINAL_CHECKER}" ]]; then
-  for required in 'p234-classification' 'run-java.sh' 'm6_final_closure: passed'; do
+  for required in 'p234-classification' 'p235-classification' 'run-java.sh' 'm6_final_closure: passed'; do
     if ! grep -q -F "${required}" "${P234_FINAL_CHECKER}"; then
-      echo "m6 mixed-router evidence check failed: final closure checker lacks Plan 234 invariant '${required}'" >&2
+      echo "m6 mixed-router evidence check failed: final closure checker lacks Plan 234/235 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
+# Plan 235 §D — post-accept response-boundary attribution. The corrective is
+# intentionally restricted to the external Java helper and black-box driver;
+# no production Rust surface may carry Plan-235 tokens before an independently
+# registered production corrective proves an i2pr-owned defect.
+P235_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P235_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+if [[ -f "${P235_DRIVER_TEST}" ]]; then
+  for required in \
+    'type P235JavaResponseState' \
+    'fn p235_parse_java_response_state' \
+    'enum P235Terminal' \
+    'fn p235_classify_syn_epoch' \
+    'fn record_p235_syn_epoch' \
+    'p235-plan234-baseline' \
+    'p235-syn-epoch' \
+    'p235-java-response-state' \
+    'p235-classification' \
+    'P235-A-PLAN234-BASELINE-REGRESSION' \
+    'P235-B-JAVA-SOCKET-SURFACE-READY-NO-I2PR-INBOUND' \
+    'P235-C-I2PR-OUTBOUND-ADMISSION-FAILED' \
+    'P235-C-I2PR-UNRELATED-TUNNELDATA' \
+    'P235-JAVA-STREAMING-PASSED'; do
+    if ! grep -q -F "${required}" "${P235_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P235_DRIVER_TEST} lacks Plan 235 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    'p235_baseline_regression_wins_before_response_attribution' \
+    'p235_socket_surface_ready_without_wire_is_exact_boundary' \
+    'p235_outbound_rejection_precedes_no_wire' \
+    'p235_unrelated_tunneldata_is_distinct_from_no_wire' \
+    'p235_terminal_tokens_are_bounded_and_scoped'; do
+    if ! grep -q "fn ${unit_row}" "${P235_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P235_DRIVER_TEST} lacks Plan 235 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'p235' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'P235' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 235 surface before an owned production corrective" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P235_HELPER_SRC}" ]]; then
+  for required in \
+    'SOCKET_SURFACE_ENTERED' \
+    'SOCKET_SURFACE_READY' \
+    'SOCKET_SURFACE_ERRORS' \
+    'socket_surface_entered=' \
+    'socket_surface_ready=' \
+    'socket_surface_errors=' \
+    'Plan 235 §B'; do
+    if ! grep -q -F "${required}" "${P235_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P235_HELPER_SRC} lacks Plan 235 helper surface '${required}'" >&2
       failures=$((failures + 1))
     fi
   done
