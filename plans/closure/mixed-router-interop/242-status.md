@@ -35,7 +35,7 @@ Implementation checkpoint (committed BEFORE counted attempts; no
 tuning between attempts):
 
 ```text
-(implementation SHA captured at the implementation commit) — Plan-242
+9b0e61c6c3f780a19e843e63d25804fb8756616a — Plan-242 implementation-and-closure
 corrective; seven files: extended P227Probe.java with the §6
 role/path observation, ControlledRouter.java exposes the new
 P242-CLIENT-TUNNELS command, ReferenceStreamingService.java unchanged
