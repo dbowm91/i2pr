@@ -1,3 +1,26 @@
+# Current dependency amendment — Plan 240 closed at B-ZERO-HOP-UNKNOWN-RI; zero-hop successor pending
+
+Plan 240 is closed at
+`passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary`
+(see `plans/closure/mixed-router-interop/240-status.md`). Its three
+counted Streaming runs on `37025f9` correlate the exact streaming
+target ISJ (2 jobs/attempt, both with Router B in `toTry`), prove B
+lookup-candidate eligible, and prove the first B-specific boundary
+inside pinned `sendQuery()`: the selected outbound tunnel was zero-hop
+while A's main NetDB held no validated RI for B, so no target DLM was
+ever dispatched to B. IP-close is false on all runs, so no topology
+correction is admitted.
+
+The streaming axis now needs the narrow zero-hop-tunnel/
+RI-availability successor (no plan-of-record yet). The
+publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-after-plan240-b-zero-hop-unknown-ri-pending-zero-hop-successor-and-publication-closure
+plan_240 = passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary
+next_executable_plan = none-pending-zero-hop-successor-plan-of-record
+```
+
 # Current dependency amendment — Plan 240 registered for exact Streaming lookup-failure attribution
 
 Plan 239 is closed at

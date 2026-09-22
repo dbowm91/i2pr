@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 240 closed; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 240 closed the Streaming lookup-failure attribution at
+`P240-C-B-ZERO-HOP-UNKNOWN-RI` (see
+`plans/closure/mixed-router-interop/240-status.md`): exact streaming ISJ
+correlated, Router B eligible and in `toTry`, zero-hop-unknown sendQuery
+skip proven on `37025f9` x3, B never queried.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure, now pending the Plan-240-authorized
+zero-hop-tunnel/RI-availability successor (no plan-of-record yet).
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-zero-hop-successor-after-plan240
+plan_240 = passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary
+milestone10_final_acceptance = closed
+next_executable_plan = none-pending-zero-hop-successor-plan-of-record
+```
+
 # Current dependency amendment — Plan 240 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is
