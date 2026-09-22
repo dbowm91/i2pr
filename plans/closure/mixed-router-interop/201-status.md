@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 243 registered for hosted stock-client-build qualification
+
+Plan 242 is closed as passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate. Its source/static/unit/workspace qualification is green, but its closure host did not have the required Java reference cache plus i2pr daemon pair, so no live counted external attempts executed there.
+
+Plan 243 is now dependency-ready. It does not redesign the harness. It first qualifies a capable Java+i2pr host, then executes the frozen Plan-242 Streaming lane three times on one committed SHA with no tuning. Exact-via-C and the one-in-four explicit branch remain diagnostic only.
+
+The publication/final-closure axis remains independently unresolved.
+
+plan_201 = blocked-after-plan242-corrected-gates-pending-plan243-and-publication-closure
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
+plan_243 = registered-ready-m6-java-streaming-hosted-stock-client-build-qualification
+next_executable_plan = 243-m6-java-streaming-hosted-stock-client-build-qualification
+
 # Current dependency amendment — Plan 242 registered for stock one-hop selector-semantics correction
 
 Plan 241 is closed at
