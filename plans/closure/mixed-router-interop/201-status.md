@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 241 registered for the one-hop Streaming fixture corrective
+
+Plan 240 closed at
+`passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary`.
+The exact Streaming ISJ selected Router B, but the current
+`ReferenceStreamingService` explicitly requests zero-hop client tunnels; the
+pinned Java `sendQuery()` zero-hop/unknown-RI guard therefore rejects B before
+a DLM can be sent.
+
+Plan 241 is now dependency-ready. It changes only the Streaming test helper to
+the already-proven stock one-hop SessionConfig through controlled transit
+Router C, requires the Plan-230 bootstrap gates and a genuine non-zero client
+pair before the SYN epoch, records main-NetDB versus helper-client-NetDB
+Router-B RI visibility, and then resumes the exact Plan-240 lookup chain.
+
+The publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-after-plan240-b-zero-hop-unknown-ri-pending-plan241-and-publication-closure
+plan_240 = passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary
+plan_241 = registered-ready-m6-java-streaming-one-hop-client-tunnel-fixture-corrective
+next_executable_plan = 241-m6-java-streaming-one-hop-client-tunnel-fixture-corrective
+```
+
 # Current dependency amendment — Plan 240 closed at B-ZERO-HOP-UNKNOWN-RI; zero-hop successor pending
 
 Plan 240 is closed at
