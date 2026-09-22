@@ -1947,143 +1947,111 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "destination" || "${I2PR_M6_JAVA_DRIVER}" == "
 fi
 
 if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "both" ]]; then
-  # Plan 241 §6 — pre-helper transit bootstrap gate (read-only reuse of
-  # the retained Plan-227/229/230 probes). Router-C identity is reused
-  # from the destination section when already derived and valid, else
-  # derived here via the same authoritative path (P220 self snapshot on
-  # C + P224-HASH-B64 render on A). No profile injection, heardAbout
-  # forcing, RI store, direct tunnel install, or topology tuning. Never
-  # fall back to zero-hop: a gate failure emits P241-A and stops.
-  P241_C_HEX="${P227_C_HEX:-}"
-  P241_C_B64="${P227_C_B64:-}"
-  if [[ ! "${P241_C_HEX}" =~ ^[0-9a-f]{64}$ || -z "${P241_C_B64}" ]]; then
-    P241_C_SNAPSHOT="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P220-SNAPSHOT")"
-    P241_C_HEX="$(printf '%s' "${P241_C_SNAPSHOT}" | grep -oE 'self_router_hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
-    P241_C_B64_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P224-HASH-B64 ${P241_C_HEX}" 2>/dev/null || true)"
-    P241_C_B64="$(printf '%s' "${P241_C_B64_LINE}" | grep -oE 'hash_b64=[A-Za-z0-9~=\-]{43,44}' | sed -n 's/^hash_b64=//p' | head -n 1 || true)"
-    if [[ ! "${P241_C_HEX}" =~ ^[0-9a-f]{64}$ || -z "${P241_C_B64}" ]]; then
-      echo "Plan 241 Router-C identity derivation failed" >&2
-      printf 'p241-classification\tP241-A-TRANSIT-BOOTSTRAP-NOT-READY reason=router-c-identity-unresolvable\n' >> "${DRIVER_STREAM_TSV}"
-      P241_GATE_OK=0
+  # Plan 242 §5 — corrected pre-helper bootstrap gate. The corrected
+  # prerequisite set for the Streaming one-hop lane:
+  #   - controlled topology valid (already enforced above);
+  #   - non-zero exploratory infrastructure present both directions;
+  #   - helper requests the corrected profile (re-proved in §7);
+  #   - at least one usable stock client-tunnel candidate exists in
+  #     the controlled topology (probe-level: Router C or Router B
+  #     selectable on the helper's peer manager; if neither is
+  #     selectable, the candidate population is empty and the harness
+  #     stops with P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE).
+  # No profile injection, heardAbout forcing, RI store, direct tunnel
+  # install, or topology tuning. Never fall back to zero-hop: a gate
+  # failure emits one of the typed P242-A terminals and stops.
+  P242_C_HEX="${P227_C_HEX:-}"
+  P242_C_B64="${P227_C_B64:-}"
+  P242_A_HEX=""
+  P242_B_HEX=""
+  P242_A_SNAPSHOT="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P220-SNAPSHOT" 2>/dev/null || true)"
+  P242_B_SNAPSHOT="$(j219_query "${JAVA_DIAGNOSTIC_B_PORT}" "P220-SNAPSHOT" 2>/dev/null || true)"
+  P242_A_HEX="$(printf '%s' "${P242_A_SNAPSHOT}" | grep -oE 'self_router_hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+  P242_B_HEX="$(printf '%s' "${P242_B_SNAPSHOT}" | grep -oE 'self_router_hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+  if [[ ! "${P242_C_HEX}" =~ ^[0-9a-f]{64}$ || -z "${P242_C_B64}" ]]; then
+    P242_C_SNAPSHOT="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P220-SNAPSHOT" 2>/dev/null || true)"
+    P242_C_HEX="$(printf '%s' "${P242_C_SNAPSHOT}" | grep -oE 'self_router_hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+    P242_C_B64_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P224-HASH-B64 ${P242_C_HEX}" 2>/dev/null || true)"
+    P242_C_B64="$(printf '%s' "${P242_C_B64_LINE}" | grep -oE 'hash_b64=[A-Za-z0-9~=\-]{43,44}' | sed -n 's/^hash_b64=//p' | head -n 1 || true)"
+  fi
+  P242_GATE_OK=0
+  if [[ "${P242_C_HEX}" =~ ^[0-9a-f]{64}$ && -n "${P242_C_B64}" && "${P242_A_HEX}" =~ ^[0-9a-f]{64}$ && "${P242_B_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'p242-explicit-peer-derivation\trouter_a_hex=%s router_b_hex=%s router_c_hex=%s router_c_b64_len=%s renderer=P220-SNAPSHOT\n' \
+      "${P242_A_HEX}" "${P242_B_HEX}" "${P242_C_HEX}" "${#P242_C_B64}" \
+      > "${DRIVER_EVIDENCE}/streaming/p242-derivation.tsv"
+    cat "${DRIVER_EVIDENCE}/streaming/p242-derivation.tsv" >> "${DRIVER_STREAM_TSV}"
+    # Probe C and B selectability on the helper's peer manager. The
+    # corrected bootstrap gate is "at least one usable stock candidate",
+    # not "Router C is selectable". If either is selectable, the
+    # corrected gate passes; if neither is selectable, the candidate
+    # population is empty and the harness stops with
+    # P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE.
+    P242_ELIG_C_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-PEER-ELIGIBILITY ${P242_C_HEX}" 2>/dev/null || true)"
+    P242_ELIG_C_NORM="$(printf '%s' "${P242_ELIG_C_LINE}" | tr ' ' '\n' || true)"
+    p242_field() {
+      printf '%s' "${P242_ELIG_C_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+    }
+    P242_C_SELECTABLE="$(p242_field selectable)"
+    P242_C_BANLISTED="$(p242_field banlisted)"
+    P242_ELIG_B_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-PEER-ELIGIBILITY ${P242_B_HEX}" 2>/dev/null || true)"
+    P242_ELIG_B_NORM="$(printf '%s' "${P242_ELIG_B_LINE}" | tr ' ' '\n' || true)"
+    p242_b_field() {
+      printf '%s' "${P242_ELIG_B_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+    }
+    P242_B_SELECTABLE="$(p242_b_field selectable)"
+    P242_B_BANLISTED="$(p242_b_field banlisted)"
+    P242_STOCK_CANDIDATES_NONEMPTY=0
+    if [[ "${P242_C_SELECTABLE}" == "true" && "${P242_C_BANLISTED}" != "true" ]]; then
+      P242_STOCK_CANDIDATES_NONEMPTY=1
+    fi
+    if [[ "${P242_B_SELECTABLE}" == "true" && "${P242_B_BANLISTED}" != "true" ]]; then
+      P242_STOCK_CANDIDATES_NONEMPTY=1
+    fi
+    # Bounded natural-bootstrap wait for non-zero exploratory both
+    # directions (retained Plan-230 12x5s bound): the existing
+    # authenticated RI bootstrap may still be processing.
+    P242_EXPL_IN_NONZERO=0
+    P242_EXPL_OUT_NONZERO=0
+    for _ in $(seq 1 12); do
+      P242_POLL_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-EXPLORATORY-TUNNELS ${P242_C_HEX}" 2>/dev/null || true)"
+      P242_POLL_NORM="$(printf '%s' "${P242_POLL_LINE}" | tr ' ' '\n' || true)"
+      P242_EXPL_IN_NONZERO="$(printf '%s' "${P242_POLL_NORM}" | grep -F 'inbound_nonzero_count=' | cut -d= -f2 | head -n 1 || true)"
+      P242_EXPL_OUT_NONZERO="$(printf '%s' "${P242_POLL_NORM}" | grep -F 'outbound_nonzero_count=' | cut -d= -f2 | head -n 1 || true)"
+      if [[ "${P242_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ && "${P242_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+        break
+      fi
+      sleep 5
+    done
+    printf 'p242-bootstrap-gate\trouter_a_hex=%s router_b_hex=%s router_c_hex=%s c_selectable=%s c_banlisted=%s b_selectable=%s b_banlisted=%s stock_candidate_population_nonempty=%s expl_inbound_nonzero=%s expl_outbound_nonzero=%s\n' \
+      "${P242_A_HEX}" "${P242_B_HEX}" "${P242_C_HEX}" \
+      "${P242_C_SELECTABLE}" "${P242_C_BANLISTED}" \
+      "${P242_B_SELECTABLE}" "${P242_B_BANLISTED}" \
+      "${P242_STOCK_CANDIDATES_NONEMPTY}" \
+      "${P242_EXPL_IN_NONZERO}" "${P242_EXPL_OUT_NONZERO}" \
+      > "${DRIVER_EVIDENCE}/streaming/p242-bootstrap-gate.tsv"
+    cat "${DRIVER_EVIDENCE}/streaming/p242-bootstrap-gate.tsv" >> "${DRIVER_STREAM_TSV}"
+    P242_GATE_OK=0
+    if [[ "${P242_STOCK_CANDIDATES_NONEMPTY}" -ne 1 ]]; then
+      echo "P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE (see p242-bootstrap-gate)" >&2
+      printf 'p242-classification\tP242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE\n' >> "${DRIVER_STREAM_TSV}"
+    elif [[ ! "${P242_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ || ! "${P242_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "P242-A-NONZERO-EXPLORATORY-NOT-READY (see p242-bootstrap-gate)" >&2
+      printf 'p242-classification\tP242-A-NONZERO-EXPLORATORY-NOT-READY expl_inbound_nonzero=%s expl_outbound_nonzero=%s\n' \
+        "${P242_EXPL_IN_NONZERO}" "${P242_EXPL_OUT_NONZERO}" >> "${DRIVER_STREAM_TSV}"
     else
-      printf 'p241-explicit-peer-derivation\trouter_c_hex=%s b64_len=%s renderer=P224-HASH-B64\n' \
-        "${P241_C_HEX}" "${#P241_C_B64}" > "${DRIVER_EVIDENCE}/streaming/p241-derivation.tsv"
-      cat "${DRIVER_EVIDENCE}/streaming/p241-derivation.tsv" >> "${DRIVER_STREAM_TSV}"
-      P241_GATE_OK=1
+      P242_GATE_OK=1
     fi
   else
-    printf 'p241-explicit-peer-derivation\trouter_c_hex=%s b64_len=%s renderer=P224-HASH-B64-reused\n' \
-      "${P241_C_HEX}" "${#P241_C_B64}" > "${DRIVER_EVIDENCE}/streaming/p241-derivation.tsv"
-    cat "${DRIVER_EVIDENCE}/streaming/p241-derivation.tsv" >> "${DRIVER_STREAM_TSV}"
-    P241_GATE_OK=1
+    echo "Plan 242 Router-A/B/C identity derivation failed" >&2
+    printf 'p242-classification\tP242-A-TOPOLOGY-INVALID reason=router-abc-identity-unresolvable\n' >> "${DRIVER_STREAM_TSV}"
   fi
-  if [[ "${P241_GATE_OK:-0}" -eq 1 ]]; then
-    P241_ELIG_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-PEER-ELIGIBILITY ${P241_C_HEX}" 2>/dev/null || true)"
-    P241_ELIG_NORM="$(printf '%s' "${P241_ELIG_LINE}" | tr ' ' '\n' || true)"
-    p241_elig() {
-      printf '%s' "${P241_ELIG_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
-    }
-    P241_MAIN_RAW="$(p241_elig main_raw_present)"
-    P241_MAIN_VALID="$(p241_elig main_valid_present)"
-    P241_SELECTABLE="$(p241_elig selectable)"
-    P241_BANLISTED="$(p241_elig banlisted)"
-    P241_CAP_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P230-CAPABILITY ${P241_C_HEX}" 2>/dev/null || true)"
-    P241_CAP_NORM="$(printf '%s' "${P241_CAP_LINE}" | tr ' ' '\n' || true)"
-    p241_cap() {
-      printf '%s' "${P241_CAP_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
-    }
-    P241_CAPS_R="$(p241_cap caps_has_r)"
-    P241_CAPS_U="$(p241_cap caps_has_u)"
-    P241_CAPS_F="$(p241_cap caps_has_f)"
-    P241_CAPS_L="$(p241_cap caps_has_l)"
-    P241_CAPS_E="$(p241_cap caps_has_e)"
-    P241_CAPS_G="$(p241_cap caps_has_g)"
-    P241_LOCAL_FF="$(p241_cap local_floodfill_enabled)"
-    P241_SHARE="$(p241_cap local_max_share_bandwidth)"
-    P241_PROFILE="$(p241_cap profile_present)"
-    P241_C_SHA="$(p241_cap c_ri_sha256)"
-    P241_PROBE_ELIGIBLE="$(p241_cap heard_about_creation_eligible)"
-    # Exact-pinned ProfileManagerImpl.shouldCreate(caps) predicate, Plan-241
-    # local mirror (same shape as p230_compute_eligible; the destination
-    # function is out of scope in streaming-only runs).
-    P241_ELIGIBLE=0
-    P241_L_EXEMPT=0
-    if [[ "${P241_CAPS_R:-}" == "true" ]]; then
-      if [[ "${P241_CAPS_F:-}" == "true" ]]; then
-        P241_ELIGIBLE=1
-      else
-        if [[ "${P241_CAPS_L:-}" != "true" ]]; then
-          P241_L_EXEMPT=1
-        elif [[ "${P241_LOCAL_FF:-}" != "true" && "${P241_SHARE:-}" =~ ^[0-9]+$ && "${P241_SHARE}" -lt 131072 ]]; then
-          P241_L_EXEMPT=1
-        fi
-        if [[ "${P241_L_EXEMPT}" -eq 1 && "${P241_CAPS_E:-}" != "true" && "${P241_CAPS_G:-}" != "true" ]]; then
-          P241_ELIGIBLE=1
-        fi
-      fi
-    fi
-    # Bounded natural-bootstrap wait (retained Plan-230 6x5s bound): the
-    # existing authenticated RI bootstrap may still be processing.
-    for _ in $(seq 1 6); do
-      if [[ "${P241_PROFILE}" == "true" ]]; then
-        break
-      fi
-      sleep 5
-      P241_CAP_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P230-CAPABILITY ${P241_C_HEX}" 2>/dev/null || true)"
-      P241_CAP_NORM="$(printf '%s' "${P241_CAP_LINE}" | tr ' ' '\n' || true)"
-      P241_PROFILE="$(p241_cap profile_present)"
-      P241_MAIN_RAW_C="$(p241_cap main_raw_present)"
-      P241_MAIN_VALID_C="$(p241_cap main_valid_present)"
-      P241_SELECTABLE_C="$(p241_cap selectable)"
-      P241_BANLISTED_C="$(p241_cap banlisted)"
-      P241_C_SHA="$(p241_cap c_ri_sha256)"
-      if [[ -n "${P241_MAIN_RAW_C:-}" ]]; then P241_MAIN_RAW="${P241_MAIN_RAW_C}"; fi
-      if [[ -n "${P241_MAIN_VALID_C:-}" ]]; then P241_MAIN_VALID="${P241_MAIN_VALID_C}"; fi
-      if [[ -n "${P241_SELECTABLE_C:-}" ]]; then P241_SELECTABLE="${P241_SELECTABLE_C}"; fi
-      if [[ -n "${P241_BANLISTED_C:-}" ]]; then P241_BANLISTED="${P241_BANLISTED_C}"; fi
-    done
-    P241_SELF_LINE="$(j219_query "${JAVA_DIAGNOSTIC_C_PORT}" "P230-SELF-VIEW" 2>/dev/null || true)"
-    P241_SELF_SHA="$(printf '%s' "${P241_SELF_LINE}" | tr ' ' '\n' | grep -F 'self_ri_sha256=' | cut -d= -f2 | head -n 1 || true)"
-    P241_EXPL_IN_NONZERO=0
-    P241_EXPL_OUT_NONZERO=0
-    for _ in $(seq 1 12); do
-      P241_POLL_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P229-EXPLORATORY-TUNNELS ${P241_C_HEX}" 2>/dev/null || true)"
-      P241_POLL_NORM="$(printf '%s' "${P241_POLL_LINE}" | tr ' ' '\n' || true)"
-      P241_EXPL_IN_NONZERO="$(printf '%s' "${P241_POLL_NORM}" | grep -F 'inbound_nonzero_count=' | cut -d= -f2 | head -n 1 || true)"
-      P241_EXPL_OUT_NONZERO="$(printf '%s' "${P241_POLL_NORM}" | grep -F 'outbound_nonzero_count=' | cut -d= -f2 | head -n 1 || true)"
-      if [[ "${P241_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ && "${P241_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
-        break
-      fi
-      sleep 5
-    done
-    printf 'p241-bootstrap-gate\trouter_c_hex=%s main_raw_present=%s main_valid_present=%s selectable=%s banlisted=%s eligible=%s probe_eligible=%s profile_present=%s caps_has_f=%s c_ri_sha256=%s self_ri_sha256=%s expl_inbound_nonzero=%s expl_outbound_nonzero=%s\n' \
-      "${P241_C_HEX}" "${P241_MAIN_RAW}" "${P241_MAIN_VALID}" "${P241_SELECTABLE}" "${P241_BANLISTED}" \
-      "${P241_ELIGIBLE}" "${P241_PROBE_ELIGIBLE}" "${P241_PROFILE}" "${P241_CAPS_F}" \
-      "${P241_C_SHA}" "${P241_SELF_SHA}" "${P241_EXPL_IN_NONZERO}" "${P241_EXPL_OUT_NONZERO}" \
-      > "${DRIVER_EVIDENCE}/streaming/p241-bootstrap-gate.tsv"
-    cat "${DRIVER_EVIDENCE}/streaming/p241-bootstrap-gate.tsv" >> "${DRIVER_STREAM_TSV}"
-    P241_GATE_OK=0
-    if [[ "${P241_MAIN_RAW}" == "true" && "${P241_MAIN_VALID}" == "true" \
-      && "${P241_SELECTABLE}" == "true" && "${P241_BANLISTED}" == "false" \
-      && "${P241_ELIGIBLE}" -eq 1 && "${P241_PROBE_ELIGIBLE}" == "true" \
-      && "${P241_PROFILE}" == "true" && "${P241_CAPS_F}" == "false" \
-      && -n "${P241_C_SHA}" && "${P241_C_SHA}" != "unknown" \
-      && "${P241_C_SHA}" == "${P241_SELF_SHA}" \
-      && "${P241_EXPL_IN_NONZERO}" =~ ^[1-9][0-9]*$ && "${P241_EXPL_OUT_NONZERO}" =~ ^[1-9][0-9]*$ ]]; then
-      P241_GATE_OK=1
-    else
-      echo "P241-A-TRANSIT-BOOTSTRAP-NOT-READY (see p241-bootstrap-gate)" >&2
-      printf 'p241-classification\tP241-A-TRANSIT-BOOTSTRAP-NOT-READY router_c_hex=%s\n' \
-        "${P241_C_HEX}" >> "${DRIVER_STREAM_TSV}"
-    fi
-  fi
-  if [[ "${P241_GATE_OK:-0}" -eq 1 ]]; then
-  P241_HELPER_RC=0
-  start_stream_helper "${P241_C_B64}" || P241_HELPER_RC=$?
-  if [[ "${P241_HELPER_RC}" -ne 0 ]]; then
-    echo "    public Java streaming helper failed to connect (Plan-241 one-hop lane, rc=${P241_HELPER_RC})" >>"${DRIVER_LOG}"
-    printf 'p241-classification\tP241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=both helper_ready=false\n' >> "${DRIVER_STREAM_TSV}"
-    P241_PAIR_OK=0
+  if [[ "${P242_GATE_OK:-0}" -eq 1 ]]; then
+  P242_HELPER_RC=0
+  start_stream_helper "${P242_C_B64}" || P242_HELPER_RC=$?
+  if [[ "${P242_HELPER_RC}" -ne 0 ]]; then
+    echo "    public Java streaming helper failed to connect (Plan-242 one-hop lane, rc=${P242_HELPER_RC})" >>"${DRIVER_LOG}"
+    printf 'p242-classification\tP242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=both helper_ready=false\n' >> "${DRIVER_STREAM_TSV}"
+    P242_PAIR_OK=0
   else
   # Plan 200 §A.1 — see RAW_REFERENCE_DESTINATION_B64 above.
   STREAM_REFERENCE_DESTINATION_B64="$(awk 'NR==1 {
@@ -2091,13 +2059,14 @@ if [[ "${I2PR_M6_JAVA_DRIVER}" == "streaming" || "${I2PR_M6_JAVA_DRIVER}" == "bo
       if (length($i) > 100) { print $i; exit }
     }
   }' "${STREAM_HELPER_READY}")"
-  echo "    public Java streaming helper ready; proving one-hop client pair" >>"${DRIVER_LOG}"
-  # Plan 241 §7 — prove the corrected SessionConfig is active before the
+  echo "    public Java streaming helper ready; proving non-zero-hop client pair (Plan 242)" >>"${DRIVER_LOG}"
+  # Plan 242 §7 — prove the corrected SessionConfig is active before the
   # client-pair gate. Bounded control query only (lengths/booleans, never
   # the peer value). A zero-hop/unset report on the counted lane is a
   # deterministic fixture defect: hard harness failure, never a counted
-  # build terminal and never a zero-hop fallback.
-  P241_PROFILE_LINE="$(python3 - "${JAVA_STREAM_CONTROL_PORT}" <<'PY' 2>/dev/null || true
+  # build terminal and never a zero-hop fallback. The retained
+  # P241 helper profile is unchanged (one-hop with explicit peer).
+  P242_PROFILE_LINE="$(python3 - "${JAVA_STREAM_CONTROL_PORT}" <<'PY' 2>/dev/null || true
 import socket, sys
 try:
     with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5) as sock:
@@ -2113,70 +2082,141 @@ except OSError as e:
     sys.stdout.write("TUNNEL_PROFILE_ERROR class=" + type(e).__name__)
 PY
 )"
-  printf '%s\n' "${P241_PROFILE_LINE}" > "${DRIVER_EVIDENCE}/streaming/p241-helper-profile-raw.tsv"
-  printf 'p241-helper-profile\t%s\n' "${P241_PROFILE_LINE}" > "${DRIVER_EVIDENCE}/streaming/p241-helper-profile.tsv"
-  cat "${DRIVER_EVIDENCE}/streaming/p241-helper-profile.tsv" >> "${DRIVER_STREAM_TSV}"
-  if [[ "${P241_PROFILE_LINE}" != "TUNNEL_PROFILE inbound_length=1 outbound_length=1 inbound_allow_zero_hop=false outbound_allow_zero_hop=false explicit_peers_set=true" ]]; then
-    echo "Plan 241 fixture defect: streaming helper tunnel profile is not the corrected one-hop profile: ${P241_PROFILE_LINE}" >&2
+  printf '%s\n' "${P242_PROFILE_LINE}" > "${DRIVER_EVIDENCE}/streaming/p242-helper-profile-raw.tsv"
+  printf 'p242-helper-profile\t%s\n' "${P242_PROFILE_LINE}" > "${DRIVER_EVIDENCE}/streaming/p242-helper-profile.tsv"
+  cat "${DRIVER_EVIDENCE}/streaming/p242-helper-profile.tsv" >> "${DRIVER_STREAM_TSV}"
+  if [[ "${P242_PROFILE_LINE}" != "TUNNEL_PROFILE inbound_length=1 outbound_length=1 inbound_allow_zero_hop=false outbound_allow_zero_hop=false explicit_peers_set=true" ]]; then
+    echo "Plan 242 fixture defect: streaming helper tunnel profile is not the corrected one-hop profile: ${P242_PROFILE_LINE}" >&2
     exit 72
   fi
-  # Plan 241 §7 — Streaming client-pool proof. Derive the helper client
-  # DBID via the read-only P223-DEST-INSPECT renderer, then resolve live
-  # pools via the retained P227-CLIENT-TUNNELS probe. Installed pool
-  # state is authoritative. Continuation requires inbound+outbound
-  # non-zero exact-via-C tunnels with zero zero-hop tunnels.
-  P241_CLIENT_DBID_HEX=""
-  P241_PAIR_OK=0
+  # Plan 242 §6/§7 — Streaming client-pool proof via the new bounded
+  # extended observation (P242-CLIENT-TUNNELS <client> <A> <B> <C>).
+  # The retained Plan-227 basic fields are emitted alongside the role/
+  # path facts (length-including-local, remote-hop count, first/last
+  # remote role, contains-B, contains-C, exact-one-remote-hop,
+  # exact-via-C, nonzero counts, unexpected-peer flags). Derive the
+  # helper client DBID via the read-only P223-DEST-INSPECT renderer.
+  P242_CLIENT_DBID_HEX=""
+  P242_PAIR_OK=0
   if [[ -n "${STREAM_REFERENCE_DESTINATION_B64}" ]]; then
-    P241_DEST_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P223-DEST-INSPECT ${STREAM_REFERENCE_DESTINATION_B64}" 2>/dev/null || true)"
-    P241_CLIENT_DBID_HEX="$(printf '%s' "${P241_DEST_LINE}" | grep -oE 'hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
+    P242_DEST_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P223-DEST-INSPECT ${STREAM_REFERENCE_DESTINATION_B64}" 2>/dev/null || true)"
+    P242_CLIENT_DBID_HEX="$(printf '%s' "${P242_DEST_LINE}" | grep -oE 'hash_hex=[0-9a-f]{64}' | cut -d= -f2 | head -n 1 || true)"
   fi
-  if [[ "${P241_CLIENT_DBID_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
-    P241_TUN_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P227-CLIENT-TUNNELS ${P241_CLIENT_DBID_HEX} ${P241_C_HEX}" 2>/dev/null || true)"
-    printf '%s\n' "${P241_TUN_LINE}" > "${DRIVER_EVIDENCE}/streaming/p241-tunnels-raw.tsv"
-    P241_TUN_NORM="$(printf '%s' "${P241_TUN_LINE}" | tr ' ' '\n' || true)"
-    p241t_field() {
-      printf '%s' "${P241_TUN_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
-    }
-    P241_IN_COUNT="$(p241t_field inbound_tunnel_count)"
-    P241_OUT_COUNT="$(p241t_field outbound_tunnel_count)"
-    P241_IN_EXACT="$(p241t_field inbound_exact_one_remote_hop_via_c)"
-    P241_OUT_EXACT="$(p241t_field outbound_exact_one_remote_hop_via_c)"
-    P241_IN_ZERO="$(p241t_field inbound_zero_hop_present)"
-    P241_OUT_ZERO="$(p241t_field outbound_zero_hop_present)"
-    # Plan 241 §7 — the retained P227 probe emits counts, exact-via-C
-    # booleans, and zero-hop booleans (no per-length histograms). An
-    # exact-via-C tunnel has getLength() == 2 by probe construction, so
-    # exact=true strictly implies a non-zero tunnel is installed in that
-    # direction; the implied fields below document that implication and
-    # are never independent measurements.
-    P241_IN_NONZERO_IMPLIED="${P241_IN_EXACT}"
-    P241_OUT_NONZERO_IMPLIED="${P241_OUT_EXACT}"
-    printf 'p241-client-tunnels\tclient_resolved=%s inbound_tunnel_count=%s outbound_tunnel_count=%s inbound_nonzero_implied=%s outbound_nonzero_implied=%s inbound_exact_one_remote_hop_via_c=%s outbound_exact_one_remote_hop_via_c=%s inbound_zero_hop_present=%s outbound_zero_hop_present=%s router_c_hex=%s\n' \
-      "$(p241t_field client_resolved)" "${P241_IN_COUNT}" "${P241_OUT_COUNT}" \
-      "${P241_IN_NONZERO_IMPLIED}" "${P241_OUT_NONZERO_IMPLIED}" "${P241_IN_EXACT}" "${P241_OUT_EXACT}" \
-      "${P241_IN_ZERO}" "${P241_OUT_ZERO}" "${P241_C_HEX}" \
-      > "${DRIVER_EVIDENCE}/streaming/p241-tunnels.tsv"
-    cat "${DRIVER_EVIDENCE}/streaming/p241-tunnels.tsv" >> "${DRIVER_STREAM_TSV}"
-    if [[ "${P241_IN_EXACT}" == "true" && "${P241_OUT_EXACT}" == "true" && "${P241_IN_ZERO}" == "false" && "${P241_OUT_ZERO}" == "false" ]]; then
-      P241_PAIR_OK=1
-    else
-      if [[ "${P241_IN_EXACT}" == "true" ]]; then
-        P241_MISSING_DIR="outbound"
-      elif [[ "${P241_OUT_EXACT}" == "true" ]]; then
-        P241_MISSING_DIR="inbound"
-      else
-        P241_MISSING_DIR="both"
+  if [[ "${P242_CLIENT_DBID_HEX}" =~ ^[0-9a-f]{64}$ ]]; then
+    P242_TUN_LINE="$(j219_query "${JAVA_DIAGNOSTIC_A_PORT}" "P242-CLIENT-TUNNELS ${P242_CLIENT_DBID_HEX} ${P242_A_HEX} ${P242_B_HEX} ${P242_C_HEX}" 2>/dev/null || true)"
+    printf '%s\n' "${P242_TUN_LINE}" > "${DRIVER_EVIDENCE}/streaming/p242-tunnels-raw.tsv"
+    if grep -q "^P242-EV" "${DRIVER_EVIDENCE}/streaming/p242-tunnels-raw.tsv" 2>/dev/null; then
+      P242_TUN_NORM="$(printf '%s' "${P242_TUN_LINE}" | tr ' ' '\n' || true)"
+      p242t_field() {
+        printf '%s' "${P242_TUN_NORM}" | grep -F "${1}=" | cut -d= -f2 | head -n 1 || true
+      }
+      P242_IN_COUNT="$(p242t_field inbound_tunnel_count)"
+      P242_OUT_COUNT="$(p242t_field outbound_tunnel_count)"
+      P242_IN_EXACT_C="$(p242t_field inbound_exact_one_remote_hop_via_c)"
+      P242_OUT_EXACT_C="$(p242t_field outbound_exact_one_remote_hop_via_c)"
+      P242_IN_ZERO="$(p242t_field inbound_zero_hop_present)"
+      P242_OUT_ZERO="$(p242t_field outbound_zero_hop_present)"
+      P242_IN_NZ_COUNT="$(p242t_field inbound_nonzero_count)"
+      P242_OUT_NZ_COUNT="$(p242t_field outbound_nonzero_count)"
+      P242_IN_FIRST_ROLE="$(p242t_field inbound_first_remote_role)"
+      P242_IN_LAST_ROLE="$(p242t_field inbound_last_remote_role)"
+      P242_OUT_FIRST_ROLE="$(p242t_field outbound_first_remote_role)"
+      P242_OUT_LAST_ROLE="$(p242t_field outbound_last_remote_role)"
+      P242_IN_CONTAINS_B="$(p242t_field inbound_contains_b)"
+      P242_OUT_CONTAINS_B="$(p242t_field outbound_contains_b)"
+      P242_IN_CONTAINS_C="$(p242t_field inbound_contains_c)"
+      P242_OUT_CONTAINS_C="$(p242t_field outbound_contains_c)"
+      P242_IN_EXACT_ONE="$(p242t_field inbound_exact_one_remote_hop)"
+      P242_OUT_EXACT_ONE="$(p242t_field outbound_exact_one_remote_hop)"
+      P242_IN_LEN="$(p242t_field inbound_tunnel_length_including_local)"
+      P242_OUT_LEN="$(p242t_field outbound_tunnel_length_including_local)"
+      P242_IN_REMOTE_COUNT="$(p242t_field inbound_remote_hop_count)"
+      P242_OUT_REMOTE_COUNT="$(p242t_field outbound_remote_hop_count)"
+      P242_IN_UNEXPECTED="$(p242t_field inbound_unexpected_peer_observed)"
+      P242_OUT_UNEXPECTED="$(p242t_field outbound_unexpected_peer_observed)"
+      # Plan 242 §6 — installed path diagnostic. `contains_c` and
+      # `exact_one_remote_hop_via_c` are recorded as diagnostic only
+      # (the corrected gate does NOT consume them).
+      printf 'p242-client-tunnels\tclient_resolved=%s inbound_tunnel_count=%s outbound_tunnel_count=%s inbound_nonzero_count=%s outbound_nonzero_count=%s inbound_zero_hop_present=%s outbound_zero_hop_present=%s inbound_tunnel_length_including_local=%s outbound_tunnel_length_including_local=%s inbound_remote_hop_count=%s outbound_remote_hop_count=%s inbound_first_remote_role=%s inbound_last_remote_role=%s outbound_first_remote_role=%s outbound_last_remote_role=%s inbound_contains_b=%s outbound_contains_b=%s inbound_contains_c=%s outbound_contains_c=%s inbound_exact_one_remote_hop=%s outbound_exact_one_remote_hop=%s inbound_exact_one_remote_hop_via_c=%s outbound_exact_one_remote_hop_via_c=%s inbound_unexpected_peer_observed=%s outbound_unexpected_peer_observed=%s router_a_hex=%s router_b_hex=%s router_c_hex=%s\n' \
+        "$(p242t_field client_resolved)" "${P242_IN_COUNT}" "${P242_OUT_COUNT}" \
+        "${P242_IN_NZ_COUNT}" "${P242_OUT_NZ_COUNT}" \
+        "${P242_IN_ZERO}" "${P242_OUT_ZERO}" \
+        "${P242_IN_LEN}" "${P242_OUT_LEN}" \
+        "${P242_IN_REMOTE_COUNT}" "${P242_OUT_REMOTE_COUNT}" \
+        "${P242_IN_FIRST_ROLE}" "${P242_IN_LAST_ROLE}" \
+        "${P242_OUT_FIRST_ROLE}" "${P242_OUT_LAST_ROLE}" \
+        "${P242_IN_CONTAINS_B}" "${P242_OUT_CONTAINS_B}" \
+        "${P242_IN_CONTAINS_C}" "${P242_OUT_CONTAINS_C}" \
+        "${P242_IN_EXACT_ONE}" "${P242_OUT_EXACT_ONE}" \
+        "${P242_IN_EXACT_C}" "${P242_OUT_EXACT_C}" \
+        "${P242_IN_UNEXPECTED}" "${P242_OUT_UNEXPECTED}" \
+        "${P242_A_HEX}" "${P242_B_HEX}" "${P242_C_HEX}" \
+        > "${DRIVER_EVIDENCE}/streaming/p242-tunnels.tsv"
+      cat "${DRIVER_EVIDENCE}/streaming/p242-tunnels.tsv" >> "${DRIVER_STREAM_TSV}"
+      # Plan 242 §6 — unexpected-peer fail-closed.
+      P242_UNEXPECTED_DIR=""
+      if [[ "${P242_IN_UNEXPECTED}" == "true" && "${P242_OUT_UNEXPECTED}" == "true" ]]; then
+        P242_UNEXPECTED_DIR="both"
+      elif [[ "${P242_IN_UNEXPECTED}" == "true" ]]; then
+        P242_UNEXPECTED_DIR="inbound"
+      elif [[ "${P242_OUT_UNEXPECTED}" == "true" ]]; then
+        P242_UNEXPECTED_DIR="outbound"
       fi
-      echo "P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=${P241_MISSING_DIR}" >&2
-      printf 'p241-classification\tP241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=%s inbound_exact=%s outbound_exact=%s inbound_zero=%s outbound_zero=%s\n' \
-        "${P241_MISSING_DIR}" "${P241_IN_EXACT}" "${P241_OUT_EXACT}" "${P241_IN_ZERO}" "${P241_OUT_ZERO}" >> "${DRIVER_STREAM_TSV}"
+      if [[ -n "${P242_UNEXPECTED_DIR}" ]]; then
+        echo "P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction=${P242_UNEXPECTED_DIR}" >&2
+        printf 'p242-classification\tP242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction=%s\n' \
+          "${P242_UNEXPECTED_DIR}" >> "${DRIVER_STREAM_TSV}"
+        P242_PAIR_OK=0
+      # Plan 242 §7 — zero-hop contradiction. Any zero-hop tunnel in the
+      # pool contradicts the corrected helper profile (allowZeroHop=false).
+      elif [[ "${P242_IN_ZERO}" == "true" || "${P242_OUT_ZERO}" == "true" ]]; then
+        echo "P242-B-ZERO-HOP-CONTRADICTION (see p242-client-tunnels)" >&2
+        printf 'p242-classification\tP242-B-ZERO-HOP-CONTRADICTION inbound_zero=%s outbound_zero=%s\n' \
+          "${P242_IN_ZERO}" "${P242_OUT_ZERO}" >> "${DRIVER_STREAM_TSV}"
+        P242_PAIR_OK=0
+      # Plan 242 §7 — non-zero pair is sufficient. `contains_c` and
+      # `exact_one_remote_hop_via_c` are diagnostic only and do NOT gate
+      # the corrected prerequisite. The retained Plan-232/240 lookup chain
+      # below consumes the streaming job correlation verbatim.
+      elif [[ "${P242_IN_COUNT}" =~ ^[1-9][0-9]*$ && "${P242_OUT_COUNT}" =~ ^[1-9][0-9]*$ \
+        && "${P242_IN_NZ_COUNT}" =~ ^[1-9][0-9]*$ && "${P242_OUT_NZ_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+        P242_PAIR_OK=1
+      else
+        if [[ "${P242_IN_NZ_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+          P242_MISSING_DIR="outbound"
+        elif [[ "${P242_OUT_NZ_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+          P242_MISSING_DIR="inbound"
+        else
+          P242_MISSING_DIR="both"
+        fi
+        echo "P242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=${P242_MISSING_DIR}" >&2
+        printf 'p242-classification\tP242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=%s inbound_count=%s outbound_count=%s inbound_nonzero_count=%s outbound_nonzero_count=%s inbound_contains_c=%s outbound_contains_c=%s\n' \
+          "${P242_MISSING_DIR}" "${P242_IN_COUNT}" "${P242_OUT_COUNT}" \
+          "${P242_IN_NZ_COUNT}" "${P242_OUT_NZ_COUNT}" \
+          "${P242_IN_CONTAINS_C}" "${P242_OUT_CONTAINS_C}" \
+          >> "${DRIVER_STREAM_TSV}"
+        P242_PAIR_OK=0
+      fi
+    else
+      echo "Plan 242 streaming extended pool probe unavailable; cannot prove non-zero pair" >&2
+      printf 'p242-classification\tP242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=both reason=extended-pool-probe-unavailable\n' >> "${DRIVER_STREAM_TSV}"
+      P242_PAIR_OK=0
     fi
   else
-    echo "Plan 241 streaming client DBID derivation failed; cannot prove one-hop tunnels" >&2
-    printf 'p241-classification\tP241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=both reason=client-dbid-unresolvable\n' >> "${DRIVER_STREAM_TSV}"
+    echo "Plan 242 streaming client DBID derivation failed; cannot prove non-zero pair" >&2
+    printf 'p242-classification\tP242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=both reason=client-dbid-unresolvable\n' >> "${DRIVER_STREAM_TSV}"
+    P242_PAIR_OK=0
   fi
-  if [[ "${P241_PAIR_OK:-0}" -eq 1 ]]; then
+  if [[ "${P242_PAIR_OK:-0}" -eq 1 ]]; then
+    # Mirror the corrected gate inputs as Plan-241-compatible env vars so
+    # the retained Plan-240/241 streaming driver runs against the same
+    # helper client and Router C. The Plan-242 module re-derives its own
+    # classification at the lookup epoch via the stream driver.
+    P241_C_HEX="${P242_C_HEX}"
+    P241_C_B64="${P242_C_B64}"
+    P241_CLIENT_DBID_HEX="${P242_CLIENT_DBID_HEX}"
+    P241_PAIR_OK=1
+    echo "    non-zero client pair proven (Plan 242); running streaming driver" >>"${DRIVER_LOG}"
   echo "    streaming one-hop client pair proven; running streaming driver" >>"${DRIVER_LOG}"
   # Streaming driver run. Reuses the same SSU2 endpoint and SAM
   # Java public Streaming manager; it is independent of §5.4.

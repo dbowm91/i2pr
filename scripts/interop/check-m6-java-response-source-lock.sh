@@ -26,6 +26,8 @@ ROUTER_FPS="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/Flo
 ROUTER_STOREJOB="${SOURCE_ROOT}/router/java/src/net/i2p/router/networkdb/kademlia/StoreJob.java"
 ROUTER_TUNNEL_POOL_MANAGER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPoolManager.java"
 ROUTER_TUNNEL_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPool.java"
+ROUTER_TUNNEL_PEER_SELECTOR="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPeerSelector.java"
+ROUTER_CLIENT_PEER_SELECTOR="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/ClientPeerSelector.java"
 
 [[ -d "${SOURCE_ROOT}/.git" ]] || { echo "Java source is not a Git checkout" >&2; exit 1; }
 [[ "$(git -C "${SOURCE_ROOT}" rev-parse HEAD)" == "${EXPECTED_PIN}" ]] || {
@@ -52,11 +54,13 @@ done
 
 for file in \
    "${ROUTER_TUNNEL_POOL_MANAGER}" \
-   "${ROUTER_TUNNEL_POOL}"; do
+   "${ROUTER_TUNNEL_POOL}" \
+   "${ROUTER_TUNNEL_PEER_SELECTOR}" \
+   "${ROUTER_CLIENT_PEER_SELECTOR}"; do
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" <<'PY'
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" "${ROUTER_TUNNEL_PEER_SELECTOR}" "${ROUTER_CLIENT_PEER_SELECTOR}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -73,6 +77,8 @@ router_fps = Path(sys.argv[10]).read_text(encoding="utf-8")
 router_storejob = Path(sys.argv[11]).read_text(encoding="utf-8")
 router_tunnel_pool_manager = Path(sys.argv[12]).read_text(encoding="utf-8")
 router_tunnel_pool = Path(sys.argv[13]).read_text(encoding="utf-8")
+router_tunnel_peer_selector = Path(sys.argv[14]).read_text(encoding="utf-8")
+router_client_peer_selector = Path(sys.argv[15]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -218,6 +224,30 @@ required = {
     "ISJ.client_facade_lookup": (router_isj, "_facade.lookupLocallyWithoutValidation(peer)"),
     "ISJ.zero_hop_length_guard": (router_isj, "outTunnel.getLength() <= 1"),
     "ISJ.dispatch_outbound": (router_isj, "dispatchOutbound(outMsg, outTunnel.getSendTunnelId(0), peer)"),
+    # Plan 242 §3 — exact-pinned probabilistic explicit-peer selection.
+    # `TunnelPeerSelector.shouldSelectExplicit(settings)` short-circuits
+    # on `isExploratory()`, reads the per-pool `explicitPeers` (or the
+    # router-global fallback), and returns true only when
+    # `ctx.random().nextInt(4) == 0` (the one-in-four explicit branch).
+    # `TunnelPeerSelector.selectExplicit(settings, length)` is the matching
+    # explicit branch; `ClientPeerSelector.selectPeers(settings)` is the
+    # dispatcher that chooses between the explicit and the stock
+    # fast-peer branches. Any upgrade that makes the explicit branch
+    # deterministic, removes the random gate, or skips
+    # `shouldSelectExplicit` must fail the lane before an external
+    # attempt. A source upgrade that renames any of these must fail the
+    # lane before an external attempt.
+    "TPS.should_select_explicit": (router_tunnel_peer_selector, "protected boolean shouldSelectExplicit(TunnelPoolSettings settings)"),
+    "TPS.explicit_peers_property": (router_tunnel_peer_selector, "String peers = opts.getProperty(\"explicitPeers\");"),
+    "TPS.random_one_in_four": (router_tunnel_peer_selector, "ctx.random().nextInt(4) == 0"),
+    "TPS.select_explicit": (router_tunnel_peer_selector, "protected List<Hash> selectExplicit(TunnelPoolSettings settings, int length)"),
+    "TPS.random_shuffle_explicit": (router_tunnel_peer_selector, "Collections.shuffle(rv, ctx.random());"),
+    "TPS.local_router_appended": (router_tunnel_peer_selector, "rv.add(ctx.routerHash());"),
+    "TPS.no_valid_explicit_zero_hop": (router_tunnel_peer_selector, "\"No valid explicit peers found, building zero hop\""),
+    "TPS.fallback_select_fast_peers": (router_tunnel_peer_selector, "ctx.profileOrganizer().selectFastPeers(more, exclude, matches);"),
+    "CPS.select_peers": (router_client_peer_selector, "public List<Hash> selectPeers(TunnelPoolSettings settings)"),
+    "CPS.should_select_explicit_check": (router_client_peer_selector, "if (shouldSelectExplicit(settings))"),
+    "CPS.explicit_returns_select_explicit": (router_client_peer_selector, "return selectExplicit(settings, length);"),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -301,6 +331,15 @@ output.write_text(
         "java_tunnelpool_selection\tselectOutboundTunnel(destination, closestTo) | _clientOutboundPools.get(destination) | pool.selectTunnel(closestTo) (destination client pool served when present, no exploratory fallback)\n",
         "java_tunnelpool_zero_hop_last\tselectTunnel(Hash closestTo) | avoidZeroHop = !getAllowZeroHop() | TunnelInfoComparator(closestTo, avoidZeroHop) zero-hop-last (genuine non-zero-hop client tunnel bypasses the ISJ guard)\n",
         "java_isj_sendquery_split\tctx.netDb().lookupRouterInfoLocally(peer) (main-NetDB send preparation) vs _facade.lookupLocallyWithoutValidation(peer) (client-facade zero-hop guard) | outTunnel.getLength() <= 1 | dispatchOutbound(outMsg, outTunnel.getSendTunnelId(0), peer) (authoritative dispatch)\n",
+        # Plan 242 §3/§15 — pinned probabilistic explicit-peer selection
+        # that proves a `length=1` SessionConfig via `explicitPeers` is
+        # NOT deterministic. ShouldSelectExplicit returns true only when
+        # `ctx.random().nextInt(4) == 0`; otherwise ClientPeerSelector
+        # falls back to the stock `selectFastPeers` path. Retained Plan
+        # 236–241 rows above stay frozen; these rows are additive.
+        "java_explicit_peer_semantics\tshouldSelectExplicit(settings) returns true only when ctx.random().nextInt(4) == 0 (TunnelPeerSelector one-in-four explicit branch)\n",
+        "java_explicit_peer_dispatcher\tClientPeerSelector.selectPeers(settings) | if (shouldSelectExplicit(settings)) return selectExplicit(settings, length); (explicit vs stock fast-peer dispatch)\n",
+        "java_explicit_branch_evidence\tNo valid explicit peers found, building zero hop | selectFastPeers(more, exclude, matches) | Collections.shuffle(rv, ctx.random()) (TunnelPeerSelector explicit branch fallbacks)\n",
     ]),
     encoding="utf-8",
 )

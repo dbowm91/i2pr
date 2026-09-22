@@ -4749,14 +4749,6 @@ fi
 if [[ -f "${P241_HARNESS}" ]]; then
   for required in \
     'P241Probe.java' \
-    'p241-bootstrap-gate' \
-    'p241-client-tunnels' \
-    'p241-helper-profile' \
-    'p241-classification' \
-    'P241-A-TRANSIT-BOOTSTRAP-NOT-READY' \
-    'P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT' \
-    'start_stream_helper "${P241_C_B64}"' \
-    'TUNNEL_PROFILE inbound_length=1' \
     'P241_ROUTER_C_HEX' \
     'P241_CLIENT_DBID_HEX' \
     'external-p241' ; do
@@ -4765,6 +4757,19 @@ if [[ -f "${P241_HARNESS}" ]]; then
       failures=$((failures + 1))
     fi
   done
+  # Plan 242 §31i supersedes the Plan 241 §30i bootstrap/client-pair
+  # gate rows: P242-A-* terminals replace P241-A-TRANSIT-BOOTSTRAP-NOT-READY,
+  # P242-B-NONZERO- and P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL replace
+  # P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT, and
+  # `start_stream_helper "${P242_C_B64}"` replaces
+  # `start_stream_helper "${P241_C_B64}"`. The streaming driver env
+  # vars (P241_ROUTER_C_HEX / P241_CLIENT_DBID_HEX) are mirrored from
+  # the P242-* derived values inside the §31i block, so the Plan 241
+  # driver still runs against the corrected pre-helper state.
+  if grep -q -E "P241-A-TRANSIT-BOOTSTRAP-NOT-READY|P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT|start_stream_helper \"\\\$\\{P241_C_B64\\}\"" "${P241_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P241_HARNESS} still emits pre-Plan-242 gate tokens (Plan 242 §5/§7 supersede Plan 241 §6/§7)" >&2
+    failures=$((failures + 1))
+  fi
   if grep -q -E "record[[:space:]]+[\"']P241-" "${P241_HARNESS}"; then
     echo "m6 mixed-router evidence check failed: ${P241_HARNESS} invents a Plan 241 terminal" >&2
     failures=$((failures + 1))
@@ -4794,8 +4799,315 @@ if [[ -f "${P241_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 31. Plan 242 stock one-hop selector semantics corrective --------
+# Plan 242 source-locks the 1-in-4 explicit-peer selection semantics,
+# removes the Plan-241 exact-via-C hard gate from the counted lane, and
+# records the corrected installed-client-pool facts. No production Rust
+# change, no Java source patch, no raw-helper change, no topology /
+# profile / publication / timing change, no zero-hop fallback, no raw-log
+# promotion. The streaming helper retains the Plan-241 one-hop profile
+# unchanged (corrected fixture stands).
+P242_PROBE_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/net/i2p/router/networkdb/kademlia/P227Probe.java"
+P242_LAUNCHER_SRC="${JAVA_LAUNCHER_SRC}"
+P242_STREAM_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P242_RAW_HELPER_SRC="${JAVA_RAW_HELPER_SRC}"
+P242_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P242_HARNESS="${JAVA_HARNESS}"
+P242_SOURCE_LOCK="${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh"
+if [[ ! -f "${P242_PROBE_SRC}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 242 extended probe ${P242_PROBE_SRC}" >&2
+  failures=$((failures + 1))
+else
+  # 31a. Extended snapshot must record bounded role/path facts only.
+  for required in \
+    'snapshotClientTunnelsExtended' \
+    'Role.UNKNOWN' \
+    'inboundFirstRemoteRole' \
+    'outboundLastRemoteRole' \
+    'inboundContainsB' \
+    'outboundContainsB' \
+    'inboundContainsC' \
+    'outboundContainsC' \
+    'inboundExactOneRemoteHop' \
+    'outboundExactOneRemoteHop' \
+    'inboundUnexpectedPeerObserved' \
+    'outboundUnexpectedPeerObserved' \
+    'classifyPeerRole'; do
+    if ! grep -q -F "${required}" "${P242_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_PROBE_SRC} lacks Plan 242 extended snapshot surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 31b. Probe-side mutation, profile creation, NetDB/tunnel/queue/stat
+  # writes, RouterInfo stores, reflection, and private-field access are
+  # forbidden. The extended snapshot MUST stay read-only.
+  for forbidden in \
+    '.addProfile(' \
+    '.getOrCreateProfile' \
+    'heardAbout(' \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'setKeys' \
+    'buildTunnels' \
+    'addTunnel' \
+    'createRateStat' \
+    'createRequiredRateStat' \
+    'createFrequencyStat' \
+    'addRateData' \
+    'getDeclaredField' \
+    'setAccessible' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P242_PROBE_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_PROBE_SRC} uses forbidden Plan 242 probe call '${forbidden}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P242_LAUNCHER_SRC}" ]]; then
+  # 31c. The launcher serves the new P242-CLIENT-TUNNELS command and
+  # exposes the extended role/path fields in the TSV.
+  for required in \
+    '"P242-CLIENT-TUNNELS"' \
+    'p242ClientTunnels' \
+    'kind=extended-client-tunnels' \
+    'router_a_hex=' \
+    'router_b_hex=' \
+    'router_c_hex=' \
+    'inbound_tunnel_length_including_local=' \
+    'outbound_tunnel_length_including_local=' \
+    'inbound_remote_hop_count=' \
+    'outbound_remote_hop_count=' \
+    'inbound_first_remote_role=' \
+    'inbound_last_remote_role=' \
+    'outbound_first_remote_role=' \
+    'outbound_last_remote_role=' \
+    'inbound_contains_b=' \
+    'outbound_contains_b=' \
+    'inbound_contains_c=' \
+    'outbound_contains_c=' \
+    'inbound_exact_one_remote_hop=' \
+    'outbound_exact_one_remote_hop=' \
+    'inbound_nonzero_count=' \
+    'outbound_nonzero_count=' \
+    'inbound_unexpected_peer_observed=' \
+    'outbound_unexpected_peer_observed='; do
+    if ! grep -q -F "${required}" "${P242_LAUNCHER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_LAUNCHER_SRC} lacks Plan 242 launcher surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P242_STREAM_HELPER_SRC}" ]]; then
+  # 31d. The streaming helper retains the Plan-241 corrected one-hop
+  # profile unchanged; Plan 242 does NOT introduce a new helper
+  # SessionConfig contract or a P242 surface in the helper.
+  for required in \
+    'explicitPeerB64OrNull' \
+    'inbound.length", "1"' \
+    'outbound.length", "1"' \
+    'allowZeroHop", "false"' \
+    'i2cp.leaseSetType", "3"' \
+    'i2cp.leaseSetEncType", "4"' \
+    'i2cp.messageReliability", "BestEffort"' \
+    'REPORT_TUNNEL_PROFILE'; do
+    if ! grep -q -F "${required}" "${P242_STREAM_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_STREAM_HELPER_SRC} lost its Plan 241 contract '${required}' (Plan 242 §3: helper profile unchanged)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -F 'P242' "${P242_STREAM_HELPER_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ReferenceStreamingService.java carries Plan 242 surface (Plan 242 §3: helper stays scoped to its own contract)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P242_RAW_HELPER_SRC}" ]]; then
+  # 31e. The raw helper stays frozen; it MUST carry no Plan 242 surface.
+  if grep -q -F 'P242' "${P242_RAW_HELPER_SRC}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ReferenceRawDestination.java carries Plan 242 surface (Plan 242 §3: raw helper frozen)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P242_DRIVER_TEST}" ]]; then
+  # 31f. The Rust driver carries the bounded Plan-242 parser +
+  # bootstrap gate + continuation gate + ordered classifier, plus the
+  # additive P242 evidence keys. `contains_c` and
+  # `exact_one_remote_hop_via_c` are recorded but never consumed by
+  # the gate (corrected continuation). No terminal closes M6 or
+  # authorizes production change.
+  for required in \
+    'struct P242ExtendedTunnels' \
+    'fn p242_parse_extended_tunnels' \
+    'fn p242_collect_extended_tunnels' \
+    'fn record_p242_extended_tunnels' \
+    'fn p242_bootstrap_gate' \
+    'fn p242_continuation_gate' \
+    'enum P242BootstrapOutcome' \
+    'enum P242ContinuationOutcome' \
+    'enum P242UnexpectedPeerDirection' \
+    'fn p242_role_label_is_valid' \
+    'enum P242Terminal' \
+    'struct P242Inputs' \
+    'fn p242_classify' \
+    'fn record_p242_classification' \
+    'fn p242_ocmosj_resume_allowed' \
+    'fn p242_m6_closure_claimable' \
+    'fn p242_authorizes_production_change' \
+    'P242-CLIENT-TUNNELS' \
+    'p242-classification' \
+    'P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE' \
+    'P242-A-NONZERO-EXPLORATORY-NOT-READY' \
+    'P242-A-TOPOLOGY-INVALID' \
+    'P242-A-HELPER-PROFILE-NOT-ONE-HOP' \
+    'P242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=' \
+    'P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction=' \
+    'P242-B-ZERO-HOP-CONTRADICTION' \
+    'P242-C-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION' \
+    'P242-C-B-QUERY-DISPATCHED' \
+    'P242-D-B-LOOKUP-NOT-RECEIVED' \
+    'P242-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE' \
+    'P242-D-B-ANSWER-NOT-EMITTED' \
+    'P242-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED' \
+    'P242-D-A-CLIENT-SUBDB-NOT-INSTALLED' \
+    'P242-D-LOOKUP-SUCCEEDED'; do
+    if ! grep -q -F "${required}" "${P242_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_DRIVER_TEST} lacks Plan 242 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Reject hard-coded terminal-record calls that fabricate P242 classifications.
+  if rg -n "^[[:space:]]*record[[:space:]]+[\"']P242-" "${P242_DRIVER_TEST}" >/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P242_DRIVER_TEST} hard-codes a Plan 242 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -rq -F 'P242' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'p242' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 242 surface" >&2
+    failures=$((failures + 1))
+  fi
+  # 31g. The Plan 242 §12 unit rows: at least 19 named rows + the
+  # extended-tunnels parsing row + the terminal-tokens row.
+  for unit_row in \
+    p242_explicit_peers_is_probabilistic_not_mandatory \
+    p242_exact_via_c_is_diagnostic_not_gate \
+    p242_nonzero_pair_is_lookup_prerequisite \
+    p242_zero_hop_remains_forbidden \
+    p242_c_profile_absence_alone_does_not_block_helper \
+    p242_no_candidate_population_stops_before_helper \
+    p242_unknown_client_tunnel_peer_fails_closed \
+    p242_installed_path_records_remote_hop_count \
+    p242_lookup_selected_tunnel_must_be_nonzero \
+    p242_plan240_exact_job_correlation_retained \
+    p242_b_query_requires_exact_dispatch \
+    p242_b_receipt_requires_query \
+    p242_b_answer_requires_b_receipt \
+    p242_client_dsm_requires_b_answer \
+    p242_subdb_install_requires_client_dsm \
+    p242_ocmosj_resume_requires_lookup_success \
+    p242_i2pr_terminal_requires_expected_tunneldata \
+    p242_direction_a_pass_does_not_close_m6 \
+    p242_no_production_change \
+    p242_terminal_tokens_are_canonical \
+    p242_extended_tunnels_row_parses_with_bounded_roles; do
+    if ! grep -q "fn ${unit_row}" "${P242_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_DRIVER_TEST} lacks Plan 242 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P242_SOURCE_LOCK}" ]]; then
+  # 31h. Source-lock the exact-pinned probabilistic explicit-peer
+  # selection: `shouldSelectExplicit` returns true only when
+  # `ctx.random().nextInt(4) == 0`; `ClientPeerSelector.selectPeers`
+  # dispatches between the explicit branch and the stock fast-peer
+  # branch.
+  for required in \
+    'protected boolean shouldSelectExplicit(TunnelPoolSettings settings)' \
+    'String peers = opts.getProperty(\"explicitPeers\");' \
+    'ctx.random().nextInt(4) == 0' \
+    'protected List<Hash> selectExplicit(TunnelPoolSettings settings, int length)' \
+    'Collections.shuffle(rv, ctx.random());' \
+    'rv.add(ctx.routerHash());' \
+    '\"No valid explicit peers found, building zero hop\"' \
+    'ctx.profileOrganizer().selectFastPeers(more, exclude, matches);' \
+    'public List<Hash> selectPeers(TunnelPoolSettings settings)' \
+    'if (shouldSelectExplicit(settings))' \
+    'return selectExplicit(settings, length);'; do
+    if ! grep -q -F "${required}" "${P242_SOURCE_LOCK}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_SOURCE_LOCK} lacks Plan 242 selector source lock '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P242_HARNESS}" ]]; then
+  # 31i. Harness shell gate correction: §7 non-zero pair, §6 extended
+  # diagnostic, §5 stock-candidate-population gate. Exact-via-C must
+  # not be a continuation gate (only diagnostic).
+  for required in \
+    'p242-bootstrap-gate' \
+    'p242-client-tunnels' \
+    'p242-helper-profile' \
+    'p242-classification' \
+    'P242-CLIENT-TUNNELS' \
+    'P242_A_HEX' \
+    'P242_A_SNAPSHOT' \
+    'P242_B_HEX' \
+    'P242_B_SNAPSHOT' \
+    'P242_C_HEX' \
+    'P242_C_B64' \
+    'P242_GATE_OK' \
+    'P242_STOCK_CANDIDATES_NONEMPTY' \
+    'P242_PAIR_OK' \
+    'P242_IN_NZ_COUNT' \
+    'P242_OUT_NZ_COUNT' \
+    'P242_IN_CONTAINS_C' \
+    'P242_OUT_CONTAINS_C' \
+    'P242_IN_EXACT_C' \
+    'P242_OUT_EXACT_C' \
+    'start_stream_helper "${P242_C_B64}"' \
+    'TUNNEL_PROFILE inbound_length=1' \
+    'inbound_nonzero_count=' \
+    'outbound_nonzero_count=' \
+    'P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE' \
+    'P242-A-NONZERO-EXPLORATORY-NOT-READY' \
+    'P242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=' \
+    'P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction=' \
+    'P242-B-ZERO-HOP-CONTRADICTION'; do
+    if ! grep -q -F "${required}" "${P242_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_HARNESS} lacks Plan 242 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # No P242 row may carry topology/profile/tunnel-policy changes,
+  # timeout overrides, public-I2P/reseed/VMComm/alwaysQuery escapes, or
+  # raw log promotion relative to Plan 241.
+  p242_harness_lines="$(grep -n -E 'p242|P242' "${P242_HARNESS}" || true)"
+  for forbidden in \
+    'netDb.alwaysQuery' \
+    'vmCommSystem' \
+    'forceBandwidthClass' \
+    'floodfillParticipant' \
+    'reseed' \
+    'DRIVER_TIMEOUT=' \
+    'log-router' \
+    'random.nextInt(4) == 0' \
+    'random().nextInt(4) = 1' \
+    'forceShouldSelectExplicit' \
+    'explicitPeers=*[, ]'; do
+    if printf '%s\n' "${p242_harness_lines}" | grep -q -F "${forbidden}"; then
+      echo "m6 mixed-router evidence check failed: ${P242_HARNESS} P242 row carries forbidden surface '${forbidden}' (Plan 242 §4 + §14)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if ! grep -q -F 'exit 72' "${P242_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P242_HARNESS} lacks the Plan 242 helper-profile hard-fail (fixture defect must exit, never a counted terminal)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants)"

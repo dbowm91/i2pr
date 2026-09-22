@@ -11,7 +11,8 @@ Plan 242 is dependency-ready to correct that harness gate, replace the C-specifi
 
 The publication/final-closure axis remains independently unresolved.
 
-plan_201 = blocked-after-plan241-a-b-build-stage-pending-plan242-and-publication-closure
+plan_201 = blocked-after-plan242-corrected-bootstrap-pair-gate-pending-stock-client-build-successor-and-publication-closure
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
 plan_241 = passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary
 plan_242 = registered-ready-m6-java-streaming-stock-one-hop-selector-semantics-corrective
 next_executable_plan = 242-m6-java-streaming-stock-one-hop-selector-semantics-corrective

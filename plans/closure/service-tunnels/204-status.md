@@ -1,17 +1,18 @@
-# Current dependency amendment — Plan 242 registered; M10 product authority remains closed
+# Current dependency amendment — Plan 242 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
 
 Plan 241 removed the forced zero-hop Streaming fixture but stopped at the client-build gate because the harness required exact-via-C tunnels. Exact-pinned Java source now proves explicitPeers is sampled only one build in four; ordinary client tunnel builds may legitimately choose another stock fast peer.
 
-Plan 242 is registered-ready to correct only that harness semantics, accept a genuine controlled non-zero-hop client pair, and resume the exact lookup/reply/OCMOSJ continuation.
+Plan 242 closes the corrected harness semantics on the implementation head: the §5 stock-candidate-population gate replaces the Plan-241 §6 C-profile gate, the §7 non-zero-hop pair gate replaces the Plan-241 §7 exact-via-C gate, the §6 extended `P242-CLIENT-TUNNELS` row records role/path facts and `contains_c` as diagnostic only, source lock grew 35→38 with TunnelPeerSelector / ClientPeerSelector needles, and the routine + focused + full serial workspace floors all pass. Live counted external attempts remain unexecuted on this host (no Java cache + i2pr daemon pair available); the §20 stock-client-build successor is the next executable lane.
 
-Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure.
+Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure pending the §20 stock-client-build successor.
 
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan242
-plan_242 = registered-ready-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+plan_204 = blocked-on-m6-java-second-family-closure-pending-stock-client-build-successor-after-plan242
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
+plan_241 = passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary
 milestone10_final_acceptance = closed
-next_executable_plan = 242-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+next_executable_plan = none-pending-stock-client-build-attribution-successor-plan-of-record
 
 # Current dependency amendment — Plan 241 closed; M10 product authority remains closed
 

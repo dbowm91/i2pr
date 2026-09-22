@@ -265,6 +265,7 @@
 //     no profile creation, tier promotion, connection forcing, or NetDB
 //     store;
 //   - `P227-CLIENT-TUNNELS <client-dbid-hex> <router-c-hex>` resolves the
+//   - `P242-CLIENT-TUNNELS <client-dbid-hex> <router-a-hex> <router-b-hex> <router-c-hex>`
 //     live inbound/outbound client pools through public tunnel-manager
 //     accessors and inspects installed tunnels read-only; one remote hop
 //     via C is the exact local+Router-C path (`getLength() == 2`), never
@@ -845,6 +846,15 @@ public final class ControlledRouter {
                             return p227Error("missing-hash-arguments");
                         }
                         return p227ClientTunnels(parts[1], parts[2]);
+                    case "P242-CLIENT-TUNNELS":
+                        // Plan 242 §6 — extended client-tunnel observation
+                        // with bounded role/length facts. Requires three
+                        // controlled-router identities (A is the helper/
+                        // local; B and C are the rest of the topology).
+                        if (parts.length < 5) {
+                            return p242ClientTunnelsError("missing-hash-arguments");
+                        }
+                        return p242ClientTunnels(parts[1], parts[2], parts[3], parts[4]);
                     case "P228-TUNNEL-INFRA":
                         return p228TunnelInfra();
                     case "P228-CLIENT-POOLS":
@@ -1248,6 +1258,85 @@ public final class ControlledRouter {
 
         private String p241Error(String reason) {
             return "P241-ERROR " + reason;
+        }
+
+        private String p242ClientTunnelsError(String reason) {
+            return "P242-ERROR " + reason;
+        }
+
+        /**
+         * Plan 242 §3/§6 — extended read-only installed client-tunnel
+         * snapshot for one helper client DBID. Resolves live pools through
+         * public tunnel-manager accessors and inspects installed tunnels
+         * read-only. Records the basic Plan-227 fields plus bounded role/
+         * path facts (tunnel length including local, remote hop count,
+         * first/last remote role as B/C/other-controlled/unknown,
+         * contains-B/contains-C/exact-one-remote-hop/exact-one-via-C,
+         * nonzero counts, plus an unexpected-peer flag). No peer hashes,
+         * keys, tags, or payloads are emitted.
+         */
+        private String p242ClientTunnels(
+                String clientDbidHex,
+                String routerAHex,
+                String routerBHex,
+                String routerCHex) {
+            Hash clientDbid = p220ParseHexHash(clientDbidHex);
+            Hash routerA = p220ParseHexHash(routerAHex);
+            Hash routerB = p220ParseHexHash(routerBHex);
+            Hash routerC = p220ParseHexHash(routerCHex);
+            if (clientDbid == null || routerA == null
+                || routerB == null || routerC == null) {
+                return p242ClientTunnelsError("invalid-hex-hash");
+            }
+            P227Probe.ExtendedTunnels result =
+                P227Probe.snapshotClientTunnelsExtended(
+                    context(), clientDbid, routerA, routerB, routerC);
+            if (result.error != null && result.base == null) {
+                return "P242-EV kind=extended-client-tunnels"
+                    + " client_dbid_hex=" + clientDbidHex
+                    + " router_a_hex=" + routerAHex
+                    + " router_b_hex=" + routerBHex
+                    + " router_c_hex=" + routerCHex
+                    + " observable=false reason=" + result.error;
+            }
+            P227Probe.Tunnels base = result.base;
+            String head = "P242-EV kind=extended-client-tunnels"
+                + " client_dbid_hex=" + clientDbidHex
+                + " router_a_hex=" + routerAHex
+                + " router_b_hex=" + routerBHex
+                + " router_c_hex=" + routerCHex
+                + " observable=true"
+                + " client_resolved=" + base.clientResolved
+                + " inbound_pool_present=" + base.inboundPoolPresent
+                + " outbound_pool_present=" + base.outboundPoolPresent
+                + " inbound_tunnel_count=" + base.inboundTunnelCount
+                + " outbound_tunnel_count=" + base.outboundTunnelCount
+                + " inbound_zero_hop_present=" + base.inboundZeroHopPresent
+                + " outbound_zero_hop_present=" + base.outboundZeroHopPresent
+                + " inbound_exact_one_remote_hop_via_c=" + base.inboundExactOneRemoteHopViaC
+                + " outbound_exact_one_remote_hop_via_c=" + base.outboundExactOneRemoteHopViaC
+                + " inbound_tunnel_length_including_local=" + result.inboundTunnelLengthIncludingLocal
+                + " outbound_tunnel_length_including_local=" + result.outboundTunnelLengthIncludingLocal
+                + " inbound_remote_hop_count=" + result.inboundRemoteHopCount
+                + " outbound_remote_hop_count=" + result.outboundRemoteHopCount
+                + " inbound_first_remote_role=" + result.inboundFirstRemoteRole
+                + " inbound_last_remote_role=" + result.inboundLastRemoteRole
+                + " outbound_first_remote_role=" + result.outboundFirstRemoteRole
+                + " outbound_last_remote_role=" + result.outboundLastRemoteRole
+                + " inbound_contains_b=" + result.inboundContainsB
+                + " outbound_contains_b=" + result.outboundContainsB
+                + " inbound_contains_c=" + result.inboundContainsC
+                + " outbound_contains_c=" + result.outboundContainsC
+                + " inbound_exact_one_remote_hop=" + result.inboundExactOneRemoteHop
+                + " outbound_exact_one_remote_hop=" + result.outboundExactOneRemoteHop
+                + " inbound_nonzero_count=" + result.inboundNonzeroCount
+                + " outbound_nonzero_count=" + result.outboundNonzeroCount
+                + " inbound_unexpected_peer_observed=" + result.inboundUnexpectedPeerObserved
+                + " outbound_unexpected_peer_observed=" + result.outboundUnexpectedPeerObserved;
+            if (result.error != null) {
+                return head + " extended_error=" + result.error;
+            }
+            return head;
         }
 
         /**

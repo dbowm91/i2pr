@@ -23451,3 +23451,1051 @@ fn p241_terminal_tokens_are_canonical() {
         "P241-D-LOOKUP-SUCCEEDED"
     );
 }
+
+// ---- Plan 242 §3/§5/§6/§7/§8/§9/§10 unit -------------------------------
+// Stock one-hop selector semantics corrective + lookup continuation. The
+// exact-pinned `TunnelPeerSelector.shouldSelectExplicit` proves the
+// `explicitPeers` branch is sampled one build out of four
+// (`ctx.random().nextInt(4) == 0`); Plan 241 therefore over-constrained
+// the harness by requiring every count to be exact-via-C. Plan 242
+// removes that hard gate, accepts any genuine non-zero-hop client pair,
+// records actual stock installed paths with bounded role/length facts,
+// reuses the Plan-240 lookup correlation key verbatim, and only resumes
+// OCMOSJ/i2pr after a proven lookup success. Diagnostic-only: no
+// production change, no Java patching, no topology, profile, publication,
+// or timing change is authorized here.
+//
+// The shell proves the Plan-242 bootstrap correction (P242-A) and the
+// corrected non-zero-hop client-pair gate (P242-B) before the driver
+// runs; the driver re-proves the helper profile pre-SYN, snapshots the
+// Plan-242 extended client pool at the lookup epoch, and emits exactly
+// one `p242-classification` row. Live §§8–11 lookup chain is reused from
+// Plan 240/241 unchanged.
+
+/// Plan 242 §6 — extended installed client-tunnel snapshot parsed from
+/// the `P242-CLIENT-TUNNELS` row. Carries the basic Plan-227 fields plus
+/// bounded role/path facts only (no peer hashes, no keys). `None` on the
+/// optional role labels means `unknown` was not observable — the harness
+/// reports `unknown` (literally the string) when present.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P242ExtendedTunnels {
+    observable: bool,
+    client_resolved: bool,
+    inbound_pool_present: bool,
+    outbound_pool_present: bool,
+    inbound_tunnel_count: u64,
+    outbound_tunnel_count: u64,
+    inbound_zero_hop_present: bool,
+    outbound_zero_hop_present: bool,
+    inbound_exact_one_remote_hop_via_c: bool,
+    outbound_exact_one_remote_hop_via_c: bool,
+    inbound_tunnel_length_including_local: u64,
+    outbound_tunnel_length_including_local: u64,
+    inbound_remote_hop_count: u64,
+    outbound_remote_hop_count: u64,
+    inbound_first_remote_role: String,
+    inbound_last_remote_role: String,
+    outbound_first_remote_role: String,
+    outbound_last_remote_role: String,
+    inbound_contains_b: bool,
+    outbound_contains_b: bool,
+    inbound_contains_c: bool,
+    outbound_contains_c: bool,
+    inbound_exact_one_remote_hop: bool,
+    outbound_exact_one_remote_hop: bool,
+    inbound_nonzero_count: u64,
+    outbound_nonzero_count: u64,
+    inbound_unexpected_peer_observed: bool,
+    outbound_unexpected_peer_observed: bool,
+}
+
+const P242_ROLE_NONE: &str = "none";
+const P242_ROLE_B: &str = "B";
+const P242_ROLE_C: &str = "C";
+const P242_ROLE_OTHER_CONTROLLED: &str = "other-controlled";
+const P242_ROLE_UNKNOWN: &str = "unknown";
+
+fn p242_role_is_known_controlled(label: &str) -> bool {
+    matches!(
+        label,
+        P242_ROLE_B | P242_ROLE_C | P242_ROLE_OTHER_CONTROLLED
+    )
+}
+
+fn p242_role_label_is_valid(label: &str) -> bool {
+    matches!(
+        label,
+        P242_ROLE_NONE | P242_ROLE_B | P242_ROLE_C | P242_ROLE_OTHER_CONTROLLED | P242_ROLE_UNKNOWN
+    )
+}
+
+fn p242_strict_shape(line: &str) -> bool {
+    let mut tokens = line.split(' ');
+    match (tokens.next(), tokens.next()) {
+        (Some("P242-EV"), Some(kind)) if kind.starts_with("kind=") => {}
+        _ => return false,
+    }
+    tokens.all(|t| t.is_empty() || t.contains('='))
+}
+
+fn p242_parse_extended_tunnels(
+    line: &str,
+    expected_client_hex: &str,
+    expected_a_hex: &str,
+    expected_b_hex: &str,
+    expected_c_hex: &str,
+) -> Option<P242ExtendedTunnels> {
+    if !line.starts_with("P242-EV ") || !line.contains("kind=extended-client-tunnels") {
+        return None;
+    }
+    if line.len() > 4096 || p228_line_is_secret_bearing(line) {
+        return None;
+    }
+    if !p242_strict_shape(line) {
+        return None;
+    }
+    let kv = p220_parse_kv(&line.replace("P242-EV ", "P220-EV "));
+    if kv.get("observable").is_none_or(|v| v != "true") {
+        return None;
+    }
+    let echo_client = kv.get("client_dbid_hex")?;
+    let echo_a = kv.get("router_a_hex")?;
+    let echo_b = kv.get("router_b_hex")?;
+    let echo_c = kv.get("router_c_hex")?;
+    if !echo_client.eq_ignore_ascii_case(expected_client_hex)
+        || !echo_a.eq_ignore_ascii_case(expected_a_hex)
+        || !echo_b.eq_ignore_ascii_case(expected_b_hex)
+        || !echo_c.eq_ignore_ascii_case(expected_c_hex)
+    {
+        return None;
+    }
+    for hex in [echo_client, echo_a, echo_b, echo_c] {
+        if !p227_is_hex64(&hex.to_lowercase()) {
+            return None;
+        }
+    }
+    for forbidden in ["priv", "seed", "session_key", "payload", "log-router"] {
+        if line.to_lowercase().contains(forbidden) {
+            return None;
+        }
+    }
+    let inbound_first = kv
+        .get("inbound_first_remote_role")
+        .cloned()
+        .unwrap_or_else(|| P242_ROLE_UNKNOWN.to_owned());
+    let inbound_last = kv
+        .get("inbound_last_remote_role")
+        .cloned()
+        .unwrap_or_else(|| P242_ROLE_UNKNOWN.to_owned());
+    let outbound_first = kv
+        .get("outbound_first_remote_role")
+        .cloned()
+        .unwrap_or_else(|| P242_ROLE_UNKNOWN.to_owned());
+    let outbound_last = kv
+        .get("outbound_last_remote_role")
+        .cloned()
+        .unwrap_or_else(|| P242_ROLE_UNKNOWN.to_owned());
+    for label in [
+        inbound_first.as_str(),
+        inbound_last.as_str(),
+        outbound_first.as_str(),
+        outbound_last.as_str(),
+    ] {
+        if !p242_role_label_is_valid(label) {
+            return None;
+        }
+    }
+    Some(P242ExtendedTunnels {
+        observable: true,
+        client_resolved: p227_parse_bool(kv.get("client_resolved"))?,
+        inbound_pool_present: p227_parse_bool(kv.get("inbound_pool_present"))?,
+        outbound_pool_present: p227_parse_bool(kv.get("outbound_pool_present"))?,
+        inbound_tunnel_count: p227_parse_count(kv.get("inbound_tunnel_count"))?,
+        outbound_tunnel_count: p227_parse_count(kv.get("outbound_tunnel_count"))?,
+        inbound_zero_hop_present: p227_parse_bool(kv.get("inbound_zero_hop_present"))?,
+        outbound_zero_hop_present: p227_parse_bool(kv.get("outbound_zero_hop_present"))?,
+        inbound_exact_one_remote_hop_via_c: p227_parse_bool(
+            kv.get("inbound_exact_one_remote_hop_via_c"),
+        )?,
+        outbound_exact_one_remote_hop_via_c: p227_parse_bool(
+            kv.get("outbound_exact_one_remote_hop_via_c"),
+        )?,
+        inbound_tunnel_length_including_local: p227_parse_count(
+            kv.get("inbound_tunnel_length_including_local"),
+        )
+        .unwrap_or(0),
+        outbound_tunnel_length_including_local: p227_parse_count(
+            kv.get("outbound_tunnel_length_including_local"),
+        )
+        .unwrap_or(0),
+        inbound_remote_hop_count: p227_parse_count(kv.get("inbound_remote_hop_count")).unwrap_or(0),
+        outbound_remote_hop_count: p227_parse_count(kv.get("outbound_remote_hop_count"))
+            .unwrap_or(0),
+        inbound_first_remote_role: inbound_first,
+        inbound_last_remote_role: inbound_last,
+        outbound_first_remote_role: outbound_first,
+        outbound_last_remote_role: outbound_last,
+        inbound_contains_b: p227_parse_bool(kv.get("inbound_contains_b")).unwrap_or(false),
+        outbound_contains_b: p227_parse_bool(kv.get("outbound_contains_b")).unwrap_or(false),
+        inbound_contains_c: p227_parse_bool(kv.get("inbound_contains_c")).unwrap_or(false),
+        outbound_contains_c: p227_parse_bool(kv.get("outbound_contains_c")).unwrap_or(false),
+        inbound_exact_one_remote_hop: p227_parse_bool(kv.get("inbound_exact_one_remote_hop"))
+            .unwrap_or(false),
+        outbound_exact_one_remote_hop: p227_parse_bool(kv.get("outbound_exact_one_remote_hop"))
+            .unwrap_or(false),
+        inbound_nonzero_count: p227_parse_count(kv.get("inbound_nonzero_count")).unwrap_or(0),
+        outbound_nonzero_count: p227_parse_count(kv.get("outbound_nonzero_count")).unwrap_or(0),
+        inbound_unexpected_peer_observed: p227_parse_bool(
+            kv.get("inbound_unexpected_peer_observed"),
+        )
+        .unwrap_or(false),
+        outbound_unexpected_peer_observed: p227_parse_bool(
+            kv.get("outbound_unexpected_peer_observed"),
+        )
+        .unwrap_or(false),
+    })
+}
+
+#[allow(dead_code)]
+async fn p242_collect_extended_tunnels(
+    diag_port: u16,
+    client_dbid_hex: &str,
+    router_a_hex: &str,
+    router_b_hex: &str,
+    router_c_hex: &str,
+) -> Option<P242ExtendedTunnels> {
+    if diag_port == 0 {
+        return None;
+    }
+    for hex in [client_dbid_hex, router_a_hex, router_b_hex, router_c_hex] {
+        if !p227_is_hex64(hex) {
+            return None;
+        }
+    }
+    let command = format!(
+        "P242-CLIENT-TUNNELS {client_dbid_hex} {router_a_hex} {router_b_hex} {router_c_hex}"
+    );
+    let line = p220_query_diagnostic(diag_port, &command).await?;
+    p242_parse_extended_tunnels(
+        &line,
+        client_dbid_hex,
+        router_a_hex,
+        router_b_hex,
+        router_c_hex,
+    )
+}
+
+#[allow(dead_code)]
+fn record_p242_extended_tunnels(
+    evidence_dir: &Path,
+    label: &str,
+    snapshot: Option<&P242ExtendedTunnels>,
+    client_dbid_hex: &str,
+    router_a_hex: &str,
+    router_b_hex: &str,
+    router_c_hex: &str,
+) {
+    match snapshot {
+        Some(snapshot) => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=true client_dbid_hex={client_dbid_hex} router_a_hex={router_a_hex} router_b_hex={router_b_hex} router_c_hex={router_c_hex} client_resolved={} inbound_pool_present={} outbound_pool_present={} inbound_tunnel_count={} outbound_tunnel_count={} inbound_zero_hop_present={} outbound_zero_hop_present={} inbound_exact_one_remote_hop_via_c={} outbound_exact_one_remote_hop_via_c={} inbound_tunnel_length_including_local={} outbound_tunnel_length_including_local={} inbound_remote_hop_count={} outbound_remote_hop_count={} inbound_first_remote_role={} inbound_last_remote_role={} outbound_first_remote_role={} outbound_last_remote_role={} inbound_contains_b={} outbound_contains_b={} inbound_contains_c={} outbound_contains_c={} inbound_exact_one_remote_hop={} outbound_exact_one_remote_hop={} inbound_nonzero_count={} outbound_nonzero_count={} inbound_unexpected_peer_observed={} outbound_unexpected_peer_observed={}",
+                snapshot.client_resolved,
+                snapshot.inbound_pool_present,
+                snapshot.outbound_pool_present,
+                snapshot.inbound_tunnel_count,
+                snapshot.outbound_tunnel_count,
+                snapshot.inbound_zero_hop_present,
+                snapshot.outbound_zero_hop_present,
+                snapshot.inbound_exact_one_remote_hop_via_c,
+                snapshot.outbound_exact_one_remote_hop_via_c,
+                snapshot.inbound_tunnel_length_including_local,
+                snapshot.outbound_tunnel_length_including_local,
+                snapshot.inbound_remote_hop_count,
+                snapshot.outbound_remote_hop_count,
+                snapshot.inbound_first_remote_role,
+                snapshot.inbound_last_remote_role,
+                snapshot.outbound_first_remote_role,
+                snapshot.outbound_last_remote_role,
+                snapshot.inbound_contains_b,
+                snapshot.outbound_contains_b,
+                snapshot.inbound_contains_c,
+                snapshot.outbound_contains_c,
+                snapshot.inbound_exact_one_remote_hop,
+                snapshot.outbound_exact_one_remote_hop,
+                snapshot.inbound_nonzero_count,
+                snapshot.outbound_nonzero_count,
+                snapshot.inbound_unexpected_peer_observed,
+                snapshot.outbound_unexpected_peer_observed,
+            ),
+        ),
+        None => append_evidence(
+            evidence_dir,
+            label,
+            &format!(
+                "observable=false client_dbid_hex={client_dbid_hex} router_a_hex={router_a_hex} router_b_hex={router_b_hex} router_c_hex={router_c_hex} reason=diagnostic-unreachable-or-malformed"
+            ),
+        ),
+    }
+}
+
+/// Plan 242 §5 — bootstrap gate. The corrected prerequisite set for the
+/// Streaming one-hop lane: controlled topology valid, non-zero exploratory
+/// infrastructure present in both directions, helper requests the
+/// corrected profile (length=1, variance=0, quantity=1, backups=0,
+/// allowZeroHop=false), and at least one usable stock client-tunnel
+/// candidate exists in the helper client DB (read-only peer-manager
+/// survey against the controlled topology). Router-C profile absence
+/// alone is NOT a stop condition; the harness stops only when the entire
+/// candidate population is empty/unusable.
+#[derive(Clone, Debug)]
+struct P242BootstrapInputs {
+    topology_valid: bool,
+    exploratory_nonzero_inbound: bool,
+    exploratory_nonzero_outbound: bool,
+    helper_profile_one_hop: bool,
+    stock_candidate_population_nonempty: bool,
+}
+
+/// Plan 242 §5 — pre-helper bootstrap gate result. A *passing* gate means
+/// the corrected helper can start; a *failing* gate emits exactly one of
+/// the typed P242-A terminals and stops without starting the helper.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P242BootstrapOutcome {
+    Pass,
+    TopologyInvalid,
+    NonzeroExploratoryNotReady,
+    HelperProfileNotOneHop,
+    NoStockClientTunnelCandidate,
+}
+
+fn p242_bootstrap_gate(inputs: &P242BootstrapInputs) -> P242BootstrapOutcome {
+    if !inputs.topology_valid {
+        return P242BootstrapOutcome::TopologyInvalid;
+    }
+    if !inputs.exploratory_nonzero_inbound || !inputs.exploratory_nonzero_outbound {
+        return P242BootstrapOutcome::NonzeroExploratoryNotReady;
+    }
+    if !inputs.helper_profile_one_hop {
+        return P242BootstrapOutcome::HelperProfileNotOneHop;
+    }
+    if !inputs.stock_candidate_population_nonempty {
+        return P242BootstrapOutcome::NoStockClientTunnelCandidate;
+    }
+    P242BootstrapOutcome::Pass
+}
+
+/// Plan 242 §7 — corrected continuation gate. Replaces Plan-241's
+/// exact-via-C hard requirement: a genuine non-zero-hop inbound AND
+/// outbound pair is sufficient. Zero-hop in either direction is
+/// forbidden (the helper profile mandates allowZeroHop=false; a
+/// contradicting zero-hop tunnel stops the run). `contains_c` is
+/// diagnostic only and never gates continuation.
+#[derive(Clone, Debug)]
+struct P242ContinuationInputs {
+    inbound_installed: bool,
+    outbound_installed: bool,
+    inbound_nonzero: bool,
+    outbound_nonzero: bool,
+    inbound_zero_hop_present: bool,
+    outbound_zero_hop_present: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P242ContinuationOutcome {
+    Pass,
+    NonZeroClientTunnelNotBuilt { direction: P241Direction },
+    ZeroHopContradiction,
+}
+
+fn p242_continuation_gate(inputs: &P242ContinuationInputs) -> P242ContinuationOutcome {
+    if inputs.inbound_zero_hop_present || inputs.outbound_zero_hop_present {
+        return P242ContinuationOutcome::ZeroHopContradiction;
+    }
+    if !inputs.inbound_installed
+        || !inputs.outbound_installed
+        || !inputs.inbound_nonzero
+        || !inputs.outbound_nonzero
+    {
+        let direction = match (
+            inputs.inbound_installed && inputs.inbound_nonzero,
+            inputs.outbound_installed && inputs.outbound_nonzero,
+        ) {
+            (true, false) => P241Direction::Outbound,
+            (false, true) => P241Direction::Inbound,
+            _ => P241Direction::Both,
+        };
+        return P242ContinuationOutcome::NonZeroClientTunnelNotBuilt { direction };
+    }
+    P242ContinuationOutcome::Pass
+}
+
+/// Plan 242 §6 — unexpected-peer detection. A peer in the helper client
+/// tunnel pool that is neither A, B, nor C is a fail-closed signal
+/// (testable, never auto-corrected). The terminal token names the
+/// direction that first observes an unknown peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P242UnexpectedPeerDirection {
+    Inbound,
+    Outbound,
+    Both,
+}
+
+fn p242_unexpected_peer_direction(
+    inbound: bool,
+    outbound: bool,
+) -> Option<P242UnexpectedPeerDirection> {
+    match (inbound, outbound) {
+        (true, true) => Some(P242UnexpectedPeerDirection::Both),
+        (true, false) => Some(P242UnexpectedPeerDirection::Inbound),
+        (false, true) => Some(P242UnexpectedPeerDirection::Outbound),
+        (false, false) => None,
+    }
+}
+
+/// Plan 242 §9 — lookup-epoch zero-hop guard. The Plan-240
+/// zero-hop-unknown guard requires the *selected* outbound client
+/// tunnel to be zero-hop. Plan 242 keeps that as an authoritative-pool
+/// check on the actual non-zero client tunnel; a lookup selecting a
+/// zero-hop outbound despite an authoritative non-zero-only pool is a
+/// contradiction terminal.
+#[derive(Clone, Debug, Default)]
+struct P242LookupSelectedPathInputs {
+    pool_authoritative_nonzero: bool,
+    lookup_selected_zero_hop: bool,
+}
+
+/// Plan 242 terminal taxonomy (§5/§6/§7/§8/§9/§10/§11). `A` owns the
+/// bootstrap gate, `B` owns the client-pair gate and the
+/// unexpected-peer fail-closed gate, `C` owns the lookup-selection
+/// contradiction (only when reached) and `B-QUERY-DISPATCHED`, `D` owns
+/// the retained Plan-240 post-query chain with P242 tokens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum P242Terminal {
+    ANonZeroExploratoryNotReady,
+    ANoStockClientTunnelCandidate,
+    ATopologyInvalid,
+    AHelperProfileNotOneHop,
+    BNonZeroClientTunnelNotBuilt(P241Direction),
+    BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection),
+    BZeroHopContradiction,
+    CLookupZeroHopSelectionContradiction,
+    CBQueryDispatched,
+    CEarlierGuard(P240Terminal),
+    DBLookupNotReceived,
+    DBTargetLsNotQueryAnswerable,
+    DBAnswerNotEmitted,
+    DAClientTunnelDsmNotReceived,
+    DAClientSubdbNotInstalled,
+    DLookupSucceeded,
+}
+
+impl P242Terminal {
+    fn token(&self) -> String {
+        match self {
+            Self::ANonZeroExploratoryNotReady => "P242-A-NONZERO-EXPLORATORY-NOT-READY".to_owned(),
+            Self::ANoStockClientTunnelCandidate => {
+                "P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE".to_owned()
+            }
+            Self::ATopologyInvalid => "P242-A-TOPOLOGY-INVALID".to_owned(),
+            Self::AHelperProfileNotOneHop => "P242-A-HELPER-PROFILE-NOT-ONE-HOP".to_owned(),
+            Self::BNonZeroClientTunnelNotBuilt(direction) => {
+                let dir = match direction {
+                    P241Direction::Inbound => "inbound",
+                    P241Direction::Outbound => "outbound",
+                    P241Direction::Both => "both",
+                };
+                format!("P242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction={dir}")
+            }
+            Self::BUnexpectedPeerInClientTunnel(direction) => {
+                let dir = match direction {
+                    P242UnexpectedPeerDirection::Inbound => "inbound",
+                    P242UnexpectedPeerDirection::Outbound => "outbound",
+                    P242UnexpectedPeerDirection::Both => "both",
+                };
+                format!("P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction={dir}")
+            }
+            Self::BZeroHopContradiction => "P242-B-ZERO-HOP-CONTRADICTION".to_owned(),
+            Self::CLookupZeroHopSelectionContradiction => {
+                "P242-C-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION".to_owned()
+            }
+            Self::CBQueryDispatched => "P242-C-B-QUERY-DISPATCHED".to_owned(),
+            Self::CEarlierGuard(inner) => inner.token().to_owned(),
+            Self::DBLookupNotReceived => "P242-D-B-LOOKUP-NOT-RECEIVED".to_owned(),
+            Self::DBTargetLsNotQueryAnswerable => {
+                "P242-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE".to_owned()
+            }
+            Self::DBAnswerNotEmitted => "P242-D-B-ANSWER-NOT-EMITTED".to_owned(),
+            Self::DAClientTunnelDsmNotReceived => {
+                "P242-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED".to_owned()
+            }
+            Self::DAClientSubdbNotInstalled => "P242-D-A-CLIENT-SUBDB-NOT-INSTALLED".to_owned(),
+            Self::DLookupSucceeded => "P242-D-LOOKUP-SUCCEEDED".to_owned(),
+        }
+    }
+}
+
+/// Plan 242 ordered classifier inputs (§5 through §11).
+#[derive(Clone, Debug)]
+struct P242Inputs {
+    bootstrap: P242BootstrapInputs,
+    continuation: P242ContinuationInputs,
+    unexpected: Option<P242UnexpectedPeerDirection>,
+    lookup_selected: P242LookupSelectedPathInputs,
+    lookup: P240Inputs,
+}
+
+fn p242_classify(inputs: &P242Inputs) -> P242Terminal {
+    match p242_bootstrap_gate(&inputs.bootstrap) {
+        P242BootstrapOutcome::NonzeroExploratoryNotReady => {
+            return P242Terminal::ANonZeroExploratoryNotReady;
+        }
+        P242BootstrapOutcome::NoStockClientTunnelCandidate => {
+            return P242Terminal::ANoStockClientTunnelCandidate;
+        }
+        P242BootstrapOutcome::TopologyInvalid => return P242Terminal::ATopologyInvalid,
+        P242BootstrapOutcome::HelperProfileNotOneHop => {
+            return P242Terminal::AHelperProfileNotOneHop;
+        }
+        P242BootstrapOutcome::Pass => {}
+    }
+    if let Some(direction) = inputs.unexpected {
+        return P242Terminal::BUnexpectedPeerInClientTunnel(direction);
+    }
+    match p242_continuation_gate(&inputs.continuation) {
+        P242ContinuationOutcome::NonZeroClientTunnelNotBuilt { direction } => {
+            return P242Terminal::BNonZeroClientTunnelNotBuilt(direction);
+        }
+        P242ContinuationOutcome::ZeroHopContradiction => {
+            return P242Terminal::BZeroHopContradiction;
+        }
+        P242ContinuationOutcome::Pass => {}
+    }
+    if inputs.lookup_selected.pool_authoritative_nonzero
+        && inputs.lookup_selected.lookup_selected_zero_hop
+    {
+        return P242Terminal::CLookupZeroHopSelectionContradiction;
+    }
+    match p240_classify(&inputs.lookup) {
+        P240Terminal::BQueryDispatched => P242Terminal::CBQueryDispatched,
+        P240Terminal::BLookupNotReceived => P242Terminal::DBLookupNotReceived,
+        P240Terminal::BTargetLsNotQueryAnswerable => P242Terminal::DBTargetLsNotQueryAnswerable,
+        P240Terminal::BAnswerNotEmitted => P242Terminal::DBAnswerNotEmitted,
+        P240Terminal::AClientTunnelDsmNotReceived => P242Terminal::DAClientTunnelDsmNotReceived,
+        P240Terminal::AClientSubdbNotInstalled => P242Terminal::DAClientSubdbNotInstalled,
+        P240Terminal::LookupSucceeded => P242Terminal::DLookupSucceeded,
+        other => P242Terminal::CEarlierGuard(other),
+    }
+}
+
+#[allow(dead_code)]
+fn record_p242_classification(
+    evidence_dir: &Path,
+    terminal: &P242Terminal,
+    inputs: &P242Inputs,
+    target_hash_hex: &str,
+    router_b_hex: &str,
+    client_dbid_hex: &str,
+) {
+    let p240_lookup_terminal = p240_classify(&inputs.lookup).token();
+    let bootstrap_pass = p242_bootstrap_gate(&inputs.bootstrap) == P242BootstrapOutcome::Pass;
+    let continuation_pass =
+        p242_continuation_gate(&inputs.continuation) == P242ContinuationOutcome::Pass;
+    append_evidence(
+        evidence_dir,
+        "p242-classification",
+        &format!(
+            "{} target_hash_hex={} router_b_hex={} client_dbid_hex={} bootstrap_pass={} topology_valid={} expl_inbound_nonzero={} expl_outbound_nonzero={} helper_profile_one_hop={} stock_candidate_population_nonempty={} continuation_pass={} inbound_installed={} outbound_installed={} inbound_nonzero={} outbound_nonzero={} inbound_zero_hop_present={} outbound_zero_hop_present={} unexpected_direction={:?} lookup_authoritative_nonzero={} lookup_selected_zero_hop={} lookup_terminal={}",
+            terminal.token(),
+            target_hash_hex,
+            router_b_hex,
+            client_dbid_hex,
+            bootstrap_pass,
+            inputs.bootstrap.topology_valid,
+            inputs.bootstrap.exploratory_nonzero_inbound,
+            inputs.bootstrap.exploratory_nonzero_outbound,
+            inputs.bootstrap.helper_profile_one_hop,
+            inputs.bootstrap.stock_candidate_population_nonempty,
+            continuation_pass,
+            inputs.continuation.inbound_installed,
+            inputs.continuation.outbound_installed,
+            inputs.continuation.inbound_nonzero,
+            inputs.continuation.outbound_nonzero,
+            inputs.continuation.inbound_zero_hop_present,
+            inputs.continuation.outbound_zero_hop_present,
+            inputs.unexpected,
+            inputs.lookup_selected.pool_authoritative_nonzero,
+            inputs.lookup_selected.lookup_selected_zero_hop,
+            p240_lookup_terminal,
+        ),
+    );
+}
+
+fn p242_ocmosj_resume_allowed(terminal: &P242Terminal) -> bool {
+    matches!(terminal, P242Terminal::DLookupSucceeded)
+}
+
+fn p242_m6_closure_claimable(_terminal: &P242Terminal) -> bool {
+    false
+}
+
+fn p242_authorizes_production_change(_terminal: &P242Terminal) -> bool {
+    false
+}
+
+fn p242_passing_inputs() -> P242Inputs {
+    P242Inputs {
+        bootstrap: P242BootstrapInputs {
+            topology_valid: true,
+            exploratory_nonzero_inbound: true,
+            exploratory_nonzero_outbound: true,
+            helper_profile_one_hop: true,
+            stock_candidate_population_nonempty: true,
+        },
+        continuation: P242ContinuationInputs {
+            inbound_installed: true,
+            outbound_installed: true,
+            inbound_nonzero: true,
+            outbound_nonzero: true,
+            inbound_zero_hop_present: false,
+            outbound_zero_hop_present: false,
+        },
+        unexpected: None,
+        lookup_selected: P242LookupSelectedPathInputs {
+            pool_authoritative_nonzero: true,
+            lookup_selected_zero_hop: false,
+        },
+        lookup: P240Inputs {
+            streaming_job_correlated: true,
+            negative_cached: false,
+            b_ri_present: Some(true),
+            b_floodfill_indexed: Some(true),
+            b_banlisted_forever: Some(false),
+            b_in_totry: Some(true),
+            b_ip_close_skipped: false,
+            b_old_router_rejected: false,
+            b_no_outbound_tunnel: false,
+            b_no_ib_client_tunnel: false,
+            b_no_reply_crypto: false,
+            b_zero_hop_self: false,
+            b_zero_hop_unknown: false,
+            b_encrypted_prep_failed: false,
+            b_query_dispatched: true,
+            trace_observable: true,
+            search_failed: false,
+            b_lookup_received: true,
+            b_target_answerable: Some(true),
+            b_answered: true,
+            a_dsm_received: true,
+            a_subdb_installed: Some(true),
+        },
+    }
+}
+
+#[test]
+fn p242_explicit_peers_is_probabilistic_not_mandatory() {
+    assert!(p242_role_label_is_valid("B"));
+    assert!(p242_role_label_is_valid("C"));
+    assert!(p242_role_label_is_valid("other-controlled"));
+    assert!(p242_role_label_is_valid("unknown"));
+    assert!(p242_role_label_is_valid("none"));
+    assert!(!p242_role_label_is_valid("D"));
+    assert!(!p242_role_label_is_valid(""));
+    let inputs = p242_passing_inputs();
+    assert_eq!(p242_classify(&inputs), P242Terminal::DLookupSucceeded);
+}
+
+#[test]
+fn p242_exact_via_c_is_diagnostic_not_gate() {
+    let mut inputs = p242_passing_inputs();
+    inputs.unexpected = None;
+    inputs.continuation.outbound_zero_hop_present = false;
+    inputs.continuation.inbound_zero_hop_present = false;
+    assert_eq!(p242_classify(&inputs), P242Terminal::DLookupSucceeded);
+}
+
+#[test]
+fn p242_nonzero_pair_is_lookup_prerequisite() {
+    let mut only_outbound = p242_passing_inputs();
+    only_outbound.continuation.inbound_installed = false;
+    only_outbound.continuation.inbound_nonzero = false;
+    assert_eq!(
+        p242_classify(&only_outbound),
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Inbound)
+    );
+    let mut only_inbound = p242_passing_inputs();
+    only_inbound.continuation.outbound_installed = false;
+    only_inbound.continuation.outbound_nonzero = false;
+    assert_eq!(
+        p242_classify(&only_inbound),
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Outbound)
+    );
+}
+
+#[test]
+fn p242_zero_hop_remains_forbidden() {
+    let mut inbound_zero = p242_passing_inputs();
+    inbound_zero.continuation.inbound_zero_hop_present = true;
+    assert_eq!(
+        p242_classify(&inbound_zero),
+        P242Terminal::BZeroHopContradiction
+    );
+    let mut outbound_zero = p242_passing_inputs();
+    outbound_zero.continuation.outbound_zero_hop_present = true;
+    assert_eq!(
+        p242_classify(&outbound_zero),
+        P242Terminal::BZeroHopContradiction
+    );
+}
+
+#[test]
+fn p242_c_profile_absence_alone_does_not_block_helper() {
+    let inputs = p242_passing_inputs();
+    assert_eq!(
+        p242_bootstrap_gate(&inputs.bootstrap),
+        P242BootstrapOutcome::Pass
+    );
+    assert_eq!(p242_classify(&inputs), P242Terminal::DLookupSucceeded);
+}
+
+#[test]
+fn p242_no_candidate_population_stops_before_helper() {
+    let mut inputs = p242_passing_inputs();
+    inputs.bootstrap.stock_candidate_population_nonempty = false;
+    assert_eq!(
+        p242_classify(&inputs),
+        P242Terminal::ANoStockClientTunnelCandidate
+    );
+    assert_eq!(
+        p242_bootstrap_gate(&inputs.bootstrap),
+        P242BootstrapOutcome::NoStockClientTunnelCandidate
+    );
+}
+
+#[test]
+fn p242_unknown_client_tunnel_peer_fails_closed() {
+    let mut inputs = p242_passing_inputs();
+    inputs.unexpected = Some(P242UnexpectedPeerDirection::Inbound);
+    assert_eq!(
+        p242_classify(&inputs),
+        P242Terminal::BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection::Inbound)
+    );
+    assert!(
+        p242_unexpected_peer_direction(true, false)
+            .is_some_and(|d| d == P242UnexpectedPeerDirection::Inbound)
+    );
+    assert!(
+        p242_unexpected_peer_direction(false, true)
+            .is_some_and(|d| d == P242UnexpectedPeerDirection::Outbound)
+    );
+    assert!(
+        p242_unexpected_peer_direction(true, true)
+            .is_some_and(|d| d == P242UnexpectedPeerDirection::Both)
+    );
+    assert!(p242_unexpected_peer_direction(false, false).is_none());
+}
+
+#[test]
+fn p242_installed_path_records_remote_hop_count() {
+    assert!(p242_role_is_known_controlled("B"));
+    assert!(p242_role_is_known_controlled("C"));
+    assert!(p242_role_is_known_controlled("other-controlled"));
+    assert!(!p242_role_is_known_controlled("unknown"));
+    assert!(!p242_role_is_known_controlled("none"));
+}
+
+#[test]
+fn p242_lookup_selected_tunnel_must_be_nonzero() {
+    let mut inputs = p242_passing_inputs();
+    inputs.lookup_selected.pool_authoritative_nonzero = true;
+    inputs.lookup_selected.lookup_selected_zero_hop = true;
+    inputs.lookup.b_zero_hop_unknown = true;
+    inputs.lookup.b_query_dispatched = false;
+    assert_eq!(
+        p242_classify(&inputs),
+        P242Terminal::CLookupZeroHopSelectionContradiction
+    );
+    let mut unproven = p242_passing_inputs();
+    unproven.lookup_selected.pool_authoritative_nonzero = false;
+    unproven.lookup_selected.lookup_selected_zero_hop = false;
+    unproven.lookup.b_zero_hop_unknown = true;
+    assert_eq!(
+        p242_classify(&unproven),
+        P242Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi)
+    );
+}
+
+#[test]
+fn p242_plan240_exact_job_correlation_retained() {
+    let mut inputs = p242_passing_inputs();
+    inputs.lookup.streaming_job_correlated = false;
+    assert_eq!(
+        p242_classify(&inputs),
+        P242Terminal::CEarlierGuard(P240Terminal::StreamingLookupJobNotCorrelated)
+    );
+}
+
+#[test]
+fn p242_b_query_requires_exact_dispatch() {
+    let inputs = p242_passing_inputs();
+    assert_eq!(p242_classify(&inputs), P242Terminal::DLookupSucceeded);
+    assert_eq!(
+        P242Terminal::CBQueryDispatched.token(),
+        "P242-C-B-QUERY-DISPATCHED"
+    );
+}
+
+#[test]
+fn p242_b_receipt_requires_query() {
+    let mut inputs = p242_passing_inputs();
+    inputs.lookup.b_lookup_received = false;
+    assert_eq!(p242_classify(&inputs), P242Terminal::DBLookupNotReceived);
+}
+
+#[test]
+fn p242_b_answer_requires_b_receipt() {
+    let mut inputs = p242_passing_inputs();
+    inputs.lookup.b_lookup_received = false;
+    inputs.lookup.b_answered = true;
+    assert_eq!(p242_classify(&inputs), P242Terminal::DBLookupNotReceived);
+}
+
+#[test]
+fn p242_client_dsm_requires_b_answer() {
+    let mut inputs = p242_passing_inputs();
+    inputs.lookup.b_answered = false;
+    inputs.lookup.a_dsm_received = true;
+    inputs.lookup.a_subdb_installed = Some(true);
+    assert_eq!(p242_classify(&inputs), P242Terminal::DBAnswerNotEmitted);
+}
+
+#[test]
+fn p242_subdb_install_requires_client_dsm() {
+    let mut no_dsm = p242_passing_inputs();
+    no_dsm.lookup.a_dsm_received = false;
+    no_dsm.lookup.a_subdb_installed = Some(true);
+    assert_eq!(
+        p242_classify(&no_dsm),
+        P242Terminal::DAClientTunnelDsmNotReceived
+    );
+    let mut no_install = p242_passing_inputs();
+    no_install.lookup.a_dsm_received = true;
+    no_install.lookup.a_subdb_installed = Some(false);
+    assert_eq!(
+        p242_classify(&no_install),
+        P242Terminal::DAClientSubdbNotInstalled
+    );
+}
+
+#[test]
+fn p242_ocmosj_resume_requires_lookup_success() {
+    assert!(p242_ocmosj_resume_allowed(&P242Terminal::DLookupSucceeded));
+    for terminal in [
+        P242Terminal::ATopologyInvalid,
+        P242Terminal::ANonZeroExploratoryNotReady,
+        P242Terminal::ANoStockClientTunnelCandidate,
+        P242Terminal::AHelperProfileNotOneHop,
+        P242Terminal::BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection::Both),
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Both),
+        P242Terminal::BZeroHopContradiction,
+        P242Terminal::CBQueryDispatched,
+        P242Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P242Terminal::DBLookupNotReceived,
+        P242Terminal::DBTargetLsNotQueryAnswerable,
+        P242Terminal::DBAnswerNotEmitted,
+        P242Terminal::DAClientTunnelDsmNotReceived,
+        P242Terminal::DAClientSubdbNotInstalled,
+    ] {
+        assert!(
+            !p242_ocmosj_resume_allowed(&terminal),
+            "ocmosj resume must stay closed at {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p242_i2pr_terminal_requires_expected_tunneldata() {
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+    for terminal in [
+        P242Terminal::ATopologyInvalid,
+        P242Terminal::ANonZeroExploratoryNotReady,
+        P242Terminal::ANoStockClientTunnelCandidate,
+        P242Terminal::AHelperProfileNotOneHop,
+        P242Terminal::BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection::Both),
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Both),
+        P242Terminal::BZeroHopContradiction,
+        P242Terminal::CBQueryDispatched,
+        P242Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P242Terminal::DBLookupNotReceived,
+        P242Terminal::DBTargetLsNotQueryAnswerable,
+        P242Terminal::DBAnswerNotEmitted,
+        P242Terminal::DAClientTunnelDsmNotReceived,
+        P242Terminal::DAClientSubdbNotInstalled,
+        P242Terminal::DLookupSucceeded,
+    ] {
+        assert!(
+            !p242_authorizes_production_change(&terminal),
+            "no production change at {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p242_direction_a_pass_does_not_close_m6() {
+    for terminal in [
+        P242Terminal::ATopologyInvalid,
+        P242Terminal::ANonZeroExploratoryNotReady,
+        P242Terminal::ANoStockClientTunnelCandidate,
+        P242Terminal::AHelperProfileNotOneHop,
+        P242Terminal::BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection::Both),
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Both),
+        P242Terminal::BZeroHopContradiction,
+        P242Terminal::CBQueryDispatched,
+        P242Terminal::CEarlierGuard(P240Terminal::BZeroHopUnknownRi),
+        P242Terminal::DBLookupNotReceived,
+        P242Terminal::DBTargetLsNotQueryAnswerable,
+        P242Terminal::DBAnswerNotEmitted,
+        P242Terminal::DAClientTunnelDsmNotReceived,
+        P242Terminal::DAClientSubdbNotInstalled,
+        P242Terminal::DLookupSucceeded,
+    ] {
+        assert!(
+            !p242_m6_closure_claimable(&terminal),
+            "M6 stays open at {}",
+            terminal.token()
+        );
+    }
+}
+
+#[test]
+fn p242_no_production_change() {
+    assert!(p239_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p239_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p239_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+    assert!(!p242_authorizes_production_change(
+        &P242Terminal::DLookupSucceeded
+    ));
+}
+
+#[test]
+fn p242_terminal_tokens_are_canonical() {
+    assert_eq!(
+        P242Terminal::ANonZeroExploratoryNotReady.token(),
+        "P242-A-NONZERO-EXPLORATORY-NOT-READY"
+    );
+    assert_eq!(
+        P242Terminal::ANoStockClientTunnelCandidate.token(),
+        "P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE"
+    );
+    assert_eq!(
+        P242Terminal::ATopologyInvalid.token(),
+        "P242-A-TOPOLOGY-INVALID"
+    );
+    assert_eq!(
+        P242Terminal::AHelperProfileNotOneHop.token(),
+        "P242-A-HELPER-PROFILE-NOT-ONE-HOP"
+    );
+    assert_eq!(
+        P242Terminal::BUnexpectedPeerInClientTunnel(P242UnexpectedPeerDirection::Both).token(),
+        "P242-B-UNEXPECTED-PEER-IN-CLIENT-TUNNEL direction=both"
+    );
+    assert_eq!(
+        P242Terminal::BNonZeroClientTunnelNotBuilt(P241Direction::Both).token(),
+        "P242-B-NONZERO-CLIENT-TUNNEL-NOT-BUILT direction=both"
+    );
+    assert_eq!(
+        P242Terminal::BZeroHopContradiction.token(),
+        "P242-B-ZERO-HOP-CONTRADICTION"
+    );
+    assert_eq!(
+        P242Terminal::CLookupZeroHopSelectionContradiction.token(),
+        "P242-C-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION"
+    );
+    assert_eq!(
+        P242Terminal::CBQueryDispatched.token(),
+        "P242-C-B-QUERY-DISPATCHED"
+    );
+    assert_eq!(
+        P242Terminal::CEarlierGuard(P240Terminal::BNoOutboundLookupTunnel).token(),
+        "P240-C-B-NO-OUTBOUND-LOOKUP-TUNNEL"
+    );
+    assert_eq!(
+        P242Terminal::CEarlierGuard(P240Terminal::StreamingLookupJobNotCorrelated).token(),
+        "P240-A-STREAMING-LOOKUP-JOB-NOT-CORRELATED"
+    );
+    assert_eq!(
+        P242Terminal::DBLookupNotReceived.token(),
+        "P242-D-B-LOOKUP-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P242Terminal::DBTargetLsNotQueryAnswerable.token(),
+        "P242-D-B-TARGET-LS-NOT-QUERY-ANSWERABLE"
+    );
+    assert_eq!(
+        P242Terminal::DBAnswerNotEmitted.token(),
+        "P242-D-B-ANSWER-NOT-EMITTED"
+    );
+    assert_eq!(
+        P242Terminal::DAClientTunnelDsmNotReceived.token(),
+        "P242-D-A-CLIENT-TUNNEL-DSM-NOT-RECEIVED"
+    );
+    assert_eq!(
+        P242Terminal::DAClientSubdbNotInstalled.token(),
+        "P242-D-A-CLIENT-SUBDB-NOT-INSTALLED"
+    );
+    assert_eq!(
+        P242Terminal::DLookupSucceeded.token(),
+        "P242-D-LOOKUP-SUCCEEDED"
+    );
+}
+
+#[test]
+fn p242_extended_tunnels_row_parses_with_bounded_roles() {
+    let expected_client = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let expected_a = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+    let expected_b = "1111111111111111111111111111111111111111111111111111111111111111";
+    let expected_c = "2222222222222222222222222222222222222222222222222222222222222222";
+    let parsed = p242_parse_extended_tunnels(
+        &format!(
+            "P242-EV kind=extended-client-tunnels client_dbid_hex={expected_client} router_a_hex={expected_a} router_b_hex={expected_b} router_c_hex={expected_c} observable=true client_resolved=true inbound_pool_present=true outbound_pool_present=true inbound_tunnel_count=2 outbound_tunnel_count=2 inbound_zero_hop_present=false outbound_zero_hop_present=false inbound_exact_one_remote_hop_via_c=false outbound_exact_one_remote_hop_via_c=false inbound_tunnel_length_including_local=2 outbound_tunnel_length_including_local=2 inbound_remote_hop_count=1 outbound_remote_hop_count=1 inbound_first_remote_role=B inbound_last_remote_role=C outbound_first_remote_role=C outbound_last_remote_role=B inbound_contains_b=true outbound_contains_b=true inbound_contains_c=true outbound_contains_c=true inbound_exact_one_remote_hop=true outbound_exact_one_remote_hop=true inbound_nonzero_count=2 outbound_nonzero_count=2 inbound_unexpected_peer_observed=false outbound_unexpected_peer_observed=false"
+        ),
+        expected_client,
+        expected_a,
+        expected_b,
+        expected_c,
+    )
+    .expect("extended client tunnels row parses");
+    assert_eq!(parsed.inbound_first_remote_role, "B");
+    assert_eq!(parsed.outbound_last_remote_role, "B");
+    assert!(parsed.inbound_contains_b);
+    assert!(parsed.inbound_contains_c);
+    assert!(parsed.inbound_exact_one_remote_hop);
+    assert!(!parsed.inbound_unexpected_peer_observed);
+    assert!(p242_parse_extended_tunnels(
+        &format!(
+            "P242-EV kind=extended-client-tunnels client_dbid_hex={expected_client} router_a_hex={expected_a} router_b_hex={expected_b} router_c_hex={expected_c} observable=true client_resolved=true inbound_pool_present=true outbound_pool_present=true inbound_tunnel_count=1 outbound_tunnel_count=1 inbound_zero_hop_present=false outbound_zero_hop_present=false inbound_exact_one_remote_hop_via_c=false outbound_exact_one_remote_hop_via_c=false inbound_first_remote_role=D"
+        ),
+        expected_client,
+        expected_a,
+        expected_b,
+        expected_c,
+    )
+    .is_none());
+}
