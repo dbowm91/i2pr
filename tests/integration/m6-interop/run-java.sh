@@ -188,6 +188,19 @@ if [[ ! -f "${JAVA_CACHE}/source-revision.txt" ]] ||
 fi
 echo "==> Java I2P reference: ${JAVA_VERSION} (${JAVA_PIN})"
 
+# Plan 236 §6 — source-lock the response path before any counted router or
+# client process starts. The source checkout is disposable and ignored; only
+# the sanitized TSV is copied into durable evidence below.
+JAVA_SOURCE_ROOT="${I2PR_M6_JAVA_SOURCE_ROOT:-${REPO_ROOT}/target/interop/m6-java-sources/i2p.i2p-${JAVA_PIN}}"
+if [[ ! -d "${JAVA_SOURCE_ROOT}/.git" ]]; then
+  echo "Plan 236 requires the exact Java source checkout: ${JAVA_SOURCE_ROOT}" >&2
+  echo "run scripts/interop/fetch-m6-java.sh --rebuild first" >&2
+  exit 1
+fi
+JAVA_RESPONSE_SOURCE_LOCK="${EVIDENCE_DIR}/java-response-source-lock.tsv"
+bash "${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh" \
+  "${JAVA_SOURCE_ROOT}" "${JAVA_RESPONSE_SOURCE_LOCK}"
+
 # ---- Plan 196 §5.1 controlled stock-router launcher build ----------------
 # Compile the out-of-tree launcher against the staged Java I2P `lib/`
 # jars into the ephemeral scratch dir. Never compile into or against

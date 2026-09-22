@@ -3405,6 +3405,87 @@ if [[ -f "${P235_HELPER_SRC}" ]]; then
   done
 fi
 
+# Plan 236 §6–§17 — response-emission attribution is test-only, source-locked,
+# and fail-closed. The checker requires the complete typed boundary surface
+# while refusing any Plan-236 token in production Rust.
+P236_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P236_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P236_SOURCE_LOCK="${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh"
+if [[ ! -x "${P236_SOURCE_LOCK}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing executable Plan 236 source-lock checker" >&2
+  failures=$((failures + 1))
+fi
+if [[ -f "${P236_DRIVER_TEST}" ]]; then
+  for required in \
+    'struct P236JavaResponseState' \
+    'fn p236_parse_java_response_state' \
+    'enum P236Terminal' \
+    'fn p236_classify_syn_epoch' \
+    'fn record_p236_response_epoch' \
+    'p236-response-epoch' \
+    'p236-classification' \
+    'P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP' \
+    'P236-F-DIRECTION-A-ESTABLISHED'; do
+    if ! grep -q -F "${required}" "${P236_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P236_DRIVER_TEST} lacks Plan 236 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    'p236_plan235_baseline_precedes_response_attribution' \
+    'p236_source_lock_names_exact_pinned_response_path' \
+    'p236_scheduler_missing_precedes_packetqueue_missing' \
+    'p236_packet_not_constructed_precedes_sendpacket_missing' \
+    'p236_sendpacket_missing_precedes_packetqueue_missing' \
+    'p236_packetqueue_failure_precedes_router_i2cp_missing' \
+    'p236_i2psession_send_failure_precedes_router_i2cp_missing' \
+    'p236_ack_only_path_does_not_require_status_listener' \
+    'p236_router_i2cp_missing_is_distinct_from_no_target_leaseset' \
+    'p236_no_outbound_tunnel_is_distinct_from_gateway_enqueue_failure' \
+    'p236_target_ibgw_uses_route_derived_lease_not_publication_target' \
+    'p236_no_expected_tunneldata_is_distinct_from_recovery_failure' \
+    'p236_i2pr_owned_terminal_requires_expected_tunneldata' \
+    'p236_direction_a_established_does_not_by_itself_close_m6' \
+    'p236_workspace_sam_hang_cannot_be_recorded_as_pass' \
+    'p236_no_production_change_before_owned_defect'; do
+    if ! grep -q "fn ${unit_row}" "${P236_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P236_DRIVER_TEST} lacks Plan 236 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'P236' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'p236' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 236 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P236_HELPER_SRC}" ]]; then
+  for required in \
+    'java_source_pin=' \
+    'java_response_scheduler_class=' \
+    'java_response_send_method=' \
+    'java_packetqueue_method=' \
+    'java_i2psession_send_method=' \
+    'java_response_observation_complete=false' \
+    'Plan 236 §6'; do
+    if ! grep -q -F "${required}" "${P236_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P236_HELPER_SRC} lacks Plan 236 helper surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${JAVA_HARNESS}" ]]; then
+  for required in \
+    'check-m6-java-response-source-lock.sh' \
+    'JAVA_SOURCE_ROOT' \
+    'java-response-source-lock.tsv'; do
+    if ! grep -q -F "${required}" "${JAVA_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${JAVA_HARNESS} lacks Plan 236 source-lock invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1

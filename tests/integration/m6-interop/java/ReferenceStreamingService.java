@@ -71,6 +71,21 @@ public final class ReferenceStreamingService {
     private static final AtomicInteger SOCKET_SURFACE_ENTERED = new AtomicInteger();
     private static final AtomicInteger SOCKET_SURFACE_READY = new AtomicInteger();
     private static final AtomicInteger SOCKET_SURFACE_ERRORS = new AtomicInteger();
+    // Plan 236 §6 — source-locked facts are emitted as constants from the
+    // helper protocol. The separate source-lock script proves these names
+    // against the exact checkout; the helper never claims that any stage was
+    // observed merely because the source path exists.
+    private static final String JAVA_SOURCE_PIN = PIN;
+    private static final String JAVA_RESPONSE_SCHEDULER_CLASS =
+        "net.i2p.client.streaming.impl.SchedulerReceived";
+    private static final String JAVA_RESPONSE_SCHEDULER_METHOD = "eventOccurred";
+    private static final String JAVA_RESPONSE_PACKET_KIND = "ACK_OR_SYN_ACK";
+    private static final String JAVA_RESPONSE_SEND_METHOD =
+        "Connection.sendPacket(PacketLocal)";
+    private static final String JAVA_PACKETQUEUE_METHOD =
+        "PacketQueue.enqueue(PacketLocal)";
+    private static final String JAVA_I2PSESSION_SEND_METHOD =
+        "boolean_sendMessage_SendMessageOptions";
     private static volatile boolean accepting;
 
     private static int incrementBounded(AtomicInteger counter) {
@@ -221,7 +236,34 @@ public final class ReferenceStreamingService {
                                 + " socket_surface_errors=" + SOCKET_SURFACE_ERRORS.get()
                                 + " accepting=" + accepting
                                 + " accepted_count=" + ACCEPTED.size()
-                                + " connected_count=" + CONNECTED.size());
+                                + " connected_count=" + CONNECTED.size()
+                                + " java_source_pin=" + JAVA_SOURCE_PIN
+                                + " java_response_scheduler_class=" + JAVA_RESPONSE_SCHEDULER_CLASS
+                                + " java_response_scheduler_method=" + JAVA_RESPONSE_SCHEDULER_METHOD
+                                + " java_response_packet_kind=" + JAVA_RESPONSE_PACKET_KIND
+                                + " java_response_send_method=" + JAVA_RESPONSE_SEND_METHOD
+                                + " java_packetqueue_method=" + JAVA_PACKETQUEUE_METHOD
+                                + " java_i2psession_send_method=" + JAVA_I2PSESSION_SEND_METHOD
+                                // Plan 236 §7–§10 — no stage is inferred from
+                                // accept(). These remain Unknown until stock
+                                // log/status evidence proves each boundary.
+                                + " java_response_observation_complete=false"
+                                + " java_response_scheduler_observed=false"
+                                + " java_response_packet_constructed=false"
+                                + " java_sendpacket_observed=false"
+                                + " java_packetqueue_observed=false"
+                                + " java_packetqueue_send_failed=false"
+                                + " java_i2psession_send_observed=false"
+                                + " java_i2psession_send_failed=false"
+                                + " java_router_i2cp_observed=false"
+                                + " java_client_message_admitted=false"
+                                + " java_target_leaseset_selected=false"
+                                + " java_outbound_tunnel_selected=false"
+                                + " java_dispatch_outbound_called=false"
+                                + " java_outbound_gateway_enqueued=false"
+                                + " java_transit_processed=false"
+                                + " java_target_ibgw_present=false"
+                                + " java_target_ibgw_dispatched=false");
                             break;
                         }
                         case "START_ACCEPT":

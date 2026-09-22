@@ -128,6 +128,7 @@ const OBEP_RECEIVE: u32 = 0x9501;
 const OBEP_NEXT: u32 = 0x9502;
 const IBGW_RECEIVE: u32 = 0x9601;
 const IBGW_NEXT: u32 = 0x9602;
+const JAVA_I2P_PIN: &str = "9134f808337b401e8e53c73734c81fab04280c9d";
 
 // Plan 217 §6.D — destination and Streaming drivers run against the
 // same long-lived Java RouterContexts inside a single `run-java.sh`
@@ -339,6 +340,12 @@ impl ReferenceControl {
     async fn report_stream_response_state(&mut self) -> Option<P235JavaResponseState> {
         p235_parse_java_response_state(&self.command("REPORT_STREAM_STATE").await)
     }
+
+    /// Plan 236 §6–§8 — the source-lock facts and bounded response-stage
+    /// observations are separate from the Plan 235 public-socket state.
+    async fn report_plan236_response_state(&mut self) -> Option<P236JavaResponseState> {
+        p236_parse_java_response_state(&self.command("REPORT_STREAM_STATE").await)
+    }
 }
 
 // ---- Plan 234 — Streaming SYN epoch attribution --------------------------
@@ -380,6 +387,10 @@ fn p234_parse_java_accept_state(line: &str) -> Option<P234JavaAcceptState> {
             "socket_surface_entered" => state.socket_surface_entered = value.parse().ok()?,
             "socket_surface_ready" => state.socket_surface_ready = value.parse().ok()?,
             "socket_surface_errors" => state.socket_surface_errors = value.parse().ok()?,
+            // Plan 236 adds source-lock and response-stage fields to the same
+            // bounded line. Plan 234/235 intentionally retain their strict
+            // eleven-field shape and ignore only these namespaced additions.
+            key if key.starts_with("java_") => continue,
             _ => return None,
         }
         seen = seen.saturating_add(1);
@@ -696,6 +707,321 @@ fn record_p235_syn_epoch(
         ),
     );
     append_evidence(evidence_dir, "p235-classification", terminal.token());
+}
+
+// ---- Plan 236 §11/§16 unit and external attribution surface --------------
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P236JavaResponseState {
+    java_source_lock_valid: bool,
+    response_observation_complete: bool,
+    java_response_scheduler_observed: bool,
+    java_response_packet_constructed: bool,
+    java_sendpacket_observed: bool,
+    java_packetqueue_observed: bool,
+    java_packetqueue_send_failed: bool,
+    java_i2psession_send_observed: bool,
+    java_i2psession_send_failed: bool,
+    java_router_i2cp_observed: bool,
+    java_client_message_admitted: bool,
+    java_target_leaseset_selected: bool,
+    java_outbound_tunnel_selected: bool,
+    java_dispatch_outbound_called: bool,
+    java_outbound_gateway_enqueued: bool,
+    java_transit_processed: bool,
+    java_target_ibgw_present: bool,
+    java_target_ibgw_dispatched: bool,
+}
+
+fn p236_parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn p236_parse_java_response_state(line: &str) -> Option<P236JavaResponseState> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "STREAM_STATUS" {
+        return None;
+    }
+    let mut state = P236JavaResponseState::default();
+    let mut seen = 0u16;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            // The Plan 235 helper state remains on the line for backwards
+            // compatibility; Plan 236 classifies only its own namespaced
+            // facts and does not count these fields toward completeness.
+            "accept_requested"
+            | "accept_entered"
+            | "accept_returned"
+            | "socket_stored"
+            | "accept_errors"
+            | "accepting"
+            | "accepted_count"
+            | "connected_count"
+            | "socket_surface_entered"
+            | "socket_surface_ready"
+            | "socket_surface_errors" => continue,
+            "java_source_pin" => state.java_source_lock_valid = value == JAVA_I2P_PIN,
+            "java_response_scheduler_class" => {
+                state.java_source_lock_valid &=
+                    value == "net.i2p.client.streaming.impl.SchedulerReceived"
+            }
+            "java_response_scheduler_method" => {
+                state.java_source_lock_valid &= value == "eventOccurred"
+            }
+            "java_response_packet_kind" => {
+                state.java_source_lock_valid &= value == "ACK_OR_SYN_ACK"
+            }
+            "java_response_send_method" => {
+                state.java_source_lock_valid &= value == "Connection.sendPacket(PacketLocal)"
+            }
+            "java_packetqueue_method" => {
+                state.java_source_lock_valid &= value == "PacketQueue.enqueue(PacketLocal)"
+            }
+            "java_i2psession_send_method" => {
+                state.java_source_lock_valid &= value == "boolean_sendMessage_SendMessageOptions"
+            }
+            "java_response_observation_complete" => {
+                state.response_observation_complete = p236_parse_bool(value)?
+            }
+            "java_response_scheduler_observed" => {
+                state.java_response_scheduler_observed = p236_parse_bool(value)?
+            }
+            "java_response_packet_constructed" => {
+                state.java_response_packet_constructed = p236_parse_bool(value)?
+            }
+            "java_sendpacket_observed" => state.java_sendpacket_observed = p236_parse_bool(value)?,
+            "java_packetqueue_observed" => {
+                state.java_packetqueue_observed = p236_parse_bool(value)?
+            }
+            "java_packetqueue_send_failed" => {
+                state.java_packetqueue_send_failed = p236_parse_bool(value)?
+            }
+            "java_i2psession_send_observed" => {
+                state.java_i2psession_send_observed = p236_parse_bool(value)?
+            }
+            "java_i2psession_send_failed" => {
+                state.java_i2psession_send_failed = p236_parse_bool(value)?
+            }
+            "java_router_i2cp_observed" => {
+                state.java_router_i2cp_observed = p236_parse_bool(value)?
+            }
+            "java_client_message_admitted" => {
+                state.java_client_message_admitted = p236_parse_bool(value)?
+            }
+            "java_target_leaseset_selected" => {
+                state.java_target_leaseset_selected = p236_parse_bool(value)?
+            }
+            "java_outbound_tunnel_selected" => {
+                state.java_outbound_tunnel_selected = p236_parse_bool(value)?
+            }
+            "java_dispatch_outbound_called" => {
+                state.java_dispatch_outbound_called = p236_parse_bool(value)?
+            }
+            "java_outbound_gateway_enqueued" => {
+                state.java_outbound_gateway_enqueued = p236_parse_bool(value)?
+            }
+            "java_transit_processed" => state.java_transit_processed = p236_parse_bool(value)?,
+            "java_target_ibgw_present" => state.java_target_ibgw_present = p236_parse_bool(value)?,
+            "java_target_ibgw_dispatched" => {
+                state.java_target_ibgw_dispatched = p236_parse_bool(value)?
+            }
+            _ => return None,
+        }
+        seen = seen.saturating_add(1);
+    }
+    // Seven source-lock facts plus the eighteen bounded response facts are
+    // required. Missing facts are Unknown, never false.
+    (seen == 24).then_some(state)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P236Terminal {
+    Plan235BaselineRegression,
+    JavaResponseSchedulerNotObserved,
+    JavaResponsePacketNotConstructed,
+    JavaSendPacketNotObserved,
+    JavaPacketQueueNotObserved,
+    JavaPacketQueueSendFailed,
+    JavaI2pSessionSendNotObserved,
+    JavaI2pSessionSendFailed,
+    JavaResponseEmissionObservabilityGap,
+    JavaRouterI2cpNotObserved,
+    JavaClientMessageNotAdmitted,
+    JavaNoTargetLeaseSet,
+    JavaNoOutboundTunnel,
+    JavaDispatchNotCalled,
+    JavaOutboundGatewayNotEnqueued,
+    TransitNotProcessed,
+    TargetIbgwNotPresent,
+    TargetIbgwNoDispatch,
+    I2prNoExpectedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prNoStreamingPayload,
+    I2prStreamingAdapterFailed,
+    DispatchedNotEstablished,
+    DirectionAEstablished,
+    ObservabilityGap,
+}
+
+impl P236Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::Plan235BaselineRegression => "P236-A-BASELINE-REGRESSION",
+            Self::JavaResponseSchedulerNotObserved => "P236-B-JAVA-RESPONSE-SCHEDULER-NOT-OBSERVED",
+            Self::JavaResponsePacketNotConstructed => "P236-B-JAVA-RESPONSE-PACKET-NOT-CONSTRUCTED",
+            Self::JavaSendPacketNotObserved => "P236-C-JAVA-SENDPACKET-NOT-OBSERVED",
+            Self::JavaPacketQueueNotObserved => "P236-C-JAVA-PACKETQUEUE-NOT-OBSERVED",
+            Self::JavaPacketQueueSendFailed => "P236-C-JAVA-PACKETQUEUE-SEND-FAILED",
+            Self::JavaI2pSessionSendNotObserved => "P236-C-JAVA-I2PSESSION-SEND-NOT-OBSERVED",
+            Self::JavaI2pSessionSendFailed => "P236-C-JAVA-I2PSESSION-SEND-FAILED",
+            Self::JavaResponseEmissionObservabilityGap => {
+                "P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP"
+            }
+            Self::JavaRouterI2cpNotObserved => "P236-D-JAVA-ROUTER-I2CP-NOT-OBSERVED",
+            Self::JavaClientMessageNotAdmitted => "P236-D-JAVA-CLIENT-MESSAGE-NOT-ADMITTED",
+            Self::JavaNoTargetLeaseSet => "P236-D-JAVA-NO-TARGET-LEASESET",
+            Self::JavaNoOutboundTunnel => "P236-D-JAVA-NO-OUTBOUND-TUNNEL",
+            Self::JavaDispatchNotCalled => "P236-D-JAVA-DISPATCH-NOT-CALLED",
+            Self::JavaOutboundGatewayNotEnqueued => "P236-D-JAVA-OUTBOUND-GATEWAY-NOT-ENQUEUED",
+            Self::TransitNotProcessed => "P236-E-TRANSIT-NOT-PROCESSED",
+            Self::TargetIbgwNotPresent => "P236-E-TARGET-IBGW-NOT-PRESENT",
+            Self::TargetIbgwNoDispatch => "P236-E-TARGET-IBGW-NO-DISPATCH",
+            Self::I2prNoExpectedTunnelData => "P236-E-I2PR-NO-EXPECTED-TUNNELDATA",
+            Self::I2prTunnelRecoveryFailed => "P236-F-I2PR-TUNNEL-RECOVERY-FAILED",
+            Self::I2prGarlicDecodeFailed => "P236-F-I2PR-GARLIC-DECODE-FAILED",
+            Self::I2prNoStreamingPayload => "P236-F-I2PR-NO-STREAMING-PAYLOAD",
+            Self::I2prStreamingAdapterFailed => "P236-F-I2PR-STREAMING-ADAPTER-FAILED",
+            Self::DispatchedNotEstablished => "P236-F-I2PR-DISPATCHED-NOT-ESTABLISHED",
+            Self::DirectionAEstablished => "P236-F-DIRECTION-A-ESTABLISHED",
+            Self::ObservabilityGap => "P236-OBSERVABILITY-GAP",
+        }
+    }
+}
+
+fn p236_classify_syn_epoch(
+    plan235_baseline_ok: bool,
+    epoch: &P234SynEpoch,
+    java: Option<P236JavaResponseState>,
+) -> P236Terminal {
+    if !plan235_baseline_ok {
+        return P236Terminal::Plan235BaselineRegression;
+    }
+    let Some(java) = java else {
+        return P236Terminal::ObservabilityGap;
+    };
+    if !java.java_source_lock_valid || !java.response_observation_complete {
+        return P236Terminal::JavaResponseEmissionObservabilityGap;
+    }
+    if !java.java_response_scheduler_observed {
+        return P236Terminal::JavaResponseSchedulerNotObserved;
+    }
+    if !java.java_response_packet_constructed {
+        return P236Terminal::JavaResponsePacketNotConstructed;
+    }
+    if !java.java_sendpacket_observed {
+        return P236Terminal::JavaSendPacketNotObserved;
+    }
+    if !java.java_packetqueue_observed {
+        return P236Terminal::JavaPacketQueueNotObserved;
+    }
+    if java.java_packetqueue_send_failed {
+        return P236Terminal::JavaPacketQueueSendFailed;
+    }
+    if !java.java_i2psession_send_observed {
+        return P236Terminal::JavaI2pSessionSendNotObserved;
+    }
+    if java.java_i2psession_send_failed {
+        return P236Terminal::JavaI2pSessionSendFailed;
+    }
+    if !java.java_router_i2cp_observed {
+        return P236Terminal::JavaRouterI2cpNotObserved;
+    }
+    if !java.java_client_message_admitted {
+        return P236Terminal::JavaClientMessageNotAdmitted;
+    }
+    if !java.java_target_leaseset_selected {
+        return P236Terminal::JavaNoTargetLeaseSet;
+    }
+    if !java.java_outbound_tunnel_selected {
+        return P236Terminal::JavaNoOutboundTunnel;
+    }
+    if !java.java_dispatch_outbound_called {
+        return P236Terminal::JavaDispatchNotCalled;
+    }
+    if !java.java_outbound_gateway_enqueued {
+        return P236Terminal::JavaOutboundGatewayNotEnqueued;
+    }
+    if !java.java_transit_processed {
+        return P236Terminal::TransitNotProcessed;
+    }
+    if !java.java_target_ibgw_present {
+        return P236Terminal::TargetIbgwNotPresent;
+    }
+    if !java.java_target_ibgw_dispatched {
+        return P236Terminal::TargetIbgwNoDispatch;
+    }
+    if epoch.i2pr_expected_stream_tunneldata_count == 0 {
+        return P236Terminal::I2prNoExpectedTunnelData;
+    }
+    if epoch.i2pr_tunnel_recovery_failures > 0 && epoch.i2pr_tunnel_recovery_count == 0 {
+        return P236Terminal::I2prTunnelRecoveryFailed;
+    }
+    if epoch.i2pr_garlic_decode_failures > 0 && epoch.i2pr_garlic_payload_count == 0 {
+        return P236Terminal::I2prGarlicDecodeFailed;
+    }
+    if epoch.i2pr_streaming_adapter_calls == 0 {
+        return P236Terminal::I2prNoStreamingPayload;
+    }
+    if epoch.i2pr_streaming_adapter_errors > 0 {
+        return P236Terminal::I2prStreamingAdapterFailed;
+    }
+    if epoch.i2pr_streaming_adapter_successes > 0 && !epoch.connection_established {
+        return P236Terminal::DispatchedNotEstablished;
+    }
+    if epoch.connection_established {
+        return P236Terminal::DirectionAEstablished;
+    }
+    P236Terminal::ObservabilityGap
+}
+
+fn record_p236_response_epoch(
+    evidence_dir: &Path,
+    java: Option<P236JavaResponseState>,
+    terminal: P236Terminal,
+) {
+    let state = java.unwrap_or_default();
+    append_evidence(
+        evidence_dir,
+        "p236-response-epoch",
+        &format!(
+            "java_source_lock_valid={} response_observation_complete={} java_response_scheduler_observed={} java_response_packet_constructed={} java_sendpacket_observed={} java_packetqueue_observed={} java_packetqueue_send_failed={} java_i2psession_send_observed={} java_i2psession_send_failed={} java_router_i2cp_observed={} java_client_message_admitted={} java_target_leaseset_selected={} java_outbound_tunnel_selected={} java_dispatch_outbound_called={} java_outbound_gateway_enqueued={} java_transit_processed={} java_target_ibgw_present={} java_target_ibgw_dispatched={}",
+            state.java_source_lock_valid,
+            state.response_observation_complete,
+            state.java_response_scheduler_observed,
+            state.java_response_packet_constructed,
+            state.java_sendpacket_observed,
+            state.java_packetqueue_observed,
+            state.java_packetqueue_send_failed,
+            state.java_i2psession_send_observed,
+            state.java_i2psession_send_failed,
+            state.java_router_i2cp_observed,
+            state.java_client_message_admitted,
+            state.java_target_leaseset_selected,
+            state.java_outbound_tunnel_selected,
+            state.java_dispatch_outbound_called,
+            state.java_outbound_gateway_enqueued,
+            state.java_transit_processed,
+            state.java_target_ibgw_present,
+            state.java_target_ibgw_dispatched,
+        ),
+    );
+    append_evidence(evidence_dir, "p236-classification", terminal.token());
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -8809,6 +9135,25 @@ async fn streaming_through_java() {
         p235_plan234_baseline_ok,
         p235_terminal,
     );
+    let p236_state = stream_control.report_plan236_response_state().await;
+    let p236_terminal = p236_classify_syn_epoch(
+        p235_plan234_baseline_ok && p235_terminal != P235Terminal::Plan234BaselineRegression,
+        &p234_epoch,
+        p236_state,
+    );
+    record_p236_response_epoch(&evidence_dir, p236_state, p236_terminal);
+    if p236_terminal != P236Terminal::DirectionAEstablished {
+        record_stop(
+            &evidence_dir,
+            &format!(
+                "Plan 236 response epoch stopped at {}",
+                p236_terminal.token()
+            ),
+        );
+        handle.shutdown();
+        let _ = scope.shutdown().await;
+        return;
+    }
     if p235_terminal != P235Terminal::JavaStreamingPassed {
         record_stop(
             &evidence_dir,
@@ -18695,5 +19040,295 @@ fn p235_terminal_tokens_are_bounded_and_scoped() {
         P235Terminal::ObservabilityGap,
     ] {
         assert!(token.token().starts_with("P235-"));
+    }
+}
+
+fn p236_complete_java_state() -> P236JavaResponseState {
+    P236JavaResponseState {
+        java_source_lock_valid: true,
+        response_observation_complete: true,
+        java_response_scheduler_observed: true,
+        java_response_packet_constructed: true,
+        java_sendpacket_observed: true,
+        java_packetqueue_observed: true,
+        java_i2psession_send_observed: true,
+        java_router_i2cp_observed: true,
+        java_client_message_admitted: true,
+        java_target_leaseset_selected: true,
+        java_outbound_tunnel_selected: true,
+        java_dispatch_outbound_called: true,
+        java_outbound_gateway_enqueued: true,
+        java_transit_processed: true,
+        java_target_ibgw_present: true,
+        java_target_ibgw_dispatched: true,
+        ..P236JavaResponseState::default()
+    }
+}
+
+fn p236_complete_epoch() -> P234SynEpoch {
+    P234SynEpoch {
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_tunnel_recovery_count: 1,
+        i2pr_garlic_payload_count: 1,
+        i2pr_streaming_adapter_calls: 1,
+        i2pr_streaming_adapter_successes: 1,
+        connection_established: true,
+        ..P234SynEpoch::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P236ClosureGates {
+    direction_a_established: bool,
+    retained_qualification_complete: bool,
+    plan200_201_resolved: bool,
+    run_java_exit_zero: bool,
+    final_checker_passed: bool,
+    workspace_floor_complete: bool,
+}
+
+fn p236_family_closure_allowed(gates: P236ClosureGates) -> bool {
+    gates.direction_a_established
+        && gates.retained_qualification_complete
+        && gates.plan200_201_resolved
+        && gates.run_java_exit_zero
+        && gates.final_checker_passed
+        && gates.workspace_floor_complete
+}
+
+fn p236_production_change_allowed_before_owned_defect(
+    production_changed: bool,
+    expected_tunneldata_seen: bool,
+) -> bool {
+    !production_changed || expected_tunneldata_seen
+}
+
+#[test]
+fn p236_plan235_baseline_precedes_response_attribution() {
+    assert_eq!(
+        p236_classify_syn_epoch(false, &P234SynEpoch::default(), None),
+        P236Terminal::Plan235BaselineRegression
+    );
+}
+
+#[test]
+fn p236_source_lock_names_exact_pinned_response_path() {
+    let state = p236_complete_java_state();
+    assert!(state.java_source_lock_valid);
+    assert_eq!(JAVA_I2P_PIN, "9134f808337b401e8e53c73734c81fab04280c9d");
+}
+
+#[test]
+fn p236_scheduler_missing_precedes_packetqueue_missing() {
+    let mut state = p236_complete_java_state();
+    state.java_response_scheduler_observed = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaResponseSchedulerNotObserved
+    );
+}
+
+#[test]
+fn p236_packet_not_constructed_precedes_sendpacket_missing() {
+    let mut state = p236_complete_java_state();
+    state.java_response_packet_constructed = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaResponsePacketNotConstructed
+    );
+}
+
+#[test]
+fn p236_sendpacket_missing_precedes_packetqueue_missing() {
+    let mut state = p236_complete_java_state();
+    state.java_sendpacket_observed = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaSendPacketNotObserved
+    );
+}
+
+#[test]
+fn p236_packetqueue_failure_precedes_router_i2cp_missing() {
+    let mut state = p236_complete_java_state();
+    state.java_packetqueue_send_failed = true;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaPacketQueueSendFailed
+    );
+}
+
+#[test]
+fn p236_i2psession_send_failure_precedes_router_i2cp_missing() {
+    let mut state = p236_complete_java_state();
+    state.java_i2psession_send_failed = true;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaI2pSessionSendFailed
+    );
+}
+
+#[test]
+fn p236_ack_only_path_does_not_require_status_listener() {
+    let state = p236_complete_java_state();
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::DirectionAEstablished
+    );
+}
+
+#[test]
+fn p236_router_i2cp_missing_is_distinct_from_no_target_leaseset() {
+    let mut state = p236_complete_java_state();
+    state.java_router_i2cp_observed = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaRouterI2cpNotObserved
+    );
+    let mut state = p236_complete_java_state();
+    state.java_target_leaseset_selected = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaNoTargetLeaseSet
+    );
+}
+
+#[test]
+fn p236_no_outbound_tunnel_is_distinct_from_gateway_enqueue_failure() {
+    let mut state = p236_complete_java_state();
+    state.java_outbound_tunnel_selected = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaNoOutboundTunnel
+    );
+    let mut state = p236_complete_java_state();
+    state.java_outbound_gateway_enqueued = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaOutboundGatewayNotEnqueued
+    );
+}
+
+#[test]
+fn p236_target_ibgw_uses_route_derived_lease_not_publication_target() {
+    let route = p232_test_route(0xA1, IBGW_RECEIVE, IBGW_NEXT);
+    let lease = p232_route_derived_lease_source(
+        i2pr_tunnel::pool::TunnelSlot::from_raw(7),
+        TunnelId::new(IBGW_NEXT).expect("local receive"),
+        Some(route),
+        Some(i2pr_tunnel::pool::TunnelSlot::from_raw(7)),
+        1_700_000_600,
+        1_700_000_540,
+    )
+    .expect("route-derived lease");
+    assert_eq!(lease.gateway(), route.gateway_router);
+    assert_ne!(lease.gateway(), Hash::from_bytes([0xB2; 32]));
+}
+
+#[test]
+fn p236_no_expected_tunneldata_is_distinct_from_recovery_failure() {
+    let mut epoch = p236_complete_epoch();
+    epoch.i2pr_expected_stream_tunneldata_count = 0;
+    epoch.i2pr_tunnel_recovery_count = 0;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &epoch, Some(p236_complete_java_state())),
+        P236Terminal::I2prNoExpectedTunnelData
+    );
+    epoch.i2pr_expected_stream_tunneldata_count = 1;
+    epoch.i2pr_tunnel_recovery_count = 0;
+    epoch.i2pr_tunnel_recovery_failures = 1;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &epoch, Some(p236_complete_java_state())),
+        P236Terminal::I2prTunnelRecoveryFailed
+    );
+}
+
+#[test]
+fn p236_i2pr_owned_terminal_requires_expected_tunneldata() {
+    let mut epoch = p236_complete_epoch();
+    epoch.i2pr_expected_stream_tunneldata_count = 0;
+    epoch.i2pr_tunnel_recovery_failures = 1;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &epoch, Some(p236_complete_java_state())),
+        P236Terminal::I2prNoExpectedTunnelData
+    );
+}
+
+#[test]
+fn p236_direction_a_established_does_not_by_itself_close_m6() {
+    assert!(!p236_family_closure_allowed(P236ClosureGates {
+        direction_a_established: true,
+        ..P236ClosureGates::default()
+    }));
+}
+
+#[test]
+fn p236_workspace_sam_hang_cannot_be_recorded_as_pass() {
+    assert!(!p236_family_closure_allowed(P236ClosureGates {
+        direction_a_established: true,
+        retained_qualification_complete: true,
+        plan200_201_resolved: true,
+        run_java_exit_zero: true,
+        final_checker_passed: true,
+        workspace_floor_complete: false,
+    }));
+}
+
+#[test]
+fn p236_no_production_change_before_owned_defect() {
+    assert!(p236_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p236_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p236_production_change_allowed_before_owned_defect(
+        true, true
+    ));
+}
+
+#[test]
+fn p236_observability_gap_does_not_infer_scheduler_absence() {
+    let mut state = p236_complete_java_state();
+    state.response_observation_complete = false;
+    state.java_response_scheduler_observed = false;
+    assert_eq!(
+        p236_classify_syn_epoch(true, &p236_complete_epoch(), Some(state)),
+        P236Terminal::JavaResponseEmissionObservabilityGap
+    );
+}
+
+#[test]
+fn p236_terminal_tokens_are_bounded_and_scoped() {
+    let tokens = [
+        P236Terminal::Plan235BaselineRegression,
+        P236Terminal::JavaResponseSchedulerNotObserved,
+        P236Terminal::JavaResponsePacketNotConstructed,
+        P236Terminal::JavaSendPacketNotObserved,
+        P236Terminal::JavaPacketQueueNotObserved,
+        P236Terminal::JavaPacketQueueSendFailed,
+        P236Terminal::JavaI2pSessionSendNotObserved,
+        P236Terminal::JavaI2pSessionSendFailed,
+        P236Terminal::JavaResponseEmissionObservabilityGap,
+        P236Terminal::JavaRouterI2cpNotObserved,
+        P236Terminal::JavaClientMessageNotAdmitted,
+        P236Terminal::JavaNoTargetLeaseSet,
+        P236Terminal::JavaNoOutboundTunnel,
+        P236Terminal::JavaDispatchNotCalled,
+        P236Terminal::JavaOutboundGatewayNotEnqueued,
+        P236Terminal::TransitNotProcessed,
+        P236Terminal::TargetIbgwNotPresent,
+        P236Terminal::TargetIbgwNoDispatch,
+        P236Terminal::I2prNoExpectedTunnelData,
+        P236Terminal::I2prTunnelRecoveryFailed,
+        P236Terminal::I2prGarlicDecodeFailed,
+        P236Terminal::I2prNoStreamingPayload,
+        P236Terminal::I2prStreamingAdapterFailed,
+        P236Terminal::DispatchedNotEstablished,
+        P236Terminal::DirectionAEstablished,
+        P236Terminal::ObservabilityGap,
+    ];
+    for token in tokens {
+        assert!(token.token().starts_with("P236-"));
     }
 }
