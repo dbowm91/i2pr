@@ -1,3 +1,18 @@
+# Current dependency amendment — Plan 242 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 241 removed the forced zero-hop Streaming fixture but stopped at the client-build gate because the harness required exact-via-C tunnels. Exact-pinned Java source now proves explicitPeers is sampled only one build in four; ordinary client tunnel builds may legitimately choose another stock fast peer.
+
+Plan 242 is registered-ready to correct only that harness semantics, accept a genuine controlled non-zero-hop client pair, and resume the exact lookup/reply/OCMOSJ continuation.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure.
+
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan242
+plan_242 = registered-ready-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 242-m6-java-streaming-stock-one-hop-selector-semantics-corrective
+
 # Current dependency amendment — Plan 241 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is
