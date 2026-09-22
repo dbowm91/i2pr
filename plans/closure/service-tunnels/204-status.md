@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 241 closed; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 241 closed the Streaming one-hop fixture corrective at the exact A/B
+build-stage boundary (see
+`plans/closure/mixed-router-interop/241-status.md`): the forced zero-hop
+fixture is removed, the lane stops at typed bootstrap/pair terminals, and
+the §20 successor (bootstrap repeatability / stock client-build
+corrective) requires its own plan-of-record.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-successor-after-plan241
+plan_241 = passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary
+milestone10_final_acceptance = closed
+next_executable_plan = none-pending-section-20-successor-plan-of-record
+```
+
 # Current dependency amendment — Plan 241 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is

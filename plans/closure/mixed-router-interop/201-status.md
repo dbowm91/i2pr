@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 241 closed at the A/B build-stage boundary; §20 successor pending
+
+Plan 241 closed as
+`passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary`
+(see `plans/closure/mixed-router-interop/241-status.md`). The forced
+zero-hop Streaming fixture is removed on the counted lane (one-hop
+SessionConfig proven active live); the lane now stops at exact typed
+build-stage terminals — `P241-A-TRANSIT-BOOTSTRAP-NOT-READY` (2/3,
+known Plan-230 profile stochasticity) or
+`P241-B-ONE-HOP-CLIENT-TUNNEL-NOT-BUILT direction=both` (1/3: 1+1
+non-zero-hop tunnels installed but not exact-via-C) — with the old
+zero-hop terminal structurally unreachable. Live lookup continuation
+(§§8–11) was not reached and is owned by the §20 successor, which
+requires its own plan-of-record.
+
+The publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-after-plan241-a-b-build-stage-pending-successor-and-publication-closure
+plan_240 = passed-m6-java-streaming-target-leaseset-lookup-failure-attribution-with-b-zero-hop-unknown-ri-boundary
+plan_241 = passed-m6-java-streaming-one-hop-client-tunnel-fixture-corrective-with-a-b-build-stage-boundary
+next_executable_plan = none-pending-section-20-successor-plan-of-record
+```
+
 # Current dependency amendment — Plan 241 registered for the one-hop Streaming fixture corrective
 
 Plan 240 closed at
