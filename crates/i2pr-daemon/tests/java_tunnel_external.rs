@@ -346,6 +346,14 @@ impl ReferenceControl {
     async fn report_plan236_response_state(&mut self) -> Option<P236JavaResponseState> {
         p236_parse_java_response_state(&self.command("REPORT_STREAM_STATE").await)
     }
+
+    /// Plan 237 §5–§6 — real stock helper-JVM observations for the
+    /// isolated SYN epoch. Returns the bounded `RESPONSE_STATS` line;
+    /// the caller snapshots before the SYN and at the end of the frozen
+    /// response window, then classifies from deltas (never absolutes).
+    async fn report_plan237_response_stats(&mut self) -> Option<P237ResponseStats> {
+        p237_parse_response_stats(&self.command("REPORT_RESPONSE_STATS").await)
+    }
 }
 
 // ---- Plan 234 — Streaming SYN epoch attribution --------------------------
@@ -1022,6 +1030,342 @@ fn record_p236_response_epoch(
         ),
     );
     append_evidence(evidence_dir, "p236-classification", terminal.token());
+}
+
+// ---- Plan 237 §5–§12 stock-response observability corrective --------------
+// Replaces the Plan-236 literal placeholders with real bounded stock-Java
+// observations from the helper JVM (`REPORT_RESPONSE_STATS`). The Rust
+// driver snapshots before the Direction-A SYN and at the end of the frozen
+// response window, then classifies from deltas (never absolutes). Plan-236
+// `REPORT_STREAM_STATE` booleans are never consumed here.
+
+/// Bounded stock helper-JVM facts from `REPORT_RESPONSE_STATS`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P237ResponseStats {
+    scheduler_log_count: u64,
+    ack_constructed_log_count: u64,
+    send_message_size_lifetime_events: u64,
+    send_failure_count: u64,
+    send_exception_count: u64,
+    scheduler_debug_enabled: bool,
+    connection_debug_enabled: bool,
+    packetqueue_debug_enabled: bool,
+}
+
+fn p237_parse_u64(value: &str) -> Option<u64> {
+    value.parse().ok()
+}
+
+fn p237_parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn p237_parse_response_stats(line: &str) -> Option<P237ResponseStats> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "RESPONSE_STATS" {
+        return None;
+    }
+    let mut stats = P237ResponseStats::default();
+    let mut seen = 0u8;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "scheduler_log_count" => stats.scheduler_log_count = p237_parse_u64(value)?,
+            "ack_constructed_log_count" => stats.ack_constructed_log_count = p237_parse_u64(value)?,
+            "send_message_size_lifetime_events" => {
+                stats.send_message_size_lifetime_events = p237_parse_u64(value)?
+            }
+            "send_failure_count" => stats.send_failure_count = p237_parse_u64(value)?,
+            "send_exception_count" => stats.send_exception_count = p237_parse_u64(value)?,
+            "scheduler_debug_enabled" => stats.scheduler_debug_enabled = p237_parse_bool(value)?,
+            "connection_debug_enabled" => stats.connection_debug_enabled = p237_parse_bool(value)?,
+            "packetqueue_debug_enabled" => {
+                stats.packetqueue_debug_enabled = p237_parse_bool(value)?
+            }
+            _ => return None,
+        }
+        seen = seen.saturating_add(1);
+    }
+    (seen == 8).then_some(stats)
+}
+
+/// Isolated-epoch deltas (`post.saturating_sub(pre)`). The lifetime-event
+/// counter is monotonic; log-buffer counts use saturating deltas because
+/// the bounded console buffer may evict under load.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P237Deltas {
+    scheduler_delta: u64,
+    ack_delta: u64,
+    sendmessage_delta: u64,
+    send_failure_delta: u64,
+    send_exception_delta: u64,
+}
+
+fn p237_deltas(pre: &P237ResponseStats, post: &P237ResponseStats) -> P237Deltas {
+    P237Deltas {
+        scheduler_delta: post
+            .scheduler_log_count
+            .saturating_sub(pre.scheduler_log_count),
+        ack_delta: post
+            .ack_constructed_log_count
+            .saturating_sub(pre.ack_constructed_log_count),
+        sendmessage_delta: post
+            .send_message_size_lifetime_events
+            .saturating_sub(pre.send_message_size_lifetime_events),
+        send_failure_delta: post
+            .send_failure_count
+            .saturating_sub(pre.send_failure_count),
+        send_exception_delta: post
+            .send_exception_count
+            .saturating_sub(pre.send_exception_count),
+    }
+}
+
+/// Router-A / transit / target stages after sendMessage is proven. Plan 237
+/// reuses the existing Plan-231/232 router-side observations; the live
+/// streaming driver has no Router-A/C/B probe yet, so it passes all-false
+/// (Unknown) and a proven sendMessage stops at `RouterI2cpNotObserved`
+/// with a narrow successor registered. Unit tests cover the full ordering
+/// with synthetic passing stages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P237RouterStages {
+    router_i2cp_observed: bool,
+    client_message_admitted: bool,
+    target_leaseset_selected: bool,
+    outbound_tunnel_selected: bool,
+    dispatch_outbound_called: bool,
+    outbound_gateway_enqueued: bool,
+    transit_processed: bool,
+    target_ibgw_present: bool,
+    target_ibgw_dispatched: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P237Terminal {
+    ResponseObservationNotIsolatable,
+    P235BaselineRegression,
+    SchedulerNotObserved,
+    SchedulerObservedNoAckConstruction,
+    AckConstructedNoSendMessage,
+    SendMessageFailed,
+    RouterI2cpNotObserved,
+    ClientMessageNotAdmitted,
+    NoTargetLeaseSet,
+    NoOutboundTunnel,
+    DispatchNotCalled,
+    OutboundGatewayNotEnqueued,
+    TransitNotProcessed,
+    TargetIbgwNotPresent,
+    TargetIbgwNoDispatch,
+    I2prNoExpectedTunnelData,
+    I2prTunnelRecoveryFailed,
+    I2prGarlicDecodeFailed,
+    I2prStreamingAdapterFailed,
+    DirectionAEstablished,
+}
+
+impl P237Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::ResponseObservationNotIsolatable => "P237-A-RESPONSE-OBSERVATION-NOT-ISOLATABLE",
+            Self::P235BaselineRegression => "P237-A-P235-BASELINE-REGRESSION",
+            Self::SchedulerNotObserved => "P237-B-SCHEDULER-NOT-OBSERVED",
+            Self::SchedulerObservedNoAckConstruction => {
+                "P237-B-SCHEDULER-OBSERVED-NO-ACK-CONSTRUCTION"
+            }
+            Self::AckConstructedNoSendMessage => "P237-C-ACK-CONSTRUCTED-NO-SENDMESSAGE",
+            Self::SendMessageFailed => "P237-C-SENDMESSAGE-FAILED",
+            Self::RouterI2cpNotObserved => "P237-D-ROUTER-I2CP-NOT-OBSERVED",
+            Self::ClientMessageNotAdmitted => "P237-D-CLIENT-MESSAGE-NOT-ADMITTED",
+            Self::NoTargetLeaseSet => "P237-D-NO-TARGET-LEASESET",
+            Self::NoOutboundTunnel => "P237-D-NO-OUTBOUND-TUNNEL",
+            Self::DispatchNotCalled => "P237-D-DISPATCH-NOT-CALLED",
+            Self::OutboundGatewayNotEnqueued => "P237-D-OUTBOUND-GATEWAY-NOT-ENQUEUED",
+            Self::TransitNotProcessed => "P237-E-TRANSIT-NOT-PROCESSED",
+            Self::TargetIbgwNotPresent => "P237-E-TARGET-IBGW-NOT-PRESENT",
+            Self::TargetIbgwNoDispatch => "P237-E-TARGET-IBGW-NO-DISPATCH",
+            Self::I2prNoExpectedTunnelData => "P237-E-I2PR-NO-EXPECTED-TUNNELDATA",
+            Self::I2prTunnelRecoveryFailed => "P237-F-I2PR-TUNNEL-RECOVERY-FAILED",
+            Self::I2prGarlicDecodeFailed => "P237-F-I2PR-GARLIC-DECODE-FAILED",
+            Self::I2prStreamingAdapterFailed => "P237-F-I2PR-STREAMING-ADAPTER-FAILED",
+            Self::DirectionAEstablished => "P237-F-DIRECTION-A-ESTABLISHED",
+        }
+    }
+}
+
+/// Plan 237 §7 classifier over real stock deltas. `P237-C-SENDMESSAGE-
+/// RETURNED` is a continuation state, not an emitted row: once the
+/// sendMessage lifetime-event delta is proven (with no failure delta),
+/// classification continues into the D/E/F stages. `accept_returned`
+/// and `socket_surface_ready` never satisfy a response stage; only
+/// stock log/stat deltas do.
+fn p237_classify_response(
+    p235_baseline_ok: bool,
+    pre: Option<P237ResponseStats>,
+    post: Option<P237ResponseStats>,
+    router: &P237RouterStages,
+    epoch: &P234SynEpoch,
+) -> P237Terminal {
+    let (Some(pre), Some(post)) = (pre, post) else {
+        return P237Terminal::ResponseObservationNotIsolatable;
+    };
+    if !p235_baseline_ok {
+        return P237Terminal::P235BaselineRegression;
+    }
+    let deltas = p237_deltas(&pre, &post);
+    // A positive stock-log delta without its proven logger is untrusted
+    // (contradiction, not evidence); the epoch is not isolatable.
+    if deltas.scheduler_delta > 0 && !post.scheduler_debug_enabled {
+        return P237Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.ack_delta > 0 && !post.connection_debug_enabled {
+        return P237Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.scheduler_delta == 0 {
+        return P237Terminal::SchedulerNotObserved;
+    }
+    if deltas.ack_delta == 0 {
+        return P237Terminal::SchedulerObservedNoAckConstruction;
+    }
+    // Stock failure evidence precedes any router attribution.
+    if deltas.send_failure_delta > 0 || deltas.send_exception_delta > 0 {
+        return P237Terminal::SendMessageFailed;
+    }
+    if deltas.sendmessage_delta == 0 {
+        return P237Terminal::AckConstructedNoSendMessage;
+    }
+    // SendMessage returned (positive lifetime-event delta, no failure):
+    // continue into Router-A attribution. No later terminal may be
+    // emitted while an earlier stage is Unknown.
+    if !router.router_i2cp_observed {
+        return P237Terminal::RouterI2cpNotObserved;
+    }
+    if !router.client_message_admitted {
+        return P237Terminal::ClientMessageNotAdmitted;
+    }
+    if !router.target_leaseset_selected {
+        return P237Terminal::NoTargetLeaseSet;
+    }
+    if !router.outbound_tunnel_selected {
+        return P237Terminal::NoOutboundTunnel;
+    }
+    if !router.dispatch_outbound_called {
+        return P237Terminal::DispatchNotCalled;
+    }
+    if !router.outbound_gateway_enqueued {
+        return P237Terminal::OutboundGatewayNotEnqueued;
+    }
+    if !router.transit_processed {
+        return P237Terminal::TransitNotProcessed;
+    }
+    if !router.target_ibgw_present {
+        return P237Terminal::TargetIbgwNotPresent;
+    }
+    if !router.target_ibgw_dispatched {
+        return P237Terminal::TargetIbgwNoDispatch;
+    }
+    if epoch.i2pr_expected_stream_tunneldata_count == 0 {
+        return P237Terminal::I2prNoExpectedTunnelData;
+    }
+    if epoch.i2pr_tunnel_recovery_failures > 0 && epoch.i2pr_tunnel_recovery_count == 0 {
+        return P237Terminal::I2prTunnelRecoveryFailed;
+    }
+    if epoch.i2pr_garlic_decode_failures > 0 && epoch.i2pr_garlic_payload_count == 0 {
+        return P237Terminal::I2prGarlicDecodeFailed;
+    }
+    // Plan 237 folds P236's no-payload and dispatched-not-established
+    // nuances into the adapter terminal: any adapter path that does not
+    // end Established is adapter-owned. A successor may re-split these
+    // if the folded case appears live.
+    if epoch.i2pr_streaming_adapter_errors > 0 || epoch.i2pr_streaming_adapter_successes == 0 {
+        return P237Terminal::I2prStreamingAdapterFailed;
+    }
+    if epoch.connection_established {
+        return P237Terminal::DirectionAEstablished;
+    }
+    P237Terminal::I2prStreamingAdapterFailed
+}
+
+fn record_p237_response_epoch(
+    evidence_dir: &Path,
+    pre: Option<P237ResponseStats>,
+    post: Option<P237ResponseStats>,
+    router: &P237RouterStages,
+    terminal: P237Terminal,
+) {
+    let pre = pre.unwrap_or_default();
+    let post = post.unwrap_or_default();
+    let deltas = p237_deltas(&pre, &post);
+    append_evidence(
+        evidence_dir,
+        "p237-response-stats-pre",
+        &format!(
+            "scheduler_log_count={} ack_constructed_log_count={} send_message_size_lifetime_events={} send_failure_count={} send_exception_count={} scheduler_debug_enabled={} connection_debug_enabled={} packetqueue_debug_enabled={}",
+            pre.scheduler_log_count,
+            pre.ack_constructed_log_count,
+            pre.send_message_size_lifetime_events,
+            pre.send_failure_count,
+            pre.send_exception_count,
+            pre.scheduler_debug_enabled,
+            pre.connection_debug_enabled,
+            pre.packetqueue_debug_enabled,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p237-response-stats-post",
+        &format!(
+            "scheduler_log_count={} ack_constructed_log_count={} send_message_size_lifetime_events={} send_failure_count={} send_exception_count={} scheduler_debug_enabled={} connection_debug_enabled={} packetqueue_debug_enabled={}",
+            post.scheduler_log_count,
+            post.ack_constructed_log_count,
+            post.send_message_size_lifetime_events,
+            post.send_failure_count,
+            post.send_exception_count,
+            post.scheduler_debug_enabled,
+            post.connection_debug_enabled,
+            post.packetqueue_debug_enabled,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p237-response-deltas",
+        &format!(
+            "scheduler_delta={} ack_constructed_delta={} send_message_event_delta={} send_failure_delta={} send_exception_delta={}",
+            deltas.scheduler_delta,
+            deltas.ack_delta,
+            deltas.sendmessage_delta,
+            deltas.send_failure_delta,
+            deltas.send_exception_delta,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p237-router-stages",
+        &format!(
+            "router_i2cp_observed={} client_message_admitted={} target_leaseset_selected={} outbound_tunnel_selected={} dispatch_outbound_called={} outbound_gateway_enqueued={} transit_processed={} target_ibgw_present={} target_ibgw_dispatched={}",
+            router.router_i2cp_observed,
+            router.client_message_admitted,
+            router.target_leaseset_selected,
+            router.outbound_tunnel_selected,
+            router.dispatch_outbound_called,
+            router.outbound_gateway_enqueued,
+            router.transit_processed,
+            router.target_ibgw_present,
+            router.target_ibgw_dispatched,
+        ),
+    );
+    append_evidence(evidence_dir, "p237-classification", terminal.token());
+}
+
+fn p237_production_change_allowed_before_owned_defect(
+    production_changed: bool,
+    expected_tunneldata_seen: bool,
+) -> bool {
+    !production_changed || expected_tunneldata_seen
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -8928,6 +9272,11 @@ async fn streaming_through_java() {
     let mut streaming = StreamingManager::new(StreamingConfig::balanced());
     let accept_start = stream_control.command("START_ACCEPT").await;
     let java_accept_thread_started = accept_start == "STARTED";
+    // Plan 237 §6 — baseline stock observation immediately before the
+    // Direction-A SYN is sent. The helper is fresh for the counted lane
+    // (run-java.sh starts one streaming helper per counted attempt with
+    // no other Streaming traffic), so deltas isolate the SYN epoch.
+    let p237_pre = stream_control.report_plan237_response_stats().await;
     let outcome = streaming
         .connect(
             &local_identity,
@@ -9142,6 +9491,41 @@ async fn streaming_through_java() {
         p236_state,
     );
     record_p236_response_epoch(&evidence_dir, p236_state, p236_terminal);
+    // Plan 237 §6–§7 — second stock snapshot at the end of the frozen
+    // response window; classify the earliest response stage from deltas.
+    // The P235 response boundary (accept + surface + outbound admission)
+    // is the retained prerequisite; P237 never classifies a response
+    // stage from the Plan-236 literal placeholders, `accept_returned`,
+    // or `socket_surface_ready` alone.
+    let p237_post = stream_control.report_plan237_response_stats().await;
+    let p237_baseline_ok = p235_plan234_baseline_ok
+        && !matches!(
+            p235_terminal,
+            P235Terminal::Plan234BaselineRegression
+                | P235Terminal::JavaAcceptWorkerNotStarted
+                | P235Terminal::JavaAcceptNotReturned
+                | P235Terminal::JavaSocketSurfaceNotReady
+                | P235Terminal::I2prOutboundAdmissionFailed
+        );
+    // No Router-A/C/B probe exists on the streaming path in Plan 237;
+    // D/E-transit/IBGW stages stay false (Unknown). A proven sendMessage
+    // therefore stops at `P237-D-ROUTER-I2CP-NOT-OBSERVED` with a narrow
+    // Router-A-observer successor registered — never a later terminal.
+    let p237_router = P237RouterStages::default();
+    let p237_terminal = p237_classify_response(
+        p237_baseline_ok,
+        p237_pre,
+        p237_post,
+        &p237_router,
+        &p234_epoch,
+    );
+    record_p237_response_epoch(
+        &evidence_dir,
+        p237_pre,
+        p237_post,
+        &p237_router,
+        p237_terminal,
+    );
     if p236_terminal != P236Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -19331,4 +19715,286 @@ fn p236_terminal_tokens_are_bounded_and_scoped() {
     for token in tokens {
         assert!(token.token().starts_with("P236-"));
     }
+}
+
+// ---- Plan 237 §12 unit rows ------------------------------------------------
+// Focused local rows locking the stock-response observability corrective.
+// They run in the ordinary workspace floor (no external environment).
+
+fn p237_stats(
+    scheduler: u64,
+    ack: u64,
+    sendmessage_events: u64,
+    failures: u64,
+    exceptions: u64,
+) -> P237ResponseStats {
+    P237ResponseStats {
+        scheduler_log_count: scheduler,
+        ack_constructed_log_count: ack,
+        send_message_size_lifetime_events: sendmessage_events,
+        send_failure_count: failures,
+        send_exception_count: exceptions,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        packetqueue_debug_enabled: true,
+    }
+}
+
+fn p237_router_all_pass() -> P237RouterStages {
+    P237RouterStages {
+        router_i2cp_observed: true,
+        client_message_admitted: true,
+        target_leaseset_selected: true,
+        outbound_tunnel_selected: true,
+        dispatch_outbound_called: true,
+        outbound_gateway_enqueued: true,
+        transit_processed: true,
+        target_ibgw_present: true,
+        target_ibgw_dispatched: true,
+    }
+}
+
+fn p237_complete_epoch() -> P234SynEpoch {
+    P234SynEpoch {
+        java_accept_thread_started: true,
+        i2pr_expected_stream_tunneldata_count: 1,
+        i2pr_tunnel_recovery_count: 1,
+        i2pr_garlic_payload_count: 1,
+        i2pr_streaming_adapter_calls: 1,
+        i2pr_streaming_adapter_successes: 1,
+        connection_established: true,
+        ..P234SynEpoch::default()
+    }
+}
+
+#[test]
+fn p237_placeholder_false_is_unknown_not_negative_evidence() {
+    // The Plan-236 `REPORT_STREAM_STATE` line carries literal `false`
+    // placeholders, not measurements. It must never parse as a P237
+    // `RESPONSE_STATS` observation.
+    let placeholder = "STREAM_STATUS accept_requested=1 accept_entered=1 accept_returned=1 socket_stored=1 accept_errors=0 socket_surface_entered=1 socket_surface_ready=1 socket_surface_errors=0 accepting=false accepted_count=1 connected_count=0 java_source_pin=9134f808337b401e8e53c73734c81fab04280c9d java_response_scheduler_class=net.i2p.client.streaming.impl.SchedulerReceived java_response_scheduler_method=eventOccurred java_response_packet_kind=ACK_OR_SYN_ACK java_response_send_method=Connection.sendPacket(PacketLocal) java_packetqueue_method=PacketQueue.enqueue(PacketLocal) java_i2psession_send_method=boolean_sendMessage_SendMessageOptions java_response_observation_complete=false java_response_scheduler_observed=false java_response_packet_constructed=false java_sendpacket_observed=false java_packetqueue_observed=false java_packetqueue_send_failed=false java_i2psession_send_observed=false java_i2psession_send_failed=false java_router_i2cp_observed=false java_client_message_admitted=false java_target_leaseset_selected=false java_outbound_tunnel_selected=false java_dispatch_outbound_called=false java_outbound_gateway_enqueued=false java_transit_processed=false java_target_ibgw_present=false java_target_ibgw_dispatched=false";
+    assert_eq!(p237_parse_response_stats(placeholder), None);
+    // And a missing stock snapshot is NOT-ISOLATABLE, never a negative
+    // response-stage claim.
+    assert_eq!(
+        p237_classify_response(
+            true,
+            None,
+            None,
+            &P237RouterStages::default(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::ResponseObservationNotIsolatable
+    );
+}
+
+#[test]
+fn p237_scheduler_requires_enabled_stock_observer() {
+    // A positive scheduler log delta without its proven DEBUG logger is
+    // a contradiction (untrusted), not evidence of scheduler execution.
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let mut post = p237_stats(2, 0, 0, 0, 0);
+    post.scheduler_debug_enabled = false;
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &P237RouterStages::default(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::ResponseObservationNotIsolatable
+    );
+}
+
+#[test]
+fn p237_scheduler_precedes_ack_construction() {
+    // No scheduler delta: earliest stage wins even when later counters
+    // are positive (stale or unrelated traffic cannot promote the epoch).
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(0, 3, 5, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SchedulerNotObserved
+    );
+}
+
+#[test]
+fn p237_ack_construction_precedes_sendmessage() {
+    // Scheduler observed but no ACK: stops at B even when the
+    // sendMessage stat advanced (the stat without its ACK predecessor
+    // cannot satisfy the response stage).
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(2, 0, 4, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SchedulerObservedNoAckConstruction
+    );
+}
+
+#[test]
+fn p237_sendmessage_event_delta_proves_call_returned() {
+    // Scheduler + ACK + positive sendMessage lifetime-event delta with no
+    // failure traverses C into Router-A attribution (here all D/E pass
+    // and the i2pr epoch is complete, so Direction A establishes). This
+    // proves the delta carries the epoch past the C boundary.
+    let pre = p237_stats(1, 1, 10, 0, 0);
+    let post = p237_stats(3, 3, 11, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::DirectionAEstablished
+    );
+}
+
+#[test]
+fn p237_send_failure_precedes_router_attribution() {
+    // Stock failure evidence wins over any router stage: a failed send
+    // never continues into D/E/F attribution.
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(2, 2, 1, 1, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SendMessageFailed
+    );
+    let post_exc = p237_stats(2, 2, 0, 0, 1);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post_exc),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SendMessageFailed
+    );
+}
+
+#[test]
+fn p237_sendmessage_returned_does_not_prove_router_admission() {
+    // Proven sendMessage (positive delta, no failure) with no Router-A
+    // observation stops at the first D stage — never Established.
+    let pre = p237_stats(0, 0, 7, 0, 0);
+    let post = p237_stats(2, 2, 8, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &P237RouterStages::default(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::RouterI2cpNotObserved
+    );
+}
+
+#[test]
+fn p237_router_attribution_requires_sendmessage_returned() {
+    // Router stages stay unreachable while the ACK-constructed send was
+    // never submitted (zero sendMessage delta, no failure): the epoch
+    // stops at C, never at D.
+    let pre = p237_stats(0, 0, 5, 0, 0);
+    let post = p237_stats(2, 2, 5, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &P237RouterStages::default(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::AckConstructedNoSendMessage
+    );
+}
+
+#[test]
+fn p237_i2pr_owned_terminal_requires_expected_tunneldata() {
+    // All Java/D/E stages pass but no expected TunnelData reached i2pr:
+    // the epoch stops at E-I2PR, never at an F owned-defect terminal,
+    // even when recovery failures are present.
+    let pre = p237_stats(0, 0, 3, 0, 0);
+    let post = p237_stats(2, 2, 4, 0, 0);
+    let mut epoch = p237_complete_epoch();
+    epoch.i2pr_expected_stream_tunneldata_count = 0;
+    epoch.i2pr_tunnel_recovery_count = 0;
+    epoch.i2pr_tunnel_recovery_failures = 1;
+    assert_eq!(
+        p237_classify_response(true, Some(pre), Some(post), &p237_router_all_pass(), &epoch,),
+        P237Terminal::I2prNoExpectedTunnelData
+    );
+}
+
+#[test]
+fn p237_accept_returned_does_not_satisfy_response_stage() {
+    // Java accept returned (baseline prerequisite met through the P235
+    // boundary) but zero stock deltas: the response stage is still B,
+    // never C/D/E/F. `accept_returned` alone satisfies nothing.
+    let pre = p237_stats(0, 0, 0, 0, 0);
+    let post = p237_stats(0, 0, 0, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SchedulerNotObserved
+    );
+}
+
+#[test]
+fn p237_socket_surface_ready_does_not_satisfy_response_stage() {
+    // Both the accept and the public socket surface are ready (baseline
+    // ok) but the isolated epoch produced no stock scheduler evidence:
+    // still B. Wire-stage attribution remains the driver's
+    // responsibility; surface readiness never promotes the epoch.
+    let pre = p237_stats(4, 4, 9, 0, 0);
+    let post = p237_stats(4, 4, 9, 0, 0);
+    assert_eq!(
+        p237_classify_response(
+            true,
+            Some(pre),
+            Some(post),
+            &p237_router_all_pass(),
+            &p237_complete_epoch(),
+        ),
+        P237Terminal::SchedulerNotObserved
+    );
+}
+
+#[test]
+fn p237_no_production_change() {
+    assert!(p237_production_change_allowed_before_owned_defect(
+        false, false
+    ));
+    assert!(!p237_production_change_allowed_before_owned_defect(
+        true, false
+    ));
+    assert!(p237_production_change_allowed_before_owned_defect(
+        true, true
+    ));
 }

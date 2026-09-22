@@ -2504,6 +2504,26 @@ m6_key_row "external-p230-baseline" "p230-baseline" \
 m6_key_row "external-p230-profile" "p230-profile" \
   "Plan 230 WP D: natural profile-bootstrap outcome through the ordinary authenticated RI path"
 
+# Plan 237 §19 — read the single stock-response terminal the streaming
+# driver emitted from its isolated SYN-epoch deltas. Consume the LAST
+# occurrence so an early branch cannot shadow the authoritative outcome,
+# and record exactly one external row (diagnostic observation, always
+# passed when present). The static checker rejects any literal
+# `record "<P237-X>" passed` line.
+P237_CLASSIFICATION=""
+STREAM_DRIVER_TSV_FOR_P237="${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv"
+if [[ -f "${STREAM_DRIVER_TSV_FOR_P237}" ]]; then
+  P237_CLASSIFICATION="$(awk -F'\t' '$1 == "p237-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${STREAM_DRIVER_TSV_FOR_P237}")"
+fi
+if [[ -z "${P237_CLASSIFICATION}" ]]; then
+  P237_CLASSIFICATION="P237-classification-missing"
+fi
+record "external-p237-classification" passed "Plan 237 §19: ${P237_CLASSIFICATION}"
+m6_key_row "external-p237-response-deltas" "p237-response-deltas" \
+  "Plan 237 §6: isolated-epoch stock deltas (scheduler/ack/sendMessage/failure)"
+m6_key_row "external-p237-response-stats" "p237-response-stats-post" \
+  "Plan 237 §5: helper-JVM stock snapshot with logger-enablement proof"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted

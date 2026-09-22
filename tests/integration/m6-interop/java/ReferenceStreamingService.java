@@ -15,6 +15,7 @@
 // question and is proved by the harness through ordinary I2NP
 // DatabaseLookup/Store traffic, never by helper readiness.
 
+import net.i2p.I2PAppContext;
 import net.i2p.client.I2PClient;
 import net.i2p.client.I2PClientFactory;
 import net.i2p.client.I2PSession;
@@ -24,6 +25,7 @@ import net.i2p.client.streaming.I2PSocketManager;
 import net.i2p.client.streaming.I2PSocketManagerFactory;
 import net.i2p.crypto.SigType;
 import net.i2p.data.Destination;
+import net.i2p.stat.RateStat;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -87,6 +89,86 @@ public final class ReferenceStreamingService {
     private static final String JAVA_I2PSESSION_SEND_METHOD =
         "boolean_sendMessage_SendMessageOptions";
     private static volatile boolean accepting;
+
+    // Plan 237 §4–§5 — stock helper-JVM response observation. All facts
+    // are bounded public counts from the exact-pinned implementation:
+    // `stream.con.sendMessageSize` lifetime events via the public
+    // `StatManager.getRate(...).getLifetimeEventCount()`, plus exact
+    // source-locked DEBUG/WARN substrings scanned from the public
+    // `LogManager.getBuffer().getMostRecentMessages()` console buffer.
+    // No packet contents, keys, tags, plaintext payloads, or private
+    // state. Counts are bounded by the console buffer size (512) and
+    // MAX_OBSERVATIONS.
+    private static final int P237_CONSOLE_BUFFER_SIZE = 512;
+    private static final String P237_SCHEDULER_CLASS =
+        "net.i2p.client.streaming.impl.SchedulerReceived";
+    private static final String P237_CONNECTION_CLASS =
+        "net.i2p.client.streaming.impl.Connection";
+    private static final String P237_PACKETQUEUE_CLASS =
+        "net.i2p.client.streaming.impl.PacketQueue";
+    private static final String P237_SCHEDULER_SIGNAL = "received con... ";
+    private static final String P237_ACK_SIGNAL = "sending new ack: ";
+    private static final String P237_SEND_FAILED_SIGNAL = "Send failed for ";
+    private static final String P237_SEND_EXCEPTION_SIGNAL = "Unable to send the packet";
+    private static final String P237_SENDMESSAGE_STAT = "stream.con.sendMessageSize";
+
+    private static void p237ConfigureStockObserver() {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null) return;
+            context.logManager().setConsoleBufferSize(P237_CONSOLE_BUFFER_SIZE);
+            Properties limits = new Properties();
+            limits.setProperty(P237_SCHEDULER_CLASS, "DEBUG");
+            limits.setProperty(P237_CONNECTION_CLASS, "DEBUG");
+            limits.setProperty(P237_PACKETQUEUE_CLASS, "DEBUG");
+            context.logManager().setLimits(limits);
+        } catch (Throwable ignored) { }
+    }
+
+    private static long p237SendMessageSizeLifetimeEvents() {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.statManager() == null) return 0;
+            RateStat rate = context.statManager().getRate(P237_SENDMESSAGE_STAT);
+            if (rate == null) return 0;
+            long count = rate.getLifetimeEventCount();
+            return Math.max(0, count);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private static int p237CountBufferSubstring(String needle) {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) return 0;
+            int count = 0;
+            for (String message : context.logManager().getBuffer().getMostRecentMessages()) {
+                if (message == null) continue;
+                if (message.contains(needle)) {
+                    count++;
+                    if (count >= MAX_OBSERVATIONS) break;
+                }
+            }
+            return count;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private static boolean p237IsDebugEnabledFor(String className) {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null) return false;
+            Properties limits = context.logManager().getLimits();
+            if (limits == null) return false;
+            String level = limits.getProperty(className);
+            return level != null && level.equalsIgnoreCase("DEBUG");
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
 
     private static int incrementBounded(AtomicInteger counter) {
         return counter.updateAndGet(value -> value < MAX_OBSERVATIONS ? value + 1 : value);
@@ -182,6 +264,11 @@ public final class ReferenceStreamingService {
         }
         I2PSession session = manager.getSession();
         session.connect();
+        // Plan 237 §9 — enable only the three exact-pinned Streaming
+        // classes at DEBUG, before any SYN can arrive. Uses only public
+        // LogManager APIs; never patches router/client internals, never
+        // uses reflection, never mutates private state.
+        p237ConfigureStockObserver();
         I2PServerSocket server = manager.getServerSocket();
         Destination destination = session.getMyDestination();
         try (ServerSocket control = new ServerSocket(controlPort, 16, java.net.InetAddress.getByName("127.0.0.1"))) {
@@ -264,6 +351,37 @@ public final class ReferenceStreamingService {
                                 + " java_transit_processed=false"
                                 + " java_target_ibgw_present=false"
                                 + " java_target_ibgw_dispatched=false");
+                            break;
+                        }
+                        case "REPORT_RESPONSE_STATS": {
+                            // Plan 237 §5 — bounded public stock facts for
+                            // the isolated SYN epoch. The Rust driver
+                            // snapshots this command before the SYN and at
+                            // the end of the frozen response window, then
+                            // classifies from deltas (never absolutes).
+                            long sendEvents = p237SendMessageSizeLifetimeEvents();
+                            int schedulerCount =
+                                p237CountBufferSubstring(P237_SCHEDULER_SIGNAL);
+                            int ackCount =
+                                p237CountBufferSubstring(P237_ACK_SIGNAL);
+                            int sendFail =
+                                p237CountBufferSubstring(P237_SEND_FAILED_SIGNAL);
+                            int sendException =
+                                p237CountBufferSubstring(P237_SEND_EXCEPTION_SIGNAL);
+                            boolean schedulerDebug =
+                                p237IsDebugEnabledFor(P237_SCHEDULER_CLASS);
+                            boolean connectionDebug =
+                                p237IsDebugEnabledFor(P237_CONNECTION_CLASS);
+                            boolean packetqueueDebug =
+                                p237IsDebugEnabledFor(P237_PACKETQUEUE_CLASS);
+                            output.println("RESPONSE_STATS scheduler_log_count=" + schedulerCount
+                                + " ack_constructed_log_count=" + ackCount
+                                + " send_message_size_lifetime_events=" + sendEvents
+                                + " send_failure_count=" + sendFail
+                                + " send_exception_count=" + sendException
+                                + " scheduler_debug_enabled=" + schedulerDebug
+                                + " connection_debug_enabled=" + connectionDebug
+                                + " packetqueue_debug_enabled=" + packetqueueDebug);
                             break;
                         }
                         case "START_ACCEPT":

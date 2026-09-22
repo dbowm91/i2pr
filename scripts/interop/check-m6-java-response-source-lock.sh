@@ -63,6 +63,16 @@ required = {
     "PacketQueue.streaming_protocol": (queue, "I2PSession.PROTO_STREAMING"),
     "PacketQueue.boolean_send_overload": (queue, "                                 options);"),
     "I2PSession.boolean_send_overload": (session, "public boolean sendMessage(Destination dest, byte[] payload, int offset, int size,"),
+    # Plan 237 §4 — exact-pinned stock observability signals the
+    # helper-JVM observer depends on. A source upgrade that renames any
+    # of these must fail the lane before an external attempt.
+    "SchedulerReceived.send_branch_log": (scheduler, "received con... send a packet"),
+    "SchedulerReceived.reschedule_branch_log": (scheduler, "received con... time till next send: "),
+    "Connection.ack_construction_log": (connection, "sending new ack: "),
+    "PacketQueue.sendmessage_stat": (queue, '"stream.con.sendMessageSize"'),
+    "PacketQueue.send_exception_log": (queue, "Unable to send the packet"),
+    "PacketQueue.send_failed_log": (queue, "Send failed for "),
+    "PacketQueue.slow_send_log": (queue, "ms to sendMessage(...)"),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -98,6 +108,11 @@ output.write_text(
         "java_packetqueue_method\tPacketQueue.enqueue(PacketLocal)\n",
         "java_i2psession_send_method\tboolean_sendMessage_SendMessageOptions\n",
         "java_i2psession_status_listener_overload\tconditional-only\n",
+        # Plan 237 §4 — pinned stock signals the helper observer counts.
+        "java_scheduler_log_signals\treceived con... send a packet | received con... time till next send: <n>\n",
+        "java_ack_log_signal\tsending new ack: <PacketLocal>\n",
+        "java_sendmessage_stat\tstream.con.sendMessageSize\n",
+        "java_send_failure_signals\tUnable to send the packet | Send failed for <PacketLocal> | Took <n>ms to sendMessage(...)\n",
     ]),
     encoding="utf-8",
 )

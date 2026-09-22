@@ -3486,8 +3486,177 @@ if [[ -f "${JAVA_HARNESS}" ]]; then
   done
 fi
 
+# ---- 26. Plan 237 stock-response observability corrective -----------------
+# Plan 237 replaces the Plan-236 literal response placeholders with real
+# bounded stock-Java observations (helper-JVM `stream.con.sendMessageSize`
+# lifetime events + exact source-locked DEBUG/WARN log counts through one
+# tiny public `REPORT_RESPONSE_STATS` command) and classifies the earliest
+# response stage from isolated-epoch deltas. The existing Plan-236 source
+# lock remains required and is extended with the pinned log/stat signals.
+P237_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P237_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P237_SOURCE_LOCK="${REPO_ROOT}/scripts/interop/check-m6-java-response-source-lock.sh"
+if [[ -f "${P237_DRIVER_TEST}" ]]; then
+  for required in \
+    'struct P237ResponseStats' \
+    'fn p237_parse_response_stats' \
+    'struct P237Deltas' \
+    'fn p237_deltas' \
+    'struct P237RouterStages' \
+    'enum P237Terminal' \
+    'fn p237_classify_response' \
+    'fn record_p237_response_epoch' \
+    'REPORT_RESPONSE_STATS' \
+    'send_message_size_lifetime_events' \
+    'p237-response-stats-pre' \
+    'p237-response-stats-post' \
+    'p237-response-deltas' \
+    'p237-router-stages' \
+    'p237-classification' \
+    'P237-A-RESPONSE-OBSERVATION-NOT-ISOLATABLE' \
+    'P237-B-SCHEDULER-NOT-OBSERVED' \
+    'P237-B-SCHEDULER-OBSERVED-NO-ACK-CONSTRUCTION' \
+    'P237-C-ACK-CONSTRUCTED-NO-SENDMESSAGE' \
+    'P237-C-SENDMESSAGE-FAILED' \
+    'P237-D-ROUTER-I2CP-NOT-OBSERVED' \
+    'P237-E-I2PR-NO-EXPECTED-TUNNELDATA' \
+    'P237-F-I2PR-TUNNEL-RECOVERY-FAILED' \
+    'P237-F-I2PR-GARLIC-DECODE-FAILED' \
+    'P237-F-I2PR-STREAMING-ADAPTER-FAILED' \
+    'P237-F-DIRECTION-A-ESTABLISHED'; do
+    if ! grep -q -F "${required}" "${P237_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_DRIVER_TEST} lacks Plan 237 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  for unit_row in \
+    p237_placeholder_false_is_unknown_not_negative_evidence \
+    p237_scheduler_requires_enabled_stock_observer \
+    p237_scheduler_precedes_ack_construction \
+    p237_ack_construction_precedes_sendmessage \
+    p237_sendmessage_event_delta_proves_call_returned \
+    p237_send_failure_precedes_router_attribution \
+    p237_sendmessage_returned_does_not_prove_router_admission \
+    p237_router_attribution_requires_sendmessage_returned \
+    p237_i2pr_owned_terminal_requires_expected_tunneldata \
+    p237_accept_returned_does_not_satisfy_response_stage \
+    p237_socket_surface_ready_does_not_satisfy_response_stage \
+    p237_no_production_change; do
+    if ! grep -q "fn ${unit_row}" "${P237_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_DRIVER_TEST} lacks Plan 237 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # Response stages must be satisfied by stock deltas, never by the
+  # Plan-235 socket surface: the P237 classifier body must not consume
+  # `accept_returned` or `socket_surface_ready`.
+  if grep -n 'fn p237_classify_response' "${P237_DRIVER_TEST}" >/dev/null 2>&1; then
+    p237_body="$(awk '/fn p237_classify_response/,/^}/' "${P237_DRIVER_TEST}")"
+    if printf '%s' "${p237_body}" | grep -q 'accept_returned\|socket_surface_ready'; then
+      echo "m6 mixed-router evidence check failed: ${P237_DRIVER_TEST} satisfies a P237 response stage from accept_returned/socket_surface_ready (Plan 237 §11.3)" >&2
+      failures=$((failures + 1))
+    fi
+  fi
+  # No invented P237 terminals: classification rows flow only through the
+  # typed `p237-classification` evidence key.
+  if rg -n "^[[:space:]]*record[[:space:]]+[\"']P237-" "${P237_DRIVER_TEST}" >/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P237_DRIVER_TEST} hard-codes a Plan 237 terminal record" >&2
+    failures=$((failures + 1))
+  fi
+  # Frozen acceptance windows stay frozen on the streaming path.
+  for frozen in \
+    'const DATAGRAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const STREAM_WAIT: Duration = Duration::from_secs(45)' \
+    'const SYN_ACK_WAIT: Duration = Duration::from_secs(45)'; do
+    if ! grep -q -F "${frozen}" "${P237_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_DRIVER_TEST} changed frozen window '${frozen}' (Plan 237 §2 retained)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -rq -F 'P237' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null ||
+     grep -rq -F 'p237' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 237 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P237_HELPER_SRC}" ]]; then
+  for required in \
+    'REPORT_RESPONSE_STATS' \
+    'RESPONSE_STATS scheduler_log_count=' \
+    'send_message_size_lifetime_events=' \
+    'scheduler_debug_enabled=' \
+    'getLifetimeEventCount' \
+    'getMostRecentMessages' \
+    'setLimits' \
+    'setConsoleBufferSize' \
+    'received con... ' \
+    'sending new ack: ' \
+    'Send failed for ' \
+    'Unable to send the packet' \
+    'Plan 237 §'; do
+    if ! grep -q -F "${required}" "${P237_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_HELPER_SRC} lacks Plan 237 helper surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # No literal hard-coded positive response observations: counts must be
+  # computed from the stock observer, never assigned as literals.
+  if grep -n -E 'scheduler_log_count=[1-9]|ack_constructed_log_count=[1-9]|send_message_size_lifetime_events=[1-9]|send_failure_count=[1-9]|send_exception_count=[1-9]' "${P237_HELPER_SRC}" \
+     | grep -v 'p237CountBufferSubstring\|p237SendMessageSizeLifetimeEvents\|schedulerCount\|ackCount\|sendEvents\|sendFail\|sendException' \
+     >/dev/null 2>&1; then
+    echo "m6 mixed-router evidence check failed: ${P237_HELPER_SRC} hard-codes a positive P237 response observation (Plan 237 §11.1)" >&2
+    failures=$((failures + 1))
+  fi
+  # No Java source patching surface: read-only public APIs only, never
+  # reflection, state mutation, or router-internals access.
+  for forbidden in \
+    'getDeclaredField' \
+    'setAccessible' \
+    'registerKeys' \
+    'unregisterKeys' \
+    '.store(' \
+    '.publish(' \
+    'import java.lang.reflect'; do
+    if grep -q -F "${forbidden}" "${P237_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_HELPER_SRC} carries forbidden Java mutation/reflection '${forbidden}' (Plan 237 §5)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P237_SOURCE_LOCK}" ]]; then
+  for required in \
+    'received con... send a packet' \
+    'received con... time till next send: ' \
+    'sending new ack: ' \
+    'stream.con.sendMessageSize' \
+    'Unable to send the packet' \
+    'Send failed for ' \
+    'ms to sendMessage(...)'; do
+    if ! grep -q -F "${required}" "${P237_SOURCE_LOCK}"; then
+      echo "m6 mixed-router evidence check failed: ${P237_SOURCE_LOCK} lacks Plan 237 pinned signal '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${JAVA_HARNESS}" ]]; then
+  for required in \
+    'external-p237-classification' \
+    'p237-classification' \
+    'p237-response-deltas' \
+    'p237-response-stats-post'; do
+    if ! grep -q -F "${required}" "${JAVA_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${JAVA_HARNESS} lacks Plan 237 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P237-" "${JAVA_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${JAVA_HARNESS} invents a Plan 237 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants)"
