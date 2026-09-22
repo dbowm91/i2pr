@@ -1,3 +1,22 @@
+# Current dependency amendment — Plan 239 tightened; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed.
+
+Plan 238 proved Router-A I2CP admission but zero dispatch progress for the
+Streaming response epoch. Plan 239 now owns the exact post-admission OCMOSJ
+attribution: local-vs-remote target LeaseSet state, lease/tunnel preparation,
+branch-specific `client.dispatchNoTunnels`, and dispatchOutbound.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan239
+plan_239 = registered-ready-m6-java-streaming-router-a-dispatch-observer
+milestone10_final_acceptance = closed
+next_executable_plan = 239-m6-java-streaming-router-a-dispatch-observer
+```
+
 # Current dependency amendment — Plan 238 closed at dispatch boundary; Plan 239 registered; M10 product authority remains closed
 
 Plan 204 remains convergence-only. M10 product/application authority through
