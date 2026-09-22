@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 239 tightened to post-admission OCMOSJ attribution
+
+Plan 238's retained terminal label is historically named
+`P237-D-CLIENT-MESSAGE-NOT-ADMITTED`, but its executed evidence proves
+Router-A I2CP admission occurred: `client.distributeTime` advanced by exactly
+3 on all three counted attempts, matching the helper's three sendMessage
+events. The actual open Streaming boundary is post-admission / pre-dispatch:
+`client.dispatchTime` and `client.dispatchSendTime` remained zero.
+
+Plan 239 is therefore tightened to distinguish the exact OCMOSJ branches:
+local target LeaseSet vs remote lookup, lease selection, outbound-tunnel
+selection, garlic/tunnel-material failure, and only then
+`dispatchOutbound(...)`. Zero `client.leaseSetFoundRemoteTime` alone is not
+evidence that no target LeaseSet exists.
+
+```text
+plan_201 = blocked-after-plan238-post-admission-pre-dispatch-pending-plan239-and-publication-closure
+plan_238 = passed-m6-java-streaming-router-a-admission-observer-with-client-message-not-admitted-boundary
+plan_239 = registered-ready-m6-java-streaming-router-a-dispatch-observer
+next_executable_plan = 239-m6-java-streaming-router-a-dispatch-observer
+```
+
 # Current dependency amendment — Plan 238 closed at Client-Message-Not-Admitted; Plan 239 registered
 
 Plan 238 is now closed at
