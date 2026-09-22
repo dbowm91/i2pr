@@ -32,8 +32,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | SAM 3.1 | closed | `plans/subsystems/sam-roadmap.md` | Plan 151 final acceptance | Loopback-only, disabled by default |
 | SSU2 transport | closed | `plans/subsystems/ssu2-roadmap.md` | Plans 161 + 162 closed | Classical X25519 only; no ML-KEM |
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
-| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | M10 product authority is closed; Plan 204 remains blocked on independent M6 Java second-family closure pending Plan 239 post-admission OCMOSJ attribution. |
-| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 238 proved Router-A admission with zero dispatch; Plan 239 ready | Plan 239 attributes the exact post-admission OCMOSJ path: local-vs-remote target LS, tunnel preparation, branch-specific no-tunnel failures, then dispatchOutbound. |
+| Service tunnels | active | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 passed; Plan 204 convergence open | M10 product authority is closed; Plan 204 remains blocked on independent M6 Java second-family closure pending lookup-failure follow-up after Plan 239 D1 attribution. |
+| M6 mixed-router interop | active | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 239 passed at TARGET-LEASESET-LOOKUP-FAILED; lookup-failure follow-up unregistered | Plan 239 proved the exact post-admission D1 failure (local absent, found 0, failed 3/4/4, dispatch 0/0) on `d82cf06` x3; a narrow lookup-failure attribution follow-up needs its own plan-of-record. |
 
 ## Current milestone authorities
 
@@ -52,18 +52,18 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 ## Dependency-ready and active plans
 
-Current authority: Plan 238 proved Router-A I2CP admission (distribute delta 3) and zero dispatch deltas. The historical terminal label is retained for traceability, but Plan 239 is dependency-ready to attribute the exact post-admission OCMOSJ path before dispatch. Plans 201 and 204 remain blocked on Java-family closure.
+Current authority: Plan 239 passed the Router-A pre-dispatch observer at `P239-D-TARGET-LEASESET-LOOKUP-FAILED` (local absent, found 0, failed 3/4/4, dispatch 0/0 on `d82cf06` x3). No new plan is registered; a narrow lookup-failure attribution follow-up needs its own plan-of-record. Plans 201 and 204 remain blocked on Java-family closure.
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M6 mixed-router interop | 239 Java Streaming Router-A pre-dispatch / OCMOSJ attribution | ready | `plans/implementation/mixed-router-interop/239-m6-java-streaming-router-a-dispatch-observer.md` | Distinguish local LS vs remote lookup, lease/tunnel preparation, branch-specific no-tunnel failures, and dispatchOutbound; never infer no-LS from zero remote-lookup stats. |
+| — | — | — | — | No dependency-ready plan; see blocked work below. |
 
 ## Blocked work
 
 | Subsystem | Plan | Blocker |
 |---|---|---|
-| M6 mixed-router interop | 201 | Blocked after Plan 238 Client-Message-Not-Admitted boundary; streaming axis needs the Plan 239 Router-A dispatch observer, publication/final-closure axis unchanged |
-| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure pending Plan 239; closed M10 product authority unchanged |
+| M6 mixed-router interop | 201 | Blocked after Plan 239 Target-Leaseset-Lookup-Failed boundary; streaming axis needs a narrow lookup-failure attribution follow-up (no plan-of-record yet), publication/final-closure axis unchanged |
+| Service tunnels | 204 | Cross-milestone convergence waits for M6 Java second-family closure pending lookup-failure follow-up after Plan 239; closed M10 product authority unchanged |
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 
 ### Retained / conditional work
@@ -74,6 +74,7 @@ Current authority: Plan 238 proved Router-A I2CP admission (distribute delta 3) 
 
 | Subsystem | Plan | State | Closure record |
 |---|---|---|---|
+| M6 mixed-router interop | 239 Router-A pre-dispatch / OCMOSJ attribution | closed | `plans/closure/mixed-router-interop/239-status.md` (`passed-m6-java-streaming-router-a-dispatch-observer-with-target-leaseset-lookup-failed-boundary`; local absent, found 0, failed 3/4/4, dispatch 0/0 on `d82cf06` x3; retained Plan-234/235/236/237/238 baselines; no production change) |
 | M6 mixed-router interop | 238 Router-A admission observer | closed | `plans/closure/mixed-router-interop/238-status.md` (`passed-m6-java-streaming-router-a-admission-observer-with-client-message-not-admitted-boundary`; distribute delta exactly 3 with dispatch deltas 0 on `08df6ea` x3; retained Plan-234/235/236 baselines + Plan-237 2/1/3 deltas; no production change) |
 | M6 mixed-router interop | 231 reverse-delivery tunnel-dispatch attribution corrective | closed | `plans/closure/mixed-router-interop/231-status.md` (`passed-m6-java-reverse-delivery-tunnel-dispatch-attribution-with-target-ibgw-not-installed-boundary`; post-`ACCEPTED` attribution complete on `1f5a495`: A enqueue proven, C OBEP processing proven, exact target IBGW on B proven absent twice, i2pr wire honestly zero; root-caused to the test-driver lease fixture; no production change) |
 | M6 mixed-router interop | 232 route-derived lease-gateway fixture corrective | closed | `plans/closure/mixed-router-interop/232-status.md` (`passed-m6-java-route-derived-lease-gateway-fixture-corrective-with-raw-reverse-passed-streaming-boundary`; raw reverse digest-matched on `236ccb6` attempt 1; Streaming stops identically at SYN-ACK-never-established on attempts 2+3) |
@@ -120,8 +121,8 @@ Full per-plan history (000–239) lives in the subsystem roadmaps §7 tables.
 
 - `m9_sequence = 164 -> 165 -> 166 -> 167 -> 168 -> 169 -> 171 -> 170 -> 172` (closed).
 - `m10_sequence = 173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 -> 204` (204 convergence open; 199/207/209 retained-superseded scaffolds).
-- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231 -> 232 -> 233 -> 234 -> 235 -> 236 -> 237 -> 238 -> 239` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 closed with the exact target-IBGW-not-installed boundary after proving A-enqueue/C-OBEP with zero i2pr wire; Plan 232 closed at Outcome B (raw reverse passed, Streaming SYN-ACK boundary) on `236ccb6`; Plan 233 was superseded-before-execution; Plan 234 closed at the Java-accepted/no-i2pr-inbound boundary; Plan 235 closed at the post-accept/no-i2pr-inbound boundary; Plan 236 closed at the response-emission observability gap; Plan 237 closed at the Router-A I2CP-not-observed boundary with sendMessage-return proven on `a1065d1` x3; Plan 238 closed at the Client-Message-Not-Admitted boundary with distribute delta 3 and dispatch deltas 0 on `08df6ea` x3; Plan 239 registered for the narrow Router-A dispatch observer).
-- `active_plan = none`; `next_executable_plan = 239-m6-java-streaming-router-a-dispatch-observer`; Plans 234–238 are closed bounded diagnostics. Plan 201 remains blocked (streaming axis pending Plan 239, publication axis unchanged), Plan 204 remains blocked on M6 Java closure pending Plan 239, and Plan 205 remains retained/deferred.
+- `m6_sequence = 183 -> 184 -> 185 -> 186 -> 187 -> 188 -> 190 -> 191 -> 192 -> 193 -> 196 -> 197 -> 194 -> 198 -> 200 -> 201 -> 217 -> 218 -> 219 -> 220 -> 221 -> 222 -> 223 -> 224 -> 225 -> 226 -> 227 -> 228 -> 229 -> 230 -> 231 -> 232 -> 233 -> 234 -> 235 -> 236 -> 237 -> 238 -> 239` (Plan 205 retained off-path; Plan 221 superseded-before-execution; Plan 222 closed the narrowing; Plan 223 closed identity separation with NEXT-BOUNDARY; Plan 224 closed with an observability gap; Plan 225 closed with exact lookup-path attribution; Plan 226 closed with exact baseline non-IP boundary; Plan 227 closed with selectable-C-but-not-built boundary; Plan 228 closed with NO-PAIRED-TUNNEL attribution; Plan 229 closed with NOT-EXPLORATORY-ELIGIBLE boundary; Plan 230 closed with the reverse-delivery boundary after proving predicate/correction/bootstrap/forward-delivery; Plan 231 closed with the exact target-IBGW-not-installed boundary after proving A-enqueue/C-OBEP with zero i2pr wire; Plan 232 closed at Outcome B (raw reverse passed, Streaming SYN-ACK boundary) on `236ccb6`; Plan 233 was superseded-before-execution; Plan 234 closed at the Java-accepted/no-i2pr-inbound boundary; Plan 235 closed at the post-accept/no-i2pr-inbound boundary; Plan 236 closed at the response-emission observability gap; Plan 237 closed at the Router-A I2CP-not-observed boundary with sendMessage-return proven on `a1065d1` x3; Plan 238 closed at the Client-Message-Not-Admitted boundary with distribute delta 3 and dispatch deltas 0 on `08df6ea` x3; Plan 239 closed at the Target-Leaseset-Lookup-Failed boundary with local absent, found 0, failed 3/4/4 and dispatch 0/0 on `d82cf06` x3).
+- `active_plan = none`; `next_executable_plan = none-pending-lookup-failure-followup-plan-of-record`; Plans 234–239 are closed bounded diagnostics. Plan 201 remains blocked (streaming axis pending lookup-failure follow-up, publication axis unchanged), Plan 204 remains blocked on M6 Java closure pending that follow-up, and Plan 205 remains retained/deferred.
 
 ## Verification policy
 
