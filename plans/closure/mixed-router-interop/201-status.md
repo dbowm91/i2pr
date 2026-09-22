@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 240 registered for exact Streaming lookup-failure attribution
+
+Plan 239 is closed at
+`passed-m6-java-streaming-router-a-dispatch-observer-with-target-leaseset-lookup-failed-boundary`.
+Its three counted Streaming runs prove Router-A admission, no local target LS,
+zero remote lookup successes, positive remote lookup failures, and no dispatch.
+
+Plan 240 is now dependency-ready. It reuses the retained Plan-225/226 exact
+target-search machinery inside the Streaming epoch and must determine the first
+supported cause among negative cache, Router-B candidate selection, B-specific
+pre-query guards, actual B query/reply delivery, or helper client-subDB
+installation. It may not change routing behavior before that attribution.
+
+The publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-after-plan239-target-leaseset-lookup-failed-pending-plan240-attribution-and-publication-closure
+plan_239 = passed-m6-java-streaming-router-a-dispatch-observer-with-target-leaseset-lookup-failed-boundary
+plan_240 = registered-ready-m6-java-streaming-target-leaseset-lookup-failure-attribution
+next_executable_plan = 240-m6-java-streaming-target-leaseset-lookup-failure-attribution
+```
+
 # Current dependency amendment — Plan 239 tightened to post-admission OCMOSJ attribution
 
 Plan 238's retained terminal label is historically named
