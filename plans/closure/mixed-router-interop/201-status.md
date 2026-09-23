@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 244 registered for reverse-direction continuous response attribution
+
+Plan 243 is closed as
+`passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established`.
+Direction A (i2pr → Java Streaming) is proven live on hosted execution.
+
+Plan 244 is dependency-ready to correlate the retained Plan-237/238/239/240
+response observers in the same successful Plan-243 response epoch, ignore the
+historical P236 classifier when deeper same-epoch evidence exists, and follow
+the Java → i2pr Streaming response until the first real missing stage.
+
+The publication/final-closure axis remains independently unresolved and MUST
+NOT be folded into Plan 244 unless the reverse direction itself closes and a
+separate final-closure successor is then authorized.
+
+```text
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan244
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+plan_244 = registered-ready-m6-java-streaming-reverse-direction-continuous-response-attribution
+next_executable_plan = 244-m6-java-streaming-reverse-direction-continuous-response-attribution
+```
+
 # Current dependency amendment — Plan 243 closed; Direction-A established; reverse direction + publication closure pending
 
 Plan 243 is closed as
