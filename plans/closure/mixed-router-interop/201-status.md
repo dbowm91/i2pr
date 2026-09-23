@@ -1,3 +1,16 @@
+# Current dependency amendment — Plan 245 registered for stock-response construction-signal attribution
+
+Plan 244 is closed as `passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary`.
+
+Exact-pinned Java I2P 2.13.0 source review after closure shows that Plan 244's `Resend in`-derived construction proxy is conditional: ACK-only sequence-0 non-SYN packets bypass the retransmit-timer block. Plan 245 is therefore dependency-ready to observe `ConnectionDataReceiver.buildPacket` directly, distinguish an observer false negative from genuine writeData/build suppression, and resume the same-epoch reverse chain if construction is proven.
+
+The publication/final-closure axis remains independently unresolved.
+
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan245
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+plan_245 = registered-ready-m6-java-streaming-stock-response-construction-signal-attribution-corrective
+next_executable_plan = 245-m6-java-streaming-stock-response-construction-signal-attribution-corrective
+
 # Current dependency amendment — Plan 244 closed at response-packet-not-constructed; narrow stock-response successor pending
 
 Plan 244 is closed as
