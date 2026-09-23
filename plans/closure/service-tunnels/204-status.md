@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 245 closed at scheduler-rescheduled; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 245 closed the stock-response construction-signal attribution corrective on `c866967f114ce15012d3256e38eebdd1f7e9f6f5` (with the Plan-237-stats extract committed as `685a59f` and counted attempts run on that head; see `plans/closure/mixed-router-interop/245-status.md`). Three counted same-SHA executions of the frozen Plan-242 Streaming lane established Direction A 3/3 with fully bound response epochs, and the Stage A.0 classifier proved the scheduler reschedule-only branch on every attempt with identical deltas (`scheduler_delta=1`, `scheduler_send_branch_delta=0`, `scheduler_reschedule_branch_delta=1`, `receiver_packet_built_delta=0`, `connection_resend_timer_delta=0`, failures zero). The Plan-244 `Resend in` retransmit-timer proxy was **not** a false negative on this lane — construction genuinely did not occur because the scheduler rescheduled before the response window opened. Plan 245 §17 authorizes a new narrow-timer/state-attribution plan-of-record to own the bounded investigation into why `con.getNextSendTime() - _context.clock().now() > 0` holds for the frozen 45-second response window on every counted attempt.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure (now pending the Plan-245 successor-narrow-timer/state-attribution + publication / final-closure axis; no double unblock).
+
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan245-successor-narrow-timer-state-attribution
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+plan_245 = passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary
+milestone10_final_acceptance = closed
+next_executable_plan = none-pending-successor-narrow-timer-state-attribution
+
 # Current dependency amendment — Plan 245 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.

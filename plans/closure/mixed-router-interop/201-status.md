@@ -1,3 +1,38 @@
+# Current dependency amendment — Plan 245 closed at scheduler-rescheduled; narrow timer/state attribution successor pending
+
+Plan 245 is closed as
+`passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary`
+(see `plans/closure/mixed-router-interop/245-status.md`). On the
+implementation SHA `c866967f114ce15012d3256e38eebdd1f7e9f6f5` (with
+the Plan-237-stats extract committed as `685a59f` and counted
+attempts run on that head), three counted same-SHA executions of the
+frozen Plan-242 Streaming lane established Direction A 3/3 with fully
+bound response epochs, and the Stage A.0 classifier proved the
+scheduler reschedule-only branch on every attempt with identical
+deltas:
+`scheduler_delta=1`, `scheduler_send_branch_delta=0`,
+`scheduler_reschedule_branch_delta=1`,
+`scheduler_no_unacked_delta=0`,
+`message_output_flush_nonempty_delta=0`,
+`receiver_do_send_false_delta=0`,
+`receiver_packet_built_delta=0`,
+`connection_resend_timer_delta=0`, failures zero. The Plan-244
+`Resend in` retransmit-timer proxy was **not** a false negative on
+this lane — construction genuinely did not occur because the
+scheduler rescheduled before the response window opened. Plan-244
+execution evidence is preserved verbatim (Plan 245 §1 does not
+rewrite history); Plan 245 §17 authorizes a new
+narrow-timer/state-attribution plan-of-record to own the bounded
+investigation into why
+`con.getNextSendTime() - _context.clock().now() > 0` holds for the
+frozen 45-second response window on every counted attempt. The
+publication / final-closure axis remains independently unresolved.
+
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan245-successor-narrow-timer-state-attribution
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+plan_245 = passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary
+next_executable_plan = none-pending-successor-narrow-timer-state-attribution
+
 # Current dependency amendment — Plan 245 registered for stock-response construction-signal attribution
 
 Plan 244 is closed as `passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary`.
