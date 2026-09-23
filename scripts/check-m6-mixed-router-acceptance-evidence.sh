@@ -5201,8 +5201,179 @@ if [[ ! -f "${P243_CLOSURE}" ]]; then
   failures=$((failures + 1))
 fi
 
+# ---- 33. Plan 244 continuous response attribution --------------------------
+# Plan 244 correlates the retained Plan-237/238/239/240 observers in one
+# response epoch and stops at the first real Java→i2pr boundary. The
+# checker enforces the §16 unit surface, the canonical terminal
+# vocabulary, the historical-token rule (the P236 gap token never
+# governs), the epoch/delta/correlation vocabulary, the production-
+# surface guard, the plan invariants, and the read-only harness row.
+P244_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P244_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+P244_PLAN="${REPO_ROOT}/plans/implementation/mixed-router-interop/244-m6-java-streaming-reverse-direction-continuous-response-attribution.md"
+P244_CLOSURE="${REPO_ROOT}/plans/closure/mixed-router-interop/244-status.md"
+if [[ -f "${P244_DRIVER_TEST}" ]]; then
+  # 33a. The Plan 244 unit rows: the 18 §16 named rows plus arm coverage.
+  for unit_row in \
+    p244_p236_token_is_historical_when_deeper_observers_exist \
+    p244_response_epoch_binds_all_observers \
+    p244_destination_epoch_cannot_satisfy_streaming_epoch \
+    p244_sendmessage_precedes_router_a_admission \
+    p244_router_a_admission_precedes_lookup \
+    p244_lookup_requires_exact_streaming_job \
+    p244_totry_is_not_query_dispatch \
+    p244_nonzero_pool_zero_hop_selection_is_contradiction \
+    p244_b_query_precedes_b_receipt \
+    p244_b_receipt_precedes_b_answer \
+    p244_b_answer_precedes_client_dsm \
+    p244_client_dsm_precedes_subdb_install \
+    p244_subdb_install_precedes_lookup_success \
+    p244_lookup_success_precedes_ocmosj_dispatch \
+    p244_dispatch_precedes_i2pr_reverse_tunneldata \
+    p244_i2pr_defect_requires_exact_reverse_tunneldata \
+    p244_reverse_pass_does_not_close_publication_axis \
+    p244_no_production_change_without_owned_boundary \
+    p244_stage_arm_coverage; do
+    if ! grep -q "fn ${unit_row}" "${P244_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P244_DRIVER_TEST} lacks Plan 244 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 33b. The canonical Plan 244 terminal vocabulary (§§5–12).
+  for terminal in \
+    'P244-A-HOSTED-LANE-NOT-REACHED' \
+    'P244-A-DIRECTION-A-NOT-ESTABLISHED' \
+    'P244-B-SCHEDULER-NOT-OBSERVED' \
+    'P244-B-RESPONSE-PACKET-NOT-CONSTRUCTED' \
+    'P244-B-SENDMESSAGE-NOT-RETURNED' \
+    'P244-B-SENDMESSAGE-FAILED' \
+    'P244-C-ROUTER-A-I2CP-NOT-ADMITTED' \
+    'P244-C-TARGET-LOOKUP-NOT-CORRELATED' \
+    'P244-D-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION' \
+    'P244-D-B-IP-DIVERSITY-SKIPPED' \
+    'P244-D-B-OLD-OR-UNSUPPORTED-ROUTER' \
+    'P244-D-B-NO-OUTBOUND-LOOKUP-TUNNEL' \
+    'P244-D-B-NO-INBOUND-CLIENT-REPLY-TUNNEL' \
+    'P244-D-B-NO-COMPATIBLE-REPLY-ENCRYPTION' \
+    'P244-D-B-ZERO-HOP-SELF-LOOKUP' \
+    'P244-D-B-ENCRYPTED-LOOKUP-PREP-FAILED' \
+    'P244-E-B-LOOKUP-NOT-RECEIVED' \
+    'P244-E-B-TARGET-LS-NOT-QUERY-ANSWERABLE' \
+    'P244-E-B-ANSWER-NOT-EMITTED' \
+    'P244-E-A-CLIENT-DSM-NOT-RECEIVED' \
+    'P244-E-A-CLIENT-SUBDB-NOT-INSTALLED' \
+    'P244-F-NO-USABLE-TARGET-LEASE' \
+    'P244-F-NO-OUTBOUND-RESPONSE-TUNNEL' \
+    'P244-F-GARLIC-PREP-FAILED' \
+    'P244-F-DISPATCH-OUTBOUND-NOT-OBSERVED' \
+    'P244-F-OUTBOUND-GATEWAY-NOT-ENQUEUED' \
+    'P244-F-TRANSIT-NOT-PROCESSED' \
+    'P244-F-TARGET-IBGW-NOT-INSTALLED' \
+    'P244-F-TARGET-IBGW-NO-DISPATCH' \
+    'P244-G-I2PR-NO-EXPECTED-REVERSE-TUNNELDATA' \
+    'P244-G-I2PR-REVERSE-TUNNEL-RECOVERY-FAILED' \
+    'P244-G-I2PR-REVERSE-GARLIC-DECODE-FAILED' \
+    'P244-G-I2PR-REVERSE-STREAMING-ADAPTER-FAILED' \
+    'P244-G-REVERSE-DIRECTION-ESTABLISHED'; do
+    if ! grep -q -F "${terminal}" "${P244_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P244_DRIVER_TEST} lacks Plan 244 terminal '${terminal}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 33c. The Plan 244 ranges (live correlation + module) never read the
+  # historical classifier, never use the tunnel-handoff counter as
+  # dispatch proof, and never fail open — while keeping the
+  # epoch/delta/correlation vocabulary (deltas, never absolutes).
+  p244_section="$(awk '/Plan 244 .*\(begin\)\./{flag=1} flag{print} /Plan 244 .*\(end\)\./{flag=0}' "${P244_DRIVER_TEST}")"
+  if [[ -z "${p244_section}" ]]; then
+    echo "m6 mixed-router evidence check failed: ${P244_DRIVER_TEST} lacks delimited Plan 244 ranges" >&2
+    failures=$((failures + 1))
+  else
+    for forbidden in \
+      'P236Terminal' \
+      'p236_terminal' \
+      'p236_state' \
+      'record_p236' \
+      'p236_classify' \
+      'p236_parse' \
+      'dispatch_outbound_tunnel' \
+      '|| true'; do
+      if grep -q -F "${forbidden}" <<<"${p244_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 244 range carries forbidden surface '${forbidden}' (Plan 244 §15)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    for required in \
+      'scheduler_delta' \
+      'distribute_delta' \
+      'found_remote_delta' \
+      'failed_remote_delta' \
+      'streaming_job_correlated' \
+      'b_query_dispatched' \
+      'a_subdb_installed' \
+      'observers_same_epoch' \
+      'epoch_bound'; do
+      if ! grep -q -F "${required}" <<<"${p244_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 244 range lacks required vocabulary '${required}' (Plan 244 §15)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+  # 33d. Production Rust stays free of P244 surface (mirrors Plan 243
+  # §32d). The checker scans the same production source roots.
+  if grep -rq -F 'P244' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 244 surface" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -rq -F 'p244' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 244 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P244_HARNESS}" ]]; then
+  # 33e. The harness carries the read-only Plan 244 rows keyed on the
+  # driver TSV (diagnostic observation, always passed when present) and
+  # never invents a terminal literal.
+  for required in \
+    'external-p244-classification' \
+    'p244-epoch-binding' \
+    'p244-stage-summary'; do
+    if ! grep -q -F "${required}" "${P244_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P244_HARNESS} lacks Plan 244 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P244-" "${P244_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P244_HARNESS} invents a Plan 244 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P244_PLAN}" ]]; then
+  # 33f. The implementation plan keeps the §§3/6/12/17 invariants in its
+  # own text (defense in depth against silent drift).
+  for required in \
+    'earliest missing stage among the deepest trustworthy same-epoch observers' \
+    'three counted attempts' \
+    'No production i2pr change is introduced before exact reverse TunnelData' \
+    'P244-G-REVERSE-DIRECTION-ESTABLISHED' \
+    'P244-D-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION' \
+    'Do not fold new publication corrections into Plan 244'; do
+    if ! grep -q -F "${required}" "${P244_PLAN}"; then
+      echo "m6 mixed-router evidence check failed: ${P244_PLAN} lost Plan 244 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The Plan 244 closure record is required for the registry/roadmap
+# unblock audit; its presence is asserted here (the registration stub
+# satisfies this before closure lands, the full record after).
+if [[ ! -f "${P244_CLOSURE}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 244 closure record ${P244_CLOSURE}" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants)"

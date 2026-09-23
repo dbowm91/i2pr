@@ -10645,7 +10645,12 @@ async fn streaming_through_java() {
         p239_post.clone(),
         &p234_epoch,
     );
-    record_p239_dispatch_epoch(&evidence_dir, p239_pre, p239_post, p239_terminal);
+    record_p239_dispatch_epoch(
+        &evidence_dir,
+        p239_pre.clone(),
+        p239_post.clone(),
+        p239_terminal,
+    );
     // Plan 240 §6–§11 — streaming-epoch target-LeaseSet lookup-failure
     // attribution. Reuses the retained P224/P225/P226 surfaces bound to
     // the exact streaming target job (helper DBID + target hash + ISJ job
@@ -10967,6 +10972,147 @@ async fn streaming_through_java() {
         &p241_inputs,
         &p239_target_hex,
     );
+    // Plan 244 §17 — continuous response attribution (read-only
+    // correlation of the retained Plan-237/238/239/240 observers in this
+    // same response epoch). No new probes, no timing/topology change:
+    // every fact below was already collected above. The historical P236
+    // token is never read here; the earliest missing same-epoch stage
+    // governs. Recorded before the retained P236/P235/P234 lane stops
+    // so the attribution survives whichever stop fires.
+    // Plan 244 §17 live correlation (begin).
+    let p244_direction_a = p234_terminal == P234Terminal::DirectionAEstablished
+        && p235_terminal == P235Terminal::JavaStreamingPassed;
+    let p244_binding = P244EpochBinding {
+        helper_dbid_hex: p239_client_hex.clone(),
+        target_hash_hex: p239_target_hex.clone(),
+        epoch_id: "streaming-response".to_owned(),
+        direction_a_established: p244_direction_a,
+        // Every probe in this invocation is scoped to the same
+        // (helper DBID, target) pair except the P241 pool re-query,
+        // which carries its own DBID provenance. A mismatch means the
+        // observers do not share one epoch, so the epoch is unbound.
+        observers_same_epoch: p241_client_hex == p239_client_hex,
+    };
+    let (p244_a_isolatable, p244_a_deltas) = match (p237_pre, p237_post) {
+        (Some(pre), Some(post)) => (true, p237_deltas(&pre, &post)),
+        _ => (false, P237Deltas::default()),
+    };
+    let p244_stage_a = P244StageA {
+        isolatable: p244_a_isolatable,
+        scheduler_delta: p244_a_deltas.scheduler_delta,
+        ack_delta: p244_a_deltas.ack_delta,
+        sendmessage_delta: p244_a_deltas.sendmessage_delta,
+        failure_delta: p244_a_deltas.send_failure_delta,
+        exception_delta: p244_a_deltas.send_exception_delta,
+    };
+    let (p244_distribute, p244_dispatch, p244_dispatch_send) = match (p238_pre, p238_post) {
+        (Some(pre), Some(post)) => {
+            let deltas = p238_deltas(&pre, &post);
+            (
+                deltas.distribute_delta,
+                deltas.dispatch_delta,
+                deltas.dispatch_send_delta,
+            )
+        }
+        _ => (None, None, None),
+    };
+    let (p244_local_path, p244_found, p244_failed, p244_prepare_ok, p244_dispatch_ok) =
+        match (p239_pre.as_ref(), p239_post.as_ref()) {
+            (Some(pre), Some(post)) => {
+                let deltas = p239_deltas(pre, post);
+                (
+                    p239_local_leaseset_path(pre) || p239_local_leaseset_path(post),
+                    deltas.found_remote_delta,
+                    deltas.failed_remote_delta,
+                    deltas.prepare_delta.is_some_and(|delta| delta > 0),
+                    p239_dispatch_proven(&deltas),
+                )
+            }
+            _ => (false, None, None, false, false),
+        };
+    let p244_stage_b = P244StageB {
+        distribute_delta: p244_distribute,
+        dispatch_delta: p244_dispatch,
+        dispatch_send_delta: p244_dispatch_send,
+        local_target_ls_path: p244_local_path,
+        found_remote_delta: p244_found,
+        failed_remote_delta: p244_failed,
+    };
+    let p244_pool_authoritative = p241_pool
+        .as_ref()
+        .is_some_and(p244_pool_nonzero_authoritative);
+    let p244_stage_c = P244StageC {
+        streaming_job_correlated: p240_inputs.streaming_job_correlated,
+        b_in_totry: p240_inputs.b_in_totry,
+        pool_authoritative_nonzero_only: p244_pool_authoritative,
+        zero_hop_selected: p240_inputs.b_zero_hop_self || p240_inputs.b_zero_hop_unknown,
+        zero_hop_self: p240_inputs.b_zero_hop_self,
+        zero_hop_unknown: p240_inputs.b_zero_hop_unknown,
+        ip_close_skipped: p240_inputs.b_ip_close_skipped,
+        old_router_rejected: p240_inputs.b_old_router_rejected,
+        no_outbound_tunnel: p240_inputs.b_no_outbound_tunnel,
+        no_ib_client_tunnel: p240_inputs.b_no_ib_client_tunnel,
+        no_reply_crypto: p240_inputs.b_no_reply_crypto,
+        encrypted_prep_failed: p240_inputs.b_encrypted_prep_failed,
+        b_query_dispatched: p240_inputs.b_query_dispatched,
+    };
+    let p244_stage_d = P244StageD {
+        b_lookup_received: p240_inputs.b_lookup_received,
+        b_target_answerable: p240_inputs.b_target_answerable,
+        b_answered: p240_inputs.b_answered,
+        a_dsm_received: p240_inputs.a_dsm_received,
+        a_subdb_installed: p240_inputs.a_subdb_installed,
+    };
+    let (p244_usable_lease, p244_ob_tunnel) = match p239_post.as_ref() {
+        Some(post) => (
+            p239_local_leaseset_path(post),
+            post.outbound_tunnel_count > 0,
+        ),
+        None => (false, false),
+    };
+    let p244_stage_e = P244StageE {
+        usable_target_lease: p244_usable_lease,
+        outbound_response_tunnel_selected: p244_ob_tunnel,
+        garlic_prepared: p244_prepare_ok,
+        dispatch_outbound_observed: p244_dispatch_ok,
+        // No live probe observes the Router-A outbound gateway, transit
+        // processing, or the route-derived target IBGW for the reverse
+        // path in this lane; a successor owns those stages (§20). False
+        // is Unknown here, and the classifier stops at the earliest
+        // such stage only if lookup succeeds first (never live).
+        outbound_gateway_enqueued: false,
+        transit_processed: false,
+        target_ibgw_installed: false,
+        target_ibgw_dispatched: false,
+    };
+    // No live probe observes i2pr inbound for the reverse direction in
+    // this lane (the P234 epoch counters measure Direction A). Stage F
+    // is therefore unit-locked; reaching it live would stop at the
+    // first G terminal, and production change stays forbidden (§12).
+    let p244_stage_f = P244StageF {
+        expected_reverse_tunneldata: false,
+        reverse_recovery_ok: false,
+        reverse_garlic_ok: false,
+        reverse_adapter_ok: false,
+        reverse_payload_match: false,
+    };
+    let p244_stages = P244Stages {
+        a: p244_stage_a,
+        b: p244_stage_b,
+        c: p244_stage_c,
+        d: p244_stage_d,
+        e: p244_stage_e,
+        f: p244_stage_f,
+    };
+    let p244_terminal = p244_classify(P244LaneEntry::ResponseEpoch, &p244_binding, &p244_stages);
+    record_p244_classification(
+        &evidence_dir,
+        &p244_binding,
+        &p244_stages,
+        p244_terminal,
+        &p241_client_hex,
+    );
+    // Plan 244 §17 live correlation (end).
     if p236_terminal != P236Terminal::DirectionAEstablished {
         record_stop(
             &evidence_dir,
@@ -24915,3 +25061,1287 @@ fn p243_no_publication_corrective() {
     .concat();
     assert!(plan.contains(&token), "{}", msg);
 }
+
+// ============================================================================
+// Plan 244 — M6 Java Streaming reverse-direction continuous response attribution
+//
+// Plan 244 correlates the retained Plan-237/238/239/240 observers in one
+// continuous hosted response epoch and stops at the first real Java → i2pr
+// boundary. The historical P236 response-emission gap token is historical
+// classifier output only: no function below reads it, and the checker
+// rejects any future reference to the P236 classifier inputs in this
+// section. The authoritative rule is the earliest missing stage among the
+// deepest trustworthy same-epoch observers (Plan 244 §3).
+//
+// Orchestration/correlation only: no new probes, no Java change, no
+// topology/profile/publication/timing change, no production Rust change.
+// Only same-epoch deltas and correlated IDs satisfy a stage; absolutes,
+// destination-lane jobs, and toTry membership never do. The tunnel-handoff
+// counter is context only and never satisfies dispatch. Stage E
+// gateway/transit/IBGW facts and Stage F reverse-direction i2pr facts have
+// no live probe in this lane, so those arms are unit-locked for the §20
+// successor; the live driver wires them as Unknown (false).
+// ============================================================================
+// Plan 244 continuous response attribution (begin).
+
+/// Plan 244 §5 lane entry. Attempts that never reach the hosted streaming
+/// lane cannot attribute the reverse direction; they stop here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P244LaneEntry {
+    HelperHandshakeFailed,
+    NonZeroPairFailed,
+    ResponseEpoch,
+}
+
+/// Plan 244 §6 response-epoch binding. Every retained observer must own the
+/// same epoch: helper DBID + target hash + epoch id. Only same-epoch
+/// deltas and correlated IDs may satisfy a stage.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct P244EpochBinding {
+    helper_dbid_hex: String,
+    target_hash_hex: String,
+    epoch_id: String,
+    direction_a_established: bool,
+    observers_same_epoch: bool,
+}
+
+/// The binding holds only when every observer shares one epoch. A mixed
+/// epoch is not a response epoch, so the classifier cannot start reverse
+/// attribution from it (fail-closed at the Direction-A gate terminal).
+fn p244_epoch_bound(binding: &P244EpochBinding) -> bool {
+    binding.observers_same_epoch
+        && binding.helper_dbid_hex.len() == 64
+        && binding.target_hash_hex.len() == 64
+        && !binding.epoch_id.is_empty()
+}
+
+/// Plan 244 §7 stock-Java response-emission facts (same-epoch deltas from
+/// the retained Plan-237 observer).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageA {
+    isolatable: bool,
+    scheduler_delta: u64,
+    ack_delta: u64,
+    sendmessage_delta: u64,
+    failure_delta: u64,
+    exception_delta: u64,
+}
+
+/// Plan 244 §8 Router-A admission/lookup facts (same-epoch deltas from the
+/// retained Plan-238/239 observers). Unknown (`None`) is never admission
+/// or lookup activity as fact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageB {
+    distribute_delta: Option<u64>,
+    dispatch_delta: Option<u64>,
+    dispatch_send_delta: Option<u64>,
+    local_target_ls_path: bool,
+    found_remote_delta: Option<u64>,
+    failed_remote_delta: Option<u64>,
+}
+
+/// Plan 244 §9 exact Streaming job / Router-B query facts (retained
+/// Plan-240 correlation plus the Plan-242 non-zero pool authority at the
+/// lookup epoch).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageC {
+    streaming_job_correlated: bool,
+    b_in_totry: Option<bool>,
+    pool_authoritative_nonzero_only: bool,
+    zero_hop_selected: bool,
+    zero_hop_self: bool,
+    zero_hop_unknown: bool,
+    ip_close_skipped: bool,
+    old_router_rejected: bool,
+    no_outbound_tunnel: bool,
+    no_ib_client_tunnel: bool,
+    no_reply_crypto: bool,
+    encrypted_prep_failed: bool,
+    b_query_dispatched: bool,
+}
+
+/// Plan 244 §10 lookup-reply / client-subDB facts (retained Plan-240
+/// post-query trace, evaluated strictly in order).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageD {
+    b_lookup_received: bool,
+    b_target_answerable: Option<bool>,
+    b_answered: bool,
+    a_dsm_received: bool,
+    a_subdb_installed: Option<bool>,
+}
+
+/// Plan 244 §11 OCMOSJ dispatch-to-reverse-tunnel facts (retained
+/// Plan-239/231 ordering; gateway/transit/IBGW have no live probe yet).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageE {
+    usable_target_lease: bool,
+    outbound_response_tunnel_selected: bool,
+    garlic_prepared: bool,
+    dispatch_outbound_observed: bool,
+    outbound_gateway_enqueued: bool,
+    transit_processed: bool,
+    target_ibgw_installed: bool,
+    target_ibgw_dispatched: bool,
+}
+
+/// Plan 244 §12 exact i2pr reverse-delivery facts. No live probe observes
+/// i2pr inbound for the reverse direction in this lane, so live stages
+/// stay Unknown (false); only exact expected reverse TunnelData may ever
+/// authorize a production corrective.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244StageF {
+    expected_reverse_tunneldata: bool,
+    reverse_recovery_ok: bool,
+    reverse_garlic_ok: bool,
+    reverse_adapter_ok: bool,
+    reverse_payload_match: bool,
+}
+
+/// All Plan 244 stages bundled so the ordered classifier takes one value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P244Stages {
+    a: P244StageA,
+    b: P244StageB,
+    c: P244StageC,
+    d: P244StageD,
+    e: P244StageE,
+    f: P244StageF,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P244Terminal {
+    HostedLaneNotReachedHandshake,
+    HostedLaneNotReachedPair,
+    DirectionANotEstablished,
+    SchedulerNotObserved,
+    ResponsePacketNotConstructed,
+    SendmessageNotReturned,
+    SendmessageFailed,
+    RouterAI2cpNotAdmitted,
+    TargetLookupNotCorrelated,
+    LookupZeroHopContradiction,
+    BIpDiversitySkipped,
+    BOldOrUnsupportedRouter,
+    BNoOutboundLookupTunnel,
+    BNoInboundClientReplyTunnel,
+    BNoCompatibleReplyEncryption,
+    BZeroHopSelfLookup,
+    BEncryptedLookupPrepFailed,
+    BLookupNotReceived,
+    BTargetLsNotQueryAnswerable,
+    BAnswerNotEmitted,
+    AClientDsmNotReceived,
+    AClientSubdbNotInstalled,
+    NoUsableTargetLease,
+    NoOutboundResponseTunnel,
+    GarlicPrepFailed,
+    DispatchOutboundNotObserved,
+    OutboundGatewayNotEnqueued,
+    TransitNotProcessed,
+    TargetIbgwNotInstalled,
+    TargetIbgwNoDispatch,
+    I2prNoExpectedReverseTunneldata,
+    I2prReverseRecoveryFailed,
+    I2prReverseGarlicDecodeFailed,
+    I2prReverseStreamingAdapterFailed,
+    ReverseDirectionEstablished,
+}
+
+impl P244Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::HostedLaneNotReachedHandshake => {
+                "P244-A-HOSTED-LANE-NOT-REACHED reason=helper-handshake"
+            }
+            Self::HostedLaneNotReachedPair => "P244-A-HOSTED-LANE-NOT-REACHED reason=nonzero-pair",
+            Self::DirectionANotEstablished => "P244-A-DIRECTION-A-NOT-ESTABLISHED",
+            Self::SchedulerNotObserved => "P244-B-SCHEDULER-NOT-OBSERVED",
+            Self::ResponsePacketNotConstructed => "P244-B-RESPONSE-PACKET-NOT-CONSTRUCTED",
+            Self::SendmessageNotReturned => "P244-B-SENDMESSAGE-NOT-RETURNED",
+            Self::SendmessageFailed => "P244-B-SENDMESSAGE-FAILED",
+            Self::RouterAI2cpNotAdmitted => "P244-C-ROUTER-A-I2CP-NOT-ADMITTED",
+            Self::TargetLookupNotCorrelated => "P244-C-TARGET-LOOKUP-NOT-CORRELATED",
+            Self::LookupZeroHopContradiction => "P244-D-LOOKUP-ZERO-HOP-SELECTION-CONTRADICTION",
+            Self::BIpDiversitySkipped => "P244-D-B-IP-DIVERSITY-SKIPPED",
+            Self::BOldOrUnsupportedRouter => "P244-D-B-OLD-OR-UNSUPPORTED-ROUTER",
+            Self::BNoOutboundLookupTunnel => "P244-D-B-NO-OUTBOUND-LOOKUP-TUNNEL",
+            Self::BNoInboundClientReplyTunnel => "P244-D-B-NO-INBOUND-CLIENT-REPLY-TUNNEL",
+            Self::BNoCompatibleReplyEncryption => "P244-D-B-NO-COMPATIBLE-REPLY-ENCRYPTION",
+            Self::BZeroHopSelfLookup => "P244-D-B-ZERO-HOP-SELF-LOOKUP",
+            Self::BEncryptedLookupPrepFailed => "P244-D-B-ENCRYPTED-LOOKUP-PREP-FAILED",
+            Self::BLookupNotReceived => "P244-E-B-LOOKUP-NOT-RECEIVED",
+            Self::BTargetLsNotQueryAnswerable => "P244-E-B-TARGET-LS-NOT-QUERY-ANSWERABLE",
+            Self::BAnswerNotEmitted => "P244-E-B-ANSWER-NOT-EMITTED",
+            Self::AClientDsmNotReceived => "P244-E-A-CLIENT-DSM-NOT-RECEIVED",
+            Self::AClientSubdbNotInstalled => "P244-E-A-CLIENT-SUBDB-NOT-INSTALLED",
+            Self::NoUsableTargetLease => "P244-F-NO-USABLE-TARGET-LEASE",
+            Self::NoOutboundResponseTunnel => "P244-F-NO-OUTBOUND-RESPONSE-TUNNEL",
+            Self::GarlicPrepFailed => "P244-F-GARLIC-PREP-FAILED",
+            Self::DispatchOutboundNotObserved => "P244-F-DISPATCH-OUTBOUND-NOT-OBSERVED",
+            Self::OutboundGatewayNotEnqueued => "P244-F-OUTBOUND-GATEWAY-NOT-ENQUEUED",
+            Self::TransitNotProcessed => "P244-F-TRANSIT-NOT-PROCESSED",
+            Self::TargetIbgwNotInstalled => "P244-F-TARGET-IBGW-NOT-INSTALLED",
+            Self::TargetIbgwNoDispatch => "P244-F-TARGET-IBGW-NO-DISPATCH",
+            Self::I2prNoExpectedReverseTunneldata => "P244-G-I2PR-NO-EXPECTED-REVERSE-TUNNELDATA",
+            Self::I2prReverseRecoveryFailed => "P244-G-I2PR-REVERSE-TUNNEL-RECOVERY-FAILED",
+            Self::I2prReverseGarlicDecodeFailed => "P244-G-I2PR-REVERSE-GARLIC-DECODE-FAILED",
+            Self::I2prReverseStreamingAdapterFailed => {
+                "P244-G-I2PR-REVERSE-STREAMING-ADAPTER-FAILED"
+            }
+            Self::ReverseDirectionEstablished => "P244-G-REVERSE-DIRECTION-ESTABLISHED",
+        }
+    }
+}
+
+/// Plan 244 §9: the Plan-242 §7 non-zero pair gate re-evaluated at the
+/// lookup epoch. Only a genuinely installed non-zero-only client pool is
+/// authoritative; the exact-via-C diagnostic never feeds this predicate.
+fn p244_pool_nonzero_authoritative(pool: &P227Tunnels) -> bool {
+    pool.observable
+        && pool.client_resolved
+        && pool.inbound_pool_present
+        && pool.outbound_pool_present
+        && pool.inbound_tunnel_count >= 1
+        && pool.outbound_tunnel_count >= 1
+        && !pool.inbound_zero_hop_present
+        && !pool.outbound_zero_hop_present
+}
+
+/// Detail reason for the `P244-C-TARGET-LOOKUP-NOT-CORRELATED` terminal,
+/// evaluated in classifier order so the record names the earliest
+/// uncorrelated stage without duplicating classifier logic.
+fn p244_not_correlated_reason(stage_b: &P244StageB, stage_c: &P244StageC) -> &'static str {
+    let dispatch_active = stage_b.dispatch_delta.is_some_and(|delta| delta > 0)
+        || stage_b.dispatch_send_delta.is_some_and(|delta| delta > 0);
+    let remote_active = stage_b.found_remote_delta.is_some_and(|delta| delta > 0)
+        || stage_b.failed_remote_delta.is_some_and(|delta| delta > 0);
+    if !(dispatch_active || stage_b.local_target_ls_path || remote_active) {
+        return "reason=lookup-not-started";
+    }
+    if !stage_c.streaming_job_correlated {
+        return "reason=streaming-job-not-correlated";
+    }
+    if stage_c.b_in_totry != Some(true) {
+        return "reason=b-not-in-initial-selection";
+    }
+    if stage_c.zero_hop_unknown && !stage_c.pool_authoritative_nonzero_only {
+        return "reason=zero-hop-without-pool-authority";
+    }
+    "reason=query-not-dispatched"
+}
+
+/// Plan 244 §5–§12 ordered classifier. Stages evaluate strictly in order
+/// and the first missing stage governs; no later stage is evaluated after
+/// an earlier missing stage. The historical gap token is not an input.
+fn p244_classify(
+    entry: P244LaneEntry,
+    binding: &P244EpochBinding,
+    stages: &P244Stages,
+) -> P244Terminal {
+    match entry {
+        P244LaneEntry::HelperHandshakeFailed => {
+            return P244Terminal::HostedLaneNotReachedHandshake;
+        }
+        P244LaneEntry::NonZeroPairFailed => return P244Terminal::HostedLaneNotReachedPair,
+        P244LaneEntry::ResponseEpoch => {}
+    }
+    if !binding.direction_a_established || !p244_epoch_bound(binding) {
+        return P244Terminal::DirectionANotEstablished;
+    }
+    // Stage A — stock-Java response emission (§7). Construction precedes
+    // sendMessage: a lifetime-event delta without construction never
+    // advances the epoch, and failures precede any router attribution.
+    let stage_a = &stages.a;
+    if !stage_a.isolatable || stage_a.scheduler_delta == 0 {
+        return P244Terminal::SchedulerNotObserved;
+    }
+    if stage_a.ack_delta == 0 {
+        return P244Terminal::ResponsePacketNotConstructed;
+    }
+    if stage_a.failure_delta > 0 || stage_a.exception_delta > 0 {
+        return P244Terminal::SendmessageFailed;
+    }
+    if stage_a.sendmessage_delta == 0 {
+        return P244Terminal::SendmessageNotReturned;
+    }
+    // Stage B — Router-A admission and lookup start (§8). Unknown
+    // admission is fail-closed (never admitted-as-fact). Dispatch
+    // failure is never inferred here; the exact lookup stage decides.
+    let stage_b = &stages.b;
+    match stage_b.distribute_delta {
+        Some(delta) if delta > 0 => {}
+        _ => return P244Terminal::RouterAI2cpNotAdmitted,
+    }
+    let dispatch_active = stage_b.dispatch_delta.is_some_and(|delta| delta > 0)
+        || stage_b.dispatch_send_delta.is_some_and(|delta| delta > 0);
+    let remote_active = stage_b.found_remote_delta.is_some_and(|delta| delta > 0)
+        || stage_b.failed_remote_delta.is_some_and(|delta| delta > 0);
+    if !(dispatch_active || stage_b.local_target_ls_path || remote_active) {
+        return P244Terminal::TargetLookupNotCorrelated;
+    }
+    // Stage C — exact Streaming job and Router-B query (§9). Only the
+    // exact streaming-target ISJ correlation satisfies this stage;
+    // destination-lane jobs carry a different target and can never do
+    // so. toTry membership never proves query dispatch.
+    let stage_c = &stages.c;
+    if !stage_c.streaming_job_correlated {
+        return P244Terminal::TargetLookupNotCorrelated;
+    }
+    if stage_c.b_in_totry != Some(true) {
+        return P244Terminal::TargetLookupNotCorrelated;
+    }
+    if (stage_c.zero_hop_self || stage_c.zero_hop_unknown)
+        && stage_c.pool_authoritative_nonzero_only
+    {
+        return P244Terminal::LookupZeroHopContradiction;
+    }
+    if stage_c.ip_close_skipped {
+        return P244Terminal::BIpDiversitySkipped;
+    }
+    if stage_c.old_router_rejected {
+        return P244Terminal::BOldOrUnsupportedRouter;
+    }
+    if stage_c.no_outbound_tunnel {
+        return P244Terminal::BNoOutboundLookupTunnel;
+    }
+    if stage_c.no_ib_client_tunnel {
+        return P244Terminal::BNoInboundClientReplyTunnel;
+    }
+    if stage_c.no_reply_crypto {
+        return P244Terminal::BNoCompatibleReplyEncryption;
+    }
+    if stage_c.zero_hop_self {
+        return P244Terminal::BZeroHopSelfLookup;
+    }
+    if stage_c.zero_hop_unknown {
+        return P244Terminal::TargetLookupNotCorrelated;
+    }
+    if stage_c.encrypted_prep_failed {
+        return P244Terminal::BEncryptedLookupPrepFailed;
+    }
+    if !stage_c.b_query_dispatched {
+        return P244Terminal::TargetLookupNotCorrelated;
+    }
+    // Stage D — lookup reply and client-subDB install (§10), strictly in
+    // order. A dispatched query with no B receipt never advances; an
+    // answer never precedes answerability; lookup success requires the
+    // client-subDB target LS presence.
+    let stage_d = &stages.d;
+    if !stage_d.b_lookup_received {
+        return P244Terminal::BLookupNotReceived;
+    }
+    if stage_d.b_target_answerable != Some(true) {
+        return P244Terminal::BTargetLsNotQueryAnswerable;
+    }
+    if !stage_d.b_answered {
+        return P244Terminal::BAnswerNotEmitted;
+    }
+    if !stage_d.a_dsm_received {
+        return P244Terminal::AClientDsmNotReceived;
+    }
+    if stage_d.a_subdb_installed != Some(true) {
+        return P244Terminal::AClientSubdbNotInstalled;
+    }
+    // Stage E — OCMOSJ dispatch to the reverse tunnel (§11), strictly in
+    // order. Only after exact lookup success.
+    let stage_e = &stages.e;
+    if !stage_e.usable_target_lease {
+        return P244Terminal::NoUsableTargetLease;
+    }
+    if !stage_e.outbound_response_tunnel_selected {
+        return P244Terminal::NoOutboundResponseTunnel;
+    }
+    if !stage_e.garlic_prepared {
+        return P244Terminal::GarlicPrepFailed;
+    }
+    if !stage_e.dispatch_outbound_observed {
+        return P244Terminal::DispatchOutboundNotObserved;
+    }
+    if !stage_e.outbound_gateway_enqueued {
+        return P244Terminal::OutboundGatewayNotEnqueued;
+    }
+    if !stage_e.transit_processed {
+        return P244Terminal::TransitNotProcessed;
+    }
+    if !stage_e.target_ibgw_installed {
+        return P244Terminal::TargetIbgwNotInstalled;
+    }
+    if !stage_e.target_ibgw_dispatched {
+        return P244Terminal::TargetIbgwNoDispatch;
+    }
+    // Stage F — exact i2pr reverse delivery (§12). Only exact expected
+    // reverse TunnelData may authorize a production corrective.
+    let stage_f = &stages.f;
+    if !stage_f.expected_reverse_tunneldata {
+        return P244Terminal::I2prNoExpectedReverseTunneldata;
+    }
+    if !stage_f.reverse_recovery_ok {
+        return P244Terminal::I2prReverseRecoveryFailed;
+    }
+    if !stage_f.reverse_garlic_ok {
+        return P244Terminal::I2prReverseGarlicDecodeFailed;
+    }
+    if !stage_f.reverse_adapter_ok || !stage_f.reverse_payload_match {
+        return P244Terminal::I2prReverseStreamingAdapterFailed;
+    }
+    P244Terminal::ReverseDirectionEstablished
+}
+
+/// The exact B-query milestone holds for every terminal at or past the
+/// Stage-D evaluation (the classifier only returns those after the
+/// target DLM dispatches to B).
+fn p244_query_dispatched(terminal: P244Terminal) -> bool {
+    matches!(
+        terminal,
+        P244Terminal::BLookupNotReceived
+            | P244Terminal::BTargetLsNotQueryAnswerable
+            | P244Terminal::BAnswerNotEmitted
+            | P244Terminal::AClientDsmNotReceived
+            | P244Terminal::AClientSubdbNotInstalled
+            | P244Terminal::NoUsableTargetLease
+            | P244Terminal::NoOutboundResponseTunnel
+            | P244Terminal::GarlicPrepFailed
+            | P244Terminal::DispatchOutboundNotObserved
+            | P244Terminal::OutboundGatewayNotEnqueued
+            | P244Terminal::TransitNotProcessed
+            | P244Terminal::TargetIbgwNotInstalled
+            | P244Terminal::TargetIbgwNoDispatch
+            | P244Terminal::I2prNoExpectedReverseTunneldata
+            | P244Terminal::I2prReverseRecoveryFailed
+            | P244Terminal::I2prReverseGarlicDecodeFailed
+            | P244Terminal::I2prReverseStreamingAdapterFailed
+            | P244Terminal::ReverseDirectionEstablished
+    )
+}
+
+/// The exact lookup-success milestone holds for every terminal at or past
+/// the Stage-E evaluation (only after the client subDB installs the
+/// target LS).
+fn p244_lookup_succeeded(terminal: P244Terminal) -> bool {
+    matches!(
+        terminal,
+        P244Terminal::NoUsableTargetLease
+            | P244Terminal::NoOutboundResponseTunnel
+            | P244Terminal::GarlicPrepFailed
+            | P244Terminal::DispatchOutboundNotObserved
+            | P244Terminal::OutboundGatewayNotEnqueued
+            | P244Terminal::TransitNotProcessed
+            | P244Terminal::TargetIbgwNotInstalled
+            | P244Terminal::TargetIbgwNoDispatch
+            | P244Terminal::I2prNoExpectedReverseTunneldata
+            | P244Terminal::I2prReverseRecoveryFailed
+            | P244Terminal::I2prReverseGarlicDecodeFailed
+            | P244Terminal::I2prReverseStreamingAdapterFailed
+            | P244Terminal::ReverseDirectionEstablished
+    )
+}
+
+/// Plan 244 §12 production-change gate. A production i2pr corrective is
+/// authorized only when exact expected reverse TunnelData reaches i2pr
+/// and a specific i2pr-owned stage then fails.
+fn p244_production_change_allowed(
+    production_changed: bool,
+    expected_reverse_tunneldata_seen: bool,
+) -> bool {
+    !production_changed || expected_reverse_tunneldata_seen
+}
+
+fn record_p244_classification(
+    evidence_dir: &Path,
+    binding: &P244EpochBinding,
+    stages: &P244Stages,
+    terminal: P244Terminal,
+    p241_client_hex: &str,
+) {
+    append_evidence(
+        evidence_dir,
+        "p244-epoch-binding",
+        &format!(
+            "helper_dbid_hex={} target_hash_hex={} epoch_id={} direction_a_established={} observers_same_epoch={} epoch_bound={} pool_dbid_provenance={}",
+            binding.helper_dbid_hex,
+            binding.target_hash_hex,
+            binding.epoch_id,
+            binding.direction_a_established,
+            binding.observers_same_epoch,
+            p244_epoch_bound(binding),
+            if p241_client_hex == binding.helper_dbid_hex {
+                "matched"
+            } else {
+                "mismatch"
+            },
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p244-stage-summary",
+        &format!(
+            "isolatable={} scheduler_delta={} ack_delta={} sendmessage_delta={} failure_delta={} exception_delta={} distribute_delta={:?} dispatch_delta={:?} dispatch_send_delta={:?} local_target_ls_path={} found_remote_delta={:?} failed_remote_delta={:?} streaming_job_correlated={} b_in_totry={:?} pool_authoritative_nonzero_only={} zero_hop_selected={} b_query_dispatched={} b_lookup_received={} b_target_answerable={:?} b_answered={} a_dsm_received={} a_subdb_installed={:?}",
+            stages.a.isolatable,
+            stages.a.scheduler_delta,
+            stages.a.ack_delta,
+            stages.a.sendmessage_delta,
+            stages.a.failure_delta,
+            stages.a.exception_delta,
+            stages.b.distribute_delta,
+            stages.b.dispatch_delta,
+            stages.b.dispatch_send_delta,
+            stages.b.local_target_ls_path,
+            stages.b.found_remote_delta,
+            stages.b.failed_remote_delta,
+            stages.c.streaming_job_correlated,
+            stages.c.b_in_totry,
+            stages.c.pool_authoritative_nonzero_only,
+            stages.c.zero_hop_selected,
+            stages.c.b_query_dispatched,
+            stages.d.b_lookup_received,
+            stages.d.b_target_answerable,
+            stages.d.b_answered,
+            stages.d.a_dsm_received,
+            stages.d.a_subdb_installed,
+        ),
+    );
+    let mut detail = String::new();
+    if terminal == P244Terminal::TargetLookupNotCorrelated {
+        detail = format!(" {}", p244_not_correlated_reason(&stages.b, &stages.c));
+    }
+    append_evidence(
+        evidence_dir,
+        "p244-classification",
+        &format!("{}{}", terminal.token(), detail),
+    );
+    if p244_query_dispatched(terminal) {
+        append_evidence(
+            evidence_dir,
+            "p244-b-query-milestone",
+            &format!(
+                "P244-D-B-QUERY-DISPATCHED target_hash_hex={} lookup_terminal={}",
+                binding.target_hash_hex,
+                terminal.token(),
+            ),
+        );
+    }
+    if p244_lookup_succeeded(terminal) {
+        append_evidence(
+            evidence_dir,
+            "p244-lookup-success-milestone",
+            &format!(
+                "P244-E-LOOKUP-SUCCEEDED target_hash_hex={} lookup_terminal={}",
+                binding.target_hash_hex,
+                terminal.token(),
+            ),
+        );
+    }
+}
+
+// ---- Plan 244 §16 focused tests -------------------------------------------
+// Each test pins one precedence or binding rule from the plan. Together
+// with the retained P237–P243 floors they lock the full ordering.
+
+fn p244_test_binding(direction_a: bool, same_epoch: bool) -> P244EpochBinding {
+    P244EpochBinding {
+        helper_dbid_hex: "a".repeat(64),
+        target_hash_hex: "b".repeat(64),
+        epoch_id: "streaming-response".to_owned(),
+        direction_a_established: direction_a,
+        observers_same_epoch: same_epoch,
+    }
+}
+
+fn p244_test_prefix_proven() -> P244Stages {
+    P244Stages {
+        a: P244StageA {
+            isolatable: true,
+            scheduler_delta: 1,
+            ack_delta: 1,
+            sendmessage_delta: 1,
+            failure_delta: 0,
+            exception_delta: 0,
+        },
+        b: P244StageB {
+            distribute_delta: Some(1),
+            dispatch_delta: Some(1),
+            dispatch_send_delta: Some(1),
+            local_target_ls_path: false,
+            found_remote_delta: Some(1),
+            failed_remote_delta: Some(0),
+        },
+        c: P244StageC {
+            streaming_job_correlated: true,
+            b_in_totry: Some(true),
+            pool_authoritative_nonzero_only: true,
+            zero_hop_selected: false,
+            zero_hop_self: false,
+            zero_hop_unknown: false,
+            ip_close_skipped: false,
+            old_router_rejected: false,
+            no_outbound_tunnel: false,
+            no_ib_client_tunnel: false,
+            no_reply_crypto: false,
+            encrypted_prep_failed: false,
+            b_query_dispatched: true,
+        },
+        d: P244StageD {
+            b_lookup_received: true,
+            b_target_answerable: Some(true),
+            b_answered: true,
+            a_dsm_received: true,
+            a_subdb_installed: Some(true),
+        },
+        e: P244StageE {
+            usable_target_lease: true,
+            outbound_response_tunnel_selected: true,
+            garlic_prepared: true,
+            dispatch_outbound_observed: true,
+            outbound_gateway_enqueued: true,
+            transit_processed: true,
+            target_ibgw_installed: true,
+            target_ibgw_dispatched: true,
+        },
+        f: P244StageF {
+            expected_reverse_tunneldata: true,
+            reverse_recovery_ok: true,
+            reverse_garlic_ok: true,
+            reverse_adapter_ok: true,
+            reverse_payload_match: true,
+        },
+    }
+}
+
+#[test]
+fn p244_p236_token_is_historical_when_deeper_observers_exist() {
+    // The classifier takes no historical token as input: a live-like
+    // epoch with scheduler action but no response-packet construction
+    // stops at the exact B terminal, never at the printed gap token.
+    let mut live_like = p244_test_prefix_proven();
+    live_like.a.ack_delta = 0;
+    live_like.a.sendmessage_delta = 1;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &live_like,
+    );
+    assert_eq!(terminal, P244Terminal::ResponsePacketNotConstructed);
+    assert_ne!(
+        terminal.token(),
+        "P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP"
+    );
+    // And a fully proven epoch reaches the reverse-direction terminal,
+    // proving deeper same-epoch observers are never shadowed by history.
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &p244_test_prefix_proven(),
+    );
+    assert_eq!(terminal, P244Terminal::ReverseDirectionEstablished);
+}
+
+#[test]
+fn p244_response_epoch_binds_all_observers() {
+    // Every observer shares helper DBID + target + epoch id.
+    assert!(p244_epoch_bound(&p244_test_binding(true, true)));
+    // Any mismatch unbinds the epoch ...
+    let mut mismatched = p244_test_binding(true, true);
+    mismatched.helper_dbid_hex = "c".repeat(64);
+    mismatched.observers_same_epoch = false;
+    assert!(!p244_epoch_bound(&mismatched));
+    let mut short_target = p244_test_binding(true, true);
+    short_target.target_hash_hex = "abc".to_owned();
+    assert!(!p244_epoch_bound(&short_target));
+    // ... and an unbound epoch cannot start reverse attribution: the
+    // classifier reports the Direction-A gate terminal (fail-closed,
+    // never a reverse claim from mixed epochs).
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &mismatched,
+        &p244_test_prefix_proven(),
+    );
+    assert_eq!(terminal, P244Terminal::DirectionANotEstablished);
+    // Direction A itself is a prerequisite even for a bound epoch.
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(false, true),
+        &p244_test_prefix_proven(),
+    );
+    assert_eq!(terminal, P244Terminal::DirectionANotEstablished);
+}
+
+#[test]
+fn p244_destination_epoch_cannot_satisfy_streaming_epoch() {
+    // Router-A lookup facts without the exact streaming-target ISJ
+    // correlation never satisfy Stage C, even with strong deltas.
+    let mut stages = p244_test_prefix_proven();
+    stages.c.streaming_job_correlated = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::TargetLookupNotCorrelated);
+    assert_eq!(
+        p244_not_correlated_reason(&stages.b, &stages.c),
+        "reason=streaming-job-not-correlated"
+    );
+}
+
+#[test]
+fn p244_sendmessage_precedes_router_a_admission() {
+    // Admission facts without response emission stay at Stage A ...
+    let mut stages = p244_test_prefix_proven();
+    stages.a.ack_delta = 0;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::ResponsePacketNotConstructed);
+    // ... and emission without admission stays at the admission gate.
+    let mut stages = p244_test_prefix_proven();
+    stages.b.distribute_delta = Some(0);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::RouterAI2cpNotAdmitted);
+    // Unknown admission is fail-closed, never admitted-as-fact.
+    stages.b.distribute_delta = None;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::RouterAI2cpNotAdmitted);
+    // An unisolatable epoch proves no scheduler observation.
+    let mut stages = p244_test_prefix_proven();
+    stages.a.isolatable = false;
+    stages.a.scheduler_delta = 0;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::SchedulerNotObserved);
+    // Failures precede any router attribution.
+    let mut stages = p244_test_prefix_proven();
+    stages.a.failure_delta = 1;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::SendmessageFailed);
+    // Construction without return stays at sendMessage.
+    let mut stages = p244_test_prefix_proven();
+    stages.a.sendmessage_delta = 0;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::SendmessageNotReturned);
+}
+
+#[test]
+fn p244_router_a_admission_precedes_lookup() {
+    // Strong lookup facts without admission stay at the admission gate:
+    // lookup activity never satisfies admission.
+    let mut stages = p244_test_prefix_proven();
+    stages.b.distribute_delta = Some(0);
+    stages.b.dispatch_delta = Some(2);
+    stages.b.dispatch_send_delta = Some(2);
+    stages.b.local_target_ls_path = true;
+    stages.b.found_remote_delta = Some(3);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::RouterAI2cpNotAdmitted);
+}
+
+#[test]
+fn p244_lookup_requires_exact_streaming_job() {
+    // Admitted with lookup activity but no exact streaming ISJ stays at
+    // the lookup-correlation gate.
+    let mut stages = p244_test_prefix_proven();
+    stages.c.streaming_job_correlated = false;
+    stages.c.b_in_totry = Some(true);
+    stages.c.b_query_dispatched = true;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::TargetLookupNotCorrelated);
+}
+
+#[test]
+fn p244_totry_is_not_query_dispatch() {
+    // B in the initial selection without a dispatched query never
+    // proves dispatch; the epoch stays uncorrelated.
+    let mut stages = p244_test_prefix_proven();
+    stages.c.b_query_dispatched = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::TargetLookupNotCorrelated);
+    assert_eq!(
+        p244_not_correlated_reason(&stages.b, &stages.c),
+        "reason=query-not-dispatched"
+    );
+    // B absent from the initial selection is uncorrelated even when the
+    // rest of the job context is exact.
+    stages.c.b_in_totry = Some(false);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::TargetLookupNotCorrelated);
+}
+
+#[test]
+fn p244_nonzero_pool_zero_hop_selection_is_contradiction() {
+    // A zero-hop selection under an authoritative non-zero-only client
+    // pool is a contradiction, not a guard skip.
+    let mut stages = p244_test_prefix_proven();
+    stages.c.zero_hop_selected = true;
+    stages.c.zero_hop_unknown = true;
+    stages.c.pool_authoritative_nonzero_only = true;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::LookupZeroHopContradiction);
+    // Without pool authority the same selection is not a contradiction.
+    stages.c.pool_authoritative_nonzero_only = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_ne!(terminal, P244Terminal::LookupZeroHopContradiction);
+    assert_eq!(terminal, P244Terminal::TargetLookupNotCorrelated);
+    // The pool-authority predicate requires genuinely installed
+    // non-zero pools in both directions with zero-hop absent.
+    let authoritative = P227Tunnels {
+        observable: true,
+        client_resolved: true,
+        inbound_pool_present: true,
+        outbound_pool_present: true,
+        inbound_tunnel_count: 1,
+        outbound_tunnel_count: 1,
+        inbound_exact_one_remote_hop_via_c: false,
+        outbound_exact_one_remote_hop_via_c: true,
+        inbound_zero_hop_present: false,
+        outbound_zero_hop_present: false,
+    };
+    assert!(p244_pool_nonzero_authoritative(&authoritative));
+    let zero_hop = P227Tunnels {
+        outbound_zero_hop_present: true,
+        ..authoritative.clone()
+    };
+    assert!(!p244_pool_nonzero_authoritative(&zero_hop));
+    let unobserved = P227Tunnels {
+        observable: false,
+        ..authoritative.clone()
+    };
+    assert!(!p244_pool_nonzero_authoritative(&unobserved));
+}
+
+#[test]
+fn p244_b_query_precedes_b_receipt() {
+    let mut stages = p244_test_prefix_proven();
+    stages.d.b_lookup_received = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::BLookupNotReceived);
+    assert!(p244_query_dispatched(terminal));
+}
+
+#[test]
+fn p244_b_receipt_precedes_b_answer() {
+    let mut stages = p244_test_prefix_proven();
+    stages.d.b_target_answerable = Some(false);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::BTargetLsNotQueryAnswerable);
+    stages.d.b_target_answerable = Some(true);
+    stages.d.b_answered = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::BAnswerNotEmitted);
+}
+
+#[test]
+fn p244_b_answer_precedes_client_dsm() {
+    let mut stages = p244_test_prefix_proven();
+    stages.d.a_dsm_received = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::AClientDsmNotReceived);
+}
+
+#[test]
+fn p244_client_dsm_precedes_subdb_install() {
+    // Lookup success requires the client-subDB target LS presence;
+    // a received DSM without the install never succeeds.
+    let mut stages = p244_test_prefix_proven();
+    stages.d.a_subdb_installed = Some(false);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::AClientSubdbNotInstalled);
+    stages.d.a_subdb_installed = None;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::AClientSubdbNotInstalled);
+}
+
+#[test]
+fn p244_subdb_install_precedes_lookup_success() {
+    // Full OCMOSJ/tunnel/i2pr facts without the subDB install stay at
+    // the install gate; later stages never override it.
+    let mut stages = p244_test_prefix_proven();
+    stages.d.a_subdb_installed = None;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::AClientSubdbNotInstalled);
+    assert!(!p244_lookup_succeeded(terminal));
+}
+
+#[test]
+fn p244_lookup_success_precedes_ocmosj_dispatch() {
+    // Proven dispatch with the exact reverse TunnelData present but no
+    // lookup success stays before Stage E.
+    let mut stages = p244_test_prefix_proven();
+    stages.d.a_subdb_installed = Some(false);
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::AClientSubdbNotInstalled);
+    // Lookup success advances into Stage E ordering.
+    let mut stages = p244_test_prefix_proven();
+    stages.e.dispatch_outbound_observed = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::DispatchOutboundNotObserved);
+}
+
+#[test]
+fn p244_dispatch_precedes_i2pr_reverse_tunneldata() {
+    // Full reverse-tunnel facts without proven dispatch stay at the
+    // dispatch gate; i2pr facts never override it.
+    let mut stages = p244_test_prefix_proven();
+    stages.e.dispatch_outbound_observed = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::DispatchOutboundNotObserved);
+    // Proven dispatch without exact expected reverse TunnelData stays
+    // at the i2pr gate; no i2pr defect is claimed.
+    let mut stages = p244_test_prefix_proven();
+    stages.f.expected_reverse_tunneldata = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::I2prNoExpectedReverseTunneldata);
+}
+
+#[test]
+fn p244_i2pr_defect_requires_exact_reverse_tunneldata() {
+    // The production gate mirrors the retained Plan-237 rule: a change
+    // is allowed only with exact expected reverse TunnelData in hand.
+    assert!(!p244_production_change_allowed(true, false));
+    assert!(p244_production_change_allowed(true, true));
+    assert!(p244_production_change_allowed(false, false));
+    assert!(p244_production_change_allowed(false, true));
+    // And the classifier never emits an i2pr-owned terminal before the
+    // exact reverse TunnelData stage.
+    let mut stages = p244_test_prefix_proven();
+    stages.f.expected_reverse_tunneldata = false;
+    let terminal = p244_classify(
+        P244LaneEntry::ResponseEpoch,
+        &p244_test_binding(true, true),
+        &stages,
+    );
+    assert_eq!(terminal, P244Terminal::I2prNoExpectedReverseTunneldata);
+}
+
+#[test]
+fn p244_reverse_pass_does_not_close_publication_axis() {
+    // A reverse-direction pass returns authority to Plan 201 for the
+    // remaining publication/final-closure rows; no publication
+    // correction is folded into Plan 244.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("244-m6-java-streaming-reverse-direction-continuous-response-attribution.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("does not automatically close M6"),
+        "Plan 244 §13: reverse pass does not close M6"
+    );
+    assert!(
+        plan.contains("unblocks Plan 201") || plan.contains("return to Plan 201"),
+        "Plan 244 §13/§20: reverse pass returns to Plan 201"
+    );
+    assert!(
+        plan.contains("Do not fold new publication corrections into Plan 244"),
+        "Plan 244 §13: no publication correction folded in"
+    );
+    assert_eq!(
+        P244Terminal::ReverseDirectionEstablished.token(),
+        "P244-G-REVERSE-DIRECTION-ESTABLISHED"
+    );
+}
+
+#[test]
+fn p244_no_production_change_without_owned_boundary() {
+    // Plan 244 §12 authorizes a production corrective only when exact
+    // expected reverse TunnelData reaches i2pr and a specific
+    // i2pr-owned stage then fails.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("244-m6-java-streaming-reverse-direction-continuous-response-attribution.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("only if exact expected reverse TunnelData reaches i2pr"),
+        "Plan 244 §12: production change only after exact reverse TunnelData"
+    );
+    assert!(
+        plan.contains("production change remains") && plan.contains("forbidden"),
+        "Plan 244 §12: production change forbidden without reverse TunnelData"
+    );
+    // Production Rust carries no Plan 244 surface.
+    let prod_dirs = [
+        "crates/i2pr-daemon/src",
+        "crates/i2pr-client/src",
+        "crates/i2pr-tunnel/src",
+        "crates/i2pr-runtime/src",
+    ];
+    for dir in prod_dirs {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let hits = walkdir_find(&path, "p244").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 244: production Rust carries Plan 244 surface ({dir}): {hits:?}"
+        );
+        let hits = walkdir_find(&path, "P244").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 244: production Rust carries Plan 244 surface ({dir}): {hits:?}"
+        );
+    }
+}
+
+/// Setter applied to a fresh proven Stage C while sweeping the exact
+/// pre-query guard arms.
+type P244StageCGuardSetter = fn(&mut P244StageC);
+
+/// Setter applied to a fresh proven Stage E while sweeping the
+/// dispatch-to-reverse-tunnel arms.
+type P244StageEBreaker = fn(&mut P244StageE);
+
+#[test]
+fn p244_stage_arm_coverage() {
+    // Every remaining terminal is reachable: lane stops, exact
+    // pre-query guards, Stage-E arms, and Stage-G arms. This keeps the
+    // ordered classifier total and honest about which arms are live
+    // versus unit-locked for the §20 successor.
+    let binding = p244_test_binding(true, true);
+    for (entry, expected) in [
+        (
+            P244LaneEntry::HelperHandshakeFailed,
+            P244Terminal::HostedLaneNotReachedHandshake,
+        ),
+        (
+            P244LaneEntry::NonZeroPairFailed,
+            P244Terminal::HostedLaneNotReachedPair,
+        ),
+    ] {
+        let terminal = p244_classify(entry, &binding, &p244_test_prefix_proven());
+        assert_eq!(terminal, expected);
+    }
+    assert_eq!(
+        P244Terminal::HostedLaneNotReachedHandshake.token(),
+        "P244-A-HOSTED-LANE-NOT-REACHED reason=helper-handshake"
+    );
+    assert_eq!(
+        P244Terminal::HostedLaneNotReachedPair.token(),
+        "P244-A-HOSTED-LANE-NOT-REACHED reason=nonzero-pair"
+    );
+    // Exact pre-query guards fire in pinned source order.
+    let guard_cases: [(P244StageCGuardSetter, P244Terminal); 7] = [
+        (
+            (move |stage_c: &mut P244StageC| stage_c.ip_close_skipped = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BIpDiversitySkipped,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| stage_c.old_router_rejected = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BOldOrUnsupportedRouter,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| stage_c.no_outbound_tunnel = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BNoOutboundLookupTunnel,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| stage_c.no_ib_client_tunnel = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BNoInboundClientReplyTunnel,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| stage_c.no_reply_crypto = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BNoCompatibleReplyEncryption,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| {
+                stage_c.zero_hop_selected = true;
+                stage_c.zero_hop_self = true;
+            }) as P244StageCGuardSetter,
+            P244Terminal::BZeroHopSelfLookup,
+        ),
+        (
+            (move |stage_c: &mut P244StageC| stage_c.encrypted_prep_failed = true)
+                as P244StageCGuardSetter,
+            P244Terminal::BEncryptedLookupPrepFailed,
+        ),
+    ];
+    for (set_guard, expected) in guard_cases {
+        let mut stages = p244_test_prefix_proven();
+        stages.c.pool_authoritative_nonzero_only = false;
+        set_guard(&mut stages.c);
+        let terminal = p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages);
+        assert_eq!(terminal, expected);
+    }
+    // Stage-E arms evaluate strictly in order after lookup success.
+    let stage_e_cases: [(P244StageEBreaker, P244Terminal); 7] = [
+        (
+            (move |stage_e: &mut P244StageE| stage_e.usable_target_lease = false)
+                as P244StageEBreaker,
+            P244Terminal::NoUsableTargetLease,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.outbound_response_tunnel_selected = false)
+                as P244StageEBreaker,
+            P244Terminal::NoOutboundResponseTunnel,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.garlic_prepared = false) as P244StageEBreaker,
+            P244Terminal::GarlicPrepFailed,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.outbound_gateway_enqueued = false)
+                as P244StageEBreaker,
+            P244Terminal::OutboundGatewayNotEnqueued,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.transit_processed = false)
+                as P244StageEBreaker,
+            P244Terminal::TransitNotProcessed,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.target_ibgw_installed = false)
+                as P244StageEBreaker,
+            P244Terminal::TargetIbgwNotInstalled,
+        ),
+        (
+            (move |stage_e: &mut P244StageE| stage_e.target_ibgw_dispatched = false)
+                as P244StageEBreaker,
+            P244Terminal::TargetIbgwNoDispatch,
+        ),
+    ];
+    for (break_stage, expected) in stage_e_cases {
+        let mut stages = p244_test_prefix_proven();
+        break_stage(&mut stages.e);
+        let terminal = p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages);
+        assert_eq!(terminal, expected);
+    }
+    // Stage-G arms evaluate strictly in order after Stage E.
+    let mut stages = p244_test_prefix_proven();
+    stages.f.reverse_recovery_ok = false;
+    assert_eq!(
+        p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages),
+        P244Terminal::I2prReverseRecoveryFailed
+    );
+    stages.f.reverse_recovery_ok = true;
+    stages.f.reverse_garlic_ok = false;
+    assert_eq!(
+        p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages),
+        P244Terminal::I2prReverseGarlicDecodeFailed
+    );
+    stages.f.reverse_garlic_ok = true;
+    stages.f.reverse_adapter_ok = false;
+    assert_eq!(
+        p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages),
+        P244Terminal::I2prReverseStreamingAdapterFailed
+    );
+    stages.f.reverse_adapter_ok = true;
+    stages.f.reverse_payload_match = false;
+    assert_eq!(
+        p244_classify(P244LaneEntry::ResponseEpoch, &binding, &stages),
+        P244Terminal::I2prReverseStreamingAdapterFailed
+    );
+    // Milestone helpers agree with the classifier ordering.
+    assert!(p244_query_dispatched(P244Terminal::BLookupNotReceived));
+    assert!(p244_lookup_succeeded(P244Terminal::NoUsableTargetLease));
+    assert!(!p244_query_dispatched(
+        P244Terminal::TargetLookupNotCorrelated
+    ));
+    assert!(!p244_lookup_succeeded(
+        P244Terminal::AClientSubdbNotInstalled
+    ));
+}
+// Plan 244 continuous response attribution (end).

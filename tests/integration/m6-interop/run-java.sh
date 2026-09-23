@@ -2904,6 +2904,28 @@ m6_key_row "external-p241-pool-epoch" "p241-pool-epoch" \
 m6_key_row "external-p241-classification" "p241-classification" \
   "Plan 241 §9/§10/§11: ordered one-hop continuation terminal (earliest missing stage)"
 
+# Plan 244 §17 — read the continuous-response attribution terminal the
+# streaming driver correlated from the retained P237/P238/P239/P240
+# observers in the same response epoch. Consume the LAST occurrence so
+# an early branch cannot shadow the authoritative outcome, and record
+# exactly one external row per key (diagnostic observation, always
+# passed when present). The static checker rejects any literal
+# `record "<P244-X>" passed` line: the historical gap token never
+# governs this row.
+P244_CLASSIFICATION=""
+STREAM_DRIVER_TSV_FOR_P244="${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv"
+if [[ -f "${STREAM_DRIVER_TSV_FOR_P244}" ]]; then
+  P244_CLASSIFICATION="$(awk -F'\t' '$1 == "p244-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${STREAM_DRIVER_TSV_FOR_P244}")"
+fi
+if [[ -z "${P244_CLASSIFICATION}" ]]; then
+  P244_CLASSIFICATION="P244-classification-missing"
+fi
+record "external-p244-classification" passed "Plan 244 §17: ${P244_CLASSIFICATION}"
+m6_key_row "external-p244-epoch-binding" "p244-epoch-binding" \
+  "Plan 244 §6: same-epoch binding (helper DBID + target + epoch id + Direction-A prerequisite)"
+m6_key_row "external-p244-stage-summary" "p244-stage-summary" \
+  "Plan 244 §§7-12: same-epoch stage deltas and correlation flags behind the terminal"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted
