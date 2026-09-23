@@ -351,6 +351,11 @@ impl ReferenceControl {
     /// isolated SYN epoch. Returns the bounded `RESPONSE_STATS` line;
     /// the caller snapshots before the SYN and at the end of the frozen
     /// response window, then classifies from deltas (never absolutes).
+    /// Retained for the Plan-237 unit-test parser surface; the live
+    /// streaming driver consumes the widened 17-field Plan-245 line
+    /// via `report_plan245_response_stats` and extracts the Plan-237
+    /// eight-field shape with `p237_stats_from_p245_stats`.
+    #[allow(dead_code)]
     async fn report_plan237_response_stats(&mut self) -> Option<P237ResponseStats> {
         p237_parse_response_stats(&self.command("REPORT_RESPONSE_STATS").await)
     }
@@ -10254,18 +10259,27 @@ async fn streaming_through_java() {
     let mut streaming = StreamingManager::new(StreamingConfig::balanced());
     let accept_start = stream_control.command("START_ACCEPT").await;
     let java_accept_thread_started = accept_start == "STARTED";
-    // Plan 237 §6 — baseline stock observation immediately before the
-    // Direction-A SYN is sent. The helper is fresh for the counted lane
-    // (run-java.sh starts one streaming helper per counted attempt with
-    // no other Streaming traffic), so deltas isolate the SYN epoch.
-    let p237_pre = stream_control.report_plan237_response_stats().await;
+    // Plan 245 §5 — the helper now emits the 17-field
+    // `RESPONSE_STATS` line (Plan-237 eight fields plus seven new
+    // bounded direct-attribution needles plus two logger-enabled
+    // flags). The Plan-245 parser widens the Plan-237 eight-field
+    // shape and feeds both Plan 237 and Plan 245 from the same
+    // snapshot. The Plan-237 standalone parser is kept for the
+    // eight-field legacy helper only; when the helper is the
+    // Plan-245 shape, `p237_parse_response_stats` returns `None`
+    // and the Plan-237 stats row shows the strict default
+    // (zero deltas, loggers disabled), which the Plan-237
+    // classifier reports as `P237-A-RESPONSE-OBSERVATION-NOT-
+    // ISOLATABLE` — exactly the contradiction guard Plan 237 §7
+    // requires.
+    let p245_pre = stream_control.report_plan245_response_stats().await;
+    let p237_pre = p245_pre.map(p237_stats_from_p245_stats);
     // Plan 245 §5 — same RESPONSE_STATS snapshot, parsed into the
     // extended 17-field shape. The pre snapshot is taken before the
     // SYN; the post snapshot is taken after the frozen response
     // window (below). Both must be Option<…> so the classifier can
     // distinguish Unknown (parse failed / helper unreachable) from a
     // proven zero delta.
-    let p245_pre = stream_control.report_plan245_response_stats().await;
     // Plan 238 §7 — baseline Router-A admission snapshot immediately
     // before the Direction-A SYN. Router A is long-lived across the
     // destination + streaming sub-runs (Plan 217 §6.D), so only the
@@ -10600,11 +10614,11 @@ async fn streaming_through_java() {
     // is the retained prerequisite; P237 never classifies a response
     // stage from the Plan-236 literal placeholders, `accept_returned`,
     // or `socket_surface_ready` alone.
-    let p237_post = stream_control.report_plan237_response_stats().await;
-    // Plan 245 §5 — second Plan-245 snapshot at the end of the
-    // frozen response window. Same helper, same command; only the
-    // parser widens. Deltas against `p245_pre` drive Stage A.0.
+    // Plan 245 §5 — the helper emits the 17-field shape; the
+    // Plan-245 parser feeds both the Plan-237 eight-field extract
+    // (via `p237_stats_from_p245_stats`) and the Plan-245 fields.
     let p245_post = stream_control.report_plan245_response_stats().await;
+    let p237_post = p245_post.map(p237_stats_from_p245_stats);
     // Plan 238 §7 — second Router-A admission snapshot at the end of
     // the frozen response window; the earliest D stage is classified
     // from the isolated-epoch delta (never absolutes).
@@ -26737,6 +26751,28 @@ fn p245_classify(
 /// otherwise Plan 245 must not infer response construction.
 fn p245_p244_baseline_ok(p235_baseline_ok: bool) -> bool {
     p235_baseline_ok
+}
+
+/// Extract the Plan-237 eight-field snapshot from the Plan-245
+/// seventeen-field snapshot. Plan 245 widens the helper's
+/// `RESPONSE_STATS` line but keeps every Plan-237 field verbatim
+/// (same key, same value, same order), so the Plan-237 stats
+/// row keeps its documented shape and the Plan-237/244 chain
+/// continues to consume the same deltas it consumed before the
+/// Plan-245 widening. Logger flags stay `true` only when the
+/// Plan-245 post snapshot also proves them enabled (Unknown
+/// remains Unknown).
+fn p237_stats_from_p245_stats(stats: P245ResponseStats) -> P237ResponseStats {
+    P237ResponseStats {
+        scheduler_log_count: stats.scheduler_log_count,
+        ack_constructed_log_count: stats.ack_constructed_log_count,
+        send_message_size_lifetime_events: stats.send_message_size_lifetime_events,
+        send_failure_count: stats.send_failure_count,
+        send_exception_count: stats.send_exception_count,
+        scheduler_debug_enabled: stats.scheduler_debug_enabled,
+        connection_debug_enabled: stats.connection_debug_enabled,
+        packetqueue_debug_enabled: stats.packetqueue_debug_enabled,
+    }
 }
 
 /// Build the bounded `P245StageA0` logger-enabled snapshot from the
