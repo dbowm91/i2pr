@@ -17,6 +17,8 @@ OUTPUT="$2"
 EXPECTED_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
 STREAMING_ROOT="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl"
 I2CP_SESSION="${SOURCE_ROOT}/core/java/src/net/i2p/client/I2PSession.java"
+ROUTER_MESSAGE_OUTPUT="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/MessageOutputStream.java"
+ROUTER_RECEIVER="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionDataReceiver.java"
 ROUTER_CLIENT="${SOURCE_ROOT}/router/java/src/net/i2p/router/client/ClientMessageEventListener.java"
 ROUTER_OCMOSJ="${SOURCE_ROOT}/router/java/src/net/i2p/router/message/OutboundClientMessageOneShotJob.java"
 ROUTER_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/ClientMessagePool.java"
@@ -41,6 +43,8 @@ for file in \
   "${STREAMING_ROOT}/SchedulerReceived.java" \
   "${STREAMING_ROOT}/SchedulerImpl.java" \
   "${STREAMING_ROOT}/PacketQueue.java" \
+  "${STREAMING_ROOT}/MessageOutputStream.java" \
+  "${STREAMING_ROOT}/ConnectionDataReceiver.java" \
   "${I2CP_SESSION}" \
    "${ROUTER_CLIENT}" \
    "${ROUTER_OCMOSJ}" \
@@ -60,7 +64,7 @@ for file in \
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" "${ROUTER_TUNNEL_PEER_SELECTOR}" "${ROUTER_CLIENT_PEER_SELECTOR}" <<'PY'
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" "${ROUTER_TUNNEL_PEER_SELECTOR}" "${ROUTER_CLIENT_PEER_SELECTOR}" "${ROUTER_MESSAGE_OUTPUT}" "${ROUTER_RECEIVER}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -79,6 +83,8 @@ router_tunnel_pool_manager = Path(sys.argv[12]).read_text(encoding="utf-8")
 router_tunnel_pool = Path(sys.argv[13]).read_text(encoding="utf-8")
 router_tunnel_peer_selector = Path(sys.argv[14]).read_text(encoding="utf-8")
 router_client_peer_selector = Path(sys.argv[15]).read_text(encoding="utf-8")
+message_output_stream = Path(sys.argv[16]).read_text(encoding="utf-8")
+receiver = Path(sys.argv[17]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -248,6 +254,41 @@ required = {
     "CPS.select_peers": (router_client_peer_selector, "public List<Hash> selectPeers(TunnelPoolSettings settings)"),
     "CPS.should_select_explicit_check": (router_client_peer_selector, "if (shouldSelectExplicit(settings))"),
     "CPS.explicit_returns_select_explicit": (router_client_peer_selector, "return selectExplicit(settings, length);"),
+    # Plan 245 §11 — exact-pinned stock-response construction signal
+    # attribution. The retained Plan 237/244 retransmit-timer
+    # `Resend in ...` log is conditional: ACK-only packets with
+    # `sequenceNum == 0` and no SYN flag take the ACK-only branch and
+    # never schedule the retransmit timer. ConnectionDataReceiver
+    # `buildPacket()` therefore emits the direct authoritative
+    # construction log `New OB pkt (acks not yet filled in): ...`
+    # before returning the PacketLocal to Connection.sendPacket().
+    # The Plan 245 lane also observes the doSend-false INFO log
+    # (`writeData called: size=... doSend=false ...`) and the
+    # MessageOutputStream.flushAvailable INFO log to attribute the
+    # exact predicate that suppressed construction when doSend=false.
+    # A source upgrade that renames any of these must fail the lane
+    # before an external attempt.
+    "SchedulerReceived.accept_predicates": (scheduler, "(con != null) && \n               (con.getLastSendId() < 0) &&\n               (con.getSendStreamId() > 0)"),
+    "SchedulerReceived.unacked_guard": (scheduler, "if (con.getUnackedPacketsReceived() <= 0) {"),
+    "SchedulerReceived.no_unacked_warn": (scheduler, "hmm, state is received, but no unacked packets received?"),
+    "SchedulerReceived.send_branch_log": (scheduler, "_log.debug(\"received con... send a packet\");"),
+    "SchedulerReceived.reschedule_branch_log": (scheduler, "_log.debug(\"received con... time till next send: \" + timeTillSend);"),
+    "SchedulerReceived.send_available_call": (scheduler, "con.sendAvailable();"),
+    "SchedulerReceived.set_next_send_time_negative": (scheduler, "con.setNextSendTime(-1);"),
+    "Connection.sendAvailable_method": (connection, "void sendAvailable()"),
+    "Connection.sendAvailable_flush": (connection, "_outputStream.flushAvailable(_receiver, false);"),
+    "MessageOutputStream.flushAvailable_two_arg": (message_output_stream, "void flushAvailable(DataReceiver target, boolean blocking)"),
+    "MessageOutputStream.writeData_call": (message_output_stream, "ws = target.writeData(_buf, 0, _valid);"),
+    "MessageOutputStream.zero_valid_allowed": (message_output_stream, "// if valid == 0 return ??? - no, this could flush a CLOSE packet too."),
+    "ConnectionDataReceiver.writeData_method": (receiver, "public MessageOutputStream.WriteStatus writeData(byte[] buf, int off, int size)"),
+    "ConnectionDataReceiver.writeData_dosend_false_log": (receiver, "_log.info(\"writeData called: size=\"+size + \" doSend=\" + doSend"),
+    "ConnectionDataReceiver.unacked_received_forces_doSend": (receiver, "if (con.getUnackedPacketsReceived() > 0)\n            doSend = true;"),
+    "ConnectionDataReceiver.send_calls_buildPacket": (receiver, "PacketLocal packet = buildPacket(buf, off, size, forceIncrement);"),
+    "ConnectionDataReceiver.buildPacket_new_ob_log": (receiver, "_log.debug(\"New OB pkt (acks not yet filled in): \" + packet + \" on \" + _connection);"),
+    "Connection.sendPacket_ack_only_branch": (connection, "if ( (packet.getSequenceNum() == 0) && (!packet.isFlagSet(Packet.FLAG_SYNCHRONIZE)) ) {"),
+    "Connection.sendPacket_ack_only_comment": (connection, "// ACK-only"),
+    "Connection.sendPacket_resend_timer_log": (connection, "_log.debug(Connection.this + \" Resend in \" + timeout + \" for \" + packet);"),
+    "Connection.sendPacket_retransmit_schedule": (connection, "if (_retransmitEvent.scheduleIfNotRunning(timeout)) {"),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -340,6 +381,25 @@ output.write_text(
         "java_explicit_peer_semantics\tshouldSelectExplicit(settings) returns true only when ctx.random().nextInt(4) == 0 (TunnelPeerSelector one-in-four explicit branch)\n",
         "java_explicit_peer_dispatcher\tClientPeerSelector.selectPeers(settings) | if (shouldSelectExplicit(settings)) return selectExplicit(settings, length); (explicit vs stock fast-peer dispatch)\n",
         "java_explicit_branch_evidence\tNo valid explicit peers found, building zero hop | selectFastPeers(more, exclude, matches) | Collections.shuffle(rv, ctx.random()) (TunnelPeerSelector explicit branch fallbacks)\n",
+        # Plan 245 §11 — pinned stock-response construction signal
+        # attribution that supersedes only the Plan 237/244 proxy.
+        # Retained Plan 236–244 rows above stay frozen; these rows
+        # are additive. The retransmit-timer `Resend in` signal is
+        # conditional (ACK-only sequence-0 non-SYN packets bypass the
+        # retransmit-timer block); the authoritative construction
+        # signal is `ConnectionDataReceiver.buildPacket()` direct log.
+        "java_send_received_accept\tscheduler.accept(con) predicates: con != null && con.getLastSendId() < 0 && con.getSendStreamId() > 0 (SchedulerReceived.accept)\n",
+        "java_scheduler_unacked_guard\tif (con.getUnackedPacketsReceived() <= 0) { ... return; } (SchedulerReceived.eventOccurred pre-send branch guard)\n",
+        "java_scheduler_send_branch\treceived con... send a packet | con.sendAvailable(); | con.setNextSendTime(-1); (SchedulerReceived send-branch order)\n",
+        "java_scheduler_reschedule_branch\treceived con... time till next send: <n> | reschedule(<n>, con) (SchedulerReceived reschedule-only branch)\n",
+        "java_scheduler_no_unacked_warn\thmm, state is received, but no unacked packets received? (SchedulerReceived guard warning)\n",
+        "java_send_available_call\tvoid sendAvailable() | _outputStream.flushAvailable(_receiver, false) (Connection.sendAvailable → MessageOutputStream)\n",
+        "java_flush_available_calls_write_data\tvoid flushAvailable(DataReceiver target, boolean blocking) | ws = target.writeData(_buf, 0, _valid); (MessageOutputStream.flushAvailable even with zero valid)\n",
+        "java_writedata_dosend_false_log\twriteData called: size=<n> doSend=false unackedReceived: <n> con: ... (ConnectionDataReceiver.writeData doSend=false INFO log)\n",
+        "java_writedata_unacked_forces_dosend\tif (con.getUnackedPacketsReceived() > 0) doSend = true; (ConnectionDataReceiver.writeData unacked override)\n",
+        "java_buildpacket_direct_log\tNew OB pkt (acks not yet filled in): <packet> on <connection> (ConnectionDataReceiver.buildPacket direct construction signal)\n",
+        "java_sendpacket_ack_only_branch\tif ( (packet.getSequenceNum() == 0) && (!packet.isFlagSet(Packet.FLAG_SYNCHRONIZE)) ) { /* ACK-only */ } (Connection.sendPacket ACK-only branch — bypasses retransmit timer)\n",
+        "java_sendpacket_resend_timer_log\tResend in <timeout> for <packet> | _retransmitEvent.scheduleIfNotRunning(timeout) (Connection.sendPacket retransmit-timer log — conditional, not universal)\n",
     ]),
     encoding="utf-8",
 )

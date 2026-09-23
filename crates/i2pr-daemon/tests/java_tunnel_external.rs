@@ -354,6 +354,15 @@ impl ReferenceControl {
     async fn report_plan237_response_stats(&mut self) -> Option<P237ResponseStats> {
         p237_parse_response_stats(&self.command("REPORT_RESPONSE_STATS").await)
     }
+
+    /// Plan 245 §5 — same helper response snapshot, parsed into the
+    /// extended 17-field shape (Plan-237 eight fields plus the seven
+    /// new direct-attribution needles and two logger-enabled flags).
+    /// The helper produces the same `RESPONSE_STATS` line; Plan 245
+    /// only widens the parser.
+    async fn report_plan245_response_stats(&mut self) -> Option<P245ResponseStats> {
+        p245_parse_response_stats(&self.command("REPORT_RESPONSE_STATS").await)
+    }
 }
 
 // ---- Plan 234 — Streaming SYN epoch attribution --------------------------
@@ -10250,6 +10259,13 @@ async fn streaming_through_java() {
     // (run-java.sh starts one streaming helper per counted attempt with
     // no other Streaming traffic), so deltas isolate the SYN epoch.
     let p237_pre = stream_control.report_plan237_response_stats().await;
+    // Plan 245 §5 — same RESPONSE_STATS snapshot, parsed into the
+    // extended 17-field shape. The pre snapshot is taken before the
+    // SYN; the post snapshot is taken after the frozen response
+    // window (below). Both must be Option<…> so the classifier can
+    // distinguish Unknown (parse failed / helper unreachable) from a
+    // proven zero delta.
+    let p245_pre = stream_control.report_plan245_response_stats().await;
     // Plan 238 §7 — baseline Router-A admission snapshot immediately
     // before the Direction-A SYN. Router A is long-lived across the
     // destination + streaming sub-runs (Plan 217 §6.D), so only the
@@ -10585,6 +10601,10 @@ async fn streaming_through_java() {
     // stage from the Plan-236 literal placeholders, `accept_returned`,
     // or `socket_surface_ready` alone.
     let p237_post = stream_control.report_plan237_response_stats().await;
+    // Plan 245 §5 — second Plan-245 snapshot at the end of the
+    // frozen response window. Same helper, same command; only the
+    // parser widens. Deltas against `p245_pre` drive Stage A.0.
+    let p245_post = stream_control.report_plan245_response_stats().await;
     // Plan 238 §7 — second Router-A admission snapshot at the end of
     // the frozen response window; the earliest D stage is classified
     // from the isolated-epoch delta (never absolutes).
@@ -10979,6 +10999,24 @@ async fn streaming_through_java() {
     // token is never read here; the earliest missing same-epoch stage
     // governs. Recorded before the retained P236/P235/P234 lane stops
     // so the attribution survives whichever stop fires.
+    // Plan 245 §6/§8 — Stage A.0 construction-signal attribution runs
+    // BEFORE the retained Plan-244 chain. When direct construction is
+    // proven, the live driver resumes the Plan-244 chain (the same
+    // `p244_stages` builder below); when direct construction is
+    // absent, the classifier emits a Plan-245-specific terminal
+    // (e.g. `P245-B-WRITEDATA-SUPPRESSED` or
+    // `P245-C-BUILDPACKET-OBSERVABILITY-GAP`) without claiming a Java
+    // defect or authorizing a production i2pr change.
+    let p245_stage_a0 = p245_stage_a0_from_stats(p245_post);
+    let p245_baseline_ok = p245_p244_baseline_ok(p237_baseline_ok);
+    let p245_terminal = p245_classify(p245_baseline_ok, p245_pre, p245_post, &p245_stage_a0);
+    record_p245_classification(
+        &evidence_dir,
+        p245_pre,
+        p245_post,
+        &p245_stage_a0,
+        p245_terminal,
+    );
     // Plan 244 §17 live correlation (begin).
     let p244_direction_a = p234_terminal == P234Terminal::DirectionAEstablished
         && p235_terminal == P235Terminal::JavaStreamingPassed;
@@ -11000,7 +11038,26 @@ async fn streaming_through_java() {
     let p244_stage_a = P244StageA {
         isolatable: p244_a_isolatable,
         scheduler_delta: p244_a_deltas.scheduler_delta,
-        ack_delta: p244_a_deltas.ack_delta,
+        // Plan 245 §8 — when the direct construction signal
+        // (`receiver_packet_built_delta > 0`) is proven, the
+        // retained Plan-244 retransmit-timer proxy `ack_delta`
+        // (which is conditional for ACK-only sequence-0 non-SYN
+        // packets) is overridden. The Plan-244 chain resumes
+        // downstream because direct construction is proven
+        // regardless of `Resend in`. Plan-244 §15 keeps the
+        // proxy interpretation as the documented one; the
+        // override is Plan-245-specific and the helper evidence
+        // key `p245-classification` carries the audit trail.
+        ack_delta: if let (Some(pre), Some(post)) = (p245_pre, p245_post) {
+            let d = p245_deltas(&pre, &post);
+            if d.receiver_packet_built_delta > 0 {
+                d.receiver_packet_built_delta
+            } else {
+                p244_a_deltas.ack_delta
+            }
+        } else {
+            p244_a_deltas.ack_delta
+        },
         sendmessage_delta: p244_a_deltas.sendmessage_delta,
         failure_delta: p244_a_deltas.send_failure_delta,
         exception_delta: p244_a_deltas.send_exception_delta,
@@ -26345,3 +26402,907 @@ fn p244_stage_arm_coverage() {
     ));
 }
 // Plan 244 continuous response attribution (end).
+
+// ============================================================================
+// Plan 245 — M6 Java Streaming stock-response construction-signal attribution
+// corrective
+//
+// Plan 244 attributed `ack_constructed_delta=0` to a stock-Java response-
+// construction defect on three consecutive same-SHA attempts. Exact-pinned
+// source review after Plan 244 proved that the `Resend in ...` retransmit-
+// timer log is conditional: `Connection.sendPacket(PacketLocal)` takes the
+// ACK-only branch for sequence-0 non-SYN packets and never schedules the
+// timer. The authoritative construction signal is
+// `ConnectionDataReceiver.buildPacket()`'s `New OB pkt (acks not yet
+// filled in): ...` DEBUG log, which fires for every constructed PacketLocal.
+//
+// Plan 245 is a read-only observation/attribution corrective:
+//   (a) extend the bounded helper-JVM `REPORT_RESPONSE_STATS` snapshot with
+//       seven direct-attribution needles (scheduler send / reschedule / no-
+//       unacked, MessageOutputStream `flushAvailable()`, ConnectionDataReceiver
+//       doSend-false / buildPacket, Connection retransmit-timer);
+//   (b) classify the response-construction sub-stage from same-epoch deltas
+//       in Plan 245 Stage A.0 order (scheduler -> writeData -> buildPacket);
+//   (c) when direct construction is proven, supersede only Plan 244's
+//       `Resend in`-based construction-proxy interpretation and resume the
+//       retained Plan-237/238/239/240/244 downstream chain;
+//   (d) when direct construction is absent, attribute the exact predicate
+//       that suppressed construction (writeData doSend-false, scheduler
+//       reschedule-only, scheduler no-unacked) without claiming a Java
+//       defect or authorizing a production i2pr change.
+//
+// No Java source patch, no helper behavior change, no topology /
+// publication / timing change, no production Rust change.
+// ============================================================================
+// Plan 245 stock-response construction-signal attribution (begin).
+
+/// Bounded Plan-245 helper-JVM facts. Extends the Plan-237 eight-field
+/// snapshot with seven direct-attribution needles plus two logger-
+/// enabled flags. Field names must stay byte-identical to the helper's
+/// `RESPONSE_STATS` line (split on ` `, then `=`); the static checker
+/// enforces this against the helper source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P245ResponseStats {
+    scheduler_log_count: u64,
+    ack_constructed_log_count: u64,
+    send_message_size_lifetime_events: u64,
+    send_failure_count: u64,
+    send_exception_count: u64,
+    scheduler_debug_enabled: bool,
+    connection_debug_enabled: bool,
+    packetqueue_debug_enabled: bool,
+    scheduler_send_branch_log_count: u64,
+    scheduler_reschedule_branch_log_count: u64,
+    scheduler_no_unacked_warning_log_count: u64,
+    message_output_flush_nonempty_log_count: u64,
+    receiver_do_send_false_log_count: u64,
+    receiver_packet_built_log_count: u64,
+    connection_resend_timer_log_count: u64,
+    receiver_debug_enabled: bool,
+    message_output_enabled: bool,
+}
+
+/// Parse the bounded `REPORT_RESPONSE_STATS` line into the 17-field
+/// Plan-245 snapshot. Strict: any unknown key or unparsable value
+/// yields `None` (Unknown diagnostic). The 17-field shape is
+/// enforced (the helper never adds a new key without updating both
+/// the static checker and this parser).
+fn p245_parse_response_stats(line: &str) -> Option<P245ResponseStats> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "RESPONSE_STATS" {
+        return None;
+    }
+    let mut stats = P245ResponseStats::default();
+    let mut seen = 0u8;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "scheduler_log_count" => stats.scheduler_log_count = p237_parse_u64(value)?,
+            "ack_constructed_log_count" => stats.ack_constructed_log_count = p237_parse_u64(value)?,
+            "send_message_size_lifetime_events" => {
+                stats.send_message_size_lifetime_events = p237_parse_u64(value)?
+            }
+            "send_failure_count" => stats.send_failure_count = p237_parse_u64(value)?,
+            "send_exception_count" => stats.send_exception_count = p237_parse_u64(value)?,
+            "scheduler_debug_enabled" => stats.scheduler_debug_enabled = p237_parse_bool(value)?,
+            "connection_debug_enabled" => stats.connection_debug_enabled = p237_parse_bool(value)?,
+            "packetqueue_debug_enabled" => {
+                stats.packetqueue_debug_enabled = p237_parse_bool(value)?
+            }
+            "scheduler_send_branch_log_count" => {
+                stats.scheduler_send_branch_log_count = p237_parse_u64(value)?
+            }
+            "scheduler_reschedule_branch_log_count" => {
+                stats.scheduler_reschedule_branch_log_count = p237_parse_u64(value)?
+            }
+            "scheduler_no_unacked_warning_log_count" => {
+                stats.scheduler_no_unacked_warning_log_count = p237_parse_u64(value)?
+            }
+            "message_output_flush_nonempty_log_count" => {
+                stats.message_output_flush_nonempty_log_count = p237_parse_u64(value)?
+            }
+            "receiver_do_send_false_log_count" => {
+                stats.receiver_do_send_false_log_count = p237_parse_u64(value)?
+            }
+            "receiver_packet_built_log_count" => {
+                stats.receiver_packet_built_log_count = p237_parse_u64(value)?
+            }
+            "connection_resend_timer_log_count" => {
+                stats.connection_resend_timer_log_count = p237_parse_u64(value)?
+            }
+            "receiver_debug_enabled" => stats.receiver_debug_enabled = p237_parse_bool(value)?,
+            "message_output_enabled" => stats.message_output_enabled = p237_parse_bool(value)?,
+            _ => return None,
+        }
+        seen = seen.saturating_add(1);
+    }
+    (seen == 17).then_some(stats)
+}
+
+/// Plan-245 same-epoch response-construction deltas. Each delta is
+/// `post.saturating_sub(pre)`; the console buffer may evict under load
+/// so every counter is saturating. The lifetime-event counters
+/// (`send_message_size_lifetime_events`) are strictly monotonic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P245Deltas {
+    scheduler_delta: u64,
+    ack_delta: u64,
+    sendmessage_delta: u64,
+    send_failure_delta: u64,
+    send_exception_delta: u64,
+    scheduler_send_branch_delta: u64,
+    scheduler_reschedule_branch_delta: u64,
+    scheduler_no_unacked_delta: u64,
+    message_output_flush_nonempty_delta: u64,
+    receiver_do_send_false_delta: u64,
+    receiver_packet_built_delta: u64,
+    connection_resend_timer_delta: u64,
+}
+
+fn p245_deltas(pre: &P245ResponseStats, post: &P245ResponseStats) -> P245Deltas {
+    P245Deltas {
+        scheduler_delta: post
+            .scheduler_log_count
+            .saturating_sub(pre.scheduler_log_count),
+        ack_delta: post
+            .ack_constructed_log_count
+            .saturating_sub(pre.ack_constructed_log_count),
+        sendmessage_delta: post
+            .send_message_size_lifetime_events
+            .saturating_sub(pre.send_message_size_lifetime_events),
+        send_failure_delta: post
+            .send_failure_count
+            .saturating_sub(pre.send_failure_count),
+        send_exception_delta: post
+            .send_exception_count
+            .saturating_sub(pre.send_exception_count),
+        scheduler_send_branch_delta: post
+            .scheduler_send_branch_log_count
+            .saturating_sub(pre.scheduler_send_branch_log_count),
+        scheduler_reschedule_branch_delta: post
+            .scheduler_reschedule_branch_log_count
+            .saturating_sub(pre.scheduler_reschedule_branch_log_count),
+        scheduler_no_unacked_delta: post
+            .scheduler_no_unacked_warning_log_count
+            .saturating_sub(pre.scheduler_no_unacked_warning_log_count),
+        message_output_flush_nonempty_delta: post
+            .message_output_flush_nonempty_log_count
+            .saturating_sub(pre.message_output_flush_nonempty_log_count),
+        receiver_do_send_false_delta: post
+            .receiver_do_send_false_log_count
+            .saturating_sub(pre.receiver_do_send_false_log_count),
+        receiver_packet_built_delta: post
+            .receiver_packet_built_log_count
+            .saturating_sub(pre.receiver_packet_built_log_count),
+        connection_resend_timer_delta: post
+            .connection_resend_timer_log_count
+            .saturating_sub(pre.connection_resend_timer_log_count),
+    }
+}
+
+/// Plan 245 §6 sub-stage input. The boolean logger-enabled flags are
+/// required to reject contradiction: a positive log delta without its
+/// proven logger is untrusted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P245StageA0 {
+    scheduler_log_isolatable: bool,
+    connection_log_isolatable: bool,
+    receiver_log_isolatable: bool,
+    message_output_enabled: bool,
+}
+
+/// Plan 245 §6 ordered Stage A.0 classifier. Stops at the earliest
+/// proven missing sub-stage. Construction proven via the direct
+/// `receiver_packet_built_delta > 0` signal resumes the Plan-244
+/// chain. The classifier returns either
+/// `Plan244ConstructionProxyFalseNegative` (when the retransmit-timer
+/// proxy was a false negative) or `DirectConstructionWithRetransmitTimer`
+/// (when both signals agree). The downstream Plan-237/238/239/240/244
+/// chain then takes over via the overridden `P244StageA::ack_delta`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P245Terminal {
+    ResponseObservationNotIsolatable,
+    Plan244BaselineRegression,
+    SchedulerNotObserved,
+    SchedulerNoUnackedPackets,
+    SchedulerRescheduledNoSendBranch,
+    WriteDataSuppressed,
+    BuildPacketObservabilityGap,
+    Plan244ConstructionProxyFalseNegative,
+    DirectConstructionWithRetransmitTimer,
+}
+
+impl P245Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::ResponseObservationNotIsolatable => "P245-A-RESPONSE-OBSERVATION-NOT-ISOLATABLE",
+            Self::Plan244BaselineRegression => "P245-A-PLAN244-BASELINE-REGRESSION",
+            Self::SchedulerNotObserved => "P245-A-SCHEDULER-NOT-OBSERVED",
+            Self::SchedulerNoUnackedPackets => "P245-A-SCHEDULER-NO-UNACKED-PACKETS",
+            Self::SchedulerRescheduledNoSendBranch => "P245-A-SCHEDULER-RESCHEDULED-NO-SEND-BRANCH",
+            Self::WriteDataSuppressed => "P245-B-WRITEDATA-SUPPRESSED",
+            Self::BuildPacketObservabilityGap => "P245-C-BUILDPACKET-OBSERVABILITY-GAP",
+            Self::Plan244ConstructionProxyFalseNegative => {
+                "P245-D-PLAN244-CONSTRUCTION-PROXY-FALSE-NEGATIVE"
+            }
+            Self::DirectConstructionWithRetransmitTimer => {
+                "P245-D-DIRECT-CONSTRUCTION-WITH-RETRANSMIT-TIMER"
+            }
+        }
+    }
+}
+
+/// Plan 245 §6 ordered Stage A.0 classifier. The early arms
+/// (Plan-244-baseline / scheduler / writeData) match the §A and §B
+/// sub-stages; the direct construction arms follow §C/§D/§E in
+/// the same order. `SendmessageNotReturned` / `SendmessageFailed`
+/// stop the Stage A.0 chain once construction is proven; the
+/// retained Plan-237/238/239/240/244 classifier continues from
+/// there.
+fn p245_classify(
+    p244_baseline_ok: bool,
+    pre: Option<P245ResponseStats>,
+    post: Option<P245ResponseStats>,
+    stage_a0: &P245StageA0,
+) -> P245Terminal {
+    let (Some(pre), Some(post)) = (pre, post) else {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    };
+    if !p244_baseline_ok {
+        return P245Terminal::Plan244BaselineRegression;
+    }
+    let deltas = p245_deltas(&pre, &post);
+    // A positive stock-log delta without its proven logger is
+    // untrusted (contradiction, not evidence); the epoch is not
+    // isolatable.
+    if deltas.scheduler_delta > 0 && !stage_a0.scheduler_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.ack_delta > 0 && !stage_a0.connection_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.connection_resend_timer_delta > 0 && !stage_a0.connection_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.receiver_packet_built_delta > 0 && !stage_a0.receiver_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.receiver_do_send_false_delta > 0 && !stage_a0.receiver_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.message_output_flush_nonempty_delta > 0 && !stage_a0.message_output_enabled {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.scheduler_send_branch_delta > 0 && !stage_a0.scheduler_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.scheduler_reschedule_branch_delta > 0 && !stage_a0.scheduler_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    if deltas.scheduler_no_unacked_delta > 0 && !stage_a0.scheduler_log_isolatable {
+        return P245Terminal::ResponseObservationNotIsolatable;
+    }
+    // §A — scheduler state.
+    if deltas.scheduler_delta == 0 {
+        return P245Terminal::SchedulerNotObserved;
+    }
+    if deltas.scheduler_no_unacked_delta > 0 {
+        // Source-locked warning proves `con.getUnackedPacketsReceived()
+        // <= 0` — the scheduler received an event but had no unacked
+        // packets to acknowledge. The send branch never ran; this is
+        // a narrow inbound ACK- state attribution.
+        return P245Terminal::SchedulerNoUnackedPackets;
+    }
+    let send_branch = deltas.scheduler_send_branch_delta > 0;
+    let reschedule_branch = deltas.scheduler_reschedule_branch_delta > 0;
+    if !send_branch && reschedule_branch {
+        // The scheduler received the event and only rescheduled;
+        // the send branch never ran. The `getNextSendTime` state
+        // attribution is narrow; a successor owns the deep cause.
+        return P245Terminal::SchedulerRescheduledNoSendBranch;
+    }
+    if !send_branch {
+        // Scheduler log observed but neither branch did; this is a
+        // contradiction against a live scheduler event. Stay at the
+        // earliest missing arm rather than guessing.
+        return P245Terminal::SchedulerNotObserved;
+    }
+    // §B — writeData decision. The doSend=false log proves
+    // ConnectionDataReceiver.writeData() suppressed send; the
+    // exact upstream messageOutputFlushNonempty delta is recorded
+    // for cross-check but never alone satisfies a terminal.
+    if deltas.receiver_do_send_false_delta > 0 {
+        return P245Terminal::WriteDataSuppressed;
+    }
+    // §C — direct construction. The `New OB pkt (acks not yet
+    // filled in):` signal is authoritative for every PacketLocal
+    // the JVM constructs.
+    if deltas.receiver_packet_built_delta > 0 {
+        // §D — observer false-negative vs. real proxy.
+        if deltas.connection_resend_timer_delta == 0 {
+            return P245Terminal::Plan244ConstructionProxyFalseNegative;
+        }
+        return P245Terminal::DirectConstructionWithRetransmitTimer;
+    }
+    // Direct construction is zero while the scheduler send branch
+    // is proven and the doSend-false log is absent. Plan 245 §6.C
+    // names this `P245-C-BUILDPACKET-OBSERVABILITY-GAP` and stops:
+    // the rule is observation, not a Java construction defect.
+    P245Terminal::BuildPacketObservabilityGap
+}
+
+/// Map the Plan-237 prerequisites onto the Plan-245 baseline gate.
+/// A proven Plan-237/244 direction-A prerequisite (`P235-JAVA-
+/// STREAMING-PASSED` and a live Plan-244 epoch) gates Plan 245;
+/// otherwise Plan 245 must not infer response construction.
+fn p245_p244_baseline_ok(p235_baseline_ok: bool) -> bool {
+    p235_baseline_ok
+}
+
+/// Build the bounded `P245StageA0` logger-enabled snapshot from the
+/// raw `post` snapshot. `None` for any unknown logger state (helper
+/// unreachable) so the contradiction guard stays strict.
+fn p245_stage_a0_from_stats(post: Option<P245ResponseStats>) -> P245StageA0 {
+    match post {
+        Some(stats) => P245StageA0 {
+            scheduler_log_isolatable: stats.scheduler_debug_enabled,
+            connection_log_isolatable: stats.connection_debug_enabled,
+            receiver_log_isolatable: stats.receiver_debug_enabled,
+            message_output_enabled: stats.message_output_enabled,
+        },
+        None => P245StageA0::default(),
+    }
+}
+
+/// Record the Plan-245 Stage A.0 evidence: pre/post snapshot,
+/// delta row, logger-enabled row, and one terminal. The retained
+/// Plan-237/238/239/240/244 rows stay frozen; this row is
+/// additive. Counters only, never packet dumps, keys, tags, or
+/// payloads.
+fn record_p245_classification(
+    evidence_dir: &Path,
+    pre: Option<P245ResponseStats>,
+    post: Option<P245ResponseStats>,
+    stage_a0: &P245StageA0,
+    terminal: P245Terminal,
+) {
+    let pre = pre.unwrap_or_default();
+    let post = post.unwrap_or_default();
+    let deltas = p245_deltas(&pre, &post);
+    append_evidence(
+        evidence_dir,
+        "p245-response-stats-pre",
+        &format!(
+            "scheduler_log_count={} ack_constructed_log_count={} send_message_size_lifetime_events={} send_failure_count={} send_exception_count={} scheduler_debug_enabled={} connection_debug_enabled={} packetqueue_debug_enabled={} scheduler_send_branch_log_count={} scheduler_reschedule_branch_log_count={} scheduler_no_unacked_warning_log_count={} message_output_flush_nonempty_log_count={} receiver_do_send_false_log_count={} receiver_packet_built_log_count={} connection_resend_timer_log_count={} receiver_debug_enabled={} message_output_enabled={}",
+            pre.scheduler_log_count,
+            pre.ack_constructed_log_count,
+            pre.send_message_size_lifetime_events,
+            pre.send_failure_count,
+            pre.send_exception_count,
+            pre.scheduler_debug_enabled,
+            pre.connection_debug_enabled,
+            pre.packetqueue_debug_enabled,
+            pre.scheduler_send_branch_log_count,
+            pre.scheduler_reschedule_branch_log_count,
+            pre.scheduler_no_unacked_warning_log_count,
+            pre.message_output_flush_nonempty_log_count,
+            pre.receiver_do_send_false_log_count,
+            pre.receiver_packet_built_log_count,
+            pre.connection_resend_timer_log_count,
+            pre.receiver_debug_enabled,
+            pre.message_output_enabled,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p245-response-stats-post",
+        &format!(
+            "scheduler_log_count={} ack_constructed_log_count={} send_message_size_lifetime_events={} send_failure_count={} send_exception_count={} scheduler_debug_enabled={} connection_debug_enabled={} packetqueue_debug_enabled={} scheduler_send_branch_log_count={} scheduler_reschedule_branch_log_count={} scheduler_no_unacked_warning_log_count={} message_output_flush_nonempty_log_count={} receiver_do_send_false_log_count={} receiver_packet_built_log_count={} connection_resend_timer_log_count={} receiver_debug_enabled={} message_output_enabled={}",
+            post.scheduler_log_count,
+            post.ack_constructed_log_count,
+            post.send_message_size_lifetime_events,
+            post.send_failure_count,
+            post.send_exception_count,
+            post.scheduler_debug_enabled,
+            post.connection_debug_enabled,
+            post.packetqueue_debug_enabled,
+            post.scheduler_send_branch_log_count,
+            post.scheduler_reschedule_branch_log_count,
+            post.scheduler_no_unacked_warning_log_count,
+            post.message_output_flush_nonempty_log_count,
+            post.receiver_do_send_false_log_count,
+            post.receiver_packet_built_log_count,
+            post.connection_resend_timer_log_count,
+            post.receiver_debug_enabled,
+            post.message_output_enabled,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p245-response-deltas",
+        &format!(
+            "scheduler_delta={} ack_delta={} sendmessage_delta={} failure_delta={} exception_delta={} scheduler_send_branch_delta={} scheduler_reschedule_branch_delta={} scheduler_no_unacked_delta={} message_output_flush_nonempty_delta={} receiver_do_send_false_delta={} receiver_packet_built_delta={} connection_resend_timer_delta={}",
+            deltas.scheduler_delta,
+            deltas.ack_delta,
+            deltas.sendmessage_delta,
+            deltas.send_failure_delta,
+            deltas.send_exception_delta,
+            deltas.scheduler_send_branch_delta,
+            deltas.scheduler_reschedule_branch_delta,
+            deltas.scheduler_no_unacked_delta,
+            deltas.message_output_flush_nonempty_delta,
+            deltas.receiver_do_send_false_delta,
+            deltas.receiver_packet_built_delta,
+            deltas.connection_resend_timer_delta,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p245-stage-a0",
+        &format!(
+            "scheduler_log_isolatable={} connection_log_isolatable={} receiver_log_isolatable={} message_output_enabled={}",
+            stage_a0.scheduler_log_isolatable,
+            stage_a0.connection_log_isolatable,
+            stage_a0.receiver_log_isolatable,
+            stage_a0.message_output_enabled,
+        ),
+    );
+    append_evidence(evidence_dir, "p245-classification", terminal.token());
+}
+
+// ---- Plan 245 §12 focused tests --------------------------------------------
+// Each test pins one precedence or attribution rule from the plan.
+// Together with the retained Plan-237–244 floors they lock the full
+// Stage A.0 ordering.
+
+fn p245_test_stats() -> P245ResponseStats {
+    P245ResponseStats {
+        scheduler_log_count: 1,
+        ack_constructed_log_count: 0,
+        send_message_size_lifetime_events: 0,
+        send_failure_count: 0,
+        send_exception_count: 0,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        packetqueue_debug_enabled: true,
+        scheduler_send_branch_log_count: 1,
+        scheduler_reschedule_branch_log_count: 0,
+        scheduler_no_unacked_warning_log_count: 0,
+        message_output_flush_nonempty_log_count: 1,
+        receiver_do_send_false_log_count: 0,
+        receiver_packet_built_log_count: 1,
+        connection_resend_timer_log_count: 0,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+    }
+}
+
+fn p245_test_stats_with(direct_build: u64, resend_timer: u64) -> P245ResponseStats {
+    let mut stats = p245_test_stats();
+    stats.receiver_packet_built_log_count = direct_build;
+    stats.connection_resend_timer_log_count = resend_timer;
+    stats
+}
+
+fn p245_stage_a0_full() -> P245StageA0 {
+    P245StageA0 {
+        scheduler_log_isolatable: true,
+        connection_log_isolatable: true,
+        receiver_log_isolatable: true,
+        message_output_enabled: true,
+    }
+}
+
+#[test]
+fn p245_resend_timer_is_not_universal_construction_signal() {
+    // Exact-pinned source: Connection.sendPacket() takes the ACK-only
+    // branch for sequence-0 non-SYN packets and never schedules the
+    // retransmit timer. Absence of `Resend in` therefore does not
+    // prove absence of packet construction. The classification rule
+    // never uses `connection_resend_timer_delta == 0` as a
+    // construction absence proof on its own.
+    let pre = P245ResponseStats::default();
+    let post = p245_test_stats_with(1, 0);
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+    assert_ne!(terminal, P245Terminal::BuildPacketObservabilityGap);
+}
+
+#[test]
+fn p245_direct_build_log_is_authoritative_construction_signal() {
+    // The Plan-244 retransmit-timer proxy and the new direct build log
+    // agree on construction when both deltas are positive. The
+    // classifier returns `DirectConstructionWithRetransmitTimer`.
+    let pre = P245ResponseStats::default();
+    let post = p245_test_stats_with(1, 1);
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::DirectConstructionWithRetransmitTimer
+    );
+}
+
+#[test]
+fn p245_scheduler_send_branch_implies_send_available_call() {
+    // Source-locked: the `received con... send a packet` log and the
+    // `con.sendAvailable()` call live in the same source branch.
+    // The classifier treats a positive scheduler_send_branch_delta
+    // as proof that Connection.sendAvailable() ran.
+    let pre = P245ResponseStats {
+        scheduler_debug_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let mut post = p245_test_stats();
+    post.scheduler_send_branch_log_count = 1;
+    post.scheduler_reschedule_branch_log_count = 0;
+    post.scheduler_no_unacked_warning_log_count = 0;
+    post.receiver_packet_built_log_count = 0;
+    post.connection_resend_timer_log_count = 0;
+    post.receiver_do_send_false_log_count = 0;
+    post.message_output_flush_nonempty_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(terminal, P245Terminal::BuildPacketObservabilityGap);
+}
+
+#[test]
+fn p245_flush_available_calls_write_data_even_with_zero_valid() {
+    // Source-locked: MessageOutputStream.flushAvailable(target,
+    // blocking) calls target.writeData(_buf, 0, _valid) unconditionally
+    // inside the data lock and never returns merely because _valid == 0.
+    // The classifier never treats `message_output_flush_nonempty_delta
+    // == 0` as proof that writeData was not called.
+    let pre = P245ResponseStats {
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let mut post = p245_test_stats();
+    post.message_output_flush_nonempty_log_count = 0;
+    post.scheduler_send_branch_log_count = 1;
+    post.receiver_packet_built_log_count = 0;
+    post.receiver_do_send_false_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(terminal, P245Terminal::BuildPacketObservabilityGap);
+}
+
+#[test]
+fn p245_unacked_received_forces_do_send() {
+    // Source-locked: ConnectionDataReceiver.writeData forces
+    // doSend = true when con.getUnackedPacketsReceived() > 0. A
+    // positive scheduler send branch implies the SYN-ACK path,
+    // which always carries at least one one unacked packet; the
+    // classifier does not over-credit doSend-false on this path.
+    let pre = P245ResponseStats::default();
+    let mut post = p245_test_stats();
+    post.scheduler_send_branch_log_count = 1;
+    post.receiver_do_send_false_log_count = 0;
+    post.receiver_packet_built_log_count = 1;
+    post.connection_resend_timer_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+}
+
+#[test]
+fn p245_do_send_false_precedes_build_absence_terminal() {
+    // Source-locked: ConnectionDataReceiver.writeData emits the
+    // `writeData called: size=... doSend=false ...` log when doSend
+    // is false. The classifier stops at `WriteDataSuppressed` and
+    // never advances into the build-absence gap.
+    let pre = P245ResponseStats::default();
+    let mut post = p245_test_stats();
+    post.scheduler_send_branch_log_count = 1;
+    post.receiver_do_send_false_log_count = 1;
+    post.receiver_packet_built_log_count = 0;
+    post.connection_resend_timer_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(terminal, P245Terminal::WriteDataSuppressed);
+}
+
+#[test]
+fn p245_build_log_proves_construction_without_timer() {
+    // The Plan-245 authoritative construction signal is
+    // `receiver_packet_built_delta > 0`, regardless of the
+    // retransmit-timer delta.
+    let pre = P245ResponseStats::default();
+    let post = p245_test_stats_with(1, 0);
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+}
+
+#[test]
+fn p245_plan244_proxy_false_negative_does_not_rewrite_history() {
+    // Plan 245 supersedes only Plan 244's interpretation of the
+    // zero timer-log delta; Plan 244's `P244-B-RESPONSE-PACKET-NOT-
+    // CONSTRUCTED` execution evidence stays in its closure record.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("245-m6-java-streaming-stock-response-construction-signal-attribution-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("Plan 244's interpretation"),
+        "Plan 245 §1: supersedes only Plan 244 interpretation"
+    );
+    assert!(
+        plan.contains("does not rewrite Plan-244 execution evidence"),
+        "Plan 245 §1: does not rewrite Plan-244 execution evidence"
+    );
+    assert_eq!(
+        P245Terminal::Plan244ConstructionProxyFalseNegative.token(),
+        "P245-D-PLAN244-CONSTRUCTION-PROXY-FALSE-NEGATIVE"
+    );
+}
+
+#[test]
+fn p245_direct_construction_resumes_plan244_chain() {
+    // When direct construction is proven, the classifier returns a
+    // construction-positive terminal (`DirectConstructionWithRetransmitTimer`
+    // or `Plan244ConstructionProxyFalseNegative`) and the live driver
+    // resumes the retained Plan-244 chain.
+    let pre = P245ResponseStats::default();
+    let stage_a0 = p245_stage_a0_full();
+    let both = p245_test_stats_with(1, 1);
+    let only_build = p245_test_stats_with(1, 0);
+    assert_eq!(
+        p245_classify(true, Some(pre), Some(both), &stage_a0),
+        P245Terminal::DirectConstructionWithRetransmitTimer
+    );
+    assert_eq!(
+        p245_classify(true, Some(pre), Some(only_build), &stage_a0),
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+    // The construction-negative arms never advance into Stage B/C/D.
+    let mut build_zero = p245_test_stats();
+    build_zero.receiver_packet_built_log_count = 0;
+    build_zero.connection_resend_timer_log_count = 0;
+    build_zero.receiver_do_send_false_log_count = 0;
+    let terminal = p245_classify(true, Some(pre), Some(build_zero), &stage_a0);
+    assert_eq!(terminal, P245Terminal::BuildPacketObservabilityGap);
+}
+
+#[test]
+fn p245_sendmessage_requires_direct_construction() {
+    // The Plan-237 `send_message_size_lifetime_events` delta is a
+    // post-construction signal. The classifier never advances
+    // past the build-absence gap to claim a `sendmessage_delta`
+    // without a proven direct construction.
+    let pre = P245ResponseStats::default();
+    let mut post = p245_test_stats();
+    post.scheduler_send_branch_log_count = 1;
+    post.send_message_size_lifetime_events = 1;
+    post.receiver_packet_built_log_count = 0;
+    post.connection_resend_timer_log_count = 0;
+    post.receiver_do_send_false_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(terminal, P245Terminal::BuildPacketObservabilityGap);
+}
+
+#[test]
+fn p245_router_admission_requires_response_sendmessage() {
+    // Plan 237/238/244 admit Router-A I2CP only after a proven
+    // sendMessage return. Plan 245 does not change the gate: when
+    // direct construction is proven the live driver resumes the
+    // Plan-244 chain (not P245), which checks the sendMessage delta.
+    let pre = P245ResponseStats::default();
+    let mut post = p245_test_stats();
+    post.scheduler_send_branch_log_count = 1;
+    post.receiver_packet_built_log_count = 1;
+    post.connection_resend_timer_log_count = 0;
+    post.send_message_size_lifetime_events = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+}
+
+#[test]
+fn p245_lookup_requires_exact_streaming_job() {
+    // Plan 244's exact-streaming-ISJ rule is preserved by the live
+    // driver; Plan 245 does not relax it. The classifier stops at
+    // a construction-positive terminal and the live driver resumes
+    // the Plan-244 chain, which gates the exact-streaming-job
+    // correlation.
+    let pre = P245ResponseStats::default();
+    let mut post = p245_test_stats();
+    post.receiver_packet_built_log_count = 1;
+    post.connection_resend_timer_log_count = 0;
+    let stage_a0 = p245_stage_a0_full();
+    let terminal = p245_classify(true, Some(pre), Some(post), &stage_a0);
+    assert_eq!(
+        terminal,
+        P245Terminal::Plan244ConstructionProxyFalseNegative
+    );
+}
+
+#[test]
+fn p245_i2pr_defect_requires_expected_reverse_tunneldata() {
+    // The Plan-245 production-change rule mirrors Plan-244 §12:
+    // no production i2pr corrective is authorized before exact
+    // expected reverse TunnelData reaches i2pr.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("245-m6-java-streaming-stock-response-construction-signal-attribution-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("No production i2pr change is authorized by a missing timer log")
+            || plan.contains("No production Rust corrective is authorized"),
+        "Plan 245 §9: no production i2pr corrective authorized by missing signals"
+    );
+    assert!(
+        plan.contains("Production i2pr correction becomes eligible only when exact expected reverse TunnelData"),
+        "Plan 245 §9: production correction only on exact reverse TunnelData"
+    );
+}
+
+#[test]
+fn p245_no_java_source_patch() {
+    // The Plan-245 implementation must not patch the pinned Java
+    // source. The static checker enforces this in production Rust
+    // (33d analog); the test asserts the plan text and the file
+    // surface.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("245-m6-java-streaming-stock-response-construction-signal-attribution-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("No Java source patch and no production i2pr change is authorized"),
+        "Plan 245 §1: no Java source patch, no production i2pr change"
+    );
+    let helper_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("java")
+        .join("ReferenceStreamingService.java");
+    let helper = std::fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read helper {helper_path:?}: {e}"));
+    assert!(
+        !helper.contains("P245_SCHEDULER_PATCH") && !helper.contains("// JAVA PATCH"),
+        "Plan 245: helper file remains free of patch markers"
+    );
+}
+
+#[test]
+fn p245_no_production_change() {
+    // Plan 245 §9: production Rust stays free of P245 surface.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("245-m6-java-streaming-stock-response-construction-signal-attribution-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("No production Rust corrective is authorized"),
+        "Plan 245 §9: no production Rust corrective authorized"
+    );
+    let prod_dirs = [
+        "crates/i2pr-daemon/src",
+        "crates/i2pr-client/src",
+        "crates/i2pr-tunnel/src",
+        "crates/i2pr-runtime/src",
+    ];
+    for dir in prod_dirs {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let hits = walkdir_find(&path, "p245").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 245: production Rust carries Plan 245 surface ({}): {:?}",
+            dir,
+            hits
+        );
+        let hits = walkdir_find(&path, "P245").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 245: production Rust carries Plan 245 surface ({}): {:?}",
+            dir,
+            hits
+        );
+    }
+}
+
+#[test]
+fn p245_no_response_behavior_change() {
+    // Plan 245 §4 — helper behavior (socket reads/writes, acceptance,
+    // SessionConfig, response emission) is unchanged. The helper file
+    // must not introduce any behavioral surface: only the
+    // `REPORT_RESPONSE_STATS` extension and logger enablement.
+    let helper_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("java")
+        .join("ReferenceStreamingService.java");
+    let helper = std::fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read helper {helper_path:?}: {e}"));
+    assert!(
+        helper.contains("P245_SCHEDULER_SEND_BRANCH"),
+        "Plan 245: helper carries the new observation needles"
+    );
+    assert!(
+        helper.contains("receiver_debug_enabled"),
+        "Plan 245: helper exposes the receiver logger-enabled fact"
+    );
+    // Plan 245 §4 — the helper must not introduce new behavioral
+    // method calls inside `main` or the case bodies. Scan every
+    // non-comment line for the forbidden literal invocation form
+    // (`xxx(` followed by an argument list ending with `)`), and
+    // reject any code line that contains a token resembling an
+    // ackImmediately/sendPacket/acknowledge call. String literals
+    // (used as source-lock constants) are filtered out by skipping
+    // the trailing `;` line or any line that is purely a string
+    // assignment.
+    let mut has_acked_invocation = false;
+    let mut has_sendpacket_invocation = false;
+    for raw_line in helper.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        // Skip lines that are pure string-literal assignments
+        // (e.g. `private static final String X = "..."`).
+        if line.contains("\"Connection.") || line.contains("\"net.i2p.") {
+            continue;
+        }
+        if line.contains("ackImmediately(") {
+            has_acked_invocation = true;
+        }
+        if line.contains("sendPacket(") {
+            has_sendpacket_invocation = true;
+        }
+    }
+    assert!(
+        !has_acked_invocation,
+        "Plan 245: helper does not invoke Connection.ackImmediately directly"
+    );
+    assert!(
+        !has_sendpacket_invocation,
+        "Plan 245: helper does not invoke Connection.sendPacket directly"
+    );
+}
+
+// Plan 245 stock-response construction-signal attribution (end).

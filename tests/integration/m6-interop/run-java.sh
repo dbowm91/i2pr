@@ -2926,6 +2926,29 @@ m6_key_row "external-p244-epoch-binding" "p244-epoch-binding" \
 m6_key_row "external-p244-stage-summary" "p244-stage-summary" \
   "Plan 244 §§7-12: same-epoch stage deltas and correlation flags behind the terminal"
 
+# Plan 245 §17 — read the stock-response construction-signal
+# attribution terminal the streaming driver classified in Stage A.0
+# order before the Plan-244 chain. Consume the LAST occurrence so an
+# early branch cannot shadow the authoritative outcome, and record
+# exactly one external row per key (diagnostic observation, always
+# passed when present). The static checker rejects any literal
+# `record "<P245-X>" passed` line: the historical P236 token never
+# governs this row, and Plan 245 only supersedes the Plan-244
+# retransmit-timer interpretation.
+P245_CLASSIFICATION=""
+STREAM_DRIVER_TSV_FOR_P245="${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv"
+if [[ -f "${STREAM_DRIVER_TSV_FOR_P245}" ]]; then
+  P245_CLASSIFICATION="$(awk -F'\t' '$1 == "p245-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${STREAM_DRIVER_TSV_FOR_P245}")"
+fi
+if [[ -z "${P245_CLASSIFICATION}" ]]; then
+  P245_CLASSIFICATION="P245-classification-missing"
+fi
+record "external-p245-classification" passed "Plan 245 §6/§8: ${P245_CLASSIFICATION}"
+m6_key_row "external-p245-response-deltas" "p245-response-deltas" \
+  "Plan 245 §5: same-epoch deltas for scheduler branches, writeData doSend-false, direct buildPacket, retransmit-timer"
+m6_key_row "external-p245-stage-a0" "p245-stage-a0" \
+  "Plan 245 §6: logger-enabled isolation flags behind the Stage A.0 classifier"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted

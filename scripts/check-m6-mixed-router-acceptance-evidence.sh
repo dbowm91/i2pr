@@ -5372,8 +5372,192 @@ if [[ ! -f "${P244_CLOSURE}" ]]; then
   failures=$((failures + 1))
 fi
 
+# ---- 34. Plan 245 stock-response construction-signal attribution ----------
+# Plan 245 supersedes only Plan 244's interpretation of the zero
+# retransmit-timer log delta. It observes the direct
+# `ConnectionDataReceiver.buildPacket` `New OB pkt (acks not yet
+# filled in): ...` construction signal, the
+# `ConnectionDataReceiver.writeData` doSend-false INFO log, and the
+# `MessageOutputStream.flushAvailable()` INFO log; classifies in
+# Stage A.0 order; resumes the retained Plan-244 chain when direct
+# construction is proven. The checker enforces the §12 unit surface,
+# the canonical terminal vocabulary, the source-lock record has been
+# bumped to include the new needles, the production-surface guard,
+# the plan invariants, and the read-only harness row.
+P245_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P245_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+P245_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P245_PLAN="${REPO_ROOT}/plans/implementation/mixed-router-interop/245-m6-java-streaming-stock-response-construction-signal-attribution-corrective.md"
+P245_CLOSURE="${REPO_ROOT}/plans/closure/mixed-router-interop/245-status.md"
+if [[ -f "${P245_DRIVER_TEST}" ]]; then
+  # 34a. The Plan 245 unit rows: the 16 §12 named rows.
+  for unit_row in \
+    p245_resend_timer_is_not_universal_construction_signal \
+    p245_direct_build_log_is_authoritative_construction_signal \
+    p245_scheduler_send_branch_implies_send_available_call \
+    p245_flush_available_calls_write_data_even_with_zero_valid \
+    p245_unacked_received_forces_do_send \
+    p245_do_send_false_precedes_build_absence_terminal \
+    p245_build_log_proves_construction_without_timer \
+    p245_plan244_proxy_false_negative_does_not_rewrite_history \
+    p245_direct_construction_resumes_plan244_chain \
+    p245_sendmessage_requires_direct_construction \
+    p245_router_admission_requires_response_sendmessage \
+    p245_lookup_requires_exact_streaming_job \
+    p245_i2pr_defect_requires_expected_reverse_tunneldata \
+    p245_no_java_source_patch \
+    p245_no_production_change \
+    p245_no_response_behavior_change; do
+    if ! grep -q "fn ${unit_row}" "${P245_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P245_DRIVER_TEST} lacks Plan 245 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 34b. The canonical Plan 245 terminal vocabulary (§§6/8).
+  for terminal in \
+    'P245-A-RESPONSE-OBSERVATION-NOT-ISOLATABLE' \
+    'P245-A-PLAN244-BASELINE-REGRESSION' \
+    'P245-A-SCHEDULER-NOT-OBSERVED' \
+    'P245-A-SCHEDULER-NO-UNACKED-PACKETS' \
+    'P245-A-SCHEDULER-RESCHEDULED-NO-SEND-BRANCH' \
+    'P245-B-WRITEDATA-SUPPRESSED' \
+    'P245-C-BUILDPACKET-OBSERVABILITY-GAP' \
+    'P245-D-PLAN244-CONSTRUCTION-PROXY-FALSE-NEGATIVE' \
+    'P245-D-DIRECT-CONSTRUCTION-WITH-RETRANSMIT-TIMER'; do
+    if ! grep -q -F "${terminal}" "${P245_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P245_DRIVER_TEST} lacks Plan 245 terminal '${terminal}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 34c. The Plan 245 module never reads the historical P236
+  # classifier inputs, never uses the tunnel-handoff counter as
+  # dispatch proof, and never fails open — while keeping the new
+  # Plan-245 epoch/delta vocabulary.
+  p245_section="$(awk '/Plan 245 .*\(begin\)\./{flag=1} flag{print} /Plan 245 .*\(end\)\./{flag=0}' "${P245_DRIVER_TEST}")"
+  if [[ -z "${p245_section}" ]]; then
+    echo "m6 mixed-router evidence check failed: ${P245_DRIVER_TEST} lacks delimited Plan 245 ranges" >&2
+    failures=$((failures + 1))
+  else
+    for forbidden in \
+      'P236Terminal' \
+      'p236_terminal' \
+      'p236_state' \
+      'record_p236' \
+      'p236_classify' \
+      'p236_parse' \
+      'dispatch_outbound_tunnel' \
+      '|| true'; do
+      if grep -q -F "${forbidden}" <<<"${p245_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 245 range carries forbidden surface '${forbidden}' (Plan 245 §15)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    for required in \
+      'scheduler_send_branch_delta' \
+      'receiver_packet_built_delta' \
+      'receiver_do_send_false_delta' \
+      'connection_resend_timer_delta' \
+      'scheduler_no_unacked_delta' \
+      'message_output_flush_nonempty_delta' \
+      'p245_p244_baseline_ok' \
+      'p245_stage_a0_from_stats'; do
+      if ! grep -q -F "${required}" <<<"${p245_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 245 range lacks required vocabulary '${required}' (Plan 245 §15)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+  # 34d. Production Rust stays free of P245 surface (mirrors Plan
+  # 243 §32d / Plan 244 §33d). The checker scans the same
+  # production source roots.
+  if grep -rq -F 'P245' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 245 surface" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -rq -F 'p245' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 245 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P245_HARNESS}" ]]; then
+  # 34e. The harness carries the read-only Plan 245 rows keyed on
+  # the driver TSV (diagnostic observation, always passed when
+  # present) and never invents a terminal literal.
+  for required in \
+    'external-p245-classification' \
+    'p245-response-deltas' \
+    'p245-stage-a0'; do
+    if ! grep -q -F "${required}" "${P245_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P245_HARNESS} lacks Plan 245 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P245-" "${P245_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P245_HARNESS} invents a Plan 245 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P245_HELPER_SRC}" ]]; then
+  # 34f. The helper exposes the seven new bounded observation
+  # needles in `REPORT_RESPONSE_STATS` plus the two new logger-
+  # enabled flags (Plan 245 §5). It also enables DEBUG for
+  # `ConnectionDataReceiver` so the direct construction signal
+  # surfaces, and INFO for `MessageOutputStream` so the
+  # `flushAvailable()` log fires only when `_valid > 0`.
+  for required in \
+    'P245_SCHEDULER_SEND_BRANCH' \
+    'P245_SCHEDULER_RESCHEDULE_BRANCH' \
+    'P245_SCHEDULER_NO_UNACKED' \
+    'P245_MESSAGE_OUTPUT_FLUSH' \
+    'P245_RECEIVER_DOSEND_FALSE' \
+    'P245_RECEIVER_PACKET_BUILT' \
+    'scheduler_send_branch_log_count' \
+    'scheduler_reschedule_branch_log_count' \
+    'scheduler_no_unacked_warning_log_count' \
+    'message_output_flush_nonempty_log_count' \
+    'receiver_do_send_false_log_count' \
+    'receiver_packet_built_log_count' \
+    'connection_resend_timer_log_count' \
+    'receiver_debug_enabled' \
+    'message_output_enabled' \
+    'P245_RECEIVER_CLASS' \
+    'P245_MESSAGE_OUTPUT_CLASS'; do
+    if ! grep -q -F "${required}" "${P245_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P245_HELPER_SRC} lacks Plan 245 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+if [[ -f "${P245_PLAN}" ]]; then
+  # 34g. The implementation plan keeps the §§1/4/6/9/11/15 invariants
+  # in its own text (defense in depth against silent drift).
+  for required in \
+    'supersedes only Plan 244' \
+    'does not rewrite Plan-244 execution evidence' \
+    'No Java source patch' \
+    'No production i2pr change' \
+    'P245-A-SCHEDULER-NOT-OBSERVED' \
+    'P245-B-WRITEDATA-SUPPRESSED' \
+    'P245-C-BUILDPACKET-OBSERVABILITY-GAP' \
+    'P245-D-PLAN244-CONSTRUCTION-PROXY-FALSE-NEGATIVE' \
+    'P245-D-DIRECT-CONSTRUCTION-WITH-RETRANSMIT-TIMER' \
+    'absence of `Resend in` does not prove absence of packet construction'; do
+    if ! grep -q -F "${required}" "${P245_PLAN}"; then
+      echo "m6 mixed-router evidence check failed: ${P245_PLAN} lost Plan 245 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The Plan 245 closure record is required for the registry/roadmap
+# unblock audit; its presence is asserted here (the registration stub
+# satisfies this before closure lands, the full record after).
+if [[ ! -f "${P245_CLOSURE}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 245 closure record ${P245_CLOSURE}" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants, Plan 245 §34 stock-response construction-signal attribution invariants)"

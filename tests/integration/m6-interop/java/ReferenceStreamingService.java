@@ -108,7 +108,23 @@ public final class ReferenceStreamingService {
     // No packet contents, keys, tags, plaintext payloads, or private
     // state. Counts are bounded by the console buffer size (512) and
     // MAX_OBSERVATIONS.
-    private static final int P237_CONSOLE_BUFFER_SIZE = 512;
+    // Plan 245 §4 — buffer growth: the bounded console buffer must be
+    // proven sufficient for the Plan-237 retained signals plus the
+    // seven new bounded Plan-245 epoch signals
+    // (scheduler_send_branch, scheduler_reschedule_branch,
+    // scheduler_no_unacked_warning, message_output_flush_nonempty,
+    // receiver_do_send_false, receiver_packet_built,
+    // connection_resend_timer). The Plan-237 512-line buffer is
+    // already shared across an unrelated consumer
+    // (`accept_one`-style accept observability) and every observation
+    // runs through the bounded `p237CountBufferSubstring` /
+    // `p245CountBufferSubstring` counters that statically cap each
+    // needle at MAX_OBSERVATIONS (1024). The helper increases the
+    // buffer to 1024 so the seven added Plan-245 needles share the
+    // same bounded window without evicting the Plan-237 needles. No
+    // packet content, key, tag, payload, or private state crosses
+    // the bound; only the bounded public LogManager console buffer.
+    private static final int P237_CONSOLE_BUFFER_SIZE = 1024;
     // Plan 237 §9 corrective (counted attempt 1 finding): the pinned
     // `SchedulerReceived.eventOccurred()` source emits its DEBUG strings
     // through the superclass logger (`SchedulerImpl._log =
@@ -123,6 +139,21 @@ public final class ReferenceStreamingService {
         "net.i2p.client.streaming.impl.Connection";
     private static final String P237_PACKETQUEUE_CLASS =
         "net.i2p.client.streaming.impl.PacketQueue";
+    // Plan 245 §4 — additional bounded observation classes the
+    // stock-helper needs to surface the direct construction signal.
+    // The Plan-237 `Connection` and `PacketQueue` DEBUG levels stay
+    // set (they cover the retransmit-timer `Resend in` log and the
+    // `sendMessage` lifetime stat); `ConnectionDataReceiver` exposes
+    // the authoritative `New OB pkt (acks not yet filled in)` DEBUG
+    // log emitted at the end of `buildPacket()` for every packet the
+    // JVM constructs, and `MessageOutputStream` exposes the
+    // `flushAvailable()` INFO log emitted when `_valid > 0` so the
+    // observer can correlate the upstream flush call with the
+    // downstream writeData decision.
+    private static final String P245_RECEIVER_CLASS =
+        "net.i2p.client.streaming.impl.ConnectionDataReceiver";
+    private static final String P245_MESSAGE_OUTPUT_CLASS =
+        "net.i2p.client.streaming.impl.MessageOutputStream";
     private static final String P237_SCHEDULER_SIGNAL = "received con... ";
     // Plan 237 §4.2 corrective (counted attempt 1 finding): the pinned
     // `Connection.ackImmediately()` "sending new ack" log fires only on
@@ -136,6 +167,26 @@ public final class ReferenceStreamingService {
     private static final String P237_SEND_FAILED_SIGNAL = "Send failed for ";
     private static final String P237_SEND_EXCEPTION_SIGNAL = "Unable to send the packet";
     private static final String P237_SENDMESSAGE_STAT = "stream.con.sendMessageSize";
+    // Plan 245 §3.1 / §3.4 — the exact-pinned source-locked
+    // observation needles that supersede only Plan 244's
+    // `Resend in`-based construction proxy. Each needle is a
+    // bounded, public, sanitized substring from the exact-pinned
+    // implementation; never a packet dump, key, tag, plaintext
+    // payload, or private field. The Plan-237 `received con... `
+    // and `Resend in ` needles stay live for the retained
+    // Plan-237/244 chain.
+    private static final String P245_SCHEDULER_SEND_BRANCH =
+        "received con... send a packet";
+    private static final String P245_SCHEDULER_RESCHEDULE_BRANCH =
+        "received con... time till next send: ";
+    private static final String P245_SCHEDULER_NO_UNACKED =
+        "hmm, state is received, but no unacked packets received?";
+    private static final String P245_MESSAGE_OUTPUT_FLUSH =
+        "flushAvailable() valid = ";
+    private static final String P245_RECEIVER_DOSEND_FALSE =
+        "writeData called: size=";
+    private static final String P245_RECEIVER_PACKET_BUILT =
+        "New OB pkt (acks not yet filled in): ";
 
     private static void p237ConfigureStockObserver() {
         try {
@@ -147,6 +198,16 @@ public final class ReferenceStreamingService {
             limits.setProperty(P237_SCHEDULER_CLASS, "DEBUG");
             limits.setProperty(P237_CONNECTION_CLASS, "DEBUG");
             limits.setProperty(P237_PACKETQUEUE_CLASS, "DEBUG");
+            // Plan 245 §4 — DEBUG for ConnectionDataReceiver so the
+            // direct construction signal `New OB pkt (acks not yet
+            // filled in): ...` is captured at the source-locked
+            // site. INFO for MessageOutputStream so the
+            // `flushAvailable() valid = <n>` log fires only when
+            // the upstream flush carries data; both stay bounded by
+            // the console buffer and MAX_OBSERVATIONS, never touch
+            // private state.
+            limits.setProperty(P245_RECEIVER_CLASS, "DEBUG");
+            limits.setProperty(P245_MESSAGE_OUTPUT_CLASS, "INFO");
             context.logManager().setLimits(limits);
         } catch (Throwable ignored) { }
     }
@@ -200,6 +261,28 @@ public final class ReferenceStreamingService {
         // The actual scheduler logger is SchedulerImpl (see above); the
         // plan-named SchedulerReceived entry is retained for intent.
         return p237IsDebugEnabledFor(P237_SCHEDULER_IMPL_CLASS);
+    }
+
+    private static boolean p245ReceiverDebugEnabled() {
+        return p237IsDebugEnabledFor(P245_RECEIVER_CLASS);
+    }
+
+    private static boolean p245MessageOutputEnabled() {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null) return false;
+            Properties limits = context.logManager().getLimits();
+            if (limits == null) return false;
+            String level = limits.getProperty(P245_MESSAGE_OUTPUT_CLASS);
+            if (level == null) return false;
+            // INFO or higher (DEBUG also counts). Strict parse: any
+            // other value is treated as not enabled so the observation
+            // cannot accidentally observe a downgraded level.
+            return level.equalsIgnoreCase("INFO")
+                || level.equalsIgnoreCase("DEBUG");
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static int incrementBounded(AtomicInteger counter) {
@@ -480,6 +563,12 @@ public final class ReferenceStreamingService {
                             // snapshots this command before the SYN and at
                             // the end of the frozen response window, then
                             // classifies from deltas (never absolutes).
+                            // Plan 245 §5 — extends the bounded response
+                            // snapshot with the seven direct-attribution
+                            // needles the Plan-244 retransmit-timer proxy
+                            // could not discriminate. Counts are still
+                            // bounded public substrings; never packet
+                            // dumps, keys, tags, or payload bytes.
                             long sendEvents = p237SendMessageSizeLifetimeEvents();
                             int schedulerCount =
                                 p237CountBufferSubstring(P237_SCHEDULER_SIGNAL);
@@ -495,6 +584,24 @@ public final class ReferenceStreamingService {
                                 p237IsDebugEnabledFor(P237_CONNECTION_CLASS);
                             boolean packetqueueDebug =
                                 p237IsDebugEnabledFor(P237_PACKETQUEUE_CLASS);
+                            int schedulerSendBranch =
+                                p237CountBufferSubstring(P245_SCHEDULER_SEND_BRANCH);
+                            int schedulerRescheduleBranch =
+                                p237CountBufferSubstring(P245_SCHEDULER_RESCHEDULE_BRANCH);
+                            int schedulerNoUnacked =
+                                p237CountBufferSubstring(P245_SCHEDULER_NO_UNACKED);
+                            int messageOutputFlush =
+                                p237CountBufferSubstring(P245_MESSAGE_OUTPUT_FLUSH);
+                            int receiverDoSendFalse =
+                                p237CountBufferSubstring(P245_RECEIVER_DOSEND_FALSE);
+                            int receiverPacketBuilt =
+                                p237CountBufferSubstring(P245_RECEIVER_PACKET_BUILT);
+                            int connectionResendTimer =
+                                p237CountBufferSubstring(P237_SENDPACKET_SIGNAL);
+                            boolean receiverDebug =
+                                p245ReceiverDebugEnabled();
+                            boolean messageOutputEnabled =
+                                p245MessageOutputEnabled();
                             output.println("RESPONSE_STATS scheduler_log_count=" + schedulerCount
                                 + " ack_constructed_log_count=" + ackCount
                                 + " send_message_size_lifetime_events=" + sendEvents
@@ -502,7 +609,23 @@ public final class ReferenceStreamingService {
                                 + " send_exception_count=" + sendException
                                 + " scheduler_debug_enabled=" + schedulerDebug
                                 + " connection_debug_enabled=" + connectionDebug
-                                + " packetqueue_debug_enabled=" + packetqueueDebug);
+                                + " packetqueue_debug_enabled=" + packetqueueDebug
+                                // Plan 245 §5 — bounded direct-attribution
+                                // needles. `connection_resend_timer_delta`
+                                // is the retained Plan-244 construction
+                                // proxy; `receiver_packet_built_delta` is
+                                // the new direct construction signal that
+                                // proves construction even for ACK-only
+                                // sequence-0 non-SYN packets.
+                                + " scheduler_send_branch_log_count=" + schedulerSendBranch
+                                + " scheduler_reschedule_branch_log_count=" + schedulerRescheduleBranch
+                                + " scheduler_no_unacked_warning_log_count=" + schedulerNoUnacked
+                                + " message_output_flush_nonempty_log_count=" + messageOutputFlush
+                                + " receiver_do_send_false_log_count=" + receiverDoSendFalse
+                                + " receiver_packet_built_log_count=" + receiverPacketBuilt
+                                + " connection_resend_timer_log_count=" + connectionResendTimer
+                                + " receiver_debug_enabled=" + receiverDebug
+                                + " message_output_enabled=" + messageOutputEnabled);
                             break;
                         }
                         case "START_ACCEPT":
