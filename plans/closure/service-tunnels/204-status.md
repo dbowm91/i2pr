@@ -1,3 +1,27 @@
+# Current dependency amendment — Plan 243 closed; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 243 closed as
+`passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established`
+(see `plans/closure/mixed-router-interop/243-status.md`): Direction A
+established on 2/3 counted same-SHA attempts at
+`f359baba57fc7d952ab7f5a5367d34671c590b18`, one earlier
+stock-Java `I2PSession.connect()` handshake ceiling stop, reverse
+direction bounded at the retained Plan-236 response-emission
+gap. No production i2pr corrective is authorized before the
+reverse direction reaches i2pr.
+
+Plan 204 remains convergence-only and blocked on independent M6
+Java second-family closure (now pending the streaming reverse
+direction + publication / final-closure axis; no double unblock).
+
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan243-reverse-direction-and-publication-closure
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+milestone10_final_acceptance = closed
+next_executable_plan = none-pending-m6-java-streaming-reverse-direction-and-publication-corrective
+
 # Current dependency amendment — Plan 243 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.

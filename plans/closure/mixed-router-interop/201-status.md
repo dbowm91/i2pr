@@ -1,3 +1,33 @@
+# Current dependency amendment — Plan 243 closed; Direction-A established; reverse direction + publication closure pending
+
+Plan 243 is closed as
+`passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established`
+(see `plans/closure/mixed-router-interop/243-status.md`). On the
+committed implementation SHA
+`f359baba57fc7d952ab7f5a5367d34671c590b18`, the host qualification
+gate ran green, three counted same-SHA executions of the frozen
+Plan-242 Streaming lane produced `P243-G-DIRECTION-A-ESTABLISHED`
+on 2/3 attempts (one earlier stock-Java `I2PSession.connect()`
+handshake ceiling stop), and the streaming reverse direction
+(Java → i2pr response path) bounded at the retained
+`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. Direction A
+(i2pr → Java Streaming) reaches i2pr's expected TunnelData path
+(`inbound_tunneldata=1`, `expected_tunneldata=1`, `recovery=1`,
+`garlic_payload=1`, `adapter_successes=1`, `connection_established=true`).
+
+Plan 201's streaming axis now needs the narrow streaming reverse
+direction (Java → i2pr) + the bidirectional Streaming qualification
++ the publication / final-closure axis. The publication/final-
+closure axis remains independently unresolved. The successor plan
+must own the Plan-236-boundary continuation and must NOT authorize
+any i2pr production corrective before exact expected TunnelData
+reaches i2pr for the reverse direction.
+
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan243
+plan_242 = passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+next_executable_plan = none-pending-m6-java-streaming-reverse-direction-and-publication-corrective
+
 # Current dependency amendment — Plan 243 registered for hosted stock-client-build qualification
 
 Plan 242 is closed as passed-m6-java-streaming-stock-one-hop-selector-semantics-corrective-with-corrected-bootstrap-and-pair-gate. Its source/static/unit/workspace qualification is green, but its closure host did not have the required Java reference cache plus i2pr daemon pair, so no live counted external attempts executed there.
