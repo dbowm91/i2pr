@@ -1,3 +1,25 @@
+# Current dependency amendment — Plan 244 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 243 closed with Direction A (i2pr → Java Streaming) established on hosted
+execution. Plan 244 is registered-ready to attribute the remaining Java → i2pr
+Streaming response path by correlating the retained Plan-237/238/239/240
+observers in one response epoch.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure. Plan 244 does not reopen M10 product authority and does
+not pre-authorize publication or production-i2pr changes.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan244
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+plan_244 = registered-ready-m6-java-streaming-reverse-direction-continuous-response-attribution
+milestone10_final_acceptance = closed
+next_executable_plan = 244-m6-java-streaming-reverse-direction-continuous-response-attribution
+```
+
 # Current dependency amendment — Plan 243 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
