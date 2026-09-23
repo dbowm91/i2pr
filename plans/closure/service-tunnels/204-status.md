@@ -1,3 +1,17 @@
+# Current dependency amendment — Plan 245 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is not reopened or downgraded.
+
+Plan 244 closed the Java Streaming reverse-direction continuous response attribution at a repeatable response-construction boundary. Exact-pinned stock-Java review shows the retained retransmit-timer construction proxy is conditional, so Plan 245 is registered-ready to observe `ConnectionDataReceiver.buildPacket` directly and determine whether the Plan-244 boundary is an observer false negative or a genuine stock-response suppression state.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java second-family closure. Plan 245 pre-authorizes no production-i2pr, publication, topology, timing, or Java-source corrective.
+
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan245
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+plan_245 = registered-ready-m6-java-streaming-stock-response-construction-signal-attribution-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 245-m6-java-streaming-stock-response-construction-signal-attribution-corrective
+
 # Current dependency amendment — Plan 244 closed; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is
