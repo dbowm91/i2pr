@@ -1,3 +1,29 @@
+# Current dependency amendment — Plan 244 closed; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 244 closed with Direction A (i2pr → Java Streaming) established on
+3/3 counted same-SHA hosted executions at
+`154e92d8436dbad0b020a0b19d848d2d227a22af`, every response epoch fully
+bound, and the Java → i2pr Streaming response path bounded repeatably at
+`P244-B-RESPONSE-PACKET-NOT-CONSTRUCTED` (see
+`plans/closure/mixed-router-interop/244-status.md`). No production i2pr
+corrective is authorized before exact expected reverse TunnelData
+reaches i2pr.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure (now pending the §20 stock-response corrective +
+publication / final-closure axis; no double unblock).
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-successor-after-plan244
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+milestone10_final_acceptance = closed
+next_executable_plan = none-pending-stock-response-corrective-plan-of-record
+```
+
 # Current dependency amendment — Plan 244 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is

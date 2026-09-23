@@ -1,3 +1,36 @@
+# Current dependency amendment — Plan 244 closed at response-packet-not-constructed; narrow stock-response successor pending
+
+Plan 244 is closed as
+`passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary`
+(see `plans/closure/mixed-router-interop/244-status.md`). On the
+committed implementation SHA
+`154e92d8436dbad0b020a0b19d848d2d227a22af`, the host qualification
+gate ran green, three counted same-SHA executions of the frozen
+Plan-242 Streaming lane established Direction A 3/3
+(`java_accept_returned=true`, `expected_tunneldata=1`, `recovery=1`,
+`garlic_payload=1`, `adapter_successes=1`,
+`connection_established=true`), and every fully bound response epoch
+(`epoch_bound=true`, helper DBID + target + epoch id, provenance
+matched) stopped identically at the first missing live stage
+`P244-B-RESPONSE-PACKET-NOT-CONSTRUCTED` (stock-Java scheduler acts
+with `scheduler_delta=1`, `Connection.sendPacket` construction absent
+with `ack_constructed_delta=0`, failures zero). The historical P236
+gap token printed but never governed. No production i2pr corrective
+is authorized before exact expected reverse TunnelData reaches i2pr.
+
+Plan 201's streaming axis now needs the narrow stock-response
+corrective owned by the Plan-244 §20 `helper response not emitted`
+arm (its own plan-of-record; not pre-registered here) plus the
+bidirectional Streaming qualification. The publication/final-closure
+axis remains independently unresolved.
+
+```text
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-successor-after-plan244
+plan_243 = passed-m6-java-streaming-hosted-stock-client-build-qualification-with-direction-a-established
+plan_244 = passed-m6-java-streaming-reverse-direction-continuous-response-attribution-with-response-packet-not-constructed-boundary
+next_executable_plan = none-pending-stock-response-corrective-plan-of-record
+```
+
 # Current dependency amendment — Plan 244 registered for reverse-direction continuous response attribution
 
 Plan 243 is closed as
