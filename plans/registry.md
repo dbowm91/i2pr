@@ -54,7 +54,6 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 Current authority: Plan 243 closed the hosted stock-client-build qualification on `f359baba57fc7d952ab7f5a5367d34671c590b18` with Direction A established on 2/3 counted same-SHA executions. Plan 244 is dependency-ready to reuse the retained Plan-237/238/239/240 observers in one response epoch, ignore historical P236 output when deeper same-epoch evidence exists, and stop at the first real Java→i2pr reverse-direction boundary. Plan 201 and Plan 204 remain blocked on Java-family closure.
 
-## Dependency-ready and active plans
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
