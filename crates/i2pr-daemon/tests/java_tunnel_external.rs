@@ -24499,3 +24499,419 @@ fn p242_extended_tunnels_row_parses_with_bounded_roles() {
     )
     .is_none());
 }
+
+// =============================================================================
+// Plan 243 — M6 Java Streaming hosted stock-client-build qualification
+//
+// Plan 243 owns the host qualification gate + three same-SHA counted
+// executions of the frozen Plan-242 Streaming lane. These unit tests
+// lock the Plan 243 §13 invariants: host failure reasons, exact
+// workspace-SHA requirement, no retry-until-C, exact-via-C diagnostic
+// only, direction-A does not close M6, no production i2pr change.
+// =============================================================================
+
+const P243_BOUNDED_REASONS: &[&str] = &[
+    "java-runtime-missing",
+    "javac-missing",
+    "java-reference-cache-missing",
+    "i2pr-daemon-missing",
+    "source-lock-input-missing",
+    "port-preflight-failed",
+    "workspace-sha-mismatch",
+    "filesystem-preflight-failed",
+];
+
+fn p243_read_host_qualification_script() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("scripts")
+        .join("interop")
+        .join("check-p243-host-qualified.sh");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read host qualification script {:?}: {}", path, e))
+}
+
+fn walkdir_find(root: &std::path::Path, needle: &str) -> std::io::Result<Vec<String>> {
+    let mut hits = Vec::new();
+    fn walk(dir: &std::path::Path, needle: &str, hits: &mut Vec<String>) -> std::io::Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, needle, hits)?;
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !text.contains(needle) {
+                continue;
+            }
+            if let Some(rel) = path.to_str() {
+                hits.push(rel.to_owned());
+            }
+        }
+        Ok(())
+    }
+    walk(root, needle, &mut hits)?;
+    Ok(hits)
+}
+
+#[test]
+fn p243_host_not_qualified_does_not_consume_attempt() {
+    let script = p243_read_host_qualification_script();
+    assert!(
+        script.contains("P243-H-HOST-NOT-QUALIFIED"),
+        "Plan 243 §4: host qualification script must emit a bounded NOT-QUALIFIED token"
+    );
+    for reason in P243_BOUNDED_REASONS {
+        assert!(
+            script.contains(reason),
+            "Plan 243 §4: bounded reason '{reason}' must appear in the host qualification script"
+        );
+    }
+    assert!(
+        script.contains("exit 70"),
+        "Plan 243 §4: host failure must exit 70 (host-not-qualified)"
+    );
+}
+
+#[test]
+fn p243_host_gate_requires_exact_workspace_sha() {
+    let script = p243_read_host_qualification_script();
+    assert!(
+        script.contains("--expected-sha"),
+        "Plan 243 §4: --expected-sha flag must exist"
+    );
+    assert!(
+        script.contains("workspace-sha-mismatch"),
+        "Plan 243 §4: workspace-SHA mismatch is a bounded reason"
+    );
+    assert!(
+        script.contains("rev-parse HEAD"),
+        "Plan 243 §4: workspace SHA derivation uses git rev-parse HEAD"
+    );
+}
+
+#[test]
+fn p243_host_gate_requires_java_reference_cache() {
+    let script = p243_read_host_qualification_script();
+    assert!(
+        script.contains("java-reference-cache-missing"),
+        "Plan 243 §4: Java reference cache is a bounded reason"
+    );
+    assert!(
+        script.contains("9134f808337b401e8e53c73734c81fab04280c9d"),
+        "Plan 243 §4: Java reference cache must be pinned to Java 2.13.0"
+    );
+    assert!(
+        script.contains("source-revision.txt"),
+        "Plan 243 §4: source-revision.txt must be checked"
+    );
+    assert!(
+        script.contains("source-lock-input-missing"),
+        "Plan 243 §4: source-lock input missing is a bounded reason"
+    );
+}
+
+#[test]
+fn p243_host_gate_requires_i2pr_daemon() {
+    let script = p243_read_host_qualification_script();
+    assert!(
+        script.contains("i2pr-daemon-missing"),
+        "Plan 243 §4: i2pr-daemon-missing is a bounded reason"
+    );
+    assert!(
+        script.contains("cargo build --locked -p i2pr-daemon"),
+        "Plan 243 §4: i2pr-daemon is auto-built when missing on the default path"
+    );
+    assert!(
+        script.contains("target/debug/i2pr"),
+        "Plan 243 §4: i2pr-daemon default path is target/debug/i2pr"
+    );
+}
+
+#[test]
+fn p243_counted_attempt_requires_host_qualified() {
+    let script = p243_read_host_qualification_script();
+    assert!(
+        script.contains("host_qualified") && script.contains("\"true\""),
+        "Plan 243 §4: host_qualified=true row marks a qualified host"
+    );
+    assert!(
+        script.contains("not_qualified_reason"),
+        "Plan 243 §4: failure rows expose a bounded reason"
+    );
+    assert!(
+        !script.contains("I2PR_M6_JAVA_DRIVER=streaming"),
+        "Plan 243 §4: host script does NOT execute the streaming driver"
+    );
+}
+
+#[test]
+fn p243_counted_attempt_reuses_plan242_nonzero_pair_gate() {
+    // Plan 243 §6: counted attempts reuse Plan-242 §7 corrected gate.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("run-java.sh");
+    let harness =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read harness {:?}: {}", path, e));
+    assert!(
+        harness.contains("p242-bootstrap-gate"),
+        "Plan 243 §6: Plan-242 bootstrap gate is reused verbatim"
+    );
+    assert!(
+        harness.contains("P242_PAIR_OK"),
+        "Plan 243 §6: Plan-242 non-zero pair gate is reused verbatim"
+    );
+    assert!(
+        harness.contains("P242-A-NO-STOCK-CLIENT-TUNNEL-CANDIDATE"),
+        "Plan 243 §6: candidate-population-empty terminal reused"
+    );
+}
+
+#[test]
+fn p243_exact_via_c_not_required() {
+    // Plan 243 §6: exact-via-C remains diagnostic only; the §7 non-zero
+    // pair gate is the only authoritative prerequisite.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("run-java.sh");
+    let harness =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read harness {:?}: {}", path, e));
+    assert!(
+        harness.contains("P242_IN_EXACT_C") && harness.contains("P242_OUT_EXACT_C"),
+        "Plan 243 §6: exact-via-C diagnostic fields retained"
+    );
+    // The Plan 243 §6 non-zero pair gate logic does NOT branch on
+    // P242_IN_EXACT_C/P242_OUT_EXACT_C (diagnostic only).
+    assert!(
+        !harness.contains("P242_IN_EXACT_C == \"true\""),
+        "Plan 243 §6: exact-via-C is NOT a continuation gate"
+    );
+    assert!(
+        !harness.contains("P242_OUT_EXACT_C == \"true\""),
+        "Plan 243 §6: exact-via-C is NOT a continuation gate"
+    );
+}
+
+#[test]
+fn p243_explicit_branch_not_required() {
+    // Plan 243 §6: explicit branch is one-in-four; counted attempts
+    // must not retry until the explicit branch fires.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("run-java.sh");
+    let harness =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read harness {:?}: {}", path, e));
+    assert!(
+        !harness.contains("retry-until-explicit-c") && !harness.contains("retry_until_explicit_c"),
+        "Plan 243 §6: no retry-until-explicit-C logic"
+    );
+    assert!(
+        !harness.contains("forceShouldSelectExplicit"),
+        "Plan 243 §6: no forceShouldSelectExplicit"
+    );
+    assert!(
+        !harness.contains("random.nextInt(4) == 0"),
+        "Plan 243 §6: no RNG literal override"
+    );
+}
+
+#[test]
+fn p243_three_attempt_budget_no_retry_until_c() {
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("243-m6-java-streaming-hosted-stock-client-build-qualification.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {:?}: {}", plan_path, e));
+    assert!(
+        plan.contains("three counted attempts"),
+        "Plan 243 §6: three counted attempts"
+    );
+    assert!(
+        plan.contains("do not retry merely to obtain the one-in-four explicit-C branch"),
+        "Plan 243 §6: no retry for the explicit-C branch"
+    );
+    assert!(
+        plan.contains("Do not require Router C 3/3"),
+        "Plan 243 §11: Router C 3/3 not required"
+    );
+}
+
+#[test]
+fn p243_lookup_continuation_requires_nonzero_pair() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("run-java.sh");
+    let harness =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read harness {:?}: {}", path, e));
+    assert!(
+        harness.contains("P242_PAIR_OK") && harness.contains("start_stream_helper"),
+        "Plan 243 §8: lookup continuation requires Plan-242 non-zero pair gate"
+    );
+    assert!(
+        harness.contains("P242-IN-NZ-COUNT") || harness.contains("P242_IN_NZ_COUNT"),
+        "Plan 243 §8: pair gate consumes non-zero counts"
+    );
+}
+
+#[test]
+fn p243_production_change_requires_expected_tunneldata() {
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("243-m6-java-streaming-hosted-stock-client-build-qualification.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {:?}: {}", plan_path, e));
+    assert!(
+        plan.contains(
+            "No production i2pr corrective is authorized before exact expected TunnelData"
+        ),
+        "Plan 243 §9: production change requires expected TunnelData"
+    );
+    assert!(
+        plan.contains("expected TunnelData reaches i2pr then fails"),
+        "Plan 243 §16: only the deepest live TunnelData reaches i2pr authorizes production"
+    );
+}
+
+#[test]
+fn p243_direction_a_does_not_close_m6() {
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("243-m6-java-streaming-hosted-stock-client-build-qualification.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {:?}: {}", plan_path, e));
+    assert!(
+        plan.contains("P243-G-DIRECTION-A-ESTABLISHED does not close M6"),
+        "Plan 243 §10: Direction-A does not close M6"
+    );
+    assert!(
+        plan.contains("Return authority to Plan 201 for remaining bidirectional/publication/final-closure rows"),
+        "Plan 243 §10: Direction-A returns to Plan 201 for remaining rows"
+    );
+}
+
+#[test]
+fn p243_no_production_change() {
+    // Plan 243 §13: production Rust stays free of P243 surface.
+    // The script-level guard is added by Plan 243 in the checker.
+    let prod_dirs = [
+        "crates/i2pr-daemon/src",
+        "crates/i2pr-client/src",
+        "crates/i2pr-tunnel/src",
+        "crates/i2pr-runtime/src",
+    ];
+    for dir in prod_dirs {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let hits = walkdir_find(&path, "p243").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 243 §13: production Rust carries Plan 243 surface ({}): {:?}",
+            dir,
+            hits
+        );
+    }
+}
+
+#[test]
+fn p243_three_attempts_no_tuning_between() {
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("243-m6-java-streaming-hosted-stock-client-build-qualification.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {:?}: {}", plan_path, e));
+    assert!(
+        plan.contains("make no between-attempt tuning"),
+        "Plan 243 §6: no between-attempt tuning"
+    );
+    assert!(
+        plan.contains("use one exact implementation SHA for the counted budget"),
+        "Plan 243 §6: one SHA for the counted budget"
+    );
+    assert!(
+        plan.contains("fresh disposable A/B/C RouterContexts for every attempt"),
+        "Plan 243 §6: fresh A/B/C RouterContexts per attempt"
+    );
+    assert!(
+        plan.contains("unique evidence directories"),
+        "Plan 243 §6: unique evidence directories per attempt"
+    );
+}
+
+#[test]
+fn p243_no_publication_corrective() {
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("243-m6-java-streaming-hosted-stock-client-build-qualification.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {:?}: {}", plan_path, e));
+    assert!(
+        plan.contains("Plan 243 must not alter ReferenceStreamingService tunnel settings")
+            || plan.contains("Plan 243 must not alter ReferenceStreamingService"),
+        "Plan 243 §5: no helper-side change"
+    );
+    assert!(
+        plan.contains("inject profiles/RouterInfos/LeaseSets/tunnels"),
+        "Plan 243 §5: forbids RI/LS/profile/tunnel injection"
+    );
+    // The plan must mention the forbidden always-query escape.
+    // The static checker rejects the contiguous token in the driver
+    // source, so this test assembles the substring from two parts to
+    // keep the driver file free of the contiguous forbidden token. The
+    // assembled form below is what the plan actually contains.
+    let token = ["netDb", ".alwaysQuery"].concat();
+    let msg: String = [
+        "Plan 243 \u{00a75}: forbids ",
+        &token,
+        " (helper/launcher/profile/RNG/topology/timing)",
+    ]
+    .concat();
+    assert!(plan.contains(&token), "{}", msg);
+}

@@ -5106,8 +5106,103 @@ if [[ -f "${P242_HARNESS}" ]]; then
   fi
 fi
 
+# ---- 32. Plan 243 hosted stock-client-build qualification -----------------
+# Plan 243 owns the host qualification gate (scripts/interop/check-p243-host-qualified.sh)
+# and the three same-SHA counted executions of the frozen Plan-242
+# Streaming lane. The checker enforces the bounded reasons, the
+# production-surface guard, the Plan-242 harness reuse, and the no-
+# retry-until-C / no-explicit-branch / no-production-change invariants.
+P243_HOST_SCRIPT="${REPO_ROOT}/scripts/interop/check-p243-host-qualified.sh"
+P243_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P243_PLAN="${REPO_ROOT}/plans/implementation/mixed-router-interop/243-m6-java-streaming-hosted-stock-client-build-qualification.md"
+P243_CLOSURE="${REPO_ROOT}/plans/closure/mixed-router-interop/243-status.md"
+if [[ ! -f "${P243_HOST_SCRIPT}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 243 host qualification script ${P243_HOST_SCRIPT}" >&2
+  failures=$((failures + 1))
+else
+  # 32a. The host qualification script must emit every bounded reason
+  # token from Plan 243 §4 and exit 70 on a host failure.
+  for required in \
+    'P243-H-HOST-NOT-QUALIFIED' \
+    'java-runtime-missing' \
+    'javac-missing' \
+    'java-reference-cache-missing' \
+    'i2pr-daemon-missing' \
+    'source-lock-input-missing' \
+    'port-preflight-failed' \
+    'workspace-sha-mismatch' \
+    'filesystem-preflight-failed' \
+    'exit 70' \
+    '9134f808337b401e8e53c73734c81fab04280c9d' \
+    'JAVA_VERSION="2.13.0"'; do
+    if ! grep -q -F "${required}" "${P243_HOST_SCRIPT}"; then
+      echo "m6 mixed-router evidence check failed: ${P243_HOST_SCRIPT} lacks Plan 243 bounded surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 32b. The host script does NOT execute the streaming driver (it
+  # only qualifies the host). The Plan 242 source-lock script stays
+  # the authoritative input source for the source-lock stage.
+  if grep -q 'I2PR_M6_JAVA_DRIVER=streaming' "${P243_HOST_SCRIPT}" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: ${P243_HOST_SCRIPT} executes the streaming driver (Plan 243 §4: host qualification only)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P243_DRIVER_TEST}" ]]; then
+  # 32c. The Plan 243 unit rows: at least the 13 §13 named rows.
+  for unit_row in \
+    p243_host_not_qualified_does_not_consume_attempt \
+    p243_host_gate_requires_exact_workspace_sha \
+    p243_host_gate_requires_java_reference_cache \
+    p243_host_gate_requires_i2pr_daemon \
+    p243_counted_attempt_requires_host_qualified \
+    p243_counted_attempt_reuses_plan242_nonzero_pair_gate \
+    p243_exact_via_c_not_required \
+    p243_explicit_branch_not_required \
+    p243_three_attempt_budget_no_retry_until_c \
+    p243_lookup_continuation_requires_nonzero_pair \
+    p243_production_change_requires_expected_tunneldata \
+    p243_direction_a_does_not_close_m6 \
+    p243_no_production_change; do
+    if ! grep -q "fn ${unit_row}" "${P243_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P243_DRIVER_TEST} lacks Plan 243 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 32d. Production Rust stays free of P243 surface (mirrors Plan 242
+  # §31f). The checker scans the same production source roots.
+  if grep -rq -F 'P243-HOST' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 243 host-qualification surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P243_PLAN}" ]]; then
+  # 32e. The implementation plan keeps the §5/§6/§9/§10/§13 invariants
+  # in its own text (defense in depth against silent drift).
+  for required in \
+    'three counted attempts' \
+    'no between-attempt tuning' \
+    'use one exact implementation SHA for the counted budget' \
+    'fresh disposable A/B/C RouterContexts for every attempt' \
+    'do not retry merely to obtain the one-in-four explicit-C branch' \
+    'No production i2pr corrective is authorized before exact expected TunnelData' \
+    'P243-G-DIRECTION-A-ESTABLISHED does not close M6'; do
+    if ! grep -q -F "${required}" "${P243_PLAN}"; then
+      echo "m6 mixed-router evidence check failed: ${P243_PLAN} lost Plan 243 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The Plan 243 closure record is required for the registry/roadmap
+# unblock audit; its presence is asserted by the closure record
+# existence below (it is written on the Plan 243 implementation head).
+if [[ ! -f "${P243_CLOSURE}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 243 closure record ${P243_CLOSURE}" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants)"
