@@ -97,15 +97,15 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
-- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 245 is closed and Plan 246 now owns delayed-ACK timer enqueue/fire and second-scheduler attribution. None reopens or downgrades M10 product closure.
+- Plan 204 convergence is deferred until independent M6 Java second-family closure; Plan 246 is closed at an observation gap and Plan 247 now owns the observer corrective before delayed-ACK attribution is rerun. None reopens or downgrades M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see
   `plans/registry.md` "Superseded remote branches").
 
 ## 11. Completion definition
 
-Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 245 is closed at the delayed-ACK reschedule-only boundary; Plan 246 is registered-ready to attribute timer enqueue/fire and second scheduler outcome without changing the lane timing. Convergence remains blocked until Java-family qualification closes M6.
+Open: Plan 204 docs/CI normalization convergence over the independently closed M10 authority plus the M6 Java second-family row. Plan 246 is closed at an observation gap; Plan 247 is registered-ready to correct the parser and move live timer/response observation into the SYN response epoch before delayed-ACK attribution is rerun. Convergence remains blocked until Java-family qualification closes M6.
 
 ## 12. Milestone status summary
 
-Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure pending Plan 246.
+Full row history is §7. Current authority: Plan 215 remains M10 product authority; Plan 204 convergence remains blocked on M6 Java second-family closure pending Plan 247.
