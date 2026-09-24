@@ -78,6 +78,8 @@ are green. No Java source checkout was injected into ordinary CI.
 
 Plan 251 is closed. Plan 250 is now formally closed by
 `plans/closure/transit-tunnels/250-status.md`, with the full serial workspace floor green.
-No registered blocked plan lists Plan 251 as its sole remaining prerequisite. Plan 252 is
-the next M11 scope but remains unregistered until ordinary CI is green on the Plan 250
-implementation SHA. M11 capability remains unclaimed.
+No registered blocked plan lists Plan 251 as its sole remaining prerequisite. Plan 250
+ordinary CI is now green on `44187ce` (Actions run 36060781701), so the dependency-ready
+successor Plan 252 is written and registered at
+`plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md`. Plan 253
+remains unregistered behind Plan 252. M11 capability remains unclaimed.

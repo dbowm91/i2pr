@@ -26,8 +26,10 @@ Corrective authority (now closed):
 `plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md`
 
 Plan 250 status and evidence are authoritative in `plans/closure/transit-tunnels/250-status.md`.
-Plan 252 daemon composition remains unregistered until Plan 251 and Plan 250 are closed and
-ordinary CI is green on the Plan 250 implementation SHA.
+Plans 250 and 251 are closed, and Plan 250 ordinary CI is green on `44187ce` (Actions run
+36060781701). Plan 252 daemon composition is now registered ready at
+`plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md`; Plan 253
+remains unregistered behind it.
 
 No M11 capability or advertisement is claimed.
 

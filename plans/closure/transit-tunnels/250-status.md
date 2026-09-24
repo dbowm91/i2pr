@@ -87,11 +87,12 @@ Plan 249 execution evidence remains unchanged.
 
 Plan 251 is already closed, and its ordinary CI run is green on its implementation SHA. No
 other registered blocked plan lists Plan 250 as its sole dependency. Plan 252 daemon/runtime
-composition is the only immediate successor; the roadmap already defines its intended scope,
-but it must remain unregistered until ordinary GitHub Actions is green on this Plan 250
-implementation SHA. After that gate, Plan 252 can be written and registered as ready. Plan
-253 still depends on Plan 252 and remains unregistered. M12 floodfill planning remains
-deferred until controlled M11 transit/resource evidence exists.
+composition was the only immediate successor. Ordinary GitHub Actions run
+[36060781701](https://github.com/dbowm91/i2pr/actions/runs/36060781701) completed green on
+Plan 250 implementation SHA `44187ce`. Its bounded handoff is now written at
+[`252-m11-daemon-transit-composition.md`](../../implementation/transit-tunnels/252-m11-daemon-transit-composition.md)
+and registered as ready. Plan 253 still depends on Plan 252 and remains unregistered. M12
+floodfill planning remains deferred until controlled M11 transit/resource evidence exists.
 
 ## Limitations
 
@@ -100,5 +101,5 @@ deferred until controlled M11 transit/resource evidence exists.
 - The bounded token ledger is single-owner state. Plan 252 owns runtime task/composition and
   must serialize access through explicit ownership rather than adding shared synchronization
   here.
-- Ordinary CI on the pushed implementation SHA remains the final gate before Plan 252 is
-  registered.
+- Plan 252 remains infrastructure only; it must not claim M11 capability or advertise
+  transit support. Plan 253 remains gated on Plan 252 closure.
