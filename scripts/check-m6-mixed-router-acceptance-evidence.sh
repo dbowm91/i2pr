@@ -5556,8 +5556,245 @@ if [[ ! -f "${P245_CLOSURE}" ]]; then
   failures=$((failures + 1))
 fi
 
+# ---- 35. Plan 246 delayed-ACK timer attribution ---------------------------
+# Plan 246 attributes the numeric delayed-ACK deadline, exact-socket
+# SimpleTimer2 schedule/run lifecycle, and second SchedulerReceived
+# outcome through bounded read-only observation only. It adds
+# (a) SimpleTimer2 DEBUG enablement in the helper,
+# (b) `REPORT_TIMER_STATS` exact-socket-correlated bounded snapshot,
+# (c) a 50 ms × 40 poll short cadence with rolling maxima over a 2 s
+#     attribution horizon (observation only; never shortens the 45 s
+#     outer response window),
+# (d) a Stage A.1 classifier that distinguishes H1..H7 hypotheses and
+#     stops at the earliest proven arm,
+# (e) extended source-lock TSV (50 → 60 rows, default 500 ms ACK
+#     delay, setNextSendTime clamp, packet-handler ordering,
+#     SchedulerReceived branches, SchedulerImpl.reschedule delegate,
+#     Connection.scheduleConnectionEvent, SimpleTimer2 transition
+#     wrapper, ConEvent re-entry, SchedulerChooser precedence,
+#     SimpleTimer2 lifecycle logs).
+# The checker enforces: unit-row coverage, terminal vocabulary,
+# module-range invariants, production-surface guard, harness rows,
+# helper-side observation surface, and plan-text invariants.
+P246_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P246_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+P246_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P246_PLAN="${REPO_ROOT}/plans/implementation/mixed-router-interop/246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution.md"
+P246_CLOSURE="${REPO_ROOT}/plans/closure/mixed-router-interop/246-status.md"
+if [[ -f "${P246_DRIVER_TEST}" ]]; then
+  # 35a. The Plan 246 §18 named unit rows (>= 25 rows). Every row
+  # locks one precedence or attribution rule from the plan.
+  for unit_row in \
+    p246_default_ack_delay_is_500_on_frozen_helper \
+    p246_next_send_time_is_clamped_by_ack_delay \
+    p246_packet_handler_sets_deadline_before_event \
+    p246_received_reschedule_calls_connection_timer \
+    p246_transition_add_event_uses_fresh_wrapper \
+    p246_timer_wrapper_delegates_to_connection_event \
+    p246_connection_event_reenters_scheduler_chooser \
+    p246_scheduler_precedence_is_source_locked \
+    p246_polling_preserves_transient_signal \
+    p246_final_snapshot_cannot_erase_rolling_max \
+    p246_timer_logs_require_exact_socket_correlation \
+    p246_peer_identity_not_persisted \
+    p246_deadline_out_of_bounds_precedes_timer_terminal \
+    p246_schedule_precedes_run \
+    p246_timer_run_precedes_second_scheduler_terminal \
+    p246_second_reschedule_records_second_delay \
+    p246_no_unacked_second_event_is_typed \
+    p246_scheduler_changed_is_not_java_defect \
+    p246_send_branch_resumes_plan245_chain \
+    p246_i2pr_defect_requires_exact_reverse_tunneldata \
+    p246_no_timing_change \
+    p246_no_java_patch \
+    p246_no_production_change \
+    p246_baseline_gate_requires_p245_reschedule \
+    p246_contradiction_guard_requires_logger_enabled \
+    p246_timer_run_but_not_exhausted_returns_observability_gap; do
+    if ! grep -q "fn ${unit_row}" "${P246_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P246_DRIVER_TEST} lacks Plan 246 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 35b. The canonical Plan 246 terminal vocabulary (§§8-12).
+  for terminal in \
+    'P246-OBSERVABILITY-GAP' \
+    'P246-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS' \
+    'P246-B-CONNECTION-EVENT-NOT-SCHEDULED' \
+    'P246-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN' \
+    'P246-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED' \
+    'P246-C-SCHEDULER-RESCHEDULED-AGAIN' \
+    'P246-C-REPEATED-RESCHEDULE-WITHOUT-SEND' \
+    'P246-D-SCHEDULER-SEND-BRANCH-REACHED' \
+    'P246-C-SCHEDULER-NO-UNACKED-ON-SECOND-EVENT' \
+    'P246-O-END-OF-WINDOW-SNAPSHOT-EVICTION'; do
+    if ! grep -q -F "${terminal}" "${P246_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P246_DRIVER_TEST} lacks Plan 246 terminal '${terminal}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 35c. The Plan 246 module range (delimiters in the driver file)
+  # never reads the historical P236 classifier inputs, never uses
+  # the Plan-244 retransmit-timer proxy as a construction proxy, and
+  # never fails open — while keeping the new Plan-246 vocabulary.
+  p246_section="$(awk '/Plan 246 .*\(begin\)\./{flag=1} flag{print} /Plan 246 .*\(end\)\./{flag=0}' "${P246_DRIVER_TEST}")"
+  if [[ -z "${p246_section}" ]]; then
+    echo "m6 mixed-router evidence check failed: ${P246_DRIVER_TEST} lacks delimited Plan 246 ranges" >&2
+    failures=$((failures + 1))
+  else
+    for forbidden in \
+      'P236Terminal' \
+      'p236_terminal' \
+      'p236_state' \
+      'record_p236' \
+      'p236_classify' \
+      'p236_parse' \
+      'connection_resend_timer_delta' \
+      '|| true'; do
+      if grep -q -F "${forbidden}" <<<"${p246_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 246 range carries forbidden surface '${forbidden}' (Plan 246 §17)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    for required in \
+      'timer_scheduler_count' \
+      'timer_running_count' \
+      'timer_early_reschedule_count' \
+      'timer_finished_count' \
+      'connection_timer_first_schedule_timeout_ms' \
+      'connection_timer_latest_schedule_timeout_ms' \
+      'first_reschedule_delta_ms' \
+      'context_clock_minus_system_ms' \
+      'peer_correlation_present' \
+      'simple_timer_debug_enabled' \
+      'p246_classify' \
+      'record_p246_classification' \
+      'p246_observer_evicted'; do
+      if ! grep -q -F "${required}" <<<"${p246_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 246 range lacks required vocabulary '${required}' (Plan 246 §15)" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+  # 35d. Production Rust stays free of P246 surface (mirrors Plan 245
+  # §34d). The checker scans the same production source roots.
+  if grep -rq -F 'P246' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 246 surface" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -rq -F 'p246' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 246 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P246_HARNESS}" ]]; then
+  # 35e. The harness carries the read-only Plan 246 rows keyed on the
+  # driver TSV (diagnostic observation, always passed when present)
+  # and never invents a terminal literal.
+  for required in \
+    'external-p246-classification' \
+    'p246-timer-deltas' \
+    'p246-poll-cadence' \
+    'p246-stage-a1' \
+    'p246-timer-stats-pre' \
+    'p246-timer-stats-post'; do
+    if ! grep -q -F "${required}" "${P246_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P246_HARNESS} lacks Plan 246 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "record[[:space:]]+[\"']P246-" "${P246_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P246_HARNESS} invents a Plan 246 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P246_HELPER_SRC}" ]]; then
+  # 35f. The helper exposes the bounded P246 observation needles in
+  # the `REPORT_TIMER_STATS` command plus the two logger/peer flags
+  # and the SimpleTimer2 DEBUG enablement. The helper must NOT
+  # include the peer b32 in durable evidence; only the boolean
+  # `peer_correlation_present` and the sanitized numeric timer
+  # facts reach the response line.
+  for required in \
+    'P246_SIMPLE_TIMER_CLASS' \
+    'P246_TIMER_SCHEDULING_NEEDLE' \
+    'P246_TIMER_RUNNING_NEEDLE' \
+    'P246_TIMER_EARLY_RESCHED_NEEDLE' \
+    'P246_TIMER_FINISHED_NEEDLE' \
+    'P246_CON_EVENT_PREFIX' \
+    'P246_PEER_MARKER_PREFIX' \
+    'P246_PEER_MARKER_SUFFIX' \
+    'P246_TIMEOUT_TOKEN' \
+    'REPORT_TIMER_STATS' \
+    'TIMER_STATS peer_correlation_present' \
+    'simple_timer_debug_enabled' \
+    'timer_scheduler_count' \
+    'timer_running_count' \
+    'timer_early_reschedule_count' \
+    'timer_finished_count' \
+    'connection_timer_first_schedule_timeout_ms' \
+    'connection_timer_latest_schedule_timeout_ms' \
+    'connection_timer_min_schedule_timeout_ms' \
+    'connection_timer_max_schedule_timeout_ms' \
+    'first_reschedule_delta_ms' \
+    'latest_reschedule_delta_ms' \
+    'min_reschedule_delta_ms' \
+    'max_reschedule_delta_ms' \
+    'connection_timer_first_run_elapsed_ms' \
+    'context_clock_minus_system_ms' \
+    'EXPECTED_PEER_B32' \
+    'limits.setProperty(P246_SIMPLE_TIMER_CLASS, "DEBUG")'; do
+    if ! grep -q -F "${required}" "${P246_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P246_HELPER_SRC} lacks Plan 246 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 35g. The helper must NOT persist the peer b32 anywhere on disk.
+  # `appendEvidence`, `FileWriter`, and `PrintWriter`-based file
+  # writes are the only paths that could leak; the static check
+  # forbids any `appendEvidence` invocation in the helper.
+  if grep -q 'appendEvidence\|FileWriter\|Files\.write' "${P246_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P246_HELPER_SRC} adds a durable-write surface (Plan 246 §6 forbidden)" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P246_PLAN}" ]]; then
+  # 35h. The implementation plan keeps the §§1/4/5/9/13/15 invariants
+  # in its own text (defense in depth against silent drift).
+  for required in \
+    'attribution pass' \
+    'does NOT by itself authorize a Java patch' \
+    'No production `src/` file may change' \
+    'Do not alter the 45-second lane' \
+    '50 ms polling interval' \
+    '2,000 ms attribution horizon' \
+    'no production i2pr change unless the existing exact-reverse-TunnelData gate is reached' \
+    'P246-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS' \
+    'P246-B-CONNECTION-EVENT-NOT-SCHEDULED' \
+    'P246-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN' \
+    'P246-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED' \
+    'P246-C-SCHEDULER-RESCHEDULED-AGAIN' \
+    'P246-C-REPEATED-RESCHEDULE-WITHOUT-SEND' \
+    'P246-D-SCHEDULER-SEND-BRANCH-REACHED' \
+    'P246-C-SCHEDULER-NO-UNACKED-ON-SECOND-EVENT' \
+    'P246-O-END-OF-WINDOW-SNAPSHOT-EVICTION' \
+    'transition-wrapper `addEvent` deduplicates the same `ConEvent` object'; do
+    if ! grep -q -F "${required}" "${P246_PLAN}"; then
+      echo "m6 mixed-router evidence check failed: ${P246_PLAN} lost Plan 246 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The Plan 246 closure record is required for the registry/roadmap
+# unblock audit; its presence is asserted here (the registration stub
+# satisfies this before closure lands, the full record after).
+if [[ ! -f "${P246_CLOSURE}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 246 closure record ${P246_CLOSURE}" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants, Plan 245 §34 stock-response construction-signal attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants, Plan 245 §34 stock-response construction-signal attribution invariants, Plan 246 §35 delayed-ACK timer enqueue/fire and second-scheduler attribution invariants)"

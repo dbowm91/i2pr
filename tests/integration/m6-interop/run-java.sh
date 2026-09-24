@@ -2949,6 +2949,37 @@ m6_key_row "external-p245-response-deltas" "p245-response-deltas" \
 m6_key_row "external-p245-stage-a0" "p245-stage-a0" \
   "Plan 245 §6: logger-enabled isolation flags behind the Stage A.0 classifier"
 
+# Plan 246 §7 / §17 — read the delayed-ACK timer enqueue/fire and
+# second-scheduler attribution terminal the streaming driver
+# classified in Stage A.1 order after the Plan-245 Stage A.0
+# baseline gate. Consume the LAST occurrence so an early branch
+# cannot shadow the authoritative outcome, and record exactly one
+# external row per key (diagnostic observation, always passed when
+# present). The static checker rejects any literal
+# `record "<P246-X>" passed` line: the historical P236/P245 tokens
+# never govern this row, and Plan 246 only adds timer-attribution
+# observation (no production change, no Java patch, no helper
+# behavior change).
+P246_CLASSIFICATION=""
+STREAM_DRIVER_TSV_FOR_P246="${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv"
+if [[ -f "${STREAM_DRIVER_TSV_FOR_P246}" ]]; then
+  P246_CLASSIFICATION="$(awk -F'\t' '$1 == "p246-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${STREAM_DRIVER_TSV_FOR_P246}")"
+fi
+if [[ -z "${P246_CLASSIFICATION}" ]]; then
+  P246_CLASSIFICATION="P246-classification-missing"
+fi
+record "external-p246-classification" passed "Plan 246 §8/§9/§10/§11: ${P246_CLASSIFICATION}"
+m6_key_row "external-p246-timer-deltas" "p246-timer-deltas" \
+  "Plan 246 §5: same-epoch SimpleTimer2 schedule/run/early-reschedule/finish deltas with first/latest/min/max delays"
+m6_key_row "external-p246-poll-cadence" "p246-poll-cadence" \
+  "Plan 246 §5: 50 ms × 40 poll cadence over 2 s attribution horizon (rolling maxima)"
+m6_key_row "external-p246-stage-a1" "p246-stage-a1" \
+  "Plan 246 §17: simple_timer_debug_enabled + peer_correlation_present flags + observer-eviction flag"
+m6_key_row "external-p246-timer-stats-pre" "p246-timer-stats-pre" \
+  "Plan 246 §5: pre-SYN bounded SimpleTimer2 snapshot (peer correlation, logger enabled, lifecycle counters)"
+m6_key_row "external-p246-timer-stats-post" "p246-timer-stats-post" \
+  "Plan 246 §5: post-2s-horizon bounded SimpleTimer2 snapshot (lifecycle counters, delays, clock skew)"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted

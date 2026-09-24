@@ -57,6 +57,15 @@ public final class ReferenceStreamingService {
     private static final List<Integer> ACCEPTED = Collections.synchronizedList(new ArrayList<>());
     private static final List<Integer> CONNECTED = Collections.synchronizedList(new ArrayList<>());
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
+    // Plan 246 §6 — exact-socket correlation. After `accept()` returns
+    // the helper derives the remote peer b32 from the public I2PSocket
+    // surface (`socket.getPeerDestination().toBase32()`) and stores it
+    // here. All `REPORT_TIMER_STATS` snapshots filter the bounded public
+    // LogManager console buffer down to lines that match
+    // `event on [Connection ... from <EXPECTED_PEER_B32> up ...`. The
+    // peer string is never written to durable evidence; only sanitized
+    // counts and bounded numeric delays are exposed.
+    private static volatile String EXPECTED_PEER_B32 = "";
     // Plan 234/235 — helper-local accept observability.  These counters are
     // deliberately bounded and expose only control-flow facts; they never
     // expose packet contents, keys, tags, or router internals.
@@ -154,6 +163,49 @@ public final class ReferenceStreamingService {
         "net.i2p.client.streaming.impl.ConnectionDataReceiver";
     private static final String P245_MESSAGE_OUTPUT_CLASS =
         "net.i2p.client.streaming.impl.MessageOutputStream";
+    // Plan 246 §3.7 — exact-pinned SimpleTimer2 lifecycle marker classes
+    // and substrings. The transition `addEvent(SimpleTimer.TimedEvent, ...)`
+    // path emits DEBUG-level `Scheduling: ...`, `Running: ...`,
+    // `Early execution, Rescheduling ...`, and `Execution finished in ...`
+    // lines via the `net.i2p.util.SimpleTimer2` logger; the wrapper
+    // `toString()` delegates to the inner Connection.ConEvent.toString(),
+    // which contains the peer b32. The helper never persists the peer
+    // string or raw line; it only counts lines that match both the
+    // lifecycle needle and the exact-socket correlation marker.
+    private static final String P246_SIMPLE_TIMER_CLASS =
+        "net.i2p.util.SimpleTimer2";
+    private static final String P246_TIMER_SCHEDULING_NEEDLE =
+        "Scheduling: ";
+    private static final String P246_TIMER_RUNNING_NEEDLE =
+        "Running: ";
+    private static final String P246_TIMER_EARLY_RESCHED_NEEDLE =
+        "Early execution, Rescheduling for ";
+    private static final String P246_TIMER_FINISHED_NEEDLE =
+        "Execution finished in ";
+    private static final String P246_CON_EVENT_PREFIX =
+        "event on [Connection ";
+    // Marker sub-string inside Connection.toString() that the helper
+    // derives from the accepted I2PSocket peer destination
+    // (`socket.getPeerDestination().toBase32()`). Connection.toString()
+    // renders `[Connection <x>/<y> from <b32> up ...]`, so
+    // `" from " + PEER_B32 + " up "` uniquely identifies the active
+    // socket without leaking the b32 into durable evidence.
+    private static final String P246_PEER_MARKER_PREFIX = " from ";
+    private static final String P246_PEER_MARKER_SUFFIX = " up ";
+    // Plan 246 §3.7 — the timeout delimiter appears only on the
+    // SimpleTimer2 `Scheduling:` log lines; the helper extracts the
+    // bounded numeric delay for the per-poll rolling maxima without
+    // ever reading any other token from the line.
+    private static final String P246_TIMEOUT_TOKEN = " timeout = ";
+    private static final String P246_RESCHEDULE_DELTA_TOKEN =
+        "Rescheduling for ";
+    private static final String P246_FINISHED_DELTA_TOKEN =
+        "Execution finished in ";
+    // Plan 246 §3.8 — I2PAppContext.clock().now() is the helper-clock
+    // view; the SimpleTimer2 timer is the system-clock executor. The
+    // helper exposes the difference as a diagnostic-only numeric fact.
+    // The drift itself is informational only and never authorizes a
+    // Java patch or production i2pr change.
     private static final String P237_SCHEDULER_SIGNAL = "received con... ";
     // Plan 237 §4.2 corrective (counted attempt 1 finding): the pinned
     // `Connection.ackImmediately()` "sending new ack" log fires only on
@@ -208,6 +260,21 @@ public final class ReferenceStreamingService {
             // private state.
             limits.setProperty(P245_RECEIVER_CLASS, "DEBUG");
             limits.setProperty(P245_MESSAGE_OUTPUT_CLASS, "INFO");
+            // Plan 246 §3.7 / §5.2 — DEBUG for `net.i2p.util.SimpleTimer2`
+            // surfaces the four bounded lifecycle markers
+            // (`Scheduling:`, `Running:`, `Early execution, Rescheduling`,
+            // `Execution finished in`) emitted by the inner
+            // `SimpleTimer2.TimedEvent.schedule/run/finish` paths. The
+            // `addEvent(SimpleTimer.TimedEvent, timeoutMs)` transition
+            // path schedules a fresh wrapper, so the toString-derived
+            // `event on [Connection ... from <peer> up ...]` line is the
+            // only stable correlation identifier. The exact-socket
+            // filter (Plan 246 §6) lives in `REPORT_TIMER_STATS`. The
+            // bounded console buffer 1024 covers both the retained
+            // Plan 237/245 needles and the new Plan 246 lifecycle
+            // markers within the two-second attribution horizon; every
+            // counter caps at MAX_OBSERVATIONS (1024).
+            limits.setProperty(P246_SIMPLE_TIMER_CLASS, "DEBUG");
             context.logManager().setLimits(limits);
         } catch (Throwable ignored) { }
     }
@@ -287,6 +354,201 @@ public final class ReferenceStreamingService {
 
     private static int incrementBounded(AtomicInteger counter) {
         return counter.updateAndGet(value -> value < MAX_OBSERVATIONS ? value + 1 : value);
+    }
+
+    // Plan 246 §6 — exact-socket correlation for SimpleTimer2 lines.
+    // Returns true iff the line contains both the lifecycle marker
+    // (`event on [Connection `) and the active socket's
+    // `from <peerB32> up ` marker, with peerB32 derived from the
+    // public `I2PSocket.getPeerDestination().toBase32()` surface. The
+    // helper never writes the peer string to durable evidence; it only
+    // uses the marker as an in-memory filter. A missing peer (no accept
+    // yet) makes the filter strict — the marker must be present.
+    private static boolean p246LineMatchesActiveSocket(String line) {
+        if (line == null) return false;
+        String peer = EXPECTED_PEER_B32;
+        if (peer == null || peer.isEmpty()) return false;
+        if (!line.contains(P246_CON_EVENT_PREFIX)) return false;
+        String marker = P246_PEER_MARKER_PREFIX + peer + P246_PEER_MARKER_SUFFIX;
+        return line.contains(marker);
+    }
+
+    private static int p246CountBufferSubstringExactSocket(String needle) {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) return 0;
+            int count = 0;
+            for (String message : context.logManager().getBuffer().getMostRecentMessages()) {
+                if (message == null) continue;
+                if (!p246LineMatchesActiveSocket(message)) continue;
+                if (message.contains(needle)) {
+                    count++;
+                    if (count >= MAX_OBSERVATIONS) break;
+                }
+            }
+            return count;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    // Plan 246 §3.7 — extract the bounded numeric timeout from a
+    // `Scheduling: ... timeout = <n> state: ...` line. Returns -1
+    // for any line that does not match the exact format; the helper
+    // never throws and never persists raw line content.
+    private static long p246ExtractTimeoutMs(String line) {
+        if (line == null) return -1L;
+        int idx = line.indexOf(P246_TIMEOUT_TOKEN);
+        if (idx < 0) return -1L;
+        int start = idx + P246_TIMEOUT_TOKEN.length();
+        int end = start;
+        while (end < line.length()) {
+            char c = line.charAt(end);
+            if (c < '0' || c > '9') break;
+            end++;
+        }
+        if (end == start) return -1L;
+        try {
+            return Long.parseLong(line.substring(start, end));
+        } catch (NumberFormatException nfe) {
+            return -1L;
+        }
+    }
+
+    private static long p246ExtractTrailingLong(String line, String token) {
+        if (line == null) return -1L;
+        int idx = line.indexOf(token);
+        if (idx < 0) return -1L;
+        int start = idx + token.length();
+        int end = start;
+        while (end < line.length()) {
+            char c = line.charAt(end);
+            if (c < '0' || c > '9') break;
+            end++;
+        }
+        if (end == start) return -1L;
+        try {
+            return Long.parseLong(line.substring(start, end));
+        } catch (NumberFormatException nfe) {
+            return -1L;
+        }
+    }
+
+    // Plan 246 §3.7 — return the bounded per-poll rolling maxima /
+    // first-seen timestamps for the four SimpleTimer2 lifecycle markers.
+    // The driver tracks rolling maxima across polls; the helper exposes
+    // the bounded numeric facts only.
+    private static long[] p246CollectTimeouts(boolean matches) {
+        // Return shape: [count, first, latest, min, max]
+        long count = 0;
+        long first = -1L;
+        long latest = -1L;
+        long min = -1L;
+        long max = -1L;
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) {
+                return new long[]{0, -1, -1, -1, -1};
+            }
+            for (String message : context.logManager().getBuffer().getMostRecentMessages()) {
+                if (message == null) continue;
+                if (!matches && !message.contains(P246_TIMER_SCHEDULING_NEEDLE)) continue;
+                if (matches && !p246LineMatchesActiveSocket(message)) continue;
+                if (!message.contains(P246_TIMER_SCHEDULING_NEEDLE)) continue;
+                long t = p246ExtractTimeoutMs(message);
+                if (t < 0) continue;
+                count++;
+                if (first < 0) first = t;
+                latest = t;
+                if (min < 0 || t < min) min = t;
+                if (t > max) max = t;
+                if (count >= MAX_OBSERVATIONS) break;
+            }
+        } catch (Throwable ignored) { }
+        return new long[]{count, first, latest, min, max};
+    }
+
+    private static long[] p246CollectRescheduleDeltas() {
+        // Return shape: [count, first, latest, min, max]
+        long count = 0;
+        long first = -1L;
+        long latest = -1L;
+        long min = -1L;
+        long max = -1L;
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) {
+                return new long[]{0, -1, -1, -1, -1};
+            }
+            for (String message : context.logManager().getBuffer().getMostRecentMessages()) {
+                if (message == null) continue;
+                if (!p246LineMatchesActiveSocket(message)) continue;
+                if (!message.contains(P246_TIMER_EARLY_RESCHED_NEEDLE)) continue;
+                long d = p246ExtractTrailingLong(message, P246_RESCHEDULE_DELTA_TOKEN);
+                if (d < 0) continue;
+                count++;
+                if (first < 0) first = d;
+                latest = d;
+                if (min < 0 || d < min) min = d;
+                if (d > max) max = d;
+                if (count >= MAX_OBSERVATIONS) break;
+            }
+        } catch (Throwable ignored) { }
+        return new long[]{count, first, latest, min, max};
+    }
+
+    private static long[] p246CollectFinishedElapsed() {
+        // Return shape: [count, first, latest, min, max]
+        long count = 0;
+        long first = -1L;
+        long latest = -1L;
+        long min = -1L;
+        long max = -1L;
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) {
+                return new long[]{0, -1, -1, -1, -1};
+            }
+            for (String message : context.logManager().getBuffer().getMostRecentMessages()) {
+                if (message == null) continue;
+                if (!p246LineMatchesActiveSocket(message)) continue;
+                if (!message.contains(P246_TIMER_FINISHED_NEEDLE)) continue;
+                long d = p246ExtractTrailingLong(message, P246_FINISHED_DELTA_TOKEN);
+                if (d < 0) continue;
+                count++;
+                if (first < 0) first = d;
+                latest = d;
+                if (min < 0 || d < min) min = d;
+                if (d > max) max = d;
+                if (count >= MAX_OBSERVATIONS) break;
+            }
+        } catch (Throwable ignored) { }
+        return new long[]{count, first, latest, min, max};
+    }
+
+    // Plan 246 §14 — clock-skew observation. The helper-clock view
+    // (`I2PAppContext.clock().now()`) and the SimpleTimer2 executor
+    // clock (`System.currentTimeMillis()`) may diverge. The helper
+    // exposes the bounded numeric difference for the polling horizon;
+    // it never adjusts clocks and never authorizes a Java patch.
+    private static long p246ClockSkewMs() {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null) return 0L;
+            long helper = context.clock().now();
+            long system = System.currentTimeMillis();
+            return helper - system;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    private static boolean p246SimpleTimerDebugEnabled() {
+        return p237IsDebugEnabledFor(P246_SIMPLE_TIMER_CLASS);
     }
 
     private static String hex(byte[] bytes) {
@@ -421,6 +683,24 @@ public final class ReferenceStreamingService {
             SOCKETS.put(id, socket);
             ACCEPTED.add(id);
             incrementBounded(ACCEPT_STORED);
+            // Plan 246 §6 — derive the accepted socket's remote peer b32
+            // from the public I2PSocket surface for exact-socket
+            // correlation of SimpleTimer2 lifecycle markers. The peer
+            // string is held only in memory and is never written to
+            // durable evidence. Stock Java's I2PSocket.getPeerDestination()
+            // may return null at the moment accept() returns because the
+            // SYN packet has not yet been fully parsed; the helper
+            // therefore tries the eager fetch first and keeps the lazy
+            // fetch on REPORT_TIMER_STATS as a fallback. A missing peer
+            // (no remote Destination known yet) leaves the previous marker
+            // in place, so any subsequent report continues to use the
+            // last successful accept's peer.
+            try {
+                net.i2p.data.Destination peer = socket.getPeerDestination();
+                if (peer != null) {
+                    EXPECTED_PEER_B32 = peer.toBase32();
+                }
+            } catch (Throwable ignored) { }
             return id;
         } catch (Throwable error) {
             incrementBounded(ACCEPT_ERRORS);
@@ -429,6 +709,62 @@ public final class ReferenceStreamingService {
             }
             return -1;
         }
+    }
+
+    // Plan 246 §6 — lazy peer-b32 fetch on REPORT_TIMER_STATS. The
+    // eager fetch inside acceptOne() may race with stock Java's
+    // accept() surface state; if it returns null at accept time the
+    // marker is empty and exact-socket correlation is impossible.
+    // The lazy fetch re-derives the marker on every report call so
+    // the FIRST report after the peer becomes available captures it.
+    // The `LogWriter` background thread periodically calls
+    // `rereadConfig()` which CLEARS the existing limits (including
+    // the SimpleTimer2 DEBUG level we set in
+    // `p237ConfigureStockObserver`); the helper therefore re-applies
+    // the SimpleTimer2 limit on every REPORT_TIMER_STATS call so the
+    // exact-socket-filtered lifecycle markers stay observable across
+    // the 2 s attribution horizon. The re-apply is unconditional — it
+    // runs even when ACCEPTED is empty (the very first polls happen
+    // before the SYN) — because the LogWriter may have cleared the
+    // limits between startup and the first report.
+    private static void p246RefreshPeerMarker() {
+        try {
+            if (!ACCEPTED.isEmpty()) {
+                int id;
+                synchronized (ACCEPTED) {
+                    id = ACCEPTED.get(0);
+                }
+                I2PSocket active = SOCKETS.get(id);
+                if (active != null) {
+                    net.i2p.data.Destination peer = active.getPeerDestination();
+                    if (peer != null) {
+                        EXPECTED_PEER_B32 = peer.toBase32();
+                    }
+                }
+            }
+        } catch (Throwable ignored) { }
+        // Plan 246 §17 — re-apply the SimpleTimer2 DEBUG level on
+        // every REPORT_TIMER_STATS call. The `LogWriter` background
+        // thread periodically calls `rereadConfig()` which CLEARS
+        // the existing limits (including the SimpleTimer2 DEBUG
+        // level we set in `p237ConfigureStockObserver`); the bounded
+        // `setLimits` is idempotent and keeps the exact-socket-
+        // filtered lifecycle markers observable across the 2 s
+        // attribution horizon. We pass the full limits object so
+        // the other previously-set DEBUG levels are also re-applied.
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null) return;
+            Properties limits = new Properties();
+            limits.setProperty(P237_SCHEDULER_IMPL_CLASS, "DEBUG");
+            limits.setProperty(P237_SCHEDULER_CLASS, "DEBUG");
+            limits.setProperty(P237_CONNECTION_CLASS, "DEBUG");
+            limits.setProperty(P237_PACKETQUEUE_CLASS, "DEBUG");
+            limits.setProperty(P245_RECEIVER_CLASS, "DEBUG");
+            limits.setProperty(P245_MESSAGE_OUTPUT_CLASS, "INFO");
+            limits.setProperty(P246_SIMPLE_TIMER_CLASS, "DEBUG");
+            context.logManager().setLimits(limits);
+        } catch (Throwable ignored) { }
     }
 
     public static void main(String[] args) throws Exception {
@@ -555,6 +891,58 @@ public final class ReferenceStreamingService {
                                 + " java_transit_processed=false"
                                 + " java_target_ibgw_present=false"
                                 + " java_target_ibgw_dispatched=false");
+                            break;
+                        }
+                        case "REPORT_TIMER_STATS": {
+                            // Plan 246 §7 — bounded SimpleTimer2 lifecycle
+                            // + exact-socket correlation snapshot. Every
+                            // counter is bounded by MAX_OBSERVATIONS (1024)
+                            // and only numeric/count/bool fields are
+                            // emitted; the peer string is never written.
+                            // The driver polls this command ~50 ms × 40
+                            // times across a two-second attribution
+                            // horizon and keeps rolling maxima in
+                            // memory; the final 45 s outer lane keeps the
+                            // retained Plan-237/245 snapshot for
+                            // compatibility.
+                            p246RefreshPeerMarker();
+                            long[] schedTimeouts = p246CollectTimeouts(true);
+                            long[] early = p246CollectRescheduleDeltas();
+                            long[] finished = p246CollectFinishedElapsed();
+                            int runningCount =
+                                p246CountBufferSubstringExactSocket(P246_TIMER_RUNNING_NEEDLE);
+                            int schedulingCount = (int) schedTimeouts[0];
+                            int earlyRescheduleCount = (int) early[0];
+                            int finishedCount = (int) finished[0];
+                            long firstScheduleTimeout = schedTimeouts[1];
+                            long latestScheduleTimeout = schedTimeouts[2];
+                            long minScheduleTimeout = schedTimeouts[3];
+                            long maxScheduleTimeout = schedTimeouts[4];
+                            long firstRescheduleDelta = early[1];
+                            long latestRescheduleDelta = early[2];
+                            long minRescheduleDelta = early[3];
+                            long maxRescheduleDelta = early[4];
+                            long firstFinishedElapsed = finished[1];
+                            long clockSkew = p246ClockSkewMs();
+                            boolean simpleTimerDebug = p246SimpleTimerDebugEnabled();
+                            output.println("TIMER_STATS peer_correlation_present="
+                                + (EXPECTED_PEER_B32 != null && !EXPECTED_PEER_B32.isEmpty())
+                                + " simple_timer_debug_enabled=" + simpleTimerDebug
+                                + " timer_scheduler_count=" + schedulingCount
+                                + " timer_running_count=" + runningCount
+                                + " timer_early_reschedule_count=" + earlyRescheduleCount
+                                + " timer_finished_count=" + finishedCount
+                                + " connection_timer_first_schedule_timeout_ms=" + firstScheduleTimeout
+                                + " connection_timer_latest_schedule_timeout_ms=" + latestScheduleTimeout
+                                + " connection_timer_min_schedule_timeout_ms=" + minScheduleTimeout
+                                + " connection_timer_max_schedule_timeout_ms=" + maxScheduleTimeout
+                                + " first_reschedule_delta_ms=" + firstRescheduleDelta
+                                + " latest_reschedule_delta_ms=" + latestRescheduleDelta
+                                + " min_reschedule_delta_ms=" + minRescheduleDelta
+                                + " max_reschedule_delta_ms=" + maxRescheduleDelta
+                                + " connection_timer_first_run_elapsed_ms=" + firstFinishedElapsed
+                                + " context_clock_minus_system_ms=" + clockSkew
+                                + " java_source_pin=" + JAVA_SOURCE_PIN);
                             break;
                         }
                         case "REPORT_RESPONSE_STATS": {

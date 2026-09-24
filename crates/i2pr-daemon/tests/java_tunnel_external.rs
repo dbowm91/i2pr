@@ -368,6 +368,17 @@ impl ReferenceControl {
     async fn report_plan245_response_stats(&mut self) -> Option<P245ResponseStats> {
         p245_parse_response_stats(&self.command("REPORT_RESPONSE_STATS").await)
     }
+
+    /// Plan 246 §7 — bounded SimpleTimer2 / SchedulerReceived
+    /// second-event snapshot, parsed into the 17-key Plan-246 shape
+    /// (peer correlation, simple-timer logger enabled, four lifecycle
+    /// counters, first/latest/min/max schedule timeout, four
+    /// reschedule-delta stats, first run elapsed, clock skew, and
+    /// source-pin). The driver calls this ~50 ms × 40 polls over a
+    /// 2 s attribution horizon and tracks rolling maxima.
+    async fn report_plan246_timer_stats(&mut self) -> Option<P246ResponseStats> {
+        p246_parse_timer_stats(&self.command("REPORT_TIMER_STATS").await)
+    }
 }
 
 // ---- Plan 234 — Streaming SYN epoch attribution --------------------------
@@ -11030,6 +11041,126 @@ async fn streaming_through_java() {
         p245_post,
         &p245_stage_a0,
         p245_terminal,
+    );
+    // Plan 246 §5 — short polling cadence over the 2 s attribution
+    // horizon. The polling window is observational only; it MUST NOT
+    // shorten or replace the existing 45 s outer response window.
+    // Cadence: 50 ms × 40 polls maximum; bounded sleep between polls.
+    // The driver tracks rolling maxima across the polls so a transient
+    // lifecycle signal observed at any poll remains proven even if the
+    // bounded log line later ages out of the public LogManager
+    // console buffer.
+    let p246_pre_timer = stream_control.report_plan246_timer_stats().await;
+    let mut rolling_max_scheduler: u64 =
+        p246_pre_timer.map(|s| s.timer_scheduler_count).unwrap_or(0);
+    let mut rolling_max_running: u64 = p246_pre_timer.map(|s| s.timer_running_count).unwrap_or(0);
+    let mut rolling_max_finished: u64 = p246_pre_timer.map(|s| s.timer_finished_count).unwrap_or(0);
+    let mut rolling_max_early: u64 = p246_pre_timer
+        .map(|s| s.timer_early_reschedule_count)
+        .unwrap_or(0);
+    let p245_scheduler_reschedule_branch_delta = p245_post
+        .map(|post| {
+            let pre = p245_pre.unwrap_or_default();
+            post.scheduler_reschedule_branch_log_count
+                .saturating_sub(pre.scheduler_reschedule_branch_log_count)
+        })
+        .unwrap_or(0);
+    let p245_scheduler_send_branch_delta = p245_post
+        .map(|post| {
+            let pre = p245_pre.unwrap_or_default();
+            post.scheduler_send_branch_log_count
+                .saturating_sub(pre.scheduler_send_branch_log_count)
+        })
+        .unwrap_or(0);
+    let p245_scheduler_no_unacked_delta = p245_post
+        .map(|post| {
+            let pre = p245_pre.unwrap_or_default();
+            post.scheduler_no_unacked_warning_log_count
+                .saturating_sub(pre.scheduler_no_unacked_warning_log_count)
+        })
+        .unwrap_or(0);
+    let mut p246_repeated_reschedule_count: u32 = 0;
+    let mut polling_observations: u32 = 0;
+    let p246_poll_interval_ms: u64 = 50;
+    let p246_poll_max: u32 = 40;
+    let mut last_timer_snapshot: Option<P246ResponseStats> = p246_pre_timer;
+    let mut polling_horizon_ms: u64 = 0;
+    // The polling loop runs at most 40 iterations × 50 ms = 2 s. The
+    // outer response window stays unchanged; this loop is observation
+    // only and exits as soon as the rolling classification reaches a
+    // Plan 246 terminal or the horizon ends.
+    for _ in 0..p246_poll_max {
+        tokio::time::sleep(std::time::Duration::from_millis(p246_poll_interval_ms)).await;
+        polling_horizon_ms = polling_horizon_ms.saturating_add(p246_poll_interval_ms);
+        polling_observations = polling_observations.saturating_add(1);
+        if let Some(snapshot) = stream_control.report_plan246_timer_stats().await {
+            rolling_max_scheduler = rolling_max_scheduler.max(snapshot.timer_scheduler_count);
+            rolling_max_running = rolling_max_running.max(snapshot.timer_running_count);
+            rolling_max_finished = rolling_max_finished.max(snapshot.timer_finished_count);
+            rolling_max_early = rolling_max_early.max(snapshot.timer_early_reschedule_count);
+            last_timer_snapshot = Some(snapshot);
+        }
+        // Track the second SchedulerReceived reschedule signal by
+        // watching the Plan-245 scheduler reschedule branch counter
+        // increment across the polling horizon. Plan-245 attribution
+        // owns the FIRST event; Plan-246 owns the second.
+        let p245_reschedule_post = p245_post
+            .map(|p| p.scheduler_reschedule_branch_log_count)
+            .unwrap_or(0);
+        let p245_reschedule_pre = p245_pre
+            .map(|p| p.scheduler_reschedule_branch_log_count)
+            .unwrap_or(0);
+        let observed_reschedule_branch_delta =
+            p245_reschedule_post.saturating_sub(p245_reschedule_pre);
+        if observed_reschedule_branch_delta > 1 {
+            p246_repeated_reschedule_count = p246_repeated_reschedule_count.saturating_add(1);
+        }
+    }
+    let p246_post_timer = last_timer_snapshot;
+    let p246_stage_a1 = p246_stage_a1_from_stats(p246_post_timer);
+    let observer_evicted = p246_observer_evicted(
+        rolling_max_scheduler,
+        p246_post_timer
+            .map(|s| s.timer_scheduler_count)
+            .unwrap_or(0),
+    ) || p246_observer_evicted(
+        rolling_max_running,
+        p246_post_timer.map(|s| s.timer_running_count).unwrap_or(0),
+    ) || p246_observer_evicted(
+        rolling_max_finished,
+        p246_post_timer.map(|s| s.timer_finished_count).unwrap_or(0),
+    ) || p246_observer_evicted(
+        rolling_max_early,
+        p246_post_timer
+            .map(|s| s.timer_early_reschedule_count)
+            .unwrap_or(0),
+    );
+    let p246_terminal = p246_classify(
+        p245_baseline_ok,
+        &p245_stage_a0,
+        &p246_stage_a1,
+        p246_pre_timer,
+        p246_post_timer,
+        p245_scheduler_reschedule_branch_delta,
+        p245_scheduler_send_branch_delta,
+        p245_scheduler_no_unacked_delta,
+        polling_observations,
+        polling_horizon_ms,
+        p246_repeated_reschedule_count,
+    );
+    record_p246_classification(
+        &evidence_dir,
+        p246_pre_timer,
+        p246_post_timer,
+        rolling_max_scheduler,
+        rolling_max_running,
+        rolling_max_finished,
+        rolling_max_early,
+        polling_observations,
+        polling_horizon_ms,
+        &p246_stage_a1,
+        p246_terminal,
+        observer_evicted,
     );
     // Plan 244 §17 live correlation (begin).
     let p244_direction_a = p234_terminal == P234Terminal::DirectionAEstablished
@@ -27342,3 +27473,1376 @@ fn p245_no_response_behavior_change() {
 }
 
 // Plan 245 stock-response construction-signal attribution (end).
+
+// ============================================================================
+// Plan 246 — M6 Java Streaming delayed-ACK timer enqueue/fire and
+// second-scheduler attribution
+//
+// Plan 245 proved on three counted same-SHA attempts that the stock
+// `SchedulerReceived` reschedule branch fires but the send branch does
+// not, with `getNextSendTime() - _context.clock().now() > 0` holding for
+// the entire frozen 45 s response window. Exact-pinned source review
+// after Plan 245 proved that the fresh-wrapper `SimpleTimer2.addEvent`
+// path schedules a one-shot `ConEvent` whose `timeReached()` re-enters
+// `Connection.eventOccurred()` and therefore `SchedulerChooser`. Plan
+// 246 attributes the numeric delayed-ACK deadline, the timer enqueue,
+// the timer execution, and the second-scheduler outcome through bounded
+// read-only observation only: short polling (50 ms × 40 polls over a
+// 2 s horizon) of the helper-JVM `REPORT_TIMER_STATS` command, exact-
+// socket correlation against the accepted I2PSocket peer destination
+// b32, rolling maxima across the polling window, and a Stage A.1
+// classifier that distinguishes H1..H7 hypotheses without changing Java
+// timing or production i2pr.
+//
+// No Java source patch, no helper behavior change, no topology /
+// publication / timing change, no production Rust change, no initialAckDelay
+// override, no retry-until-C, no between-attempt tuning. The 45-second
+// outer lane stays frozen; the polling window is observation-only and
+// must NEVER shorten or replace it.
+// ============================================================================
+// Plan 246 delayed-ACK timer attribution (begin).
+
+/// Bounded Plan-246 helper-JVM SimpleTimer2 / SchedulerReceived
+/// second-event facts. Each field is a sanitized numeric / boolean /
+/// peer-correlation marker; the peer string itself is never emitted
+/// here (only `peer_correlation_present` says whether the helper has
+/// derived an in-memory marker from the accepted I2PSocket).
+///
+/// The bounded public LogManager console buffer (1024 lines) is the
+/// only observation surface; the polling window is 50 ms × 40 polls
+/// over 2 s. Field names must stay byte-identical to the helper's
+/// `TIMER_STATS` line (split on ` `, then `=`); the static checker
+/// enforces this against the helper source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P246ResponseStats {
+    peer_correlation_present: bool,
+    simple_timer_debug_enabled: bool,
+    timer_scheduler_count: u64,
+    timer_running_count: u64,
+    timer_early_reschedule_count: u64,
+    timer_finished_count: u64,
+    // First/latest/min/max scheduler `timeout = <n>` value across the
+    // exact-socket-filtered Scheduling: lines. `-1` means the helper
+    // has not yet observed any matching lifecycle marker.
+    connection_timer_first_schedule_timeout_ms: i64,
+    connection_timer_latest_schedule_timeout_ms: i64,
+    connection_timer_min_schedule_timeout_ms: i64,
+    connection_timer_max_schedule_timeout_ms: i64,
+    // First/latest/min/max early-reschedule delta value across the
+    // exact-socket-filtered `Early execution, Rescheduling for` lines.
+    first_reschedule_delta_ms: i64,
+    latest_reschedule_delta_ms: i64,
+    min_reschedule_delta_ms: i64,
+    max_reschedule_delta_ms: i64,
+    // First `Execution finished in <n>` elapsed value across the
+    // exact-socket-filtered lifecycle markers.
+    connection_timer_first_run_elapsed_ms: i64,
+    // Plan 246 §14 — bounded clock-skew observation. Diagnostic only;
+    // the helper never adjusts clocks and the classifier never
+    // authorizes a Java patch or production i2pr change from this.
+    context_clock_minus_system_ms: i64,
+}
+
+/// Parse the bounded `REPORT_TIMER_STATS` line into the Plan-246
+/// snapshot. Strict: any unknown key or unparsable value returns
+/// `None` so the classifier can distinguish Unknown (helper
+/// unreachable / parse failed) from a proven zero.
+fn p246_parse_timer_stats(line: &str) -> Option<P246ResponseStats> {
+    let mut fields = line.split_whitespace();
+    if fields.next()? != "TIMER_STATS" {
+        return None;
+    }
+    let mut stats = P246ResponseStats::default();
+    let mut seen = 0u8;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "peer_correlation_present" => stats.peer_correlation_present = p237_parse_bool(value)?,
+            "simple_timer_debug_enabled" => {
+                stats.simple_timer_debug_enabled = p237_parse_bool(value)?
+            }
+            "timer_scheduler_count" => stats.timer_scheduler_count = p237_parse_u64(value)?,
+            "timer_running_count" => stats.timer_running_count = p237_parse_u64(value)?,
+            "timer_early_reschedule_count" => {
+                stats.timer_early_reschedule_count = p237_parse_u64(value)?
+            }
+            "timer_finished_count" => stats.timer_finished_count = p237_parse_u64(value)?,
+            "connection_timer_first_schedule_timeout_ms" => {
+                stats.connection_timer_first_schedule_timeout_ms = p246_parse_i64(value)?
+            }
+            "connection_timer_latest_schedule_timeout_ms" => {
+                stats.connection_timer_latest_schedule_timeout_ms = p246_parse_i64(value)?
+            }
+            "connection_timer_min_schedule_timeout_ms" => {
+                stats.connection_timer_min_schedule_timeout_ms = p246_parse_i64(value)?
+            }
+            "connection_timer_max_schedule_timeout_ms" => {
+                stats.connection_timer_max_schedule_timeout_ms = p246_parse_i64(value)?
+            }
+            "first_reschedule_delta_ms" => stats.first_reschedule_delta_ms = p246_parse_i64(value)?,
+            "latest_reschedule_delta_ms" => {
+                stats.latest_reschedule_delta_ms = p246_parse_i64(value)?
+            }
+            "min_reschedule_delta_ms" => stats.min_reschedule_delta_ms = p246_parse_i64(value)?,
+            "max_reschedule_delta_ms" => stats.max_reschedule_delta_ms = p246_parse_i64(value)?,
+            "connection_timer_first_run_elapsed_ms" => {
+                stats.connection_timer_first_run_elapsed_ms = p246_parse_i64(value)?
+            }
+            "context_clock_minus_system_ms" => {
+                stats.context_clock_minus_system_ms = p246_parse_i64(value)?
+            }
+            // The trailing `java_source_pin=…` is documentation-only;
+            // we accept and ignore it here so the parser stays strict
+            // on the documented keys.
+            "java_source_pin" => continue,
+            _ => return None,
+        }
+        seen = seen.saturating_add(1);
+    }
+    (seen == 17).then_some(stats)
+}
+
+/// Strict signed 64-bit parser used by the Plan-246 keys. The helper
+/// emits `-1` for missing/never-observed values; the parser must
+/// accept the negative form so the classifier can distinguish
+/// observed-but-absent from parse failure.
+fn p246_parse_i64(value: &str) -> Option<i64> {
+    if value.is_empty() {
+        return None;
+    }
+    value.parse::<i64>().ok()
+}
+
+/// Plan-246 same-epoch SimpleTimer2 deltas. Each counter is
+/// `post.saturating_sub(pre)` because the bounded public LogManager
+/// console buffer may evict under load. Negative-key fields are
+/// `latest.post - latest.pre` (a tracking-newest view).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P246Deltas {
+    scheduler_count_delta: u64,
+    running_count_delta: u64,
+    early_reschedule_count_delta: u64,
+    finished_count_delta: u64,
+    first_schedule_timeout_post: i64,
+    latest_schedule_timeout_post: i64,
+    min_schedule_timeout_post: i64,
+    max_schedule_timeout_post: i64,
+    first_reschedule_delta_post: i64,
+    latest_reschedule_delta_post: i64,
+    min_reschedule_delta_post: i64,
+    max_reschedule_delta_post: i64,
+    first_run_elapsed_post: i64,
+    clock_skew_post: i64,
+    clock_skew_delta: i64,
+}
+
+fn p246_deltas(pre: &P246ResponseStats, post: &P246ResponseStats) -> P246Deltas {
+    P246Deltas {
+        scheduler_count_delta: post
+            .timer_scheduler_count
+            .saturating_sub(pre.timer_scheduler_count),
+        running_count_delta: post
+            .timer_running_count
+            .saturating_sub(pre.timer_running_count),
+        early_reschedule_count_delta: post
+            .timer_early_reschedule_count
+            .saturating_sub(pre.timer_early_reschedule_count),
+        finished_count_delta: post
+            .timer_finished_count
+            .saturating_sub(pre.timer_finished_count),
+        first_schedule_timeout_post: post.connection_timer_first_schedule_timeout_ms,
+        latest_schedule_timeout_post: post.connection_timer_latest_schedule_timeout_ms,
+        min_schedule_timeout_post: post.connection_timer_min_schedule_timeout_ms,
+        max_schedule_timeout_post: post.connection_timer_max_schedule_timeout_ms,
+        first_reschedule_delta_post: post.first_reschedule_delta_ms,
+        latest_reschedule_delta_post: post.latest_reschedule_delta_ms,
+        min_reschedule_delta_post: post.min_reschedule_delta_ms,
+        max_reschedule_delta_post: post.max_reschedule_delta_ms,
+        first_run_elapsed_post: post.connection_timer_first_run_elapsed_ms,
+        clock_skew_post: post.context_clock_minus_system_ms,
+        clock_skew_delta: post
+            .context_clock_minus_system_ms
+            .saturating_sub(pre.context_clock_minus_system_ms),
+    }
+}
+
+/// Plan-246 logger-enabled snapshot. `simple_timer_debug_enabled`
+/// must be true before any positive lifecycle delta is trusted
+/// (Plan 246 §17 contradiction guard); `peer_correlation_present`
+/// must be true before any exact-socket-filtered lifecycle delta is
+/// trusted (Plan 246 §6). Unknown state (`None` helper response)
+/// collapses to the conservative `false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P246StageA1 {
+    simple_timer_isolatable: bool,
+    peer_correlation_present: bool,
+}
+
+fn p246_stage_a1_from_stats(post: Option<P246ResponseStats>) -> P246StageA1 {
+    match post {
+        Some(stats) => P246StageA1 {
+            simple_timer_isolatable: stats.simple_timer_debug_enabled,
+            peer_correlation_present: stats.peer_correlation_present,
+        },
+        None => P246StageA1::default(),
+    }
+}
+
+/// Plan 246 §4 / §8–11 — typed terminals the Stage A.1 classifier
+/// returns. The H1..H7 hypotheses are projected onto bounded terminal
+/// tokens so the durable evidence is exhaustive. The classifier
+/// stops at the earliest proven arm; nothing downstream is claimed
+/// unless the send branch is reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P246Terminal {
+    /// Helper unreachable / parse failed / SimpleTimer2 DEBUG disabled
+    /// without a positive lifecycle delta. Not evidence against any
+    /// hypothesis; just an observation gap.
+    ObservabilityGap,
+    /// H1 — first observed scheduler reschedule delay > 500 ms.
+    /// Frozen helper does not set `initialAckDelay` so the default
+    /// is 500; a value outside `(0, getSendAckDelay()]` proves a
+    /// deadline/clock-origin issue and authorizes only a narrow
+    /// deadline/clock successor.
+    NextSendDeadlineOutOfBounds,
+    /// H2 — SchedulerReceived reschedule branch is observed but no
+    /// matching Connection timer schedule is observed inside the
+    /// 2 s attribution horizon.
+    ConnectionEventNotScheduled,
+    /// H3 — matching Connection timer schedule is observed but no
+    /// matching timer run appears.
+    ConnectionEventScheduledNotRun,
+    /// H4 — matching timer run appears but the second
+    /// SchedulerReceived branch (send / reschedule / no-unacked) is
+    /// not observed. Chooser changed or another scheduler selected.
+    ConnectionEventRanSchedulerChanged,
+    /// H5 — second SchedulerReceived fires the reschedule branch
+    /// again. The classifier stays at this arm and the driver
+    /// continues polling until either the send branch is reached or
+    /// the bounded horizon ends.
+    SchedulerRescheduledAgain,
+    /// H5-2 — repeated bounded reschedules consume the full polling
+    /// horizon without send. Diagnostic terminal that authors a
+    /// narrow clock/nextSendTime successor.
+    RepeatedRescheduleWithoutSend,
+    /// H6 — second SchedulerReceived reaches the send branch.
+    /// Resume the retained Plan-245 downstream chain.
+    SchedulerSendBranchReached,
+    /// H6/§11.2 - the second SchedulerReceived event reaches the
+    /// exact `hmm, state is received, but no unacked packets
+    /// received?` warning. Authorizes a narrow inbound ACK-state
+    /// successor.
+    SchedulerNoUnackedOnSecondEvent,
+}
+
+impl P246Terminal {
+    fn token(self) -> &'static str {
+        match self {
+            Self::ObservabilityGap => "P246-OBSERVABILITY-GAP",
+            Self::NextSendDeadlineOutOfBounds => "P246-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS",
+            Self::ConnectionEventNotScheduled => "P246-B-CONNECTION-EVENT-NOT-SCHEDULED",
+            Self::ConnectionEventScheduledNotRun => "P246-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN",
+            Self::ConnectionEventRanSchedulerChanged => {
+                "P246-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED"
+            }
+            Self::SchedulerRescheduledAgain => "P246-C-SCHEDULER-RESCHEDULED-AGAIN",
+            Self::RepeatedRescheduleWithoutSend => "P246-C-REPEATED-RESCHEDULE-WITHOUT-SEND",
+            Self::SchedulerSendBranchReached => "P246-D-SCHEDULER-SEND-BRANCH-REACHED",
+            Self::SchedulerNoUnackedOnSecondEvent => "P246-C-SCHEDULER-NO-UNACKED-ON-SECOND-EVENT",
+        }
+    }
+}
+
+/// Plan 246 §8–11 ordered Stage A.1 classifier. Stops at the
+/// earliest proven arm. The baseline gate requires a Plan-245
+/// Stage A.0 scheduler reschedule (no production change authorized
+/// otherwise). The classifier is observation-only: it never
+/// patches Java or production i2pr.
+#[allow(clippy::too_many_arguments)]
+fn p246_classify(
+    p245_baseline_ok: bool,
+    p245_stage_a0: &P245StageA0,
+    p246_stage_a1: &P246StageA1,
+    pre: Option<P246ResponseStats>,
+    post: Option<P246ResponseStats>,
+    p245_scheduler_reschedule_branch_delta: u64,
+    p245_scheduler_send_branch_delta: u64,
+    p245_scheduler_no_unacked_delta: u64,
+    polling_observations: u32,
+    polling_horizon_ms: u64,
+    p246_repeated_reschedule_count: u32,
+) -> P246Terminal {
+    let (Some(pre), Some(post)) = (pre, post) else {
+        return P246Terminal::ObservabilityGap;
+    };
+    // The contradiction guard: any positive lifecycle delta without
+    // its proven logger is an untrusted observation, not evidence.
+    if post.timer_scheduler_count > pre.timer_scheduler_count
+        && !p246_stage_a1.simple_timer_isolatable
+    {
+        return P246Terminal::ObservabilityGap;
+    }
+    if post.timer_running_count > pre.timer_running_count && !p246_stage_a1.simple_timer_isolatable
+    {
+        return P246Terminal::ObservabilityGap;
+    }
+    if post.timer_early_reschedule_count > pre.timer_early_reschedule_count
+        && !p246_stage_a1.simple_timer_isolatable
+    {
+        return P246Terminal::ObservabilityGap;
+    }
+    if post.timer_finished_count > pre.timer_finished_count
+        && !p246_stage_a1.simple_timer_isolatable
+    {
+        return P246Terminal::ObservabilityGap;
+    }
+    if !p246_stage_a1.peer_correlation_present {
+        return P246Terminal::ObservabilityGap;
+    }
+    // The baseline gate: a Plan-245 Stage A.0 reschedule observation
+    // is required before Plan-246 attributes a delayed-ACK timer
+    // deadline. The original P245-A-SCHEDULER-RESCHEDULED-NO-SEND-BRANCH
+    // is the pre-condition; if Plan-245 didn't see a reschedule there
+    // is no Plan-246 attribution to make.
+    if !p245_baseline_ok
+        || p245_scheduler_reschedule_branch_delta == 0
+        || !p245_stage_a0.scheduler_log_isolatable
+    {
+        return P246Terminal::ObservabilityGap;
+    }
+    let deltas = p246_deltas(&pre, &post);
+    // §8 — deadline validation. The frozen helper does not set
+    // `initialAckDelay` so the documented default is 500 ms. The
+    // observed latest schedule timeout must lie within (0, 500] ms;
+    // a value outside the bound (including `0` and `>500`) proves a
+    // deadline/clock-origin issue and authorizes only a narrow
+    // deadline/clock successor.
+    let latest = deltas.latest_schedule_timeout_post;
+    if latest > 500 || latest <= 0 {
+        return P246Terminal::NextSendDeadlineOutOfBounds;
+    }
+    // §9 — timer enqueue attribution. A positive
+    // scheduler_count_delta proves the Connection event was scheduled
+    // on SimpleTimer2; a zero proves it was not.
+    if deltas.scheduler_count_delta == 0 && polling_observations >= 1 {
+        return P246Terminal::ConnectionEventNotScheduled;
+    }
+    // §10 — timer execution attribution. A positive
+    // running_count_delta OR a positive finished_count_delta proves
+    // the timer ran; both zero (and no early-execution signal) means
+    // the event was scheduled but never executed within the bounded
+    // horizon.
+    let ran = deltas.running_count_delta > 0 || deltas.finished_count_delta > 0;
+    if !ran && polling_horizon_ms >= 2000 {
+        return P246Terminal::ConnectionEventScheduledNotRun;
+    }
+    if !ran {
+        // The polling window has not completed yet; signal Unknown
+        // and let the driver continue polling.
+        return P246Terminal::ObservabilityGap;
+    }
+    // §11 — second scheduler attribution. After a matching timer
+    // run, the second SchedulerReceived event should fire one of:
+    //   * the send branch (`received con... send a packet` +
+    //     `con.sendAvailable()`), resumed by Plan-245 Stage A.0;
+    //   * the reschedule branch (positive second timeTillSend);
+    //   * the no-unacked guard warning
+    //     (`hmm, state is received, but no unacked packets received?`).
+    // The Plan-245 Stage A.0 already attributes the FIRST
+    // SchedulerReceived event; Plan-246 attributes the SECOND one
+    // by watching the same scheduler debug counters across the
+    // polling window.
+    if p245_scheduler_send_branch_delta > 1 {
+        return P246Terminal::SchedulerSendBranchReached;
+    }
+    if p245_scheduler_no_unacked_delta > 1 {
+        return P246Terminal::SchedulerNoUnackedOnSecondEvent;
+    }
+    if p245_scheduler_reschedule_branch_delta > 1 {
+        if p246_repeated_reschedule_count >= 2 && polling_horizon_ms >= 2000 {
+            return P246Terminal::RepeatedRescheduleWithoutSend;
+        }
+        return P246Terminal::SchedulerRescheduledAgain;
+    }
+    // The timer ran, but the second SchedulerReceived event did not
+    // reappear within the polling horizon. This means the chooser
+    // selected another scheduler (or an observability gap remains).
+    // Plan 246 §11.4 stops at this arm; a successor owns the narrow
+    // scheduler-choice attribution.
+    P246Terminal::ConnectionEventRanSchedulerChanged
+}
+
+/// Plan 246 §12 — observer-window eviction classification. If any
+/// short-poll signal is observed but its final 45-second snapshot
+/// counter later returns to a lower value because the bounded log
+/// line aged out, return true so the driver can record the
+/// `P246-O-END-OF-WINDOW-SNAPSHOT-EVICTION` key alongside the deeper
+/// terminal. Plan 246 §12 is an observer correction only.
+fn p246_observer_evicted(rolling_max: u64, final_snapshot: u64) -> bool {
+    rolling_max > final_snapshot
+}
+
+/// Record the Plan-246 Stage A.1 evidence: pre/post snapshot,
+/// delta row, polling-cadence summary, observer-eviction flag,
+/// logger-enabled isolation flag, and one terminal. The retained
+/// Plan-237/238/239/240/244/245 rows stay frozen; this row is
+/// additive. Counters only, never packet dumps, keys, tags, peer
+/// strings, or payloads.
+#[allow(clippy::too_many_arguments)]
+fn record_p246_classification(
+    evidence_dir: &Path,
+    pre: Option<P246ResponseStats>,
+    post: Option<P246ResponseStats>,
+    rolling_max_scheduler: u64,
+    rolling_max_running: u64,
+    rolling_max_finished: u64,
+    rolling_max_early: u64,
+    polling_observations: u32,
+    polling_horizon_ms: u64,
+    p246_stage_a1: &P246StageA1,
+    terminal: P246Terminal,
+    observer_evicted: bool,
+) {
+    let pre = pre.unwrap_or_default();
+    let post = post.unwrap_or_default();
+    let deltas = p246_deltas(&pre, &post);
+    append_evidence(
+        evidence_dir,
+        "p246-timer-stats-pre",
+        &format!(
+            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={}",
+            pre.peer_correlation_present,
+            pre.simple_timer_debug_enabled,
+            pre.timer_scheduler_count,
+            pre.timer_running_count,
+            pre.timer_early_reschedule_count,
+            pre.timer_finished_count,
+            pre.connection_timer_first_schedule_timeout_ms,
+            pre.connection_timer_latest_schedule_timeout_ms,
+            pre.connection_timer_min_schedule_timeout_ms,
+            pre.connection_timer_max_schedule_timeout_ms,
+            pre.first_reschedule_delta_ms,
+            pre.latest_reschedule_delta_ms,
+            pre.min_reschedule_delta_ms,
+            pre.max_reschedule_delta_ms,
+            pre.connection_timer_first_run_elapsed_ms,
+            pre.context_clock_minus_system_ms,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p246-timer-stats-post",
+        &format!(
+            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={}",
+            post.peer_correlation_present,
+            post.simple_timer_debug_enabled,
+            post.timer_scheduler_count,
+            post.timer_running_count,
+            post.timer_early_reschedule_count,
+            post.timer_finished_count,
+            post.connection_timer_first_schedule_timeout_ms,
+            post.connection_timer_latest_schedule_timeout_ms,
+            post.connection_timer_min_schedule_timeout_ms,
+            post.connection_timer_max_schedule_timeout_ms,
+            post.first_reschedule_delta_ms,
+            post.latest_reschedule_delta_ms,
+            post.min_reschedule_delta_ms,
+            post.max_reschedule_delta_ms,
+            post.connection_timer_first_run_elapsed_ms,
+            post.context_clock_minus_system_ms,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p246-timer-deltas",
+        &format!(
+            "scheduler_count_delta={} running_count_delta={} early_reschedule_count_delta={} finished_count_delta={} first_schedule_timeout_post={} latest_schedule_timeout_post={} min_schedule_timeout_post={} max_schedule_timeout_post={} first_reschedule_delta_post={} latest_reschedule_delta_post={} min_reschedule_delta_post={} max_reschedule_delta_post={} first_run_elapsed_post={} clock_skew_post={} clock_skew_delta={}",
+            deltas.scheduler_count_delta,
+            deltas.running_count_delta,
+            deltas.early_reschedule_count_delta,
+            deltas.finished_count_delta,
+            deltas.first_schedule_timeout_post,
+            deltas.latest_schedule_timeout_post,
+            deltas.min_schedule_timeout_post,
+            deltas.max_schedule_timeout_post,
+            deltas.first_reschedule_delta_post,
+            deltas.latest_reschedule_delta_post,
+            deltas.min_reschedule_delta_post,
+            deltas.max_reschedule_delta_post,
+            deltas.first_run_elapsed_post,
+            deltas.clock_skew_post,
+            deltas.clock_skew_delta,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p246-poll-cadence",
+        &format!(
+            "polling_observations={} polling_horizon_ms={} polling_interval_ms=50 rolling_max_scheduler={} rolling_max_running={} rolling_max_finished={} rolling_max_early_reschedule={}",
+            polling_observations,
+            polling_horizon_ms,
+            rolling_max_scheduler,
+            rolling_max_running,
+            rolling_max_finished,
+            rolling_max_early,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p246-stage-a1",
+        &format!(
+            "simple_timer_isolatable={} peer_correlation_present={} observer_evicted={}",
+            p246_stage_a1.simple_timer_isolatable,
+            p246_stage_a1.peer_correlation_present,
+            observer_evicted,
+        ),
+    );
+    append_evidence(evidence_dir, "p246-classification", terminal.token());
+    if observer_evicted {
+        append_evidence(
+            evidence_dir,
+            "p246-classification-eviction",
+            "P246-O-END-OF-WINDOW-SNAPSHOT-EVICTION",
+        );
+    }
+}
+
+// ---- Plan 246 §18 focused tests --------------------------------------------
+// Each test pins one precedence, attribution, or contradiction rule
+// from the plan. Together with the retained Plan-237–245 floors they
+// lock the Stage A.1 ordering.
+
+fn p246_test_stats() -> P246ResponseStats {
+    P246ResponseStats {
+        peer_correlation_present: true,
+        simple_timer_debug_enabled: true,
+        timer_scheduler_count: 1,
+        timer_running_count: 1,
+        timer_early_reschedule_count: 0,
+        timer_finished_count: 1,
+        connection_timer_first_schedule_timeout_ms: 500,
+        connection_timer_latest_schedule_timeout_ms: 500,
+        connection_timer_min_schedule_timeout_ms: 500,
+        connection_timer_max_schedule_timeout_ms: 500,
+        first_reschedule_delta_ms: -1,
+        latest_reschedule_delta_ms: -1,
+        min_reschedule_delta_ms: -1,
+        max_reschedule_delta_ms: -1,
+        connection_timer_first_run_elapsed_ms: 0,
+        context_clock_minus_system_ms: 0,
+    }
+}
+
+fn p246_stage_a1_full() -> P246StageA1 {
+    P246StageA1 {
+        simple_timer_isolatable: true,
+        peer_correlation_present: true,
+    }
+}
+
+fn p245_stage_a0_for_p246() -> P245StageA0 {
+    P245StageA0 {
+        scheduler_log_isolatable: true,
+        connection_log_isolatable: true,
+        receiver_log_isolatable: true,
+        message_output_enabled: true,
+    }
+}
+
+#[test]
+fn p246_default_ack_delay_is_500_on_frozen_helper() {
+    // Plan 246 §3.1 — frozen helper does not set
+    // `i2p.streaming.initialAckDelay`; the documented default is 500
+    // ms and `Connection.setNextSendTime()` clamps future deadlines
+    // to `now + getSendAckDelay()`. The 500 ms upper bound is the
+    // canonical fact this test pins.
+    let conn_options_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("ConnectionOptions.java"),
+    )
+    .expect("read ConnectionOptions.java");
+    assert!(
+        conn_options_src.contains("DEFAULT_INITIAL_ACK_DELAY = 500"),
+        "Plan 246 §3.1: frozen default 500 ms"
+    );
+}
+
+#[test]
+fn p246_next_send_time_is_clamped_by_ack_delay() {
+    // Plan 246 §3.2 — `Connection.setNextSendTime()` clamps future
+    // deadlines to no later than `now + getSendAckDelay()`. The
+    // classifier treats any latest-schedule-timeout outside
+    // `(0, 500]` as `NextSendDeadlineOutOfBounds`.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.connection_timer_latest_schedule_timeout_ms = 600;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::NextSendDeadlineOutOfBounds);
+}
+
+#[test]
+fn p246_packet_handler_sets_deadline_before_event() {
+    // Plan 246 §3.3 — ConnectionPacketHandler ordering on a new
+    // inbound packet: `incrementUnackedPacketsReceived`,
+    // `setNextSendTime(delay + context.clock().now())`,
+    // `con.eventOccurred()`. The deadline exists BEFORE the first
+    // SchedulerReceived event so its `timeTillSend` is non-zero.
+    let packet_handler_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("ConnectionPacketHandler.java"),
+    )
+    .expect("read ConnectionPacketHandler.java");
+    let inc_idx = packet_handler_src
+        .find("incrementUnackedPacketsReceived")
+        .expect("Plan 246 §3.3: incrementUnackedPacketsReceived present");
+    let set_idx = packet_handler_src
+        .find("con.setNextSendTime(delay + _context.clock().now());")
+        .expect("Plan 246 §3.3: setNextSendTime present");
+    let ev_idx = packet_handler_src
+        .find("con.eventOccurred();")
+        .expect("Plan 246 §3.3: eventOccurred present");
+    assert!(inc_idx < set_idx);
+    assert!(set_idx < ev_idx);
+}
+
+#[test]
+fn p246_received_reschedule_calls_connection_timer() {
+    // Plan 246 §3.4 — SchedulerReceived.reschedule() branch
+    // (`timeTillSend > 0`) calls `reschedule(timeTillSend, con)`;
+    // the SchedulerImpl wrapper delegates through
+    // `Connection.scheduleConnectionEvent()`. The classifier treats
+    // a Plan-245 Stage A.0 scheduler reschedule as the baseline
+    // gate.
+    let scheduler_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("SchedulerImpl.java"),
+    )
+    .expect("read SchedulerImpl.java");
+    assert!(scheduler_src.contains("con.scheduleConnectionEvent(msToWait);"));
+}
+
+#[test]
+fn p246_transition_add_event_uses_fresh_wrapper() {
+    // Plan 246 §3.6 — `SimpleTimer2.addEvent(SimpleTimer.TimedEvent,
+    // timeoutMs)` constructs a fresh anonymous `SimpleTimer2.TimedEvent`
+    // wrapper for every call. The transition wrapper schedules itself
+    // during construction and never reuses the same wrapper object for
+    // repeated `ConEvent` submissions.
+    let simple_timer2_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("core")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("util")
+            .join("SimpleTimer2.java"),
+    )
+    .expect("read SimpleTimer2.java");
+    let add_idx = simple_timer2_src
+        .find("public void addEvent(final SimpleTimer.TimedEvent event, final long timeoutMs)")
+        .expect("Plan 246 §3.6: addEvent signature present");
+    let new_idx = simple_timer2_src
+        .find("new TimedEvent(this, timeoutMs) {")
+        .expect("Plan 246 §3.6: fresh-wrapper construction present");
+    let reached_idx = simple_timer2_src
+        .find("event.timeReached();")
+        .expect("Plan 246 §3.6: wrapper.timeReached delegation present");
+    let to_string_idx = simple_timer2_src
+        .find("return event.toString();")
+        .expect("Plan 246 §3.6: wrapper.toString delegation present");
+    assert!(add_idx < new_idx);
+    assert!(new_idx < reached_idx);
+    assert!(new_idx < to_string_idx);
+}
+
+#[test]
+fn p246_timer_wrapper_delegates_to_connection_event() {
+    // Plan 246 §3.6 — the wrapper `timeReached()` delegates to the
+    // inner `event.timeReached()` which is `ConEvent.timeReached` and
+    // re-enters `Connection.eventOccurred()`. The classifier must
+    // never assume a transition wrapper deduplicates ConEvent
+    // submissions.
+    let connection_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("Connection.java"),
+    )
+    .expect("read Connection.java");
+    let con_event_idx = connection_src
+        .find("class ConEvent implements SimpleTimer.TimedEvent")
+        .expect("Plan 246 §3.8: ConEvent class present");
+    let time_reached_idx = connection_src
+        .find("eventOccurred();")
+        .expect("Plan 246 §3.8: ConEvent.timeReached -> eventOccurred");
+    let to_string_idx = connection_src
+        .find("return \"event on \" + Connection.this.toString();")
+        .expect("Plan 246 §3.8: ConEvent.toString delegates to Connection");
+    assert!(con_event_idx < time_reached_idx);
+    assert!(con_event_idx < to_string_idx);
+}
+
+#[test]
+fn p246_connection_event_reenters_scheduler_chooser() {
+    // Plan 246 §3.8 — `Connection.eventOccurred()` calls
+    // `_chooser.getScheduler(this)` and the chooser iterates the
+    // exact 8-entry scheduler list (plus NullScheduler). The
+    // classifier never assumes SchedulerReceived remains the
+    // selected scheduler for the second event.
+    let connection_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("Connection.java"),
+    )
+    .expect("read Connection.java");
+    assert!(connection_src.contains("_chooser.getScheduler(this)"));
+    assert!(connection_src.contains("sched.eventOccurred(this);"));
+}
+
+#[test]
+fn p246_scheduler_precedence_is_source_locked() {
+    // Plan 246 §3.8 — exact scheduler precedence:
+    // HardDisconnected, Preconnect, Connecting, Received,
+    // ConnectedBulk, Closing, Closed, Dead, NullScheduler.
+    let chooser_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("SchedulerChooser.java"),
+    )
+    .expect("read SchedulerChooser.java");
+    let order = [
+        "SchedulerHardDisconnected",
+        "SchedulerPreconnect",
+        "SchedulerConnecting",
+        "SchedulerReceived",
+        "SchedulerConnectedBulk",
+        "SchedulerClosing",
+        "SchedulerClosed",
+        "SchedulerDead",
+    ];
+    let mut last_idx = 0usize;
+    for scheduler in order.iter() {
+        let needle = format!("rv.add(new {scheduler}(_context));");
+        let idx = chooser_src
+            .find(&needle)
+            .unwrap_or_else(|| panic!("Plan 246 §3.8: {scheduler} entry present"));
+        assert!(
+            idx > last_idx,
+            "Plan 246 §3.8: precedence order ({scheduler} after previous)"
+        );
+        last_idx = idx;
+    }
+}
+
+#[test]
+fn p246_polling_preserves_transient_signal() {
+    // Plan 246 §5.3 — the driver tracks rolling maxima across the
+    // polling horizon. A transient lifecycle signal observed at any
+    // poll remains proven even if the bounded log line later ages
+    // out of the public LogManager console buffer.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 0;
+    let rolling = p246_observer_evicted(1, 0);
+    assert!(rolling);
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    // With scheduler_count_delta=0 and polling_horizon_ms=2000 the
+    // classifier returns `ConnectionEventNotScheduled`.
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ConnectionEventNotScheduled);
+}
+
+#[test]
+fn p246_final_snapshot_cannot_erase_rolling_max() {
+    // Plan 246 §5.3 — the rolling maximum becomes authoritative for
+    // the Plan-246 timer/scheduler lifecycle facts; the retained
+    // final snapshot remains historical / compatibility evidence.
+    // The Plan-246 §12 `P246-O-END-OF-WINDOW-SNAPSHOT-EVICTION` key
+    // is appended only when the rolling max exceeds the final
+    // snapshot.
+    assert!(p246_observer_evicted(2, 0));
+    assert!(!p246_observer_evicted(0, 0));
+    assert!(!p246_observer_evicted(1, 1));
+}
+
+#[test]
+fn p246_timer_logs_require_exact_socket_correlation() {
+    // Plan 246 §6 — the helper derives the expected peer b32 from
+    // `I2PSocket.getPeerDestination().toBase32()` and filters the
+    // bounded public LogManager console buffer down to lines
+    // containing both the lifecycle needle and the exact-socket
+    // marker. Without the marker the classifier stays at
+    // `ObservabilityGap`.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.peer_correlation_present = false;
+    post.timer_scheduler_count = 1;
+    post.timer_running_count = 1;
+    let stage_a1 = P246StageA1 {
+        simple_timer_isolatable: true,
+        peer_correlation_present: false,
+    };
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ObservabilityGap);
+}
+
+#[test]
+fn p246_peer_identity_not_persisted() {
+    // Plan 246 §6 — the helper never persists the peer Destination
+    // / b32 in durable evidence. Only the boolean
+    // `peer_correlation_present` and the sanitized numeric timer
+    // facts reach the response line.
+    let helper_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("java")
+        .join("ReferenceStreamingService.java");
+    let helper = std::fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read helper {helper_path:?}: {e}"));
+    assert!(helper.contains("P246_SIMPLE_TIMER_CLASS"));
+    assert!(helper.contains("peer_correlation_present"));
+    assert!(!helper.contains("appendEvidence") && !helper.contains("FileWriter"));
+    // The helper must not expose a peer b32 through the
+    // REPORT_TIMER_STATS command output. Every key in the output
+    // line is named `peer_correlation_present`, `simple_timer_*`,
+    // `timer_*`, `connection_timer_*`, `*_reschedule_delta_ms`,
+    // `context_clock_minus_system_ms`, or `java_source_pin`; none
+    // are the peer b32 itself.
+    let report_timer_marker = "case \"REPORT_TIMER_STATS\":";
+    let after_marker = helper
+        .split(report_timer_marker)
+        .nth(1)
+        .expect("helper contains REPORT_TIMER_STATS case");
+    assert!(
+        !after_marker.contains("EXPECTED_PEER_B32 + \"=\""),
+        "Plan 246 §6: helper does not embed peer b32 in REPORT_TIMER_STATS output"
+    );
+}
+
+#[test]
+fn p246_deadline_out_of_bounds_precedes_timer_terminal() {
+    // Plan 246 §8 — when the latest observed schedule timeout is
+    // outside (0, 500] the classifier stops at
+    // `NextSendDeadlineOutOfBounds` and never reaches the timer
+    // attribution arms.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.connection_timer_latest_schedule_timeout_ms = 0;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::NextSendDeadlineOutOfBounds);
+}
+
+#[test]
+fn p246_schedule_precedes_run() {
+    // Plan 246 §9 / §10 — the classifier stops at
+    // `ConnectionEventNotScheduled` when no schedule is observed,
+    // even if the polling horizon is exhausted. The schedule arm
+    // precedes the run arm.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 0;
+    post.timer_running_count = 0;
+    post.timer_finished_count = 0;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ConnectionEventNotScheduled);
+}
+
+#[test]
+fn p246_timer_run_precedes_second_scheduler_terminal() {
+    // Plan 246 §11 — when a matching timer run is observed but no
+    // second SchedulerReceived branch fires, the classifier returns
+    // `ConnectionEventRanSchedulerChanged`. The timer-run gate
+    // precedes the second-scheduler arms.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 1;
+    post.timer_running_count = 1;
+    post.timer_finished_count = 1;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ConnectionEventRanSchedulerChanged);
+}
+
+#[test]
+fn p246_second_reschedule_records_second_delay() {
+    // Plan 246 §11.2 — the second scheduler arm fires only when the
+    // P245 scheduler reschedule branch counter increases across the
+    // polling horizon. The classifier returns
+    // `SchedulerRescheduledAgain` (one extra reschedule) or
+    // `RepeatedRescheduleWithoutSend` (two or more extra
+    // reschedules over the full horizon).
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 2;
+    post.timer_running_count = 2;
+    post.timer_finished_count = 2;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        2,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::SchedulerRescheduledAgain);
+}
+
+#[test]
+fn p246_no_unacked_second_event_is_typed() {
+    // Plan 246 §11.3 — the second SchedulerReceived event reaching
+    // the no-unacked guard warning is its own terminal so a
+    // successor owns a narrow inbound ACK-state attribution.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 1;
+    post.timer_running_count = 1;
+    post.timer_finished_count = 1;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        2,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::SchedulerNoUnackedOnSecondEvent);
+}
+
+#[test]
+fn p246_scheduler_changed_is_not_java_defect() {
+    // Plan 246 §11.4 — when the timer ran but the second
+    // SchedulerReceived did not reappear the classifier returns
+    // `ConnectionEventRanSchedulerChanged`. This terminal means the
+    // chooser selected another state (or an observability gap
+    // remains); it does NOT by itself authorize a Java patch.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("does NOT by itself authorize a Java patch"),
+        "Plan 246 §11.4: terminal does not authorize a Java patch"
+    );
+    assert!(
+        plan.contains("This is an attribution pass"),
+        "Plan 246 §1: Plan 246 is an attribution pass"
+    );
+}
+
+#[test]
+fn p246_send_branch_resumes_plan245_chain() {
+    // Plan 246 §13 — once the second SchedulerReceived event
+    // reaches the send branch the Plan-245 downstream chain resumes
+    // unchanged. The classifier returns `SchedulerSendBranchReached`
+    // and the live driver does NOT classify further.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 2;
+    post.timer_running_count = 2;
+    post.timer_finished_count = 2;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        2,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::SchedulerSendBranchReached);
+}
+
+#[test]
+fn p246_i2pr_defect_requires_exact_reverse_tunneldata() {
+    // Plan 246 §9 — production i2pr correction becomes eligible only
+    // when exact expected reverse TunnelData reaches i2pr. A missing
+    // timer log or a `connection_event_not_scheduled` terminal never
+    // authorizes an i2pr corrective on its own.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("no production Rust change before exact reverse TunnelData reaches i2pr"),
+        "Plan 246 §9: no production Rust change authorized"
+    );
+    assert!(
+        plan.contains(
+            "no production i2pr change unless the existing exact-reverse-TunnelData gate is reached"
+        ),
+        "Plan 246 §9: production correction only on exact reverse TunnelData"
+    );
+}
+
+#[test]
+fn p246_no_timing_change() {
+    // Plan 246 §5.1 — the lane must NOT change the outer 45-second
+    // timeout, the initialAckDelay, the RTT, the topology, or the
+    // response-window protocol. The polling horizon is observation
+    // only and is bounded to 50 ms × 40 = 2 s.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(plan.contains("Do not alter the 45-second lane"));
+    assert!(plan.contains("50 ms polling interval"));
+    assert!(plan.contains("2,000 ms attribution horizon"));
+    assert!(plan.contains("maximum 40 polls"));
+}
+
+#[test]
+fn p246_no_java_patch() {
+    // Plan 246 §15 — no Java source/jar patch. The helper file must
+    // not carry any patch marker, and the helper-side diff stays
+    // observation-only.
+    let helper_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("java")
+        .join("ReferenceStreamingService.java");
+    let helper = std::fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read helper {helper_path:?}: {e}"));
+    assert!(
+        !helper.contains("// JAVA PATCH") && !helper.contains("P246_JAVA_PATCH"),
+        "Plan 246: helper file remains free of patch markers"
+    );
+    assert!(helper.contains("P246_SIMPLE_TIMER_CLASS"));
+    assert!(helper.contains("REPORT_TIMER_STATS"));
+}
+
+#[test]
+fn p246_no_production_change() {
+    // Plan 246 §9 / §15 — production Rust stays free of P246 surface.
+    let prod_dirs = [
+        "crates/i2pr-daemon/src",
+        "crates/i2pr-client/src",
+        "crates/i2pr-tunnel/src",
+        "crates/i2pr-runtime/src",
+    ];
+    for dir in prod_dirs {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let hits = walkdir_find(&path, "p246").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 246: production Rust carries Plan 246 surface ({}): {:?}",
+            dir,
+            hits
+        );
+        let hits = walkdir_find(&path, "P246").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 246: production Rust carries Plan 246 surface ({}): {:?}",
+            dir,
+            hits
+        );
+    }
+}
+
+#[test]
+fn p246_baseline_gate_requires_p245_reschedule() {
+    // Plan 246 §6 / §8 — the Stage A.1 classifier requires a
+    // Plan-245 Stage A.0 scheduler reschedule observation as its
+    // baseline gate. Without the gate the classifier returns
+    // `ObservabilityGap` and never reaches the Plan-246 §8 deadline
+    // validation arm.
+    let pre = P246ResponseStats::default();
+    let post = p246_test_stats();
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        false, // p245_baseline_ok=false
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        0, // no P245 scheduler reschedule
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ObservabilityGap);
+}
+
+#[test]
+fn p246_contradiction_guard_requires_logger_enabled() {
+    // Plan 246 §17 — any positive lifecycle delta without its
+    // proven logger is untrusted; the classifier returns
+    // `ObservabilityGap` rather than claiming a fact the helper did
+    // not actually log.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 1;
+    let stage_a1 = P246StageA1 {
+        simple_timer_isolatable: false,
+        peer_correlation_present: true,
+    };
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        2000,
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ObservabilityGap);
+}
+
+#[test]
+fn p246_timer_run_but_not_exhausted_returns_observability_gap() {
+    // Plan 246 §10 — the polling horizon is 50 ms × 40 polls = 2 s.
+    // Until the horizon is exhausted the classifier does NOT
+    // classify a `ConnectionEventScheduledNotRun`; it returns
+    // `ObservabilityGap` so the driver keeps polling.
+    let pre = P246ResponseStats::default();
+    let mut post = p246_test_stats();
+    post.timer_scheduler_count = 1;
+    post.timer_running_count = 0;
+    post.timer_finished_count = 0;
+    let stage_a1 = p246_stage_a1_full();
+    let stage_a0 = p245_stage_a0_for_p246();
+    let terminal = p246_classify(
+        true,
+        &stage_a0,
+        &stage_a1,
+        Some(pre),
+        Some(post),
+        1,
+        0,
+        0,
+        40,
+        100, // horizon not exhausted
+        0,
+    );
+    assert_eq!(terminal, P246Terminal::ObservabilityGap);
+}
+
+// Plan 246 delayed-ACK timer attribution (end).

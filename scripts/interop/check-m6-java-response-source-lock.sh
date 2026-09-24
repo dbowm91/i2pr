@@ -30,6 +30,28 @@ ROUTER_TUNNEL_POOL_MANAGER="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel
 ROUTER_TUNNEL_POOL="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPool.java"
 ROUTER_TUNNEL_PEER_SELECTOR="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/TunnelPeerSelector.java"
 ROUTER_CLIENT_PEER_SELECTOR="${SOURCE_ROOT}/router/java/src/net/i2p/router/tunnel/pool/ClientPeerSelector.java"
+# Plan 246 §3 — additional source-lock needles for the delayed-ACK
+# timer enqueue/fire and second-scheduler attribution. The frozen
+# helper never sets `i2p.streaming.initialAckDelay`, so the default
+# 500 ms ACK delay applies. `Connection.setNextSendTime()` clamps any
+# future deadline to no later than `now + getSendAckDelay()`, the
+# packet-handler ordering fires the ACK deadline before the scheduler
+# event, `SchedulerReceived.reschedule()` delegates through
+# `Connection.scheduleConnectionEvent()` which calls
+# `_timer.addEvent(_connectionEvent, ms)`, the `SimpleTimer2`
+# transition `addEvent` wraps the connection event in a fresh one-shot
+# `SimpleTimer2.TimedEvent`, `ConEvent.timeReached()` re-enters
+# `Connection.eventOccurred()` and therefore `SchedulerChooser`, and
+# the exact scheduler precedence is:
+#   SchedulerHardDisconnected, SchedulerPreconnect,
+#   SchedulerConnecting, SchedulerReceived,
+#   SchedulerConnectedBulk, SchedulerClosing, SchedulerClosed,
+#   SchedulerDead, NullScheduler.
+CONNECTION_OPTIONS="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionOptions.java"
+CONNECTION_PACKET_HANDLER_SRC="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionPacketHandler.java"
+SCHEDULER_RECEIVED_SRC="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/SchedulerReceived.java"
+SCHEDULER_CHOOSER_SRC="${SOURCE_ROOT}/apps/streaming/java/src/net/i2p/client/streaming/impl/SchedulerChooser.java"
+SIMPLE_TIMER2_SRC="${SOURCE_ROOT}/core/java/src/net/i2p/util/SimpleTimer2.java"
 
 [[ -d "${SOURCE_ROOT}/.git" ]] || { echo "Java source is not a Git checkout" >&2; exit 1; }
 [[ "$(git -C "${SOURCE_ROOT}" rev-parse HEAD)" == "${EXPECTED_PIN}" ]] || {
@@ -60,11 +82,16 @@ for file in \
    "${ROUTER_TUNNEL_POOL_MANAGER}" \
    "${ROUTER_TUNNEL_POOL}" \
    "${ROUTER_TUNNEL_PEER_SELECTOR}" \
-   "${ROUTER_CLIENT_PEER_SELECTOR}"; do
+   "${ROUTER_CLIENT_PEER_SELECTOR}" \
+   "${CONNECTION_OPTIONS}" \
+   "${CONNECTION_PACKET_HANDLER_SRC}" \
+   "${SCHEDULER_RECEIVED_SRC}" \
+   "${SCHEDULER_CHOOSER_SRC}" \
+   "${SIMPLE_TIMER2_SRC}"; do
   [[ -f "${file}" ]] || { echo "missing pinned Java source: ${file}" >&2; exit 1; }
 done
 
-python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" "${ROUTER_TUNNEL_PEER_SELECTOR}" "${ROUTER_CLIENT_PEER_SELECTOR}" "${ROUTER_MESSAGE_OUTPUT}" "${ROUTER_RECEIVER}" <<'PY'
+python3 - "${STREAMING_ROOT}" "${I2CP_SESSION}" "${OUTPUT}" "${EXPECTED_PIN}" "${ROUTER_CLIENT}" "${ROUTER_OCMOSJ}" "${ROUTER_POOL}" "${ROUTER_DISPATCHER}" "${ROUTER_ISJ}" "${ROUTER_FPS}" "${ROUTER_STOREJOB}" "${ROUTER_TUNNEL_POOL_MANAGER}" "${ROUTER_TUNNEL_POOL}" "${ROUTER_TUNNEL_PEER_SELECTOR}" "${ROUTER_CLIENT_PEER_SELECTOR}" "${ROUTER_MESSAGE_OUTPUT}" "${ROUTER_RECEIVER}" "${CONNECTION_OPTIONS}" "${CONNECTION_PACKET_HANDLER_SRC}" "${SCHEDULER_RECEIVED_SRC}" "${SCHEDULER_CHOOSER_SRC}" "${SIMPLE_TIMER2_SRC}" <<'PY'
 from pathlib import Path
 import sys
 
@@ -85,6 +112,11 @@ router_tunnel_peer_selector = Path(sys.argv[14]).read_text(encoding="utf-8")
 router_client_peer_selector = Path(sys.argv[15]).read_text(encoding="utf-8")
 message_output_stream = Path(sys.argv[16]).read_text(encoding="utf-8")
 receiver = Path(sys.argv[17]).read_text(encoding="utf-8")
+connection_options_src = Path(sys.argv[18]).read_text(encoding="utf-8")
+connection_packet_handler_src = Path(sys.argv[19]).read_text(encoding="utf-8")
+scheduler_received_src = Path(sys.argv[20]).read_text(encoding="utf-8")
+scheduler_chooser_src = Path(sys.argv[21]).read_text(encoding="utf-8")
+simple_timer2_src = Path(sys.argv[22]).read_text(encoding="utf-8")
 
 def read(name: str) -> str:
     return (streaming_root / name).read_text(encoding="utf-8")
@@ -289,6 +321,73 @@ required = {
     "Connection.sendPacket_ack_only_comment": (connection, "// ACK-only"),
     "Connection.sendPacket_resend_timer_log": (connection, "_log.debug(Connection.this + \" Resend in \" + timeout + \" for \" + packet);"),
     "Connection.sendPacket_retransmit_schedule": (connection, "if (_retransmitEvent.scheduleIfNotRunning(timeout)) {"),
+    # Plan 246 §3 — exact-pinned delayed-ACK timer enqueue/fire and
+    # second-scheduler attribution. The frozen helper does not set
+    # `i2p.streaming.initialAckDelay` so the default 500 ms ACK delay
+    # applies; `Connection.setNextSendTime` clamps future deadlines to
+    # `now + getSendAckDelay()`; the ConnectionPacketHandler ordering is
+    # incrementUnackedPacketsReceived -> setNextSendTime ->
+    # con.eventOccurred; the SchedulerReceived branches feed through
+    # `Connection.scheduleConnectionEvent -> _timer.addEvent(_connectionEvent, ms)`;
+    # the SimpleTimer2 `addEvent` transition wraps the connection event
+    # in a fresh one-shot `SimpleTimer2.TimedEvent`; `ConEvent.timeReached()`
+    # re-enters `Connection.eventOccurred()` and therefore
+    # `SchedulerChooser.getScheduler`. A source upgrade that changes
+    # any of these must fail the lane before an external attempt.
+    "ConnectionOptions.prop_initial_ack_delay": (connection_options_src, "public static final String PROP_INITIAL_ACK_DELAY = \"i2p.streaming.initialAckDelay\";"),
+    "ConnectionOptions.default_initial_ack_delay": (connection_options_src, "private static final int DEFAULT_INITIAL_ACK_DELAY = 500;"),
+    "ConnectionOptions.cinit_set_send_ack_delay": (connection_options_src, "setSendAckDelay(getInt(opts, PROP_INITIAL_ACK_DELAY, DEFAULT_INITIAL_ACK_DELAY))"),
+    "ConnectionOptions.get_send_ack_delay": (connection_options_src, "public int getSendAckDelay() { return _sendAckDelay; }"),
+    "Connection.set_next_send_time_signature": (connection, "public void setNextSendTime(long when)"),
+    "Connection.set_next_send_time_clamp": (connection, "long max = _context.clock().now() + _options.getSendAckDelay();"),
+    "Connection.set_next_send_time_clamp_assign": (connection, "if (max < _nextSendTime)\n                    _nextSendTime = max;"),
+    "ConnectionPacketHandler.receive_packet_signature": (connection_packet_handler_src, "void receivePacket(Packet packet, Connection con) throws I2PException"),
+    "ConnectionPacketHandler.increment_unacked_received": (connection_packet_handler_src, "con.incrementUnackedPacketsReceived();"),
+    "ConnectionPacketHandler.set_next_send_time_get_ack_delay": (connection_packet_handler_src, "delay = con.getOptions().getSendAckDelay();"),
+    "ConnectionPacketHandler.set_next_send_time_delay_plus_now": (connection_packet_handler_src, "con.setNextSendTime(delay + _context.clock().now());"),
+    "ConnectionPacketHandler.event_occurred_after_set": (connection_packet_handler_src, "con.eventOccurred();"),
+    "SchedulerReceived.event_occurred_signature": (scheduler_received_src, "public void eventOccurred(Connection con)"),
+    "SchedulerReceived.unacked_guard": (scheduler_received_src, "if (con.getUnackedPacketsReceived() <= 0) {"),
+    "SchedulerReceived.no_unacked_warn": (scheduler_received_src, "hmm, state is received, but no unacked packets received?"),
+    "SchedulerReceived.time_till_send": (scheduler_received_src, "long timeTillSend = con.getNextSendTime() - _context.clock().now();"),
+    "SchedulerReceived.reschedule_branch_log": (scheduler_received_src, "received con... time till next send: "),
+    "SchedulerReceived.reschedule_branch_call": (scheduler_received_src, "reschedule(timeTillSend, con);"),
+    "SchedulerReceived.send_branch_log": (scheduler_received_src, "received con... send a packet"),
+    "SchedulerReceived.send_branch_call": (scheduler_received_src, "con.sendAvailable();"),
+    "SchedulerReceived.send_branch_set_next": (scheduler_received_src, "con.setNextSendTime(-1);"),
+    "SchedulerImpl.reschedule_signature": (scheduler_impl, "protected void reschedule(long msToWait, Connection con)"),
+    "SchedulerImpl.reschedule_delegate": (scheduler_impl, "con.scheduleConnectionEvent(msToWait);"),
+    "Connection.schedule_connection_event_signature": (connection, "public void scheduleConnectionEvent(long msToWait)"),
+    "Connection.schedule_connection_event_delegate": (connection, "schedule(_connectionEvent, msToWait);"),
+    "Connection.schedule_signature": (connection, "public void schedule(SimpleTimer.TimedEvent event, long msToWait)"),
+    "Connection.schedule_add_event": (connection, "_timer.addEvent(event, msToWait);"),
+    "Connection.event_occurred_signature": (connection, "void eventOccurred()"),
+    "Connection.event_occurred_chooser": (connection, "_chooser.getScheduler(this)"),
+    "Connection.event_occurred_delegate": (connection, "sched.eventOccurred(this);"),
+    "Connection.con_event_class": (connection, "class ConEvent implements SimpleTimer.TimedEvent"),
+    "Connection.con_event_time_reached": (connection, "eventOccurred();"),
+    "Connection.con_event_to_string": (connection, "return \"event on \" + Connection.this.toString();"),
+    "Connection.to_string_prefix": (connection, "buf.append(\"[Connection \");"),
+    "Connection.to_string_from": (connection, "buf.append(\" from \");"),
+    "Connection.to_string_remote_b32": (connection, "buf.append(_remotePeer.toBase32());"),
+    "Connection.to_string_up": (connection, "buf.append(\" up \")"),
+    "SchedulerChooser.get_scheduler": (scheduler_chooser_src, "public TaskScheduler getScheduler(Connection con)"),
+    "SchedulerChooser.scheduler_hard_disconnected": (scheduler_chooser_src, "rv.add(new SchedulerHardDisconnected(_context));"),
+    "SchedulerChooser.scheduler_preconnect": (scheduler_chooser_src, "rv.add(new SchedulerPreconnect(_context));"),
+    "SchedulerChooser.scheduler_connecting": (scheduler_chooser_src, "rv.add(new SchedulerConnecting(_context));"),
+    "SchedulerChooser.scheduler_received": (scheduler_chooser_src, "rv.add(new SchedulerReceived(_context));"),
+    "SchedulerChooser.scheduler_connected_bulk": (scheduler_chooser_src, "rv.add(new SchedulerConnectedBulk(_context));"),
+    "SchedulerChooser.scheduler_closing": (scheduler_chooser_src, "rv.add(new SchedulerClosing(_context));"),
+    "SchedulerChooser.scheduler_closed": (scheduler_chooser_src, "rv.add(new SchedulerClosed(_context));"),
+    "SchedulerChooser.scheduler_dead": (scheduler_chooser_src, "rv.add(new SchedulerDead(_context));"),
+    "SimpleTimer2.add_event_transition_signature": (simple_timer2_src, "public void addEvent(final SimpleTimer.TimedEvent event, final long timeoutMs)"),
+    "SimpleTimer2.add_event_wrapper_class": (simple_timer2_src, "new TimedEvent(this, timeoutMs) {"),
+    "SimpleTimer2.add_event_wrapper_time_reached": (simple_timer2_src, "event.timeReached();"),
+    "SimpleTimer2.add_event_wrapper_to_string": (simple_timer2_src, "return event.toString();"),
+    "SimpleTimer2.lifecycle_scheduling_log": (simple_timer2_src, "_log.debug(\"Scheduling: \" + this + \" timeout = \" + timeoutMs + \" state: \" + _state);"),
+    "SimpleTimer2.lifecycle_running_log": (simple_timer2_src, "_log.debug(\"Running: \" + this);"),
+    "SimpleTimer2.lifecycle_early_reschedule_log": (simple_timer2_src, "_log.info(\"Early execution, Rescheduling for \" + difference + \" later: \" + this);"),
+    "SimpleTimer2.lifecycle_finished_log": (simple_timer2_src, "_log.debug(\"Execution finished in \" + time + \": \" + this);"),
 }
 for label, (source, needle) in required.items():
     if needle not in source:
@@ -400,6 +499,30 @@ output.write_text(
         "java_buildpacket_direct_log\tNew OB pkt (acks not yet filled in): <packet> on <connection> (ConnectionDataReceiver.buildPacket direct construction signal)\n",
         "java_sendpacket_ack_only_branch\tif ( (packet.getSequenceNum() == 0) && (!packet.isFlagSet(Packet.FLAG_SYNCHRONIZE)) ) { /* ACK-only */ } (Connection.sendPacket ACK-only branch — bypasses retransmit timer)\n",
         "java_sendpacket_resend_timer_log\tResend in <timeout> for <packet> | _retransmitEvent.scheduleIfNotRunning(timeout) (Connection.sendPacket retransmit-timer log — conditional, not universal)\n",
+        # Plan 246 §16 — pinned delayed-ACK timer enqueue/fire and
+        # second-scheduler attribution. Retained Plan 236–245 rows above
+        # stay frozen; these rows are additive. The exact-pinned
+        # `i2p.streaming.initialAckDelay` default 500 ms + setNextSendTime
+        # clamp + packet-handler ordering + SchedulerReceived branches +
+        # SchedulerImpl.reschedule -> scheduleConnectionEvent ->
+        # _timer.addEvent(_connectionEvent, ms) + SimpleTimer2 transition
+        # wrapper + ConEvent.timeReached -> eventOccurred ->
+        # SchedulerChooser.getScheduler + SchedulerChooser precedence
+        # (SchedulerHardDisconnected, SchedulerPreconnect,
+        # SchedulerConnecting, SchedulerReceived,
+        # SchedulerConnectedBulk, SchedulerClosing, SchedulerClosed,
+        # SchedulerDead, NullScheduler) are all source-locked. Raw log
+        # lines never enter durable evidence.
+        "java_initial_ack_delay_default\tPROP_INITIAL_ACK_DELAY = \"i2p.streaming.initialAckDelay\" | DEFAULT_INITIAL_ACK_DELAY = 500 (ConnectionOptions.cinit -> setSendAckDelay)\n",
+        "java_set_next_send_time_clamp\tpublic void setNextSendTime(long when) | long max = _context.clock().now() + _options.getSendAckDelay() (Connection.setNextSendTime clamp to no later than now + getSendAckDelay)\n",
+        "java_packet_handler_ack_order\tcon.incrementUnackedPacketsReceived() | con.setNextSendTime(delay + _context.clock().now()) | con.eventOccurred() (ConnectionPacketHandler ordering on a new inbound packet)\n",
+        "java_scheduler_received_branches\ttimeTillSend = con.getNextSendTime() - _context.clock().now() | reschedule(timeTillSend, con) (positive branch) | con.sendAvailable(); con.setNextSendTime(-1); (send branch) (SchedulerReceived.eventOccurred)\n",
+        "java_scheduler_impl_reschedule\tscheduleConnectionEvent(msToWait) (SchedulerImpl.reschedule -> Connection.scheduleConnectionEvent)\n",
+        "java_connection_timer_wrapper\tpublic void scheduleConnectionEvent(long msToWait) | schedule(_connectionEvent, msToWait) | _timer.addEvent(event, msToWait) (Connection -> Connection.ConEvent -> SimpleTimer2)\n",
+        "java_simple_timer2_transition\tpublic void addEvent(final SimpleTimer.TimedEvent event, final long timeoutMs) | new TimedEvent(this, timeoutMs) | event.timeReached() | event.toString() (one-shot wrapper, fresh per call)\n",
+        "java_con_event_reentry\teventOccurred() | _chooser.getScheduler(this) | sched.eventOccurred(this) (ConEvent.timeReached -> Connection.eventOccurred -> SchedulerChooser -> scheduler)\n",
+        "java_scheduler_chooser_precedence\tSchedulerHardDisconnected | SchedulerPreconnect | SchedulerConnecting | SchedulerReceived | SchedulerConnectedBulk | SchedulerClosing | SchedulerClosed | SchedulerDead | NullScheduler (SchedulerChooser exact order)\n",
+        "java_simple_timer2_lifecycle_logs\tScheduling: <event> timeout = <n> | Running: <event> | Early execution, Rescheduling for <n> later: <event> | Execution finished in <n>: <event> (SimpleTimer2 bounded lifecycle markers)\n",
     ]),
     encoding="utf-8",
 )
