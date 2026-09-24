@@ -50,7 +50,7 @@ knowledge.
 
 ## 3. Non-goals
 
-No public-network transit in Plans 249-251; no floodfill (M12); no new ElGamal generation;
+No public-network transit in Plans 249-253; no floodfill (M12); no new ElGamal generation;
 no Proposal 153 data layer; no broad RouterInfo/router.version change in Plan 249; no Java
 full-router gate for experimental M11 progression; no resource-governor bypass.
 
@@ -69,8 +69,13 @@ The cryptographic/data-plane substrate is ahead of runtime service:
 - TunnelData already has an authenticated-router typed dispatch seam.
 
 Current I2NP API 0.9.65 defines m/r/l/b tunnel bandwidth parameters. API 0.9.68+ also
-requires tunnel testing for routers advertising that protocol level. Plan 249 therefore
-does not alter router.version or advertise M11 support.
+requires tunnel testing for routers advertising that protocol level. No M11 foundation
+plan alters router.version or advertises transit support.
+
+Plan 249 landed the intended runtime-neutral architecture but is retained rather than
+accepted as complete after post-closure review found provenance, wire-reply, time-window,
+pending-reservation, secret-ownership, panic-safety, and direct-test defects. Plan 250 owns
+those corrections. Plan 251 independently repairs the ordinary CI/source-lock boundary.
 
 ## 5. Target architecture
 
@@ -100,22 +105,33 @@ requires genuine short-build and TunnelData traffic, not injected registry state
 
 ~~~text
 Plan 248
-  -> Plan 249 runtime-neutral admission + short-build participant foundation
-    -> later Plan 250 daemon/runtime transit composition
-      -> later Plan 251 controlled exact-pinned i2pd transit qualification
-        -> M11 experimental closure
-          -> M12 floodfill planning
+  -> Plan 249 runtime-neutral foundation attempt
+      -> Plan 250 transit semantic/ownership corrective ----\
+                                                       +--> Plan 252 daemon/runtime composition
+Plan 251 Java source-lock CI corrective ---------------/         |
+                                                                 v
+                                                   Plan 253 exact-pinned i2pd qualification
+                                                                 |
+                                                                 v
+                                                   M11 experimental closure
+                                                                 |
+                                                                 v
+                                                   M12 floodfill planning
 ~~~
 
-Only Plan 249 is registered. Plans 250/251 are roadmap slots only.
+Plans 250 and 251 are registered ready and may execute independently. Plan 252 remains
+unregistered until both close and ordinary CI is green. Plan 253 remains unregistered until
+Plan 252 closes.
 
 ## 7. Milestones
 
 | Plan | State | i2pr token | Implementation | Closure |
 |---|---|---|---|---|
-| 249 | closed | passed-m11-transit-admission-and-short-build-participant-foundation-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
-| 250 | planned | unregistered-after-plan249 | not yet written | not yet written |
-| 251 | planned | unregistered-after-plan250 | not yet written | not yet written |
+| 249 | retained | retained-m11-transit-foundation-corrective-required-via-plan250 | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
+| 250 | ready | registered-ready-m11-transit-foundation-semantic-and-ownership-corrective | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
+| 251 | parallel ready (cross-subsystem CI maintenance) | registered-ready-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
+| 252 | planned | unregistered-after-plans250-and251 | not yet written | not yet written |
+| 253 | planned | unregistered-after-plan252 | not yet written | not yet written |
 
 ## 8. Cross-cutting requirements
 
@@ -147,10 +163,22 @@ virtual-time expiry, previous-peer/replay regressions, and secret redaction.
 
 ### Plan 250
 
-Prove bounded queue admission, cancellation/shutdown cleanup, authenticated previous-peer
-provenance, next-hop dispatch, expiry, and no per-cell task explosion.
+Correct the runtime-neutral contract: authenticated previous-peer provenance, actual sealed
+reply b/30 semantics, creation/expiry direction, real pending reservations, move-only
+secret owners, panic-free removal, and direct requirement tests.
 
 ### Plan 251
+
+Restore ordinary CI by explicitly environment-gating only exact-pinned Java source-tree
+source-lock tests. This cross-subsystem maintenance does not reopen M6 progression.
+
+### Plan 252
+
+After Plans 250/251 close and CI is green, prove bounded daemon queue admission,
+cancellation/shutdown cleanup, authenticated previous-peer handoff, next-hop dispatch,
+expiry, and no per-cell task explosion.
+
+### Plan 253
 
 Against exact-pinned i2pd prove genuine build addressed to i2pr, accepted encrypted reply,
 TunnelData receive-id dispatch and next-id forwarding, digest-bound delivery, bandwidth
@@ -172,14 +200,16 @@ register a separate compatibility plan.
 
 ## 11. Completion definition
 
-M11 experimental progression closes only after runtime-neutral admission/registration,
-bounded daemon composition, and exact-pinned i2pd controlled build/forward/expiry/cleanup
-evidence. Public-network enablement stays separately gated.
+M11 experimental progression closes only after the corrected runtime-neutral
+admission/registration contract, bounded daemon composition, and exact-pinned i2pd
+controlled build/forward/expiry/cleanup evidence. Public-network enablement stays separately gated.
 
 Full two-family router conformance is not required to begin M12 development under ADR
 0026, but remains required for a broad full-conformance/advertisement claim.
 
 ## 12. Milestone status summary
 
-Plan 249 is the only closed plan. Plans 250/251 are intentionally unregistered.
-M12 floodfill remains deferred until M11 controlled transit/resource evidence exists.
+Plan 249 is retained with corrective authority transferred to ready Plan 250. Parallel
+Plan 251 is ready for ordinary-CI/source-lock hygiene. Plans 252/253 are intentionally
+unregistered. M12 floodfill remains deferred until M11 controlled transit/resource
+evidence exists.

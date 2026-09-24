@@ -1,3 +1,34 @@
+# Current authority amendment — Plan 250 corrective required
+
+Status: **retained-m11-transit-foundation-corrective-required-via-plan250**
+
+Post-closure source review on `958c06171a6d60dc3d1866ed8b7d93937d001d6f` found
+correctness defects that prevent the Plan 249 public contract from being consumed safely by
+daemon/runtime composition.
+
+The original execution evidence below is retained as historical evidence of what ran. Its
+"passed" completion interpretation is superseded by this amendment.
+
+Blocking findings:
+
+1. previous peer derives from local hop identity rather than authenticated sender;
+2. accepted sealed replies encode request `m/r/l` instead of response `b`;
+3. policy rejection does not return a sealed code-30 transaction outcome;
+4. creation/expiration validation uses the wrong time direction;
+5. pending ceilings are not real reservations;
+6. secret-owning transit role/registration/registry types are Clone;
+7. unknown registry removal may panic;
+8. mandatory rows 21/23/29/30/33/36 are proxy/implicit evidence rather than direct tests;
+9. the transaction carries an unused mutable `layer_state_seed` secret argument.
+
+Corrective authority:
+`plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md`
+
+Plan 250 is registered ready. Daemon composition moves to Plan 252 and must remain
+unregistered until Plan 250 and independent Plan 251 ordinary-CI corrective both close.
+
+No M11 capability or advertisement is claimed.
+
 # Plan 249 status — M11 transit admission and short-build participant foundation
 
 Status: **passed-m11-transit-admission-and-short-build-participant-foundation-infrastructure-only-m11-capability-not-claimed**

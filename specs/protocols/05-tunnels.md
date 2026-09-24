@@ -268,6 +268,21 @@ operational mode, and shutdown/degraded state.
 A rejection should be protocol-correct and inexpensive. Never reserve large
 buffers or spawn long-lived tasks before admission succeeds.
 
+### Current M11 foundation authority — Plan 250 corrective
+
+Plan 249's architecture is retained, but its completion interpretation is narrowed by the
+current status amendment in `plans/closure/transit-tunnels/249-status.md`. Plan 250 is the
+active corrective authority before daemon composition.
+
+The corrective must establish authenticated previous-peer provenance distinct from local
+hop identity, encode reply-side `b` in the actual encrypted accepted reply, return sealed
+code-30 outcomes for valid local rejection, validate creation time against the 600-second
+protocol lifetime in the correct direction, track real global/per-peer pending
+reservations, remove Clone from secret-owning transit types, make unknown registry removal
+panic-free, and replace proxy tests with direct state/wire assertions.
+
+No M11 capability is advertised while Plan 250 is open.
+
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
 `i2pr-tunnel::transit` owns the bounded M11 foundation laid down by Plan 249:
