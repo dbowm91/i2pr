@@ -1,3 +1,29 @@
+# Current dependency amendment — Plan 246 registered for delayed-ACK timer attribution
+
+Plan 245 is closed as
+`passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary`.
+
+Exact-pinned Java I2P 2.13.0 source review narrows that stop to a bounded
+delayed-ACK timer question: the frozen helper uses the default 500 ms initial
+ACK delay, `Connection.setNextSendTime()` clamps future deadlines to no later
+than `now + getSendAckDelay()`, and the reschedule path delegates through
+`Connection.scheduleConnectionEvent` to a fresh one-shot
+`SimpleTimer2.addEvent(SimpleTimer.TimedEvent,...)` wrapper whose callback
+re-enters `SchedulerChooser`.
+
+Plan 246 is registered-ready to prove the numeric deadline, exact-socket timer
+enqueue/fire, second scheduler outcome, and any transient log eviction through
+bounded short polling inside the unchanged 45-second lane.
+
+The publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan246
+plan_245 = passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary
+plan_246 = registered-ready-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+next_executable_plan = 246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+```
+
 # Current dependency amendment — Plan 245 closed at scheduler-rescheduled; narrow timer/state attribution successor pending
 
 Plan 245 is closed as
