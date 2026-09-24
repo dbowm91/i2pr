@@ -1,3 +1,28 @@
+# Current dependency amendment — Plan 247 registered for Plan-246 observation corrective
+
+Plan 246 remains historically closed at
+`observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution`.
+
+Post-closure review found three harness-local defects before any stock-Java
+timer conclusion is valid: the TIMER_STATS parser counts sixteen data fields
+but requires seventeen, the Plan-246 timer polling begins after the retained
+45-second response post-snapshot, and the polling loop reuses frozen
+`p245_post` instead of refreshing SchedulerReceived counters.
+
+Plan 247 is registered-ready to correct only those observer defects. It keeps
+Java I2P, ACK delay, topology/publication behavior, the 45-second outer lane,
+and production i2pr unchanged. Requested delayed-ACK duration and actual Java
+executor latency are treated as separate facts.
+
+The publication/final-closure axis remains independently unresolved.
+
+```text
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan247
+plan_246 = observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+plan_247 = registered-ready-m6-java-streaming-plan246-observation-window-parser-corrective
+next_executable_plan = 247-m6-java-streaming-plan246-observation-window-parser-corrective
+```
+
 # Current dependency amendment — Plan 246 closed at observation-gap; narrow successor pending
 
 Plan 246 is closed as
