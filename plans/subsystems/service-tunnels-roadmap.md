@@ -36,7 +36,7 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 ## 4. Current state
 
-Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure pending Plan 247. Plan 245 is closed at the reschedule-only delayed-ACK boundary; Plan 246 is registered-ready to attribute the timer enqueue/fire and second scheduler outcome. None of Plans 231-246 changes closed M10 product authority.
+Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 204 is convergence-only and remains blocked on independent M6 Java second-family closure pending Plan 247. Plan 246 is closed at an observation gap; Plan 247 is registered-ready to correct the timer-stats parser and move live response/timer observation into the SYN response epoch before re-running delayed-ACK attribution. None of Plans 231-247 changes closed M10 product authority.
 
 ## 5. Target architecture
 
