@@ -285,23 +285,30 @@ hop's own 218-byte reply record is sealed with ChaCha20/Poly1305, and every othe
 record in the build message is transformed with plain ChaCha20 using the same reply key and
 the target record-number nonce.
 
-Plan 252 therefore requires one runtime-neutral full-message transit operation before
-daemon wiring. It must validate the complete count-prefixed STBM, locate/open the local
-record once, perform Plan 250 admission and reply construction, replace the local slot,
-transform every non-local slot exactly once through the canonical multirecord primitive,
-encode the complete payload, and only then commit accepted registration state.
+Plan 252 landed one runtime-neutral full-message transit operation before daemon
+wiring (`i2pr_tunnel::process_short_build_message`). It validates the complete
+count-prefixed STBM, locates/opens the local record once, performs Plan 250 admission
+and reply construction, replaces the local slot, transforms every non-local slot exactly
+once through the canonical multirecord primitive, encodes the complete payload, and only
+then commits accepted registration state.
 
 A valid local policy rejection follows the same full-message transformation with reply
 code 30 and zero registration. Malformed/unauthenticated/ambiguous-slot input fails closed.
 
-The message-level result may expose only non-secret build-routing facts (role, receive
+The message-level result exposes only non-secret build-routing facts (role, receive
 tunnel, next router, next tunnel, next message id) plus the opaque transformed payload.
 Reply keys, LayerKeys, Noise state, and decrypted request bytes stay inside
 `i2pr-tunnel`. Participant/IBGW continue STBM routing; OBEP terminates into OTBRM using the
-already-transformed record set. The daemon must not reopen/reseal/retransform the message.
+already-transformed record set. The daemon does not reopen/reseal/retransform the message:
+`crates/i2pr-daemon/src/transit_compose.rs` owns the disabled-by-default
+`TransitBuildService` + `TransitIngressGate` composition (authenticated peer provenance,
+role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
+`NoActiveSession` rollback, creator-correlation bypass preserving
+`ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
+inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
 This is still non-advertised infrastructure. Exact-pinned i2pd qualification remains Plan
-253 after Plan 252 closure.
+253, unregistered pending registration after Plan 252 closure.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

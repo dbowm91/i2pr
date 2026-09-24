@@ -184,10 +184,11 @@ pub use transit::{
     MAX_TRANSIT_ACTIVE, MAX_TRANSIT_PEER_ACTIVE, MAX_TRANSIT_PEER_PENDING, MAX_TRANSIT_PENDING,
     TRANSIT_TIME_SKEW_SECONDS, TransitAdmissionConfigError, TransitAdmissionError,
     TransitAdmissionPolicy, TransitAdmissionState, TransitBandwidthParseError,
-    TransitBandwidthReply, TransitBandwidthRequest, TransitBuildContext, TransitBuildOutcome,
-    TransitFatalError, TransitHopRegistration, TransitHopRole, TransitMode, TransitNow,
-    TransitRegistry, TransitRegistryError, TransitReplySlot, build_rejected_reply_record,
-    parse_transit_bandwidth_request, process_short_build_request,
+    TransitBandwidthReply, TransitBandwidthRequest, TransitBuildContext,
+    TransitBuildMessageOutcome, TransitBuildOutcome, TransitBuildRoute, TransitFatalError,
+    TransitHopRegistration, TransitHopRole, TransitMode, TransitNow, TransitRegistry,
+    TransitRegistryError, TransitReplySlot, build_rejected_reply_record,
+    parse_transit_bandwidth_request, process_short_build_message, process_short_build_request,
 };
 pub use zero_hop::{
     LocalZeroHopInbound, LocalZeroHopOutbound, MAX_ZERO_HOP_LIFETIME_SECONDS, ZeroHopError,

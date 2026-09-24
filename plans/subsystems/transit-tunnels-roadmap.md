@@ -132,9 +132,10 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    M12 floodfill planning
 ~~~
 
-Plans 250 and 251 are closed. Plan 250 ordinary CI is green on `44187ce` (Actions run
-36060781701); Plan 252 is written and registered as the next executable plan. Plan 253
-remains unregistered until Plan 252 closes.
+Plans 250, 251, and 252 are closed. Plan 250 ordinary CI is green on `44187ce`
+(Actions run 36060781701); Plan 252 closed the full-message STBM transform/routing seam
+plus the disabled-by-default daemon ingress gate as infrastructure only. Plan 253
+remains unregistered pending registration now that Plan 252 is stable.
 
 ## 7. Milestones
 
@@ -143,7 +144,7 @@ remains unregistered until Plan 252 closes.
 | 249 | retained | retained-m11-transit-foundation-corrected-via-plan250 | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
 | 250 | closed (infrastructure only) | passed-m11-transit-foundation-semantic-and-ownership-corrective-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
 | 251 | closed (cross-subsystem CI maintenance) | passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
-| 252 | ready | registered-m11-daemon-transit-composition-ready | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | not yet written |
+| 252 | closed (infrastructure only) | passed-m11-daemon-transit-composition-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
 | 253 | planned | unregistered-after-plan252 | not yet written | not yet written |
 
 ## 8. Cross-cutting requirements
@@ -228,7 +229,8 @@ Full two-family router conformance is not required to begin M12 development unde
 
 Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
 closed the ordinary-CI/source-lock corrective with CI green on `6cf441d`. Plan 250 ordinary
-CI is green on `44187ce`. Plan 252 remains registered ready, with its pre-execution
-planning corrected to require the full-message STBM transform/routing seam before daemon
-wiring. Plan 253 remains unregistered behind Plan 252. M12 floodfill remains deferred until
-M11 controlled transit/resource evidence exists.
+CI is green on `44187ce`. Plan 252 closed the full-message STBM transform/routing seam plus
+the disabled-by-default daemon ingress gate as infrastructure only, with M11 capability
+still unclaimed. Plan 253 remains unregistered pending registration now that the Plan 252
+composition boundary is stable. M12 floodfill remains deferred until M11 controlled
+transit/resource evidence exists.
