@@ -124,10 +124,13 @@ Add deterministic caller-configured runtime-neutral limits for:
 - available shared bandwidth KBps;
 - optional max per-tunnel allocation.
 
-Distinguish Accepted, BandwidthRejected, local policy rejection, and malformed/unsupported
-errors. Do not invent a wire response code. If a necessary local rejection cannot be
-honestly represented by current typed response codes, stop and research/extend the codec
-in a corrective plan.
+Keep detailed local rejection reasons internally, but preserve the current ECIES wire
+fingerprint: the reply byte is only Accepted (0) or BandwidthRejected (30). Any
+well-formed/authenticated request rejected by local admission policy emits code 30; do not
+expose capacity, shutdown, per-peer, or overload reasons as distinct wire codes.
+Malformed, unauthenticated, or undecodable request records fail closed without creating
+transit state; their reply behavior must follow the existing short-build parser/crypto
+contract rather than inventing an observable policy response.
 
 ## Scope C — Transactional short-build postprocessing
 
@@ -195,12 +198,12 @@ Bandwidth/options:
 
 Admission/transaction:
 
-18. disabled -> no state;
-19. degraded/shutdown -> no state;
-20. global active full -> unchanged;
-21. global pending full -> unchanged;
-22. per-peer active full -> unchanged;
-23. per-peer pending full -> unchanged;
+18. disabled -> code 30 + no state;
+19. degraded/shutdown -> code 30 + no state;
+20. global active full -> code 30 + unchanged registry;
+21. global pending full -> code 30 + unchanged registry;
+22. per-peer active full -> code 30 + unchanged registry;
+23. per-peer pending full -> code 30 + unchanged registry;
 24. m above available -> code 30 + no registration;
 25. accepted m/r -> b present and b>=m;
 26. accepted no m/r may omit b;
@@ -266,7 +269,7 @@ roadmap, and registry. Register the next plan only after the unblock audit.
 
 Plan 249 passes only when bandwidth parsing/role semantics match the current spec,
 admission is explicit/bounded, accepted requests produce canonical encrypted replies,
-insufficient m yields code 30 with zero state, accepted state commits atomically to a
+all well-formed admission-policy rejections yield code 30 without leaking the internal reason, insufficient m yields code 30 with zero state, accepted state commits atomically to a
 dedicated bounded registry, all pre-commit failures roll back, virtual-time expiry works,
 replay/previous-peer protections remain green, no daemon/config/exposure changes land, and
 the complete focused + routine floor is green.
@@ -275,11 +278,11 @@ Closure remains infrastructure-only; M11 capability must not be marked passed.
 
 ## Stop conditions
 
-Stop and create a follow-up rather than widening scope if the current spec requires a
-missing response code, current exact-pinned peers require a mandatory unsupported legacy
-build path, safe integration requires runtime ownership, typed interpretation would weaken
-Mapping semantics, an existing short-build wire defect is found, or a new dependency is
-proposed for already-available functionality.
+Stop and create a follow-up rather than widening scope if current exact-pinned peers
+require a mandatory unsupported legacy build path, safe integration requires runtime
+ownership, typed interpretation would weaken Mapping semantics, an existing short-build
+wire defect is found, or a new dependency is proposed for already-available functionality.
+Do not expand the ECIES reply-code vocabulary beyond the current authoritative 0/30 set.
 
 ## Closure evidence
 

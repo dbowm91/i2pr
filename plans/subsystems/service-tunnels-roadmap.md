@@ -46,7 +46,7 @@ in this subsystem, following `plans/README.md`.
 ## 6. Dependency graph
 
 ```text
-173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 204 (see legacy registry `m10_sequence`; 199/207/209 retained-superseded scaffolds).
+173 -> 174 -> 175 -> 176 -> 177 -> 178 -> 179 -> 180 -> 182 -> 181 -> 195 -> 202 -> 203 -> 206 -> 208 -> 210 -> 211 -> 212 -> 213 -> 214 -> 215 (closed product authority; Plan 204 convergence record superseded by Plan 248; 199/207/209 retained-superseded scaffolds).
 ```
 
 ## 7. Milestones

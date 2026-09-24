@@ -130,8 +130,11 @@ Only Plan 249 is registered. Plans 250/251 are roadmap slots only.
   terminal failures.
 - Transit traffic remains lower priority than router-owned/client traffic and must obey
   router-wide resource governance.
-- m/r/l/b are positive integer KBps; m <= r <= l; l is IBGW-only; inability to satisfy m
-  returns bandwidth rejection 30; accepted m/r replies should include b >= m.
+- m/r/l/b are positive integer KBps; m <= r <= l; l is IBGW-only; accepted m/r replies
+  should include b >= m.
+- Current ECIES replies intentionally expose only 0 (accept) and 30 (bandwidth reject) to
+  reduce fingerprinting. Keep local rejection taxonomy internal; any well-formed request
+  rejected by admission policy maps to 30. Malformed/unauthenticated input fails closed.
 
 ## 9. Verification strategy
 
