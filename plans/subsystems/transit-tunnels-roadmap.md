@@ -85,6 +85,15 @@ i2pr-tunnel owns typed m/r/l/b interpretation, deterministic admission, a dedica
 TransitRegistry keyed by receive tunnel id, role-local secret state, exact expiry, and
 transactional build postprocessing.
 
+Plan 252 adds the full-message seam required before daemon composition. One runtime-neutral
+operation must consume the complete count-prefixed STBM, locate/open the local record once,
+reuse the Plan 250 admission/reply semantics, replace the local slot, ChaCha20-transform
+every other slot exactly once with the same derived reply key and target-slot nonce, and
+return the complete transformed payload plus non-secret role/routing metadata. Accepted
+registration commits only after full-message construction succeeds; valid code-30 rejection
+returns a transformed message with zero registration. Reply keys, LayerKeys, Noise state,
+and decrypted request bytes do not cross into the daemon.
+
 Admission inputs include enabled/degraded/shutdown state, global active/pending ceilings,
 per-peer active/pending ceilings, available share bandwidth, and optional per-tunnel cap.
 
