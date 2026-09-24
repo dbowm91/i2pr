@@ -16,6 +16,29 @@
 
 Java I2P and I2P+ share lineage and count as one implementation family for independence. The preferred router-to-router interoperability pair is Java I2P or I2P+ plus i2pd. Emissary/go-i2p should be added where its current implementation is complete enough for the tested surface.
 
+
+### Evidence tiers for progression versus full conformance
+
+ADR 0026 distinguishes an experimental development gate from the full claim above.
+
+For **experimental development progression**, a non-advertised subsystem may continue
+after local conformance requirements and at least one exact-pinned independent
+implementation demonstrate the relevant controlled external path. This authorizes later
+implementation work only; it does not authorize public exposure, production-readiness
+language, broad advertisement, or a full interoperability claim.
+
+For **full router-to-router conformance or broad capability advertisement**, item 7 above
+remains mandatory: at least two independent implementation families must interoperate for
+the claimed router-to-router surface.
+
+For **client/application protocols** such as Streaming, SAM, I2CP, and service-tunnel
+profiles, require independent evidence appropriate to the surface. A second full router
+family is not automatically a hard gate merely because the path traverses routers.
+
+Exact-pinned i2pd Plan 193 satisfies M6 experimental mixed-router progression. The Java
+full-router lane remains compatibility debt at Plan 247. Full two-family M6 router
+conformance remains not claimed.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:
@@ -103,7 +126,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | NetDB lookup | requester | pending | pending | family duplicate | optional | trace/result |
 | Tunnel build | creator | pending | pending | family duplicate | optional | testnet artifact |
 | Transit tunnel | participant | pending | pending | family duplicate | optional | testnet artifact |
-| Streaming | connect/listen | pending | pending | family duplicate | optional | client transcript |
+| Streaming | connect/listen | retained/deferred full-router compatibility at Plan 247 | passed bidirectional matrix via Plan 193 | family duplicate | optional | Plan 193 external transcript + Plan 247 retained Java boundary |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
 | SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/closure/ssu2/161-status.md`, `tests/integration/ssu2/run-independent.sh` |
 | Router I2NP preflight | daemon-owned dispatch/delivery | n/a (router-internal) | bidirectional DeliveryStatus control via Plan 184 lane (no tunnel/NetDB/Streaming claim) | n/a | n/a | `plans/closure/mixed-router-interop/184-status.md`, `tests/integration/m6-interop/run-preflight.sh` |
@@ -163,10 +186,7 @@ dedicated M6 interop lane through Plan 203
 the two `remote-independent-*` rows flip `blocked → passed-on-env`
 when the lane provisions the SSU2 endpoint + bind tuple and the
 driver emits the `http-remote-application-established` /
-`irc-remote-application-established` evidence keys. M10 final
-acceptance is recorded by Plan 204's §12 authority transition
-once Plan 201 records the terminal `P200-{A..H}` classification
-and lands its narrow corrective. See `plans/closure/service-tunnels/204-status.md`,
+`irc-remote-application-established` evidence keys. M10 final acceptance is authoritative through the hosted Plan 215 re-verification of Plan 214. Plan 248 supersedes Plan 204's Java-dependent convergence gate without relabeling the Java lane. See `plans/closure/service-tunnels/204-status.md`,
 `plans/closure/service-tunnels/203-status.md`, and `plans/closure/service-tunnels/202-status.md`.
 
 ## Fuzzing targets

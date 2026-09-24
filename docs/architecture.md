@@ -18,7 +18,7 @@ bird's-eye view, then follow the deep-dive links.
 | Data | Protocol representations, authenticated links, messages, network tunnel traffic | Bounded common-structure and I2NP models, Standard LeaseSet2 (Plan 119), Streaming wire format (Plan 128), transport-neutral link contracts, NTCP2 state, runtime-owned local TCP integration; no public-network behavior |
 | Control | Configuration, lifecycle, health, cancellation, supervision, resource budgets | Runtime-neutral core contracts plus the `i2pr-runtime` supervisor and bounded socket-owning services |
 | Client | Destinations, LeaseSets, streaming, SAM, I2CP adapters | Milestone 6 local product closed via Plan 134 (destinations, garlic, LS2, Streaming); Milestone 7 SAM 3.1 localhost acceptance closed via Plan 151; Milestone 9 I2CP loopback product closed via Plan 172 |
-| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Milestone 10 local product closed via Plans 174–180/182; remote generic + HTTP/IRC application closure via Plans 213–215 (see `plans/closure/service-tunnels/214-status.md`, `plans/closure/service-tunnels/215-status.md`); Java second-family row remains open under Plan 201 |
+| Service | HTTP, SOCKS5, IRC, generic TCP, local service tunnels | Milestone 10 local product closed via Plans 174–180/182; remote generic + HTTP/IRC application closure via Plans 213–215 (see `plans/closure/service-tunnels/214-status.md`, `plans/closure/service-tunnels/215-status.md`); Plan 248 supersedes the Java-dependent convergence gate while retaining Java full-router debt at Plan 247 |
 
 Network tunnels carry router-to-router I2P traffic and are distinct
 from application service tunnels, which eventually connect a local
@@ -184,10 +184,10 @@ A live `i2pr run` (Plan 106) follows this sequence:
     traffic.
 
 The Milestone 6 local product (destinations, garlic, LS2,
-Streaming) is closed locally via Plan 134; independent-router
-interoperability is tracked separately as external acceptance debt
-(i2pd first family closed via Plan 193; Java second family open
-under Plan 201). The SAM 3.1 localhost product is closed via
+Streaming) is closed locally via Plan 134. Under ADR 0026 / Plan 248,
+exact-pinned i2pd Plan 193 closes experimental mixed-router progression;
+full Java-router compatibility is retained/deferred at Plan 247 and full
+two-family router conformance remains unclaimed. The SAM 3.1 localhost product is closed via
 Plan 151 (see [`plans/closure/sam/151-status.md`](../plans/closure/sam/151-status.md));
 the I2CP loopback product is closed via Plan 172; the M10 remote
 generic + HTTP/IRC application product is closed via Plans 214–215.
@@ -244,3 +244,8 @@ lints, script gates, and review:
 - [`AGENTS.md`](../AGENTS.md) — repository guidelines
 - [`.opencode/skills/`](../.opencode/skills/) — loadable skill
   bundles for OpenCode sessions
+
+
+## Forward router-role roadmap
+
+Milestone 11 transit participation is the next active router-role workstream (Plan 249 foundation). Milestone 12 floodfill follows after controlled M11 transit/resource closure. Both remain disabled/non-advertised until their own gates close.

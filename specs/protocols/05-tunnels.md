@@ -255,9 +255,11 @@ them outside codecs and cryptographic records.
 
 ## Transit participation
 
-Full public transit participation remains a later milestone. Plan 116 may
-implement a minimal runtime-neutral participant role solely to prove the local
-data-plane trajectory and to establish reusable role primitives.
+Full public transit participation remains gated, but Milestone 11 is now the active
+next router-role workstream. Plan 249 owns the runtime-neutral admission / short-build
+participant foundation; later M11 plans own daemon composition and controlled exact-pinned
+i2pd qualification. The existing Plan 116 participant role remains the reusable local
+data-plane primitive rather than a public capability.
 
 The later public transit mode must separately consider bandwidth/queue capacity,
 active tunnel limits, abuse controls, supported build format, expiration,

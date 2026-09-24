@@ -1,3 +1,20 @@
+# Current dependency amendment — Plan 248 supersedes the Java-dependent convergence gate
+
+ADR 0026 / Plan 248 remove full Java-router Streaming qualification from the experimental
+progression gate. This does not execute or retroactively pass Plan 204.
+
+Plan 215 remains authoritative M10 product closure. Plan 204 is retained as historical
+convergence bookkeeping and superseded for live dependency purposes by Plan 248.
+
+~~~text
+plan_204 = retained-convergence-record-superseded-by-plan248-policy-reconciliation
+milestone10_final_acceptance = closed-via-plan215
+m6_java_full_router_compatibility = retained-deferred-at-plan247
+next_executable_plan = 249-m11-transit-admission-and-short-build-participant-foundation
+~~~
+
+Historical Plan 204 amendments follow unchanged below.
+
 # Current dependency amendment — Plan 247 registered; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed and is

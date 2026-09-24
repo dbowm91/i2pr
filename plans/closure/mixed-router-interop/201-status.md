@@ -1,3 +1,23 @@
+# Current dependency amendment — Plan 248 retains Java as nonblocking compatibility debt
+
+ADR 0026 and Plan 248 separate experimental progression from full two-family router
+conformance. Plan 247 remains the latest trustworthy Java diagnostic boundary and is not
+relabeled as passed.
+
+The full Java-router lane is retained/deferred and does not block M11 or closed M10.
+Resuming it requires an explicit new plan tied to a concrete i2pr compatibility decision;
+no automatic Plan-247 timer successor is authorized.
+
+~~~text
+plan_201 = retained-deferred-nonblocking-java-router-compatibility-debt-via-plan248
+plan_247 = passed-m6-java-streaming-plan246-observation-window-parser-corrective
+m6_experimental_mixed_router_progression = passed-via-i2pd-plan193
+m6_full_two_family_router_conformance = not-yet-claimed
+next_executable_plan = 249-m11-transit-admission-and-short-build-participant-foundation
+~~~
+
+Historical Plan 201 amendments follow unchanged below.
+
 # Current dependency amendment — Plan 247 registered for Plan-246 observation corrective
 
 Plan 246 remains historically closed at

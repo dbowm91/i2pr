@@ -16,15 +16,13 @@ evidence.
 | M7 SAM 3.1 | Localhost SAM product plus external-client evidence | Closed |
 | M8 SSU2 v2 | Direct-session interop against exact-pinned i2pd over loopback UDP | Closed (bounded scope) |
 | M9 I2CP | Loopback server product plus independent LeaseSet2 lifecycle | Closed |
-| M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed (hosted double-pass; docs normalization pending) |
-| M6 mixed-router | i2pd first-family Streaming | Closed; Java second family remains blocked at the Plan 236 response-emission observability gap |
+| M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed via Plans 214/215 |
+| M6 mixed-router progression | i2pd first-family Streaming | Closed for experimental progression via Plan 193; Java full-router compatibility retained/deferred at Plan 247 |
+| M11 transit tunnels | Accept/forward tunnels for other routers | Plan 249 ready (runtime-neutral admission foundation) |
 
 Interoperability beyond the rows above is not claimed.
 
-The Java second-family diagnostic is closed at
-`P236-C-JAVA-RESPONSE-EMISSION-OBSERVABILITY-GAP`. The exact Java I2P 2.13.0
-response path is source-locked, but response emission was not observable on
-two same-SHA attempts; no Router-A or i2pr-owned conclusion is claimed.
+Plan 248 / ADR 0026 separate experimental progression from full two-family router conformance. Exact-pinned i2pd Plan 193 is the M6 external progression authority. The Java full-router lane remains unpassed and retained as nonblocking compatibility debt at Plan 247; no Java result is relabeled. Full two-family router conformance is not claimed.
 
 ## Workspace
 
