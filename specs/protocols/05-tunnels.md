@@ -268,6 +268,45 @@ operational mode, and shutdown/degraded state.
 A rejection should be protocol-correct and inexpensive. Never reserve large
 buffers or spawn long-lived tasks before admission succeeds.
 
+### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
+
+`i2pr-tunnel::transit` owns the bounded M11 foundation laid down by Plan 249:
+
+- `TransitBandwidthRequest` / `TransitBandwidthReply` typed interpretation
+  layered over the canonical `BuildOptions` `Mapping`, with
+  `m` / `r` / `l` / `b` parsed as positive ASCII-decimal `u32` KBps
+  values. m<=r, r<=l, and m<=l ordering checks fire
+  `TransitBandwidthParseError`. `l` is only legal on `HopRole::InboundGateway`;
+  unknown keys remain on the canonical `Mapping` forward-compatibility
+  path.
+- `TransitAdmissionPolicy` is a caller-supplied runtime-neutral
+  bounded configuration (enabled/disabled, accepting vs degraded/shutdown,
+  global active/pending ceilings, per-peer active/pending ceilings,
+  shared bandwidth budget, optional per-tunnel allocation cap). Every
+  well-formed admission rejection collapses to the existing wire code
+  `ShortResponseCode::BandwidthRejected (30)`; the local
+  `TransitAdmissionError` taxonomy is internal only.
+- `TransitRegistry` is the dedicated bounded registry keyed by receive
+  tunnel id with explicit global capacity, per-peer active count,
+  duplicate-id rejection, deterministic `remove`, and `expire(now)`.
+  The role enum wraps the existing participant / inbound-gateway /
+  outbound-endpoint primitives without duplicating transforms; secret
+  material is zeroized on drop. The registry deliberately remains
+  separate from `DataPlaneRegistry`.
+- `process_short_build_request` is the production-intended runtime-neutral
+  transaction that opens the request, strictly decodes the
+  `ShortRequestRecord`, validates the request time against a narrow
+  documented skew policy (wire lifetime remains 600 seconds), parses
+  the bandwidth options, performs the typed admission check, derives
+  the hop-local `LayerKeys`, constructs the canonical reply, seals the
+  reply envelope, and only commits the registry insertion after the
+  reply was successfully constructed and sealed. Every non-commit path
+  returns `TransitRejectStage` and refuses to leave live state.
+
+Plan 249 is infrastructure-only. M11 capability is not claimed;
+`router.version`, capabilities, and RouterInfo publication remain
+unchanged. Daemon composition is the next ownership/concurrency plan.
+
 ## Required Plan 116 tests
 
 - successful short build transfers real established key material into the pool;

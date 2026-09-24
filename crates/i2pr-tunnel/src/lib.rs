@@ -52,9 +52,16 @@
 //!   - the `EstablishedTunnel` / `EstablishedHop` /
 //!     `EstablishedMaterial` secret-material ownership with the
 //!     one-shot `into_extracted` transfer in [`established`]
-//!   - the runtime-neutral outbound/inbound/local role composition
-//!     with multi-cell `forward_cells` / `process_cells` seams in
-//!     [`roles`]
+//! - the runtime-neutral outbound/inbound/local role composition
+//!   with multi-cell `forward_cells` / `process_cells` seams in
+//!   [`roles`]
+//! - the Plan 249 M11 transit admission / short-build participant
+//!   foundation ([`transit`]) with the typed `m` / `r` / `l` / `b`
+//!   bandwidth interpretation, the
+//!   `TransitAdmissionPolicy` / `TransitAdmissionError` taxonomy,
+//!   the dedicated `TransitRegistry`, and the
+//!   `process_short_build_request` transaction. The module is
+//!   infrastructure only; M11 capability is not yet claimed.
 //!
 //! The crate deliberately remains runtime-neutral: it does not open
 //! sockets, does not perform DNS, does not spawn tasks, and depends
@@ -86,6 +93,7 @@ pub mod roles;
 pub mod short;
 pub mod short_record;
 pub mod short_state;
+pub mod transit;
 pub mod zero_hop;
 
 pub use bridge::{BridgeError, BridgeHeader, BridgeRecord, ShortBuildI2npBridge};
@@ -170,6 +178,16 @@ pub use short_record::{
     ShortBuildError, ShortReplyRecord, ShortRequestRecord, ShortResponseCode,
 };
 pub use short_state::{HopResponse, ShortBuildRegistrar, ShortBuildState, ShortBuildStateMachine};
+pub use transit::{
+    BANDWIDTH_AVAILABLE_KEY, BANDWIDTH_LIMIT_KEY, BANDWIDTH_MINIMUM_KEY, BANDWIDTH_REQUESTED_KEY,
+    MAX_TRANSIT_ACTIVE, MAX_TRANSIT_PEER_ACTIVE, MAX_TRANSIT_PEER_PENDING, MAX_TRANSIT_PENDING,
+    TRANSIT_TIME_SKEW_SECONDS, TransitAdmissionConfigError, TransitAdmissionError,
+    TransitAdmissionPolicy, TransitBandwidthParseError, TransitBandwidthReply,
+    TransitBandwidthRequest, TransitBuildContext, TransitBuildOutcome, TransitHopRegistration,
+    TransitHopRole, TransitMode, TransitNow, TransitRegistry, TransitRegistryError,
+    TransitRejectStage, TransitReplySlot, build_rejected_reply_record,
+    parse_transit_bandwidth_request, process_short_build_request,
+};
 pub use zero_hop::{
     LocalZeroHopInbound, LocalZeroHopOutbound, MAX_ZERO_HOP_LIFETIME_SECONDS, ZeroHopError,
 };

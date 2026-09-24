@@ -113,7 +113,7 @@ Only Plan 249 is registered. Plans 250/251 are roadmap slots only.
 
 | Plan | State | i2pr token | Implementation | Closure |
 |---|---|---|---|---|
-| 249 | ready | registered-ready-m11-transit-admission-and-short-build-participant-foundation | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
+| 249 | closed | passed-m11-transit-admission-and-short-build-participant-foundation-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
 | 250 | planned | unregistered-after-plan249 | not yet written | not yet written |
 | 251 | planned | unregistered-after-plan250 | not yet written | not yet written |
 
@@ -181,5 +181,5 @@ Full two-family router conformance is not required to begin M12 development unde
 
 ## 12. Milestone status summary
 
-Plan 249 is the sole ready plan. Plans 250/251 are intentionally unregistered. M12
-floodfill remains deferred until M11 controlled transit/resource evidence exists.
+Plan 249 is the only closed plan. Plans 250/251 are intentionally unregistered.
+M12 floodfill remains deferred until M11 controlled transit/resource evidence exists.
