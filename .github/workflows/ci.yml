@@ -112,6 +112,9 @@ jobs:
       - name: Check M6 mixed-router acceptance evidence integrity
         if: runner.os == 'Linux'
         run: bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+      - name: Check Java source-lock test gating
+        if: runner.os == 'Linux'
+        run: bash scripts/check-java-source-lock-gating.sh
       - name: Test constrained-host lane contracts
         if: runner.os == 'Linux'
         run: python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'

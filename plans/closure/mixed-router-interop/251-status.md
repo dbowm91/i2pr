@@ -1,6 +1,6 @@
 # Plan 251 status — Java source-lock test environment gating and ordinary-CI corrective
 
-Status: **registered-ready-java-source-lock-test-environment-gating-and-ordinary-ci-corrective**
+Status: **in-progress-java-source-lock-test-environment-gating-and-ordinary-ci-corrective**
 
 Plan of record:
 `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md`

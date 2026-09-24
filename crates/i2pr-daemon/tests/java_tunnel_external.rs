@@ -138,6 +138,38 @@ const OBEP_NEXT: u32 = 0x9502;
 const IBGW_RECEIVE: u32 = 0x9601;
 const IBGW_NEXT: u32 = 0x9602;
 const JAVA_I2P_PIN: &str = "9134f808337b401e8e53c73734c81fab04280c9d";
+
+/// Read one Java source-lock input from an explicitly configured, exact-pinned
+/// checkout. These tests are ignored in ordinary runs; the source-lock runner
+/// sets `I2PR_M6_JAVA_SOURCE_ROOT` only after validating the same contract.
+fn read_java_source_lock(relative_path: &str) -> String {
+    let root = std::env::var_os("I2PR_M6_JAVA_SOURCE_ROOT")
+        .map(std::path::PathBuf::from)
+        .expect("I2PR_M6_JAVA_SOURCE_ROOT must name the exact-pinned Java I2P source tree");
+    assert!(
+        root.join(".git").exists(),
+        "Java source-lock root is not a Git checkout: {}",
+        root.display()
+    );
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git must be available to verify the Java source-lock pin");
+    assert!(
+        output.status.success(),
+        "could not read Java source-lock HEAD"
+    );
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    assert_eq!(
+        head, JAVA_I2P_PIN,
+        "Java source-lock checkout must be exact-pinned Java I2P 2.13.0"
+    );
+    let path = root.join(relative_path);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read Java source-lock input {}: {error}", path.display()))
+}
 // Plan 247 §11 — the documented bounded console-buffer capacity. The
 // helper-side `P237_CONSOLE_BUFFER_SIZE = 1024` constant is the
 // canonical capacity; we mirror it in the driver so the static
@@ -28175,32 +28207,16 @@ fn p245_stage_a0_for_p246() -> P245StageA0 {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_default_ack_delay_is_500_on_frozen_helper() {
     // Plan 246 §3.1 — frozen helper does not set
     // `i2p.streaming.initialAckDelay`; the documented default is 500
     // ms and `Connection.setNextSendTime()` clamps future deadlines
     // to `now + getSendAckDelay()`. The 500 ms upper bound is the
     // canonical fact this test pins.
-    let conn_options_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("ConnectionOptions.java"),
-    )
-    .expect("read ConnectionOptions.java");
+    let conn_options_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionOptions.java",
+    );
     assert!(
         conn_options_src.contains("DEFAULT_INITIAL_ACK_DELAY = 500"),
         "Plan 246 §3.1: frozen default 500 ms"
@@ -28235,32 +28251,16 @@ fn p246_next_send_time_is_clamped_by_ack_delay() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_packet_handler_sets_deadline_before_event() {
     // Plan 246 §3.3 — ConnectionPacketHandler ordering on a new
     // inbound packet: `incrementUnackedPacketsReceived`,
     // `setNextSendTime(delay + context.clock().now())`,
     // `con.eventOccurred()`. The deadline exists BEFORE the first
     // SchedulerReceived event so its `timeTillSend` is non-zero.
-    let packet_handler_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("ConnectionPacketHandler.java"),
-    )
-    .expect("read ConnectionPacketHandler.java");
+    let packet_handler_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionPacketHandler.java",
+    );
     let inc_idx = packet_handler_src
         .find("incrementUnackedPacketsReceived")
         .expect("Plan 246 §3.3: incrementUnackedPacketsReceived present");
@@ -28275,6 +28275,7 @@ fn p246_packet_handler_sets_deadline_before_event() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_received_reschedule_calls_connection_timer() {
     // Plan 246 §3.4 — SchedulerReceived.reschedule() branch
     // (`timeTillSend > 0`) calls `reschedule(timeTillSend, con)`;
@@ -28282,53 +28283,21 @@ fn p246_received_reschedule_calls_connection_timer() {
     // `Connection.scheduleConnectionEvent()`. The classifier treats
     // a Plan-245 Stage A.0 scheduler reschedule as the baseline
     // gate.
-    let scheduler_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("SchedulerImpl.java"),
-    )
-    .expect("read SchedulerImpl.java");
+    let scheduler_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/SchedulerImpl.java",
+    );
     assert!(scheduler_src.contains("con.scheduleConnectionEvent(msToWait);"));
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_transition_add_event_uses_fresh_wrapper() {
     // Plan 246 §3.6 — `SimpleTimer2.addEvent(SimpleTimer.TimedEvent,
     // timeoutMs)` constructs a fresh anonymous `SimpleTimer2.TimedEvent`
     // wrapper for every call. The transition wrapper schedules itself
     // during construction and never reuses the same wrapper object for
     // repeated `ConEvent` submissions.
-    let simple_timer2_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("core")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("util")
-            .join("SimpleTimer2.java"),
-    )
-    .expect("read SimpleTimer2.java");
+    let simple_timer2_src = read_java_source_lock("core/java/src/net/i2p/util/SimpleTimer2.java");
     let add_idx = simple_timer2_src
         .find("public void addEvent(final SimpleTimer.TimedEvent event, final long timeoutMs)")
         .expect("Plan 246 §3.6: addEvent signature present");
@@ -28347,32 +28316,16 @@ fn p246_transition_add_event_uses_fresh_wrapper() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_timer_wrapper_delegates_to_connection_event() {
     // Plan 246 §3.6 — the wrapper `timeReached()` delegates to the
     // inner `event.timeReached()` which is `ConEvent.timeReached` and
     // re-enters `Connection.eventOccurred()`. The classifier must
     // never assume a transition wrapper deduplicates ConEvent
     // submissions.
-    let connection_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("Connection.java"),
-    )
-    .expect("read Connection.java");
+    let connection_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/Connection.java",
+    );
     let con_event_idx = connection_src
         .find("class ConEvent implements SimpleTimer.TimedEvent")
         .expect("Plan 246 §3.8: ConEvent class present");
@@ -28387,6 +28340,7 @@ fn p246_timer_wrapper_delegates_to_connection_event() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_connection_event_reenters_scheduler_chooser() {
     // Plan 246 §3.8 — `Connection.eventOccurred()` calls
     // `_chooser.getScheduler(this)` and the chooser iterates the
@@ -28418,30 +28372,14 @@ fn p246_connection_event_reenters_scheduler_chooser() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p246_scheduler_precedence_is_source_locked() {
     // Plan 246 §3.8 — exact scheduler precedence:
     // HardDisconnected, Preconnect, Connecting, Received,
     // ConnectedBulk, Closing, Closed, Dead, NullScheduler.
-    let chooser_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("SchedulerChooser.java"),
-    )
-    .expect("read SchedulerChooser.java");
+    let chooser_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/SchedulerChooser.java",
+    );
     let order = [
         "SchedulerHardDisconnected",
         "SchedulerPreconnect",
@@ -30227,6 +30165,7 @@ fn p247_no_java_patch() {
 }
 
 #[test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]
 fn p247_no_ack_delay_override() {
     // Plan 247 §16 — `i2p.streaming.initialAckDelay` is not set on the
     // frozen helper; the canonical value remains `(0, 500]` (default

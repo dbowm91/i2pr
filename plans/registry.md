@@ -58,7 +58,7 @@ Current authority: Plan 248 closes policy reconciliation. Plan 193 i2pd evidence
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
 | M11 transit tunnels | 250 transit foundation semantic/ownership corrective | ready | `plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md` | Correct Plan 249 provenance/wire/time/pending/secret/panic/test defects before any daemon consumer. |
-| M6 Java compatibility maintenance | 251 Java source-lock CI gating corrective | ready | `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md` | Independent test-infrastructure corrective; does not reopen M6 progression. |
+| M6 Java compatibility maintenance | 251 Java source-lock CI gating corrective | active | `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md` | Eight exact-pinned source locks gated; ordinary floor passed locally; waiting for current-SHA Ubuntu/macOS CI. |
 
 ## Blocked work
 

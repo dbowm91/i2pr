@@ -188,7 +188,7 @@ conflict); `state` is the codegg-registry projection. Filenames keep global i2pr
 | 246 | closed (gap) | observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution | `plans/implementation/mixed-router-interop/246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution.md` | `plans/closure/mixed-router-interop/246-status.md` |
 | 247 | closed | passed-m6-java-streaming-plan246-observation-window-parser-corrective | `plans/implementation/mixed-router-interop/247-m6-java-streaming-plan246-observation-window-parser-corrective.md` | `plans/closure/mixed-router-interop/247-status.md` |
 | 248 | closed | passed-interop-evidence-policy-reconciliation-and-m11-handoff | `plans/implementation/mixed-router-interop/248-interop-evidence-policy-reconciliation-and-m11-handoff.md` | `plans/closure/mixed-router-interop/248-status.md` |
-| 251 | ready (post-closure maintenance) | registered-ready-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md` | `plans/closure/mixed-router-interop/251-status.md` |
+| 251 | active (post-closure maintenance) | in-progress-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | `plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md` | `plans/closure/mixed-router-interop/251-status.md` |
 
 ## 8. Cross-cutting requirements
 
