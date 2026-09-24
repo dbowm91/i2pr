@@ -551,6 +551,24 @@ public final class ReferenceStreamingService {
         return p237IsDebugEnabledFor(P246_SIMPLE_TIMER_CLASS);
     }
 
+    // Plan 247 §11 — bounded console-buffer entry count. The helper
+    // returns the size of the bounded public LogManager console
+    // buffer (or 0 when the buffer is unavailable). Plan 247 §11
+    // forbids increasing the buffer preemptively; the field stays
+    // bounded by `P237_CONSOLE_BUFFER_SIZE` (1024).
+    private static long p246BufferEntryCount() {
+        try {
+            I2PAppContext context = I2PAppContext.getGlobalContext();
+            if (context == null || context.logManager() == null
+                || context.logManager().getBuffer() == null) {
+                return 0L;
+            }
+            return context.logManager().getBuffer().getMostRecentMessages().size();
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
     private static String hex(byte[] bytes) {
         StringBuilder out = new StringBuilder(bytes.length * 2);
         for (byte b : bytes) out.append(String.format("%02x", b & 0xff));
@@ -905,6 +923,19 @@ public final class ReferenceStreamingService {
                             // memory; the final 45 s outer lane keeps the
                             // retained Plan-237/245 snapshot for
                             // compatibility.
+                            //
+                            // Plan 247 §11 — the response now also carries
+                            // three console-buffer-pressure fields
+                            // (`console_buffer_entries`,
+                            // `console_buffer_capacity`, and
+                            // `console_buffer_at_capacity`). The capacity
+                            // mirrors the configured
+                            // `P237_CONSOLE_BUFFER_SIZE` constant (1024)
+                            // and `at_capacity` flips to `true` when the
+                            // bounded entry count meets or exceeds it.
+                            // Plan 247 §11 forbids increasing the buffer
+                            // preemptively; the pressure fields gate the
+                            // classifier's absence inference only.
                             p246RefreshPeerMarker();
                             long[] schedTimeouts = p246CollectTimeouts(true);
                             long[] early = p246CollectRescheduleDeltas();
@@ -925,6 +956,9 @@ public final class ReferenceStreamingService {
                             long firstFinishedElapsed = finished[1];
                             long clockSkew = p246ClockSkewMs();
                             boolean simpleTimerDebug = p246SimpleTimerDebugEnabled();
+                            long bufferEntries = p246BufferEntryCount();
+                            long bufferCapacity = P237_CONSOLE_BUFFER_SIZE;
+                            boolean bufferAtCapacity = bufferEntries >= bufferCapacity;
                             output.println("TIMER_STATS peer_correlation_present="
                                 + (EXPECTED_PEER_B32 != null && !EXPECTED_PEER_B32.isEmpty())
                                 + " simple_timer_debug_enabled=" + simpleTimerDebug
@@ -942,7 +976,10 @@ public final class ReferenceStreamingService {
                                 + " max_reschedule_delta_ms=" + maxRescheduleDelta
                                 + " connection_timer_first_run_elapsed_ms=" + firstFinishedElapsed
                                 + " context_clock_minus_system_ms=" + clockSkew
-                                + " java_source_pin=" + JAVA_SOURCE_PIN);
+                                + " java_source_pin=" + JAVA_SOURCE_PIN
+                                + " console_buffer_entries=" + bufferEntries
+                                + " console_buffer_capacity=" + bufferCapacity
+                                + " console_buffer_at_capacity=" + bufferAtCapacity);
                             break;
                         }
                         case "REPORT_RESPONSE_STATS": {

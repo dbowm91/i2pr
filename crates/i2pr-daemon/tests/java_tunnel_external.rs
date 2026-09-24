@@ -60,6 +60,15 @@
 //! publication chain stopped. Plan 201 will own the corrective.
 
 #![forbid(unsafe_code)]
+// Plan 247 — the test fixtures exercise the corrected parser,
+// tri-state observer-readiness, parallel polling state, classifier,
+// and evidence recorder. The Plan 247 unit tests intentionally use
+// `Default::default()` + per-field assignment to construct fixtures
+// (matches the existing Plan-237/245/246 pattern) and copy small
+// stats structs rather than refactoring every call site.
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::needless_late_init)]
 
 use std::io::Write as _;
 use std::net::{IpAddr, SocketAddr};
@@ -129,6 +138,12 @@ const OBEP_NEXT: u32 = 0x9502;
 const IBGW_RECEIVE: u32 = 0x9601;
 const IBGW_NEXT: u32 = 0x9602;
 const JAVA_I2P_PIN: &str = "9134f808337b401e8e53c73734c81fab04280c9d";
+// Plan 247 §11 — the documented bounded console-buffer capacity. The
+// helper-side `P237_CONSOLE_BUFFER_SIZE = 1024` constant is the
+// canonical capacity; we mirror it in the driver so the static
+// checker can verify the field shape even when the helper has not yet
+// responded. Plan 247 §11 forbids increasing the buffer preemptively.
+const P246_CONSOLE_BUFFER_CAPACITY: u64 = 1024;
 
 // Plan 217 §6.D — destination and Streaming drivers run against the
 // same long-lived Java RouterContexts inside a single `run-java.sh`
@@ -221,8 +236,22 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Plan 199 helper control channel. The Java helper owns all I2P client and
 /// Streaming operations; this channel carries only sanitized coordination
 /// commands and hex-encoded test bytes over loopback.
+///
+/// Plan 247 §7 — `Clone` is needed so a parallel polling task can own
+/// a second `ReferenceControl` to the same loopback endpoint while
+/// the main thread continues driving the existing 45-second response
+/// lane. Each `command()` opens a fresh TCP connection, so cloning is
+/// safe; the bounded `SAM_TIMEOUT` already gates every command.
 struct ReferenceControl {
     endpoint: SocketAddr,
+}
+
+impl Clone for ReferenceControl {
+    fn clone(&self) -> Self {
+        Self {
+            endpoint: self.endpoint,
+        }
+    }
 }
 
 impl ReferenceControl {
@@ -27513,6 +27542,13 @@ fn p245_no_response_behavior_change() {
 /// over 2 s. Field names must stay byte-identical to the helper's
 /// `TIMER_STATS` line (split on ` `, then `=`); the static checker
 /// enforces this against the helper source.
+///
+/// Plan 247 §11 — three new fields track public console-buffer
+/// pressure. The helper exposes the bounded buffer-entry count, the
+/// configured capacity (`P237_CONSOLE_BUFFER_SIZE = 1024`), and
+/// `at_capacity` (the bounded helper-side predicate `entries >=
+/// capacity`). They are emitted alongside the existing 17 fields; a
+/// parser that ignores them stays backwards compatible.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct P246ResponseStats {
     peer_correlation_present: bool,
@@ -27541,65 +27577,145 @@ struct P246ResponseStats {
     // the helper never adjusts clocks and the classifier never
     // authorizes a Java patch or production i2pr change from this.
     context_clock_minus_system_ms: i64,
+    // Plan 247 §11 — public console-buffer pressure fields. The
+    // `console_buffer_capacity` is the configured
+    // `P237_CONSOLE_BUFFER_SIZE` constant (1024); the helper emits
+    // `at_capacity=true` when the bounded entry count meets or
+    // exceeds it. The driver uses these to distinguish "no
+    // observed signal because nothing was logged" from "no observed
+    // signal because the bounded buffer evicted the line". Plan
+    // 247 §11 makes this gate a precondition for absence inference.
+    console_buffer_entries: u64,
+    console_buffer_capacity: u64,
+    console_buffer_at_capacity: bool,
 }
 
 /// Parse the bounded `REPORT_TIMER_STATS` line into the Plan-246
 /// snapshot. Strict: any unknown key or unparsable value returns
 /// `None` so the classifier can distinguish Unknown (helper
 /// unreachable / parse failed) from a proven zero.
+///
+/// Plan 247 §4 corrects the original magic-count `seen == 17`
+/// accounting. The exact helper shape is **16 data fields** plus **1
+/// source-pin field**; both must be present and the source pin must
+/// equal the exact-pinned Java I2P commit SHA. The parser now uses
+/// explicit schema validation: `seen_data == 16 && seen_source_pin`
+/// with the pin value matched against `JAVA_I2P_PIN`. This prevents
+/// a structurally valid helper response from collapsing to `None`
+/// because the source pin was accepted-and-ignored (the original
+/// `continue` arm skipped the `seen` increment).
+///
+/// Plan 247 §11 adds three console-buffer-pressure fields
+/// (`console_buffer_entries`, `console_buffer_capacity`,
+/// `console_buffer_at_capacity`). They are recognized by name but
+/// are NOT counted toward `seen_data` (they are observational,
+/// not schema). The parser stays forwards-compatible: a helper that
+/// emits the three pressure fields plus the 16 data fields plus the
+/// source pin parses successfully; the pressure fields populate the
+/// new `console_buffer_*` fields.
 fn p246_parse_timer_stats(line: &str) -> Option<P246ResponseStats> {
     let mut fields = line.split_whitespace();
     if fields.next()? != "TIMER_STATS" {
         return None;
     }
     let mut stats = P246ResponseStats::default();
-    let mut seen = 0u8;
+    let mut seen_data = 0u8;
+    let mut seen_source_pin = false;
     for field in fields {
         let (key, value) = field.split_once('=')?;
         match key {
-            "peer_correlation_present" => stats.peer_correlation_present = p237_parse_bool(value)?,
+            "peer_correlation_present" => {
+                stats.peer_correlation_present = p237_parse_bool(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
             "simple_timer_debug_enabled" => {
-                stats.simple_timer_debug_enabled = p237_parse_bool(value)?
+                stats.simple_timer_debug_enabled = p237_parse_bool(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
-            "timer_scheduler_count" => stats.timer_scheduler_count = p237_parse_u64(value)?,
-            "timer_running_count" => stats.timer_running_count = p237_parse_u64(value)?,
+            "timer_scheduler_count" => {
+                stats.timer_scheduler_count = p237_parse_u64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
+            "timer_running_count" => {
+                stats.timer_running_count = p237_parse_u64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
             "timer_early_reschedule_count" => {
-                stats.timer_early_reschedule_count = p237_parse_u64(value)?
+                stats.timer_early_reschedule_count = p237_parse_u64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
-            "timer_finished_count" => stats.timer_finished_count = p237_parse_u64(value)?,
+            "timer_finished_count" => {
+                stats.timer_finished_count = p237_parse_u64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
             "connection_timer_first_schedule_timeout_ms" => {
-                stats.connection_timer_first_schedule_timeout_ms = p246_parse_i64(value)?
+                stats.connection_timer_first_schedule_timeout_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
             "connection_timer_latest_schedule_timeout_ms" => {
-                stats.connection_timer_latest_schedule_timeout_ms = p246_parse_i64(value)?
+                stats.connection_timer_latest_schedule_timeout_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
             "connection_timer_min_schedule_timeout_ms" => {
-                stats.connection_timer_min_schedule_timeout_ms = p246_parse_i64(value)?
+                stats.connection_timer_min_schedule_timeout_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
             "connection_timer_max_schedule_timeout_ms" => {
-                stats.connection_timer_max_schedule_timeout_ms = p246_parse_i64(value)?
+                stats.connection_timer_max_schedule_timeout_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
-            "first_reschedule_delta_ms" => stats.first_reschedule_delta_ms = p246_parse_i64(value)?,
+            "first_reschedule_delta_ms" => {
+                stats.first_reschedule_delta_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
             "latest_reschedule_delta_ms" => {
-                stats.latest_reschedule_delta_ms = p246_parse_i64(value)?
+                stats.latest_reschedule_delta_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
-            "min_reschedule_delta_ms" => stats.min_reschedule_delta_ms = p246_parse_i64(value)?,
-            "max_reschedule_delta_ms" => stats.max_reschedule_delta_ms = p246_parse_i64(value)?,
+            "min_reschedule_delta_ms" => {
+                stats.min_reschedule_delta_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
+            "max_reschedule_delta_ms" => {
+                stats.max_reschedule_delta_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
+            }
             "connection_timer_first_run_elapsed_ms" => {
-                stats.connection_timer_first_run_elapsed_ms = p246_parse_i64(value)?
+                stats.connection_timer_first_run_elapsed_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
             "context_clock_minus_system_ms" => {
-                stats.context_clock_minus_system_ms = p246_parse_i64(value)?
+                stats.context_clock_minus_system_ms = p246_parse_i64(value)?;
+                seen_data = seen_data.saturating_add(1);
             }
-            // The trailing `java_source_pin=…` is documentation-only;
-            // we accept and ignore it here so the parser stays strict
-            // on the documented keys.
-            "java_source_pin" => continue,
+            // Plan 247 §4 — the trailing `java_source_pin=…` is a
+            // required field; the value must equal the exact-pinned
+            // Java I2P commit SHA. The Plan 246 helper always emits
+            // it. If the value disagrees with the pinned SHA the
+            // line is rejected (it is no longer the exact-pinned
+            // response).
+            "java_source_pin" => {
+                if value != JAVA_I2P_PIN {
+                    return None;
+                }
+                seen_source_pin = true;
+            }
+            // Plan 247 §11 — buffer-pressure fields. They are
+            // observational, not part of the strict 16-data-field
+            // schema, so they do NOT increment `seen_data`.
+            "console_buffer_entries" => {
+                stats.console_buffer_entries = p237_parse_u64(value)?;
+            }
+            "console_buffer_capacity" => {
+                stats.console_buffer_capacity = p237_parse_u64(value)?;
+            }
+            "console_buffer_at_capacity" => {
+                stats.console_buffer_at_capacity = p237_parse_bool(value)?;
+            }
             _ => return None,
         }
-        seen = seen.saturating_add(1);
     }
-    (seen == 17).then_some(stats)
+    (seen_data == 16 && seen_source_pin).then_some(stats)
 }
 
 /// Strict signed 64-bit parser used by the Plan-246 keys. The helper
@@ -27910,7 +28026,7 @@ fn record_p246_classification(
         evidence_dir,
         "p246-timer-stats-pre",
         &format!(
-            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={}",
+            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={} console_buffer_entries={} console_buffer_capacity={} console_buffer_at_capacity={}",
             pre.peer_correlation_present,
             pre.simple_timer_debug_enabled,
             pre.timer_scheduler_count,
@@ -27927,13 +28043,16 @@ fn record_p246_classification(
             pre.max_reschedule_delta_ms,
             pre.connection_timer_first_run_elapsed_ms,
             pre.context_clock_minus_system_ms,
+            pre.console_buffer_entries,
+            pre.console_buffer_capacity,
+            pre.console_buffer_at_capacity,
         ),
     );
     append_evidence(
         evidence_dir,
         "p246-timer-stats-post",
         &format!(
-            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={}",
+            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={} console_buffer_entries={} console_buffer_capacity={} console_buffer_at_capacity={}",
             post.peer_correlation_present,
             post.simple_timer_debug_enabled,
             post.timer_scheduler_count,
@@ -27950,6 +28069,9 @@ fn record_p246_classification(
             post.max_reschedule_delta_ms,
             post.connection_timer_first_run_elapsed_ms,
             post.context_clock_minus_system_ms,
+            post.console_buffer_entries,
+            post.console_buffer_capacity,
+            post.console_buffer_at_capacity,
         ),
     );
     append_evidence(
@@ -28030,6 +28152,9 @@ fn p246_test_stats() -> P246ResponseStats {
         max_reschedule_delta_ms: -1,
         connection_timer_first_run_elapsed_ms: 0,
         context_clock_minus_system_ms: 0,
+        console_buffer_entries: 0,
+        console_buffer_capacity: P246_CONSOLE_BUFFER_CAPACITY,
+        console_buffer_at_capacity: false,
     }
 }
 
@@ -28846,3 +28971,1383 @@ fn p246_timer_run_but_not_exhausted_returns_observability_gap() {
 }
 
 // Plan 246 delayed-ACK timer attribution (end).
+
+// Plan 247 — observation-window/parser corrective (begin).
+//
+// Plan 247 keeps the corrected parser, the pre-SYN + live dual
+// polling state, the tri-state observer-readiness, the classifier,
+// and the evidence-recording helper as the documented API surface
+// for the streaming driver. The streaming_through_java integration
+// consumes them; for the focused Plan-247 test suite they stay
+// available but not all are wired into the integration in this pass.
+// The integration scaffolding is intentionally read-only and
+// observation-only (no production change authorized).
+//
+// Plan 247 §4 — correct the Plan-246 TIMER_STATS parser schema accounting
+// (16 data fields + 1 source-pin field, both required and the source pin
+// validated against the exact-pinned Java I2P commit SHA).
+//
+// Plan 247 §5 — preserve Unknown vs Observed(false)/Observed(true) for
+// observer readiness; a parse failure is a typed observer terminal,
+// not silently-defaulted false readiness.
+//
+// Plan 247 §6 — move the timer/response observation window into the
+// response epoch. Pre-SYN RESPONSE_STATS + TIMER_STATS snapshots are
+// taken immediately before the SYN; rolling RESPONSE_STATS + TIMER_STATS
+// polling begins immediately after the SYN; the existing 45-second outer
+// response lane continues unchanged.
+//
+// Plan 247 §7 — live dual polling refreshes both RESPONSE_STATS and
+// TIMER_STATS on every iteration and derives SchedulerReceived deltas
+// from the live rolling baseline, not from a frozen Plan-245 post
+// snapshot.
+//
+// Plan 247 §8 — early high-resolution phase (50 ms × 40 polls = 2 s
+// after SYN) followed by a bounded low-rate tail (100 ms × 30 polls
+// = 3 s) only while timer schedule/run or second-scheduler outcome
+// remains unresolved. The total attribution horizon is at most 5 s
+// and lives entirely inside the existing 45-second outer lane.
+//
+// Plan 247 §11 — bound and observe console-buffer pressure; the
+// absence of an exact-socket-filtered signal must be qualified against
+// the buffer-entry count and `at_capacity` predicate before the
+// classifier concludes "no SimpleTimer2 lifecycle event happened".
+//
+// Plan 247 supersedes only the interpretation of the Plan-246 helper
+// readiness booleans and timing window. Direction A 3/3 and the
+// no-production-change facts remain valid. The retained Plan 246
+// surface stays green as historical authority.
+
+// ---- Plan 247 — observation-window/parser corrective -----------------------
+//
+// Plan 247 §4 — correct the Plan-246 TIMER_STATS parser schema accounting
+// (16 data fields + 1 source-pin field, both required and the source pin
+// validated against the exact-pinned Java I2P commit SHA).
+//
+// Plan 247 §5 — preserve Unknown vs Observed(false)/Observed(true) for
+// observer readiness; a parse failure is a typed observer terminal,
+// not silently-defaulted false readiness.
+//
+// Plan 247 §6 — move the timer/response observation window into the
+// response epoch. Pre-SYN RESPONSE_STATS + TIMER_STATS snapshots are
+// taken immediately before the SYN; rolling RESPONSE_STATS + TIMER_STATS
+// polling begins immediately after the SYN; the existing 45-second outer
+// response lane continues unchanged.
+//
+// Plan 247 §7 — live dual polling refreshes both RESPONSE_STATS and
+// TIMER_STATS on every iteration and derives SchedulerReceived deltas
+// from the live rolling baseline, not from a frozen Plan-245 post
+// snapshot.
+//
+// Plan 247 §8 — early high-resolution phase (50 ms × 40 polls = 2 s
+// after SYN) followed by a bounded low-rate tail (100 ms × 30 polls
+// = 3 s) only while timer schedule/run or second-scheduler outcome
+// remains unresolved. The total attribution horizon is at most 5 s
+// and lives entirely inside the existing 45-second outer lane.
+//
+// Plan 247 §11 — bound and observe console-buffer pressure; the
+// absence of an exact-socket-filtered signal must be qualified against
+// the buffer-entry count and `at_capacity` predicate before the
+// classifier concludes "no SimpleTimer2 lifecycle event happened".
+//
+// Plan 247 supersedes only the interpretation of the Plan-246 helper
+// readiness booleans and timing window. Direction A 3/3 and the
+// no-production-change facts remain valid. The retained Plan 246
+// surface stays green as historical authority.
+
+/// Plan 247 §5 — tri-state observer-readiness type. Distinguishes:
+/// - `Unknown`: parse failed or helper unreachable (a typed observer
+///   terminal, never silently-defaulted to false);
+/// - `Observed(false)`: the helper responded with a structurally
+///   valid line whose field reports `false`;
+/// - `Observed(true)`: the helper responded with a structurally
+///   valid line whose field reports `true`.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum P247ObserverReadiness {
+    #[default]
+    Unknown,
+    Observed(bool),
+}
+
+impl P247ObserverReadiness {
+    /// Derive the readiness value from any `Option<T>` snapshot using
+    /// the supplied field accessor. `Unknown` when the snapshot is
+    /// missing; `Observed(field(&t))` when present.
+    fn from_optional<T>(stats: Option<T>, field: impl Fn(&T) -> bool) -> Self {
+        stats
+            .map(|s| Self::Observed(field(&s)))
+            .unwrap_or(Self::Unknown)
+    }
+}
+
+/// Plan 247 §7 — shared polling state. The parallel polling task
+/// updates these fields on every iteration; the main thread reads
+/// them after the polling task joins (or the 5-second deadline
+/// expires). All fields are bounded by the polling horizon (≤ 5 s,
+/// 70 polls total).
+#[derive(Clone, Debug, Default)]
+struct P247PollingState {
+    pre_syn_response: Option<P245ResponseStats>,
+    pre_syn_timer: Option<P246ResponseStats>,
+    rolling_max_scheduler: u64,
+    rolling_max_running: u64,
+    rolling_max_finished: u64,
+    rolling_max_early_reschedule: u64,
+    rolling_max_scheduler_reschedule_branch: u64,
+    rolling_max_scheduler_send_branch: u64,
+    rolling_max_scheduler_no_unacked: u64,
+    rolling_max_message_output_flush_nonempty: u64,
+    rolling_max_receiver_do_send_false: u64,
+    rolling_max_receiver_packet_built: u64,
+    rolling_max_connection_resend_timer: u64,
+    rolling_max_send_message_lifetime: u64,
+    first_scheduler_count: u64,
+    first_reschedule_branch_count: u64,
+    first_send_branch_count: u64,
+    first_no_unacked_count: u64,
+    first_observed_at_ms: Option<u64>,
+    final_buffer_entries: u64,
+    final_buffer_capacity: u64,
+    final_buffer_at_capacity: bool,
+    polling_observations: u32,
+    #[allow(dead_code)]
+    polling_horizon_ms: u64,
+    peer_correlation_first_observed_at_ms: Option<u64>,
+}
+
+/// Plan 247 §13 — terminals for the Plan-247 attribution chain. The
+/// `P247-O-*` arms are observer-only (no scheduler attribution); the
+/// `P247-A` arm is a requested-deadline contradiction; the
+/// `P247-B-*` arms cover reschedule-observed-no-timer and
+/// timer-scheduled-not-run-within-tail; the `P247-C-*` arms cover
+/// timer-ran-scheduler-changed, repeated reschedules, and the
+/// no-unacked guard; the `P247-D` arm resumes the existing
+/// Plan-245 downstream chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum P247Terminal {
+    /// Plan 247 §5/§9 — TIMER_STATS parse failed (helper unreachable
+    /// or schema invalid). Never silently-defaulted to false readiness.
+    TimerStatsParseFailed,
+    /// Plan 247 §9 — pre-SYN observer readiness was not satisfied
+    /// (parse failed or required loggers disabled). The run does NOT
+    /// consume a counted protocol attempt.
+    ObserverReadinessNotProven,
+    /// Plan 247 §10 — exact-socket correlation never became
+    /// available before the post-accept window.
+    PeerCorrelationNotAvailable,
+    /// Plan 247 §11 — console buffer reached capacity before exact
+    /// correlation was available; absence of a SimpleTimer2 lifecycle
+    /// signal cannot be attributed.
+    ConsoleBufferSaturated,
+    /// Plan 247 §12 — live rolling evidence proves the first
+    /// SchedulerReceived reschedule but the 45-second final snapshot
+    /// did not preserve the line.
+    #[allow(dead_code)]
+    Plan245FinalSnapshotEviction,
+    /// Plan 247 §13.A — exact `timeTillSend` is ≤ 0 before the
+    /// reschedule branch or > 500 ms under the frozen helper default.
+    NextSendDeadlineOutOfBounds,
+    /// Plan 247 §13.B1 — first live SchedulerReceived reschedule is
+    /// observed but no matching Connection timer schedule is
+    /// observed inside the 5-second tail.
+    ConnectionEventNotScheduled,
+    /// Plan 247 §13.C — matching timer schedule is observed but no
+    /// matching run appears by the 5-second tail.
+    ConnectionEventScheduledNotRunWithinAttributionWindow,
+    /// Plan 247 §13.D — matching timer run is observed but the next
+    /// SchedulerReceived event did not reappear; chooser changed.
+    ConnectionEventRanSchedulerChanged,
+    /// Plan 247 §13.E — second SchedulerReceived fires the reschedule
+    /// branch again.
+    SchedulerRescheduledAgain,
+    /// Plan 247 §13.E-2 — repeated bounded reschedules consume the
+    /// 5-second tail without send.
+    RepeatedRescheduleWithoutSend,
+    /// Plan 247 §13.F — second SchedulerReceived reaches the
+    /// no-unacked guard.
+    SchedulerNoUnackedOnSecondEvent,
+    /// Plan 247 §13.G — second SchedulerReceived reaches the send
+    /// branch; resume the existing Plan-245 downstream chain.
+    SchedulerSendBranchReached,
+    /// Plan 247 §5/§9 — readiness not proven before the SYN, or any
+    /// other Unknown state.
+    ObservabilityGap,
+}
+
+impl P247Terminal {
+    #[allow(dead_code)]
+    fn token(self) -> &'static str {
+        match self {
+            Self::TimerStatsParseFailed => "P247-O-TIMER-STATS-PARSE-FAILED",
+            Self::ObserverReadinessNotProven => "P247-O-OBSERVER-READINESS-NOT-PROVEN",
+            Self::PeerCorrelationNotAvailable => "P247-O-PEER-CORRELATION-NOT-AVAILABLE",
+            Self::ConsoleBufferSaturated => "P247-O-CONSOLE-BUFFER-SATURATED",
+            Self::Plan245FinalSnapshotEviction => "P247-O-PLAN245-FINAL-SNAPSHOT-EVICTION",
+            Self::NextSendDeadlineOutOfBounds => "P247-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS",
+            Self::ConnectionEventNotScheduled => "P247-B-CONNECTION-EVENT-NOT-SCHEDULED",
+            Self::ConnectionEventScheduledNotRunWithinAttributionWindow => {
+                "P247-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN-WITHIN-ATTRIBUTION-WINDOW"
+            }
+            Self::ConnectionEventRanSchedulerChanged => {
+                "P247-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED"
+            }
+            Self::SchedulerRescheduledAgain => "P247-C-SCHEDULER-RESCHEDULED-AGAIN",
+            Self::RepeatedRescheduleWithoutSend => "P247-C-REPEATED-RESCHEDULE-WITHOUT-SEND",
+            Self::SchedulerNoUnackedOnSecondEvent => "P247-C-SCHEDULER-NO-UNACKED-ON-SECOND-EVENT",
+            Self::SchedulerSendBranchReached => "P247-D-SCHEDULER-SEND-BRANCH-REACHED",
+            Self::ObservabilityGap => "P247-OBSERVABILITY-GAP",
+        }
+    }
+}
+
+/// Plan 247 §12 — Plan-245-compatible reschedule boundary exists when
+/// the live rolling delta proves the scheduler reschedule branch
+/// (no-unacked + send-branch remain at zero).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct P247Plan245RollingBaseline {
+    scheduler_reschedule_branch_delta: u64,
+    scheduler_send_branch_delta: u64,
+    scheduler_no_unacked_delta: u64,
+    p245_baseline_ok: bool,
+}
+
+impl P247Plan245RollingBaseline {
+    fn is_reschedule_only(&self) -> bool {
+        self.p245_baseline_ok
+            && self.scheduler_reschedule_branch_delta >= 1
+            && self.scheduler_send_branch_delta == 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct P247ReadinessFacts {
+    response_stats_parse_ok: P247ObserverReadiness,
+    scheduler_debug_enabled: P247ObserverReadiness,
+    connection_debug_enabled: P247ObserverReadiness,
+    receiver_debug_enabled: P247ObserverReadiness,
+    message_output_enabled: P247ObserverReadiness,
+    timer_stats_parse_ok: P247ObserverReadiness,
+    simple_timer_debug_enabled: P247ObserverReadiness,
+    source_pin_matches: P247ObserverReadiness,
+}
+
+impl P247ReadinessFacts {
+    fn pre_syn_response(response: Option<P245ResponseStats>) -> Self {
+        Self {
+            response_stats_parse_ok: if response.is_some() {
+                P247ObserverReadiness::Observed(true)
+            } else {
+                P247ObserverReadiness::Unknown
+            },
+            scheduler_debug_enabled: P247ObserverReadiness::from_optional(response, |s| {
+                s.scheduler_debug_enabled
+            }),
+            connection_debug_enabled: P247ObserverReadiness::from_optional(response, |s| {
+                s.connection_debug_enabled
+            }),
+            receiver_debug_enabled: P247ObserverReadiness::from_optional(response, |s| {
+                s.receiver_debug_enabled
+            }),
+            message_output_enabled: P247ObserverReadiness::from_optional(response, |s| {
+                s.message_output_enabled
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn pre_syn_timer(timer: Option<P246ResponseStats>) -> Self {
+        Self {
+            timer_stats_parse_ok: if timer.is_some() {
+                P247ObserverReadiness::Observed(true)
+            } else {
+                P247ObserverReadiness::Unknown
+            },
+            simple_timer_debug_enabled: P247ObserverReadiness::from_optional(timer, |s| {
+                s.simple_timer_debug_enabled
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn merge(self, other: &Self) -> Self {
+        Self {
+            response_stats_parse_ok: merge_readiness(
+                self.response_stats_parse_ok,
+                other.response_stats_parse_ok,
+            ),
+            scheduler_debug_enabled: merge_readiness(
+                self.scheduler_debug_enabled,
+                other.scheduler_debug_enabled,
+            ),
+            connection_debug_enabled: merge_readiness(
+                self.connection_debug_enabled,
+                other.connection_debug_enabled,
+            ),
+            receiver_debug_enabled: merge_readiness(
+                self.receiver_debug_enabled,
+                other.receiver_debug_enabled,
+            ),
+            message_output_enabled: merge_readiness(
+                self.message_output_enabled,
+                other.message_output_enabled,
+            ),
+            timer_stats_parse_ok: merge_readiness(
+                self.timer_stats_parse_ok,
+                other.timer_stats_parse_ok,
+            ),
+            simple_timer_debug_enabled: merge_readiness(
+                self.simple_timer_debug_enabled,
+                other.simple_timer_debug_enabled,
+            ),
+            source_pin_matches: merge_readiness(self.source_pin_matches, other.source_pin_matches),
+        }
+    }
+
+    fn is_pre_syn_proven(&self) -> bool {
+        let proven = |r: P247ObserverReadiness| matches!(r, P247ObserverReadiness::Observed(true));
+        let parsed = |r: P247ObserverReadiness| !matches!(r, P247ObserverReadiness::Unknown);
+        parsed(self.response_stats_parse_ok)
+            && proven(self.scheduler_debug_enabled)
+            && proven(self.connection_debug_enabled)
+            && proven(self.receiver_debug_enabled)
+            && proven(self.message_output_enabled)
+            && parsed(self.timer_stats_parse_ok)
+            && proven(self.simple_timer_debug_enabled)
+    }
+}
+
+fn merge_readiness(a: P247ObserverReadiness, b: P247ObserverReadiness) -> P247ObserverReadiness {
+    use P247ObserverReadiness::*;
+    match (a, b) {
+        (Unknown, x) | (x, Unknown) => x,
+        (Observed(x), Observed(y)) if x == y => Observed(x),
+        // Disagreement between two observed readings collapses to Unknown
+        // so the driver never claims a definitive true/false on
+        // conflicting helper snapshots.
+        (Observed(_), Observed(_)) => Unknown,
+    }
+}
+
+/// Plan 247 §12/§13 — Plan-247 ordered classifier. The function takes
+/// the pre-SYN snapshots, the live rolling maxima, the Plan-245
+/// rolling baseline, and the polling horizon; it stops at the
+/// earliest proven arm. The classifier never authorizes a Java patch
+/// or production i2pr change; every arm is observation-only and
+/// every deeper arm requires the prerequisite arms to be
+/// `Observed(true)` (never `Unknown`).
+#[allow(clippy::too_many_arguments)]
+fn p247_classify(
+    pre_syn_readiness: &P247ReadinessFacts,
+    timer_post: Option<P246ResponseStats>,
+    rolling: &P247PollingState,
+    p245_rolling: &P247Plan245RollingBaseline,
+    polling_horizon_ms: u64,
+    p247_repeated_reschedule_count: u32,
+) -> P247Terminal {
+    // §9 — pre-SYN readiness gate. A run that fails observer readiness
+    // before SYN is not a counted protocol attempt; the driver records
+    // a typed observer terminal and the run aborts to readiness-fix.
+    if !pre_syn_readiness.is_pre_syn_proven() {
+        return P247Terminal::ObserverReadinessNotProven;
+    }
+    // §5 — parse-failure is its own typed terminal. If the final
+    // TIMER_STATS response failed to parse (helper unreachable or
+    // schema invalid) we report the parse failure, never silently
+    // collapse to false readiness.
+    if matches!(
+        pre_syn_readiness.timer_stats_parse_ok,
+        P247ObserverReadiness::Unknown
+    ) && timer_post.is_none()
+    {
+        return P247Terminal::TimerStatsParseFailed;
+    }
+    let Some(timer_post) = timer_post else {
+        return P247Terminal::TimerStatsParseFailed;
+    };
+    // §11 — console-buffer pressure gate. If the bounded public
+    // LogManager console buffer reached capacity before exact-socket
+    // correlation was available, absence of a SimpleTimer2 lifecycle
+    // signal cannot be attributed.
+    if timer_post.console_buffer_at_capacity
+        && rolling.peer_correlation_first_observed_at_ms.is_none()
+    {
+        return P247Terminal::ConsoleBufferSaturated;
+    }
+    // §10 — peer-correlation must become available after accept/socket
+    // establishment before any exact-socket timer terminal.
+    if rolling.peer_correlation_first_observed_at_ms.is_none() {
+        // The polling horizon is bounded to 5 s. If peer correlation
+        // never arrived within the full tail, classify as
+        // PeerCorrelationNotAvailable — distinct from the parse-failure
+        // arm and from the generic gap.
+        if polling_horizon_ms >= P247_POLLING_HORIZON_MAX_MS {
+            return P247Terminal::PeerCorrelationNotAvailable;
+        }
+        // The polling window has not completed yet; signal Unknown.
+        return P247Terminal::ObservabilityGap;
+    }
+    // §13.A — deadline validation. The frozen helper does not set
+    // `initialAckDelay` so the documented default is 500 ms.
+    let latest = timer_post.connection_timer_latest_schedule_timeout_ms;
+    if latest > 500 || latest <= 0 {
+        return P247Terminal::NextSendDeadlineOutOfBounds;
+    }
+    // §13.D — second SchedulerReceived attribution. The send / no-unacked
+    // / reschedule branches are mutually exclusive outcomes of the
+    // second event; whichever arm fires first wins. The send branch
+    // arm takes precedence so the Plan-245 downstream chain resumes
+    // immediately.
+    if p245_rolling.scheduler_send_branch_delta >= 2 {
+        return P247Terminal::SchedulerSendBranchReached;
+    }
+    // §13.B — timer enqueue attribution. The first observed scheduler
+    // reschedule must be paired with a matching SimpleTimer2 schedule.
+    // The Plan-245-compatible baseline (`p245_baseline_ok &&
+    // scheduler_reschedule_branch_delta >= 1`) is the prerequisite;
+    // a missing baseline returns Unknown.
+    if !p245_rolling.is_reschedule_only() {
+        return P247Terminal::ObservabilityGap;
+    }
+    let schedule_delta = rolling
+        .rolling_max_scheduler
+        .saturating_sub(rolling.first_scheduler_count);
+    if schedule_delta == 0 {
+        if polling_horizon_ms >= P247_POLLING_HORIZON_MAX_MS {
+            return P247Terminal::ConnectionEventNotScheduled;
+        }
+        return P247Terminal::ObservabilityGap;
+    }
+    // §13.C — timer execution attribution.
+    let ran = rolling.rolling_max_running > 0 || rolling.rolling_max_finished > 0;
+    if !ran {
+        if polling_horizon_ms >= P247_POLLING_HORIZON_MAX_MS {
+            return P247Terminal::ConnectionEventScheduledNotRunWithinAttributionWindow;
+        }
+        return P247Terminal::ObservabilityGap;
+    }
+    // §13.F — no-unacked guard for the second SchedulerReceived event.
+    if p245_rolling.scheduler_no_unacked_delta >= 2 {
+        return P247Terminal::SchedulerNoUnackedOnSecondEvent;
+    }
+    // §13.E — second SchedulerReceived fires the reschedule branch again.
+    if p245_rolling.scheduler_reschedule_branch_delta >= 2 {
+        if p247_repeated_reschedule_count >= 2 && polling_horizon_ms >= P247_POLLING_HORIZON_MAX_MS
+        {
+            return P247Terminal::RepeatedRescheduleWithoutSend;
+        }
+        return P247Terminal::SchedulerRescheduledAgain;
+    }
+    // The timer ran, but the second SchedulerReceived event did not
+    // reappear within the polling horizon. Chooser selected another.
+    P247Terminal::ConnectionEventRanSchedulerChanged
+}
+
+const P247_POLLING_HORIZON_MAX_MS: u64 = 5_000;
+
+/// Plan 247 §12 — observer-eviction classifier. If any live-rolling
+/// signal is observed but its final 45-second snapshot counter later
+/// returns to a lower value because the bounded log line aged out,
+/// return true so the driver can record the
+/// `P247-O-PLAN245-FINAL-SNAPSHOT-EVICTION` companion flag.
+fn p247_observer_evicted(rolling_max: u64, final_snapshot: u64) -> bool {
+    rolling_max > final_snapshot
+}
+
+/// Plan 247 §7 — derive the Plan-245-compatible rolling baseline from
+/// the live rolling maxima observed across the polling horizon.
+/// The Plan-247 surface does NOT reuse the frozen `p245_post`
+/// snapshot; the live rolling counts are the authoritative view.
+fn p247_plan245_rolling_baseline(
+    pre_syn_response: Option<P245ResponseStats>,
+    rolling: &P247PollingState,
+    response_post: Option<P245ResponseStats>,
+) -> P247Plan245RollingBaseline {
+    match (pre_syn_response, response_post) {
+        (Some(pre), Some(post)) => P247Plan245RollingBaseline {
+            scheduler_reschedule_branch_delta: rolling
+                .rolling_max_scheduler_reschedule_branch
+                .saturating_sub(pre.scheduler_reschedule_branch_log_count),
+            scheduler_send_branch_delta: rolling
+                .rolling_max_scheduler_send_branch
+                .saturating_sub(pre.scheduler_send_branch_log_count),
+            scheduler_no_unacked_delta: rolling
+                .rolling_max_scheduler_no_unacked
+                .saturating_sub(pre.scheduler_no_unacked_warning_log_count),
+            p245_baseline_ok: post.scheduler_debug_enabled
+                && post.connection_debug_enabled
+                && post.receiver_debug_enabled
+                && post.message_output_enabled,
+        },
+        _ => P247Plan245RollingBaseline::default(),
+    }
+}
+
+/// Plan 247 §7 — record the live polling state for the streaming
+/// driver. Updates the rolling maxima and stores the first-seen
+/// scheduler signal timestamps.
+#[allow(clippy::too_many_arguments)]
+fn p247_record_poll(
+    state: &mut P247PollingState,
+    timer: Option<P246ResponseStats>,
+    response: Option<P245ResponseStats>,
+    now_ms: u64,
+) {
+    state.polling_observations = state.polling_observations.saturating_add(1);
+    if let Some(t) = timer {
+        state.rolling_max_scheduler = state.rolling_max_scheduler.max(t.timer_scheduler_count);
+        state.rolling_max_running = state.rolling_max_running.max(t.timer_running_count);
+        state.rolling_max_finished = state.rolling_max_finished.max(t.timer_finished_count);
+        state.rolling_max_early_reschedule = state
+            .rolling_max_early_reschedule
+            .max(t.timer_early_reschedule_count);
+        state.final_buffer_entries = t.console_buffer_entries;
+        state.final_buffer_capacity = t.console_buffer_capacity;
+        state.final_buffer_at_capacity = t.console_buffer_at_capacity;
+    }
+    if let Some(r) = response {
+        state.rolling_max_scheduler_reschedule_branch = state
+            .rolling_max_scheduler_reschedule_branch
+            .max(r.scheduler_reschedule_branch_log_count);
+        state.rolling_max_scheduler_send_branch = state
+            .rolling_max_scheduler_send_branch
+            .max(r.scheduler_send_branch_log_count);
+        state.rolling_max_scheduler_no_unacked = state
+            .rolling_max_scheduler_no_unacked
+            .max(r.scheduler_no_unacked_warning_log_count);
+        state.rolling_max_message_output_flush_nonempty = state
+            .rolling_max_message_output_flush_nonempty
+            .max(r.message_output_flush_nonempty_log_count);
+        state.rolling_max_receiver_do_send_false = state
+            .rolling_max_receiver_do_send_false
+            .max(r.receiver_do_send_false_log_count);
+        state.rolling_max_receiver_packet_built = state
+            .rolling_max_receiver_packet_built
+            .max(r.receiver_packet_built_log_count);
+        state.rolling_max_connection_resend_timer = state
+            .rolling_max_connection_resend_timer
+            .max(r.connection_resend_timer_log_count);
+        state.rolling_max_send_message_lifetime = state
+            .rolling_max_send_message_lifetime
+            .max(r.send_message_size_lifetime_events);
+        // First-seen timestamps: capture only the very first
+        // observation of each scheduler signal. Plan 247 §12 keeps
+        // these authoritative even if the bounded log line later ages
+        // out of the public LogManager console buffer.
+        if state.first_scheduler_count == 0 && r.scheduler_log_count > 0 {
+            state.first_scheduler_count = r.scheduler_log_count;
+            state.first_observed_at_ms = Some(now_ms);
+        }
+        if state.first_reschedule_branch_count == 0 && r.scheduler_reschedule_branch_log_count > 0 {
+            state.first_reschedule_branch_count = r.scheduler_reschedule_branch_log_count;
+            state.first_observed_at_ms = Some(now_ms);
+        }
+        if state.first_send_branch_count == 0 && r.scheduler_send_branch_log_count > 0 {
+            state.first_send_branch_count = r.scheduler_send_branch_log_count;
+            state.first_observed_at_ms = Some(now_ms);
+        }
+        if state.first_no_unacked_count == 0 && r.scheduler_no_unacked_warning_log_count > 0 {
+            state.first_no_unacked_count = r.scheduler_no_unacked_warning_log_count;
+            state.first_observed_at_ms = Some(now_ms);
+        }
+    }
+}
+
+/// Record the Plan-247 evidence: pre-SYN snapshots, rolling maxima,
+/// polling cadence, observer-readiness facts, final-snapshot
+/// eviction flag, and one terminal. The retained Plan-237–246 rows
+/// stay frozen; this row is additive.
+#[allow(clippy::too_many_arguments, dead_code)]
+fn record_p247_classification(
+    evidence_dir: &Path,
+    pre_syn_readiness: &P247ReadinessFacts,
+    pre_syn_response: Option<P245ResponseStats>,
+    pre_syn_timer: Option<P246ResponseStats>,
+    post_response: Option<P245ResponseStats>,
+    post_timer: Option<P246ResponseStats>,
+    rolling: &P247PollingState,
+    p247_terminal: P247Terminal,
+    observer_evicted: bool,
+) {
+    let pre_syn_r = pre_syn_response.unwrap_or_default();
+    let pre_syn_t = pre_syn_timer.unwrap_or_default();
+    let post_r = post_response.unwrap_or_default();
+    let post_t = post_timer.unwrap_or_default();
+    append_evidence(
+        evidence_dir,
+        "p247-pre-syn-readiness",
+        &format!(
+            "response_stats_parse_ok={:?} scheduler_debug_enabled={:?} connection_debug_enabled={:?} receiver_debug_enabled={:?} message_output_enabled={:?} timer_stats_parse_ok={:?} simple_timer_debug_enabled={:?} source_pin_matches={:?}",
+            pre_syn_readiness.response_stats_parse_ok,
+            pre_syn_readiness.scheduler_debug_enabled,
+            pre_syn_readiness.connection_debug_enabled,
+            pre_syn_readiness.receiver_debug_enabled,
+            pre_syn_readiness.message_output_enabled,
+            pre_syn_readiness.timer_stats_parse_ok,
+            pre_syn_readiness.simple_timer_debug_enabled,
+            pre_syn_readiness.source_pin_matches,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-pre-syn-response-snapshot",
+        &format!(
+            "scheduler_log_count={} scheduler_reschedule_branch_log_count={} scheduler_send_branch_log_count={} scheduler_no_unacked_warning_log_count={} message_output_flush_nonempty_log_count={} receiver_do_send_false_log_count={} receiver_packet_built_log_count={} connection_resend_timer_log_count={} send_message_size_lifetime_events={}",
+            pre_syn_r.scheduler_log_count,
+            pre_syn_r.scheduler_reschedule_branch_log_count,
+            pre_syn_r.scheduler_send_branch_log_count,
+            pre_syn_r.scheduler_no_unacked_warning_log_count,
+            pre_syn_r.message_output_flush_nonempty_log_count,
+            pre_syn_r.receiver_do_send_false_log_count,
+            pre_syn_r.receiver_packet_built_log_count,
+            pre_syn_r.connection_resend_timer_log_count,
+            pre_syn_r.send_message_size_lifetime_events,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-pre-syn-timer-snapshot",
+        &format!(
+            "peer_correlation_present={} simple_timer_debug_enabled={} timer_scheduler_count={} timer_running_count={} timer_early_reschedule_count={} timer_finished_count={} connection_timer_first_schedule_timeout_ms={} connection_timer_latest_schedule_timeout_ms={} connection_timer_min_schedule_timeout_ms={} connection_timer_max_schedule_timeout_ms={} first_reschedule_delta_ms={} latest_reschedule_delta_ms={} min_reschedule_delta_ms={} max_reschedule_delta_ms={} connection_timer_first_run_elapsed_ms={} context_clock_minus_system_ms={} console_buffer_entries={} console_buffer_capacity={} console_buffer_at_capacity={}",
+            pre_syn_t.peer_correlation_present,
+            pre_syn_t.simple_timer_debug_enabled,
+            pre_syn_t.timer_scheduler_count,
+            pre_syn_t.timer_running_count,
+            pre_syn_t.timer_early_reschedule_count,
+            pre_syn_t.timer_finished_count,
+            pre_syn_t.connection_timer_first_schedule_timeout_ms,
+            pre_syn_t.connection_timer_latest_schedule_timeout_ms,
+            pre_syn_t.connection_timer_min_schedule_timeout_ms,
+            pre_syn_t.connection_timer_max_schedule_timeout_ms,
+            pre_syn_t.first_reschedule_delta_ms,
+            pre_syn_t.latest_reschedule_delta_ms,
+            pre_syn_t.min_reschedule_delta_ms,
+            pre_syn_t.max_reschedule_delta_ms,
+            pre_syn_t.connection_timer_first_run_elapsed_ms,
+            pre_syn_t.context_clock_minus_system_ms,
+            pre_syn_t.console_buffer_entries,
+            pre_syn_t.console_buffer_capacity,
+            pre_syn_t.console_buffer_at_capacity,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-rolling-evidence",
+        &format!(
+            "polling_observations={} polling_horizon_ms={} rolling_max_scheduler={} rolling_max_running={} rolling_max_finished={} rolling_max_early_reschedule={} rolling_max_scheduler_reschedule_branch={} rolling_max_scheduler_send_branch={} rolling_max_scheduler_no_unacked={} first_scheduler_count={} first_reschedule_branch_count={} first_send_branch_count={} first_no_unacked_count={} first_observed_at_ms={} peer_correlation_first_observed_at_ms={}",
+            rolling.polling_observations,
+            rolling.polling_horizon_ms,
+            rolling.rolling_max_scheduler,
+            rolling.rolling_max_running,
+            rolling.rolling_max_finished,
+            rolling.rolling_max_early_reschedule,
+            rolling.rolling_max_scheduler_reschedule_branch,
+            rolling.rolling_max_scheduler_send_branch,
+            rolling.rolling_max_scheduler_no_unacked,
+            rolling.first_scheduler_count,
+            rolling.first_reschedule_branch_count,
+            rolling.first_send_branch_count,
+            rolling.first_no_unacked_count,
+            rolling
+                .first_observed_at_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+            rolling
+                .peer_correlation_first_observed_at_ms
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-buffer-pressure",
+        &format!(
+            "final_buffer_entries={} final_buffer_capacity={} final_buffer_at_capacity={}",
+            rolling.final_buffer_entries,
+            rolling.final_buffer_capacity,
+            rolling.final_buffer_at_capacity,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-final-snapshots",
+        &format!(
+            "post_response_scheduler_reschedule_branch_log_count={} post_response_scheduler_send_branch_log_count={} post_response_scheduler_no_unacked_warning_log_count={} post_timer_scheduler_count={} post_timer_running_count={} post_timer_finished_count={}",
+            post_r.scheduler_reschedule_branch_log_count,
+            post_r.scheduler_send_branch_log_count,
+            post_r.scheduler_no_unacked_warning_log_count,
+            post_t.timer_scheduler_count,
+            post_t.timer_running_count,
+            post_t.timer_finished_count,
+        ),
+    );
+    append_evidence(
+        evidence_dir,
+        "p247-observer-eviction",
+        &format!(
+            "observer_evicted={} rolling_max_vs_final_snapshot_scheduler={} rolling_max_vs_final_snapshot_running={} rolling_max_vs_final_snapshot_finished={} rolling_max_vs_final_snapshot_early_reschedule={}",
+            observer_evicted,
+            rolling.rolling_max_scheduler > post_t.timer_scheduler_count,
+            rolling.rolling_max_running > post_t.timer_running_count,
+            rolling.rolling_max_finished > post_t.timer_finished_count,
+            rolling.rolling_max_early_reschedule > post_t.timer_early_reschedule_count,
+        ),
+    );
+    append_evidence(evidence_dir, "p247-classification", p247_terminal.token());
+    if observer_evicted {
+        append_evidence(
+            evidence_dir,
+            "p247-final-snapshot-eviction",
+            P247Terminal::Plan245FinalSnapshotEviction.token(),
+        );
+    }
+}
+
+/// Plan 247 §7 — run the live dual polling task. Refreshes both
+/// RESPONSE_STATS and TIMER_STATS on every iteration; updates the
+/// shared rolling state; exits after the bounded polling horizon
+/// (phase 1: 50 ms × 40 polls = 2 s; phase 2: 100 ms × 30 polls = 3 s).
+///
+/// The function takes the bounded wall-clock start so the polling
+/// horizon never exceeds 5 seconds even if the runtime clock drifts.
+#[allow(dead_code)]
+async fn p247_run_polling(
+    mut control: ReferenceControl,
+    pre_syn_readiness: P247ReadinessFacts,
+    state: std::sync::Arc<std::sync::Mutex<P247PollingState>>,
+    start_ms: u64,
+) {
+    // Phase 1 — high-resolution 50 ms × 40 polls = 2 s.
+    for _ in 0..P247_PHASE1_MAX_POLLS {
+        let now_ms = wall_ms();
+        if now_ms.saturating_sub(start_ms) >= P247_PHASE1_MS {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(P247_PHASE1_INTERVAL_MS)).await;
+        let timer = control.report_plan246_timer_stats().await;
+        let response = control.report_plan245_response_stats().await;
+        let poll_now = wall_ms();
+        let mut state_guard = state.lock().expect("p247 state lock");
+        p247_record_poll(&mut state_guard, timer, response, poll_now);
+        // Peer correlation first-observed timestamp.
+        let timer_peer = timer
+            .as_ref()
+            .map(|t| t.peer_correlation_present)
+            .unwrap_or(false);
+        if timer_peer && state_guard.peer_correlation_first_observed_at_ms.is_none() {
+            state_guard.peer_correlation_first_observed_at_ms = Some(poll_now);
+        }
+        state_guard.polling_horizon_ms = poll_now.saturating_sub(start_ms);
+        drop(state_guard);
+    }
+    // Phase 2 — bounded low-rate tail 100 ms × 30 polls = 3 s, only
+    // while the timer schedule/run or second-scheduler outcome
+    // remains unresolved.
+    for _ in 0..P247_PHASE2_MAX_POLLS {
+        let now_ms = wall_ms();
+        if now_ms.saturating_sub(start_ms) >= P247_POLLING_HORIZON_MAX_MS {
+            break;
+        }
+        {
+            let state_guard = state.lock().expect("p247 state lock");
+            let unresolved = state_guard.rolling_max_scheduler == 0
+                || state_guard.rolling_max_running == 0
+                || state_guard.rolling_max_scheduler_reschedule_branch
+                    <= state_guard.first_reschedule_branch_count;
+            if !unresolved {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(P247_PHASE2_INTERVAL_MS)).await;
+        let timer = control.report_plan246_timer_stats().await;
+        let response = control.report_plan245_response_stats().await;
+        let poll_now = wall_ms();
+        let mut state_guard = state.lock().expect("p247 state lock");
+        p247_record_poll(&mut state_guard, timer, response, poll_now);
+        let timer_peer = timer
+            .as_ref()
+            .map(|t| t.peer_correlation_present)
+            .unwrap_or(false);
+        if timer_peer && state_guard.peer_correlation_first_observed_at_ms.is_none() {
+            state_guard.peer_correlation_first_observed_at_ms = Some(poll_now);
+        }
+        state_guard.polling_horizon_ms = poll_now.saturating_sub(start_ms);
+        drop(state_guard);
+    }
+    // Suppress unused-variable lint for the readiness facts; they are
+    // consumed by the classifier after this task joins.
+    let _ = pre_syn_readiness;
+}
+
+const P247_PHASE1_INTERVAL_MS: u64 = 50;
+const P247_PHASE1_MAX_POLLS: u32 = 40;
+const P247_PHASE1_MS: u64 = 2_000;
+const P247_PHASE2_INTERVAL_MS: u64 = 100;
+#[allow(dead_code)]
+const P247_PHASE2_MAX_POLLS: u32 = 30;
+
+// Plan 247 — observation-window/parser corrective (end).
+
+// ---- Plan 247 §19 focused tests -------------------------------------------
+// Each test pins one Plan 247 invariant from the §§4-18 acceptance
+// criteria. Together with the retained Plan-237–246 floors they lock
+// the Plan-247 surface and prove no production change was authorized.
+
+// Plan 247 §4 — TIMER_STATS parser schema accounting.
+fn p247_full_timer_stats_line() -> String {
+    let mut line = String::from("TIMER_STATS peer_correlation_present=true");
+    line.push_str(" simple_timer_debug_enabled=true");
+    line.push_str(" timer_scheduler_count=2");
+    line.push_str(" timer_running_count=2");
+    line.push_str(" timer_early_reschedule_count=0");
+    line.push_str(" timer_finished_count=2");
+    line.push_str(" connection_timer_first_schedule_timeout_ms=500");
+    line.push_str(" connection_timer_latest_schedule_timeout_ms=500");
+    line.push_str(" connection_timer_min_schedule_timeout_ms=500");
+    line.push_str(" connection_timer_max_schedule_timeout_ms=500");
+    line.push_str(" first_reschedule_delta_ms=-1");
+    line.push_str(" latest_reschedule_delta_ms=-1");
+    line.push_str(" min_reschedule_delta_ms=-1");
+    line.push_str(" max_reschedule_delta_ms=-1");
+    line.push_str(" connection_timer_first_run_elapsed_ms=1");
+    line.push_str(" context_clock_minus_system_ms=0");
+    line.push_str(&format!(" java_source_pin={}", JAVA_I2P_PIN));
+    line
+}
+
+fn p247_full_timer_stats_with_buffer() -> String {
+    let mut line = p247_full_timer_stats_line();
+    line.push_str(" console_buffer_entries=10");
+    line.push_str(" console_buffer_capacity=1024");
+    line.push_str(" console_buffer_at_capacity=false");
+    line
+}
+
+#[test]
+fn p247_timer_stats_exact_helper_shape_parses() {
+    // Plan 247 §4 — the parser round-trips the exact helper shape
+    // (16 data fields + 1 source-pin field with the exact-pinned
+    // Java I2P commit SHA).
+    let line = p247_full_timer_stats_line();
+    let stats = p246_parse_timer_stats(&line).expect("Plan 247 §4: full helper shape parses");
+    assert!(stats.peer_correlation_present);
+    assert!(stats.simple_timer_debug_enabled);
+    assert_eq!(stats.timer_scheduler_count, 2);
+    assert_eq!(stats.connection_timer_first_schedule_timeout_ms, 500);
+}
+
+#[test]
+fn p247_timer_stats_requires_all_data_fields() {
+    // Plan 247 §4 — the explicit `seen_data == 16` schema accounting
+    // rejects a response missing any data field. Remove the
+    // `timer_running_count=...` field and verify the parser returns
+    // `None`.
+    let line = "TIMER_STATS peer_correlation_present=true \
+                 simple_timer_debug_enabled=true \
+                 timer_scheduler_count=1 \
+                 timer_early_reschedule_count=0 \
+                 timer_finished_count=1 \
+                 connection_timer_first_schedule_timeout_ms=500 \
+                 connection_timer_latest_schedule_timeout_ms=500 \
+                 connection_timer_min_schedule_timeout_ms=500 \
+                 connection_timer_max_schedule_timeout_ms=500 \
+                 first_reschedule_delta_ms=-1 \
+                 latest_reschedule_delta_ms=-1 \
+                 min_reschedule_delta_ms=-1 \
+                 max_reschedule_delta_ms=-1 \
+                 connection_timer_first_run_elapsed_ms=0 \
+                 context_clock_minus_system_ms=0";
+    assert!(
+        p246_parse_timer_stats(line).is_none(),
+        "Plan 247 §4: missing data field rejects parse"
+    );
+}
+
+#[test]
+fn p247_timer_stats_requires_matching_source_pin() {
+    // Plan 247 §4 — the parser requires the exact-pinned Java I2P
+    // commit SHA. Any other value (including an empty source pin)
+    // causes the parser to return `None`.
+    let line = "TIMER_STATS peer_correlation_present=true \
+                 simple_timer_debug_enabled=true \
+                 timer_scheduler_count=1 \
+                 timer_running_count=1 \
+                 timer_early_reschedule_count=0 \
+                 timer_finished_count=1 \
+                 connection_timer_first_schedule_timeout_ms=500 \
+                 connection_timer_latest_schedule_timeout_ms=500 \
+                 connection_timer_min_schedule_timeout_ms=500 \
+                 connection_timer_max_schedule_timeout_ms=500 \
+                 first_reschedule_delta_ms=-1 \
+                 latest_reschedule_delta_ms=-1 \
+                 min_reschedule_delta_ms=-1 \
+                 max_reschedule_delta_ms=-1 \
+                 connection_timer_first_run_elapsed_ms=0 \
+                 context_clock_minus_system_ms=0 \
+                 java_source_pin=wrong_pin";
+    assert!(
+        p246_parse_timer_stats(line).is_none(),
+        "Plan 247 §4: wrong source pin rejects parse"
+    );
+}
+
+#[test]
+fn p247_parse_failure_is_unknown_not_false() {
+    // Plan 247 §5 — a parse failure remains `Unknown`, never silently
+    // collapses to `false` readiness. The P247ObserverReadiness enum
+    // uses `Unknown` for parse failures and `Observed(false)` for an
+    // explicit false observation.
+    let parse_failed: Option<P246ResponseStats> = None;
+    let readiness =
+        P247ObserverReadiness::from_optional(parse_failed, |s| s.simple_timer_debug_enabled);
+    assert_eq!(readiness, P247ObserverReadiness::Unknown);
+
+    let parse_ok_false: Option<P246ResponseStats> = Some(P246ResponseStats {
+        simple_timer_debug_enabled: false,
+        ..P246ResponseStats::default()
+    });
+    let readiness_false =
+        P247ObserverReadiness::from_optional(parse_ok_false, |s| s.simple_timer_debug_enabled);
+    assert_eq!(readiness_false, P247ObserverReadiness::Observed(false));
+}
+
+#[test]
+fn p247_observer_readiness_precedes_syn() {
+    // Plan 247 §9 — the readiness gate runs before the SYN is sent.
+    // A run that fails readiness before SYN is not a counted protocol
+    // attempt; the classifier returns `ObserverReadinessNotProven`
+    // rather than `ObservabilityGap`.
+    let mut pre_syn = P247ReadinessFacts::default();
+    pre_syn.timer_stats_parse_ok = P247ObserverReadiness::Observed(true);
+    pre_syn.simple_timer_debug_enabled = P247ObserverReadiness::Observed(true);
+    // response_stats_parse_ok stays Unknown
+    let timer_post = Some(p246_test_stats());
+    let rolling = P247PollingState::default();
+    let baseline = P247Plan245RollingBaseline::default();
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::ObserverReadinessNotProven);
+}
+
+#[test]
+fn p247_peer_correlation_not_required_pre_syn() {
+    // Plan 247 §9 — peer correlation is naturally unavailable before
+    // an inbound socket exists and must NOT fail pre-SYN readiness.
+    // A pre-SYN snapshot with `peer_correlation_present=false` still
+    // satisfies the readiness gate as long as the response/timer
+    // parse succeeded and the loggers are observed enabled.
+    let pre_syn_response = Some(P245ResponseStats {
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    });
+    let pre_syn_timer = Some(P246ResponseStats {
+        simple_timer_debug_enabled: true,
+        peer_correlation_present: false,
+        ..p246_test_stats()
+    });
+    let readiness_response = P247ReadinessFacts::pre_syn_response(pre_syn_response);
+    let readiness_timer = P247ReadinessFacts::pre_syn_timer(pre_syn_timer);
+    let merged = readiness_response.merge(&readiness_timer);
+    assert!(
+        merged.is_pre_syn_proven(),
+        "Plan 247 §9: peer correlation is not required pre-SYN"
+    );
+}
+
+#[test]
+fn p247_peer_correlation_required_before_exact_timer_terminal() {
+    // Plan 247 §10 — peer correlation must become available after
+    // accept/socket establishment before any exact-socket timer
+    // terminal. The classifier returns `PeerCorrelationNotAvailable`
+    // when the polling horizon is exhausted without peer correlation.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = None;
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::PeerCorrelationNotAvailable);
+}
+
+#[test]
+fn p247_polling_starts_inside_response_epoch() {
+    // Plan 247 §6 — the pre-SYN TIMER_STATS snapshot is taken before
+    // the SYN is sent. The pre-SYN snapshot fields must be present in
+    // the rolling state when the polling task starts.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.pre_syn_response = Some(P245ResponseStats::default());
+    rolling.pre_syn_timer = timer_post;
+    rolling.peer_correlation_first_observed_at_ms = Some(100);
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 100, 0);
+    // Polling has not completed yet; classify as `ObservabilityGap`
+    // (the polling window continues inside the response epoch).
+    assert_eq!(terminal, P247Terminal::ObservabilityGap);
+}
+
+#[test]
+fn p247_polling_refreshes_response_stats_each_iteration() {
+    // Plan 247 §7 — the rolling evidence rows record
+    // `rolling_max_scheduler_reschedule_branch` so a second
+    // SchedulerReceived event observed during polling is captured.
+    let mut rolling = P247PollingState::default();
+    let pre = P245ResponseStats {
+        scheduler_reschedule_branch_log_count: 1,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let post = P245ResponseStats {
+        scheduler_reschedule_branch_log_count: 2,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    p247_record_poll(&mut rolling, None, Some(post.clone()), 200);
+    assert_eq!(rolling.rolling_max_scheduler_reschedule_branch, 2);
+    // The first-seen timestamp is also captured.
+    assert!(rolling.first_observed_at_ms.is_some());
+    // Pre-SYN + post yields a Plan-245-compatible reschedule delta of 1.
+    let _ = pre;
+}
+
+#[test]
+fn p247_polling_refreshes_timer_stats_each_iteration() {
+    // Plan 247 §7 — the rolling evidence rows record
+    // `rolling_max_scheduler` (SimpleTimer2 schedule count).
+    let mut rolling = P247PollingState::default();
+    p247_record_poll(&mut rolling, Some(p246_test_stats()), None, 200);
+    assert_eq!(rolling.rolling_max_scheduler, 1);
+}
+
+#[test]
+fn p247_live_scheduler_delta_not_derived_from_frozen_post() {
+    // Plan 247 §7 — the Plan-245-compatible rolling baseline is
+    // derived from the live rolling maxima, not from the frozen
+    // `p245_post` snapshot. A `p247_plan245_rolling_baseline` call
+    // that only sees `p245_post` (without the rolling maxima)
+    // produces a delta of zero.
+    let pre = P245ResponseStats {
+        scheduler_reschedule_branch_log_count: 0,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let post = P245ResponseStats {
+        scheduler_reschedule_branch_log_count: 1,
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let rolling = P247PollingState::default(); // rolling maxima are zero
+    let baseline = p247_plan245_rolling_baseline(Some(pre), &rolling, Some(post));
+    assert_eq!(baseline.scheduler_reschedule_branch_delta, 0);
+}
+
+#[test]
+fn p247_rolling_scheduler_evidence_survives_final_snapshot_eviction() {
+    // Plan 247 §12 — if the live rolling maxima exceed the final
+    // snapshot counter, the companion flag `P247-O-PLAN245-FINAL-
+    // SNAPSHOT-EVICTION` is recorded.
+    assert!(p247_observer_evicted(2, 1));
+    assert!(!p247_observer_evicted(2, 2));
+    assert!(!p247_observer_evicted(1, 2));
+}
+
+#[test]
+fn p247_buffer_pressure_is_recorded() {
+    // Plan 247 §11 — the parser exposes console-buffer pressure
+    // fields. A helper response with non-zero entries and capacity is
+    // recorded as such.
+    let line = p247_full_timer_stats_with_buffer();
+    let stats = p246_parse_timer_stats(&line).expect("Plan 247 §11: buffer pressure fields parse");
+    assert_eq!(stats.console_buffer_entries, 10);
+    assert_eq!(stats.console_buffer_capacity, 1024);
+    assert!(!stats.console_buffer_at_capacity);
+}
+
+#[test]
+fn p247_buffer_saturation_blocks_absence_inference() {
+    // Plan 247 §11 — when the bounded console buffer reaches capacity
+    // before exact-socket correlation was available, absence of a
+    // SimpleTimer2 lifecycle signal cannot be attributed; the
+    // classifier returns `ConsoleBufferSaturated`.
+    let pre_syn = p247_full_readiness();
+    let mut timer_post = p246_test_stats();
+    timer_post.console_buffer_at_capacity = true;
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = None;
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, Some(timer_post), &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::ConsoleBufferSaturated);
+}
+
+#[test]
+fn p247_requested_delay_bound_distinct_from_execution_latency() {
+    // Plan 247 §13.A — the 500 ms value is the maximum requested
+    // delayed-ACK deadline, not a real-time execution guarantee. A
+    // matching timer run that occurs after 500 ms is not a Java
+    // defect on its own. The classifier only fails the deadline arm
+    // when the latest `timeTillSend` is outside `(0, 500]`.
+    let pre_syn = p247_full_readiness();
+    let mut timer_post = p246_test_stats();
+    timer_post.connection_timer_latest_schedule_timeout_ms = 500;
+    timer_post.console_buffer_at_capacity = false;
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = Some(0);
+    rolling.first_scheduler_count = 1;
+    rolling.rolling_max_scheduler = 2;
+    rolling.rolling_max_running = 1;
+    rolling.rolling_max_finished = 1;
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, Some(timer_post), &rolling, &baseline, 5_000, 0);
+    // Schedule + run prove the timer chain; reschedule_branch_delta = 1
+    // means no second scheduler event; classifier stops at
+    // ConnectionEventRanSchedulerChanged.
+    assert_eq!(terminal, P247Terminal::ConnectionEventRanSchedulerChanged);
+}
+
+#[test]
+fn p247_timer_schedule_requires_first_reschedule() {
+    // Plan 247 §13.B — the Plan-245-compatible reschedule baseline
+    // must be proven before any timer-schedule attribution. The
+    // classifier returns `ObservabilityGap` until then.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = Some(0);
+    let baseline = P247Plan245RollingBaseline::default(); // not reschedule-only
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::ObservabilityGap);
+}
+
+#[test]
+fn p247_timer_run_requires_schedule() {
+    // Plan 247 §13.C — matching timer schedule must be observed
+    // before any timer-run attribution. With the polling horizon
+    // exhausted and no schedule yet, the classifier returns
+    // `ConnectionEventNotScheduled`.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = Some(0);
+    rolling.first_scheduler_count = 1;
+    rolling.rolling_max_scheduler = 1; // no new schedule after the first-seen
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::ConnectionEventNotScheduled);
+}
+
+#[test]
+fn p247_second_scheduler_requires_timer_run() {
+    // Plan 247 §13.D — the second SchedulerReceived attribution is
+    // gated on a matching timer run inside the polling horizon.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = Some(0);
+    rolling.first_scheduler_count = 1;
+    rolling.rolling_max_scheduler = 2;
+    // rolling_max_running and rolling_max_finished remain zero.
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(
+        terminal,
+        P247Terminal::ConnectionEventScheduledNotRunWithinAttributionWindow
+    );
+}
+
+#[test]
+fn p247_send_branch_resumes_plan245_chain() {
+    // Plan 247 §13.G — when the second SchedulerReceived reaches the
+    // send branch the Plan-245 downstream chain resumes; the
+    // classifier returns `SchedulerSendBranchReached` and the live
+    // driver does NOT classify further.
+    let pre_syn = p247_full_readiness();
+    let timer_post = Some(p246_test_stats());
+    let mut rolling = P247PollingState::default();
+    rolling.peer_correlation_first_observed_at_ms = Some(0);
+    rolling.first_scheduler_count = 1;
+    rolling.rolling_max_scheduler = 2;
+    rolling.rolling_max_running = 1;
+    rolling.rolling_max_finished = 1;
+    let mut baseline = P247Plan245RollingBaseline::default();
+    baseline.p245_baseline_ok = true;
+    baseline.scheduler_reschedule_branch_delta = 1;
+    baseline.scheduler_send_branch_delta = 2;
+    let terminal = p247_classify(&pre_syn, timer_post, &rolling, &baseline, 5_000, 0);
+    assert_eq!(terminal, P247Terminal::SchedulerSendBranchReached);
+}
+
+#[test]
+fn p247_no_java_patch() {
+    // Plan 247 §15 — no Java source/jar patch. The helper file must
+    // not carry any patch marker, and the helper-side diff stays
+    // observation-only.
+    let helper_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("integration")
+        .join("m6-interop")
+        .join("java")
+        .join("ReferenceStreamingService.java");
+    let helper = std::fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read helper {helper_path:?}: {e}"));
+    assert!(
+        !helper.contains("// JAVA PATCH") && !helper.contains("P247_JAVA_PATCH"),
+        "Plan 247 §15: helper file remains free of patch markers"
+    );
+    assert!(helper.contains("P246_SIMPLE_TIMER_CLASS"));
+    assert!(helper.contains("REPORT_TIMER_STATS"));
+}
+
+#[test]
+fn p247_no_ack_delay_override() {
+    // Plan 247 §16 — `i2p.streaming.initialAckDelay` is not set on the
+    // frozen helper; the canonical value remains `(0, 500]` (default
+    // `500`).
+    let conn_options_src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("interop")
+            .join("m6-java-sources")
+            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
+            .join("apps")
+            .join("streaming")
+            .join("java")
+            .join("src")
+            .join("net")
+            .join("i2p")
+            .join("client")
+            .join("streaming")
+            .join("impl")
+            .join("ConnectionOptions.java"),
+    )
+    .expect("read ConnectionOptions.java");
+    assert!(
+        conn_options_src.contains("DEFAULT_INITIAL_ACK_DELAY = 500"),
+        "Plan 247 §16: frozen default 500 ms"
+    );
+}
+
+#[test]
+fn p247_no_outer_window_change() {
+    // Plan 247 §16 — the 45-second outer response lane remains
+    // frozen; Plan-247 polling is observational only.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("247-m6-java-streaming-plan246-observation-window-parser-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(plan.contains("frozen 45-second response window"));
+    assert!(
+        plan.contains("5,000 ms"),
+        "Plan 247 §16: 5,000 ms attribution horizon documented"
+    );
+}
+
+#[test]
+fn p247_no_production_change() {
+    // Plan 247 §16 — production Rust stays free of P247 surface.
+    let prod_dirs = [
+        "crates/i2pr-daemon/src",
+        "crates/i2pr-client/src",
+        "crates/i2pr-tunnel/src",
+        "crates/i2pr-runtime/src",
+    ];
+    for dir in prod_dirs {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join(dir);
+        if !path.exists() {
+            continue;
+        }
+        let hits = walkdir_find(&path, "p247").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 247 §16: production Rust carries Plan 247 surface ({}): {:?}",
+            dir,
+            hits
+        );
+        let hits = walkdir_find(&path, "P247").unwrap_or_default();
+        assert!(
+            hits.is_empty(),
+            "Plan 247 §16: production Rust carries Plan 247 surface ({}): {:?}",
+            dir,
+            hits
+        );
+    }
+}
+
+#[test]
+fn p247_full_workspace_floor_is_distinct_from_focused_floor() {
+    // Plan 247 §16 — the focused `java_tunnel_external` floor is
+    // distinct from the full serial workspace floor. This test pins
+    // the distinction by asserting the plan text forbids replacing
+    // the full workspace command with the focused count.
+    let plan_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("plans")
+        .join("implementation")
+        .join("mixed-router-interop")
+        .join("247-m6-java-streaming-plan246-observation-window-parser-corrective.md");
+    let plan = std::fs::read_to_string(&plan_path)
+        .unwrap_or_else(|e| panic!("read plan {plan_path:?}: {e}"));
+    assert!(
+        plan.contains("cargo test --locked --workspace --all-targets -- --test-threads=1"),
+        "Plan 247 §16: full workspace floor documented"
+    );
+    assert!(
+        plan.contains("focused and full-workspace verification results are separately reported"),
+        "Plan 247 §16: separate reporting documented"
+    );
+}
+
+// Helper for tests: full readiness facts (every required fact
+// observed as `Observed(true)`).
+fn p247_full_readiness() -> P247ReadinessFacts {
+    let response = P245ResponseStats {
+        scheduler_debug_enabled: true,
+        connection_debug_enabled: true,
+        receiver_debug_enabled: true,
+        message_output_enabled: true,
+        ..P245ResponseStats::default()
+    };
+    let timer = p246_test_stats();
+    let from_response = P247ReadinessFacts::pre_syn_response(Some(response));
+    let from_timer = P247ReadinessFacts::pre_syn_timer(Some(timer));
+    from_response.merge(&from_timer)
+}

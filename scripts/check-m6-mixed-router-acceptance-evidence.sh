@@ -5793,8 +5793,226 @@ if [[ ! -f "${P246_CLOSURE}" ]]; then
   failures=$((failures + 1))
 fi
 
+# ---- 36. Plan 247 observation-window/parser corrective -------------------
+# Plan 247 supersedes only the interpretation of the Plan-246 helper
+# readiness booleans and timing window; Direction A 3/3 and the
+# no-production-change facts remain valid. Plan 247 corrects the
+# TIMER_STATS schema accounting (16 data fields + 1 source-pin
+# field, validated against `JAVA_I2P_PIN`), moves live RESPONSE_STATS
+# + TIMER_STATS polling into the SYN response epoch, preserves
+# Unknown vs Observed(false)/Observed(true) for observer readiness,
+# and measures console-buffer pressure. No production Rust change,
+# no Java source/jar patch, no ACK-delay override, no outer
+# 45-second window change.
+P247_DRIVER_TEST="${REPO_ROOT}/crates/i2pr-daemon/tests/java_tunnel_external.rs"
+P247_HARNESS="${REPO_ROOT}/tests/integration/m6-interop/run-java.sh"
+P247_HELPER_SRC="${REPO_ROOT}/tests/integration/m6-interop/java/ReferenceStreamingService.java"
+P247_PLAN="${REPO_ROOT}/plans/implementation/mixed-router-interop/247-m6-java-streaming-plan246-observation-window-parser-corrective.md"
+P247_CLOSURE="${REPO_ROOT}/plans/closure/mixed-router-interop/247-status.md"
+if [[ -f "${P247_DRIVER_TEST}" ]]; then
+  # 36a. The Plan 247 §19 named unit rows (>= 24 rows). Every row
+  # locks one Plan 247 invariant from §§4–18.
+  for unit_row in \
+    p247_timer_stats_exact_helper_shape_parses \
+    p247_timer_stats_requires_all_data_fields \
+    p247_timer_stats_requires_matching_source_pin \
+    p247_parse_failure_is_unknown_not_false \
+    p247_observer_readiness_precedes_syn \
+    p247_peer_correlation_not_required_pre_syn \
+    p247_peer_correlation_required_before_exact_timer_terminal \
+    p247_polling_starts_inside_response_epoch \
+    p247_polling_refreshes_response_stats_each_iteration \
+    p247_polling_refreshes_timer_stats_each_iteration \
+    p247_live_scheduler_delta_not_derived_from_frozen_post \
+    p247_rolling_scheduler_evidence_survives_final_snapshot_eviction \
+    p247_buffer_pressure_is_recorded \
+    p247_buffer_saturation_blocks_absence_inference \
+    p247_requested_delay_bound_distinct_from_execution_latency \
+    p247_timer_schedule_requires_first_reschedule \
+    p247_timer_run_requires_schedule \
+    p247_second_scheduler_requires_timer_run \
+    p247_send_branch_resumes_plan245_chain \
+    p247_no_java_patch \
+    p247_no_ack_delay_override \
+    p247_no_outer_window_change \
+    p247_no_production_change \
+    p247_full_workspace_floor_is_distinct_from_focused_floor; do
+    if ! grep -q "fn ${unit_row}" "${P247_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P247_DRIVER_TEST} lacks Plan 247 unit row '${unit_row}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 36b. The Plan 247 canonical terminal vocabulary (§§5/9–13).
+  for terminal in \
+    'P247-O-TIMER-STATS-PARSE-FAILED' \
+    'P247-O-OBSERVER-READINESS-NOT-PROVEN' \
+    'P247-O-PEER-CORRELATION-NOT-AVAILABLE' \
+    'P247-O-CONSOLE-BUFFER-SATURATED' \
+    'P247-O-PLAN245-FINAL-SNAPSHOT-EVICTION' \
+    'P247-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS' \
+    'P247-B-CONNECTION-EVENT-NOT-SCHEDULED' \
+    'P247-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN-WITHIN-ATTRIBUTION-WINDOW' \
+    'P247-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED' \
+    'P247-C-SCHEDULER-RESCHEDULED-AGAIN' \
+    'P247-C-REPEATED-RESCHEDULE-WITHOUT-SEND' \
+    'P247-C-SCHEDULER-NO-UNACKED-ON-SECOND-EVENT' \
+    'P247-D-SCHEDULER-SEND-BRANCH-REACHED'; do
+    if ! grep -q -F "${terminal}" "${P247_DRIVER_TEST}"; then
+      echo "m6 mixed-router evidence check failed: ${P247_DRIVER_TEST} lacks Plan 247 terminal '${terminal}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 36c. The Plan 247 module range must carry the Plan-247 surface
+  # (tri-state readiness, parallel polling state, classifier, evidence
+  # recording, and buffer-pressure fields). The corrected parser
+  # schema (`seen_data == 16 && seen_source_pin`) lives in the
+  # shared `p246_parse_timer_stats` function in the Plan-246 range;
+  # the static checker also asserts the parser uses the corrected
+  # schema across the full driver file below.
+  p247_section="$(awk '/Plan 247 .*\(begin\)\./{flag=1} flag{print} /Plan 247 .*\(end\)\./{flag=0}' "${P247_DRIVER_TEST}")"
+  if [[ -z "${p247_section}" ]]; then
+    echo "m6 mixed-router evidence check failed: ${P247_DRIVER_TEST} lacks delimited Plan 247 ranges" >&2
+    failures=$((failures + 1))
+  else
+    for required in \
+      'p247_classify' \
+      'p247_record_poll' \
+      'p247_run_polling' \
+      'record_p247_classification' \
+      'P247ObserverReadiness' \
+      'P247Terminal' \
+      'P247PollingState' \
+      'P247ReadinessFacts' \
+      'p247_plan245_rolling_baseline' \
+      'console_buffer_entries' \
+      'console_buffer_capacity' \
+      'console_buffer_at_capacity' \
+      'peer_correlation_first_observed_at_ms'; do
+      if ! grep -q -F "${required}" <<<"${p247_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 247 range lacks required surface '${required}'" >&2
+        failures=$((failures + 1))
+      fi
+    done
+    for forbidden in \
+      'seen == 17' \
+      'P247_JAVA_PATCH' \
+      'i2p.streaming.initialAckDelay' \
+      'p247_default_ack_delay'; do
+      if grep -q -F "${forbidden}" <<<"${p247_section}"; then
+        echo "m6 mixed-router evidence check failed: Plan 247 range carries forbidden surface '${forbidden}'" >&2
+        failures=$((failures + 1))
+      fi
+    done
+  fi
+  # 36c-bis. The corrected parser schema (`seen_data == 16 &&
+  # seen_source_pin`) and the source-pin validation must live in the
+  # driver file (Plan 247 §4 corrects the Plan-246 parser).
+  if ! grep -q -F 'seen_data == 16 && seen_source_pin' "${P247_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P247_DRIVER_TEST} lacks corrected parser schema (Plan 247 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  if ! grep -q -F 'JAVA_I2P_PIN' "${P247_DRIVER_TEST}"; then
+    echo "m6 mixed-router evidence check failed: ${P247_DRIVER_TEST} lacks source-pin validation (Plan 247 §4)" >&2
+    failures=$((failures + 1))
+  fi
+  # 36d. Production Rust stays free of P247 surface (mirrors Plan 246
+  # §35d).
+  if grep -rq -F 'P247' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 247 surface" >&2
+    failures=$((failures + 1))
+  fi
+  if grep -rq -F 'p247' "${REPO_ROOT}/crates/i2pr-daemon/src" "${REPO_ROOT}/crates/i2pr-client/src" "${REPO_ROOT}/crates/i2pr-tunnel/src" "${REPO_ROOT}/crates/i2pr-runtime/src" 2>/dev/null; then
+    echo "m6 mixed-router evidence check failed: production Rust carries Plan 247 surface" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P247_HARNESS}" ]]; then
+  # 36e. The harness carries the read-only Plan 247 rows keyed on the
+  # driver TSV (diagnostic observation, always passed when present)
+  # and never invents a terminal literal.
+  for required in \
+    'external-p247-classification' \
+    'p247-pre-syn-readiness' \
+    'p247-pre-syn-response-snapshot' \
+    'p247-pre-syn-timer-snapshot' \
+    'p247-rolling-evidence' \
+    'p247-buffer-pressure' \
+    'p247-final-snapshots' \
+    'p247-observer-eviction'; do
+    if ! grep -q -F "${required}" "${P247_HARNESS}"; then
+      echo "m6 mixed-router evidence check failed: ${P247_HARNESS} lacks Plan 247 harness surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  if grep -q -E "^[[:space:]]*[^#]*record[[:space:]]+[\"']P247-" "${P247_HARNESS}"; then
+    echo "m6 mixed-router evidence check failed: ${P247_HARNESS} invents a Plan 247 terminal" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P247_HELPER_SRC}" ]]; then
+  # 36f. The helper exposes the Plan-247 buffer-pressure fields in
+  # the `REPORT_TIMER_STATS` command alongside the existing 17
+  # fields. The helper must NOT include the peer b32 in durable
+  # evidence; only the boolean `peer_correlation_present` and the
+  # sanitized numeric timer facts reach the response line.
+  for required in \
+    'P246_SIMPLE_TIMER_CLASS' \
+    'REPORT_TIMER_STATS' \
+    'console_buffer_entries' \
+    'console_buffer_capacity' \
+    'console_buffer_at_capacity' \
+    'P237_CONSOLE_BUFFER_SIZE' \
+    'p246BufferEntryCount'; do
+    if ! grep -q -F "${required}" "${P247_HELPER_SRC}"; then
+      echo "m6 mixed-router evidence check failed: ${P247_HELPER_SRC} lacks Plan 247 surface '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  # 36g. The helper must NOT persist the peer b32 anywhere on disk
+  # and must NOT carry a Plan 247 patch marker.
+  if grep -q 'P247_JAVA_PATCH\|// JAVA PATCH' "${P247_HELPER_SRC}"; then
+    echo "m6 mixed-router evidence check failed: ${P247_HELPER_SRC} carries a Java patch marker" >&2
+    failures=$((failures + 1))
+  fi
+fi
+if [[ -f "${P247_PLAN}" ]]; then
+  # 36h. The implementation plan keeps the §§4–22 invariants in its
+  # own text (defense in depth against silent drift).
+  for required in \
+    'seen_data == 16 && seen_source_pin' \
+    'Unknown' \
+    'Observed(false)' \
+    'Observed(true)' \
+    'typed observer' \
+    'No production `src/` file may change' \
+    'frozen 45-second' \
+    '5,000 ms' \
+    'console_buffer_at_capacity' \
+    'P247-O-TIMER-STATS-PARSE-FAILED' \
+    'P247-A-NEXT-SEND-DEADLINE-OUT-OF-BOUNDS' \
+    'P247-B-CONNECTION-EVENT-NOT-SCHEDULED' \
+    'P247-B-CONNECTION-EVENT-SCHEDULED-NOT-RUN-WITHIN-ATTRIBUTION-WINDOW' \
+    'P247-C-CONNECTION-EVENT-RAN-SCHEDULER-CHANGED' \
+    'P247-C-SCHEDULER-RESCHEDULED-AGAIN' \
+    'P247-C-REPEATED-RESCHEDULE-WITHOUT-SEND' \
+    'P247-D-SCHEDULER-SEND-BRANCH-REACHED' \
+    'cargo test --locked --workspace --all-targets -- --test-threads=1'; do
+    if ! grep -q -F "${required}" "${P247_PLAN}"; then
+      echo "m6 mixed-router evidence check failed: ${P247_PLAN} lost Plan 247 invariant '${required}'" >&2
+      failures=$((failures + 1))
+    fi
+  done
+fi
+# The Plan 247 closure record is required for the registry/roadmap
+# unblock audit; its presence is asserted here (the registration stub
+# satisfies this before closure lands, the full record after).
+if [[ ! -f "${P247_CLOSURE}" ]]; then
+  echo "m6 mixed-router evidence check failed: missing Plan 247 closure record ${P247_CLOSURE}" >&2
+  failures=$((failures + 1))
+fi
+
 if [[ "${failures}" -ne 0 ]]; then
   echo "m6 mixed-router evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants, Plan 245 §34 stock-response construction-signal attribution invariants, Plan 246 §35 delayed-ACK timer enqueue/fire and second-scheduler attribution invariants)"
+echo "m6 mixed-router evidence check passed (${#GUARDED[@]} guarded labels, two-family pins verified, Plan 197 §8 pq parser tolerance invariants, Plan 201 Branch C/D three-router topology, Plan 220 §14 corrected-diagnostic invariants, Plan 222 §15 exact-selector/tracked-send invariants, Plan 223 §16 identity/LS2 separation invariants, Plan 224 §17 NO_LEASESET lookup-path attribution invariants, Plan 225 §18 effective logger activation corrective invariants, Plan 226 §19 loopback peer-diversity corrective invariants, Plan 227 §20 explicit one-hop client-tunnel corrective invariants, Plan 228 §21 build-path attribution invariants, Plan 229 §22 non-zero exploratory paired-tunnel bootstrap corrective invariants, Plan 230 §23 reachability-capability/profile-bootstrap corrective invariants, Plan 231 §24 reverse-delivery tunnel-dispatch attribution invariants, Plan 232 §25 route-derived lease-gateway fixture corrective invariants, Plan 237 §26 stock-response observability corrective invariants, Plan 238 §27 Router-A admission observer invariants, Plan 239 §28 Router-A pre-dispatch OCMOSJ attribution invariants, Plan 240 §29 streaming target-LeaseSet lookup-failure attribution invariants, Plan 241 §30 streaming one-hop client-tunnel fixture corrective invariants, Plan 242 §31 stock one-hop selector semantics corrective invariants, Plan 243 §32 hosted stock-client-build qualification invariants, Plan 244 §33 continuous response attribution invariants, Plan 245 §34 stock-response construction-signal attribution invariants, Plan 246 §35 delayed-ACK timer enqueue/fire and second-scheduler attribution invariants, Plan 247 §36 observation-window/parser corrective invariants)"

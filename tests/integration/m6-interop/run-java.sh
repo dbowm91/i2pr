@@ -2980,6 +2980,38 @@ m6_key_row "external-p246-timer-stats-pre" "p246-timer-stats-pre" \
 m6_key_row "external-p246-timer-stats-post" "p246-timer-stats-post" \
   "Plan 246 §5: post-2s-horizon bounded SimpleTimer2 snapshot (lifecycle counters, delays, clock skew)"
 
+# Plan 247 §6/§7/§11 — read the Plan-247 observation-window/parser
+# corrective classification the streaming driver emitted alongside
+# the Plan-246 surface. Consume the LAST occurrence so an early
+# branch cannot shadow the authoritative outcome. The Plan-247
+# harness rows are additive diagnostic observations; they are
+# always passed when present, never synthetic, and the static
+# checker rejects any literal `record "P247-X" passed` line. No
+# production change is authorized.
+P247_CLASSIFICATION=""
+STREAM_DRIVER_TSV_FOR_P247="${DRIVER_EVIDENCE}/streaming/driver-evidence.tsv"
+if [[ -f "${STREAM_DRIVER_TSV_FOR_P247}" ]]; then
+  P247_CLASSIFICATION="$(awk -F'\t' '$1 == "p247-classification" { sub(/^[^ ]+ /, "", $2); last=$2 } END { if (last) print last }' "${STREAM_DRIVER_TSV_FOR_P247}")"
+fi
+if [[ -z "${P247_CLASSIFICATION}" ]]; then
+  P247_CLASSIFICATION="P247-classification-missing"
+fi
+record "external-p247-classification" passed "Plan 247 §13: ${P247_CLASSIFICATION}"
+m6_key_row "external-p247-pre-syn-readiness" "p247-pre-syn-readiness" \
+  "Plan 247 §9: pre-SYN observer readiness (parse + logger flags before SYN)"
+m6_key_row "external-p247-pre-syn-response-snapshot" "p247-pre-syn-response-snapshot" \
+  "Plan 247 §6: pre-SYN bounded RESPONSE_STATS snapshot (scheduler branches, message output, receiver)"
+m6_key_row "external-p247-pre-syn-timer-snapshot" "p247-pre-syn-timer-snapshot" \
+  "Plan 247 §6: pre-SYN bounded TIMER_STATS snapshot (lifecycle counters, deadlines, buffer pressure)"
+m6_key_row "external-p247-rolling-evidence" "p247-rolling-evidence" \
+  "Plan 247 §7: live rolling maxima for response + timer counters across the 5,000 ms attribution horizon"
+m6_key_row "external-p247-buffer-pressure" "p247-buffer-pressure" \
+  "Plan 247 §11: console-buffer entries/capacity/at_capacity samples"
+m6_key_row "external-p247-final-snapshots" "p247-final-snapshots" \
+  "Plan 247 §12: final post-45s response + timer snapshot counts (compare to live rolling maxima)"
+m6_key_row "external-p247-observer-eviction" "p247-observer-eviction" \
+  "Plan 247 §12: P247-O-PLAN245-FINAL-SNAPSHOT-EVICTION companion flag"
+
 # Plan 201 §G — Branch G (store-acked-remote-lookup-fails) diagnostic
 # boundary rows. Each row is `passed` only when the corresponding
 # `p201-lookup-boundary-<label>-<value>` evidence key was emitted
