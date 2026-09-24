@@ -76,8 +76,8 @@ are green. No Java source checkout was injected into ordinary CI.
 
 ## Unblock audit and roadmap disposition
 
-Plan 251 is closed. Plan 250 is ready and is the next executable plan in the requested
-sequence. No registered blocked plan lists Plan 251 as its sole remaining prerequisite.
-Plan 252 is still unregistered; its Plan 250 hard dependency remains open, so it cannot be
-unblocked yet. Ordinary CI is green on the Plan 251 implementation SHA. M11 capability
-remains unclaimed.
+Plan 251 is closed. Plan 250 is now formally closed by
+`plans/closure/transit-tunnels/250-status.md`, with the full serial workspace floor green.
+No registered blocked plan lists Plan 251 as its sole remaining prerequisite. Plan 252 is
+the next M11 scope but remains unregistered until ordinary CI is green on the Plan 250
+implementation SHA. M11 capability remains unclaimed.

@@ -112,6 +112,9 @@ jobs:
       - name: Check M6 mixed-router acceptance evidence integrity
         if: runner.os == 'Linux'
         run: bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+      - name: Check M11 transit boundaries
+        if: runner.os == 'Linux'
+        run: bash scripts/check-m11-transit-boundaries.sh
       - name: Check Java source-lock test gating
         if: runner.os == 'Linux'
         run: bash scripts/check-java-source-lock-gating.sh

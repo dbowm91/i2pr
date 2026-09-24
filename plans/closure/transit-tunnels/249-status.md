@@ -1,15 +1,16 @@
-# Current authority amendment — Plan 250 corrective required
+# Current authority amendment — Plan 250 corrective completed
 
-Status: **retained-m11-transit-foundation-corrective-required-via-plan250**
+Status: **retained-m11-transit-foundation-corrected-via-plan250**
 
 Post-closure source review on `958c06171a6d60dc3d1866ed8b7d93937d001d6f` found
-correctness defects that prevent the Plan 249 public contract from being consumed safely by
-daemon/runtime composition.
+correctness defects that prevented the Plan 249 public contract from being consumed safely by
+daemon/runtime composition. Plan 250 has now corrected those defects; Plan 249 remains a
+retained historical pass because Plan 250 is the separately tracked corrective record.
 
 The original execution evidence below is retained as historical evidence of what ran. Its
 "passed" completion interpretation is superseded by this amendment.
 
-Blocking findings:
+Findings addressed by Plan 250:
 
 1. previous peer derives from local hop identity rather than authenticated sender;
 2. accepted sealed replies encode request `m/r/l` instead of response `b`;
@@ -21,11 +22,12 @@ Blocking findings:
 8. mandatory rows 21/23/29/30/33/36 are proxy/implicit evidence rather than direct tests;
 9. the transaction carries an unused mutable `layer_state_seed` secret argument.
 
-Corrective authority:
+Corrective authority (now closed):
 `plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md`
 
-Plan 250 is registered ready. Daemon composition moves to Plan 252 and must remain
-unregistered until Plan 250 and independent Plan 251 ordinary-CI corrective both close.
+Plan 250 status and evidence are authoritative in `plans/closure/transit-tunnels/250-status.md`.
+Plan 252 daemon composition remains unregistered until Plan 251 and Plan 250 are closed and
+ordinary CI is green on the Plan 250 implementation SHA.
 
 No M11 capability or advertisement is claimed.
 
@@ -288,7 +290,14 @@ record is the only artifact whose status changed.
 
 No corrective plan is required.
 
-## Handoff
+## Original Plan 249 handoff (historical; superseded by Plan 250)
+
+Plan 250 updates this API: `TransitBuildContext` now receives the authenticated
+`previous_peer` and a mutable `TransitAdmissionState`; `process_short_build_request` has no
+`layer_state_seed` argument, returns policy denials as sealed outcomes, and uses
+`TransitFatalError` only for fatal decode/crypto/RNG/registry failures. `TransitRegistry::remove`
+now returns `Result<TransitHopRegistration, TransitRegistryError>`. Consumers must follow
+the Plan 250 closure rather than this original handoff.
 
 `i2pr-tunnel::transit` is the runtime-neutral foundation M11 needs.
 Daemons (Plan 250) consume:

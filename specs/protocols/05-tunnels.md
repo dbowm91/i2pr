@@ -268,20 +268,14 @@ operational mode, and shutdown/degraded state.
 A rejection should be protocol-correct and inexpensive. Never reserve large
 buffers or spawn long-lived tasks before admission succeeds.
 
-### Current M11 foundation authority — Plan 250 corrective
+### Current M11 foundation authority — Plan 250
 
-Plan 249's architecture is retained, but its completion interpretation is narrowed by the
-current status amendment in `plans/closure/transit-tunnels/249-status.md`. Plan 250 is the
-active corrective authority before daemon composition.
-
-The corrective must establish authenticated previous-peer provenance distinct from local
-hop identity, encode reply-side `b` in the actual encrypted accepted reply, return sealed
-code-30 outcomes for valid local rejection, validate creation time against the 600-second
-protocol lifetime in the correct direction, track real global/per-peer pending
-reservations, remove Clone from secret-owning transit types, make unknown registry removal
-panic-free, and replace proxy tests with direct state/wire assertions.
-
-No M11 capability is advertised while Plan 250 is open.
+Plan 249's architecture is retained; its completion interpretation was narrowed by the
+status amendment in `plans/closure/transit-tunnels/249-status.md`. Plan 250 corrected the
+authenticated previous-peer provenance, sealed accepted `b` and policy code-30 outcomes,
+creation-time/expiry direction, actual bounded pending reservations, move-only secret
+owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
+only; no M11 capability is advertised before daemon composition and external qualification.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
@@ -303,20 +297,22 @@ No M11 capability is advertised while Plan 250 is open.
   `TransitAdmissionError` taxonomy is internal only.
 - `TransitRegistry` is the dedicated bounded registry keyed by receive
   tunnel id with explicit global capacity, per-peer active count,
-  duplicate-id rejection, deterministic `remove`, and `expire(now)`.
+  duplicate-id rejection, typed unknown-id `remove`, and `expire(now)`.
   The role enum wraps the existing participant / inbound-gateway /
   outbound-endpoint primitives without duplicating transforms; secret
   material is zeroized on drop. The registry deliberately remains
   separate from `DataPlaneRegistry`.
+- `TransitAdmissionState` tracks bounded in-flight reservations globally and by authenticated
+  previous peer. Tokens release on rejection/fatal error and return to baseline on commit.
 - `process_short_build_request` is the production-intended runtime-neutral
   transaction that opens the request, strictly decodes the
-  `ShortRequestRecord`, validates the request time against a narrow
-  documented skew policy (wire lifetime remains 600 seconds), parses
+  `ShortRequestRecord`, rejects creation beyond bounded future skew or expiry at
+  `creation + 600 <= now`, parses
   the bandwidth options, performs the typed admission check, derives
-  the hop-local `LayerKeys`, constructs the canonical reply, seals the
-  reply envelope, and only commits the registry insertion after the
-  reply was successfully constructed and sealed. Every non-commit path
-  returns `TransitRejectStage` and refuses to leave live state.
+  the hop-local `LayerKeys`, constructs the canonical reply with reply-side `b` only, seals
+  the reply envelope, and commits only accepted registrations after sealing. Well-formed
+  policy denials return a sealed code-30 outcome and leave no active state; malformed, RNG,
+  and crypto failures are typed fatal errors.
 
 Plan 249 is infrastructure-only. M11 capability is not claimed;
 `router.version`, capabilities, and RouterInfo publication remain

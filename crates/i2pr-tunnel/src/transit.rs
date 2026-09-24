@@ -4,16 +4,16 @@
 //! runtime-neutral short-build surface into a bounded transit
 //! admission and registration service. It does **not** introduce
 //! transport, queues, listeners, or any other runtime ownership; the
-//! daemon composition later plan (Plan 250) replaces the reserved
-//! `TunnelBuildReserved` outcome with the bounded composition. The
-//! slice is intentionally narrow:
+//! daemon composition is left to a later M11 plan. The slice is
+//! intentionally narrow:
 //!
 //! - [`TransitBandwidthRequest`] / [`TransitBandwidthReply`] own a
 //!   typed interpretation of the canonical `m` / `r` / `l` / `b`
 //!   `BuildOptions` bandwidth parameters; malformed inputs are
 //!   rejected by [`TransitBandwidthParseError`] without weakening the
 //!   [`crate::short_record::BuildOptions`] codec.
-//! - [`TransitAdmissionPolicy`] is the caller-supplied bounded
+//! - [`TransitAdmissionPolicy`] and [`TransitAdmissionState`] provide
+//!   bounded policy and live pending reservations. [`TransitAdmissionPolicy`] is the caller-supplied bounded
 //!   policy surface: enabled/disabled, accepting vs degraded, global
 //!   active/pending ceilings, per-peer active/pending ceilings,
 //!   available share bandwidth, and an optional per-tunnel cap.
@@ -32,7 +32,8 @@
 //!   reserve admission, derive hop-local keys, build role
 //!   registration, construct accepted/rejected reply, seal reply,
 //!   atomically commit only accepted registration, release
-//!   reservation on every non-commit path.
+//!   reservation on every non-commit path; policy denials are sealed
+//!   code-30 outcomes and malformed/cryptographic failures are fatal.
 //!
 //! The module keeps its secrets out of `Debug`/`Display` and refuses
 //! to expose decoded keys through any consumer surface.
@@ -515,14 +516,6 @@ pub enum TransitAdmissionError {
         /// Available share.
         available: u32,
     },
-    /// The allocation would exceed the optional per-tunnel cap.
-    #[error("bandwidth allocation {requested} kbps exceeds per-tunnel cap {cap}")]
-    PerTunnelCapExceeded {
-        /// Requested allocation.
-        requested: u32,
-        /// Configured cap.
-        cap: u32,
-    },
 }
 
 impl TransitAdmissionError {
@@ -538,7 +531,6 @@ impl TransitAdmissionError {
             Self::ActivePerPeerFull => "per-peer-active-full",
             Self::PendingPerPeerFull => "per-peer-pending-full",
             Self::InsufficientBandwidth { .. } => "insufficient-bandwidth",
-            Self::PerTunnelCapExceeded { .. } => "per-tunnel-cap-exceeded",
         }
     }
 }
@@ -589,7 +581,6 @@ pub enum TransitAdmissionConfigError {
 /// Owns the per-role-state keyed by receive tunnel id. A role
 /// enum wraps the existing participant/IBGW/OBEP primitives without
 /// duplicating the transforms.
-#[derive(Clone)]
 pub enum TransitHopRole {
     /// Intermediate participant role.
     Participant {
@@ -682,7 +673,6 @@ impl Drop for TransitHopRole {
 }
 
 /// One active transit registration.
-#[derive(Clone)]
 pub struct TransitHopRegistration {
     /// Previous-peer router hash; locked on first accepted cell.
     pub previous_peer: TunnelPeer,
@@ -731,7 +721,7 @@ pub enum TransitRegistryError {
 /// creator/local-pool state, while the transit registry owns remote
 /// selected work that the router accepts from peers. Mixing the two
 /// would conflate lifetimes and accounting.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct TransitRegistry {
     capacity: u16,
     entries: BTreeMap<u32, TransitHopRegistration>,
@@ -815,10 +805,13 @@ impl TransitRegistry {
     /// Removes the registration bound to the supplied receive tunnel
     /// id. Returns the removed registration so the caller can drop
     /// the secret material.
-    pub fn remove(&mut self, receive_tunnel: TunnelId) -> TransitHopRegistration {
+    pub fn remove(
+        &mut self,
+        receive_tunnel: TunnelId,
+    ) -> Result<TransitHopRegistration, TransitRegistryError> {
         self.entries
             .remove(&receive_tunnel.get())
-            .expect("entry present")
+            .ok_or(TransitRegistryError::UnknownReceiveTunnelId)
     }
 
     /// Removes the entry and returns it through the supplied
@@ -915,6 +908,8 @@ pub struct TransitBuildContext<'a> {
     pub hop_static_priv: &'a [u8; EPHEMERAL_KEY_LEN],
     /// Hop identity hash the truncated envelope prefix must match.
     pub hop_identity: &'a Hash,
+    /// Authenticated router that sent this request (previous hop).
+    pub previous_peer: TunnelPeer,
     /// Caller-supplied record slot for the reply envelope.
     pub reply_slot: TransitReplySlot,
     /// Caller-supplied current time in seconds since Unix epoch.
@@ -924,13 +919,14 @@ pub struct TransitBuildContext<'a> {
     /// Mutable reference to the transit registry; the
     /// transaction may write a single accepted registration.
     pub registry: &'a mut TransitRegistry,
+    /// Mutable owner of in-flight admission reservations.
+    pub admission: &'a mut TransitAdmissionState,
 }
 
 /// Outcome of one short-build request against the transit
 /// transaction. The struct carries the sealed reply record (when
 /// the request was accepted) and a typed status that explains the
 /// decision at the local level.
-#[derive(Debug)]
 pub struct TransitBuildOutcome {
     /// The response code byte the hop emitted on the wire.
     pub response: ShortResponseCode,
@@ -941,13 +937,23 @@ pub struct TransitBuildOutcome {
     /// reject.
     pub bandwidth_reply: Option<TransitBandwidthReply>,
     /// The local reason for reject; `None` on accept.
-    pub reject_reason: Option<TransitRejectStage>,
+    pub reject_reason: Option<TransitAdmissionError>,
 }
 
-/// Local reason the transaction refused to admit. Internal only;
-/// the wire code is [`ShortResponseCode::BandwidthRejected`].
+impl fmt::Debug for TransitBuildOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TransitBuildOutcome")
+            .field("response", &self.response)
+            .field("sealed_reply", &"<redacted>")
+            .field("bandwidth_reply", &self.bandwidth_reply)
+            .field("reject_reason", &self.reject_reason)
+            .finish()
+    }
+}
+
+/// Fatal errors that prevent returning an honest sealed reply or decoding a request.
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
-pub enum TransitRejectStage {
+pub enum TransitFatalError {
     /// The supplied record envelope failed to authenticate or
     /// decode as a hop-own request.
     #[error("short-build record authentication/decode failed")]
@@ -958,9 +964,6 @@ pub enum TransitRejectStage {
     /// The build options contained malformed bandwidth keys.
     #[error("bandwidth options decode failed: {0}")]
     BandwidthParse(#[from] TransitBandwidthParseError),
-    /// The local admission policy rejected the request.
-    #[error("admission policy rejected: {0}")]
-    Admission(#[from] TransitAdmissionError),
     /// The registry refused to install the accepted registration.
     #[error("transit registry rejected: {0}")]
     Registry(#[from] TransitRegistryError),
@@ -972,9 +975,47 @@ pub enum TransitRejectStage {
     RandomnessUnavailable,
 }
 
-impl TransitRejectStage {
-    /// Returns whether the rejection happened before any live
-    /// registration was committed. All Plan 249 stages fail closed.
+/// Bounded owner for outstanding admission work. Reservations are
+/// tracked globally and by authenticated previous peer until commit/release.
+#[derive(Debug, Default)]
+pub struct TransitAdmissionState {
+    pending: u16,
+    pending_by_peer: BTreeMap<Hash, u16>,
+    tokens: BTreeMap<u64, Hash>,
+    next_token: u64,
+}
+
+impl TransitAdmissionState {
+    /// Number of currently reserved admissions.
+    pub const fn pending(&self) -> u16 {
+        self.pending
+    }
+    /// Number of currently reserved admissions for a peer.
+    pub fn pending_for_peer(&self, peer: TunnelPeer) -> u16 {
+        self.pending_by_peer.get(&peer.hash()).copied().unwrap_or(0)
+    }
+
+    fn release(&mut self, token: TransitAdmissionToken) -> bool {
+        let Some(peer_hash) = self.tokens.remove(&token.id) else {
+            return false;
+        };
+        self.pending = self.pending.saturating_sub(1);
+        if let Some(count) = self.pending_by_peer.get_mut(&peer_hash) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.pending_by_peer.remove(&peer_hash);
+            }
+        }
+        true
+    }
+
+    fn commit(&mut self, token: TransitAdmissionToken) -> bool {
+        self.release(token)
+    }
+}
+
+impl TransitFatalError {
+    /// Returns whether the failure happened before any live registration was committed.
     pub fn is_pre_commit(&self) -> bool {
         true
     }
@@ -986,23 +1027,23 @@ impl TransitRejectStage {
 
 /// Validates an admission request against the supplied policy and
 /// current registry state, returning either a reservation that the
-/// caller can commit or a typed [`TransitAdmissionError`]. The
-/// reservation type does not borrow the registry mutably, so the
-/// caller can perform the bounded derive + seal steps without
-/// holding a mutable borrow.
-pub(crate) struct TransitAdmissionReservation {
-    previous_peer: TunnelPeer,
-    receive_tunnel: TunnelId,
+/// Opaque, move-only identifier for one outstanding admission.
+#[derive(Debug)]
+struct TransitAdmissionToken {
+    id: u64,
 }
+
+struct TransitAdmissionReservation;
 
 impl TransitAdmissionReservation {
     fn check(
+        state: &mut TransitAdmissionState,
         policy: &TransitAdmissionPolicy,
         registry: &TransitRegistry,
         bandwidth: &TransitBandwidthRequest,
         previous_peer: TunnelPeer,
         receive_tunnel_id: TunnelId,
-    ) -> Result<Self, TransitAdmissionError> {
+    ) -> Result<TransitAdmissionToken, TransitAdmissionError> {
         if !policy.enabled() {
             return Err(TransitAdmissionError::Disabled);
         }
@@ -1011,45 +1052,57 @@ impl TransitAdmissionReservation {
             TransitMode::Shutdown => return Err(TransitAdmissionError::Shutdown),
             TransitMode::Accepting => {}
         }
-        if (registry.len() as u16) >= policy.max_active() {
+        if (registry.len() as u16) >= policy.max_active()
+            || registry.len() >= registry.capacity() as usize
+        {
             return Err(TransitAdmissionError::ActiveFull);
         }
-        if policy.max_pending() == 0 {
+        if state.pending >= policy.max_pending() {
             return Err(TransitAdmissionError::PendingFull);
         }
         if registry.contains(receive_tunnel_id) {
-            return Err(TransitAdmissionError::ActivePerPeerFull);
+            return Err(TransitAdmissionError::ActiveFull);
         }
         let active_for_peer = registry.active_per_peer_count(previous_peer);
-        if policy.max_active_per_peer() > 0 && active_for_peer >= policy.max_active_per_peer() {
+        if active_for_peer >= policy.max_active_per_peer() {
             return Err(TransitAdmissionError::ActivePerPeerFull);
         }
-        if active_for_peer >= policy.max_pending_per_peer() {
+        if state
+            .pending_by_peer
+            .get(&previous_peer.hash())
+            .copied()
+            .unwrap_or(0)
+            >= policy.max_pending_per_peer()
+        {
             return Err(TransitAdmissionError::PendingPerPeerFull);
         }
-        if let Some(minimum) = bandwidth.minimum_kbps
-            && policy.available_bandwidth_kbps() < minimum
+        let allocatable = policy
+            .max_per_tunnel_allocation_kbps()
+            .map_or(policy.available_bandwidth_kbps(), |cap| {
+                cap.min(policy.available_bandwidth_kbps())
+            });
+        let required = bandwidth
+            .minimum_kbps
+            .or_else(|| bandwidth.requested_kbps.map(|_| 1));
+        if let Some(minimum) = required
+            && allocatable < minimum
         {
             return Err(TransitAdmissionError::InsufficientBandwidth {
                 minimum,
-                available: policy.available_bandwidth_kbps(),
+                available: allocatable,
             });
         }
-        if let Some(cap) = policy.max_per_tunnel_allocation_kbps() {
-            let requested = bandwidth.minimum_kbps.or(bandwidth.requested_kbps);
-            if let Some(value) = requested
-                && value > cap
-            {
-                return Err(TransitAdmissionError::PerTunnelCapExceeded {
-                    requested: value,
-                    cap,
-                });
-            }
-        }
-        Ok(Self {
-            previous_peer,
-            receive_tunnel: receive_tunnel_id,
-        })
+        let id = state.next_token;
+        state.next_token = id
+            .checked_add(1)
+            .ok_or(TransitAdmissionError::PendingFull)?;
+        state.pending += 1;
+        *state
+            .pending_by_peer
+            .entry(previous_peer.hash())
+            .or_default() += 1;
+        state.tokens.insert(id, previous_peer.hash());
+        Ok(TransitAdmissionToken { id })
     }
 }
 
@@ -1090,14 +1143,11 @@ fn compute_expires_at_seconds(request_time_ms: u64) -> u64 {
 /// Validates the decoded `request_time` against the caller-supplied
 /// `now` plus a bounded skew window. The wire lifetime remains
 /// 600 seconds.
-fn validate_request_time(request_time_ms: u64, now_seconds: u64) -> Result<(), TransitRejectStage> {
-    let window_seconds =
-        (REQUEST_EXPIRATION_SECONDS as u64).saturating_add(TRANSIT_TIME_SKEW_SECONDS);
-    let request_seconds = request_time_ms / 1_000;
-    let lower = now_seconds.saturating_sub(TRANSIT_TIME_SKEW_SECONDS);
-    let upper = now_seconds.saturating_add(window_seconds);
-    if request_seconds < lower || request_seconds > upper {
-        return Err(TransitRejectStage::RequestTimeOutOfRange);
+fn validate_request_time(request_time_ms: u64, now_seconds: u64) -> Result<(), TransitFatalError> {
+    let creation = request_time_ms / 1_000;
+    let expires = creation.saturating_add(REQUEST_EXPIRATION_SECONDS as u64);
+    if creation > now_seconds.saturating_add(TRANSIT_TIME_SKEW_SECONDS) || expires <= now_seconds {
+        return Err(TransitFatalError::RequestTimeOutOfRange);
     }
     Ok(())
 }
@@ -1118,14 +1168,11 @@ pub fn process_short_build_request<R>(
     cryptography: &impl BuildCryptography,
     record_envelope: &[u8],
     context: &mut TransitBuildContext<'_>,
-    layer_state_seed: &mut Zeroizing<LayerKeys>,
     rng: &mut R,
-) -> Result<TransitBuildOutcome, TransitRejectStage>
+) -> Result<TransitBuildOutcome, TransitFatalError>
 where
     R: TryCryptoRng,
 {
-    debug_assert_eq!(layer_state_seed.layer_key().len(), 32);
-
     // 1) Open/decrypt own record.
     let opened = cryptography.open_short_request(
         record_envelope,
@@ -1136,88 +1183,123 @@ where
     let noise_state = opened.state;
     // 2) Strict ShortRequestRecord decode.
     let decoded = ShortRequestRecord::decode(plaintext.as_ref())
-        .map_err(|_| TransitRejectStage::RecordDecode)?;
+        .map_err(|_| TransitFatalError::RecordDecode)?;
     // 3) Validate request time + role/options.
     let now_seconds = context.now.seconds;
     validate_request_time(decoded.request_time().as_millis(), now_seconds)?;
     let bandwidth = parse_transit_bandwidth_request(decoded.options(), decoded.role())?;
-    let previous_peer = TunnelPeer::from_hash(*context.hop_identity);
-    // 4) Reserve admission against immutable view of the registry.
+    let previous_peer = context.previous_peer;
+    // Reserve pending capacity before deriving reply keys or sealing.
     let reservation = TransitAdmissionReservation::check(
+        context.admission,
         context.policy,
         context.registry,
         &bandwidth,
         previous_peer,
         decoded.receive_tunnel(),
-    )?;
-    // 5) Derive hop-local keys.
-    let role = build_role_state(&decoded, &noise_state)?;
-    // 6) Construct accepted/rejected ShortReplyRecord.
-    let reply_options = bandwidth.to_build_options()?;
-    let response = ShortResponseCode::Accepted;
-    let reply_record = ShortReplyRecord::new(reply_options, response);
-    let sealed_plaintext = Zeroizing::new(
-        reply_record
-            .encode_with_rng(rng)
-            .map_err(|_| TransitRejectStage::RandomnessUnavailable)?
-            .to_vec(),
     );
-    let mut plaintext_array = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
-    if sealed_plaintext.len() != SHORT_REPLY_PLAINTEXT_SIZE {
-        plaintext_array.zeroize();
-        plaintext.zeroize();
-        return Err(TransitRejectStage::RecordDecode);
-    }
-    plaintext_array.copy_from_slice(sealed_plaintext.as_ref());
-    // 7) Seal reply.
-    let layer_keys = role.layer_keys().clone();
-    let sealed_reply = match cryptography.seal_short_reply(
-        &plaintext_array,
-        &layer_keys,
-        &noise_state.transcript_hash(),
-        context.reply_slot.0,
-    ) {
-        Ok(sealed) => sealed,
+    let (mut token, rejection) = match reservation {
+        Ok(token) => (Some(token), None),
+        Err(reason) => (None, Some(reason)),
+    };
+    // Explicit cleanup is safe here because this transaction is synchronous and owns
+    // the token. Every fallible derivation/seal path consumes it before returning.
+    let generated = (|| {
+        let role = build_role_state(&decoded, &noise_state)?;
+        let (response, bandwidth_reply) = if rejection.is_none() {
+            let allocatable = context
+                .policy
+                .max_per_tunnel_allocation_kbps()
+                .map_or(context.policy.available_bandwidth_kbps(), |cap| {
+                    cap.min(context.policy.available_bandwidth_kbps())
+                });
+            let allocation = if bandwidth.has_minimum_or_requested() {
+                Some(
+                    bandwidth
+                        .requested_kbps
+                        .map_or(allocatable, |requested| requested.min(allocatable)),
+                )
+            } else {
+                None
+            };
+            (
+                ShortResponseCode::Accepted,
+                TransitBandwidthReply {
+                    available_kbps: allocation,
+                },
+            )
+        } else {
+            (
+                ShortResponseCode::BandwidthRejected,
+                TransitBandwidthReply::default(),
+            )
+        };
+        let reply_options = bandwidth_reply.to_build_options()?;
+        let reply_record = ShortReplyRecord::new(reply_options, response);
+        let sealed_plaintext = Zeroizing::new(
+            reply_record
+                .encode_with_rng(rng)
+                .map_err(|_| TransitFatalError::RandomnessUnavailable)?
+                .to_vec(),
+        );
+        let mut plaintext_array = Zeroizing::new([0_u8; SHORT_REPLY_PLAINTEXT_SIZE]);
+        if sealed_plaintext.len() != SHORT_REPLY_PLAINTEXT_SIZE {
+            return Err(TransitFatalError::RecordDecode);
+        }
+        plaintext_array.copy_from_slice(sealed_plaintext.as_ref());
+        let sealed_reply = cryptography
+            .seal_short_reply(
+                &plaintext_array,
+                role.layer_keys(),
+                &noise_state.transcript_hash(),
+                context.reply_slot.0,
+            )
+            .map_err(TransitFatalError::Seal)?;
+        Ok::<_, TransitFatalError>((role, response, bandwidth_reply, sealed_reply))
+    })();
+    let (role, response, bandwidth_reply, sealed_reply) = match generated {
+        Ok(value) => value,
         Err(error) => {
-            plaintext_array.zeroize();
+            if let Some(token) = token.take() {
+                context.admission.release(token);
+            }
             plaintext.zeroize();
-            return Err(TransitRejectStage::Seal(error));
+            return Err(error);
         }
     };
-    // 8) Atomically commit only accepted registration. The
-    // reservation check above already validated the live state, so
-    // the only post-seal outcome is a registry failure (duplicate id
-    // appeared in flight). On that path the registry wins; the
-    // caller still receives a sealed rejection-style 30 envelope
-    // through their own overlay because `accept` here only commits.
+    if let Some(reason) = rejection {
+        plaintext.zeroize();
+        return Ok(TransitBuildOutcome {
+            response,
+            sealed_reply,
+            bandwidth_reply: None,
+            reject_reason: Some(reason),
+        });
+    }
+    let Some(reservation) = token.take() else {
+        plaintext.zeroize();
+        return Err(TransitFatalError::RecordDecode);
+    };
     let expires_at = compute_expires_at_seconds(decoded.request_time().as_millis());
     let registration = TransitHopRegistration {
-        previous_peer: reservation.previous_peer,
+        previous_peer,
         role,
         expires_at_seconds: expires_at,
     };
-    match context
+    if let Err(error) = context
         .registry
-        .insert(reservation.receive_tunnel, registration)
+        .insert(decoded.receive_tunnel(), registration)
     {
-        Ok(()) => {}
-        Err(error) => {
-            plaintext_array.zeroize();
-            plaintext.zeroize();
-            return Err(TransitRejectStage::Registry(error));
-        }
+        plaintext.zeroize();
+        context.admission.release(reservation);
+        return Err(TransitFatalError::Registry(error));
     }
-    plaintext_array.zeroize();
+    if !context.admission.commit(reservation) {
+        let _ = context.registry.remove(decoded.receive_tunnel());
+        plaintext.zeroize();
+        return Err(TransitFatalError::RecordDecode);
+    }
     plaintext.zeroize();
-    layer_state_seed.zeroize();
-    // 9) Return accepted outcome.
-    let bandwidth_reply = if bandwidth.has_minimum_or_requested() {
-        TransitBandwidthReply {
-            available_kbps: Some(context.policy.available_bandwidth_kbps()),
-        }
-    } else {
-        TransitBandwidthReply::default()
-    };
     Ok(TransitBuildOutcome {
         response,
         sealed_reply,
@@ -1235,7 +1317,7 @@ pub fn build_rejected_reply_record<R>(
     slot: ValidatedRecordSlot,
     bandwidth: TransitBandwidthReply,
     rng: &mut R,
-) -> Result<[u8; SHORT_BUILD_RECORD_SIZE], TransitRejectStage>
+) -> Result<[u8; SHORT_BUILD_RECORD_SIZE], TransitFatalError>
 where
     R: TryCryptoRng,
 {
@@ -1244,17 +1326,17 @@ where
     let sealed_plaintext = Zeroizing::new(
         reply_record
             .encode_with_rng(rng)
-            .map_err(|_| TransitRejectStage::RandomnessUnavailable)?
+            .map_err(|_| TransitFatalError::RandomnessUnavailable)?
             .to_vec(),
     );
     let mut plaintext_array = [0_u8; SHORT_REPLY_PLAINTEXT_SIZE];
     if sealed_plaintext.len() != SHORT_REPLY_PLAINTEXT_SIZE {
-        return Err(TransitRejectStage::RecordDecode);
+        return Err(TransitFatalError::RecordDecode);
     }
     plaintext_array.copy_from_slice(sealed_plaintext.as_ref());
     cryptography
         .seal_short_reply(&plaintext_array, layer_keys, request_hash, slot)
-        .map_err(TransitRejectStage::Seal)
+        .map_err(TransitFatalError::Seal)
 }
 
 #[cfg(test)]
@@ -1263,6 +1345,66 @@ mod tests {
 
     use rand_chacha::ChaCha8Rng;
     use rand_core::{RngCore, SeedableRng};
+
+    struct ReplySealFailure(crate::build_crypto::EciesX25519BuildCryptography);
+
+    impl BuildCryptography for ReplySealFailure {
+        fn seal_short_request<R: rand_core::CryptoRng + RngCore>(
+            &self,
+            plaintext: &[u8; i2pr_proto::SHORT_REQUEST_PLAINTEXT_SIZE],
+            peer_static_key: &[u8; EPHEMERAL_KEY_LEN],
+            hop_identity_hash: &[u8; 32],
+            rng: &mut R,
+        ) -> Result<crate::build_crypto::SealedShortRequest, BuildCryptographyError> {
+            self.0
+                .seal_short_request(plaintext, peer_static_key, hop_identity_hash, rng)
+        }
+        fn seal_short_request_with_ephemeral(
+            &self,
+            plaintext: &[u8; i2pr_proto::SHORT_REQUEST_PLAINTEXT_SIZE],
+            peer_static_key: &[u8; EPHEMERAL_KEY_LEN],
+            hop_identity_hash: &[u8; 32],
+            ephemeral_priv: &[u8; EPHEMERAL_KEY_LEN],
+        ) -> Result<crate::build_crypto::SealedShortRequest, BuildCryptographyError> {
+            self.0.seal_short_request_with_ephemeral(
+                plaintext,
+                peer_static_key,
+                hop_identity_hash,
+                ephemeral_priv,
+            )
+        }
+        fn open_short_request(
+            &self,
+            record: &[u8],
+            peer_static_priv: &[u8; EPHEMERAL_KEY_LEN],
+            hop_identity_hash: &[u8; 32],
+        ) -> Result<crate::build_crypto::OpenedShortRequest, BuildCryptographyError> {
+            self.0
+                .open_short_request(record, peer_static_priv, hop_identity_hash)
+        }
+        fn seal_short_reply(
+            &self,
+            _plaintext: &[u8; SHORT_REPLY_PLAINTEXT_SIZE],
+            _layer_keys: &LayerKeys,
+            _request_hash: &[u8; 32],
+            _slot: ValidatedRecordSlot,
+        ) -> Result<[u8; SHORT_BUILD_RECORD_SIZE], BuildCryptographyError> {
+            Err(BuildCryptographyError::EncryptionFailed)
+        }
+        fn open_short_reply(
+            &self,
+            record: &[u8],
+            layer_keys: &LayerKeys,
+            request_hash: &[u8; 32],
+            slot: ValidatedRecordSlot,
+        ) -> Result<Zeroizing<[u8; SHORT_REPLY_PLAINTEXT_SIZE]>, BuildCryptographyError> {
+            self.0
+                .open_short_reply(record, layer_keys, request_hash, slot)
+        }
+        fn name(&self) -> &'static str {
+            "reply-seal-failure-test"
+        }
+    }
 
     fn next_router(seed: u8) -> Hash {
         Hash::from_bytes([seed; 32])
@@ -1580,10 +1722,6 @@ mod tests {
                 minimum: 12,
                 available: 0,
             },
-            TransitAdmissionError::PerTunnelCapExceeded {
-                requested: 100,
-                cap: 32,
-            },
         ];
         for reason in rejects {
             assert_eq!(
@@ -1637,10 +1775,19 @@ mod tests {
         registry
             .insert(receive, make_test_registration(receive, 600))
             .expect("insert");
-        let removed = registry.remove(receive);
+        let removed = registry.remove(receive).expect("known registration");
         assert_eq!(removed.expires_at_seconds(), 600);
         assert!(!registry.contains(receive));
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn registry_remove_unknown_id_is_typed_error() {
+        let mut registry = TransitRegistry::with_capacity(1).expect("registry");
+        assert!(matches!(
+            registry.remove(TunnelId::new(1).expect("id")),
+            Err(TransitRegistryError::UnknownReceiveTunnelId)
+        ));
     }
 
     #[test]
@@ -1705,6 +1852,44 @@ mod tests {
         assert_eq!(registry.active_per_peer_count(previous), 2);
     }
 
+    #[test]
+    fn active_per_peer_limit_rejects_one_sender_and_keeps_other_eligible() {
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 1, 1, 12, None)
+                .expect("policy");
+        let first_peer = TunnelPeer::from_hash(Hash::from_bytes([0xA1; 32]));
+        let second_peer = TunnelPeer::from_hash(Hash::from_bytes([0xA2; 32]));
+        let mut registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut first = make_test_registration(TunnelId::new(1).expect("id"), 600);
+        first.previous_peer = first_peer;
+        registry
+            .insert(TunnelId::new(1).expect("id"), first)
+            .expect("first active");
+        let mut state = TransitAdmissionState::default();
+        assert!(matches!(
+            TransitAdmissionReservation::check(
+                &mut state,
+                &policy,
+                &registry,
+                &TransitBandwidthRequest::default(),
+                first_peer,
+                TunnelId::new(2).expect("id")
+            ),
+            Err(TransitAdmissionError::ActivePerPeerFull)
+        ));
+        let reservation = TransitAdmissionReservation::check(
+            &mut state,
+            &policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            second_peer,
+            TunnelId::new(3).expect("id"),
+        );
+        let reservation = reservation.expect("second peer remains eligible");
+        assert_eq!(state.pending(), 1);
+        assert!(state.release(reservation));
+    }
+
     fn make_test_registration(receive: TunnelId, expires_at: u64) -> TransitHopRegistration {
         let layer_keys = LayerKeys::new([0x11; 32], [0x22; 32], [0x33; 32]);
         let previous_peer = TunnelPeer::from_hash(Hash::from_bytes([receive.get() as u8; 32]));
@@ -1760,7 +1945,7 @@ mod tests {
     fn run_participant_transaction(
         policy: TransitAdmissionPolicy,
         bandwidth_opts: BuildOptions,
-    ) -> Result<TransitBuildOutcome, TransitRejectStage> {
+    ) -> Result<TransitBuildOutcome, TransitFatalError> {
         let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
         let responder_priv = privkey(0xAA);
         let hop_hash = next_router(0x55);
@@ -1783,25 +1968,67 @@ mod tests {
             &mut rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0x55; 32], [0x66; 32], [0x77; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(2).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xBB);
-        process_short_build_request(
+        process_short_build_request(&cryptography, &envelope, &mut context, &mut rng)
+    }
+
+    fn participant_wire_reply(
+        policy: TransitAdmissionPolicy,
+        bandwidth_opts: BuildOptions,
+    ) -> (ShortReplyRecord, TransitBuildOutcome, usize) {
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_hash = next_router(0x55);
+        let record = build_request(HopRole::Participant, 0x1000, 0x2000, bandwidth_opts, 60_000);
+        let mut seal_rng = fixed_rng(12);
+        let envelope = seal_short_request(
             &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        )
+            &record,
+            &responder_priv,
+            hop_hash.as_bytes(),
+            &mut seal_rng,
+        );
+        let mut registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut admission = TransitAdmissionState::default();
+        let mut context = TransitBuildContext {
+            hop_static_priv: &responder_priv,
+            hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x98)),
+            reply_slot: TransitReplySlot(ValidatedRecordSlot::new(2).expect("slot")),
+            now: TransitNow { seconds: 60 },
+            policy: &policy,
+            registry: &mut registry,
+            admission: &mut admission,
+        };
+        let mut rng = fixed_rng(13);
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng)
+            .expect("transaction outcome");
+        let opened = cryptography
+            .open_short_request(&envelope, &responder_priv, hop_hash.as_bytes())
+            .expect("open request");
+        let keys = derive_layer_keys(&opened.state, false).expect("derive reply keys");
+        let plaintext = cryptography
+            .open_short_reply(
+                &outcome.sealed_reply,
+                &keys,
+                &opened.state.transcript_hash(),
+                ValidatedRecordSlot::new(2).expect("slot"),
+            )
+            .expect("open reply");
+        let reply = ShortReplyRecord::decode(plaintext.as_ref()).expect("decode reply");
+        (reply, outcome, registry.len())
     }
 
     #[test]
@@ -1828,29 +2055,24 @@ mod tests {
             &mut seal_rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        );
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng);
+        let outcome = outcome.expect("sealed policy rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
         assert!(matches!(
-            outcome,
-            Err(TransitRejectStage::Admission(
-                TransitAdmissionError::Shutdown | TransitAdmissionError::Disabled
-            ))
+            outcome.reject_reason,
+            Some(TransitAdmissionError::Shutdown | TransitAdmissionError::Disabled)
         ));
         assert!(registry.is_empty());
     }
@@ -1860,12 +2082,9 @@ mod tests {
         let policy = TransitAdmissionPolicy::new(true, TransitMode::Degraded, 4, 2, 2, 1, 12, None)
             .expect("policy");
         let outcome = run_participant_transaction(policy, BuildOptions::empty());
-        assert!(matches!(
-            outcome,
-            Err(TransitRejectStage::Admission(
-                TransitAdmissionError::Degraded
-            ))
-        ));
+        let outcome = outcome.expect("sealed policy rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
+        assert_eq!(outcome.reject_reason, Some(TransitAdmissionError::Degraded));
     }
 
     #[test]
@@ -1901,31 +2120,22 @@ mod tests {
                 .insert(receive, make_test_registration(receive, 600))
                 .expect("fill");
         }
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xBB);
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        );
-        assert!(matches!(
-            outcome,
-            Err(TransitRejectStage::Admission(
-                TransitAdmissionError::ActiveFull
-            ))
-        ));
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng);
+        let outcome = outcome.expect("sealed policy rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
     }
 
     #[test]
@@ -1935,12 +2145,8 @@ mod tests {
                 .expect("policy");
         let opts = options_with(&[("m", "100")]);
         let outcome = run_participant_transaction(policy, opts);
-        assert!(matches!(
-            outcome,
-            Err(TransitRejectStage::Admission(
-                TransitAdmissionError::InsufficientBandwidth { .. }
-            ))
-        ));
+        let outcome = outcome.expect("sealed policy rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
     }
 
     #[test]
@@ -1954,6 +2160,337 @@ mod tests {
         let bw = outcome.bandwidth_reply.expect("bandwidth reply");
         let b = bw.available_kbps.expect("b present");
         assert!(b >= 12);
+    }
+
+    #[test]
+    fn m_only_wire_reply_has_b_and_no_request_fields() {
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 64, None)
+                .expect("policy");
+        let (reply, _, active) = participant_wire_reply(policy, options_with(&[("m", "12")]));
+        assert_eq!(reply.response(), ShortResponseCode::Accepted);
+        assert!(
+            reply
+                .options()
+                .mapping()
+                .get("b")
+                .and_then(|value| value.parse::<u32>().ok())
+                .is_some_and(|value| value >= 12)
+        );
+        for key in ["m", "r", "l"] {
+            assert_eq!(reply.options().mapping().get(key), None);
+        }
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn r_only_wire_reply_has_positive_b_and_no_request_fields() {
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 64, Some(32))
+                .expect("policy");
+        let (reply, _, _) = participant_wire_reply(policy, options_with(&[("r", "100")]));
+        assert_eq!(reply.response(), ShortResponseCode::Accepted);
+        assert_eq!(reply.options().mapping().get("b"), Some("32"));
+        for key in ["m", "r", "l"] {
+            assert_eq!(reply.options().mapping().get(key), None);
+        }
+    }
+
+    #[test]
+    fn no_bandwidth_request_has_empty_accepted_mapping() {
+        let (reply, _, _) = participant_wire_reply(default_policy(), BuildOptions::empty());
+        assert_eq!(reply.response(), ShortResponseCode::Accepted);
+        assert_eq!(reply.options().mapping().get("b"), None);
+        assert_eq!(reply.options().mapping().get("m"), None);
+        assert_eq!(reply.options().mapping().get("r"), None);
+        assert_eq!(reply.options().mapping().get("l"), None);
+    }
+
+    #[test]
+    fn r_above_local_cap_is_allocated_to_cap_when_minimum_fits() {
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 64, Some(16))
+                .expect("policy");
+        let (reply, outcome, _) =
+            participant_wire_reply(policy, options_with(&[("m", "8"), ("r", "40")]));
+        assert_eq!(outcome.response, ShortResponseCode::Accepted);
+        assert_eq!(reply.options().mapping().get("b"), Some("16"));
+    }
+
+    #[test]
+    fn sealed_reply_contains_only_allocated_b_and_uses_authenticated_previous_peer() {
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA1);
+        let hop_hash = next_router(0x55);
+        let authenticated_peer = TunnelPeer::from_hash(next_router(0x61));
+        let record = build_request(
+            HopRole::Participant,
+            0x1000,
+            0x2000,
+            options_with(&[("m", "8"), ("r", "20")]),
+            60_000,
+        );
+        let mut seal_rng = fixed_rng(8);
+        let envelope = seal_short_request(
+            &cryptography,
+            &record,
+            &responder_priv,
+            hop_hash.as_bytes(),
+            &mut seal_rng,
+        );
+        let mut registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut admission = TransitAdmissionState::default();
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 12, Some(10))
+                .expect("policy");
+        let mut context = TransitBuildContext {
+            hop_static_priv: &responder_priv,
+            hop_identity: &hop_hash,
+            previous_peer: authenticated_peer,
+            reply_slot: TransitReplySlot(ValidatedRecordSlot::new(2).expect("slot")),
+            now: TransitNow { seconds: 60 },
+            policy: &policy,
+            registry: &mut registry,
+            admission: &mut admission,
+        };
+        let mut rng = fixed_rng(9);
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng)
+            .expect("accepted");
+        assert_eq!(outcome.response, ShortResponseCode::Accepted);
+        assert_eq!(
+            context
+                .registry
+                .registration(TunnelId::new(0x1000).expect("id"))
+                .expect("entry")
+                .previous_peer,
+            authenticated_peer
+        );
+        assert_eq!(context.admission.pending(), 0);
+        let opened = cryptography
+            .open_short_request(&envelope, &responder_priv, hop_hash.as_bytes())
+            .expect("open request");
+        let decoded =
+            ShortRequestRecord::decode(opened.plaintext.as_ref()).expect("decode request");
+        let keys = derive_layer_keys(&opened.state, false).expect("derive reply keys");
+        let plaintext = cryptography
+            .open_short_reply(
+                &outcome.sealed_reply,
+                &keys,
+                &opened.state.transcript_hash(),
+                ValidatedRecordSlot::new(2).expect("slot"),
+            )
+            .expect("open reply");
+        let reply = ShortReplyRecord::decode(plaintext.as_ref()).expect("decode reply");
+        assert_eq!(reply.response(), ShortResponseCode::Accepted);
+        assert_eq!(reply.options().mapping().get("b"), Some("10"));
+        assert_eq!(reply.options().mapping().get("m"), None);
+        assert_eq!(reply.options().mapping().get("r"), None);
+        assert_eq!(reply.options().mapping().get("l"), None);
+        assert_eq!(
+            decoded.request_time().as_millis() / 1000 + REQUEST_EXPIRATION_SECONDS as u64,
+            660
+        );
+    }
+
+    #[test]
+    fn policy_rejection_is_sealed_code_30_and_releases_pending_reservation() {
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA2);
+        let hop_hash = next_router(0x55);
+        let record = build_request(
+            HopRole::Participant,
+            0x1000,
+            0x2000,
+            options_with(&[("m", "20")]),
+            60_000,
+        );
+        let mut seal_rng = fixed_rng(10);
+        let envelope = seal_short_request(
+            &cryptography,
+            &record,
+            &responder_priv,
+            hop_hash.as_bytes(),
+            &mut seal_rng,
+        );
+        let mut registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut admission = TransitAdmissionState::default();
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 2, 1, 12, None)
+                .expect("policy");
+        let peer = TunnelPeer::from_hash(next_router(0x62));
+        let mut context = TransitBuildContext {
+            hop_static_priv: &responder_priv,
+            hop_identity: &hop_hash,
+            previous_peer: peer,
+            reply_slot: TransitReplySlot(ValidatedRecordSlot::new(2).expect("slot")),
+            now: TransitNow { seconds: 60 },
+            policy: &policy,
+            registry: &mut registry,
+            admission: &mut admission,
+        };
+        let mut rng = fixed_rng(11);
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng)
+            .expect("sealed rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
+        assert_eq!(
+            outcome.reject_reason,
+            Some(TransitAdmissionError::InsufficientBandwidth {
+                minimum: 20,
+                available: 12
+            })
+        );
+        assert!(context.registry.is_empty());
+        assert_eq!(context.admission.pending(), 0);
+        let opened = cryptography
+            .open_short_request(&envelope, &responder_priv, hop_hash.as_bytes())
+            .expect("open request");
+        let keys = derive_layer_keys(&opened.state, false).expect("derive reply keys");
+        let plaintext = cryptography
+            .open_short_reply(
+                &outcome.sealed_reply,
+                &keys,
+                &opened.state.transcript_hash(),
+                ValidatedRecordSlot::new(2).expect("slot"),
+            )
+            .expect("open reply");
+        let reply = ShortReplyRecord::decode(plaintext.as_ref()).expect("decode reply");
+        assert_eq!(reply.response(), ShortResponseCode::BandwidthRejected);
+        assert_eq!(reply.options().mapping().get("b"), None);
+    }
+
+    #[test]
+    fn pending_reservations_enforce_global_and_per_peer_limits_and_release_on_drop() {
+        let policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 1, 4, 1, 12, None)
+                .expect("policy");
+        let peer = TunnelPeer::from_hash(next_router(0x70));
+        let other = TunnelPeer::from_hash(next_router(0x71));
+        let registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut state = TransitAdmissionState::default();
+        let first = TransitAdmissionReservation::check(
+            &mut state,
+            &policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            peer,
+            TunnelId::new(1).expect("id"),
+        )
+        .expect("reservation");
+        assert_eq!(state.pending(), 1);
+        assert_eq!(state.pending_for_peer(peer), 1);
+        assert!(matches!(
+            TransitAdmissionReservation::check(
+                &mut state,
+                &policy,
+                &registry,
+                &TransitBandwidthRequest::default(),
+                other,
+                TunnelId::new(2).expect("id")
+            ),
+            Err(TransitAdmissionError::PendingFull)
+        ));
+        assert!(state.release(first));
+        assert_eq!(state.pending(), 0);
+        assert_eq!(state.pending_for_peer(peer), 0);
+        let per_peer_policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 4, 1, 12, None)
+                .expect("policy");
+        let first = TransitAdmissionReservation::check(
+            &mut state,
+            &per_peer_policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            peer,
+            TunnelId::new(1).expect("id"),
+        )
+        .expect("reservation");
+        assert!(matches!(
+            TransitAdmissionReservation::check(
+                &mut state,
+                &per_peer_policy,
+                &registry,
+                &TransitBandwidthRequest::default(),
+                peer,
+                TunnelId::new(2).expect("id")
+            ),
+            Err(TransitAdmissionError::PendingPerPeerFull)
+        ));
+        let spent_id = first.id;
+        assert!(state.release(first));
+        assert!(!state.release(TransitAdmissionToken { id: spent_id }));
+        assert_eq!(state.pending(), 0);
+        assert_eq!(state.pending_for_peer(peer), 0);
+        let independent_policy =
+            TransitAdmissionPolicy::new(true, TransitMode::Accepting, 4, 2, 4, 1, 12, None)
+                .expect("policy");
+        let first = TransitAdmissionReservation::check(
+            &mut state,
+            &independent_policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            peer,
+            TunnelId::new(3).expect("id"),
+        )
+        .expect("first peer reservation");
+        let other_peer = TransitAdmissionReservation::check(
+            &mut state,
+            &independent_policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            other,
+            TunnelId::new(4).expect("id"),
+        )
+        .expect("other peer has independent pending limit");
+        assert_eq!(state.pending_for_peer(peer), 1);
+        assert_eq!(state.pending_for_peer(other), 1);
+        assert!(state.release(first));
+        assert!(state.release(other_peer));
+        assert_eq!(state.pending(), 0);
+    }
+
+    #[test]
+    fn registry_conflict_after_reservation_releases_pending_token() {
+        let policy = default_policy();
+        let peer = TunnelPeer::from_hash(next_router(0x72));
+        let receive = TunnelId::new(0x333).expect("id");
+        let mut registry = TransitRegistry::with_capacity(2).expect("registry");
+        let mut state = TransitAdmissionState::default();
+        let token = TransitAdmissionReservation::check(
+            &mut state,
+            &policy,
+            &registry,
+            &TransitBandwidthRequest::default(),
+            peer,
+            receive,
+        )
+        .expect("reservation");
+        registry
+            .insert(receive, make_test_registration(receive, 600))
+            .expect("simulated concurrent insert");
+        assert!(matches!(
+            registry.insert(receive, make_test_registration(receive, 600)),
+            Err(TransitRegistryError::DuplicateReceiveTunnelId)
+        ));
+        assert!(state.release(token));
+        assert_eq!(state.pending(), 0);
+        assert_eq!(state.pending_for_peer(peer), 0);
+    }
+
+    #[test]
+    fn request_time_accepts_bounded_future_and_rejects_expired_lifetime() {
+        assert!(validate_request_time(160_000, 100).is_ok());
+        assert!(validate_request_time(1_000, 600).is_ok());
+        assert!(matches!(
+            validate_request_time(161_000, 100),
+            Err(TransitFatalError::RequestTimeOutOfRange)
+        ));
+        assert!(matches!(
+            validate_request_time(1_000, 602),
+            Err(TransitFatalError::RequestTimeOutOfRange)
+        ));
+        assert_eq!(compute_expires_at_seconds(160_000), 760);
+        let original_expiry = compute_expires_at_seconds(60_000);
+        assert_eq!(compute_expires_at_seconds(60_000), original_expiry);
     }
 
     #[test]
@@ -1992,31 +2529,22 @@ mod tests {
         registry
             .insert(receive, make_test_registration(receive, 600))
             .expect("prefill");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xBB);
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        );
-        assert!(matches!(
-            outcome,
-            Err(TransitRejectStage::Admission(
-                TransitAdmissionError::ActivePerPeerFull
-            ))
-        ));
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng);
+        let outcome = outcome.expect("sealed policy rejection");
+        assert_eq!(outcome.response, ShortResponseCode::BandwidthRejected);
         // Registry should still have only the pre-filled entry.
         assert_eq!(registry.len(), 1);
     }
@@ -2044,26 +2572,21 @@ mod tests {
             &mut rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow { seconds: 60 },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xBB);
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        );
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng);
         assert!(matches!(
             outcome,
-            Err(TransitRejectStage::RequestTimeOutOfRange)
+            Err(TransitFatalError::RequestTimeOutOfRange)
         ));
         assert!(registry.is_empty());
     }
@@ -2085,7 +2608,7 @@ mod tests {
         // Participant + l is rejected at the bandwidth-parse stage.
         assert!(matches!(
             outcome,
-            Err(TransitRejectStage::BandwidthParse(
+            Err(TransitFatalError::BandwidthParse(
                 TransitBandwidthParseError::LimitOnNonInboundGateway { .. }
             ))
         ));
@@ -2114,37 +2637,28 @@ mod tests {
             &mut rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xDD);
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        )
-        .expect("accept");
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng)
+            .expect("accept");
         assert_eq!(outcome.response, ShortResponseCode::Accepted);
         assert_eq!(registry.len(), 1);
     }
 
     #[test]
     fn rng_failure_rolls_back() {
-        // Deterministic-zero RNG using Default doesn't fail; instead
-        // we construct a sealed reply envelope with a zero-length
-        // reply mapping that bypasses the canonical encoder. The
-        // transactional helper refuses to commit when the
-        // `encode_with_rng` path returns `RandomnessUnavailable`.
+        // The request uses a working RNG; only reply randomness fails.
         let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
         let responder_priv = privkey(0xAA);
         let hop_hash = next_router(0x55);
@@ -2166,16 +2680,18 @@ mod tests {
             &mut rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
+        let mut admission = TransitAdmissionState::default();
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut admission,
         };
         // Use a failing RNG. Only `TryRngCore` is implemented so we can
         // override `try_fill_bytes` to fail without conflicting with
@@ -2195,18 +2711,59 @@ mod tests {
         }
         impl rand_core::TryCryptoRng for FailingRng {}
         let mut failing = FailingRng;
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut failing,
-        );
+        let outcome =
+            process_short_build_request(&cryptography, &envelope, &mut context, &mut failing);
         assert!(matches!(
             outcome,
-            Err(TransitRejectStage::RandomnessUnavailable)
+            Err(TransitFatalError::RandomnessUnavailable)
         ));
         assert!(registry.is_empty());
+        assert_eq!(admission.pending(), 0);
+    }
+
+    #[test]
+    fn reply_seal_failure_releases_pending_reservation() {
+        let base = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let crypto = ReplySealFailure(base);
+        let responder_priv = privkey(0xAD);
+        let hop_hash = next_router(0x55);
+        let record = build_request(
+            HopRole::Participant,
+            0x1000,
+            0x2000,
+            BuildOptions::empty(),
+            60_000,
+        );
+        let mut request_rng = fixed_rng(14);
+        let envelope = seal_short_request(
+            &crypto.0,
+            &record,
+            &responder_priv,
+            hop_hash.as_bytes(),
+            &mut request_rng,
+        );
+        let mut registry = TransitRegistry::with_capacity(4).expect("registry");
+        let mut admission = TransitAdmissionState::default();
+        let policy = default_policy();
+        let mut context = TransitBuildContext {
+            hop_static_priv: &responder_priv,
+            hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x69)),
+            reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
+            now: TransitNow { seconds: 60 },
+            policy: &policy,
+            registry: &mut registry,
+            admission: &mut admission,
+        };
+        let mut rng = fixed_rng(15);
+        assert!(matches!(
+            process_short_build_request(&crypto, &envelope, &mut context, &mut rng),
+            Err(TransitFatalError::Seal(
+                BuildCryptographyError::EncryptionFailed
+            ))
+        ));
+        assert!(registry.is_empty());
+        assert_eq!(admission.pending(), 0);
     }
 
     #[test]
@@ -2232,25 +2789,20 @@ mod tests {
             &mut rng,
         );
         let mut registry = TransitRegistry::with_capacity(4).expect("registry");
-        let mut layer_seed = Zeroizing::new(LayerKeys::new([0; 32], [0; 32], [0; 32]));
         let mut context = TransitBuildContext {
             hop_static_priv: &responder_priv,
             hop_identity: &hop_hash,
+            previous_peer: TunnelPeer::from_hash(next_router(0x99)),
             reply_slot: TransitReplySlot(ValidatedRecordSlot::new(0).expect("slot")),
             now: TransitNow {
                 seconds: request_time_ms / 1_000,
             },
             policy: &policy,
             registry: &mut registry,
+            admission: &mut TransitAdmissionState::default(),
         };
         let mut rng = fixed_rng(0xBB);
-        let outcome = process_short_build_request(
-            &cryptography,
-            &envelope,
-            &mut context,
-            &mut layer_seed,
-            &mut rng,
-        );
+        let outcome = process_short_build_request(&cryptography, &envelope, &mut context, &mut rng);
         let outcome = outcome.expect("accept");
         assert_eq!(outcome.response, ShortResponseCode::Accepted);
         let receive = TunnelId::new(0x1000).expect("id");
@@ -2282,7 +2834,9 @@ mod tests {
         // The Debug impl must not leak layer key bytes or the reply
         // record bytes.
         assert!(!debug.contains("layer_keys"));
-        assert!(!debug.contains("<redacted>"));
+        assert!(debug.contains("<redacted>"));
+        assert!(debug.contains("sealed_reply: \"<redacted>\""));
+        assert!(!debug.contains("[0, 0, 0, 0"));
         // Direct negative guard: the sealed reply is a fixed-size
         // binary; its array form must not appear literally in Debug.
         assert!(!debug.starts_with('['));
@@ -2292,25 +2846,26 @@ mod tests {
     }
 
     #[test]
-    fn reject_reason_is_anonymous_on_the_wire() {
-        // All TransitRejectStage variants must serialize as a wire
-        // envelope carrying only code 30.
-        let variants = [
-            TransitRejectStage::RecordDecode,
-            TransitRejectStage::RequestTimeOutOfRange,
-            TransitRejectStage::BandwidthParse(TransitBandwidthParseError::NotPositiveDecimal {
-                key: "m",
-            }),
-            TransitRejectStage::Admission(TransitAdmissionError::InsufficientBandwidth {
-                minimum: 12,
+    fn admission_reasons_share_code_30() {
+        let reasons = [
+            TransitAdmissionError::Disabled,
+            TransitAdmissionError::Degraded,
+            TransitAdmissionError::Shutdown,
+            TransitAdmissionError::ActiveFull,
+            TransitAdmissionError::PendingFull,
+            TransitAdmissionError::ActivePerPeerFull,
+            TransitAdmissionError::PendingPerPeerFull,
+            TransitAdmissionError::InsufficientBandwidth {
+                minimum: 1,
                 available: 0,
-            }),
-            TransitRejectStage::Registry(TransitRegistryError::DuplicateReceiveTunnelId),
-            TransitRejectStage::Seal(BuildCryptographyError::RandomnessUnavailable),
-            TransitRejectStage::RandomnessUnavailable,
+            },
         ];
-        for variant in variants {
-            assert!(variant.is_pre_commit());
+        for reason in reasons {
+            assert!(reason.category().len() < 64);
+            assert_eq!(
+                TransitAdmissionPolicy::reject_response(),
+                ShortResponseCode::BandwidthRejected
+            );
         }
     }
 }

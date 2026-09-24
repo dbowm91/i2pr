@@ -72,10 +72,10 @@ Current I2NP API 0.9.65 defines m/r/l/b tunnel bandwidth parameters. API 0.9.68+
 requires tunnel testing for routers advertising that protocol level. No M11 foundation
 plan alters router.version or advertises transit support.
 
-Plan 249 landed the intended runtime-neutral architecture but is retained rather than
-accepted as complete after post-closure review found provenance, wire-reply, time-window,
-pending-reservation, secret-ownership, panic-safety, and direct-test defects. Plan 250 owns
-those corrections. Plan 251 independently repairs the ordinary CI/source-lock boundary.
+Plan 249 landed the intended runtime-neutral architecture and remains retained historical
+work. Plan 250 corrected its provenance, wire-reply, time-window, pending-reservation,
+secret-ownership, panic-safety, and direct-test defects. Plan 251 independently repaired the
+ordinary CI/source-lock boundary.
 
 ## 5. Target architecture
 
@@ -119,18 +119,18 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    M12 floodfill planning
 ~~~
 
-Plan 251 is closed with ordinary CI green on its implementation SHA. Plan 250 is the next
-executable plan. Plan 252 remains unregistered until Plan 250 closes; Plan 253 remains
-unregistered until Plan 252 closes.
+Plans 250 and 251 are closed. Plan 252 remains unregistered until ordinary CI is green on
+the Plan 250 implementation SHA; after that audit it is the next executable plan. Plan 253
+remains unregistered until Plan 252 closes.
 
 ## 7. Milestones
 
 | Plan | State | i2pr token | Implementation | Closure |
 |---|---|---|---|---|
-| 249 | retained | retained-m11-transit-foundation-corrective-required-via-plan250 | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
-| 250 | ready | registered-ready-m11-transit-foundation-semantic-and-ownership-corrective | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
+| 249 | retained | retained-m11-transit-foundation-corrected-via-plan250 | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
+| 250 | closed (infrastructure only) | passed-m11-transit-foundation-semantic-and-ownership-corrective-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
 | 251 | closed (cross-subsystem CI maintenance) | passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
-| 252 | planned | unregistered-after-plans250-and251 | not yet written | not yet written |
+| 252 | planned | unregistered-pending-plan250-ordinary-ci-green | not yet written | not yet written |
 | 253 | planned | unregistered-after-plan252 | not yet written | not yet written |
 
 ## 8. Cross-cutting requirements
@@ -209,7 +209,8 @@ Full two-family router conformance is not required to begin M12 development unde
 
 ## 12. Milestone status summary
 
-Plan 249 is retained with corrective authority transferred to ready Plan 250. Plan 251
-closed the ordinary-CI/source-lock corrective with CI green on `6cf441d`; Plan 250 is the
-next executable M11 plan. Plans 252/253 are intentionally unregistered. M12 floodfill
-remains deferred until M11 controlled transit/resource evidence exists.
+Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
+closed the ordinary-CI/source-lock corrective with CI green on `6cf441d`. Plan 252 is the
+next M11 scope but remains unregistered until ordinary CI is green on the Plan 250
+implementation SHA. Plan 253 remains unregistered behind Plan 252. M12 floodfill remains
+deferred until M11 controlled transit/resource evidence exists.
