@@ -1,3 +1,29 @@
+# Current dependency amendment — Plan 247 registered; M10 product authority remains closed
+
+M10 product/application authority through Plans 213–215 remains closed and is
+not reopened or downgraded.
+
+Plan 246 closed the Java Streaming timer pass at an observation gap.
+Post-closure review found a timer-stats parser schema-count defect, timer
+polling placed after the retained 45-second response post-snapshot, and
+SchedulerReceived polling derived from frozen Plan-245 state.
+
+Plan 247 is registered-ready to correct only those observer defects and
+re-run the delayed-ACK attribution with live response/timer polling inside
+the response epoch. It does not change Java behavior, ACK delay, topology,
+publication, the 45-second outer lane, or production i2pr.
+
+Plan 204 remains convergence-only and blocked on independent M6 Java
+second-family closure.
+
+```text
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan247
+plan_246 = observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+plan_247 = registered-ready-m6-java-streaming-plan246-observation-window-parser-corrective
+milestone10_final_acceptance = closed
+next_executable_plan = 247-m6-java-streaming-plan246-observation-window-parser-corrective
+```
+
 # Current dependency amendment — Plan 246 closed at observation-gap; M10 product authority remains closed
 
 M10 product/application authority through Plans 213–215 remains closed
