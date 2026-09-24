@@ -149,8 +149,10 @@ bash scripts/check-exploratory-tunnel-evidence.sh             passed (local)
 git diff --check                                               passed (local)
 ```
 
-Ordinary GitHub Actions on the closure commit is required to confirm criterion
-15; the run is recorded here after push.
+Ordinary GitHub Actions run
+[36071390466](https://github.com/dbowm91/i2pr/actions/runs/36071390466)
+completed green (`success`) on closure commit `4a96261`, confirming criterion
+15 on the exact closure SHA (implementation `60de51b` plus this record).
 
 ## Dependency, secret, and runtime-boundary review
 
