@@ -103,3 +103,16 @@ floodfill planning remains deferred until controlled M11 transit/resource eviden
   here.
 - Plan 252 remains infrastructure only; it must not claim M11 capability or advertise
   transit support. Plan 253 remains gated on Plan 252 closure.
+
+## Successor planning note — full-message build composition
+
+A post-closure Plan 252 review identified a successor interface requirement, not a reopened
+Plan 250 defect. Plan 250 intentionally proves the per-record admission/reply/registration
+transaction. Production ShortTunnelBuild participation additionally requires message-level
+processing: after sealing the local 0/30 reply, the same derived reply key must transform
+every other build record before STBM continuation or OBEP OTBRM termination.
+
+Plan 252 was corrected before execution to own that runtime-neutral composition and to
+defer accepted registration commit until the complete transformed record set is ready.
+Plan 250's closure token and per-record evidence remain authoritative for their defined
+scope.

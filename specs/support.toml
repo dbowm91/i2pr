@@ -393,12 +393,12 @@ plan_251_plan_of_record = "plans/implementation/mixed-router-interop/251-java-so
 plan_251_closure = "plans/closure/mixed-router-interop/251-status.md"
 plan_251_status = "passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective"
 plan_252_plan_of_record = "plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md"
-plan_252_status = "registered-m11-daemon-transit-composition-ready"
+plan_252_status = "registered-m11-daemon-transit-composition-ready (pre-execution planning corrected: full-message STBM own-reply plus all-other-record transform and typed build-route seam required before daemon wiring)"
 plan_253_status = "unregistered-after-plan252"
 m6_experimental_mixed_router_progression = "passed-via-i2pd-plan193"
 m6_java_full_router_compatibility = "retained-deferred-at-plan247"
 m6_full_two_family_router_conformance = "not-yet-claimed"
-m11_transit_tunnels = "plan249-foundation-retained-corrected-by-plan250; plan250-semantic-ownership-corrective-passed-infrastructure-only; plan251-ci-corrective-passed; ordinary CI green on Plan250 implementation SHA 44187ce (Actions 36060781701); daemon plan252 registered-ready; i2pd plan253 depends on Plan252; advertised=false"
+m11_transit_tunnels = "plan249-foundation-retained-corrected-by-plan250; plan250-semantic-ownership-corrective-passed-infrastructure-only; plan251-ci-corrective-passed; ordinary CI green on Plan250 SHA 44187ce (Actions 36060781701); plan252 registered-ready with mandatory runtime-neutral full-message STBM transform/routing seam before daemon composition; plan253 depends on Plan252; advertised=false"
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
 m6_netdb_lookup_publication = "passed-via-plan186"
@@ -425,7 +425,7 @@ milestone10_final_acceptance = "closed-via-plan215; Plan204 convergence gate sup
 m10_remote_transport_core = "passed-via-plan202"
 m10_remote_application_interop = "passed-via-plan203"
 next_product_layer = "m11-transit-tunnels"
-next_executable_plan = "252-m11-daemon-transit-composition (registered ready; infrastructure only, M11 capability unclaimed)"
+next_executable_plan = "252-m11-daemon-transit-composition (registered ready; first full-message STBM transform/routing seam, then daemon composition; infrastructure only, M11 capability unclaimed)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"

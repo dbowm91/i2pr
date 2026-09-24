@@ -277,6 +277,32 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
+### Plan 252 full-message transit composition invariant
+
+Plan 250's per-record transaction is not itself a complete ShortTunnelBuild hop processor.
+The current ECIES short-build format uses the derived reply key twice at each hop: the
+hop's own 218-byte reply record is sealed with ChaCha20/Poly1305, and every other 218-byte
+record in the build message is transformed with plain ChaCha20 using the same reply key and
+the target record-number nonce.
+
+Plan 252 therefore requires one runtime-neutral full-message transit operation before
+daemon wiring. It must validate the complete count-prefixed STBM, locate/open the local
+record once, perform Plan 250 admission and reply construction, replace the local slot,
+transform every non-local slot exactly once through the canonical multirecord primitive,
+encode the complete payload, and only then commit accepted registration state.
+
+A valid local policy rejection follows the same full-message transformation with reply
+code 30 and zero registration. Malformed/unauthenticated/ambiguous-slot input fails closed.
+
+The message-level result may expose only non-secret build-routing facts (role, receive
+tunnel, next router, next tunnel, next message id) plus the opaque transformed payload.
+Reply keys, LayerKeys, Noise state, and decrypted request bytes stay inside
+`i2pr-tunnel`. Participant/IBGW continue STBM routing; OBEP terminates into OTBRM using the
+already-transformed record set. The daemon must not reopen/reseal/retransform the message.
+
+This is still non-advertised infrastructure. Exact-pinned i2pd qualification remains Plan
+253 after Plan 252 closure.
+
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
 `i2pr-tunnel::transit` owns the bounded M11 foundation laid down by Plan 249:

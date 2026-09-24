@@ -92,9 +92,13 @@ Admission occurs before live registration.
 
 ### Daemon/runtime composition
 
-A later plan replaces ShortTunnelBuild's reserved outcome with bounded supervised
-composition, uses existing router delivery for build forwarding/replies and TunnelData
-next-hop delivery, and removes transit state on expiry/shutdown. No per-cell task spawning.
+Plan 252 first establishes the runtime-neutral full-message processor above, then replaces
+ShortTunnelBuild's reserved daemon outcome with bounded supervised composition. Participant
+and IBGW forward the already-transformed STBM; OBEP emits OTBRM from the same transformed
+record set. The daemon uses existing router delivery for build routing and TunnelData
+next-hop delivery, and removes transit state on expiry/shutdown. It must not reopen the
+request, reseal the local reply, export reply keys, or run `MessageHopProcessor` as a second
+independent production pass. No per-cell task spawning.
 
 ### Controlled external qualification
 
@@ -174,9 +178,13 @@ source-lock tests. This cross-subsystem maintenance does not reopen M6 progressi
 
 ### Plan 252
 
-After Plans 250/251 close and CI is green, prove bounded daemon queue admission,
-cancellation/shutdown cleanup, authenticated previous-peer handoff, next-hop dispatch,
-expiry, and no per-cell task explosion.
+First prove the full-message short-build seam: complete STBM validation, unique local slot,
+one request open/KDF, exact Plan-250 own reply, one ChaCha20 transform of every other slot,
+commit-after-full-message construction, code-30 transformed rejection with zero state, and
+typed Participant/IBGW/OBEP routing metadata. Then prove bounded daemon queue admission,
+authenticated previous-peer handoff, Participant/IBGW STBM forwarding, OBEP OTBRM
+termination, TunnelData next-hop dispatch, expiry/cancellation/shutdown cleanup, creator
+correlation, and no per-cell task explosion.
 
 ### Plan 253
 
@@ -211,6 +219,7 @@ Full two-family router conformance is not required to begin M12 development unde
 
 Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
 closed the ordinary-CI/source-lock corrective with CI green on `6cf441d`. Plan 250 ordinary
-CI is green on `44187ce`, and Plan 252 is registered as the next M11 scope. Plan 253
-remains unregistered behind Plan 252. M12 floodfill remains
-deferred until M11 controlled transit/resource evidence exists.
+CI is green on `44187ce`. Plan 252 remains registered ready, with its pre-execution
+planning corrected to require the full-message STBM transform/routing seam before daemon
+wiring. Plan 253 remains unregistered behind Plan 252. M12 floodfill remains deferred until
+M11 controlled transit/resource evidence exists.
