@@ -1,28 +1,46 @@
-# Current dependency amendment — Plan 246 registered for delayed-ACK timer attribution
+# Current dependency amendment — Plan 246 closed at observation-gap; narrow successor pending
 
-Plan 245 is closed as
-`passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary`.
+Plan 246 is closed as
+`observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution`
+(see `plans/closure/mixed-router-interop/246-status.md`): on three counted
+same-SHA hosted executions of the frozen Plan-242 Streaming lane,
+Direction A was established 3/3, but the Plan-245 baseline gate
+(`p245_scheduler_reschedule_branch_delta > 0`) was satisfied on 0/3
+counted attempts and the Plan-246 contradiction guard fired on every
+attempt; all three counted terminals were `P246-OBSERVABILITY-GAP`.
+No Java defect proven; no production i2pr change; no ACK-delay override;
+45-second lane frozen; polling cadence 50 ms × 40 = 2 s attribution
+horizon (observational only).
 
-Exact-pinned Java I2P 2.13.0 source review narrows that stop to a bounded
-delayed-ACK timer question: the frozen helper uses the default 500 ms initial
-ACK delay, `Connection.setNextSendTime()` clamps future deadlines to no later
-than `now + getSendAckDelay()`, and the reschedule path delegates through
-`Connection.scheduleConnectionEvent` to a fresh one-shot
-`SimpleTimer2.addEvent(SimpleTimer.TimedEvent,...)` wrapper whose callback
-re-enters `SchedulerChooser`.
+The Plan-245 reschedule-only boundary is therefore confirmed on
+Plan-246 evidence too (the Plan-245 attribution corrective closes
+the response construction question; Plan 246 narrows the answer
+to the timer/second-scheduler window). Plan 246's contradiction
+guard's two failure modes are now documented and reproducible:
+missing `simple_timer_debug_enabled` and missing
+`peer_correlation_present` in the helper-side `getLimits()`
+snapshot.
 
-Plan 246 is registered-ready to prove the numeric deadline, exact-socket timer
-enqueue/fire, second scheduler outcome, and any transient log eviction through
-bounded short polling inside the unchanged 45-second lane.
+Plan 201 remains blocked. Plan 246 does not authorize any further
+plan-of-record on its own; the Plan-246 successor must extend the
+observation window past the Plan-245 reschedule timing (which fires
+late on the helper's outbound profile) so the SimpleTimer2 lifecycle
+markers are observable within the attribution horizon, OR prove that
+the Plan-245 reschedule is in fact a Java defect (e.g. the
+`SchedulerReceived.reschedule()` call does not enqueue the matching
+`SimpleTimer2.addEvent` event). Until either branch is sourced,
+`P246-OBSERVABILITY-GAP` is the bound.
 
 The publication/final-closure axis remains independently unresolved.
 
 ```text
-plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan246
+plan_201 = blocked-on-m6-java-streaming-reverse-direction-and-publication-closure-pending-plan246-successor-observation-gap-corrective
 plan_245 = passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary
-plan_246 = registered-ready-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
-next_executable_plan = 246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+plan_246 = observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+next_executable_plan = none-pending-plan246-successor-observation-gap-corrective
 ```
+
+# Current dependency amendment — Plan 246 registered for delayed-ACK timer attribution
 
 # Current dependency amendment — Plan 245 closed at scheduler-rescheduled; narrow timer/state attribution successor pending
 

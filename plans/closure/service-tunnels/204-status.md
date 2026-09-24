@@ -1,28 +1,33 @@
-# Current dependency amendment — Plan 246 registered; M10 product authority remains closed
+# Current dependency amendment — Plan 246 closed at observation-gap; M10 product authority remains closed
 
-M10 product/application authority through Plans 213–215 remains closed and is
-not reopened or downgraded.
+M10 product/application authority through Plans 213–215 remains closed
+and is not reopened or downgraded.
 
-Plan 245 closed the Java Streaming response attribution at the repeatable
-`SchedulerReceived` reschedule-only boundary. Exact-pinned Java I2P 2.13.0
-source bounds the frozen helper delayed ACK at 500 ms and shows the scheduled
-Connection event re-enters `SchedulerChooser` through the transition
-`SimpleTimer2` wrapper.
-
-Plan 246 is registered-ready to attribute the numeric deadline, exact-socket
-timer enqueue/fire, second scheduler result, and transient observation
-eviction. It changes neither the 45-second lane nor Java/i2pr behavior.
+Plan 246 is closed as
+`observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution`
+(see `plans/closure/mixed-router-interop/246-status.md`): on three
+counted same-SHA hosted executions of the frozen Plan-242 Streaming
+lane, Direction A was established 3/3, but the Plan-245 baseline
+gate was satisfied on 0/3 counted attempts and the Plan-246
+contradiction guard fired on every attempt; all three counted
+terminals were `P246-OBSERVABILITY-GAP`. No Java defect proven; no
+production i2pr change; no ACK-delay override; 45-second lane
+frozen; polling cadence 50 ms × 40 = 2 s attribution horizon
+(observational only).
 
 Plan 204 remains convergence-only and blocked on independent M6 Java
-second-family closure.
+second-family closure (now pending the Plan-246 successor
+observation-gap corrective; no double unblock).
 
 ```text
-plan_204 = blocked-on-m6-java-second-family-closure-pending-plan246
+plan_204 = blocked-on-m6-java-second-family-closure-pending-plan246-successor-observation-gap-corrective
 plan_245 = passed-m6-java-streaming-stock-response-construction-signal-attribution-corrective-with-scheduler-rescheduled-no-send-branch-boundary
-plan_246 = registered-ready-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+plan_246 = observability-gap-observed-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
 milestone10_final_acceptance = closed
-next_executable_plan = 246-m6-java-streaming-delayed-ack-timer-enqueue-fire-and-second-scheduler-attribution
+next_executable_plan = none-pending-plan246-successor-observation-gap-corrective
 ```
+
+# Current dependency amendment — Plan 246 registered; M10 product authority remains closed
 
 # Current dependency amendment — Plan 245 closed at scheduler-rescheduled; M10 product authority remains closed
 
