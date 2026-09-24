@@ -119,8 +119,9 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    M12 floodfill planning
 ~~~
 
-Plans 250 and 251 are registered ready and may execute independently. Plan 252 remains
-unregistered until both close and ordinary CI is green. Plan 253 remains unregistered until
+Plan 251 remains active until the final source-root routing correction passes fresh
+ordinary CI. Plan 250 remains dependency-ready but will start only after Plan 251 closes.
+Plan 252 remains unregistered until Plan 250 closes; Plan 253 remains unregistered until
 Plan 252 closes.
 
 ## 7. Milestones
@@ -129,7 +130,7 @@ Plan 252 closes.
 |---|---|---|---|---|
 | 249 | retained | retained-m11-transit-foundation-corrective-required-via-plan250 | plans/implementation/transit-tunnels/249-m11-transit-admission-and-short-build-participant-foundation.md | plans/closure/transit-tunnels/249-status.md |
 | 250 | ready | registered-ready-m11-transit-foundation-semantic-and-ownership-corrective | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
-| 251 | parallel ready (cross-subsystem CI maintenance) | registered-ready-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
+| 251 | active (cross-subsystem CI maintenance) | in-progress-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
 | 252 | planned | unregistered-after-plans250-and251 | not yet written | not yet written |
 | 253 | planned | unregistered-after-plan252 | not yet written | not yet written |
 
@@ -209,7 +210,7 @@ Full two-family router conformance is not required to begin M12 development unde
 
 ## 12. Milestone status summary
 
-Plan 249 is retained with corrective authority transferred to ready Plan 250. Parallel
-Plan 251 is ready for ordinary-CI/source-lock hygiene. Plans 252/253 are intentionally
-unregistered. M12 floodfill remains deferred until M11 controlled transit/resource
-evidence exists.
+Plan 249 is retained with corrective authority transferred to ready Plan 250. Plan 251 is
+still active pending a fresh hosted CI run for the final source-root routing correction.
+Plans 252/253 are intentionally unregistered. M12 floodfill remains deferred until M11
+controlled transit/resource evidence exists.

@@ -28347,26 +28347,9 @@ fn p246_connection_event_reenters_scheduler_chooser() {
     // exact 8-entry scheduler list (plus NullScheduler). The
     // classifier never assumes SchedulerReceived remains the
     // selected scheduler for the second event.
-    let connection_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("Connection.java"),
-    )
-    .expect("read Connection.java");
+    let connection_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/Connection.java",
+    );
     assert!(connection_src.contains("_chooser.getScheduler(this)"));
     assert!(connection_src.contains("sched.eventOccurred(this);"));
 }
@@ -30170,26 +30153,9 @@ fn p247_no_ack_delay_override() {
     // Plan 247 §16 — `i2p.streaming.initialAckDelay` is not set on the
     // frozen helper; the canonical value remains `(0, 500]` (default
     // `500`).
-    let conn_options_src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("target")
-            .join("interop")
-            .join("m6-java-sources")
-            .join("i2p.i2p-9134f808337b401e8e53c73734c81fab04280c9d")
-            .join("apps")
-            .join("streaming")
-            .join("java")
-            .join("src")
-            .join("net")
-            .join("i2p")
-            .join("client")
-            .join("streaming")
-            .join("impl")
-            .join("ConnectionOptions.java"),
-    )
-    .expect("read ConnectionOptions.java");
+    let conn_options_src = read_java_source_lock(
+        "apps/streaming/java/src/net/i2p/client/streaming/impl/ConnectionOptions.java",
+    );
     assert!(
         conn_options_src.contains("DEFAULT_INITIAL_ACK_DELAY = 500"),
         "Plan 247 §16: frozen default 500 ms"

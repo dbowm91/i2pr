@@ -28,16 +28,18 @@ fi
 if grep -q 'I2PR_M6_JAVA_SOURCE_ROOT' "${workflow}"; then
   fail "ordinary CI injects a Java source path"
 fi
-actual_tests=()
 for test_name in "${expected[@]}"; do
-  grep -Fq "#[ignore = \"requires exact-pinned Java I2P 2.13.0 source tree\"]" "${test_file}" || fail "ignore reason missing"
-  grep -Fq "fn ${test_name}()" "${test_file}" || fail "missing gated assertion ${test_name}"
+  test_line="$(grep -n -F "fn ${test_name}()" "${test_file}" | cut -d: -f1)"
+  [[ -n "${test_line}" ]] || fail "missing gated assertion ${test_name}"
+  marker_start=$((test_line - 2))
+  [[ "$(sed -n "${marker_start},$((test_line - 1))p" "${test_file}" | grep -Fc '#[ignore = "requires exact-pinned Java I2P 2.13.0 source tree"]')" == 1 ]] || fail "${test_name} is not individually ignore-gated"
   grep -Fq "  ${test_name}" "${runner}" || fail "runner omits ${test_name}"
-  actual_tests+=("${test_name}")
 done
-for test_name in p246_default_ack_delay_is_500_on_frozen_helper p246_packet_handler_sets_deadline_before_event p246_received_reschedule_calls_connection_timer p246_transition_add_event_uses_fresh_wrapper p246_timer_wrapper_delegates_to_connection_event p246_connection_event_reenters_scheduler_chooser p246_scheduler_precedence_is_source_locked p247_no_ack_delay_override; do
-  count="$(grep -Fc "  ${test_name}" "${runner}")"
-  [[ "${count}" == 1 ]] || fail "runner test list has duplicate/missing ${test_name}"
+[[ "$(grep -Fc 'read_java_source_lock(' "${test_file}")" == 9 ]] || fail "unexpected source-lock helper call count"
+mapfile -t runner_tests < <(sed -n '/^tests=(/,/^)/p' "${runner}" | sed -n 's/^[[:space:]]*\(p[0-9][^[:space:]]*\)$/\1/p')
+[[ "${#runner_tests[@]}" == "${#expected[@]}" ]] || fail "runner's explicit test list size differs from the reviewed inventory"
+for index in "${!expected[@]}"; do
+  [[ "${runner_tests[index]}" == "${expected[index]}" ]] || fail "runner test list mismatch at index ${index}"
 done
 for assertion in 'DEFAULT_INITIAL_ACK_DELAY = 500' 'setNextSendTime(delay + context.clock().now())' 'con.scheduleConnectionEvent(msToWait)' 'new TimedEvent(this, timeoutMs)' 'event.timeReached()' '_chooser.getScheduler(this)' 'SchedulerHardDisconnected' 'SchedulerDead'; do
   grep -Fq "${assertion}" "${test_file}" || fail "source-lock assertion removed: ${assertion}"
