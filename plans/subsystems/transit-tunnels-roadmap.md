@@ -50,32 +50,31 @@ knowledge.
 
 ## 3. Non-goals
 
-No public-network transit in Plans 249-253; no floodfill (M12); no new ElGamal generation;
+No public-network transit in Plans 249-255; no floodfill (M12); no new ElGamal generation;
 no Proposal 153 data layer; no broad RouterInfo/router.version change in Plan 249; no Java
 full-router gate for experimental M11 progression; no resource-governor bypass.
 
 ## 4. Current state
 
-The cryptographic/data-plane substrate is ahead of runtime service:
+The runtime-neutral and controlled-owner substrate is substantially complete:
 
-- short_record.rs implements current request/reply layouts, roles, 600-second lifetime,
-  AES layer type, and response codes 0/30.
-- build_crypto.rs / responder.rs can open a request, derive hop keys, and seal a reply.
-- roles.rs implements participant forward transforms, previous-peer locking, replay
-  rejection, and gateway/endpoint primitives.
-- data_plane_registry.rs is bounded creator/local-pool state, not a transit registry.
-- router_i2np.rs decodes authenticated ShortTunnelBuild but intentionally returns
-  TunnelBuildReserved. This is the first production composition gap.
-- TunnelData already has an authenticated-router typed dispatch seam.
+- Plan 250 owns corrected admission/reply/registry semantics.
+- Plan 252 retains the canonical full-message STBM transaction and role metadata.
+- Plan 253 retains the bounded transit data plane, complete envelopes, rollback/drain, and
+  bounded peer index.
+- Plan 254 provides the single-decode `TransitInboundBodies` handoff and controlled
+  `TransitLiveOwner::handle_inbound` with real `Ssu2InboundI2np`, creator/service
+  ownership ordering, OBEP delivery, IBGW ingress, and outer cancellation.
+- Ordinary product construction remains transit-disabled. Its SSU2 pump consults only the
+  disabled probe; Plan 255 must bind an enabled controlled owner to the real
+  `Ssu2DaemonHandle::next_inbound()` stream before external results count.
 
-Current I2NP API 0.9.65 defines m/r/l/b tunnel bandwidth parameters. API 0.9.68+ also
-requires tunnel testing for routers advertising that protocol level. No M11 foundation
-plan alters router.version or advertises transit support.
+Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
+testing for routers advertising that protocol level. No M11 plan changes router.version or
+advertises public transit support.
 
-Plan 249 landed the intended runtime-neutral architecture and remains retained historical
-work. Plan 250 corrected its provenance, wire-reply, time-window, pending-reservation,
-secret-ownership, panic-safety, and direct-test defects. Plan 251 independently repaired the
-ordinary CI/source-lock boundary.
+Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
+ordinary CI/source-lock boundary. Plan 255 is the registered external qualification gate.
 
 ## 5. Target architecture
 
@@ -101,18 +100,27 @@ Admission occurs before live registration.
 
 ### Daemon/runtime composition
 
-Plan 252 first establishes the runtime-neutral full-message processor above, then replaces
-ShortTunnelBuild's reserved daemon outcome with bounded supervised composition. Participant
-and IBGW forward the already-transformed STBM; OBEP emits OTBRM from the same transformed
-record set. The daemon uses existing router delivery for build routing and TunnelData
-next-hop delivery, and removes transit state on expiry/shutdown. It must not reopen the
-request, reseal the local reply, export reply keys, or run `MessageHopProcessor` as a second
-independent production pass. No per-cell task spawning.
+Plans 252-254 establish the full-message processor, role-correct daemon composition,
+bounded data plane, and controlled `TransitLiveOwner`. Participant/IBGW forward the
+already-transformed STBM; OBEP emits OTBRM from the same transformed record set. Existing
+router delivery owns build/TunnelData next-hop delivery. The daemon must not reopen,
+reseal, export reply keys, or run a second independent message processor.
+
+Ordinary product profiles remain disabled. Plan 255 owns the controlled real-SSU2
+composition used for qualification. No per-cell task spawning.
 
 ### Controlled external qualification
 
-The final M11 lane uses exact-pinned i2pd as the primary independent router oracle and
-requires genuine short-build and TunnelData traffic, not injected registry state.
+Plan 255 uses unmodified exact-pinned i2pd 2.61.0
+(`635b013a612ff47278ef02acf8580a28e10e26c5`) as the independent oracle. Counted builds
+originate at stock i2pd, enter through actual authenticated SSU2 `next_inbound`, and
+traverse an enabled controlled `TransitLiveOwner`. Fabricated STBMs, direct registry
+insertion, patched references, false RouterInfo claims, and public-network fallback do not
+count.
+
+The lane qualifies OBEP, IBGW, and intermediate Participant builds with real data-plane
+traffic, code-30 rejection, truthful bandwidth-option disposition, logical expiry/cleanup,
+and two complete same-SHA executions.
 
 ## 6. Dependency graph
 
@@ -138,13 +146,10 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    M12 floodfill planning
 ~~~
 
-Plans 250 and 251 are closed. Plan 252's runtime-neutral full-message STBM core is retained.
-Plan 253 retains its successful runtime-neutral transit data plane, envelope routing,
-rollback/drain, bounded-peer, and secret-ownership corrections; its live-owner narrowing
-is closed by passed Plan 254, which threads the canonical decoded body into the real
-production owner (`TransitLiveOwner::handle_inbound`, 34 live rows), removes the empty
-shim, uses the outer cancellation token, and restores committed formatting. Plan 255
-external i2pd qualification is unblocked for registration (unwritten).
+Plans 250 and 251 are closed. Plan 252's full-message STBM core is retained. Plan 253
+retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live-owner
+corrective is closed by passed Plan 254. Plan 255 exact-pinned i2pd controlled transit
+qualification is registered ready and is the next executable M11 plan.
 
 ## 7. Milestones
 
@@ -156,7 +161,7 @@ external i2pd qualification is unblocked for registration (unwritten).
 | 252 | retained | retained-m11-daemon-transit-composition-corrective-required-via-plan253 | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
 | 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
 | 254 | closed | passed-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
-| 255 | ready-to-register | unblocked-by-plan254 | not yet written | not yet written |
+| 255 | ready | registered-m11-exact-pinned-i2pd-transit-qualification-ready | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | pending |
 
 ## 8. Cross-cutting requirements
 
@@ -217,20 +222,23 @@ shutdown, and enforce bounded peer/session state.
 
 ### Plan 254
 
-Close the real production-consumer boundary: thread the decoded STBM body from the single
-canonical router-I2NP decode into TransitOwner, call that owner from the actual authenticated
-SSU2 inbound pump, use the real cancellation/session lifecycle, enforce creator/service vs
-transit ownership ordering, and complete OBEP semantic delivery plus IBGW TunnelGateway
-ingress. Remove the empty-body shim and require green current-SHA CI.
+Closed the controlled live-owner/body-threading boundary: canonical single-decode handoff,
+`TransitLiveOwner::handle_inbound`, outer cancellation/session lifecycle,
+creator/service-versus-transit ownership, OBEP delivery, IBGW ingress, and green exact-SHA
+CI. Ordinary product pump behavior remains disabled/probe-only; Plan 255 must prove the
+enabled owner on actual SSU2 `next_inbound`.
 
 ### Plan 255
 
-Against exact-pinned i2pd prove genuine build addressed to i2pr, accepted encrypted reply,
-role-correct TunnelData/TunnelGateway behavior, bandwidth rejection, expiry/duplicate
-failure, repeated exact-head stability, and cleanup baseline.
+Against unmodified exact-pinned i2pd 2.61.0, first prove real authenticated
+`Ssu2DaemonHandle::next_inbound()` events traverse an enabled `TransitLiveOwner`. Then
+prove genuine i2pd-created OBEP, IBGW, and intermediate Participant builds, accepted
+replies, role-correct TunnelData/TunnelGateway traffic, code-30 rejection, truthful
+bandwidth-option disposition, logical expiry/replay/cleanup, and two complete same-SHA
+executions.
 
-Qualify participant plus edge roles before broad M11 closure where the controlled topology
-can exercise them. Otherwise narrow the claim explicitly.
+If deterministic role placement needs patched i2pd or false RouterInfo claims, stop and
+register a narrow topology successor.
 
 ## 10. Risks and decision points
 
@@ -254,11 +262,9 @@ Full two-family router conformance is not required to begin M12 development unde
 
 ## 12. Milestone status summary
 
-Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
-closed the ordinary-CI/source-lock corrective. Plan 252 retains the successful
-runtime-neutral full-message STBM core. Plan 253 retains its successful runtime-neutral
-data-plane/envelope/rollback/drain/bounded-peer corrections with its live-owner
-corrective completed by passed Plan 254. Plan 255 exact-pinned i2pd qualification is
-unblocked for registration (unwritten). M12
-floodfill remains deferred until M11 controlled transit/resource evidence exists
-(Plan 255 qualification still pending).
+Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed the
+ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
+retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
+live-owner corrective completed by passed Plan 254. Plan 255 exact-pinned i2pd controlled
+transit qualification is registered ready and is the next executable plan. M12 floodfill
+remains deferred until Plan 255 supplies controlled transit/resource evidence.

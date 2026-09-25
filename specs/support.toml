@@ -401,11 +401,12 @@ plan_253_status = "retained-m11-live-daemon-transit-data-plane-corrective-requir
 plan_254_plan_of_record = "plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md"
 plan_254_closure = "plans/closure/transit-tunnels/254-status.md"
 plan_254_status = "passed-m11-live-ingress-body-threading-closure-corrective"
-plan_255_status = "unblocked-by-plan254-ready-to-register"
+plan_255_plan_of_record = "plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md"
+plan_255_status = "registered-m11-exact-pinned-i2pd-transit-qualification-ready"
 m6_experimental_mixed_router_progression = "passed-via-i2pd-plan193"
 m6_java_full_router_compatibility = "retained-deferred-at-plan247"
 m6_full_two_family_router_conformance = "not-yet-claimed"
-m11_transit_tunnels = "plan249 retained corrected by plan250; plan250 passed infrastructure-only; plan251 CI corrective passed; plan252 full-message STBM core retained; plan253 runtime-neutral data-plane/envelope/rollback/drain/bounded-peer corrections retained with live-owner corrective completed by passed plan254 (real production owner TransitLiveOwner::handle_inbound, canonical decoded body handoff, outer cancellation token, 34 live rows); plan255 exact-pinned i2pd qualification unblocked for registration; advertised=false"
+m11_transit_tunnels = "plan249 retained corrected by plan250; plan250 passed infrastructure-only; plan251 CI corrective passed; plan252 full-message STBM core retained; plan253 runtime-neutral data-plane/envelope/rollback/drain/bounded-peer corrections retained; plan254 passed controlled live-owner/body-threading corrective (canonical body handoff, TransitLiveOwner::handle_inbound, outer cancellation, 34 live rows; ordinary product pump remains disabled-probe only); plan255 exact-pinned i2pd controlled transit qualification registered ready and must prove real next_inbound -> enabled live owner plus OBEP/IBGW/Participant external traffic; advertised=false"
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
 m6_netdb_lookup_publication = "passed-via-plan186"
@@ -432,7 +433,7 @@ milestone10_final_acceptance = "closed-via-plan215; Plan204 convergence gate sup
 m10_remote_transport_core = "passed-via-plan202"
 m10_remote_application_interop = "passed-via-plan203"
 next_product_layer = "m11-transit-tunnels"
-next_executable_plan = "255-exact-pinned-i2pd-qualification (to-register; unblocked by passed plan254; M11 capability unclaimed)"
+next_executable_plan = "255-m11-exact-pinned-i2pd-transit-qualification (registered ready; controlled exact-pinned i2pd capability lane; M11 public capability unclaimed)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"

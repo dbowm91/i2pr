@@ -277,29 +277,31 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 live-owner authority — Plan 254 corrective
+### Current M11 qualification authority — Plans 254 and 255
 
-Plan 253 remains retained authority for the runtime-neutral transit data plane, bounded peer
-index, complete build envelope construction, code-30 route preservation, terminal rollback,
-cancellation drain, and move-only daemon secret owner.
+Plan 254 is closed
+(`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
+single-decode STBM/TunnelData/TunnelGateway handoff, controlled
+`TransitLiveOwner::handle_inbound`, creator/service ownership precedence, OBEP delivery,
+IBGW ingress, outer cancellation, and session-close reconciliation. Plan 253 remains
+retained authority for the runtime-neutral data plane, bounded peer index, complete build
+envelopes, code-30 route preservation, terminal rollback, drain, and move-only secrets.
 
-Its final live-owner claim is narrowed. The current `TransitOwner` has no production caller
-from the actual authenticated SSU2/router-I2NP inbound owner, and
-`plan253_short_build_payload` returns an empty slice. The Plan 253 daemon integration test
-constructs `TransitOwner` directly rather than traversing the real inbound owner. The same
-closure SHA also failed ordinary Ubuntu/macOS quality jobs at rustfmt.
+Ordinary product construction intentionally remains transit-disabled; its SSU2 pump only
+references `controlled_transit_disabled_probe`. That is not external capability evidence.
 
-Plan 254 is the corrective authority for:
+Plan 255 is registered ready. Its first hard gate is a controlled runtime consuming actual
+authenticated `Ssu2DaemonHandle::next_inbound()` events through an enabled
+`TransitLiveOwner`. Only then may unmodified exact-pinned i2pd 2.61.0 builds count.
 
-- one canonical decoded STBM body handoff;
-- actual production inbound-owner invocation;
-- real outer cancellation/session lifecycle;
-- creator/service-versus-transit TunnelData ownership ordering;
-- OBEP semantic delivery consumption;
-- IBGW live TunnelGateway ingress;
-- exact-SHA CI and planning-state reconciliation.
+Plan 255 requires stock-i2pd-created OBEP, IBGW, and intermediate Participant builds,
+accepted replies, role-correct data-plane traffic, code-30 rejection, truthful bandwidth
+option disposition, logical expiry/replay/cleanup, and two complete same-i2pr-SHA runs.
+Fabricated STBMs, direct registry insertion, patched references, false RouterInfo claims,
+and public-network fallback do not count.
 
-Exact-pinned i2pd qualification is deferred to Plan 255 after Plan 254 closure.
+M11 remains non-advertised. A Plan 255 pass may satisfy ADR 0026 experimental progression
+only; full two-family router conformance/public transit advertisement remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -351,8 +353,8 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 `ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
-This is still non-advertised infrastructure. Exact-pinned i2pd qualification remains Plan
-255, unregistered behind the Plan 254 live-ingress/body-threading corrective.
+This is still non-advertised infrastructure. Plan 255 exact-pinned i2pd controlled transit
+qualification is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
