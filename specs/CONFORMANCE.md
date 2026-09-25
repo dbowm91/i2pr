@@ -39,15 +39,15 @@ Exact-pinned i2pd Plan 193 satisfies M6 experimental mixed-router progression. T
 full-router lane remains compatibility debt at Plan 247. Full two-family M6 router
 conformance remains not claimed.
 
-Exact-pinned i2pd Plan 255 lands the M11 controlled transit qualification
-infrastructure (real `Ssu2DaemonHandle::next_inbound()` -> enabled
-`TransitLiveOwner::handle_inbound` for OBEP/IBGW/Participant roles,
-fail-closed runner + driver + evidence checker + hosted workflow);
-the two complete same-SHA external passes are pending hosted Actions
-execution. M11 capability remains unclaimed and `advertised=false`.
-Public transit, RouterInfo capability, router.version, public-network
-participation, and Java-router compatibility are not authorized by
-Plan 255.
+Plan 255's exact-pinned i2pd M11 qualification scaffold is retained after post-closure source
+audit found that its external evidence/topology cannot establish the claimed role/data-plane
+matrix. Plan 256 is registered as the corrective authority: counted evidence must use the
+RouterIdentity's actual tunnel-build X25519 static key, prove the active reference NetDB loaded
+the genuine signed RI before peer selection, run separate typed OBEP/IBGW/Participant epochs
+with a real second reference for Participant, and execute real rejection/replay/expiry/cancel/
+restart experiments. Two complete same-SHA exact-pinned i2pd passes remain required. M11
+capability remains unclaimed and `advertised=false`. Public transit, RouterInfo capability,
+router.version, public-network participation, and Java-router compatibility are not authorized.
 
 ## Source-to-code traceability
 
@@ -135,7 +135,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | NTCP2 | responder | pending | pending | family duplicate | optional | test log/vector |
 | NetDB lookup | requester | pending | pending | family duplicate | optional | trace/result |
 | Tunnel build | creator | pending | pending | family duplicate | optional | testnet artifact |
-| Transit tunnel | participant | retained/deferred | infrastructure-only closed via Plan 255 (hosted Actions passes pending) | family duplicate | optional | Plan 255 external evidence (hosted) + Plan 254 live-owner evidence |
+| Transit tunnel | participant | retained/deferred | Plan 255 scaffold retained; Plan 256 corrective ready, external qualification not yet passed | family duplicate | optional | Plan 254 live-owner evidence + future Plan 256 exact-pinned i2pd evidence |
 | Streaming | connect/listen | retained/deferred full-router compatibility at Plan 247 | passed bidirectional matrix via Plan 193 | family duplicate | optional | Plan 193 external transcript + Plan 247 retained Java boundary |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
 | SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/closure/ssu2/161-status.md`, `tests/integration/ssu2/run-independent.sh` |

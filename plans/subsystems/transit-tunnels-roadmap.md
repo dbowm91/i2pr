@@ -50,7 +50,7 @@ knowledge.
 
 ## 3. Non-goals
 
-No public-network transit in Plans 249-255; no floodfill (M12); no new ElGamal generation;
+No public-network transit in Plans 249-256; no floodfill (M12); no new ElGamal generation;
 no Proposal 153 data layer; no broad RouterInfo/router.version change in Plan 249; no Java
 full-router gate for experimental M11 progression; no resource-governor bypass.
 
@@ -65,20 +65,23 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
 - Plan 254 provides the single-decode `TransitInboundBodies` handoff and controlled
   `TransitLiveOwner::handle_inbound` with real `Ssu2InboundI2np`, creator/service
   ownership ordering, OBEP delivery, IBGW ingress, and outer cancellation.
-- Plan 255 is **infrastructure-only closed** on the closure SHA: the fail-closed
-  runner + driver + evidence checker + hosted workflow are wired; the two
-  same-SHA external passes remain pending hosted Actions execution. Ordinary
-  product construction remains transit-disabled; its SSU2 pump consults only the
-  disabled probe.
+- Plan 255 is retained as useful qualification scaffolding, but its completion interpretation
+  is narrowed by post-closure source audit: one generic build can fan out into unrelated success
+  rows, the Participant topology lacks i2pd-B, RouterInfo bootstrap is not proven against the
+  active reference NetDB before selection, the transit responder key is unrelated to the
+  advertised RouterIdentity encryption key, and rejection/replay/expiry/cancel/restart are not
+  real external experiments.
+- Plan 256 is registered ready as the evidence/topology corrective. Ordinary product construction
+  remains transit-disabled; its SSU2 pump consults only the disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
 testing for routers advertising that protocol level. No M11 plan changes router.version or
 advertises public transit support.
 
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
-ordinary CI/source-lock boundary. Plan 255 exact-pinned i2pd controlled transit
-qualification is infrastructure-only closed; the two same-SHA external passes
-are pending hosted Actions execution.
+ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
+post-closure audit. Plan 256 is the next executable authority; repeated Plan 255 hosted dispatches
+do not count until the evidence/topology defects are corrected.
 
 ## 5. Target architecture
 
@@ -110,17 +113,20 @@ already-transformed STBM; OBEP emits OTBRM from the same transformed record set.
 router delivery owns build/TunnelData next-hop delivery. The daemon must not reopen,
 reseal, export reply keys, or run a second independent message processor.
 
-Ordinary product profiles remain disabled. Plan 255 owns the controlled real-SSU2
-composition used for qualification. No per-cell task spawning.
+Ordinary product profiles remain disabled. Plan 254 retains the controlled real-SSU2 owner
+boundary; Plan 256 owns correction of the external qualification topology/evidence around that
+boundary. No per-cell task spawning.
 
 ### Controlled external qualification
 
-Plan 255 uses unmodified exact-pinned i2pd 2.61.0
+Plan 256 repairs the Plan 255 lane while retaining unmodified exact-pinned i2pd 2.61.0
 (`635b013a612ff47278ef02acf8580a28e10e26c5`) as the independent oracle. Counted builds
-originate at stock i2pd, enter through actual authenticated SSU2 `next_inbound`, and
-traverse an enabled controlled `TransitLiveOwner`. Fabricated STBMs, direct registry
-insertion, patched references, false RouterInfo claims, and public-network fallback do not
-count.
+must originate at stock i2pd, enter through actual authenticated SSU2 `next_inbound`, and
+traverse an enabled controlled `TransitLiveOwner`. The responder private key must correspond
+to the X25519 encryption public key in the exact signed i2pr RouterIdentity; the public RI must
+be loaded by the exact reference NetDB before peer selection; role rows must derive from typed
+decoded roles in separate epochs. Fabricated STBMs, direct registry insertion, patched
+references, false RouterInfo claims, and public-network fallback do not count.
 
 The lane qualifies OBEP, IBGW, and intermediate Participant builds with real data-plane
 traffic, code-30 rejection, truthful bandwidth-option disposition, logical expiry/cleanup,
@@ -141,7 +147,7 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    Plan 254 live ingress/body closure corrective
                                                                  |
                                                                  v
-                                                   Plan 255 exact-pinned i2pd qualification
+                                                   Plan 256 corrected exact-pinned i2pd qualification
                                                                  |
                                                                  v
                                                    M11 experimental closure
@@ -152,8 +158,9 @@ Plan 251 Java source-lock CI corrective ---------------/         |
 
 Plans 250 and 251 are closed. Plan 252's full-message STBM core is retained. Plan 253
 retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live-owner
-corrective is closed by passed Plan 254. Plan 255 exact-pinned i2pd controlled transit
-qualification is registered ready and is the next executable M11 plan.
+corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
+its post-closure defects recorded. Plan 256 is registered ready and is the next executable M11
+plan.
 
 ## 7. Milestones
 
@@ -165,7 +172,8 @@ qualification is registered ready and is the next executable M11 plan.
 | 252 | retained | retained-m11-daemon-transit-composition-corrective-required-via-plan253 | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
 | 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
 | 254 | closed | passed-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
-| 255 | closed (infrastructure only) | passed-m11-exact-pinned-i2pd-controlled-transit-qualification-infrastructure-only-external-passes-pending-hosted-actions | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | plans/closure/transit-tunnels/255-status.md |
+| 255 | retained | retained-m11-i2pd-qualification-infrastructure-evidence-topology-corrective-required-via-plan256 | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | plans/closure/transit-tunnels/255-status.md |
+| 256 | ready | registered-m11-i2pd-qualification-evidence-topology-corrective-ready | plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md | — |
 
 ## 8. Cross-cutting requirements
 
@@ -232,29 +240,37 @@ creator/service-versus-transit ownership, OBEP delivery, IBGW ingress, and green
 CI. Ordinary product pump behavior remains disabled/probe-only; Plan 255 must prove the
 enabled owner on actual SSU2 `next_inbound`.
 
-### Plan 255
+### Plan 255 — retained qualification scaffold
 
-Infrastructure-only closed on the closure SHA: the
-`crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs` driver consumes
-real `Ssu2DaemonHandle::next_inbound()` events and feeds them into
-an enabled `TransitLiveOwner`; the `tests/integration/m11-transit/run-i2pd.sh`
-runner provisions a loopback-only i2pd-A with the exact pin
-`635b013a...` / version `2.61.0`, disables public reseed/network,
-writes the controlled i2pr RouterInfo into i2pd's netDb so the
-bounded bootstrap is observable, and fails closed when the i2pd
-cache or env vars are missing; the static
-`scripts/check-m11-transit-qualification-evidence.sh` checker
-enforces every mandatory Plan 255 row; the hosted
-`.github/workflows/m11-transit-external.yml` workflow is wired and
-ready. The two complete same-SHA external passes required by §H
-remain owned by hosted Actions or manual execution; once the hosted
-double-pass is observed, `m11_transit_qualification` flips from
-`failed` to `passed-via-i2pd-2.61.0` and the M12 floodfill
-corrective may be registered.
+Plan 255 landed useful surfaces: the ignored external Rust driver, loopback runner, exact-pin
+checks, static evidence checker, and hosted workflow. Post-closure source audit narrowed the
+completion claim. Its external row generator can mark many unrelated requirements true from one
+generic observed build; role attribution is not typed; i2pd-B is not started for Participant;
+the RI write is not proven against the running reference NetDB before selection; the
+TransitHopMaterial responder key is generated independently of the advertised RouterIdentity;
+and rejection/replay/expiry/cancel/restart rows are not backed by their claimed experiments.
 
-If deterministic role placement needs patched i2pd or false
-RouterInfo claims, the runner's `m11-i2pd-selected-role-proven`
-row fails closed and the static checker rejects the evidence.
+The original local/full-workspace/CI evidence remains historical evidence for the scaffold. It
+is not M11 external capability evidence and the Plan 255 workflow must not simply be dispatched
+twice and counted.
+
+### Plan 256 — qualification evidence/topology corrective
+
+Plan 256 is the current executable authority. It keeps the exact i2pd 2.61.0 / 635b013a... pin
+and repairs the counted lane by requiring:
+
+- RouterIdentity/build-responder X25519 key coherence;
+- public RI installation into the exact source-locked reference NetDB before peer selection;
+- separate typed OBEP, IBGW, and Participant epochs, with a real second i2pd reference for the
+  intermediate Participant topology;
+- typed append-only event evidence whose row predicates cannot fan out from a generic boolean;
+- genuine Participant/OBEP/IBGW data-plane experiments;
+- genuine code-30 rejection, replay, logical expiry, cancellation, session-close, and restart
+  experiments;
+- two complete fresh-datadir external passes on the same i2pr SHA.
+
+M12 remains blocked until Plan 256 closes. Public transit and broad two-family conformance remain
+separate.
 
 ## 10. Risks and decision points
 
@@ -281,7 +297,7 @@ Full two-family router conformance is not required to begin M12 development unde
 Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed the
 ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
 retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
-live-owner corrective completed by passed Plan 254. Plan 255 exact-pinned i2pd controlled
-transit qualification is **infrastructure-only closed** on the closure SHA; the two
-same-SHA external passes are pending hosted Actions execution. M12 floodfill remains
-deferred until the hosted double-pass is observed.
+live-owner corrective completed by passed Plan 254. Plan 255 qualification scaffolding is
+retained after post-closure evidence/topology audit. Plan 256 is registered ready as the
+corrective authority. M12 floodfill remains deferred until Plan 256 closes with two complete
+same-SHA exact-pinned i2pd passes.

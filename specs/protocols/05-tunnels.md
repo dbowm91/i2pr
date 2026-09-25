@@ -277,39 +277,37 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254 and 255
+### Current M11 qualification authority — Plans 254-256
 
 Plan 254 is closed
 (`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
 single-decode STBM/TunnelData/TunnelGateway handoff, controlled
 `TransitLiveOwner::handle_inbound`, creator/service ownership precedence, OBEP delivery,
-IBGW ingress, outer cancellation, and session-close reconciliation. Plan 253 remains
-retained authority for the runtime-neutral data plane, bounded peer index, complete build
-envelopes, code-30 route preservation, terminal rollback, drain, and move-only secrets.
+IBGW ingress, outer cancellation, and session-close reconciliation. Plan 253 remains retained
+authority for the runtime-neutral data plane, bounded peer index, complete build envelopes,
+code-30 route preservation, terminal rollback, drain, and move-only secrets.
 
 Ordinary product construction intentionally remains transit-disabled; its SSU2 pump only
 references `controlled_transit_disabled_probe`. That is not external capability evidence.
 
-Plan 255 is **infrastructure-only closed** on the closure SHA. The
-fail-closed runner, driver, evidence checker, and hosted
-`.github/workflows/m11-transit-external.yml` workflow are wired;
-the controlled runtime consumes actual authenticated
-`Ssu2DaemonHandle::next_inbound()` events through an enabled
-`TransitLiveOwner`. The two complete same-SHA external passes
-required by Plan 255 §H are pending hosted Actions or manual
-execution; once the hosted double-pass is observed
-`m11_transit_qualification` flips from `failed` to
-`passed-via-i2pd-2.61.0`.
+Plan 255 is retained as qualification scaffolding after post-closure source audit. The driver,
+runner, evidence checker, and hosted workflow remain useful, but the counted external matrix is
+not authoritative: one generic observed build can emit unrelated success keys; role evidence is
+not typed; i2pd-B is absent for the claimed intermediate Participant topology; RI bootstrap is
+not proven against the active reference NetDB before selection; the transit responder private
+key is unrelated to the X25519 encryption public key in the signed RouterIdentity; and the
+rejection/replay/expiry/cancel/restart rows are not backed by those external experiments.
 
-Plan 255 requires stock-i2pd-created OBEP, IBGW, and intermediate Participant builds,
-accepted replies, role-correct data-plane traffic, code-30 rejection, truthful bandwidth
-option disposition, logical expiry/replay/cleanup, and two complete same-i2pr-SHA runs.
-Fabricated STBMs, direct registry insertion, patched references, false RouterInfo claims,
-and public-network fallback do not count.
+Plan 256 is registered ready as the corrective authority. It keeps exact-pinned unmodified
+i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) and requires RouterIdentity
+build-key coherence, exact reference NetDB load proof, separate typed OBEP/IBGW/Participant
+epochs with a real second reference for Participant, typed per-row event predicates, genuine
+role data-plane traffic, genuine code-30/replay/logical-expiry/cancel/session-close/restart
+experiments, and two complete same-SHA passes.
 
-M11 remains non-advertised. A Plan 255 hosted double-pass may satisfy
-ADR 0026 experimental progression only; full two-family router
-conformance/public transit advertisement remain separate.
+M11 remains non-advertised. Plan 256 may satisfy ADR 0026 experimental progression only after
+those two complete passes; full two-family router conformance/public transit advertisement
+remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -329,17 +327,10 @@ wire the controlled gate into the real ingress owner, construct complete outboun
 messages, route valid code-30 replies, clean all terminal delivery failures, and
 deterministically drain secrets on shutdown.
 
-Exact-pinned i2pd qualification infrastructure landed in Plan 255
-after Plan 254 closed the live-owner boundary; the two complete
-same-SHA external passes remain pending hosted Actions execution.
-The Plan 255 `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`
-driver consumes real `Ssu2DaemonHandle::next_inbound()` events
-through an enabled `TransitLiveOwner::handle_inbound` and the
-`tests/integration/m11-transit/run-i2pd.sh` runner provisions a
-loopback-only i2pd-A with the exact `635b013a...` pin and version
-`2.61.0`. The static
-`scripts/check-m11-transit-qualification-evidence.sh` checker
-enforces every mandatory Plan 255 row.
+Plan 255's exact-pinned i2pd driver/runner/checker/workflow are retained scaffolding only after
+post-closure audit. Plan 256 owns correction of the external topology and evidence semantics;
+no Plan 255 external row is promoted to M11 capability evidence until the corrected complete
+matrix passes twice on one SHA.
 
 ### Plan 252 full-message transit composition invariant
 
@@ -371,8 +362,8 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 `ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
-This is still non-advertised infrastructure. Plan 255 exact-pinned i2pd controlled transit
-qualification is registered ready and is the next M11 execution authority.
+This is still non-advertised infrastructure. Plan 256 exact-pinned i2pd qualification
+evidence/topology corrective is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

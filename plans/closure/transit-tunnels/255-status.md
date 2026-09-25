@@ -1,3 +1,50 @@
+# Current authority amendment — Plan 256 corrective registered
+
+Status: **retained-m11-i2pd-qualification-infrastructure-evidence-topology-corrective-required-via-plan256**
+
+Post-closure source audit of the Plan 255 implementation on
+`014f72d3e9c0a4128b0d6cacdb003b55c0943b12` found that the qualification scaffold cannot establish the
+external capability rows it was intended to measure. The original execution evidence below is
+retained verbatim as historical evidence of what ran; its infrastructure-completion
+interpretation is narrowed by this amendment.
+
+Plan 256 is the corrective authority:
+`plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md`.
+
+Findings requiring Plan 256:
+
+1. one generic `observed_build` branch emits success keys for unrelated OBEP, IBGW,
+   Participant, data-plane, rejection, expiry, cancellation, restart, and forwarding rows;
+2. role attribution is not bound to a typed decoded role/epoch;
+3. the runner does not start the i2pd-B process required for the claimed intermediate
+   Participant topology;
+4. the i2pr RouterInfo write is not proven to target the running reference's exact NetDB owner
+   before peer selection, and the current fallback is derived from the evidence directory;
+5. the transit service receives a freshly generated X25519 responder private key unrelated to
+   the X25519 encryption public key in the signed i2pr RouterIdentity, while ECIES tunnel-build
+   Noise-N is addressed to the hop's RouterIdentity static encryption key;
+6. several ownership/provenance keys are written before the matching `next_inbound` event is
+   observed;
+7. code-30 rejection, replay, logical expiry, cancellation, and restart are not executed as the
+   external experiments their rows claim;
+8. the static evidence checker verifies key plumbing but does not prevent this semantic
+   false-positive fan-out.
+
+Retained from Plan 255: the ignored external driver surface, loopback-only exact-pin runner,
+source/cache checks, hosted workflow, static checker foundation, ordinary CI integration, and
+the local/full-workspace evidence recorded below. These are useful scaffolding, not M11
+external qualification evidence.
+
+M12 remains blocked. Re-running the uncorrected Plan 255 workflow twice does not satisfy the
+Plan 255 §H intent. Plan 256 must first correct identity/key coherence, reference bootstrap,
+role topology, per-row typed evidence, and the missing external experiments; then the complete
+matrix must pass twice on one i2pr SHA.
+
+No public transit, RouterInfo capability, router.version, or public-network participation is
+authorized by this amendment.
+
+---
+
 # Plan 255 — M11 exact-pinned i2pd controlled transit qualification — closure record
 
 Status: **passed-m11-exact-pinned-i2pd-controlled-transit-qualification-infrastructure-only-external-passes-pending-hosted-actions**
