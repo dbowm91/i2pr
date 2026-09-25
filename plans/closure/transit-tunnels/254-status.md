@@ -222,9 +222,9 @@ cargo test --locked -p i2pr-daemon --test m11_transit_data_plane -- --test-threa
                                                             : 2 passed (updated to new owner API)
 ```
 
-Ordinary GitHub Actions (Quality ubuntu/macOS, MSRV, dependency policy) run on the exact
-closure SHA after push; green is required as closure authority per plan §H and is
-recorded as a CI-evidence follow-up on that SHA.
+Ordinary GitHub Actions on the exact closure SHA `475c25c` (run `36099566339`) are green:
+Quality (ubuntu-latest) success, Quality (macos-latest) success, MSRV (Ubuntu) success,
+Dependency policy success. This is the exact-SHA CI authority required by plan §H.
 
 ## 6. Files changed
 
