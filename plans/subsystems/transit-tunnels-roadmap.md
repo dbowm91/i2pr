@@ -126,7 +126,10 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    Plan 253 live daemon/data-plane corrective
                                                                  |
                                                                  v
-                                                   Plan 254 exact-pinned i2pd qualification
+                                                   Plan 254 live ingress/body closure corrective
+                                                                 |
+                                                                 v
+                                                   Plan 255 exact-pinned i2pd qualification
                                                                  |
                                                                  v
                                                    M11 experimental closure
@@ -135,11 +138,12 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    M12 floodfill planning
 ~~~
 
-Plans 250 and 251 are closed. Plan 252's runtime-neutral full-message STBM core is retained,
-but its daemon-composition closure is narrowed by post-closure review. Plan 253 is
-registered ready to correct live ingress ownership, canonical transit data-plane behavior,
-rejection delivery, rollback/shutdown cleanup, and bounded peer state. Plan 254 external
-i2pd qualification remains unregistered behind Plan 253.
+Plans 250 and 251 are closed. Plan 252's runtime-neutral full-message STBM core is retained.
+Plan 253 retains its successful runtime-neutral transit data plane, envelope routing,
+rollback/drain, bounded-peer, and secret-ownership corrections, but its live-owner closure
+is narrowed: the production inbound owner is not wired, the ShortTunnelBuild body shim is
+empty, and current-SHA CI is red. Plan 254 is registered ready for that narrow closure
+corrective. Plan 255 external i2pd qualification remains unregistered behind Plan 254.
 
 ## 7. Milestones
 
@@ -149,8 +153,9 @@ i2pd qualification remains unregistered behind Plan 253.
 | 250 | closed (infrastructure only) | passed-m11-transit-foundation-semantic-and-ownership-corrective-infrastructure-only-m11-capability-not-claimed | plans/implementation/transit-tunnels/250-m11-transit-foundation-semantic-and-ownership-corrective.md | plans/closure/transit-tunnels/250-status.md |
 | 251 | closed (cross-subsystem CI maintenance) | passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
 | 252 | retained | retained-m11-daemon-transit-composition-corrective-required-via-plan253 | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
-| 253 | closed | passed-m11-live-daemon-transit-data-plane-corrective | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
-| 254 | planned | unregistered-after-plan253 | not yet written | not yet written |
+| 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
+| 254 | ready | registered-ready-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
+| 255 | planned | unregistered-after-plan254 | not yet written | not yet written |
 
 ## 8. Cross-cutting requirements
 
@@ -211,6 +216,14 @@ shutdown, and enforce bounded peer/session state.
 
 ### Plan 254
 
+Close the real production-consumer boundary: thread the decoded STBM body from the single
+canonical router-I2NP decode into TransitOwner, call that owner from the actual authenticated
+SSU2 inbound pump, use the real cancellation/session lifecycle, enforce creator/service vs
+transit ownership ordering, and complete OBEP semantic delivery plus IBGW TunnelGateway
+ingress. Remove the empty-body shim and require green current-SHA CI.
+
+### Plan 255
+
 Against exact-pinned i2pd prove genuine build addressed to i2pr, accepted encrypted reply,
 role-correct TunnelData/TunnelGateway behavior, bandwidth rejection, expiry/duplicate
 failure, repeated exact-head stability, and cleanup baseline.
@@ -242,8 +255,8 @@ Full two-family router conformance is not required to begin M12 development unde
 
 Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
 closed the ordinary-CI/source-lock corrective. Plan 252 retains the successful
-runtime-neutral full-message STBM core, but its daemon closure is narrowed because live
-ingress wiring, canonical TunnelData/edge-role processing, code-30 delivery, terminal
-rollback, shutdown drain, and bounded peer ownership are incomplete. Plan 253 is registered
-ready for that corrective. Plan 254 exact-pinned i2pd qualification remains unregistered.
-M12 floodfill remains deferred until M11 controlled transit/resource evidence exists.
+runtime-neutral full-message STBM core. Plan 253 retains its successful runtime-neutral
+data-plane/envelope/rollback/drain/bounded-peer corrections but requires Plan 254 to close
+the actual live-owner/body-threading boundary and restore exact-SHA CI. Plan 254 is
+registered ready. Plan 255 exact-pinned i2pd qualification remains unregistered. M12
+floodfill remains deferred until M11 controlled transit/resource evidence exists.

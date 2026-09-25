@@ -277,6 +277,30 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
+### Current M11 live-owner authority — Plan 254 corrective
+
+Plan 253 remains retained authority for the runtime-neutral transit data plane, bounded peer
+index, complete build envelope construction, code-30 route preservation, terminal rollback,
+cancellation drain, and move-only daemon secret owner.
+
+Its final live-owner claim is narrowed. The current `TransitOwner` has no production caller
+from the actual authenticated SSU2/router-I2NP inbound owner, and
+`plan253_short_build_payload` returns an empty slice. The Plan 253 daemon integration test
+constructs `TransitOwner` directly rather than traversing the real inbound owner. The same
+closure SHA also failed ordinary Ubuntu/macOS quality jobs at rustfmt.
+
+Plan 254 is the corrective authority for:
+
+- one canonical decoded STBM body handoff;
+- actual production inbound-owner invocation;
+- real outer cancellation/session lifecycle;
+- creator/service-versus-transit TunnelData ownership ordering;
+- OBEP semantic delivery consumption;
+- IBGW live TunnelGateway ingress;
+- exact-SHA CI and planning-state reconciliation.
+
+Exact-pinned i2pd qualification is deferred to Plan 255 after Plan 254 closure.
+
 ### Current M11 daemon authority — Plan 253 corrective
 
 Plan 252 remains authoritative for the runtime-neutral full-message ShortTunnelBuild
@@ -295,7 +319,7 @@ wire the controlled gate into the real ingress owner, construct complete outboun
 messages, route valid code-30 replies, clean all terminal delivery failures, and
 deterministically drain secrets on shutdown.
 
-Exact-pinned i2pd qualification is deferred to Plan 254 after Plan 253 closure.
+Exact-pinned i2pd qualification is deferred to Plan 255 after Plan 254 closes the live-owner boundary.
 
 ### Plan 252 full-message transit composition invariant
 
@@ -328,7 +352,7 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
 This is still non-advertised infrastructure. Exact-pinned i2pd qualification remains Plan
-254, unregistered behind the Plan 253 daemon/data-plane corrective.
+255, unregistered behind the Plan 254 live-ingress/body-threading corrective.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

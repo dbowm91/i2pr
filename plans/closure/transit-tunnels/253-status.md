@@ -1,3 +1,38 @@
+# Current authority amendment — Plan 254 corrective required
+
+Status: **retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254**
+
+Post-closure audit on main `6a53efaeed30087b3ef133028f7243897d72afba` found that
+Plan 253 materially fixed the runtime-neutral transit data plane, build envelope routing,
+bounded peer index, rollback, cancellation drain, and secret ownership. Those results are
+retained.
+
+Its final live-owner closure interpretation is too strong:
+
+1. the actual authenticated SSU2/router-I2NP inbound owner does not call
+   `TransitOwner::dispatch_short_build`;
+2. `plan253_short_build_payload` explicitly returns `&[]`;
+3. the daemon integration test constructs `TransitOwner` directly and does not traverse the
+   production inbound owner;
+4. OBEP `RouterDeliveryAction` consumption is not completed in that owner;
+5. IBGW live `TunnelGateway` ingress is not completed in that owner;
+6. `dispatch_short_build` creates a fresh cancellation token rather than using the real
+   owner token;
+7. current-SHA Actions run `36089834582` failed `cargo fmt --all --check` on Ubuntu and
+   macOS;
+8. planning/support surfaces still project Plan 253 as next executable.
+
+Historical Plan 253 local test evidence below is preserved. The original `passed-*`
+interpretation is superseded by this amendment.
+
+Corrective authority:
+`plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md`
+
+Plan 254 is registered ready. Exact-pinned i2pd qualification moves to unregistered Plan
+255.
+
+No M11 capability or advertisement is claimed.
+
 # Plan 253 — M11 live daemon transit / data-plane corrective — closure record
 
 Status: passed-m11-live-daemon-transit-data-plane-corrective
