@@ -368,16 +368,15 @@ pub fn dispatch_router_i2np_with_transit_bodies(
             bodies.tunnel_data_cell = Some((**cell).clone());
         }
         I2npBody::TunnelGateway(gateway) => {
-            if gateway.tunnel_id != 0 {
-                if let Ok(nested) = gateway
+            if gateway.tunnel_id != 0
+                && let Ok(nested) = gateway
                     .message
                     .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
-                {
-                    bodies.tunnel_gateway = Some(TransitGatewayParts {
-                        tunnel_id: gateway.tunnel_id,
-                        nested,
-                    });
-                }
+            {
+                bodies.tunnel_gateway = Some(TransitGatewayParts {
+                    tunnel_id: gateway.tunnel_id,
+                    nested,
+                });
             }
         }
         _ => {}

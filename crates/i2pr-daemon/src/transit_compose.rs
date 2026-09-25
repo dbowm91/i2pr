@@ -506,15 +506,22 @@ impl TransitPeerIndex {
     /// slot; insertion at capacity returns
     /// [`TransitPeerError::CapacityFull`].
     pub fn insert(&mut self, router: Hash, peer: PeerId) -> Result<(), TransitPeerError> {
-        if self.entries.contains_key(&router) {
-            self.entries.insert(router, peer);
-            return Err(TransitPeerError::Duplicate);
+        use std::collections::btree_map::Entry;
+        let len = self.entries.len();
+        let capacity = self.capacity;
+        match self.entries.entry(router) {
+            Entry::Occupied(mut occupied) => {
+                occupied.insert(peer);
+                Err(TransitPeerError::Duplicate)
+            }
+            Entry::Vacant(vacant) => {
+                if len >= capacity {
+                    return Err(TransitPeerError::CapacityFull(capacity));
+                }
+                vacant.insert(peer);
+                Ok(())
+            }
         }
-        if self.entries.len() >= self.capacity {
-            return Err(TransitPeerError::CapacityFull(self.capacity));
-        }
-        self.entries.insert(router, peer);
-        Ok(())
     }
 
     /// Removes the entry for the supplied router hash. Returns

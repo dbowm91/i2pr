@@ -258,6 +258,12 @@ pub enum LiveInboundOutcome {
     Ignored,
 }
 
+/// Bounded LOCAL consumer for OBEP semantic delivery. Installed by
+/// the controlled harness; the production qualification installs the
+/// real local-delivery seam through the same narrow setter.
+pub type TransitLocalSink =
+    Box<dyn FnMut(&i2pr_tunnel::RouterDeliveryAction) -> Result<(), TransitLiveError> + Send>;
+
 /// The actual live authenticated SSU2/router-I2NP inbound owner for
 /// controlled transit (Plan 254 work packages C–G).
 ///
@@ -276,9 +282,7 @@ pub struct TransitLiveOwner<R> {
     creator_builds: BTreeSet<(i2pr_proto::Hash, u32)>,
     creator_data: BTreeSet<u32>,
     creator_gateways: BTreeSet<u32>,
-    local_sink: Option<
-        Box<dyn FnMut(&i2pr_tunnel::RouterDeliveryAction) -> Result<(), TransitLiveError> + Send>,
-    >,
+    local_sink: Option<TransitLocalSink>,
 }
 
 impl<R: TryCryptoRng + Send> fmt::Debug for TransitLiveOwner<R> {
@@ -469,7 +473,7 @@ where
             )?),
             RouterI2npOutcome::Unsupported { .. } => {
                 if let Some(parts) = bodies.tunnel_gateway {
-                    return Ok(self.handle_gateway_inner(parts, inbound.peer, now_ms)?);
+                    return self.handle_gateway_inner(parts, inbound.peer, now_ms);
                 }
                 Ok(LiveInboundOutcome::Ignored)
             }
@@ -574,10 +578,9 @@ where
             let Some(service) = owner.gate.service_mut() else {
                 return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Disabled));
             };
-            match service.route_tunnel_gateway(parts.tunnel_id, &parts.nested, &peer, now_ms, rng) {
-                Ok(value) => value,
-                Err(_) => None,
-            }
+            service
+                .route_tunnel_gateway(parts.tunnel_id, &parts.nested, &peer, now_ms, rng)
+                .unwrap_or_default()
         };
         let Some(forwards) = forwards else {
             return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped));

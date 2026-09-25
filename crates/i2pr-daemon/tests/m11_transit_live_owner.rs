@@ -753,7 +753,6 @@ fn plan254_d25_wrong_peer_no_fallback() {
 
 /// Plan 254 §D.26 covered by `plan254_d23` second-cell assertion
 /// (replay dropped once, not retried).
-
 /// Plan 254 §E.27–29: OBEP LOCAL/ROUTER/TUNNEL delivery wiring.
 #[test]
 fn plan254_e27_local_reaches_consumer() {
@@ -1031,7 +1030,6 @@ fn plan254_g41_cancelled_build_leaves_no_registration() {
 
 /// Plan 254 §G.42 covered by `plan254_g39` (repeated shutdown/drop
 /// idempotent).
-
 /// Plan 254 bulk dispatch-shape guard: every dispatch through the
 /// live owner used the outer token path (no fresh token), the exact
 /// canonical body, and complete I2NP envelopes on delivery.

@@ -509,12 +509,10 @@ fn register_ssu2_service(
                                 // disabled probe so the production
                                 // caller references the live-owner
                                 // module without dispatching.
-                                match dispatch_router_i2np(&inbound, now_ms) {
-                                    Ok(outcome) => {
-                                        let _ =
-                                            controlled_transit_disabled_probe(&outcome);
-                                    }
-                                    Err(_) => {}
+                                if let Ok(outcome) =
+                                    dispatch_router_i2np(&inbound, now_ms)
+                                {
+                                    let _ = controlled_transit_disabled_probe(&outcome);
                                 }
                             }
                         }

@@ -858,7 +858,13 @@ impl TransitEndpointData {
 /// The daemon uses the routed facts to dispatch the next-hop cell
 /// through the existing bounded router-delivery seam; the OBEP path
 /// returns a semantic router-delivery action instead.
+///
+/// The `Forward` variant carries the fixed 1028-byte wire cell by
+/// value; boxing it would add a heap allocation on the forwarding
+/// hot path without changing the bounded size, so the size
+/// difference against the unit variants is intentional and allowed.
 #[derive(Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TransitDataOutcome {
     /// Participant/IBGW success: forward exactly one
     /// next-hop `TunnelData` cell.
@@ -1201,10 +1207,10 @@ impl TransitHopRegistration {
         // TunnelGateway exactly the same way the participant lock
         // locks. The data_plane is the same `TransitParticipantData`
         // type for both Participant and InboundGateway variants.
-        if let TransitDataPlane::InboundGateway(data) = &mut self.data_plane {
-            if data.locked_previous_peer.is_none() {
-                data.locked_previous_peer = Some(*previous_peer);
-            }
+        if let TransitDataPlane::InboundGateway(data) = &mut self.data_plane
+            && data.locked_previous_peer.is_none()
+        {
+            data.locked_previous_peer = Some(*previous_peer);
         }
         // The IBGW canonical path accepts the standard I2NP
         // message the gateway carries, applies the first
@@ -1426,7 +1432,6 @@ fn cell_split_payload(cell: &TunnelDataMessage) -> [u8; TUNNEL_PAYLOAD_LEN] {
 /// nested envelope. The value matches the canonical I2P
 /// `MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES` ceiling.
 pub const MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES: usize = 61_440;
-const MAX_TRANSIT_GATEWAY_NESTED: usize = 65_536;
 
 /// Failure modes for [`TransitRegistry`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
@@ -5230,7 +5235,6 @@ mod tests {
     fn data_plane_participant_transforms_to_canonical_bytes() {
         let layer_keys = canonical_role_keys(0x11);
         let registered_peer = next_router(0x99);
-        let receive_tunnel_id = 0x1000_u32;
         let next_router_hash = next_router(0xAA);
         let next_tunnel_id = 0x2000_u32;
         let mut registration = TransitHopRegistration {
@@ -5497,7 +5501,7 @@ mod tests {
     fn canonical_tunnel_data_cell(tunnel_id: u32, seed_byte: u8) -> TunnelDataMessage {
         let mut data = [0_u8; 1024];
         for (index, byte) in data.iter_mut().enumerate() {
-            *byte = (seed_byte.wrapping_add(index as u8)) & 0xFF;
+            *byte = seed_byte.wrapping_add(index as u8);
         }
         TunnelDataMessage { tunnel_id, data }
     }
