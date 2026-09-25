@@ -1,3 +1,41 @@
+# Current authority amendment — Plan 253 corrective required
+
+Status: **retained-m11-daemon-transit-composition-corrective-required-via-plan253**
+
+Post-closure source review on main `c94038cfde953051da1a68a1ab29342727daa58b`
+found that the Plan 252 runtime-neutral full-message ShortTunnelBuild processor is useful
+and remains retained, but the daemon-composition completion claim is too strong.
+
+Current blocking findings:
+
+1. `TransitIngressGate` / `TransitBuildService` have no live authenticated SSU2/router-I2NP
+   production caller;
+2. `forward_participant_layer` explicitly returns TunnelData unchanged as a placeholder
+   rather than applying stored layer/IV keys;
+3. duplicate/replay behavior is not implemented through the canonical role/window state in
+   the daemon transit path;
+4. OBEP TunnelData is dropped and IBGW data-plane input is not represented role-correctly;
+5. code-30 outcomes discard `TransitBuildRoute` and `deliver_dispatch` deliberately drops
+   them instead of forwarding STBM / emitting OTBRM;
+6. build delivery tests do not prove complete encoded I2NP messages/message ids;
+7. rollback only handles `NoActiveSession`, while other terminal router-delivery outcomes
+   leave accepted state live;
+8. `cancel()` does not drain registrations/secrets and prevents later expiry cleanup;
+9. the peer index is an unconstrained `BTreeMap` despite a bounded ownership claim;
+10. `TransitHopMaterial` owns private key material but derives `Clone`;
+11. Plan 252 evidence rows 26/27/30/31/32/34/36/37 overstate what their tests prove.
+
+Historical Plan 252 execution/test/CI evidence below is retained verbatim as evidence of what
+ran. Its original `passed-*` completion interpretation is superseded by this amendment.
+
+Corrective authority:
+`plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md`
+
+Plan 253 is registered ready. Exact-pinned i2pd qualification moves to unregistered Plan
+254.
+
+No M11 capability or advertisement is claimed.
+
 # Plan 252 status — M11 daemon transit composition
 
 Status: **passed-m11-daemon-transit-composition-infrastructure-only-m11-capability-not-claimed**

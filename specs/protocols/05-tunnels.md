@@ -277,6 +277,26 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
+### Current M11 daemon authority — Plan 253 corrective
+
+Plan 252 remains authoritative for the runtime-neutral full-message ShortTunnelBuild
+transaction only. Post-closure source review narrowed its daemon/data-plane completion
+claim.
+
+The current daemon surface still contains an explicit no-op TunnelData transform
+placeholder, does not wire `TransitIngressGate` into the live authenticated SSU2/router-I2NP
+owner, drops valid code-30 routing metadata at delivery, rolls back accepted state only for
+`NoActiveSession`, does not drain registrations on cancellation, and keeps an unconstrained
+peer map.
+
+Plan 253 is the corrective authority. It must keep build cryptography in `i2pr-tunnel`,
+compose canonical participant/OBEP/IBGW role behavior with bounded replay/reassembly state,
+wire the controlled gate into the real ingress owner, construct complete outbound I2NP
+messages, route valid code-30 replies, clean all terminal delivery failures, and
+deterministically drain secrets on shutdown.
+
+Exact-pinned i2pd qualification is deferred to Plan 254 after Plan 253 closure.
+
 ### Plan 252 full-message transit composition invariant
 
 Plan 250's per-record transaction is not itself a complete ShortTunnelBuild hop processor.
@@ -308,7 +328,7 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
 This is still non-advertised infrastructure. Exact-pinned i2pd qualification remains Plan
-253, unregistered pending registration after Plan 252 closure.
+254, unregistered behind the Plan 253 daemon/data-plane corrective.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
