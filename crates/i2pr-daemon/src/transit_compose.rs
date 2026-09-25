@@ -1,35 +1,53 @@
-//! Plan 252 daemon-owned M11 transit composition.
+//! Plan 253 daemon-owned M11 transit composition.
 //!
 //! This module owns the bounded runtime bridge between the
 //! runtime-neutral [`i2pr_tunnel::TransitRegistry`] /
 //! [`i2pr_tunnel::TransitAdmissionState`] pair and the daemon's
-//! authenticated router-I2NP ingress.
+//! authenticated router-I2NP ingress. The Plan 253 corrective
+//! retires the Plan 252 module-local proxy tests and replaces them
+//! with a daemon-level [`crate::router_i2np`] dispatch seam driven
+//! from the live [`crate::router_i2np::Ssu2DaemonHandle`]
+//! (Plan 158/184/193). The runtime-neutral data-plane surface
+//! added in [`i2pr_tunnel::TransitHopRegistration::process_tunnel_data`]
+//! is the canonical TunnelData path; this module owns the typed
+//! handoff to the existing
+//! [`crate::router_i2np::RouterDeliveryService`].
 //!
 //! ```text
 //! Ssu2InboundI2np { authenticated peer/link metadata, ShortTunnelBuild body }
 //!   -> dispatch_router_i2np (Plan 184)
 //!   -> TransitBuildService::route_short_build(payload, peer, now_secs)
 //!        -> i2pr_tunnel::process_short_build_message (Plan 252 message-level)
-//!        -> TransitDispatch { ForwardStbm | EmitOtbrm | Dropped }
-//!             -> bounded router-delivery handoff
+//!        -> TransitDispatch { ForwardStbm | EmitOtbrm | Rejected | Fatal }
+//!             -> wrap_full_i2np_envelope (Plan 253)
+//!             -> router-delivery handoff
 //! ```
 //!
-//! For accepted Participant / IBGW hops the dispatch forwards the
-//! transformed STBM to the authenticated next router the request
-//! declared; for accepted OBEP the dispatch emits an OTBRM from the
-//! already-transformed record set to the decoded reply router.
-//! Valid policy rejections and accepted registrations never share
-//! the same forward path: a `code 30` rejection carries the
-//! transformed payload so the upstream IBGW propagates the
-//! rejection to the creator without installing any local state.
+//! For accepted Participant / IBGW hops the dispatch wraps the
+//! already-transformed count-prefixed body in a complete
+//! [`i2pr_proto::I2npBody::ShortTunnelBuild`] envelope with
+//! the authenticated `next_message_id` and forwards it through
+//! the bounded router-delivery seam; for accepted OBEP the
+//! dispatch wraps the transform in an
+//! [`i2pr_proto::I2npBody::OutboundTunnelBuildReply`] envelope
+//! addressed to the decoded reply router / reply message id.
+//! Valid policy rejections (code 30) and accepted registrations
+//! never share the same forward path: a code-30 rejection still
+//! carries the transformed payload wrapped in the role-correct
+//! envelope, and the daemon exposes the route via [`TransitDispatch`]
+//! so the upstream IBGW can propagate the rejection without
+//! installing any local state. The daemon never passes a bare
+//! STBM / OTBRM body to the router-delivery capability — only
+//! complete encoded I2NP messages.
 //!
 //! ```text
 //! Ssu2InboundI2np { authenticated peer/link metadata, TunnelData body }
 //!   -> dispatch_router_i2np (Plan 184)
-//!   -> TransitBuildService::route_tunnel_data(cell, peer, now_secs)
-//!        -> TransitRegistry::role(receive_tunnel) + previous-peer lock
-//!        -> bounded role-local AES transform
-//!        -> TransitTunnelDataDispatch { Forward | Drop | Expire }
+//!   -> TransitBuildService::route_tunnel_data(cell, peer, now_ms)
+//!        -> i2pr_tunnel::TransitHopRegistration::process_tunnel_data
+//!             (locked previous peer, bounded duplicate window,
+//!              expiry, role-correct canonical transform)
+//!        -> TransitTunnelDataDispatch { Forward | Deliver | Drop }
 //!             -> bounded router-delivery handoff
 //! ```
 //!
@@ -37,6 +55,11 @@
 //! against the registry; cells whose receive id is unknown, whose
 //! previous peer does not match the registered lock, or whose
 //! payload is malformed fail closed and never retransform.
+//! Participant/IBGW roles return a `Forward` dispatch; the OBEP
+//! role returns a `Deliver` dispatch carrying a canonical
+//! [`i2pr_tunnel::RouterDeliveryAction`] the daemon emits through
+//! the tunnel-delivery seam the inbound local-route helper already
+//! owns.
 //!
 //! ## Properties
 //!
@@ -46,11 +69,15 @@
 //!   registration.
 //! - The daemon never reopens the local request envelope, never
 //!   reseals the local reply, never invokes the build-cryptography
-//!   primitives directly, and never runs `MessageHopProcessor` as
-//!   a second independent pass beside the message-level
-//!   transaction. The static guard in
+//!   primitives directly, and never holds raw `LayerKeys` for
+//!   transit-side processing. The static guard in
 //!   `scripts/check-m11-transit-boundaries.sh` enforces the
 //!   boundary at compile-time across the workspace.
+//! - Every accepted build registers a single
+//!   [`i2pr_tunnel::TransitHopRegistration`]; if the
+//!   router-delivery capability reports a terminal non-Accepted
+//!   outcome the daemon synchronously removes the registration so a
+//!   failed forward never leaves a dangling participant.
 //! - One bounded daemon owner per router. No per-cell task
 //!   spawning; no unbounded channels; queue/lifecycle tests in this
 //!   module prove no detached task or queue growth under
@@ -64,32 +91,37 @@
 //! Participation remains disabled in ordinary product profiles.
 //! Constructing a [`TransitBuildService`] is the controlled opt-in
 //! path; production profiles do not build one, so no public
-//! configuration has to be introduced merely for this plan.
+//! configuration has to be introduced merely for this plan. The
+//! [`TransitIngressGate::dispatch_short_build`] seam below is the
+//! narrow bridge the Plan 184 router-I2NP dispatcher calls when
+//! the controlled opt-in is installed.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use i2pr_proto::Hash;
-use i2pr_proto::TunnelDataMessage;
+use i2pr_proto::{
+    Date, DeferredBuildRecords, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
+    TunnelDataMessage,
+};
 use i2pr_runtime::CancellationToken;
 use i2pr_transport::PeerId;
 use i2pr_tunnel::build_crypto::{EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography};
 use i2pr_tunnel::identity::{TunnelId, TunnelPeer};
 use i2pr_tunnel::multirecord::{
-    RECORD_BYTES, decode_outbound_tunnel_build_reply, encode_outbound_tunnel_build_reply,
+    RECORD_BYTES, decode_outbound_tunnel_build_reply,
 };
 use i2pr_tunnel::{
     TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState, TransitBuildContext,
-    TransitBuildMessageOutcome, TransitBuildRoute, TransitHopRole, TransitNow, TransitRegistry,
+    TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome, TransitNow, TransitRegistry,
     TransitReplySlot, process_short_build_message,
 };
 use rand_core::TryCryptoRng;
 use thiserror::Error;
 use zeroize::Zeroize;
 
-use crate::router_i2np::RouterDeliveryService;
+use crate::router_i2np::{RouterDeliveryOutcome, RouterDeliveryService};
 
 /// Maximum record count the daemon transit composition accepts in
 /// a single inbound STBM. Mirrors the
@@ -100,13 +132,50 @@ pub const MAX_TRANSIT_RECORDS: u8 = 8;
 /// forwarding. The narrow seam reuses
 /// [`crate::router_i2np::MAX_ROUTER_DELIVERY_TIMEOUT`].
 pub const TRANSIT_DELIVERY_TIMEOUT_SECS: u64 = 30;
+/// Hard upper bound on the routed-router index the daemon-owned
+/// transit composition tracks. Mirrors the SSU2 runtime's
+/// `MAX_ACTIVE_SESSIONS` ceiling (the active session table is the
+/// authoritative source of routing facts); the local cache never
+/// grows beyond this bound.
+pub const MAX_TRANSIT_PEER_INDEX: usize = 4096;
+
+/// Hard ceiling used as the `now`-supplied expiration in
+/// milliseconds when the daemon constructs the I2NP envelope for a
+/// transit forward. The router enforces no canonical M11 lifetime;
+/// the one-hour horizon matches the SSU2 runtime's
+/// `MAX_ROUTER_I2NP_FUTURE_MS`.
+pub const TRANSIT_DELIVERY_EXPIRATION_MS: u64 = 60 * 60 * 1000;
+
+/// Reasons a transit dispatch may fail to construct the I2NP
+/// envelope the router-delivery capability consumes.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum TransitDispatchError {
+    /// The supplied count-prefixed body was empty.
+    #[error("transit dispatch body was empty")]
+    Empty,
+    /// The supplied count-prefixed body failed the structural
+    /// shape check (`1 + n*218`, `n` in `1..=8`).
+    #[error("transit dispatch body shape check failed: {0}")]
+    BodyShape(&'static str),
+    /// The I2NP envelope encoder rejected the constructed
+    /// message. The body is internally consistent so this
+    /// indicates an invariant violation between the multirecord
+    /// codec and the I2NP body registry.
+    #[error("I2NP envelope framing rejected transit dispatch: {0}")]
+    I2npFraming(&'static str),
+}
 
 /// Persistent material the daemon needs to act as a transit hop.
 /// The values are derived from the persistent router identity
 /// bundle the SSU2 service already loads; the static private key
 /// is the same ECIES X25519 secret that protects short-build
 /// request envelopes addressed to this hop.
-#[derive(Clone)]
+///
+/// Plan 253 deliberately removes the `Clone` derive: the static
+/// private key is move-only, and the secret material must not
+/// leak through a duplicate handle. Callers that need to keep
+/// the material alive across ownership boundaries move the
+/// owning [`TransitBuildService`] instead.
 pub struct TransitHopMaterial {
     /// Local hop static X25519 private key used to open inbound
     /// short-build request envelopes.
@@ -154,10 +223,21 @@ impl Drop for TransitHopMaterial {
 /// carries everything the caller needs to forward or terminate the
 /// build message; the daemon must not inspect, reseal, or
 /// retransform individual build records.
+///
+/// Plan 253 carries the full
+/// non-secret route metadata for every role on every disposition:
+/// accepted paths and rejection paths alike preserve the
+/// authenticated next-router / next-message-id tuple so the
+/// upstream IBGW can propagate the dispatch through the same
+/// router-delivery seam without re-deriving anything from the
+/// payload bytes.
 #[derive(Debug, Eq, PartialEq)]
 pub enum TransitDispatch {
-    /// Participant or IBGW: forward the already-transformed STBM
-    /// to the decoded next router at the decoded message id.
+    /// Participant or IBGW: forward the already-transformed
+    /// count-prefixed STBM body wrapped in a complete
+    /// [`i2pr_proto::I2npBody::ShortTunnelBuild`] envelope with
+    /// the decoded `next_message_id` and addressed to the
+    /// authenticated `next_router`.
     ForwardStbm {
         /// Authenticated receive tunnel id this hop committed.
         /// The daemon uses it to roll back the registration when
@@ -191,19 +271,60 @@ pub enum TransitDispatch {
     /// Valid policy rejection: the build was opened, decoded, and
     /// transformed exactly once, but admission refused; the
     /// transformed payload still carries the local code-30 reply
-    /// for upstream propagation. No registration is installed.
+    /// for upstream propagation. The route metadata travels with
+    /// the rejection so the daemon can wrap the payload in the
+    /// role-correct envelope.
     Rejected {
         /// Local admission reason; the wire reply byte is always
         /// code 30 (bandwidth rejected) so no rejection taxonomy
         /// leaks onto the wire.
         reason: TransitAdmissionError,
-        /// Transformed payload the daemon may forward upstream.
+        /// Authenticated receive tunnel id the registration would
+        /// have committed. `None` only when the transform could
+        /// not identify a unique local slot; the daemon drops the
+        /// rejection in that case.
+        receive_tunnel: Option<TunnelId>,
+        /// Whether this is a Participant/IBGW continuation
+        /// (`ContinueStbm`) or an OBEP termination (`TerminateOtbrm`)
+        /// for envelope-wrapping purposes.
+        role: TransitDispatchRole,
+        /// Transformed count-prefixed payload the daemon wraps and
+        /// ships as the role-correct envelope.
         payload: Vec<u8>,
     },
     /// Fatal: the inbound payload could not be decoded or
     /// authenticated; no payload is returned and the caller must
     /// drop the message.
     Fatal,
+}
+
+/// Role classification the daemon uses when wrapping a code-30
+/// rejection payload in the role-correct I2NP envelope. The
+/// envelope is identical to the accepted path so the upstream IBGW
+/// can propagate the rejection through the same router-delivery
+/// seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitDispatchRole {
+    /// Participant / IBGW: code-30 STBM continuation addressed to
+    /// the registered next router.
+    ContinueStbm {
+        /// Authenticated next-router hash.
+        next_router: Hash,
+        /// Authenticated next-message id.
+        next_message_id: u32,
+    },
+    /// OBEP: code-30 OTBRM termination addressed to the registered
+    /// reply router.
+    TerminateOtbrm {
+        /// Authenticated reply-router hash.
+        reply_router: Hash,
+        /// Authenticated reply-tunnel id; preserved across the
+        /// termination so the upstream IBGW can choose to forward
+        /// it into the canonical reply-tunnel delivery path.
+        reply_tunnel: TunnelId,
+        /// Authenticated reply message id.
+        reply_message_id: u32,
+    },
 }
 
 /// Typed dispatch decision for one inbound `TunnelData` cell the
@@ -228,6 +349,10 @@ pub enum TransitTunnelDataDispatch {
         /// Next cell the local role transform produced.
         cell: TunnelDataMessage,
     },
+    /// OBEP semantic delivery completion: forward the recovered
+    /// standard I2NP message through the tunnel-delivery seam
+    /// Plan 209/Plan 214 already owns.
+    Deliver(i2pr_tunnel::RouterDeliveryAction),
     /// The receive id is unknown to the registry, the previous
     /// peer does not match the registered lock, the cell was a
     /// duplicate / replay, the cell payload failed the local
@@ -322,16 +447,114 @@ pub struct TransitBuildService {
     router_delivery: RouterDeliveryService,
     counters: TransitCounters,
     /// Bounded slot of decoded `next_router` -> `PeerId` mappings
-    /// the daemon-owned router delivery service knows about. When a
-    /// registration's next router is not in the slot, the
-    /// dispatch still surfaces the typed decision (so tests can
-    /// verify the routing without an actual session) but the
-    /// caller records `NoActiveSession` against the registry and
-    /// rolls back the registration.
-    peer_index: BTreeMap<Hash, PeerId>,
+    /// the daemon-owned router delivery service knows about. The
+    /// slot enforces the [`MAX_TRANSIT_PEER_INDEX`] ceiling through
+    /// [`TransitPeerIndex`] so the container cannot grow past the
+    /// authoritative session resource bound. When a registration's
+    /// next router is not in the slot, the dispatch still surfaces
+    /// the typed decision (so tests can verify the routing without
+    /// an actual session) but the caller records `NoActiveSession`
+    /// against the registry and rolls back the registration.
+    peer_index: TransitPeerIndex,
     /// Local clock input supplied by the daemon on every call.
     /// The service is runtime-neutral; it never reads wall time.
     cancelled: bool,
+}
+
+/// Bounded transit-side peer / session index.
+///
+/// The container holds the per-router `PeerId` mapping the daemon
+/// install when an authenticated SSU2 session establishes (and
+/// removes when it terminates). The index enforces
+/// [`MAX_TRANSIT_PEER_INDEX`] at construction and on every
+/// insertion; duplicate router updates replace the existing entry
+/// without consuming a second slot, and insertion at capacity
+/// fails closed with [`TransitPeerError::CapacityFull`].
+#[derive(Debug)]
+pub struct TransitPeerIndex {
+    capacity: usize,
+    entries: BTreeMap<Hash, PeerId>,
+}
+
+impl TransitPeerIndex {
+    /// Constructs a new bounded index with the supplied capacity
+    /// clamped to [`MAX_TRANSIT_PEER_INDEX`].
+    pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.min(MAX_TRANSIT_PEER_INDEX);
+        Self {
+            capacity,
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the configured capacity.
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Returns the current entry count.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Inserts or replaces the entry for the supplied router
+    /// hash. Duplicate router updates return
+    /// [`TransitPeerError::Duplicate`] and do not consume a second
+    /// slot; insertion at capacity returns
+    /// [`TransitPeerError::CapacityFull`].
+    pub fn insert(&mut self, router: Hash, peer: PeerId) -> Result<(), TransitPeerError> {
+        if self.entries.contains_key(&router) {
+            self.entries.insert(router, peer);
+            return Err(TransitPeerError::Duplicate);
+        }
+        if self.entries.len() >= self.capacity {
+            return Err(TransitPeerError::CapacityFull(self.capacity));
+        }
+        self.entries.insert(router, peer);
+        Ok(())
+    }
+
+    /// Removes the entry for the supplied router hash. Returns
+    /// `true` when an entry existed.
+    pub fn remove(&mut self, router: &Hash) -> bool {
+        self.entries.remove(router).is_some()
+    }
+
+    /// Returns the [`PeerId`] mapped to the supplied router hash.
+    pub fn get(&self, router: &Hash) -> Option<PeerId> {
+        self.entries.get(router).copied()
+    }
+
+    /// Removes every entry. Cancellation, shutdown, and disable
+    /// all call this to leave the index at its baseline state.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+impl Default for TransitPeerIndex {
+    fn default() -> Self {
+        Self::new(MAX_TRANSIT_PEER_INDEX)
+    }
+}
+
+/// Install/delete failures for [`TransitPeerIndex`].
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum TransitPeerError {
+    /// The supplied router hash was already present; the existing
+    /// entry was replaced but the caller can treat the slot as
+    /// consumed-by-update.
+    #[error("transit peer index entry already present")]
+    Duplicate,
+    /// The bounded capacity was reached; the new entry was
+    /// rejected.
+    #[error("transit peer index at capacity {0}")]
+    CapacityFull(usize),
 }
 
 impl fmt::Debug for TransitBuildService {
@@ -370,7 +593,7 @@ impl TransitBuildService {
             admission: TransitAdmissionState::default(),
             router_delivery,
             counters: TransitCounters::default(),
-            peer_index: BTreeMap::new(),
+            peer_index: TransitPeerIndex::default(),
             cancelled: false,
         })
     }
@@ -415,8 +638,13 @@ impl TransitBuildService {
     /// from an authenticated SSU2 session. The mapping is consulted
     /// before a forward decision to determine whether the daemon
     /// has an active delivery session with the next / reply router.
-    pub fn install_peer(&mut self, router: Hash, peer: PeerId) {
-        self.peer_index.insert(router, peer);
+    /// Returns `Err` when the bounded capacity
+    /// ([`MAX_TRANSIT_PEER_INDEX`]) rejects a fresh entry; duplicate
+    /// router updates replace the existing value without consuming
+    /// a second slot and surface the [`TransitPeerError::Duplicate`]
+    /// outcome to the caller.
+    pub fn install_peer(&mut self, router: Hash, peer: PeerId) -> Result<(), TransitPeerError> {
+        self.peer_index.insert(router, peer)
     }
 
     /// Removes any installed mapping for the supplied router. The
@@ -427,11 +655,29 @@ impl TransitBuildService {
         self.peer_index.remove(router);
     }
 
-    /// Marks the service as cancelled. Subsequent dispatch calls
-    /// fail closed without mutating state; expiry remains a no-op.
-    /// The daemon calls this from the runtime cancellation hook.
+    /// Marks the service as cancelled and synchronously drains
+    /// every active registration, removes every registered
+    /// peer-index entry, and refuses further dispatch / expiry
+    /// without mutating live state. The Plan 253 corrective
+    /// narrows `cancel()` so the daemon no longer relies on the
+    /// 600-second expiry timer to free secret material — the
+    /// drain happens immediately on shutdown, before the SSU2
+    /// owner completes.
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        // Drain every active registration; the registry's `Drop`
+        // zeroizes each removed entry's role-bound `LayerKeys`.
+        let drained = self.registry.expire(u64::MAX);
+        if !drained.is_empty() {
+            self.counters.expired_registrations = self
+                .counters
+                .expired_registrations
+                .saturating_add(drained.len() as u64);
+        }
+        // Drop all peer-index entries; no `[u8; EPHEMERAL_KEY_LEN]`
+        // is held in the index so the bounded drain is constant
+        // time.
+        self.peer_index.clear();
     }
 
     /// Sweeps expired registrations. The caller-supplied clock is
@@ -520,12 +766,22 @@ impl TransitBuildService {
     }
 
     /// Routes one inbound authenticated `TunnelData` cell against
-    /// the registry. The function enforces the receive-id lookup,
-    /// the previous-peer lock, the role's bounded AES-layer
-    /// transform, and replay / duplicate suppression. The next-hop
-    /// router hash and tunnel id travel with the dispatch so the
-    /// daemon runtime can route via
-    /// [`crate::router_i2np::RouterDeliveryService`].
+    /// the registry. The runtime-neutral data plane in
+    /// [`i2pr_tunnel::TransitHopRegistration::process_tunnel_data`] enforces the
+    /// receive-id lookup, the previous-peer lock, the role's bounded
+    /// AES-layer transform, replay / duplicate suppression, exact
+    /// expiry, and the role-correct disposal (Participant / IBGW
+    /// forward one cell; OBEP returns a canonical
+    /// [`i2pr_tunnel::RouterDeliveryAction`]).
+    ///
+    /// The daemon-owned wrapper updates counters, dispatches the
+    /// outcome to the appropriate typed variant, and forwards
+    /// participant/IBGW cells through the existing bounded
+    /// router-delivery seam. The OBEP semantic delivery action is
+    /// exposed as [`TransitTunnelDataDispatch::Deliver`] so the
+    /// daemon owner can ship it through
+    /// `ServiceTunnelManager`-equivalent seam Plan 209/Plan 214
+    /// already owns for local-delivery actions.
     pub fn route_tunnel_data(
         &mut self,
         cell: &TunnelDataMessage,
@@ -533,6 +789,7 @@ impl TransitBuildService {
         now_ms: u64,
     ) -> TransitTunnelDataDispatch {
         if self.cancelled {
+            self.counters.dropped_tunnel_data = self.counters.dropped_tunnel_data.saturating_add(1);
             return TransitTunnelDataDispatch::Drop;
         }
         let receive_tunnel = match TunnelId::new(cell.tunnel_id) {
@@ -544,77 +801,58 @@ impl TransitBuildService {
             }
         };
         let previous_peer_hash = peer_to_hash(*peer);
-        // Snapshot the role-local fields we need; the registry's
-        // `Drop` impl zeroizes the registered `LayerKeys`, so we
-        // must not let the borrow escape this scope.
-        enum ForwardTarget {
-            Participant {
-                next_router: Hash,
-                next_tunnel: TunnelId,
-            },
-            InboundGateway {
-                next_router: Hash,
-                next_tunnel: TunnelId,
-            },
-        }
-        let target = match self.registry.registration(receive_tunnel) {
-            Some(entry) if entry.expires_at_seconds > now_ms / 1000 => {
-                if entry.previous_peer.hash() != previous_peer_hash {
-                    None
-                } else {
-                    match &entry.role {
-                        TransitHopRole::Participant {
-                            next_router,
-                            next_tunnel,
-                            ..
-                        } => Some(ForwardTarget::Participant {
-                            next_router: *next_router,
-                            next_tunnel: *next_tunnel,
-                        }),
-                        TransitHopRole::InboundGateway {
-                            next_router,
-                            next_tunnel,
-                            ..
-                        } => Some(ForwardTarget::InboundGateway {
-                            next_router: *next_router,
-                            next_tunnel: *next_tunnel,
-                        }),
-                        TransitHopRole::OutboundEndpoint { .. } => {
-                            // OBEP receives no inbound TunnelData on
-                            // the transit hop path; if it arrives,
-                            // drop it.
-                            None
-                        }
-                    }
+        let outcome = {
+            let registration = match self.registry.registration_mut(receive_tunnel) {
+                Some(value) => value,
+                None => {
+                    self.counters.dropped_tunnel_data =
+                        self.counters.dropped_tunnel_data.saturating_add(1);
+                    return TransitTunnelDataDispatch::Drop;
+                }
+            };
+            registration.process_tunnel_data(cell, &previous_peer_hash, now_ms)
+        };
+        match outcome {
+            Ok(TransitDataOutcome::Forward {
+                next_router,
+                next_tunnel,
+                cell: next_cell,
+            }) => {
+                self.counters.forwarded_tunnel_data =
+                    self.counters.forwarded_tunnel_data.saturating_add(1);
+                TransitTunnelDataDispatch::Forward {
+                    next_router,
+                    next_tunnel,
+                    cell: next_cell,
                 }
             }
-            _ => None,
-        };
-        let (next_router, next_tunnel) = match target {
-            Some(ForwardTarget::Participant {
-                next_router,
-                next_tunnel,
-            }) => (next_router, next_tunnel),
-            Some(ForwardTarget::InboundGateway {
-                next_router,
-                next_tunnel,
-            }) => (next_router, next_tunnel),
-            None => {
+            Ok(TransitDataOutcome::Deliver { action }) => {
+                self.counters.forwarded_tunnel_data =
+                    self.counters.forwarded_tunnel_data.saturating_add(1);
+                TransitTunnelDataDispatch::Deliver(action)
+            }
+            Ok(TransitDataOutcome::DuplicateOrReplay)
+            | Ok(TransitDataOutcome::PreviousPeerMismatch)
+            | Ok(TransitDataOutcome::Expired)
+            | Ok(TransitDataOutcome::ReceiveTunnelMismatch)
+            | Ok(TransitDataOutcome::ZeroTunnelId)
+            | Ok(TransitDataOutcome::Fragment)
+            | Ok(TransitDataOutcome::TunnelMessageRejected) => {
                 self.counters.dropped_tunnel_data =
                     self.counters.dropped_tunnel_data.saturating_add(1);
-                return TransitTunnelDataDispatch::Drop;
+                TransitTunnelDataDispatch::Drop
             }
-        };
-        let (_next_iv, next_data) = forward_participant_layer(cell);
-        let next_cell = TunnelDataMessage {
-            tunnel_id: next_tunnel.get(),
-            data: next_data,
-        };
-        self.counters.forwarded_tunnel_data = self.counters.forwarded_tunnel_data.saturating_add(1);
-        TransitTunnelDataDispatch::Forward {
-            next_router,
-            next_tunnel,
-            cell: next_cell,
+            Err(error) => {
+                // The duplicate window at capacity is the only
+                // recoverable typed error: the daemon drops the
+                // cell and surfaces it through the dropped
+                // counter, leaving the registration intact. Every
+                // other error path stays a `Drop` outcome.
+                let _ = error;
+                self.counters.dropped_tunnel_data =
+                    self.counters.dropped_tunnel_data.saturating_add(1);
+                TransitTunnelDataDispatch::Drop
+            }
         }
     }
 
@@ -625,14 +863,13 @@ impl TransitBuildService {
     /// so a `NoActiveSession` outcome can roll back the
     /// registration.
     pub fn has_peer(&self, router: &Hash) -> bool {
-        self.peer_index.contains_key(router)
+        self.peer_index.get(router).is_some()
     }
 
     /// Returns the bounded peer index the daemon registered.
-    pub fn peer_index(&self) -> &BTreeMap<Hash, PeerId> {
+    pub const fn peer_index(&self) -> &TransitPeerIndex {
         &self.peer_index
     }
-
     /// Returns the bounded router-delivery reference the daemon
     /// installed. Tests use this to assert delivery outcomes
     /// without reaching into runtime sockets.
@@ -646,49 +883,88 @@ impl TransitBuildService {
     /// without owning a separate delivery path. Returns the
     /// typed [`RouterDeliveryOutcome`] for diagnostics and for
     /// the rollback path.
+    ///
+    /// Plan 253 wraps every dispatch in the role-correct complete
+    /// I2NP envelope before handing the bytes to the
+    /// router-delivery capability. The bare count-prefixed body
+    /// is never sent: STBM continuations wrap the body as type
+    /// `0x19` `ShortTunnelBuild` with the authenticated
+    /// `next_message_id`; OTBRM terminations wrap the body as
+    /// type `0x1A` `OutboundTunnelBuildReply` with the
+    /// authenticated reply message id. Code-30 rejections
+    /// follow the same envelope path so the upstream IBGW can
+    /// propagate the rejection through the same router-delivery
+    /// seam.
     pub fn deliver_dispatch(
         &self,
         dispatch: &TransitDispatch,
         cancellation: &CancellationToken,
     ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
-        let (peer, payload) = match dispatch {
+        let (peer, bytes) = match dispatch {
             TransitDispatch::ForwardStbm {
                 next_router,
+                next_message_id,
                 payload,
                 ..
             } => {
                 let peer = self
                     .peer_index
                     .get(next_router)
-                    .copied()
                     .ok_or(TransitServiceError::NoActiveSession(*next_router))?;
-                (peer, payload.clone())
+                let bytes = wrap_short_tunnel_build_envelope(payload, *next_message_id)
+                    .map_err(TransitServiceError::Dispatch)?;
+                (peer, bytes)
             }
             TransitDispatch::EmitOtbrm {
                 reply_router,
+                reply_message_id,
                 payload,
                 ..
             } => {
                 let peer = self
                     .peer_index
                     .get(reply_router)
-                    .copied()
                     .ok_or(TransitServiceError::NoActiveSession(*reply_router))?;
-                (peer, payload.clone())
+                let bytes = wrap_outbound_tunnel_build_reply_envelope(payload, *reply_message_id)
+                    .map_err(TransitServiceError::Dispatch)?;
+                (peer, bytes)
             }
-            TransitDispatch::Rejected { payload, .. } => {
-                // Policy rejections are not forwarded in the
-                // production daemon path; the transformed payload
-                // is exposed for upstream propagation only when the
-                // daemon explicitly opts in. The default is to drop.
-                let _ = payload;
-                return Ok(RouterDeliveryOutcome::Cancelled);
+            TransitDispatch::Rejected { role, payload, .. } => {
+                let (peer, bytes) = match role {
+                    TransitDispatchRole::ContinueStbm {
+                        next_router,
+                        next_message_id,
+                    } => {
+                        let peer = self
+                            .peer_index
+                            .get(next_router)
+                            .ok_or(TransitServiceError::NoActiveSession(*next_router))?;
+                        let bytes = wrap_short_tunnel_build_envelope(payload, *next_message_id)
+                            .map_err(TransitServiceError::Dispatch)?;
+                        (peer, bytes)
+                    }
+                    TransitDispatchRole::TerminateOtbrm {
+                        reply_router,
+                        reply_message_id,
+                        ..
+                    } => {
+                        let peer = self
+                            .peer_index
+                            .get(reply_router)
+                            .ok_or(TransitServiceError::NoActiveSession(*reply_router))?;
+                        let bytes =
+                            wrap_outbound_tunnel_build_reply_envelope(payload, *reply_message_id)
+                                .map_err(TransitServiceError::Dispatch)?;
+                        (peer, bytes)
+                    }
+                };
+                (peer, bytes)
             }
             TransitDispatch::Fatal => return Ok(RouterDeliveryOutcome::Cancelled),
         };
         let request = crate::router_i2np::RouterDeliveryRequest::new(
             peer,
-            payload,
+            bytes,
             std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
         )
         .map_err(|error| match error {
@@ -718,12 +994,20 @@ impl TransitBuildService {
     }
 
     /// Delivers one typed dispatch and rolls back the committed
-    /// registration when delivery reports a terminal failure the
-    /// daemon cannot represent (`NoActiveSession` at request
-    /// construction). Successful, cancelled, and rejected outcomes
-    /// leave registry state untouched; only the terminal
-    /// `NoActiveSession` path removes the just-committed entry so
-    /// a failed forward never leaves a dangling participant.
+    /// registration when delivery reports any terminal non-Accepted
+    /// outcome. Plan 253 supersedes the Plan 252 narrow rollback
+    /// (which removed only the `NoActiveSession` outcome): every
+    /// terminal router-delivery disposition
+    /// ([`RouterDeliveryOutcome::QueueFull`],
+    /// [`RouterDeliveryOutcome::ResourceDenied`],
+    /// [`RouterDeliveryOutcome::NoActiveSession`],
+    /// [`RouterDeliveryOutcome::TooLarge`],
+    /// [`RouterDeliveryOutcome::DeadlineElapsed`],
+    /// [`RouterDeliveryOutcome::Cancelled`], or an I2NP message
+    /// construction error) rolls the just-committed registration
+    /// back so a failed forward never leaves a dangling
+    /// participant. Only [`RouterDeliveryOutcome::Accepted`]
+    /// leaves the registration live until its planned expiry.
     pub fn deliver_dispatch_with_rollback(
         &mut self,
         dispatch: &TransitDispatch,
@@ -734,15 +1018,28 @@ impl TransitBuildService {
             | TransitDispatch::EmitOtbrm { receive_tunnel, .. } => Some(*receive_tunnel),
             TransitDispatch::Rejected { .. } | TransitDispatch::Fatal => None,
         };
-        match self.deliver_dispatch(dispatch, cancellation) {
-            Ok(outcome) => Ok(outcome),
-            Err(error @ TransitServiceError::NoActiveSession(_)) => {
+        let outcome = self.deliver_dispatch(dispatch, cancellation);
+        match outcome {
+            Ok(RouterDeliveryOutcome::Accepted) => Ok(RouterDeliveryOutcome::Accepted),
+            Ok(other) => {
+                // Any non-Accepted router-delivery outcome is a
+                // terminal failure for the just-committed
+                // registration.
+                if let Some(receive) = receive_tunnel {
+                    let _ = self.rollback_receive_tunnel(receive);
+                }
+                Ok(other)
+            }
+            Err(error) => {
+                // Message-construction error or no-peer error: the
+                // dispatch decision is already made, the
+                // registration (if any) must not survive a failed
+                // forward.
                 if let Some(receive) = receive_tunnel {
                     let _ = self.rollback_receive_tunnel(receive);
                 }
                 Err(error)
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -751,14 +1048,48 @@ impl TransitBuildService {
     /// daemon does not inspect, reseal, or retransform individual
     /// build records; the message-level transaction already
     /// produced the canonical record set.
+    ///
+    /// Plan 253 carries the full route metadata on every disposition,
+    /// including the role-correct policy-rejection path: the daemon
+    /// wraps the rejected code-30 payload in the role-correct envelope
+    /// (Participant / IBGW continuation or OBEP termination) using
+    /// the same authenticated next-router / next-message-id tuple the
+    /// accepted path would have used. The route metadata does not
+    /// require a registration; rejections install no registration.
     fn build_dispatch_from_outcome(
         &mut self,
         outcome: TransitBuildMessageOutcome,
     ) -> TransitDispatch {
         if let Some(reason) = outcome.reject_reason {
             self.counters.rejected_policy = self.counters.rejected_policy.saturating_add(1);
+            let role = match outcome.route {
+                TransitBuildRoute::ContinueStbm {
+                    next_router,
+                    next_message_id,
+                    ..
+                } => TransitDispatchRole::ContinueStbm {
+                    next_router,
+                    next_message_id,
+                },
+                TransitBuildRoute::TerminateOtbrm {
+                    reply_router,
+                    reply_tunnel,
+                    reply_message_id,
+                    ..
+                } => TransitDispatchRole::TerminateOtbrm {
+                    reply_router,
+                    reply_tunnel,
+                    reply_message_id,
+                },
+            };
+            let receive_tunnel = match outcome.route {
+                TransitBuildRoute::ContinueStbm { receive_tunnel, .. } => Some(receive_tunnel),
+                TransitBuildRoute::TerminateOtbrm { receive_tunnel, .. } => Some(receive_tunnel),
+            };
             return TransitDispatch::Rejected {
                 reason,
+                receive_tunnel,
+                role,
                 payload: outcome.transformed_payload,
             };
         }
@@ -770,7 +1101,6 @@ impl TransitBuildService {
                 ..
             } => {
                 self.counters.forwarded_stbms = self.counters.forwarded_stbms.saturating_add(1);
-                let _ = next_message_id;
                 TransitDispatch::ForwardStbm {
                     receive_tunnel,
                     next_router,
@@ -790,16 +1120,7 @@ impl TransitBuildService {
                 // produced; encoding it through
                 // `encode_outbound_tunnel_build_reply` produces a
                 // wire-compatible OTBRM body.
-                //
-                // The decode/encode can only fail if the
-                // message-level transaction produced a payload
-                // the helper rejects — an internal-state mismatch
-                // the static guard and unit tests already
-                // prevent. We treat that as fatal without rolling
-                // back the registry entry; the registration's
-                // 600-second lifetime ensures it drains even
-                // without an explicit rollback.
-                let (count, records) =
+                let (_count, _records) =
                     match decode_outbound_tunnel_build_reply(&outcome.transformed_payload) {
                         Ok(value) => value,
                         Err(_) => {
@@ -808,15 +1129,7 @@ impl TransitBuildService {
                             return TransitDispatch::Fatal;
                         }
                     };
-                let payload = match encode_outbound_tunnel_build_reply(count, &records) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        self.counters.fatal_short_builds =
-                            self.counters.fatal_short_builds.saturating_add(1);
-                        return TransitDispatch::Fatal;
-                    }
-                };
-                let _ = reply_message_id;
+                let payload = outcome.transformed_payload;
                 self.counters.emitted_otbrms = self.counters.emitted_otbrms.saturating_add(1);
                 TransitDispatch::EmitOtbrm {
                     receive_tunnel,
@@ -923,20 +1236,33 @@ impl TransitIngressGate {
             service.cancel();
         }
     }
+
+    /// Borrows the inner [`TransitBuildService`] mutably when one
+    /// is installed. Plan 253 exposes this seam so the live owner
+    /// can drive the typed delivery + rollback helper without
+    /// going through the boundary twice. Returns `None` while
+    /// disabled so callers keep their reserved outcome.
+    pub fn service_mut(&mut self) -> Option<&mut TransitBuildService> {
+        self.service.as_mut()
+    }
 }
 
 /// Outcome of the daemon's typed outbound router-delivery helper.
-pub type RouterDeliveryOutcome = crate::router_i2np::RouterDeliveryOutcome;
-
 /// Service construction or operation failures.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum TransitServiceError {
     /// The supplied registry capacity is out of range.
     #[error("transit registry capacity rejected: {0}")]
     Registry(#[from] i2pr_tunnel::TransitRegistryError),
+    /// The supplied peer-index install exceeded the bounded capacity.
+    #[error("transit peer index: {0}")]
+    Peer(#[from] TransitPeerError),
     /// The router-delivery request could not be constructed.
     #[error("transit router-delivery request failed")]
     DeliveryFailed,
+    /// The I2NP envelope construction refused the supplied body.
+    #[error("transit dispatch envelope construction failed: {0}")]
+    Dispatch(TransitDispatchError),
     /// No active SSU2 session exists for the supplied router.
     #[error("no active SSU2 session for transit router {0:?}")]
     NoActiveSession(Hash),
@@ -975,33 +1301,98 @@ fn peer_to_hash(peer: PeerId) -> Hash {
     peer.hash()
 }
 
-/// Minimal participant-layer forward transform that operates on
-/// one inbound `TunnelData` cell. The local hop owns a derived
-/// `layerKey` / `ivKey`; this helper applies the canonical
-/// participant transform without depending on the runtime-neutral
-/// [`crate::tunnel_liveness`] module's role state. The daemon's
-/// owner is responsible for previous-peer verification; this
-/// function applies the per-cell AES-256-CBC transform.
-///
-/// The runtime-neutral [`i2pr_tunnel::roles::OutboundParticipantRole`]
-/// and [`i2pr_tunnel::roles::InboundParticipantRole`] own the
-/// canonical duplicate-window-protected variant the production
-/// daemon uses; this inlined helper exists for the bounded
-/// daemon-owned ownership the Plan 252 composition requires.
-fn forward_participant_layer(cell: &TunnelDataMessage) -> ([u8; 16], [u8; 1024]) {
-    let mut iv = [0_u8; 16];
-    iv.copy_from_slice(&cell.data[..16]);
-    let mut data = [0_u8; 1024];
-    data.copy_from_slice(&cell.data);
-    // Placeholder participant transform: the daemon wires the
-    // canonical `TunnelLayerTransform` once the role surface
-    // exposes a `receive + previous_peer + transform` entry point
-    // that does not require cloning the secret material into the
-    // registry surface. Until that surface lands, the helper
-    // returns the cell untouched so the dispatch boundary is
-    // observable without forging secrets.
-    (iv, data)
+/// Wraps the supplied count-prefixed ShortTunnelBuild body in a
+/// complete standard-header I2NP envelope addressed to the
+/// supplied `message_id`. The helper validates the structural
+/// shape (`1 + n*218`, `n` in `1..=8`), splits the body into a
+/// [`DeferredBuildRecords`], and encodes a [`I2npMessage`] with
+/// the type-byte the canonical I2NP registry assigns to
+/// `ShortTunnelBuild` (`0x19`).
+fn wrap_short_tunnel_build_envelope(
+    payload: &[u8],
+    message_id: u32,
+) -> Result<Vec<u8>, TransitDispatchError> {
+    if payload.is_empty() {
+        return Err(TransitDispatchError::Empty);
+    }
+    let count = payload[0];
+    if count == 0 || count > MAX_TRANSIT_RECORDS {
+        return Err(TransitDispatchError::BodyShape("count out of range"));
+    }
+    let expected = 1 + (count as usize) * RECORD_BYTES;
+    if payload.len() != expected {
+        return Err(TransitDispatchError::BodyShape(
+            "length does not match count",
+        ));
+    }
+    let records = payload[1..].to_vec();
+    let deferred = DeferredBuildRecords::new(count, RECORD_BYTES, records)
+        .map_err(|_| TransitDispatchError::BodyShape("deferred build records rejected"))?;
+    let body = I2npBody::ShortTunnelBuild(deferred);
+    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
+        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected body"))?;
+    message
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
 }
+
+/// Wraps the supplied count-prefixed OutboundTunnelBuildReply
+/// body in a complete standard-header I2NP envelope addressed to
+/// the supplied reply `message_id`. The helper validates the
+/// structural shape and encodes a [`I2npMessage`] with the
+/// type-byte the canonical I2NP registry assigns to
+/// `OutboundTunnelBuildReply` (`0x1A`).
+fn wrap_outbound_tunnel_build_reply_envelope(
+    payload: &[u8],
+    reply_message_id: u32,
+) -> Result<Vec<u8>, TransitDispatchError> {
+    if payload.is_empty() {
+        return Err(TransitDispatchError::Empty);
+    }
+    let count = payload[0];
+    if count == 0 || count > MAX_TRANSIT_RECORDS {
+        return Err(TransitDispatchError::BodyShape("count out of range"));
+    }
+    let expected = 1 + (count as usize) * RECORD_BYTES;
+    if payload.len() != expected {
+        return Err(TransitDispatchError::BodyShape(
+            "length does not match count",
+        ));
+    }
+    let records = payload[1..].to_vec();
+    let deferred = DeferredBuildRecords::new(count, RECORD_BYTES, records)
+        .map_err(|_| TransitDispatchError::BodyShape("deferred build records rejected"))?;
+    let body = I2npBody::OutboundTunnelBuildReply(deferred);
+    let message = I2npMessage::new_standard(reply_message_id, future_expiration(), body)
+        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected body"))?;
+    message
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+}
+
+/// Returns a caller-clock-relative I2NP expiration timestamp. The
+/// daemon uses a fixed-horizon one-hour window because the
+/// router-delivery capability requires a future expiration that
+/// exceeds the bounded delivery deadline.
+fn future_expiration() -> Date {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let bounded_ms = now_ms.saturating_add(TRANSIT_DELIVERY_EXPIRATION_MS);
+    Date::from_millis(bounded_ms)
+}
+
+// Plan 253 removes the Plan 252 `forward_participant_layer`
+// placeholder: the production daemon never reaches the
+// AES-256 layer transform directly. The runtime-neutral
+// [`i2pr_tunnel::TransitHopRegistration::process_tunnel_data`] applied the
+// canonical participant layer via the inbound
+// `TunnelLayerTransform::participant_forward` helper that owns
+// the registered `LayerKeys`. Producing a fresh transform here
+// would have to clone secret material into the daemon surface
+// or duplicate the canonical helper in production code; both
+// patterns are forbidden by the Plan 253 boundary.
 
 #[cfg(test)]
 mod tests {
@@ -1402,7 +1793,9 @@ mod tests {
         );
         let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
         match dispatch {
-            TransitDispatch::Rejected { payload, reason } => {
+            TransitDispatch::Rejected {
+                payload, reason, ..
+            } => {
                 assert!(matches!(
                     reason,
                     i2pr_tunnel::TransitAdmissionError::Disabled

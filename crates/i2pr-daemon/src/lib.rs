@@ -29,6 +29,7 @@ pub mod service_tunnels_irc_client;
 pub mod service_tunnels_irc_server;
 pub mod service_tunnels_socks5;
 pub mod transit_compose;
+pub mod transit_owner;
 pub mod tunnel_liveness;
 
 pub use error::DaemonError;

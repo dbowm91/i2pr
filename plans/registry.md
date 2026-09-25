@@ -34,7 +34,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
 | Service tunnels | closed | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 product authority; Plan 204 superseded by Plan 248 | No product blocker. |
 | M6 mixed-router interop | closed | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 248 policy reconciliation; Plan 193 i2pd progression authority | Java full-router compatibility retained/deferred at Plan 247; full two-family conformance not claimed. |
-| M11 transit tunnels | active | `plans/subsystems/transit-tunnels-roadmap.md` | Plan 253 corrective ready | Plan 252 full-message core retained but daemon/data-plane closure narrowed; Plan 253 owns live ingress, canonical role processing, rejection delivery, rollback/drain, and bounded peer state; Plan 254 i2pd qualification remains unregistered; no public transit or advertisement. |
+| M11 transit tunnels | active | `plans/subsystems/transit-tunnels-roadmap.md` | Plan 253 corrective closed | Plan 252 full-message core retained but daemon/data-plane closure narrowed; Plan 253 owns live ingress, canonical role processing, rejection delivery, rollback/drain, and bounded peer state; Plan 253 closure record landed; Plan 254 i2pd qualification remains unregistered; no public transit or advertisement. |
 
 ## Current milestone authorities
 

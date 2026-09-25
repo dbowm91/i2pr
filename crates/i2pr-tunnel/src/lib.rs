@@ -181,12 +181,16 @@ pub use short_record::{
 pub use short_state::{HopResponse, ShortBuildRegistrar, ShortBuildState, ShortBuildStateMachine};
 pub use transit::{
     BANDWIDTH_AVAILABLE_KEY, BANDWIDTH_LIMIT_KEY, BANDWIDTH_MINIMUM_KEY, BANDWIDTH_REQUESTED_KEY,
-    MAX_TRANSIT_ACTIVE, MAX_TRANSIT_PEER_ACTIVE, MAX_TRANSIT_PEER_PENDING, MAX_TRANSIT_PENDING,
-    TRANSIT_TIME_SKEW_SECONDS, TransitAdmissionConfigError, TransitAdmissionError,
-    TransitAdmissionPolicy, TransitAdmissionState, TransitBandwidthParseError,
-    TransitBandwidthReply, TransitBandwidthRequest, TransitBuildContext,
-    TransitBuildMessageOutcome, TransitBuildOutcome, TransitBuildRoute, TransitFatalError,
-    TransitHopRegistration, TransitHopRole, TransitMode, TransitNow, TransitRegistry,
+    MAX_TRANSIT_ACTIVE, MAX_TRANSIT_DUPLICATE_WINDOW, MAX_TRANSIT_PEER_ACTIVE,
+    MAX_TRANSIT_PEER_PENDING, MAX_TRANSIT_PENDING, MAX_TRANSIT_REASSEMBLY_AGGREGATE_BYTES,
+    MAX_TRANSIT_REASSEMBLY_BYTES_PER_MESSAGE, MAX_TRANSIT_REASSEMBLY_EXPIRY_MS,
+    MAX_TRANSIT_REASSEMBLY_MESSAGES, TRANSIT_TIME_SKEW_SECONDS, TransitAdmissionConfigError,
+    TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState,
+    TransitBandwidthParseError, TransitBandwidthReply, TransitBandwidthRequest,
+    TransitBuildContext, TransitBuildMessageOutcome, TransitBuildOutcome, TransitBuildRoute,
+    TransitDataFatalError, TransitDataOutcome, TransitDataPlane, TransitEndpointData,
+    TransitFatalError, TransitGatewayData, TransitGatewayForward, TransitHopRegistration,
+    TransitHopRole, TransitMode, TransitNow, TransitParticipantData, TransitRegistry,
     TransitRegistryError, TransitReplySlot, build_rejected_reply_record,
     parse_transit_bandwidth_request, process_short_build_message, process_short_build_request,
 };
