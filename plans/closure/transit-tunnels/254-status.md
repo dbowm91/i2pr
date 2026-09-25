@@ -200,7 +200,11 @@ cargo test --locked -p i2pr-daemon --all-targets -- --test-threads=1
 cargo test --locked --workspace --all-targets -- --test-threads=1
                                                             : 3013 passed, 26 ignored
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-                                                            : passed
+                                                            : passed (`No issues found`;
+                                                              follow-up hygiene commit
+                                                              fixes 5 pre-existing Plan 253
+                                                              `i2pr-tunnel` lints and 7 new-shape
+                                                              lints with true exit codes)
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
                                                             : passed
 cargo test --locked --workspace --doc                        : passed (0 doc tests)
@@ -236,6 +240,9 @@ recorded as a CI-evidence follow-up on that SHA.
   (default behavior unchanged).
 - `crates/i2pr-daemon/tests/m11_transit_live_owner.rs` — new 34-row live-owner matrix.
 - `crates/i2pr-daemon/tests/m11_transit_data_plane.rs` — updated to the corrected owner API.
+- `crates/i2pr-tunnel/src/transit.rs` — lint-only hygiene (remove dead const, collapse
+  nested if, drop unused test binding, drop no-effect `& 0xFF`, document the intentional
+  large `TransitDataOutcome` variant); no behavior change.
 - `scripts/check-m11-transit-boundaries.sh` — Plan 254 rules 9–14.
 - `plans/registry.md`, `plans/subsystems/transit-tunnels-roadmap.md`, `specs/support.toml` —
   Plan 254 closure projection; Plan 255 unblocked for registration.
