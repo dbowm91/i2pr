@@ -109,9 +109,7 @@ use i2pr_runtime::CancellationToken;
 use i2pr_transport::PeerId;
 use i2pr_tunnel::build_crypto::{EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography};
 use i2pr_tunnel::identity::{TunnelId, TunnelPeer};
-use i2pr_tunnel::multirecord::{
-    RECORD_BYTES, decode_outbound_tunnel_build_reply,
-};
+use i2pr_tunnel::multirecord::{RECORD_BYTES, decode_outbound_tunnel_build_reply};
 use i2pr_tunnel::{
     TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState, TransitBuildContext,
     TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome, TransitNow, TransitRegistry,
@@ -535,6 +533,13 @@ impl TransitPeerIndex {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+
+    /// Iterates the bounded index entries for session-close
+    /// reconciliation. The iterator is bounded by
+    /// [`MAX_TRANSIT_PEER_INDEX`].
+    pub fn entries_iter(&self) -> impl Iterator<Item = (&Hash, &PeerId)> {
+        self.entries.iter()
+    }
 }
 
 impl Default for TransitPeerIndex {
@@ -653,6 +658,159 @@ impl TransitBuildService {
     /// instead of dispatching to a stale peer id.
     pub fn forget_peer(&mut self, router: &Hash) {
         self.peer_index.remove(router);
+    }
+
+    /// Removes any peer-index entry associated with the supplied
+    /// authenticated session peer (Plan 254 work package G).
+    ///
+    /// Entries are keyed by router hash with a `PeerId` value; a
+    /// session close carries only the `PeerId`. The helper removes
+    /// the key matching `peer.hash()` and any entry whose value
+    /// equals `peer`, so a later forward reports `NoActiveSession`
+    /// instead of dispatching to a stale session. Returns true when
+    /// at least one entry was removed.
+    pub fn forget_peer_by_session(&mut self, peer: &PeerId) -> bool {
+        let mut removed = false;
+        let key = peer.hash();
+        if self.peer_index.remove(&key) {
+            removed = true;
+        }
+        let stale: Vec<Hash> = {
+            let mut out = Vec::new();
+            for (router, mapped) in self.peer_index.entries_iter() {
+                if *mapped == *peer {
+                    out.push(*router);
+                }
+            }
+            out
+        };
+        for router in stale {
+            if self.peer_index.remove(&router) {
+                removed = true;
+            }
+        }
+        removed
+    }
+
+    /// Routes one inbound authenticated `TunnelGateway` against the
+    /// transit IBGW registration (Plan 254 work package F).
+    ///
+    /// `tunnel_id` is the gateway destination tunnel id from the
+    /// canonical decode; `nested` is the complete encoded nested
+    /// standard I2NP message from the same decode. The helper
+    /// decodes the nested message exactly once here (construction
+    /// of the already-decoded gateway, not a second network
+    /// decode), looks up the IBGW registration by `tunnel_id`,
+    /// and calls the runtime-neutral
+    /// `process_tunnel_gateway`. Unknown tunnel ids, wrong peers,
+    /// non-IBGW roles, and expired registrations return
+    /// `Ok(None)` (fail closed, no state mutation beyond the
+    /// duplicate/peer-lock path the data plane owns).
+    pub fn route_tunnel_gateway<R: rand_core::RngCore + rand_core::CryptoRng>(
+        &mut self,
+        tunnel_id: u32,
+        nested: &[u8],
+        peer: &PeerId,
+        now_ms: u64,
+        rng: &mut R,
+    ) -> Result<Option<Vec<i2pr_tunnel::TransitGatewayForward>>, TransitServiceError> {
+        if self.cancelled {
+            return Ok(None);
+        }
+        let receive = match TunnelId::new(tunnel_id) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        let nested_message = match I2npMessage::decode_standard(nested, MAX_I2NP_PAYLOAD_SIZE) {
+            Ok(message) => message,
+            Err(_) => return Ok(None),
+        };
+        let gateway = i2pr_proto::TunnelGatewayMessage {
+            tunnel_id,
+            message: Box::new(nested_message),
+        };
+        let previous_peer_hash = peer_to_hash(*peer);
+        let registration = match self.registry.registration_mut(receive) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        match registration.process_tunnel_gateway(&gateway, &previous_peer_hash, now_ms, rng) {
+            Ok(cells) => Ok(cells),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Delivers one transit `TunnelData` forward cell through the
+    /// bounded router-delivery seam.
+    pub fn deliver_tunnel_data_forward(
+        &self,
+        next_router: &Hash,
+        cell: &TunnelDataMessage,
+        message_id: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
+        let peer = self
+            .peer_index
+            .get(next_router)
+            .ok_or(TransitServiceError::NoActiveSession(*next_router))?;
+        let bytes =
+            wrap_tunnel_data_envelope(cell, message_id).map_err(TransitServiceError::Dispatch)?;
+        let request = crate::router_i2np::RouterDeliveryRequest::new(
+            peer,
+            bytes,
+            std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
+        )
+        .map_err(|_| TransitServiceError::DeliveryFailed)?;
+        Ok(self.router_delivery.deliver(request, cancellation))
+    }
+
+    /// Delivers one OBEP `ROUTER` semantic action through the
+    /// bounded router-delivery seam. The action message is already
+    /// a complete standard I2NP envelope; it is delivered verbatim.
+    pub fn deliver_obep_router(
+        &self,
+        action: &i2pr_tunnel::RouterDeliveryAction,
+        cancellation: &CancellationToken,
+    ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
+        let peer = self
+            .peer_index
+            .get(&action.target_router)
+            .ok_or(TransitServiceError::NoActiveSession(action.target_router))?;
+        let request = crate::router_i2np::RouterDeliveryRequest::new(
+            peer,
+            action.message.clone(),
+            std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
+        )
+        .map_err(|_| TransitServiceError::DeliveryFailed)?;
+        Ok(self.router_delivery.deliver(request, cancellation))
+    }
+
+    /// Delivers one OBEP `TUNNEL` semantic action by wrapping the
+    /// reconstructed message in a canonical `TunnelGateway`
+    /// envelope addressed to the action target tunnel, then
+    /// delivering through the bounded router-delivery seam.
+    pub fn deliver_obep_tunnel(
+        &self,
+        action: &i2pr_tunnel::RouterDeliveryAction,
+        message_id: u32,
+        cancellation: &CancellationToken,
+    ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
+        let tunnel_id = action
+            .tunnel_id
+            .ok_or(TransitServiceError::DeliveryFailed)?;
+        let peer = self
+            .peer_index
+            .get(&action.target_router)
+            .ok_or(TransitServiceError::NoActiveSession(action.target_router))?;
+        let bytes = wrap_tunnel_gateway_envelope(tunnel_id, &action.message, message_id)
+            .map_err(TransitServiceError::Dispatch)?;
+        let request = crate::router_i2np::RouterDeliveryRequest::new(
+            peer,
+            bytes,
+            std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
+        )
+        .map_err(|_| TransitServiceError::DeliveryFailed)?;
+        Ok(self.router_delivery.deliver(request, cancellation))
     }
 
     /// Marks the service as cancelled and synchronously drains
@@ -1365,6 +1523,44 @@ fn wrap_outbound_tunnel_build_reply_envelope(
     let body = I2npBody::OutboundTunnelBuildReply(deferred);
     let message = I2npMessage::new_standard(reply_message_id, future_expiration(), body)
         .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected body"))?;
+    message
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+}
+
+/// Wraps one transit next-hop `TunnelData` cell in a complete
+/// standard-header I2NP envelope. The cell is fixed at 1028 wire
+/// bytes; the envelope carries the supplied transport message id.
+fn wrap_tunnel_data_envelope(
+    cell: &TunnelDataMessage,
+    message_id: u32,
+) -> Result<Vec<u8>, TransitDispatchError> {
+    let body = I2npBody::TunnelData(Box::new(cell.clone()));
+    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
+        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected tunnel data"))?;
+    message
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+}
+
+/// Wraps one reconstructed OBEP message in a canonical
+/// `TunnelGateway` envelope addressed to the supplied tunnel id.
+/// `nested` must be a complete encoded standard I2NP message; it is
+/// decoded exactly once here to construct the typed gateway body.
+fn wrap_tunnel_gateway_envelope(
+    tunnel_id: TunnelId,
+    nested: &[u8],
+    message_id: u32,
+) -> Result<Vec<u8>, TransitDispatchError> {
+    let inner = I2npMessage::decode_standard(nested, MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::BodyShape("nested message decode rejected"))?;
+    let gateway = i2pr_proto::TunnelGatewayMessage {
+        tunnel_id: tunnel_id.get(),
+        message: Box::new(inner),
+    };
+    let body = I2npBody::TunnelGateway(Box::new(gateway));
+    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
+        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected gateway"))?;
     message
         .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
         .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))

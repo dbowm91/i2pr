@@ -57,7 +57,7 @@ fn service_for_test() -> TransitBuildService {
 #[test]
 fn live_transit_owner_dispatch_tunnel_data_returns_typed_outcome() {
     let service = service_for_test();
-    let mut owner = TransitOwner::new(service, OsRng);
+    let mut owner = TransitOwner::new(service);
 
     assert!(owner.is_enabled());
 
@@ -97,5 +97,5 @@ fn live_transit_owner_reports_correct_managed_outcome_shape() {
         link_id: LinkId::new(7).expect("link id"),
         encoded_len: 0,
     };
-    let _: bool = TransitOwner::<OsRng>::is_transit_managed(&short_build);
+    let _: bool = TransitOwner::is_transit_managed(&short_build);
 }

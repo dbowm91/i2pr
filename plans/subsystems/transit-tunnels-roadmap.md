@@ -140,10 +140,11 @@ Plan 251 Java source-lock CI corrective ---------------/         |
 
 Plans 250 and 251 are closed. Plan 252's runtime-neutral full-message STBM core is retained.
 Plan 253 retains its successful runtime-neutral transit data plane, envelope routing,
-rollback/drain, bounded-peer, and secret-ownership corrections, but its live-owner closure
-is narrowed: the production inbound owner is not wired, the ShortTunnelBuild body shim is
-empty, and current-SHA CI is red. Plan 254 is registered ready for that narrow closure
-corrective. Plan 255 external i2pd qualification remains unregistered behind Plan 254.
+rollback/drain, bounded-peer, and secret-ownership corrections; its live-owner narrowing
+is closed by passed Plan 254, which threads the canonical decoded body into the real
+production owner (`TransitLiveOwner::handle_inbound`, 34 live rows), removes the empty
+shim, uses the outer cancellation token, and restores committed formatting. Plan 255
+external i2pd qualification is unblocked for registration (unwritten).
 
 ## 7. Milestones
 
@@ -154,8 +155,8 @@ corrective. Plan 255 external i2pd qualification remains unregistered behind Pla
 | 251 | closed (cross-subsystem CI maintenance) | passed-java-source-lock-test-environment-gating-and-ordinary-ci-corrective | plans/implementation/mixed-router-interop/251-java-source-lock-test-environment-gating-and-ordinary-ci-corrective.md | plans/closure/mixed-router-interop/251-status.md |
 | 252 | retained | retained-m11-daemon-transit-composition-corrective-required-via-plan253 | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
 | 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
-| 254 | ready | registered-ready-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
-| 255 | planned | unregistered-after-plan254 | not yet written | not yet written |
+| 254 | closed | passed-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
+| 255 | ready-to-register | unblocked-by-plan254 | not yet written | not yet written |
 
 ## 8. Cross-cutting requirements
 
@@ -256,7 +257,8 @@ Full two-family router conformance is not required to begin M12 development unde
 Plan 249 is retained with its corrective findings addressed by closed Plan 250. Plan 251
 closed the ordinary-CI/source-lock corrective. Plan 252 retains the successful
 runtime-neutral full-message STBM core. Plan 253 retains its successful runtime-neutral
-data-plane/envelope/rollback/drain/bounded-peer corrections but requires Plan 254 to close
-the actual live-owner/body-threading boundary and restore exact-SHA CI. Plan 254 is
-registered ready. Plan 255 exact-pinned i2pd qualification remains unregistered. M12
-floodfill remains deferred until M11 controlled transit/resource evidence exists.
+data-plane/envelope/rollback/drain/bounded-peer corrections with its live-owner
+corrective completed by passed Plan 254. Plan 255 exact-pinned i2pd qualification is
+unblocked for registration (unwritten). M12
+floodfill remains deferred until M11 controlled transit/resource evidence exists
+(Plan 255 qualification still pending).

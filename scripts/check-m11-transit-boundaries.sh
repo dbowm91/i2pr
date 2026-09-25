@@ -151,4 +151,58 @@ if rg -n 'fn cancel' "$daemon_transit" | rg -q .; then
     fi
 fi
 
+# Plan 254 corrective boundaries.
+#
+# 9. The Plan 253 empty-body shim is removed completely. Neither the
+#    original `plan253_short_build_payload` helper nor a renamed
+#    equivalent returning a hard-coded empty transit build body may
+#    remain in daemon transit code.
+if rg -n 'plan253_short_build_payload' "$daemon_root"; then
+    fail "plan253_short_build_payload must be removed; thread the canonical decoded body instead"
+fi
+if rg -n 'fn .*short_build_payload' "$daemon_root"; then
+    fail "no short_build_payload helper may remain in daemon code; use the canonical transit body handoff"
+fi
+# 10. The production live-owner module must be referenced by the
+#     actual inbound owner outside tests. The ordinary daemon SSU2
+#     pump in `lib.rs` consults the disabled probe so the caller
+#     exists in non-test production code.
+if ! rg -q 'transit_owner' "$root/crates/i2pr-daemon/src/lib.rs"; then
+    fail "production lib.rs must reference the transit_owner live-owner module"
+fi
+if ! rg -q 'controlled_transit_disabled_probe' "$root/crates/i2pr-daemon/src/lib.rs"; then
+    fail "production lib.rs must consult the controlled transit probe on the inbound path"
+fi
+# 11. The production short-build dispatch path must use the outer
+#     owner's real cancellation token, never a fresh token created
+#     inside the dispatch.
+if rg -n 'CancellationToken::new\(\)' "$daemon_transit_owner"; then
+    fail "transit_owner must not create a fresh CancellationToken; use the outer owner token"
+fi
+# 12. No second I2NP decode may live in `transit_owner.rs`. The
+#     canonical `router_i2np` dispatcher is the single decoder; the
+#     live owner consumes `dispatch_router_i2np_with_transit_bodies`
+#     only.
+if rg -n 'decode_standard|decode_short_transport|I2npMessage::decode' "$daemon_transit_owner"; then
+    fail "transit_owner must not decode I2NP envelopes; use the canonical router_i2np handoff"
+fi
+# 13. Daemon transit code must never hold raw `LayerKeys` or reach
+#     the canonical `TunnelLayerTransform` directly; the
+#     runtime-neutral data plane owns the transform.
+if rg -n 'LayerKeys' "$daemon_transit_owner"; then
+    fail "transit_owner must not name LayerKeys; secrets stay in i2pr-tunnel"
+fi
+if rg -n 'TunnelLayerTransform' "$daemon_transit_owner"; then
+    fail "transit_owner must not invoke TunnelLayerTransform directly"
+fi
+# 14. The live owner must expose the controlled enablement, the
+#     creator/service ownership probes, the outer-cancellation
+#     drain, and the session-close peer reconciliation the Plan 254
+#     acceptance criteria require.
+for symbol in 'TransitLiveOwner' 'install_creator_build' 'install_creator_data' 'install_creator_gateway' 'note_session_closed' 'dispatch_router_i2np_with_transit_bodies' 'TransitInboundBodies'; do
+    if ! rg -q "$symbol" "$daemon_transit_owner" && ! rg -q "$symbol" "$root/crates/i2pr-daemon/src/router_i2np.rs"; then
+        fail "expected Plan 254 live-ingress symbol $symbol in transit_owner/router_i2np"
+    fi
+done
+
 echo "check-m11-transit-boundaries: passed"

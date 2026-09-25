@@ -352,6 +352,7 @@ fn register_ssu2_service(
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
     };
+    use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
     let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
@@ -502,7 +503,19 @@ fn register_ssu2_service(
                                 // both release the inbound bytes with the
                                 // call frame. Unsupported bodies are an
                                 // explicit disposition, not an error.
-                                let _ = dispatch_router_i2np(&inbound, now_ms);
+                                // Controlled transit stays disabled in
+                                // ordinary product profiles: the live
+                                // transit owner is consulted only as a
+                                // disabled probe so the production
+                                // caller references the live-owner
+                                // module without dispatching.
+                                match dispatch_router_i2np(&inbound, now_ms) {
+                                    Ok(outcome) => {
+                                        let _ =
+                                            controlled_transit_disabled_probe(&outcome);
+                                    }
+                                    Err(_) => {}
+                                }
                             }
                         }
                     }

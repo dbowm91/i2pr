@@ -244,6 +244,63 @@ pub enum RouterI2npError {
     FarFuture,
 }
 
+/// Narrow typed handoff carrying the already-decoded transit bodies
+/// from the single canonical router-I2NP decode (Plan 254 work
+/// package B).
+///
+/// The struct is derived directly from the canonical decoded
+/// [`I2npMessage`] inside
+/// [`dispatch_router_i2np_with_transit_bodies`]; it performs no
+/// second decode, retains no unbounded queue, and logs no payload.
+/// Ordinary callers that only need [`RouterI2npOutcome`] keep using
+/// [`dispatch_router_i2np`] and never retain these bytes.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct TransitInboundBodies {
+    /// Exact count-prefixed STBM body expected by
+    /// `process_short_build_message` (`[count] + records`). Present
+    /// only for `ShortTunnelBuild`; never for
+    /// `OutboundTunnelBuildReply`.
+    pub short_build_body: Option<Vec<u8>>,
+    /// Bounded copy of the inbound `TunnelData` cell. Present only
+    /// for `TunnelData`.
+    pub tunnel_data_cell: Option<i2pr_proto::TunnelDataMessage>,
+    /// Bounded TunnelGateway ingress parts. Present only for
+    /// `TunnelGateway`.
+    pub tunnel_gateway: Option<TransitGatewayParts>,
+}
+
+/// Bounded TunnelGateway ingress parts derived from the single
+/// canonical decode.
+#[derive(Debug, Eq, PartialEq)]
+pub struct TransitGatewayParts {
+    /// Destination tunnel identifier carried by the gateway body.
+    pub tunnel_id: u32,
+    /// Complete encoded nested standard I2NP message the gateway
+    /// carries.
+    pub nested: Vec<u8>,
+}
+
+/// Narrow borrowed transit-build view (Plan 254 architecture
+/// constraint).
+///
+/// The body slice is the exact count-prefixed STBM body expected by
+/// `process_short_build_message`, bounded by existing I2NP limits,
+/// with the authenticated `peer` / `link_id` attached to the same
+/// decoded message.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RouterI2npTransitBuild<'a> {
+    /// Exact count-prefixed STBM body bytes.
+    pub body: &'a [u8],
+    /// Transport message identifier.
+    pub message_id: u32,
+    /// Validated expiration in milliseconds since the Unix epoch.
+    pub expiration_ms: u64,
+    /// Authenticated peer reference.
+    pub peer: PeerId,
+    /// Exact link the message arrived on.
+    pub link_id: LinkId,
+}
+
 /// Dispatches one authenticated inbound I2NP message.
 ///
 /// The caller passes the live [`i2pr_runtime::Ssu2InboundI2np`]
@@ -258,6 +315,91 @@ pub fn dispatch_router_i2np(
     inbound: &i2pr_runtime::Ssu2InboundI2np,
     now_ms: u64,
 ) -> Result<RouterI2npOutcome, RouterI2npError> {
+    dispatch_inner(inbound, now_ms).map(|(_, outcome)| outcome)
+}
+
+#[allow(dead_code)]
+fn transit_build_view<'a>(
+    body: &'a [u8],
+    message_id: u32,
+    expiration_ms: u64,
+    peer: PeerId,
+    link_id: LinkId,
+) -> RouterI2npTransitBuild<'a> {
+    RouterI2npTransitBuild {
+        body,
+        message_id,
+        expiration_ms,
+        peer,
+        link_id,
+    }
+}
+
+/// Dispatches one authenticated inbound I2NP message and derives the
+/// narrow transit bodies from the same single canonical decode.
+///
+/// The returned [`TransitInboundBodies`] are derived from the exact
+/// decoded [`I2npMessage`] that produced the outcome; no second
+/// decoder runs. `short_build_body` is present only for inbound
+/// `ShortTunnelBuild` (never for `OutboundTunnelBuildReply`);
+/// malformed/expired/far-future input returns `Err` before transit
+/// sees any body.
+pub fn dispatch_router_i2np_with_transit_bodies(
+    inbound: &i2pr_runtime::Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<(RouterI2npOutcome, TransitInboundBodies), RouterI2npError> {
+    let (message, outcome) = dispatch_inner(inbound, now_ms)?;
+    let mut bodies = TransitInboundBodies::default();
+    let Some(message) = message.as_ref() else {
+        return Ok((outcome, bodies));
+    };
+    match message.body() {
+        I2npBody::ShortTunnelBuild(records) => {
+            let expected =
+                usize::from(records.count()).saturating_mul(usize::from(records.record_size()));
+            if !records.records().is_empty() && records.records().len() == expected {
+                let mut body = Vec::with_capacity(1 + expected);
+                body.push(records.count());
+                body.extend_from_slice(records.records());
+                bodies.short_build_body = Some(body);
+            }
+        }
+        I2npBody::TunnelData(cell) => {
+            bodies.tunnel_data_cell = Some((**cell).clone());
+        }
+        I2npBody::TunnelGateway(gateway) => {
+            if gateway.tunnel_id != 0 {
+                if let Ok(nested) = gateway
+                    .message
+                    .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
+                {
+                    bodies.tunnel_gateway = Some(TransitGatewayParts {
+                        tunnel_id: gateway.tunnel_id,
+                        nested,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    // Defence in depth: an OutboundTunnelBuildReply must never be
+    // misclassified as an inbound transit build body.
+    if matches!(
+        outcome,
+        RouterI2npOutcome::TunnelBuildReserved {
+            kind: RouterI2npKind::OutboundTunnelBuildReply,
+            ..
+        }
+    ) {
+        bodies.short_build_body = None;
+    }
+    Ok((outcome, bodies))
+}
+
+fn dispatch_inner(
+    inbound: &i2pr_runtime::Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<(Option<I2npMessage>, RouterI2npOutcome), RouterI2npError> {
     let bytes = inbound.bytes.as_slice();
     if bytes.is_empty() {
         return Err(RouterI2npError::Empty);
@@ -272,12 +414,15 @@ pub fn dispatch_router_i2np(
     // disposition without entering either decoder.
     let first = bytes[0];
     if matches!(MessageType::from_code(first), MessageType::Unknown(_)) {
-        return Ok(RouterI2npOutcome::Unsupported {
-            type_byte: first,
-            peer: inbound.peer,
-            link_id: inbound.link_id,
-            encoded_len: bytes.len(),
-        });
+        return Ok((
+            None,
+            RouterI2npOutcome::Unsupported {
+                type_byte: first,
+                peer: inbound.peer,
+                link_id: inbound.link_id,
+                encoded_len: bytes.len(),
+            },
+        ));
     }
     let standard = I2npMessage::decode_standard(bytes, MAX_ROUTER_I2NP_BYTES);
     let (message, header_kind) = match standard {
@@ -315,7 +460,7 @@ pub fn dispatch_router_i2np(
     if expiration_ms.saturating_sub(now_ms) > MAX_ROUTER_I2NP_FUTURE_MS {
         return Err(RouterI2npError::FarFuture);
     }
-    classify_message(
+    let outcome = classify_message(
         &message,
         header_kind,
         message_id,
@@ -323,7 +468,8 @@ pub fn dispatch_router_i2np(
         inbound.peer,
         inbound.link_id,
         bytes.len(),
-    )
+    )?;
+    Ok((Some(message), outcome))
 }
 
 fn classify_message(
