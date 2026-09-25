@@ -290,9 +290,16 @@ envelopes, code-30 route preservation, terminal rollback, drain, and move-only s
 Ordinary product construction intentionally remains transit-disabled; its SSU2 pump only
 references `controlled_transit_disabled_probe`. That is not external capability evidence.
 
-Plan 255 is registered ready. Its first hard gate is a controlled runtime consuming actual
-authenticated `Ssu2DaemonHandle::next_inbound()` events through an enabled
-`TransitLiveOwner`. Only then may unmodified exact-pinned i2pd 2.61.0 builds count.
+Plan 255 is **infrastructure-only closed** on the closure SHA. The
+fail-closed runner, driver, evidence checker, and hosted
+`.github/workflows/m11-transit-external.yml` workflow are wired;
+the controlled runtime consumes actual authenticated
+`Ssu2DaemonHandle::next_inbound()` events through an enabled
+`TransitLiveOwner`. The two complete same-SHA external passes
+required by Plan 255 §H are pending hosted Actions or manual
+execution; once the hosted double-pass is observed
+`m11_transit_qualification` flips from `failed` to
+`passed-via-i2pd-2.61.0`.
 
 Plan 255 requires stock-i2pd-created OBEP, IBGW, and intermediate Participant builds,
 accepted replies, role-correct data-plane traffic, code-30 rejection, truthful bandwidth
@@ -300,8 +307,9 @@ option disposition, logical expiry/replay/cleanup, and two complete same-i2pr-SH
 Fabricated STBMs, direct registry insertion, patched references, false RouterInfo claims,
 and public-network fallback do not count.
 
-M11 remains non-advertised. A Plan 255 pass may satisfy ADR 0026 experimental progression
-only; full two-family router conformance/public transit advertisement remain separate.
+M11 remains non-advertised. A Plan 255 hosted double-pass may satisfy
+ADR 0026 experimental progression only; full two-family router
+conformance/public transit advertisement remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -321,7 +329,17 @@ wire the controlled gate into the real ingress owner, construct complete outboun
 messages, route valid code-30 replies, clean all terminal delivery failures, and
 deterministically drain secrets on shutdown.
 
-Exact-pinned i2pd qualification is deferred to Plan 255 after Plan 254 closes the live-owner boundary.
+Exact-pinned i2pd qualification infrastructure landed in Plan 255
+after Plan 254 closed the live-owner boundary; the two complete
+same-SHA external passes remain pending hosted Actions execution.
+The Plan 255 `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`
+driver consumes real `Ssu2DaemonHandle::next_inbound()` events
+through an enabled `TransitLiveOwner::handle_inbound` and the
+`tests/integration/m11-transit/run-i2pd.sh` runner provisions a
+loopback-only i2pd-A with the exact `635b013a...` pin and version
+`2.61.0`. The static
+`scripts/check-m11-transit-qualification-evidence.sh` checker
+enforces every mandatory Plan 255 row.
 
 ### Plan 252 full-message transit composition invariant
 

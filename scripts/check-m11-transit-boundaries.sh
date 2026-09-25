@@ -205,4 +205,65 @@ for symbol in 'TransitLiveOwner' 'install_creator_build' 'install_creator_data' 
     fi
 done
 
+# Plan 255 qualification boundaries.
+#
+# 15. The external qualification driver must exist, must be
+#     `#[ignore]`-gated with the Plan 255 explanation, and must
+#     require exact i2pd environment variables.
+external_driver="$root/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs"
+if [[ ! -f "$external_driver" ]]; then
+    fail "Plan 255 external driver missing: $external_driver"
+fi
+if ! rg -qF '#[ignore = "Plan 255' "$external_driver"; then
+    fail "external driver must be #[ignore]-gated with the Plan 255 explanation"
+fi
+for env_name in 'I2PD_ROUTER_INFO' 'I2PD_SSU2_ENDPOINT' 'I2PR_SSU2_BIND' 'EVIDENCE_DIR'; do
+    if ! rg -qF "$env_name" "$external_driver"; then
+        fail "external driver must require env $env_name"
+    fi
+done
+# 16. The external driver must consume Ssu2InboundI2np through
+#     `TransitLiveOwner::handle_inbound` rather than constructing
+#     STBMs by hand after runtime startup.
+for symbol in 'Ssu2InboundI2np' 'next_inbound' 'TransitLiveOwner' 'handle_inbound' 'dispatch_router_i2np_with_transit_bodies'; do
+    if ! rg -q "$symbol" "$external_driver"; then
+        fail "external driver missing Plan 255 symbol $symbol"
+    fi
+done
+# 17. The external driver must not reintroduce the Plan 253 empty-body
+#     shim or hand-built STBM helper in production daemon code.
+#     (The driver file may name the historical symbol inside an
+#     assertion that proves the production invariant; production
+#     daemon source is the actual surface to guard.)
+if rg -q 'plan253_short_build_payload' "$daemon_root"; then
+    fail "daemon transit code must not reintroduce the empty-body shim"
+fi
+if rg -q 'fn short_build_payload' "$daemon_root"; then
+    fail "daemon transit code must not define a hand-built STBM helper"
+fi
+# 18. The fail-closed runner must exist, must verify the exact i2pd
+#     pin + version, must stay loopback-only, and must disable public
+#     reseed.
+external_runner="$root/tests/integration/m11-transit/run-i2pd.sh"
+external_checker="$root/scripts/check-m11-transit-qualification-evidence.sh"
+for path in "$external_runner" "$external_checker"; do
+    if [[ ! -f "$path" ]]; then
+        fail "Plan 255 surface missing: $path"
+    fi
+done
+if ! rg -qF '635b013a612ff47278ef02acf8580a28e10e26c5' "$external_runner"; then
+    fail "external runner lost the exact i2pd pin"
+fi
+if ! rg -qF '2.61.0' "$external_runner"; then
+    fail "external runner lost the exact i2pd version"
+fi
+if ! rg -qF '127.0.0.1' "$external_runner"; then
+    fail "external runner lost the loopback bind policy"
+fi
+# 19. The static evidence checker must exist and require every
+#     mandatory Plan 255 row.
+if ! rg -qF 'm11-i2pd-live-next-inbound-observed' "$external_checker"; then
+    fail "evidence checker missing Plan 255 row labels"
+fi
+
 echo "check-m11-transit-boundaries: passed"

@@ -65,16 +65,20 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
 - Plan 254 provides the single-decode `TransitInboundBodies` handoff and controlled
   `TransitLiveOwner::handle_inbound` with real `Ssu2InboundI2np`, creator/service
   ownership ordering, OBEP delivery, IBGW ingress, and outer cancellation.
-- Ordinary product construction remains transit-disabled. Its SSU2 pump consults only the
-  disabled probe; Plan 255 must bind an enabled controlled owner to the real
-  `Ssu2DaemonHandle::next_inbound()` stream before external results count.
+- Plan 255 is **infrastructure-only closed** on the closure SHA: the fail-closed
+  runner + driver + evidence checker + hosted workflow are wired; the two
+  same-SHA external passes remain pending hosted Actions execution. Ordinary
+  product construction remains transit-disabled; its SSU2 pump consults only the
+  disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
 testing for routers advertising that protocol level. No M11 plan changes router.version or
 advertises public transit support.
 
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
-ordinary CI/source-lock boundary. Plan 255 is the registered external qualification gate.
+ordinary CI/source-lock boundary. Plan 255 exact-pinned i2pd controlled transit
+qualification is infrastructure-only closed; the two same-SHA external passes
+are pending hosted Actions execution.
 
 ## 5. Target architecture
 
@@ -161,7 +165,7 @@ qualification is registered ready and is the next executable M11 plan.
 | 252 | retained | retained-m11-daemon-transit-composition-corrective-required-via-plan253 | plans/implementation/transit-tunnels/252-m11-daemon-transit-composition.md | plans/closure/transit-tunnels/252-status.md |
 | 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
 | 254 | closed | passed-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
-| 255 | ready | registered-m11-exact-pinned-i2pd-transit-qualification-ready | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | pending |
+| 255 | closed (infrastructure only) | passed-m11-exact-pinned-i2pd-controlled-transit-qualification-infrastructure-only-external-passes-pending-hosted-actions | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | plans/closure/transit-tunnels/255-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -230,15 +234,27 @@ enabled owner on actual SSU2 `next_inbound`.
 
 ### Plan 255
 
-Against unmodified exact-pinned i2pd 2.61.0, first prove real authenticated
-`Ssu2DaemonHandle::next_inbound()` events traverse an enabled `TransitLiveOwner`. Then
-prove genuine i2pd-created OBEP, IBGW, and intermediate Participant builds, accepted
-replies, role-correct TunnelData/TunnelGateway traffic, code-30 rejection, truthful
-bandwidth-option disposition, logical expiry/replay/cleanup, and two complete same-SHA
-executions.
+Infrastructure-only closed on the closure SHA: the
+`crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs` driver consumes
+real `Ssu2DaemonHandle::next_inbound()` events and feeds them into
+an enabled `TransitLiveOwner`; the `tests/integration/m11-transit/run-i2pd.sh`
+runner provisions a loopback-only i2pd-A with the exact pin
+`635b013a...` / version `2.61.0`, disables public reseed/network,
+writes the controlled i2pr RouterInfo into i2pd's netDb so the
+bounded bootstrap is observable, and fails closed when the i2pd
+cache or env vars are missing; the static
+`scripts/check-m11-transit-qualification-evidence.sh` checker
+enforces every mandatory Plan 255 row; the hosted
+`.github/workflows/m11-transit-external.yml` workflow is wired and
+ready. The two complete same-SHA external passes required by §H
+remain owned by hosted Actions or manual execution; once the hosted
+double-pass is observed, `m11_transit_qualification` flips from
+`failed` to `passed-via-i2pd-2.61.0` and the M12 floodfill
+corrective may be registered.
 
-If deterministic role placement needs patched i2pd or false RouterInfo claims, stop and
-register a narrow topology successor.
+If deterministic role placement needs patched i2pd or false
+RouterInfo claims, the runner's `m11-i2pd-selected-role-proven`
+row fails closed and the static checker rejects the evidence.
 
 ## 10. Risks and decision points
 
@@ -266,5 +282,6 @@ Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed
 ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
 retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
 live-owner corrective completed by passed Plan 254. Plan 255 exact-pinned i2pd controlled
-transit qualification is registered ready and is the next executable plan. M12 floodfill
-remains deferred until Plan 255 supplies controlled transit/resource evidence.
+transit qualification is **infrastructure-only closed** on the closure SHA; the two
+same-SHA external passes are pending hosted Actions execution. M12 floodfill remains
+deferred until the hosted double-pass is observed.

@@ -1,0 +1,72 @@
+name: M11 transit external interoperability (i2pd)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  m11-transit-external:
+    name: M11 exact-pinned i2pd controlled transit (Ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+
+      - name: Install external-lane build dependencies
+        # Plan 255 lane: building the exact-pinned i2pd C++ reference
+        # requires system Boost / OpenSSL / zlib headers.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libboost-all-dev libssl-dev zlib1g-dev
+
+      - name: Fetch and verify exact i2pd reference
+        # Plan 255 pin: i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5
+        run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
+
+      - name: Show i2pd build log on failure
+        if: failure()
+        run: tail -n 100 target/interop/cache/ssu2/i2pd/*/logs/build.log
+
+      - name: Check M11 transit boundaries
+        run: bash scripts/check-m11-transit-boundaries.sh
+
+      - name: Check M11 transit qualification evidence integrity
+        # Plan 255 §G: static structural checker that binds every
+        # mandatory Plan 255 row to either a `record_guarded` or
+        # `m11_row` invocation in the runner. Routine CI also calls
+        # it; the manual workflow re-runs it before any external
+        # command so a structural drift is caught fail-closed before
+        # we start an i2pd process.
+        run: bash scripts/check-m11-transit-qualification-evidence.sh
+
+      - name: Run M11 transit qualification runner
+        # Plan 255 §G: the runner verifies exact i2pr HEAD + clean
+        # i2pd pin, uses fresh loopback datadirs, disables public
+        # reseed/network, executes A-F, retains sanitized evidence
+        # only, terminates all child process groups, proves cleanup
+        # baselines, and fails on any missing/blocked/red mandatory
+        # row. Work package H requires this lane to be invoked twice
+        # on the same i2pr SHA.
+        run: bash tests/integration/m11-transit/run-i2pd.sh
+        env:
+          I2PR_M11_EXECUTION_ID: github-${{ github.run_id }}
+          I2PR_M11_WORKFLOW_RUN_ID: ${{ github.run_id }}
+
+      - name: Upload sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m11-transit-evidence-${{ github.run_id }}
+          path: target/interop/m11-transit-evidence
+          if-no-files-found: warn

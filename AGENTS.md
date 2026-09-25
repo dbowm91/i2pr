@@ -69,6 +69,8 @@ bash scripts/check-ssu2-vectors.sh
 bash scripts/check-i2cp-vectors.sh
 bash scripts/check-ntcp2-interoperability.sh
 bash scripts/check-constrained-host-lane-boundary.sh
+bash scripts/check-m11-transit-boundaries.sh
+bash scripts/check-m11-transit-qualification-evidence.sh
 bash scripts/check-sam-acceptance-evidence.sh
 bash scripts/check-ssu2-acceptance-evidence.sh
 bash scripts/check-i2cp-acceptance-evidence.sh
