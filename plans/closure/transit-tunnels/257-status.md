@@ -120,10 +120,12 @@ keys in the hardened checker.
   `check-m11-transit-qualification-evidence.sh` (148 guarded rows,
   43 epoch keys, §15 rejections).
 - `git diff --check`: pass.
-- Hosted exact-head ordinary CI (Ubuntu/macOS/MSRV/dependency-policy):
-  not yet observed — the implementation commit 1784ff8 has not been
-  pushed at this audit; CI status will be recorded by the Plan 258
-  closure on its own head. Local MSRV/deny floors pass.
+- Hosted exact-head ordinary CI on the closure head 86adc3f (Actions
+  run 36338600245): Quality (ubuntu-latest) success, Quality
+  (macos-latest) success, MSRV (Ubuntu) success, Dependency policy
+  success. The Plan 256 macOS Clippy failure class is structurally
+  removed by the Plan 257 arg-bundle fix. Local MSRV/deny floors pass
+  identically. Plan 258 must still go green on its own head.
 
 ## External evidence (all on implementation SHA 1784ff8)
 
@@ -208,12 +210,13 @@ cancel, session close, and real restart never execute externally because
 the driver aborts fail-closed at the IBGW gate. The code is reviewed and
 locally tested but carries no external proof. Owned by Plan 258 §D.
 
-### Medium — exact-head hosted CI unobserved
+### Medium — exact-head hosted CI observed green on the closure head (residual: Plan 258 head)
 
-No push has occurred on the Plan 257 line, so Ubuntu/macOS/MSRV/
-dependency-policy status on 1784ff8 is unknown. The macOS-specific risk
-is low (the Plan 256 failure class is structurally removed), but only a
-hosted run can prove it. Owned by Plan 258 §D (its head must go green).
+Actions run 36338600245 on closure head 86adc3f is green on all four
+required jobs (Ubuntu Quality, macOS Quality, MSRV, dependency policy).
+The Plan 256 macOS Clippy failure class is proven removed hosted-side.
+Residual: Plan 258 must still go green on its own implementation head
+per its §D; this record does not pre-claim it.
 
 ### Low — diagnostic evidence roots are local-only
 
