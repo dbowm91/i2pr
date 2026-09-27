@@ -25,10 +25,12 @@
 #![forbid(unsafe_code)]
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce, aead::Aead};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
-use zeroize::Zeroizing;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::build_crypto::GARLIC_REPLY_TAG_LEN;
+use crate::build_crypto::{EPHEMERAL_KEY_LEN, GARLIC_REPLY_TAG_LEN, NOISE_PROTOCOL_NAME};
 
 /// ECIES GarlicClove block type (`eECIESx25519BlkGalicClove`).
 const GARLIC_CLOVE_BLOCK_TYPE: u8 = 11;
@@ -86,6 +88,9 @@ pub enum GarlicReplyError {
     /// The recovered OTBRM payload fails the count/record contract.
     #[error("recovered build-reply payload fails its record contract")]
     InvalidReplyPayload,
+    /// Garlic relay encryption failed; nothing was emitted.
+    #[error("garlic relay AEAD encryption failed")]
+    EncryptionFailed,
 }
 
 /// Recovered build-reply material. Lengths only; no secret material
@@ -218,6 +223,258 @@ fn parse_garlic_clove(block: &[u8]) -> Result<Option<DecryptedBuildReply>, Garli
     }))
 }
 
+/// Maximum count-prefixed OTBRM body accepted for Garlic relay
+/// (`1 + 8*218` per the multi-record ceiling).
+const MAX_RELAY_OTBRM_BODY: usize = 1 + 8 * 218;
+/// Fixed Garlic padding bytes appended after the clove. The
+/// reference emits a random 0-15 byte padding block; a fixed
+/// 8-zero-byte block parses identically on every compliant
+/// implementation and keeps the relay deterministic without
+/// spending caller RNG.
+const RELAY_PADDING_BYTES: usize = 8;
+/// ECIES Padding block type (`eECIESx25519BlkPadding`).
+const GARLIC_PADDING_BLOCK_TYPE: u8 = 254;
+
+/// Wraps one count-prefixed OTBRM body in a symmetric Garlic
+/// message for tunnel-relay delivery, mirroring the reference
+/// `WrapECIESX25519Message` (`datetime=false`).
+///
+/// Layout: standard I2NP Garlic message whose opaque payload is
+/// `tag(8) || AEAD(key, nonce=0, AD=tag, clove||padding) || poly(16)`.
+/// The clove carries LOCAL delivery (flag 0), the OTBRM
+/// type/message-id/expiration-seconds, and the raw body, followed
+/// by the fixed padding block. The caller supplies the outer
+/// Garlic message id and expiration; the inner clove reuses the
+/// OTBRM reply id and expiration so the creator's pending lookup
+/// matches after the relay unwraps.
+///
+/// Returns the complete standard-encoded Garlic message bytes
+/// ready to nest inside a `TunnelGateway` envelope addressed to
+/// the reply tunnel. All failures are typed and bounded; no key
+/// material is logged or exposed.
+pub fn wrap_obep_reply_garlic(
+    payload: &[u8],
+    message_id: u32,
+    expiration_seconds: u32,
+    outer_message_id: u32,
+    outer_expiration: i2pr_proto::Date,
+    key: &[u8; 32],
+    tag: &[u8; GARLIC_REPLY_TAG_LEN],
+) -> Result<Vec<u8>, GarlicReplyError> {
+    if payload.len() > MAX_RELAY_OTBRM_BODY {
+        return Err(GarlicReplyError::TooLarge);
+    }
+    // Validate the OTBRM shape before wrapping so malformed bytes
+    // never enter a Garlic relay.
+    let (count, _) = crate::multirecord::validate_count_prefixed_short_payload(payload)
+        .map_err(|_| GarlicReplyError::InvalidReplyPayload)?;
+    if count == 0 {
+        return Err(GarlicReplyError::InvalidReplyPayload);
+    }
+    if message_id == 0 {
+        return Err(GarlicReplyError::InvalidReplyPayload);
+    }
+    let mut clove_body = Vec::with_capacity(GARLIC_CLOVE_INNER_OVERHEAD + payload.len());
+    clove_body.push(0_u8); // flag: local delivery
+    clove_body.push(SHORT_TUNNEL_BUILD_REPLY_TYPE);
+    clove_body.extend_from_slice(&message_id.to_be_bytes());
+    clove_body.extend_from_slice(&expiration_seconds.to_be_bytes());
+    clove_body.extend_from_slice(payload);
+    let mut plaintext = Vec::with_capacity(3 + clove_body.len() + 3 + RELAY_PADDING_BYTES);
+    plaintext.push(GARLIC_CLOVE_BLOCK_TYPE);
+    plaintext.extend_from_slice(
+        &u16::try_from(clove_body.len())
+            .map_err(|_| GarlicReplyError::TooLarge)?
+            .to_be_bytes(),
+    );
+    plaintext.extend_from_slice(&clove_body);
+    plaintext.push(GARLIC_PADDING_BLOCK_TYPE);
+    plaintext.extend_from_slice(
+        &u16::try_from(RELAY_PADDING_BYTES)
+            .map_err(|_| GarlicReplyError::TooLarge)?
+            .to_be_bytes(),
+    );
+    plaintext.extend_from_slice(&[0_u8; RELAY_PADDING_BYTES]);
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let nonce = Nonce::from_slice(&[0_u8; 12]);
+    let ciphertext = cipher
+        .encrypt(
+            nonce,
+            chacha20poly1305::aead::Payload {
+                msg: &plaintext,
+                aad: tag,
+            },
+        )
+        .map_err(|_| GarlicReplyError::EncryptionFailed)?;
+    let mut opaque = Vec::with_capacity(GARLIC_REPLY_TAG_LEN + ciphertext.len());
+    opaque.extend_from_slice(tag);
+    opaque.extend_from_slice(&ciphertext);
+    let body = i2pr_proto::I2npBody::Garlic(i2pr_proto::OpaqueMessageBody {
+        payload: i2pr_proto::DeferredPayload::new(opaque, i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .map_err(|_| GarlicReplyError::TooLarge)?,
+    });
+    let message = i2pr_proto::I2npMessage::new_standard(outer_message_id, outer_expiration, body)
+        .map_err(|_| GarlicReplyError::TooLarge)?;
+    message
+        .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| GarlicReplyError::TooLarge)
+}
+
+/// Inner I2NP type for a tunnel-build request
+/// (`eI2NPShortTunnelBuild`).
+pub const SHORT_TUNNEL_BUILD_TYPE: u8 = 25;
+/// Maximum router-garlic opaque payload accepted for the responder
+/// unwrap. A wrapped STBM (`eph(32) + clove framing + at most
+/// `1 + 8*218` body + padding + poly(16)`) stays far below this
+/// bound; anything larger is rejected without allocating.
+const MAX_ROUTER_GARLIC_OPAQUE: usize = 8192;
+/// Minimum router-garlic opaque payload: ephemeral key + Poly tag +
+/// minimal block header.
+const MIN_ROUTER_GARLIC_OPAQUE: usize = EPHEMERAL_KEY_LEN + 16 + 3;
+
+/// Non-secret GarlicClove facts recovered from a decrypted Garlic
+/// payload. Carries only the framing the reference already
+/// publishes (inner type, message id, expiration, raw inner
+/// payload); no key material.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GarlicClove {
+    /// Inner I2NP message type (25 = STBM, 26 = OTBRM).
+    pub inner_type: u8,
+    /// Inner I2NP message id.
+    pub message_id: u32,
+    /// Inner expiration in seconds since the Unix epoch.
+    pub expiration_seconds: u32,
+    /// Raw inner payload bytes (count-prefixed records for
+    /// build messages).
+    pub payload: Vec<u8>,
+}
+
+/// Extracts the first local-delivery GarlicClove from a decrypted
+/// Garlic payload. Skips DateTime/Padding blocks exactly like the
+/// build-reply parse; non-local cloves are rejected (the relay
+/// path only accepts router-local delivery). Truncated framing
+/// fails closed; the caller validates the payload shape (STBM
+/// vs OTBRM record contract) before any state mutation.
+pub fn extract_garlic_clove(plaintext: &[u8]) -> Result<GarlicClove, GarlicReplyError> {
+    if plaintext.len() > MAX_DECRYPTED_GARLIC_BYTES {
+        return Err(GarlicReplyError::DecryptedTooLarge);
+    }
+    let mut offset = 0_usize;
+    let mut blocks_seen = 0_usize;
+    while offset < plaintext.len() {
+        if blocks_seen >= MAX_GARLIC_BLOCKS {
+            return Err(GarlicReplyError::TooManyBlocks);
+        }
+        if plaintext.len().saturating_sub(offset) < 3 {
+            return Err(GarlicReplyError::TruncatedBlocks);
+        }
+        let block_type = plaintext[offset];
+        let size = u16::from_be_bytes([plaintext[offset + 1], plaintext[offset + 2]]) as usize;
+        offset = offset.saturating_add(3);
+        if plaintext.len().saturating_sub(offset) < size {
+            return Err(GarlicReplyError::TruncatedBlocks);
+        }
+        let block = &plaintext[offset..offset.saturating_add(size)];
+        offset = offset.saturating_add(size);
+        blocks_seen = blocks_seen.saturating_add(1);
+        if block_type != GARLIC_CLOVE_BLOCK_TYPE {
+            continue;
+        }
+        if block.len() < GARLIC_CLOVE_INNER_OVERHEAD + 1 {
+            return Err(GarlicReplyError::InvalidClove);
+        }
+        if (block[0] >> 5) & 0x03 != 0 {
+            return Err(GarlicReplyError::InvalidClove);
+        }
+        return Ok(GarlicClove {
+            inner_type: block[1],
+            message_id: u32::from_be_bytes([block[2], block[3], block[4], block[5]]),
+            expiration_seconds: u32::from_be_bytes([block[6], block[7], block[8], block[9]]),
+            payload: block[GARLIC_CLOVE_INNER_OVERHEAD..].to_vec(),
+        });
+    }
+    Err(GarlicReplyError::NoClove)
+}
+
+/// Opens one Noise-N router Garlic (`WrapECIESX25519MessageForRouter`
+/// shape) addressed to this hop's static key and returns the
+/// decrypted Garlic payload.
+///
+/// Layout: `ephemeral_pub(32) || AEAD(h, key, nonce=0)
+/// (clove plaintext) || poly(16)`, where the transcript starts
+/// from the canonical Noise-N prologue mixed with this hop's
+/// static public key and then the ephemeral key, and the AEAD key
+/// comes from `MixKey(DH(static_priv, ephemeral))`. This mirrors
+/// the pinned reference responder arm byte-for-byte; the KDF
+/// inputs were validated against the frozen Plan 111 vectors
+/// (same `mix_key` chain).
+///
+/// `static_priv` is this hop's ECIES static secret (the same key
+/// that opens short-build request envelopes). All failures map
+/// to bounded typed errors with no oracle detail; key material
+/// never leaves the return value on failure.
+pub fn open_router_garlic(
+    opaque: &[u8],
+    static_priv: &[u8; EPHEMERAL_KEY_LEN],
+) -> Result<Zeroizing<Vec<u8>>, GarlicReplyError> {
+    if opaque.len() < MIN_ROUTER_GARLIC_OPAQUE {
+        return Err(GarlicReplyError::TooShort);
+    }
+    if opaque.len() > MAX_ROUTER_GARLIC_OPAQUE {
+        return Err(GarlicReplyError::TooLarge);
+    }
+    let mut ephemeral_pub = [0_u8; EPHEMERAL_KEY_LEN];
+    ephemeral_pub.copy_from_slice(&opaque[..EPHEMERAL_KEY_LEN]);
+    if ephemeral_pub.iter().all(|byte| *byte == 0) {
+        return Err(GarlicReplyError::AuthenticationFailed);
+    }
+    let ciphertext = &opaque[EPHEMERAL_KEY_LEN..];
+    // Noise-N responder transcript: h0, MixHash(static_pub),
+    // MixHash(ephemeral_pub).
+    let secret = StaticSecret::from(*static_priv);
+    let local_pub = X25519PublicKey::from(&secret);
+    let mut h0 = [0_u8; 32];
+    h0[..NOISE_PROTOCOL_NAME.len()].copy_from_slice(NOISE_PROTOCOL_NAME);
+    let mut hasher = Sha256::new();
+    hasher.update(h0);
+    let null_h = hasher.finalize();
+    let mut hasher = Sha256::new();
+    hasher.update(null_h);
+    hasher.update(local_pub.as_bytes());
+    let mut h = hasher.finalize().to_vec();
+    let mut hasher = Sha256::new();
+    hasher.update(&h);
+    hasher.update(ephemeral_pub);
+    h = hasher.finalize().to_vec();
+    // MixKey(DH(static_priv, ephemeral_pub)).
+    let peer = X25519PublicKey::from(ephemeral_pub);
+    let shared = secret.diffie_hellman(&peer);
+    if shared.as_bytes().iter().all(|byte| *byte == 0) {
+        return Err(GarlicReplyError::AuthenticationFailed);
+    }
+    let keydata = i2pr_crypto::hkdf_sha256_extract_and_expand(&h0, shared.as_bytes(), &[], 64)
+        .map_err(|_| GarlicReplyError::AuthenticationFailed)?;
+    let mut aead_key = [0_u8; 32];
+    aead_key.copy_from_slice(&keydata[32..64]);
+    // `keydata` is `Zeroizing` and wipes on drop.
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&aead_key));
+    aead_key.zeroize();
+    let nonce = Nonce::from_slice(&[0_u8; 12]);
+    let plaintext = cipher
+        .decrypt(
+            nonce,
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext,
+                aad: &h,
+            },
+        )
+        .map_err(|_| GarlicReplyError::AuthenticationFailed)?;
+    if plaintext.len() > MAX_DECRYPTED_GARLIC_BYTES {
+        return Err(GarlicReplyError::DecryptedTooLarge);
+    }
+    Ok(Zeroizing::new(plaintext))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +577,217 @@ mod tests {
         assert!(matches!(
             decrypt_build_reply_garlic(&key, &tag, &[0_u8; 10]),
             Err(GarlicReplyError::TooShort)
+        ));
+    }
+
+    /// Test-only initiator mirror of the reference
+    /// `WrapECIESX25519MessageForRouter` (Noise-N, `datetime=true`):
+    /// ephemeral key, transcript `h0/MixHash(recipient_pub)/
+    /// MixHash(eph_pub)`, `MixKey(DH(eph_priv, recipient_pub))`,
+    /// AEAD with AD = h and nonce zero over DateTime + clove +
+    /// padding. Layout: `eph(32) || ct || poly(16)`.
+    fn wrap_for_router(
+        recipient_pub: &[u8; 32],
+        inner_type: u8,
+        inner_msgid: u32,
+        inner_exp_sec: u32,
+        inner_payload: &[u8],
+        eph_priv: &[u8; 32],
+    ) -> Vec<u8> {
+        use chacha20poly1305::aead::Aead as _;
+        let eph_secret = StaticSecret::from(*eph_priv);
+        let eph_pub = X25519PublicKey::from(&eph_secret);
+        let mut h0 = [0_u8; 32];
+        h0[..NOISE_PROTOCOL_NAME.len()].copy_from_slice(NOISE_PROTOCOL_NAME);
+        let mut hasher = Sha256::new();
+        hasher.update(h0);
+        let null_h = hasher.finalize();
+        let mut hasher = Sha256::new();
+        hasher.update(null_h);
+        hasher.update(recipient_pub);
+        let mut h = hasher.finalize().to_vec();
+        let mut hasher = Sha256::new();
+        hasher.update(&h);
+        hasher.update(eph_pub.as_bytes());
+        h = hasher.finalize().to_vec();
+        let peer = X25519PublicKey::from(*recipient_pub);
+        let shared = eph_secret.diffie_hellman(&peer);
+        let keydata = i2pr_crypto::hkdf_sha256_extract_and_expand(&h0, shared.as_bytes(), &[], 64)
+            .expect("hkdf");
+        let mut aead_key = [0_u8; 32];
+        aead_key.copy_from_slice(&keydata[32..64]);
+        // DateTime block + clove + fixed padding, mirroring the
+        // reference `CreateGarlicPayload(datetime=true)`.
+        let mut clove_body = Vec::new();
+        clove_body.push(0_u8);
+        clove_body.push(inner_type);
+        clove_body.extend_from_slice(&inner_msgid.to_be_bytes());
+        clove_body.extend_from_slice(&inner_exp_sec.to_be_bytes());
+        clove_body.extend_from_slice(inner_payload);
+        let mut plaintext = vec![0_u8, 0, 4, 0, 0, 0, 60];
+        plaintext.push(GARLIC_CLOVE_BLOCK_TYPE);
+        plaintext.extend_from_slice(
+            &u16::try_from(clove_body.len())
+                .expect("clove len")
+                .to_be_bytes(),
+        );
+        plaintext.extend_from_slice(&clove_body);
+        plaintext.push(254_u8);
+        plaintext.extend_from_slice(&8_u16.to_be_bytes());
+        plaintext.extend_from_slice(&[0_u8; 8]);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&aead_key));
+        let nonce = Nonce::from_slice(&[0_u8; 12]);
+        let ciphertext = cipher
+            .encrypt(
+                nonce,
+                chacha20poly1305::aead::Payload {
+                    msg: &plaintext,
+                    aad: &h,
+                },
+            )
+            .expect("encrypt");
+        let mut opaque = Vec::with_capacity(32 + ciphertext.len());
+        opaque.extend_from_slice(eph_pub.as_bytes());
+        opaque.extend_from_slice(&ciphertext);
+        opaque
+    }
+
+    fn router_keypair() -> ([u8; 32], [u8; 32], [u8; 32]) {
+        // Returns (responder_priv, recipient_pub, eph_priv) from a
+        // fixed seed so tests stay deterministic.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x904712);
+        let mut responder_priv = [0_u8; 32];
+        let mut eph_priv = [0_u8; 32];
+        rng.fill_bytes(&mut responder_priv);
+        rng.fill_bytes(&mut eph_priv);
+        let publ = X25519PublicKey::from(&StaticSecret::from(responder_priv));
+        (responder_priv, *publ.as_bytes(), eph_priv)
+    }
+
+    #[test]
+    fn router_garlic_round_trips_stbm_clove() {
+        let (responder_priv, recipient_pub, eph_priv) = router_keypair();
+        let mut body = vec![4_u8];
+        body.extend(std::iter::repeat_n(0x42_u8, 4 * 218));
+        let opaque = wrap_for_router(
+            &recipient_pub,
+            SHORT_TUNNEL_BUILD_TYPE,
+            0x77AA,
+            1_800_000_060,
+            &body,
+            &eph_priv,
+        );
+        let plaintext = open_router_garlic(&opaque, &responder_priv).expect("open");
+        let clove = extract_garlic_clove(&plaintext).expect("clove");
+        assert_eq!(clove.inner_type, SHORT_TUNNEL_BUILD_TYPE);
+        assert_eq!(clove.message_id, 0x77AA);
+        assert_eq!(clove.expiration_seconds, 1_800_000_060);
+        assert_eq!(clove.payload, body);
+    }
+
+    #[test]
+    fn router_garlic_wrong_key_fails_authentication() {
+        let (responder_priv, recipient_pub, eph_priv) = router_keypair();
+        let body = vec![1_u8, 0x42, 0x43];
+        let opaque = wrap_for_router(
+            &recipient_pub,
+            SHORT_TUNNEL_BUILD_TYPE,
+            1,
+            2,
+            &body,
+            &eph_priv,
+        );
+        let mut wrong = responder_priv;
+        // Flip a bit the X25519 clamp preserves (clamping clears
+        // the low bits of byte 0 and sets the high bit of byte
+        // 31, so a bit-0 flip would silently round-trip).
+        wrong[16] ^= 0x40;
+        assert!(matches!(
+            open_router_garlic(&opaque, &wrong),
+            Err(GarlicReplyError::AuthenticationFailed)
+        ));
+        let mut tampered = opaque.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        assert!(matches!(
+            open_router_garlic(&tampered, &responder_priv),
+            Err(GarlicReplyError::AuthenticationFailed)
+        ));
+    }
+
+    #[test]
+    fn router_garlic_rejects_short_and_oversize() {
+        let responder_priv = [0x11_u8; 32];
+        assert!(matches!(
+            open_router_garlic(&[0_u8; 10], &responder_priv),
+            Err(GarlicReplyError::TooShort)
+        ));
+        assert!(matches!(
+            open_router_garlic(&vec![0_u8; MAX_ROUTER_GARLIC_OPAQUE + 1], &responder_priv),
+            Err(GarlicReplyError::TooLarge)
+        ));
+    }
+
+    #[test]
+    fn wrap_round_trips_through_decrypt() {
+        use i2pr_proto::{Date, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
+        let (key, tag) = test_key_tag();
+        let reply = sample_reply_payload();
+        let bytes = wrap_obep_reply_garlic(
+            &reply,
+            0xA11CE,
+            1_800_000_060,
+            0xBEEF,
+            Date::from_millis(1_800_000_000_000),
+            &key,
+            &tag,
+        )
+        .expect("wrap");
+        let decoded =
+            I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE).expect("decode garlic");
+        assert_eq!(
+            decoded.header().message_type(),
+            i2pr_proto::MessageType::Garlic
+        );
+        let I2npBody::Garlic(opaque) = decoded.body() else {
+            panic!("expected garlic body");
+        };
+        let decrypted =
+            decrypt_build_reply_garlic(&key, &tag, opaque.payload.as_bytes()).expect("decrypt");
+        assert_eq!(decrypted.inner_message_id, 0xA11CE);
+        assert_eq!(decrypted.inner_expiration_seconds, 1_800_000_060);
+        assert_eq!(decrypted.reply_payload, reply);
+    }
+
+    #[test]
+    fn wrap_rejects_oversize_and_zero_msgid() {
+        use i2pr_proto::Date;
+        let (key, tag) = test_key_tag();
+        let big = vec![0xAA_u8; MAX_RELAY_OTBRM_BODY + 1];
+        assert!(matches!(
+            wrap_obep_reply_garlic(
+                &big,
+                1,
+                1_800_000_060,
+                2,
+                Date::from_millis(1_800_000_000_000),
+                &key,
+                &tag
+            ),
+            Err(GarlicReplyError::TooLarge)
+        ));
+        let reply = sample_reply_payload();
+        assert!(matches!(
+            wrap_obep_reply_garlic(
+                &reply,
+                0,
+                1_800_000_060,
+                2,
+                Date::from_millis(1_800_000_000_000),
+                &key,
+                &tag
+            ),
+            Err(GarlicReplyError::InvalidReplyPayload)
         ));
     }
 

@@ -102,8 +102,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use i2pr_proto::{
-    Date, DeferredBuildRecords, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
-    TunnelDataMessage,
+    DeferredBuildRecords, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, TunnelDataMessage,
 };
 use i2pr_runtime::CancellationToken;
 use i2pr_transport::PeerId;
@@ -112,8 +111,8 @@ use i2pr_tunnel::identity::{TunnelId, TunnelPeer};
 use i2pr_tunnel::multirecord::{RECORD_BYTES, decode_outbound_tunnel_build_reply};
 use i2pr_tunnel::{
     TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState, TransitBuildContext,
-    TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome, TransitNow, TransitRegistry,
-    TransitReplySlot, process_short_build_message,
+    TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome, TransitHopRole,
+    TransitHopRoleKind, TransitNow, TransitRegistry, TransitReplySlot, process_short_build_message,
 };
 use rand_core::TryCryptoRng;
 use thiserror::Error;
@@ -137,12 +136,20 @@ pub const TRANSIT_DELIVERY_TIMEOUT_SECS: u64 = 30;
 /// grows beyond this bound.
 pub const MAX_TRANSIT_PEER_INDEX: usize = 4096;
 
-/// Hard ceiling used as the `now`-supplied expiration in
+/// Expiration horizon used as the `now`-relative I2NP expiration in
 /// milliseconds when the daemon constructs the I2NP envelope for a
-/// transit forward. The router enforces no canonical M11 lifetime;
-/// the one-hour horizon matches the SSU2 runtime's
-/// `MAX_ROUTER_I2NP_FUTURE_MS`.
-pub const TRANSIT_DELIVERY_EXPIRATION_MS: u64 = 60 * 60 * 1000;
+/// transit forward, reply, or rejection.
+///
+/// Exact-pinned i2pd 2.61.0 (`I2NPProtocol.cpp`) rejects an incoming
+/// I2NP whose expiration is more than `3 * I2NP_MESSAGE_CLOCK_SKEW`
+/// (3 minutes) in the future as well as one more than
+/// `I2NP_MESSAGE_CLOCK_SKEW` (1 minute) in the past, so a transit
+/// envelope must land inside that window. The one-hour horizon this
+/// constant used to carry made every reference drop the envelope as
+/// "too far in future"; 60 seconds sits inside the pinned window with
+/// loopback slack and also stays inside this router's own
+/// `MAX_ROUTER_I2NP_FUTURE_MS` receive bound.
+pub const TRANSIT_DELIVERY_EXPIRATION_MS: u64 = 60 * 1000;
 
 /// Reasons a transit dispatch may fail to construct the I2NP
 /// envelope the router-delivery capability consumes.
@@ -248,11 +255,20 @@ pub enum TransitDispatch {
         /// Complete count-prefixed transformed payload the daemon
         /// ships verbatim as a `ShortTunnelBuild` body.
         payload: Vec<u8>,
+        /// Non-secret decoded hop-role kind (Participant vs
+        /// InboundGateway). Plan 256 typed evidence binds the
+        /// Participant/IBGW rows to this kind.
+        role_kind: TransitHopRoleKind,
     },
     /// OBEP: terminate STBM hop-to-hop propagation and emit the
     /// already-transformed record set as an
     /// `OutboundTunnelBuildReply` body addressed to the decoded
-    /// reply router.
+    /// reply router. When the decoded reply tunnel is nonzero the
+    /// reply travels a reply tunnel: the daemon garlic-wraps the
+    /// OTBRM with the hop's `RGarlicKeyAndTag` material and nests
+    /// it in a `TunnelGateway` envelope for that tunnel (the
+    /// reference relay shape). A zero reply tunnel means a direct
+    /// creator reply shipped as a raw OTBRM.
     EmitOtbrm {
         /// Authenticated receive tunnel id this hop committed.
         /// The daemon uses it to roll back the registration when
@@ -260,11 +276,18 @@ pub enum TransitDispatch {
         receive_tunnel: TunnelId,
         /// Authenticated reply-router hash the OTBRM targets.
         reply_router: Hash,
+        /// Authenticated reply tunnel id when the reply travels a
+        /// reply tunnel; zero for a direct creator reply.
+        reply_tunnel: TunnelId,
         /// Authenticated reply message id the OTBRM carries.
         reply_message_id: u32,
         /// Complete count-prefixed OTBRM payload the daemon ships
         /// verbatim as an `OutboundTunnelBuildReply` body.
         payload: Vec<u8>,
+        /// Non-secret decoded hop-role kind (always
+        /// OutboundEndpoint on this path). Present so evidence
+        /// recorders use one accessor for every disposition.
+        role_kind: TransitHopRoleKind,
     },
     /// Valid policy rejection: the build was opened, decoded, and
     /// transformed exactly once, but admission refused; the
@@ -289,11 +312,47 @@ pub enum TransitDispatch {
         /// Transformed count-prefixed payload the daemon wraps and
         /// ships as the role-correct envelope.
         payload: Vec<u8>,
+        /// Non-secret decoded hop-role kind on the rejected
+        /// request. Plan 256 code-30 rows require the rejection
+        /// epoch to prove the expected role was decoded.
+        role_kind: TransitHopRoleKind,
     },
     /// Fatal: the inbound payload could not be decoded or
     /// authenticated; no payload is returned and the caller must
     /// drop the message.
     Fatal,
+}
+
+impl TransitDispatch {
+    /// Returns the non-secret decoded hop-role kind on every
+    /// non-fatal disposition. `None` only for `Fatal`, which
+    /// never decoded a role. Plan 256 typed evidence binds role
+    /// rows to this kind.
+    pub const fn role_kind(&self) -> Option<TransitHopRoleKind> {
+        match self {
+            Self::ForwardStbm { role_kind, .. }
+            | Self::EmitOtbrm { role_kind, .. }
+            | Self::Rejected { role_kind, .. } => Some(*role_kind),
+            Self::Fatal => None,
+        }
+    }
+
+    /// Returns the committed (or would-be-committed) receive
+    /// tunnel id on every non-fatal disposition.
+    pub const fn receive_tunnel_opt(&self) -> Option<TunnelId> {
+        match self {
+            Self::ForwardStbm { receive_tunnel, .. } | Self::EmitOtbrm { receive_tunnel, .. } => {
+                Some(*receive_tunnel)
+            }
+            Self::Rejected { receive_tunnel, .. } => *receive_tunnel,
+            Self::Fatal => None,
+        }
+    }
+
+    /// Returns true for the valid code-30 policy-rejection path.
+    pub const fn is_rejection(&self) -> bool {
+        matches!(self, Self::Rejected { .. })
+    }
 }
 
 /// Role classification the daemon uses when wrapping a code-30
@@ -772,8 +831,17 @@ impl TransitBuildService {
     }
 
     /// Delivers one OBEP `ROUTER` semantic action through the
-    /// bounded router-delivery seam. The action message is already
-    /// a complete standard I2NP envelope; it is delivered verbatim.
+    /// bounded router-delivery seam. The action message arrives as
+    /// a complete standard I2NP envelope (the tunnel payload
+    /// form); router-direct SSU2 delivery requires the nine-byte
+    /// short-transport form, so the message is converted (same
+    /// type, same message id, same expiration instant, floored to
+    /// whole seconds) rather than delivered verbatim. A verbatim
+    /// standard envelope misparses on the reference: its
+    /// millisecond expiration bytes land where the short header
+    /// holds seconds, decoding as a 1970 timestamp, and the
+    /// reference drops the message as expired (source-locked
+    /// against `I2NPMessage::FromNTCP2` + `HandleI2NPMsg`).
     pub fn deliver_obep_router(
         &self,
         action: &i2pr_tunnel::RouterDeliveryAction,
@@ -783,9 +851,11 @@ impl TransitBuildService {
             .peer_index
             .get(&action.target_router)
             .ok_or(TransitServiceError::NoActiveSession(action.target_router))?;
+        let bytes = short_transport_from_standard(&action.message)
+            .map_err(TransitServiceError::Dispatch)?;
         let request = crate::router_i2np::RouterDeliveryRequest::new(
             peer,
-            action.message.clone(),
+            bytes,
             std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
         )
         .map_err(|_| TransitServiceError::DeliveryFailed)?;
@@ -928,6 +998,48 @@ impl TransitBuildService {
                 }
             };
         self.build_dispatch_from_outcome(outcome)
+    }
+
+    /// Routes one inbound Noise-N router garlic that may carry a
+    /// creator-routed short-build request. The reference tunnels
+    /// a destination build through its own outbound tunnel
+    /// whenever one is established and garlic-wraps the request
+    /// for this hop unless its tunnel endpoint is this hop, so a
+    /// counted build can arrive as type-11 Garlic instead of a
+    /// raw STBM. This method unwraps (with the service-owned
+    /// static key), extracts the first local clove, and routes an
+    /// inner `ShortTunnelBuild` through the exact same
+    /// transaction as the direct path.
+    ///
+    /// Returns `None` when the garlic is not for this hop, carries
+    /// no STBM clove, or fails any bound — the caller keeps the
+    /// existing `Ignored` outcome. Secrets never leave the
+    /// service: unwrap and clove parse are pure runtime-neutral
+    /// helpers fed with the owned key. The returned message id is
+    /// the inner build id for creator correlation.
+    pub fn route_router_garlic<R: TryCryptoRng>(
+        &mut self,
+        opaque: &[u8],
+        peer: &PeerId,
+        now_seconds: u64,
+        rng: &mut R,
+    ) -> Option<(TransitDispatch, u32)> {
+        use i2pr_tunnel::garlic_reply::{
+            SHORT_TUNNEL_BUILD_TYPE, extract_garlic_clove, open_router_garlic,
+        };
+        if self.cancelled {
+            return None;
+        }
+        let plaintext = open_router_garlic(opaque, &self.hop_material.hop_static_priv).ok()?;
+        let clove = extract_garlic_clove(&plaintext).ok()?;
+        if clove.inner_type != SHORT_TUNNEL_BUILD_TYPE {
+            return None;
+        }
+        if clove.message_id == 0 || clove.payload.is_empty() {
+            return None;
+        }
+        let dispatch = self.route_short_build(&clove.payload, peer, now_seconds, rng);
+        Some((dispatch, clove.message_id))
     }
 
     /// Routes one inbound authenticated `TunnelData` cell against
@@ -1081,7 +1193,9 @@ impl TransitBuildService {
                 (peer, bytes)
             }
             TransitDispatch::EmitOtbrm {
+                receive_tunnel,
                 reply_router,
+                reply_tunnel,
                 reply_message_id,
                 payload,
                 ..
@@ -1090,9 +1204,38 @@ impl TransitBuildService {
                     .peer_index
                     .get(reply_router)
                     .ok_or(TransitServiceError::NoActiveSession(*reply_router))?;
-                let bytes = wrap_outbound_tunnel_build_reply_envelope(payload, *reply_message_id)
+                // Raw direct reply: the creator matches it against
+                // its pending build by message id on any transport.
+                // This is the only form a direct creator reply
+                // understands, and foreign routers drop it as an
+                // unknown pending message (harmless).
+                let raw = wrap_outbound_tunnel_build_reply_envelope(payload, *reply_message_id)
                     .map_err(TransitServiceError::Dispatch)?;
-                (peer, bytes)
+                // Tunnel relay reply: when the decoded reply hop is
+                // a forwarder (the creator's reply-tunnel gateway),
+                // the raw form dies at the forwarder, so the OTBRM
+                // additionally travels garlic-wrapped inside a
+                // TunnelGateway envelope the forwarder relays down
+                // the reply tunnel. The creator unwraps via its
+                // submitted reply key/tag and matches the inner
+                // message id; a duplicate arrival after establishment
+                // misses the (removed) pending entry and is ignored.
+                // Both forms are always emitted: exactly one can
+                // establish the tunnel, the other is inert.
+                let raw_outcome = self.send_i2np_bytes(peer, raw, cancellation)?;
+                let relay = self.build_tunnel_relay_otbrm(
+                    *receive_tunnel,
+                    *reply_tunnel,
+                    payload,
+                    *reply_message_id,
+                )?;
+                let relay_outcome = self.send_i2np_bytes(peer, relay, cancellation)?;
+                return Ok(match (raw_outcome, relay_outcome) {
+                    (RouterDeliveryOutcome::Accepted, _) | (_, RouterDeliveryOutcome::Accepted) => {
+                        RouterDeliveryOutcome::Accepted
+                    }
+                    (_, relay_outcome) => relay_outcome,
+                });
             }
             TransitDispatch::Rejected { role, payload, .. } => {
                 let (peer, bytes) = match role {
@@ -1142,6 +1285,90 @@ impl TransitBuildService {
             }
         })?;
         Ok(self.router_delivery.deliver(request, cancellation))
+    }
+
+    /// Sends one pre-wrapped I2NP envelope through the bounded
+    /// router-delivery capability. Shared by the single-send arms
+    /// above and the dual-form OBEP relay so every send observes
+    /// identical timeout and error mapping.
+    fn send_i2np_bytes(
+        &self,
+        peer: PeerId,
+        bytes: Vec<u8>,
+        cancellation: &CancellationToken,
+    ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
+        let request = crate::router_i2np::RouterDeliveryRequest::new(
+            peer,
+            bytes,
+            std::time::Duration::from_secs(TRANSIT_DELIVERY_TIMEOUT_SECS),
+        )
+        .map_err(|error| match error {
+            crate::router_i2np::RouterDeliveryError::MessageTooLarge => {
+                TransitServiceError::DeliveryFailed
+            }
+            crate::router_i2np::RouterDeliveryError::ZeroTimeout
+            | crate::router_i2np::RouterDeliveryError::TimeoutTooLong => {
+                TransitServiceError::DeliveryFailed
+            }
+        })?;
+        Ok(self.router_delivery.deliver(request, cancellation))
+    }
+
+    /// Builds the tunnel-relay form of an accepted OBEP reply:
+    /// the OTBRM garlic-wrapped with the committed hop's
+    /// `RGarlicKeyAndTag` material and nested in a `TunnelGateway`
+    /// envelope for the decoded reply tunnel. The garlic keys come
+    /// from the live registration (committed before dispatch), so
+    /// no secret material crosses the dispatch boundary; a missing
+    /// registration or non-OBEP role fails closed with no send.
+    fn build_tunnel_relay_otbrm(
+        &self,
+        receive_tunnel: TunnelId,
+        reply_tunnel: TunnelId,
+        payload: &[u8],
+        reply_message_id: u32,
+    ) -> Result<Vec<u8>, TransitServiceError> {
+        let registration =
+            self.registry
+                .registration(receive_tunnel)
+                .ok_or(TransitServiceError::Dispatch(
+                    TransitDispatchError::BodyShape("relay registration missing"),
+                ))?;
+        let TransitHopRole::OutboundEndpoint { layer_keys } = &registration.role else {
+            return Err(TransitServiceError::Dispatch(
+                TransitDispatchError::BodyShape("relay role is not endpoint"),
+            ));
+        };
+        let garlic_key = layer_keys
+            .garlic_reply_key()
+            .ok_or(TransitServiceError::Dispatch(
+                TransitDispatchError::BodyShape("relay garlic key missing"),
+            ))?;
+        let garlic_tag = layer_keys
+            .garlic_reply_tag()
+            .ok_or(TransitServiceError::Dispatch(
+                TransitDispatchError::BodyShape("relay garlic tag missing"),
+            ))?;
+        let expiration_seconds = future_expiration_seconds();
+        let garlic = i2pr_tunnel::garlic_reply::wrap_obep_reply_garlic(
+            payload,
+            reply_message_id,
+            expiration_seconds,
+            reply_message_id,
+            i2pr_proto::Date::from_millis(u64::from(expiration_seconds).saturating_mul(1_000)),
+            garlic_key,
+            garlic_tag,
+        )
+        .map_err(|_| {
+            TransitServiceError::Dispatch(TransitDispatchError::BodyShape(
+                "relay garlic wrap rejected",
+            ))
+        })?;
+        wrap_tunnel_gateway_envelope(reply_tunnel, &garlic, reply_message_id).map_err(|_| {
+            TransitServiceError::Dispatch(TransitDispatchError::BodyShape(
+                "relay gateway wrap rejected",
+            ))
+        })
     }
 
     /// Synchronously removes the registration for the supplied
@@ -1208,6 +1435,112 @@ impl TransitBuildService {
         }
     }
 
+    /// Delivers one OBEP reply (accept or code-30 rejection) whose
+    /// decoded reply router is this router itself through the local
+    /// IBGW branch.
+    ///
+    /// Source-locked to `libi2pd/TransitTunnel.cpp`
+    /// `HandleShortTransitTunnelBuildMsg`: when the endpoint
+    /// record's next-ident (the reply IBGW) equals the replying
+    /// router, the reference never sends the reply on a session.
+    /// It injects the reply message into its own gateway tunnel
+    /// (`IBGW is local`) and forwards it down the reply tunnel. A
+    /// builder addresses the reply to us exactly when its live
+    /// inbound gateway is us (a reversed inbound), which is also
+    /// the only configuration that can carry the reference data
+    /// loop back to the builder; without this branch every such
+    /// reply dies as `NoActiveSession` and the builder's pool
+    /// never establishes.
+    ///
+    /// `payload` is the complete count-prefixed OTBRM body from
+    /// the dispatch. It travels wrapped as a standard-header
+    /// nested message through the canonical IBGW seam for
+    /// `reply_tunnel`, exactly like inbound gateway traffic. The
+    /// previous peer is the IBGW registration's own locked
+    /// previous peer: the reply originates here on behalf of that
+    /// tunnel's path, so the endpoint STBM's transport sender is
+    /// not the gateway's previous hop. `peer` is only the
+    /// fallback when the reply tunnel holds no registration,
+    /// which then fails closed below.
+    ///
+    /// `receive_tunnel` is the just-committed endpoint
+    /// registration (`None` for rejections, which install
+    /// nothing): any non-`Accepted` outcome rolls it back, while
+    /// only `Accepted` leaves live state behind.
+    pub fn deliver_self_reply_otbrm<R: rand_core::RngCore + rand_core::CryptoRng>(
+        &mut self,
+        receive_tunnel: Option<TunnelId>,
+        reply_tunnel: TunnelId,
+        reply_message_id: u32,
+        payload: &[u8],
+        peer: &PeerId,
+        now_ms: u64,
+        rng: &mut R,
+        cancellation: &CancellationToken,
+    ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
+        if self.cancelled {
+            return Ok(RouterDeliveryOutcome::Cancelled);
+        }
+        let nested = otbrm_nested_standard_envelope(payload, reply_message_id)
+            .map_err(TransitServiceError::Dispatch)?;
+        let previous = self
+            .registry
+            .registration(reply_tunnel)
+            .map(|registration| PeerId::from_hash(registration.previous_peer.hash()))
+            .unwrap_or(*peer);
+        let forwards = self
+            .route_tunnel_gateway(reply_tunnel.get(), &nested, &previous, now_ms, rng)?
+            .unwrap_or_default();
+        if forwards.is_empty() {
+            // Unknown, expired, or non-IBGW reply tunnel, or a
+            // previous-peer mismatch: the reference logs `Tunnel
+            // ... not found for short tunnel build reply` and
+            // drops, expiring the transit tunnel on reply-send
+            // failure via `onDrop`. The endpoint registration must
+            // not survive a reply that can never complete.
+            if let Some(receive) = receive_tunnel {
+                let _ = self.rollback_receive_tunnel(receive);
+            }
+            return Ok(RouterDeliveryOutcome::Cancelled);
+        }
+        // Every emitted cell travels the existing bounded router
+        // seam. Partial multi-cell failure is explicit and
+        // bounded; no retry. Cancellation stops subsequent cells.
+        let mut message_id = reply_tunnel.get();
+        let mut first_failure: Option<RouterDeliveryOutcome> = None;
+        for forward in &forwards {
+            if cancellation.is_cancelled() {
+                first_failure.get_or_insert(RouterDeliveryOutcome::Cancelled);
+                break;
+            }
+            message_id = message_id.wrapping_add(1);
+            match self.deliver_tunnel_data_forward(
+                &forward.next_router,
+                &forward.cell,
+                message_id,
+                cancellation,
+            ) {
+                Ok(RouterDeliveryOutcome::Accepted) => {}
+                Ok(other) => {
+                    first_failure.get_or_insert(other);
+                }
+                Err(TransitServiceError::NoActiveSession(_)) => {
+                    first_failure.get_or_insert(RouterDeliveryOutcome::NoActiveSession);
+                }
+                Err(_) => {
+                    first_failure.get_or_insert(RouterDeliveryOutcome::Cancelled);
+                }
+            }
+        }
+        let outcome = first_failure.unwrap_or(RouterDeliveryOutcome::Accepted);
+        if outcome != RouterDeliveryOutcome::Accepted
+            && let Some(receive) = receive_tunnel
+        {
+            let _ = self.rollback_receive_tunnel(receive);
+        }
+        Ok(outcome)
+    }
+
     /// Translates a [`TransitBuildMessageOutcome`] into the typed
     /// [`TransitDispatch`] the daemon runtime consumes. The
     /// daemon does not inspect, reseal, or retransform individual
@@ -1256,6 +1589,7 @@ impl TransitBuildService {
                 receive_tunnel,
                 role,
                 payload: outcome.transformed_payload,
+                role_kind: outcome.role_kind,
             };
         }
         match outcome.route {
@@ -1271,13 +1605,14 @@ impl TransitBuildService {
                     next_router,
                     next_message_id,
                     payload: outcome.transformed_payload,
+                    role_kind: outcome.role_kind,
                 }
             }
             TransitBuildRoute::TerminateOtbrm {
                 receive_tunnel,
                 reply_router,
+                reply_tunnel,
                 reply_message_id,
-                ..
             } => {
                 // Construct the OTBRM from the already transformed
                 // record set. The record set is the same
@@ -1299,8 +1634,10 @@ impl TransitBuildService {
                 TransitDispatch::EmitOtbrm {
                     receive_tunnel,
                     reply_router,
+                    reply_tunnel,
                     reply_message_id,
                     payload,
+                    role_kind: outcome.role_kind,
                 }
             }
         }
@@ -1467,12 +1804,19 @@ fn peer_to_hash(peer: PeerId) -> Hash {
 }
 
 /// Wraps the supplied count-prefixed ShortTunnelBuild body in a
-/// complete standard-header I2NP envelope addressed to the
+/// complete short-transport I2NP envelope addressed to the
 /// supplied `message_id`. The helper validates the structural
 /// shape (`1 + n*218`, `n` in `1..=8`), splits the body into a
 /// [`DeferredBuildRecords`], and encodes a [`I2npMessage`] with
 /// the type-byte the canonical I2NP registry assigns to
 /// `ShortTunnelBuild` (`0x19`).
+///
+/// The router link carries the 9-byte NTCP2/SSU2 header form
+/// (type, message id, seconds expiration): exact-pinned i2pd
+/// 2.61.0 converts every SSU2 `I2NPMessage` block through
+/// `FromNTCP2` (`SSU2Session.cpp`), so a 16-byte standard header
+/// misparses its expiration as a 1970 timestamp and the reference
+/// drops the message as expired.
 fn wrap_short_tunnel_build_envelope(
     payload: &[u8],
     message_id: u32,
@@ -1494,15 +1838,16 @@ fn wrap_short_tunnel_build_envelope(
     let deferred = DeferredBuildRecords::new(count, RECORD_BYTES, records)
         .map_err(|_| TransitDispatchError::BodyShape("deferred build records rejected"))?;
     let body = I2npBody::ShortTunnelBuild(deferred);
-    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
-        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected body"))?;
+    let message =
+        I2npMessage::new_short_transport(message_id, future_expiration_seconds(), body)
+            .map_err(|_| TransitDispatchError::I2npFraming("new_short_transport rejected body"))?;
     message
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_short_transport_to_vec rejected"))
 }
 
 /// Wraps the supplied count-prefixed OutboundTunnelBuildReply
-/// body in a complete standard-header I2NP envelope addressed to
+/// body in a complete short-transport I2NP envelope addressed to
 /// the supplied reply `message_id`. The helper validates the
 /// structural shape and encodes a [`I2npMessage`] with the
 /// type-byte the canonical I2NP registry assigns to
@@ -1511,6 +1856,43 @@ fn wrap_outbound_tunnel_build_reply_envelope(
     payload: &[u8],
     reply_message_id: u32,
 ) -> Result<Vec<u8>, TransitDispatchError> {
+    let deferred = otbrm_deferred_records(payload)?;
+    let body = I2npBody::OutboundTunnelBuildReply(deferred);
+    let message =
+        I2npMessage::new_short_transport(reply_message_id, future_expiration_seconds(), body)
+            .map_err(|_| TransitDispatchError::I2npFraming("new_short_transport rejected body"))?;
+    message
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_short_transport_to_vec rejected"))
+}
+
+/// Wraps the supplied count-prefixed OutboundTunnelBuildReply
+/// body as a complete standard-header I2NP nested message. The
+/// local-IBGW reply branch injects the reply message into this
+/// router's own gateway tunnel exactly as the reference injects
+/// its reply message (`TransitTunnel::SendTunnelDataMsg`), and
+/// the canonical IBGW seam decodes the nested message with the
+/// standard framing, so the short-transport wire form used for
+/// session delivery cannot be reused here.
+pub(crate) fn otbrm_nested_standard_envelope(
+    payload: &[u8],
+    reply_message_id: u32,
+) -> Result<Vec<u8>, TransitDispatchError> {
+    let deferred = otbrm_deferred_records(payload)?;
+    let body = I2npBody::OutboundTunnelBuildReply(deferred);
+    let expiration =
+        i2pr_proto::Date::from_millis(u64::from(future_expiration_seconds()).saturating_mul(1_000));
+    let message = I2npMessage::new_standard(reply_message_id, expiration, body)
+        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected reply body"))?;
+    message
+        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+}
+
+/// Validates the count-prefixed OutboundTunnelBuildReply body
+/// shape shared by the short-transport session envelope and the
+/// standard nested envelope above.
+fn otbrm_deferred_records(payload: &[u8]) -> Result<DeferredBuildRecords, TransitDispatchError> {
     if payload.is_empty() {
         return Err(TransitDispatchError::Empty);
     }
@@ -1525,14 +1907,8 @@ fn wrap_outbound_tunnel_build_reply_envelope(
         ));
     }
     let records = payload[1..].to_vec();
-    let deferred = DeferredBuildRecords::new(count, RECORD_BYTES, records)
-        .map_err(|_| TransitDispatchError::BodyShape("deferred build records rejected"))?;
-    let body = I2npBody::OutboundTunnelBuildReply(deferred);
-    let message = I2npMessage::new_standard(reply_message_id, future_expiration(), body)
-        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected body"))?;
-    message
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+    DeferredBuildRecords::new(count, RECORD_BYTES, records)
+        .map_err(|_| TransitDispatchError::BodyShape("deferred build records rejected"))
 }
 
 /// Wraps one transit next-hop `TunnelData` cell in a complete
@@ -1543,11 +1919,13 @@ fn wrap_tunnel_data_envelope(
     message_id: u32,
 ) -> Result<Vec<u8>, TransitDispatchError> {
     let body = I2npBody::TunnelData(Box::new(cell.clone()));
-    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
-        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected tunnel data"))?;
+    let message = I2npMessage::new_short_transport(message_id, future_expiration_seconds(), body)
+        .map_err(|_| {
+        TransitDispatchError::I2npFraming("new_short_transport rejected tunnel data")
+    })?;
     message
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_short_transport_to_vec rejected"))
 }
 
 /// Wraps one reconstructed OBEP message in a canonical
@@ -1566,24 +1944,69 @@ fn wrap_tunnel_gateway_envelope(
         message: Box::new(inner),
     };
     let body = I2npBody::TunnelGateway(Box::new(gateway));
-    let message = I2npMessage::new_standard(message_id, future_expiration(), body)
-        .map_err(|_| TransitDispatchError::I2npFraming("new_standard rejected gateway"))?;
+    let message = I2npMessage::new_short_transport(message_id, future_expiration_seconds(), body)
+        .map_err(|_| {
+        TransitDispatchError::I2npFraming("new_short_transport rejected gateway")
+    })?;
     message
-        .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(|_| TransitDispatchError::I2npFraming("encode_standard_to_vec rejected"))
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::I2npFraming("encode_short_transport_to_vec rejected"))
 }
 
-/// Returns a caller-clock-relative I2NP expiration timestamp. The
-/// daemon uses a fixed-horizon one-hour window because the
-/// router-delivery capability requires a future expiration that
-/// exceeds the bounded delivery deadline.
-fn future_expiration() -> Date {
+/// Converts one complete standard-header I2NP message into the
+/// nine-byte short-transport (NTCP2/SSU2) envelope carrying the
+/// identical body bytes. Type and message id are preserved; the
+/// millisecond expiration is floored to whole seconds, so the
+/// converted instant never exceeds the original (no lifetime is
+/// manufactured). Router-direct SSU2 delivery requires the short
+/// form: handing a standard envelope to the session makes the
+/// reference parse the millisecond expiration as seconds and
+/// drop the message as expired. Body encoding is shared between
+/// the two header forms (opaque Garlic/Data payloads pass
+/// through byte-identical), so slicing the validated standard
+/// body under the short header is exact.
+fn short_transport_from_standard(standard: &[u8]) -> Result<Vec<u8>, TransitDispatchError> {
+    let message = I2npMessage::decode_standard(standard, MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(|_| TransitDispatchError::BodyShape("obep router payload is not standard"))?;
+    let (message_type, message_id, expiration_ms) = match message.header() {
+        i2pr_proto::I2npHeader::Standard {
+            message_type,
+            message_id,
+            expiration,
+        } => (message_type, message_id, expiration.as_millis()),
+        _ => {
+            return Err(TransitDispatchError::BodyShape(
+                "obep router payload is not standard",
+            ));
+        }
+    };
+    let expiration_seconds = u32::try_from(expiration_ms / 1_000)
+        .map_err(|_| TransitDispatchError::BodyShape("obep router expiration out of range"))?;
+    let body =
+        standard
+            .get(i2pr_proto::STANDARD_HEADER_SIZE..)
+            .ok_or(TransitDispatchError::BodyShape(
+                "obep router payload shorter than a standard header",
+            ))?;
+    let mut out = Vec::with_capacity(9 + body.len());
+    out.push(message_type.code());
+    out.extend_from_slice(&message_id.to_be_bytes());
+    out.extend_from_slice(&expiration_seconds.to_be_bytes());
+    out.extend_from_slice(body);
+    Ok(out)
+}
+
+/// Returns a caller-clock-relative I2NP expiration for the
+/// short-transport header form the router link carries. The value
+/// is whole seconds because that header encodes expiration as a
+/// `u32` second count.
+fn future_expiration_seconds() -> u32 {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
     let bounded_ms = now_ms.saturating_add(TRANSIT_DELIVERY_EXPIRATION_MS);
-    Date::from_millis(bounded_ms)
+    u32::try_from(bounded_ms / 1_000).unwrap_or(u32::MAX)
 }
 
 // Plan 253 removes the Plan 252 `forward_participant_layer`
@@ -1601,6 +2024,7 @@ fn future_expiration() -> Date {
 mod tests {
     use super::*;
 
+    use crate::router_i2np::MAX_ROUTER_I2NP_BYTES;
     use i2pr_proto::{Hash, I2npBody, I2npMessage};
     use i2pr_runtime::Ssu2InboundI2np;
     use i2pr_transport::LinkId;
@@ -1851,6 +2275,7 @@ mod tests {
                 next_router: out_router,
                 next_message_id,
                 payload: out_payload,
+                ..
             } => {
                 assert_eq!(out_router, next_router);
                 assert_eq!(next_message_id, 0xDEAD_BEEF);
@@ -1901,6 +2326,7 @@ mod tests {
                 next_router: out_router,
                 next_message_id,
                 payload: out_payload,
+                ..
             } => {
                 assert_eq!(out_router, next_router);
                 assert_eq!(next_message_id, 0xAABB_CCDD);
@@ -1949,6 +2375,7 @@ mod tests {
                 reply_router: out_router,
                 reply_message_id,
                 payload: out_payload,
+                ..
             } => {
                 assert_eq!(out_router, reply_router);
                 assert_eq!(reply_message_id, 0xCAFE_BABE);
@@ -1960,6 +2387,280 @@ mod tests {
                 assert_eq!(service.counters.emitted_otbrms(), 1);
             }
             other => panic!("expected EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 25b. Accepted OBEP builds a TunnelGateway garlic relay for a
+    ///     nonzero reply tunnel: the relay decodes as a
+    ///     short-transport TunnelGateway for the reply tunnel whose
+    ///     nested standard Garlic unwraps (with the committed
+    ///     hop's reply key/tag) to the same OTBRM body and message
+    ///     id the raw form carries.
+    #[test]
+    fn obep_accepted_message_builds_tunnel_relay() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let reply_router = Hash::from_bytes([0xCC; 32]);
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x5000).expect("id"),
+            TunnelId::new(0x6000).expect("id"),
+            reply_router,
+            HopRole::OutboundEndpoint,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0xCAFE_BABE,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCAFE);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let (receive_tunnel, reply_tunnel, reply_message_id, otbrm_payload) = match dispatch {
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_router: out_router,
+                reply_tunnel,
+                reply_message_id,
+                payload: out_payload,
+                ..
+            } => {
+                assert_eq!(out_router, reply_router);
+                assert_eq!(reply_tunnel, TunnelId::new(0x6000).expect("id"));
+                (receive_tunnel, reply_tunnel, reply_message_id, out_payload)
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        };
+        // Garlic keys come from the committed registration, never
+        // from the dispatch surface.
+        let (garlic_key, garlic_tag) = {
+            let registration = service
+                .registry
+                .registration(receive_tunnel)
+                .expect("registration");
+            let i2pr_tunnel::TransitHopRole::OutboundEndpoint { layer_keys } = &registration.role
+            else {
+                panic!("expected endpoint role");
+            };
+            (
+                *layer_keys.garlic_reply_key().expect("garlic key"),
+                *layer_keys.garlic_reply_tag().expect("garlic tag"),
+            )
+        };
+        let relay = service
+            .build_tunnel_relay_otbrm(
+                receive_tunnel,
+                reply_tunnel,
+                &otbrm_payload,
+                reply_message_id,
+            )
+            .expect("relay");
+        let gateway = I2npMessage::decode_short_transport(&relay, MAX_ROUTER_I2NP_BYTES)
+            .expect("gateway decode");
+        let I2npBody::TunnelGateway(gateway) = gateway.body() else {
+            panic!("expected gateway body");
+        };
+        assert_eq!(gateway.tunnel_id, 0x6000);
+        let nested = gateway.message.as_ref();
+        assert_eq!(
+            nested.header().message_type(),
+            i2pr_proto::MessageType::Garlic
+        );
+        let I2npBody::Garlic(opaque) = nested.body() else {
+            panic!("expected garlic body");
+        };
+        let decrypted = i2pr_tunnel::garlic_reply::decrypt_build_reply_garlic(
+            &garlic_key,
+            &garlic_tag,
+            opaque.payload.as_bytes(),
+        )
+        .expect("garlic decrypt");
+        assert_eq!(decrypted.inner_message_id, reply_message_id);
+        assert_eq!(decrypted.reply_payload, otbrm_payload);
+    }
+
+    /// 25c. A self-addressed OBEP reply (reply router equals the
+    ///     local hop identity, the reference `IBGW is local` case)
+    ///     with no IBGW registration for the reply tunnel fails
+    ///     closed: no session send is attempted, the outcome is
+    ///     `Cancelled`, and the just-committed endpoint
+    ///     registration rolls back, mirroring the reference
+    ///     `Tunnel not found for short tunnel build reply` drop
+    ///     plus `onDrop` expiry.
+    #[test]
+    fn self_reply_without_ibgw_registration_fails_closed() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x5000).expect("id"),
+            TunnelId::new(0x6000).expect("id"),
+            hop_identity,
+            HopRole::OutboundEndpoint,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0xCAFE_BABE,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCAFE);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let (receive_tunnel, reply_tunnel, reply_message_id, otbrm_payload) = match dispatch {
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_router,
+                reply_tunnel,
+                reply_message_id,
+                payload,
+                ..
+            } => {
+                assert_eq!(reply_router, hop_identity);
+                (receive_tunnel, reply_tunnel, reply_message_id, payload)
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        };
+        assert_eq!(service.active_count(), 1);
+        let token = CancellationToken::new();
+        let outcome = service
+            .deliver_self_reply_otbrm(
+                Some(receive_tunnel),
+                reply_tunnel,
+                reply_message_id,
+                &otbrm_payload,
+                &dispatch_peer(),
+                60_000,
+                &mut rng,
+                &token,
+            )
+            .expect("self reply");
+        assert_eq!(outcome, RouterDeliveryOutcome::Cancelled);
+        assert!(
+            service.is_empty(),
+            "endpoint registration must roll back on undeliverable self reply"
+        );
+    }
+
+    /// 25d. A self-addressed OBEP reply whose reply tunnel holds a
+    ///     live IBGW registration injects through the canonical
+    ///     gateway seam and forwards toward the IBGW next hop: the
+    ///     forward attempt (no live session in unit tests) reports
+    ///     `NoActiveSession`, the endpoint registration rolls
+    ///     back, and the IBGW registration survives for the next
+    ///     reply. A second identical injection routes again,
+    ///     proving the survivor is the gateway registration.
+    #[test]
+    fn self_reply_injects_through_live_ibgw_registration() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let next_router = Hash::from_bytes([0xCC; 32]);
+        let ibgw_record = ShortRequestRecord::try_new(
+            TunnelId::new(0x7000).expect("id"),
+            TunnelId::new(0x7001).expect("id"),
+            next_router,
+            HopRole::InboundGateway,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0x1B67_0001,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x1B67);
+        let ibgw_payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &ibgw_record,
+            &mut rng,
+        );
+        let ibgw_peer = PeerId::from_hash(Hash::from_bytes([0x91; 32]));
+        match service.route_short_build(&ibgw_payload, &ibgw_peer, 60, &mut rng) {
+            TransitDispatch::ForwardStbm { .. } => {}
+            other => panic!("expected ForwardStbm, got {other:?}"),
+        }
+        assert_eq!(service.active_count(), 1);
+        // Install the next-hop mapping the way the daemon would
+        // from live session state; the unit runtime holds no live
+        // links, so the forward still reports NoActiveSession.
+        service
+            .install_peer(next_router, PeerId::from_hash(next_router))
+            .expect("install peer");
+        let endpoint_peer = PeerId::from_hash(Hash::from_bytes([0x92; 32]));
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x5000).expect("id"),
+            TunnelId::new(0x7000).expect("id"),
+            hop_identity,
+            HopRole::OutboundEndpoint,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0xCAFE_BABE,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &endpoint_peer, 60, &mut rng);
+        let (receive_tunnel, reply_tunnel, reply_message_id, otbrm_payload) = match dispatch {
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_router,
+                reply_tunnel,
+                reply_message_id,
+                payload,
+                ..
+            } => {
+                assert_eq!(reply_router, hop_identity);
+                assert_eq!(reply_tunnel, TunnelId::new(0x7000).expect("id"));
+                (receive_tunnel, reply_tunnel, reply_message_id, payload)
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        };
+        assert_eq!(service.active_count(), 2);
+        let token = CancellationToken::new();
+        for _ in 0..2 {
+            let outcome = service
+                .deliver_self_reply_otbrm(
+                    Some(receive_tunnel),
+                    reply_tunnel,
+                    reply_message_id,
+                    &otbrm_payload,
+                    &endpoint_peer,
+                    60_000,
+                    &mut rng,
+                    &token,
+                )
+                .expect("self reply");
+            assert_eq!(outcome, RouterDeliveryOutcome::NoActiveSession);
+            assert_eq!(
+                service.active_count(),
+                1,
+                "only the IBGW registration must survive a failed self-reply forward"
+            );
         }
     }
 
@@ -2574,5 +3275,54 @@ mod tests {
         let service = service_for_test();
         assert!(service.is_empty());
         assert_eq!(service.active_count(), 0);
+    }
+
+    /// 42. OBEP ROUTER delivery converts the standard envelope to
+    ///     the short-transport form instead of forwarding it
+    ///     verbatim: type and message id survive, the millisecond
+    ///     expiration floors to the same whole second (never
+    ///     extended), and the converted bytes decode as a short
+    ///     message whose expiration the reference reads in
+    ///     seconds. A verbatim standard envelope would misparse
+    ///     on the reference (millisecond bytes read as seconds)
+    ///     and die as expired.
+    #[test]
+    fn obep_router_delivery_converts_standard_to_short_transport() {
+        use i2pr_proto::{DeferredPayload, OpaqueMessageBody};
+        let garlic_payload = vec![0x5Au8; 64];
+        let body = I2npBody::Garlic(OpaqueMessageBody {
+            payload: DeferredPayload::new(garlic_payload, MAX_I2NP_PAYLOAD_SIZE).expect("payload"),
+        });
+        // Non-round expiration proves flooring (never rounding up).
+        let standard = I2npMessage::new_standard(
+            0xA11CE,
+            i2pr_proto::Date::from_millis(1_790_000_001_234),
+            body,
+        )
+        .expect("standard");
+        let standard_bytes = standard
+            .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode");
+        let short = short_transport_from_standard(&standard_bytes).expect("convert");
+        assert_eq!(
+            &short[..9],
+            &[11, 0x00, 0x0A, 0x11, 0xCE, 0x6A, 0xB1, 0x3B, 0x81]
+        );
+        let decoded =
+            I2npMessage::decode_short_transport(&short, MAX_I2NP_PAYLOAD_SIZE).expect("decode");
+        match decoded.header() {
+            i2pr_proto::I2npHeader::ShortTransport {
+                message_type,
+                message_id,
+                expiration_seconds,
+            } => {
+                assert_eq!(message_type, i2pr_proto::MessageType::Garlic);
+                assert_eq!(message_id, 0xA11CE);
+                assert_eq!(expiration_seconds, 1_790_000_001);
+            }
+            other => panic!("expected short transport, got {other:?}"),
+        }
+        assert!(short_transport_from_standard(&[]).is_err());
+        assert!(short_transport_from_standard(&short).is_err());
     }
 }

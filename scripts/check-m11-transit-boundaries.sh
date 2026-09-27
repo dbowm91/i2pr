@@ -205,23 +205,19 @@ for symbol in 'TransitLiveOwner' 'install_creator_build' 'install_creator_data' 
     fi
 done
 
-# Plan 255 qualification boundaries.
+# Plan 255 qualification boundaries (historical; the Plan 256
+# corrective supersedes the driver/runner/checker expectations in
+# rules 20-24 below, but the production-code invariants stay).
 #
-# 15. The external qualification driver must exist, must be
-#     `#[ignore]`-gated with the Plan 255 explanation, and must
-#     require exact i2pd environment variables.
+# 15. The external qualification driver must exist and must be
+#     `#[ignore]`-gated with its plan explanation.
 external_driver="$root/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs"
 if [[ ! -f "$external_driver" ]]; then
     fail "Plan 255 external driver missing: $external_driver"
 fi
-if ! rg -qF '#[ignore = "Plan 255' "$external_driver"; then
-    fail "external driver must be #[ignore]-gated with the Plan 255 explanation"
+if ! rg -qF '#[ignore = "Plan 25' "$external_driver"; then
+    fail "external driver must be #[ignore]-gated with its plan explanation"
 fi
-for env_name in 'I2PD_ROUTER_INFO' 'I2PD_SSU2_ENDPOINT' 'I2PR_SSU2_BIND' 'EVIDENCE_DIR'; do
-    if ! rg -qF "$env_name" "$external_driver"; then
-        fail "external driver must require env $env_name"
-    fi
-done
 # 16. The external driver must consume Ssu2InboundI2np through
 #     `TransitLiveOwner::handle_inbound` rather than constructing
 #     STBMs by hand after runtime startup.
@@ -265,5 +261,62 @@ fi
 if ! rg -qF 'm11-i2pd-live-next-inbound-observed' "$external_checker"; then
     fail "evidence checker missing Plan 255 row labels"
 fi
+
+# Plan 256 qualification evidence/topology corrective boundaries.
+#
+# 20. The external driver is `#[ignore]`-gated with the Plan 256
+#     explanation and requires the explicit single-owner
+#     environment (binary, pin, both reference datadirs,
+#     loopback bind, evidence dir). The Plan 255
+#     `I2PD_ROUTER_INFO` / `I2PD_SSU2_ENDPOINT` split inputs are
+#     gone: identity and references are owned by one process.
+if ! rg -qF '#[ignore = "Plan 256' "$external_driver"; then
+    fail "external driver must be #[ignore]-gated with the Plan 256 explanation"
+fi
+for env_name in 'I2PD_BIN' 'I2PD_A_DATADIR' 'I2PD_B_DATADIR' 'I2PD_PIN' 'I2PD_VERSION' 'I2PR_SSU2_BIND' 'EVIDENCE_DIR'; do
+    if ! rg -qF "$env_name" "$external_driver"; then
+        fail "external driver must require env $env_name"
+    fi
+done
+# 21. The driver must bind role rows to typed decoded roles through
+#     an epoch-qualified evidence recorder, and must own both
+#     reference lifecycles.
+for symbol in 'TransitHopRoleKind' 'record_row' 'enum Epoch' 'ReferenceProcess' 'I2PD_B_DATADIR' 'routerInfo-'; do
+    if ! rg -qF "$symbol" "$external_driver"; then
+        fail "external driver missing Plan 256 symbol $symbol"
+    fi
+done
+# 22. The Plan 255 defects must stay fixed: no generic build fan-out
+#     boolean, no independent transit responder key, no
+#     evidence-directory-derived NetDB fallback. Comment and
+#     self-check mentions are excluded; only code counts.
+driver_code_nocomments="$(mktemp)"
+grep -vE '^[[:space:]]*(//|//!|///)' "$external_driver" > "$driver_code_nocomments"
+if grep -qE 'let[[:space:]]+(mut[[:space:]]+)?observed_build|observed_build[[:space:]]*=|if[[:space:]]+observed_build' "$driver_code_nocomments"; then
+    fail "external driver must not reintroduce the observed_build fan-out"
+fi
+rm -f "$driver_code_nocomments"
+if rg -v 'contains\(' "$external_driver" | rg -q 'X25519PrivateKey::generate\('; then
+    fail "external driver must not generate an independent transit responder key"
+fi
+if rg -qF '../i2pd-a/data/netDb' "$external_driver"; then
+    fail "external driver must not derive a NetDB path from the evidence directory"
+fi
+# 23. The runner must provision explicit fresh datadirs for both
+#     references, drive the corrected lane once per invocation, and
+#     keep the exact pin/version/loopback/reseed gates.
+for token in 'I2PD_A_DATADIR' 'I2PD_B_DATADIR' 'I2PD_A_SAM_PORT' 'DRIVER_TIMEOUT' 'm11_row' 'exact_row'; do
+    if ! rg -qF "$token" "$external_runner"; then
+        fail "external runner missing Plan 256 token $token"
+    fi
+done
+# 24. The evidence checker must carry the Plan 256 corrective
+#     invariants (anti-fan-out, typed roles, i2pd-B, exact owner,
+#     key coherence, epoch keys).
+for token in 'observed_build' 'TransitHopRoleKind' 'I2PD_B_DATADIR' 'routerInfo-' 'X25519PrivateKey::generate' 'EPOCH_KEYS'; do
+    if ! rg -qF "$token" "$external_checker"; then
+        fail "evidence checker missing Plan 256 invariant $token"
+    fi
+done
 
 echo "check-m11-transit-boundaries: passed"

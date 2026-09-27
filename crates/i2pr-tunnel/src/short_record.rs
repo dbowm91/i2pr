@@ -59,11 +59,15 @@ pub const HOP_ROLE_OUTBOUND_ENDPOINT: u8 = 0x40;
 
 /// Hop role carried by the short request record.
 ///
-/// The normative byte values follow the I2P Tunnel Creation
-/// Specification: `0x00` for participants, `0x80` for an inbound
-/// gateway, and `0x40` for an outbound endpoint. Setting both the
-/// gateway and endpoint bits is rejected at construction time,
-/// and any other undefined high bits are refused.
+/// The flag byte is a bitmask the reference implementation sets
+/// additively (`isGateway` sets `0x80`, `isEndpoint` sets `0x40`):
+/// `0x00` for participants, `0x80` for an inbound gateway, and
+/// `0x40` for an outbound endpoint. A single-hop inbound gateway
+/// carries both bits (`0xC0`): it is still the gateway role, and
+/// the endpoint bit additionally marks it as the build endpoint.
+/// Decoding mirrors the reference: the gateway bit takes
+/// precedence, then the endpoint bit, then participant for zero.
+/// Any other low bits are refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HopRole {
     /// Intermediate participant: decrypts one layer and forwards.
@@ -84,15 +88,22 @@ impl HopRole {
         }
     }
 
-    /// Decodes a role flag byte. The I2P specification requires
-    /// that exactly one of the high-bit role flags is set (or zero
-    /// for participant). Any other bit pattern is rejected.
+    /// Decodes a role flag byte. The reference implementation
+    /// sets the gateway (`0x80`) and endpoint (`0x40`) bits
+    /// independently, so a single-hop inbound gateway arrives as
+    /// `0xC0` and must decode to [`Self::InboundGateway`]
+    /// (gateway takes precedence). Zero decodes to participant;
+    /// any low bits outside the two role bits are rejected.
     pub const fn from_flag(flag: u8) -> Result<Self, ShortBuildError> {
-        match flag {
-            HOP_ROLE_PARTICIPANT => Ok(Self::Participant),
-            HOP_ROLE_INBOUND_GATEWAY => Ok(Self::InboundGateway),
-            HOP_ROLE_OUTBOUND_ENDPOINT => Ok(Self::OutboundEndpoint),
-            other => Err(ShortBuildError::InvalidRoleFlags { flags: other }),
+        if flag & 0x3F != 0 {
+            return Err(ShortBuildError::InvalidRoleFlags { flags: flag });
+        }
+        if flag & HOP_ROLE_INBOUND_GATEWAY != 0 {
+            Ok(Self::InboundGateway)
+        } else if flag & HOP_ROLE_OUTBOUND_ENDPOINT != 0 {
+            Ok(Self::OutboundEndpoint)
+        } else {
+            Ok(Self::Participant)
         }
     }
 }
@@ -900,7 +911,12 @@ mod tests {
             HopRole::from_flag(HOP_ROLE_OUTBOUND_ENDPOINT).expect("flag"),
             HopRole::OutboundEndpoint
         );
-        assert!(HopRole::from_flag(0xC0).is_err());
+        // The reference sets gateway+endpoint additively for a
+        // single-hop inbound gateway, so 0xC0 decodes to gateway.
+        assert_eq!(
+            HopRole::from_flag(0xC0).expect("flag"),
+            HopRole::InboundGateway
+        );
         assert!(HopRole::from_flag(0x10).is_err());
     }
 
@@ -1000,13 +1016,18 @@ mod tests {
     }
 
     #[test]
-    fn request_record_rejects_simultaneous_role_flags() {
-        // The flag encoder never combines the two high bits, so a
-        // round-trip through the canonical byte must reject 0xC0.
-        let outcome = HopRole::from_flag(0xC0);
+    fn request_record_accepts_simultaneous_gateway_endpoint_flags() {
+        // The pinned reference ORs the two high bits for a
+        // single-hop inbound gateway, so 0xC0 decodes to the
+        // gateway role (gateway takes precedence); low bits
+        // outside the role mask stay rejected.
+        assert_eq!(
+            HopRole::from_flag(0xC0).expect("combined flags"),
+            HopRole::InboundGateway
+        );
         assert!(matches!(
-            outcome,
-            Err(ShortBuildError::InvalidRoleFlags { flags: 0xC0 })
+            HopRole::from_flag(0xC1),
+            Err(ShortBuildError::InvalidRoleFlags { flags: 0xC1 })
         ));
     }
 
@@ -1118,14 +1139,18 @@ mod tests {
         bytes[0..4].copy_from_slice(&0x1000_u32.to_be_bytes());
         bytes[4..8].copy_from_slice(&0x2000_u32.to_be_bytes());
         bytes[8..40].copy_from_slice(&[0x33_u8; 32]); // next router hash
-        bytes[40] = 0xC0; // invalid role flag combination
+        bytes[40] = 0xC0; // combined gateway+endpoint: single-hop gateway
         bytes[43] = LayerEncryptionType::Aes.byte();
         bytes[48..52].copy_from_slice(&REQUEST_EXPIRATION_SECONDS.to_be_bytes());
         bytes[52..56].copy_from_slice(&0x1234_5678_u32.to_be_bytes());
+        let record = ShortRequestRecord::decode(&bytes).expect("0xC0 decodes");
+        assert_eq!(record.role(), HopRole::InboundGateway);
+        // Low bits outside the role mask stay rejected.
+        bytes[40] = 0x81;
         let outcome = ShortRequestRecord::decode(&bytes);
         assert!(matches!(
             outcome,
-            Err(ShortBuildError::InvalidRoleFlags { flags: 0xC0 })
+            Err(ShortBuildError::InvalidRoleFlags { flags: 0x81 })
         ));
     }
 

@@ -190,8 +190,8 @@ pub use transit::{
     TransitBuildContext, TransitBuildMessageOutcome, TransitBuildOutcome, TransitBuildRoute,
     TransitDataFatalError, TransitDataOutcome, TransitDataPlane, TransitEndpointData,
     TransitFatalError, TransitGatewayData, TransitGatewayForward, TransitHopRegistration,
-    TransitHopRole, TransitMode, TransitNow, TransitParticipantData, TransitRegistry,
-    TransitRegistryError, TransitReplySlot, build_rejected_reply_record,
+    TransitHopRole, TransitHopRoleKind, TransitMode, TransitNow, TransitParticipantData,
+    TransitRegistry, TransitRegistryError, TransitReplySlot, build_rejected_reply_record,
     parse_transit_bandwidth_request, process_short_build_message, process_short_build_request,
 };
 pub use zero_hop::{

@@ -45,10 +45,11 @@ use thiserror::Error;
 
 use crate::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryService, RouterI2npKind, RouterI2npOutcome,
-    dispatch_router_i2np_with_transit_bodies,
+    dispatch_router_i2np_with_transit_bodies, extract_inner_short_build,
 };
 use crate::transit_compose::{
-    TransitBuildService, TransitIngressGate, TransitServiceError, TransitTunnelDataDispatch,
+    TransitBuildService, TransitDispatch, TransitDispatchRole, TransitIngressGate,
+    TransitServiceError, TransitTunnelDataDispatch,
 };
 
 /// Live transit owner errors.
@@ -185,15 +186,55 @@ pub enum TransitDataDisposition {
     CreatorOwned,
     /// Transit was disabled; the caller keeps its existing path.
     Disabled,
-    /// Transit forwarded one cell; the value is the bounded delivery
+    /// Transit forwarded one cell; the value carries the bounded
+    /// routing facts the forward used plus the terminal delivery
     /// outcome observed on the router seam.
-    Forwarded(RouterDeliveryOutcome),
-    /// Transit completed an OBEP semantic delivery.
-    DeliveredObep(ObepDeliveryOutcome),
+    Forwarded(TransitDataForwardEvidence),
+    /// Transit completed an OBEP semantic delivery. The length is
+    /// the reassembled message size in bytes and the inner type
+    /// names the reassembled I2NP message: together they are the
+    /// only semantic tags binding a delivery to its datagram
+    /// (512- vs 4096-payload garlics reassemble to distinct
+    /// sizes), so lane evidence can separate genuine datagram
+    /// deliveries from LeaseSet publishes (DatabaseStore) and
+    /// tunnel-test completions sharing the tunnel.
+    DeliveredObep {
+        /// Terminal delivery outcome.
+        outcome: ObepDeliveryOutcome,
+        /// Reassembled message length in bytes.
+        message_len: usize,
+        /// Inner I2NP message type of the reassembled bytes
+        /// (`None` when empty, which never delivers).
+        inner_type: Option<i2pr_proto::MessageType>,
+        /// Next-hop router the delivered action addressed (`None`
+        /// for LOCAL actions, which stay inside the daemon).
+        target_router: Option<i2pr_proto::Hash>,
+        /// Target tunnel id the delivered TUNNEL action addressed
+        /// (`None` for LOCAL/ROUTER actions).
+        target_tunnel: Option<u32>,
+    },
     /// Unknown receive id, wrong peer, replay, expiry, or malformed
     /// cell. Neither owner mutated state beyond the data-plane
     /// duplicate/peer-lock path.
     Dropped,
+}
+
+/// Non-secret typed evidence for one forwarded transit data cell.
+///
+/// Plan 256 data-plane rows bind to these routing facts: the
+/// receive tunnel id must resolve the accepted registration and
+/// the output must address the expected next router/tunnel. No
+/// cell bytes cross this boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitDataForwardEvidence {
+    /// Receive tunnel id the registration recorded.
+    pub receive_tunnel: u32,
+    /// Next-hop router hash the registration recorded.
+    pub next_router: i2pr_proto::Hash,
+    /// Next-hop receive tunnel id the registration recorded.
+    pub next_tunnel: u32,
+    /// Terminal delivery outcome observed on the router seam.
+    pub outcome: RouterDeliveryOutcome,
 }
 
 /// Typed outcome of one OBEP semantic delivery.
@@ -217,8 +258,129 @@ pub enum LiveBuildOutcome {
     /// coordinator behavior is preserved.
     CreatorBypass,
     /// Transit dispatch completed; the value is the terminal
-    /// delivery outcome observed on the router seam.
-    Dispatched(RouterDeliveryOutcome),
+    /// delivery outcome plus the non-secret typed build evidence
+    /// observed on the router seam.
+    Dispatched(TransitBuildEvidence),
+}
+
+/// Non-secret typed evidence for one dispatched short-build
+/// ingress through the controlled live owner.
+///
+/// Every `Some` field is already published on the wire by the
+/// ECIES short-build exchange (role, receive tunnel id,
+/// next/reply router, message id) or is a local delivery
+/// disposition. No keys, reply material, or payload bytes cross
+/// this boundary. Plan 256 binds each external role row to the
+/// `role` kind recorded here; a generic `Dispatched` whose role
+/// is `None` (fatal decode) or names the wrong role can never
+/// satisfy a role-specific row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitBuildEvidence {
+    /// Decoded hop-role kind from the local request record.
+    /// `None` only when the payload never decoded (fatal
+    /// input); no role row may consume a `None` observation.
+    pub role: Option<i2pr_tunnel::TransitHopRoleKind>,
+    /// Authenticated receive tunnel id this hop committed.
+    /// `u32::MAX` when a code-30 rejection carried no slot;
+    /// `0` when the payload never decoded (fatal input; tunnel
+    /// id 0 is never a real registration).
+    pub receive_tunnel: u32,
+    /// Authenticated next/reply router hash when the dispatch
+    /// carried one (forward continuations and OBEP
+    /// terminations); `None` only when the route had no
+    /// onward router.
+    pub next_router: Option<i2pr_proto::Hash>,
+    /// Authenticated next/reply message id (`0` when the route
+    /// carried none).
+    pub next_message_id: u32,
+    /// True when admission refused and the transformed payload
+    /// carries the normal code-30 policy rejection.
+    pub rejected: bool,
+    /// Terminal delivery outcome observed on the router seam.
+    pub delivery: RouterDeliveryOutcome,
+}
+
+impl TransitBuildEvidence {
+    /// Returns the canonical short role label for sanitized evidence.
+    pub const fn role_label(&self) -> &'static str {
+        match self.role {
+            Some(kind) => kind.label(),
+            None => "fatal",
+        }
+    }
+
+    /// Builds non-secret typed evidence from one completed
+    /// dispatch plus its terminal delivery outcome. The helper
+    /// copies only wire-published routing facts; transformed
+    /// payloads, keys, and reply material stay inside the
+    /// dispatch owner.
+    pub fn from_dispatch(dispatch: &TransitDispatch, delivery: RouterDeliveryOutcome) -> Self {
+        match dispatch {
+            TransitDispatch::ForwardStbm {
+                receive_tunnel,
+                next_router,
+                next_message_id,
+                role_kind,
+                ..
+            } => Self {
+                role: Some(*role_kind),
+                receive_tunnel: receive_tunnel.get(),
+                next_router: Some(*next_router),
+                next_message_id: *next_message_id,
+                rejected: false,
+                delivery,
+            },
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_router,
+                reply_message_id,
+                role_kind,
+                ..
+            } => Self {
+                role: Some(*role_kind),
+                receive_tunnel: receive_tunnel.get(),
+                next_router: Some(*reply_router),
+                next_message_id: *reply_message_id,
+                rejected: false,
+                delivery,
+            },
+            TransitDispatch::Rejected {
+                receive_tunnel,
+                role,
+                payload: _,
+                role_kind,
+                reason: _,
+            } => {
+                let (next_router, next_message_id) = match role {
+                    TransitDispatchRole::ContinueStbm {
+                        next_router,
+                        next_message_id,
+                    } => (Some(*next_router), *next_message_id),
+                    TransitDispatchRole::TerminateOtbrm {
+                        reply_router,
+                        reply_message_id,
+                        ..
+                    } => (Some(*reply_router), *reply_message_id),
+                };
+                Self {
+                    role: Some(*role_kind),
+                    receive_tunnel: receive_tunnel.map_or(u32::MAX, |id| id.get()),
+                    next_router,
+                    next_message_id,
+                    rejected: true,
+                    delivery,
+                }
+            }
+            TransitDispatch::Fatal => Self {
+                role: None,
+                receive_tunnel: 0,
+                next_router: None,
+                next_message_id: 0,
+                rejected: false,
+                delivery,
+            },
+        }
+    }
 }
 
 /// Typed outcome of one live TunnelGateway ingress.
@@ -231,11 +393,16 @@ pub enum LiveGatewayOutcome {
     /// Transit IBGW delivered every emitted cell. `delivered` counts
     /// cells accepted by the router seam; `failures` counts bounded
     /// per-cell delivery failures (explicit, no retry).
+    /// `receive_tunnel` is the gateway tunnel id the ingress
+    /// addressed, so lane evidence can bind each delivery to the
+    /// accepted registration (Plan 256 section 8).
     Delivered {
         /// Cells accepted by the router seam.
         delivered: usize,
         /// Cells that failed delivery (bounded, explicit).
         failures: usize,
+        /// Gateway tunnel id the ingress addressed.
+        receive_tunnel: u32,
     },
     /// Unknown gateway tunnel id, wrong peer, non-IBGW role, or
     /// expiry. Fail closed.
@@ -393,72 +560,35 @@ where
             // registration, data/gateway paths drop closed.
             self.owner.cancel();
         }
-        let (outcome, bodies) = dispatch_router_i2np_with_transit_bodies(inbound, now_ms)
-            .map_err(|_| TransitLiveError::LocalDeliveryFailed)?;
+        // Undecodable input (malformed, expired, far-future,
+        // oversize) never enters transit: the canonical decoder
+        // already rejected it at the codec boundary (Plan 254
+        // §B.11-12), so the owner drops it as Ignored with no
+        // state change. Returning a hard error here would abort
+        // the caller's inbound loop on routine stale input
+        // (delayed retransmits, clock skew), which Plan 256
+        // localized against exact-pinned i2pd traffic.
+        let (outcome, bodies) = match dispatch_router_i2np_with_transit_bodies(inbound, now_ms) {
+            Ok(value) => value,
+            Err(_) => return Ok(LiveInboundOutcome::Ignored),
+        };
         match outcome {
             RouterI2npOutcome::TunnelBuildReserved {
                 kind,
                 message_id,
                 peer,
                 ..
-            } => {
-                match kind {
-                    RouterI2npKind::ShortTunnelBuild => {
-                        if self.creator_builds.contains(&(peer.hash(), message_id)) {
-                            return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
-                        }
-                        if !self.is_enabled() {
-                            return Ok(LiveInboundOutcome::Build(
-                                LiveBuildOutcome::DisabledReserved,
-                            ));
-                        }
-                        let Some(body) = bodies.short_build_body.as_deref() else {
-                            return Ok(LiveInboundOutcome::Build(
-                                LiveBuildOutcome::DisabledReserved,
-                            ));
-                        };
-                        let (dispatch_opt, delivery) = {
-                            let (owner, rng, cancellation) =
-                                (&mut self.owner, &mut self.rng, &self.cancellation);
-                            let gate = &mut owner.gate;
-                            let dispatch =
-                                gate.dispatch_short_build(body, &peer, now_seconds, false, rng);
-                            let Some(dispatch) = dispatch else {
-                                return Ok(LiveInboundOutcome::Build(
-                                    LiveBuildOutcome::CreatorBypass,
-                                ));
-                            };
-                            let service = gate
-                                .service_mut()
-                                .ok_or(TransitLiveError::LocalDeliveryFailed)?;
-                            let delivery = match service
-                                .deliver_dispatch_with_rollback(&dispatch, cancellation)
-                            {
-                                Ok(outcome) => outcome,
-                                // A missing peer mapping is the same
-                                // terminal `NoActiveSession` the
-                                // router seam reports for a closed
-                                // session; the service already rolled
-                                // the registration back, so the live
-                                // owner propagates the terminal
-                                // result instead of a service error.
-                                Err(TransitServiceError::NoActiveSession(_)) => {
-                                    RouterDeliveryOutcome::NoActiveSession
-                                }
-                                Err(other) => {
-                                    return Err(TransitLiveError::Service(other));
-                                }
-                            };
-                            (dispatch, delivery)
-                        };
-                        let _ = dispatch_opt;
-                        Ok(LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(
-                            delivery,
-                        )))
-                    }
-                    _ => Ok(LiveInboundOutcome::ReplyIgnored),
+            } => match kind {
+                RouterI2npKind::ShortTunnelBuild => {
+                    let Some(body) = bodies.short_build_body.as_deref() else {
+                        return Ok(LiveInboundOutcome::Build(
+                            LiveBuildOutcome::DisabledReserved,
+                        ));
+                    };
+                    self.dispatch_build_body(body, &peer, message_id, now_seconds)
                 }
-            }
+                _ => Ok(LiveInboundOutcome::ReplyIgnored),
+            },
             RouterI2npOutcome::TunnelData {
                 tunnel_id,
                 message_id,
@@ -475,10 +605,220 @@ where
                 if let Some(parts) = bodies.tunnel_gateway {
                     return self.handle_gateway_inner(parts, inbound.peer, now_ms);
                 }
+                if let Some(opaque) = bodies.garlic_opaque.as_deref() {
+                    return self.dispatch_router_garlic(opaque, &inbound.peer, now_seconds);
+                }
                 Ok(LiveInboundOutcome::Ignored)
             }
             RouterI2npOutcome::RouterControl { .. } => Ok(LiveInboundOutcome::Ignored),
         }
+    }
+
+    /// Routes one inbound router garlic that may wrap a
+    /// creator-routed short-build request (see
+    /// [`TransitBuildService::route_router_garlic`]). Unwrappable
+    /// input keeps the existing `Ignored` outcome; a recovered
+    /// build flows through the shared deliver-with-rollback tail
+    /// so evidence semantics match the direct path exactly.
+    fn dispatch_router_garlic(
+        &mut self,
+        opaque: &[u8],
+        peer: &PeerId,
+        now_seconds: u64,
+    ) -> Result<LiveInboundOutcome, TransitLiveError> {
+        if !self.is_enabled() {
+            return Ok(LiveInboundOutcome::Build(
+                LiveBuildOutcome::DisabledReserved,
+            ));
+        }
+        let dispatch_opt = {
+            let (owner, rng) = (&mut self.owner, &mut self.rng);
+            let gate = &mut owner.gate;
+            let Some(service) = gate.service_mut() else {
+                return Ok(LiveInboundOutcome::Build(
+                    LiveBuildOutcome::DisabledReserved,
+                ));
+            };
+            service.route_router_garlic(opaque, peer, now_seconds, rng)
+        };
+        let Some((dispatch, inner_msgid)) = dispatch_opt else {
+            return Ok(LiveInboundOutcome::Ignored);
+        };
+        // Creator correlation uses the inner build message id the
+        // service recovered; a match means our own coordinator
+        // originated this build and transit must not claim it.
+        if self.creator_builds.contains(&(peer.hash(), inner_msgid)) {
+            return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
+        }
+        self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
+    }
+
+    /// Delivers one routed build dispatch with rollback and typed
+    /// evidence. Shared tail for the direct, garlic-wrapped, and
+    /// OBEP-redispatched build paths. `peer` is the authenticated
+    /// transport sender of the build and `now_ms` the wall-clock
+    /// millisecond stamp; both feed only the local-IBGW self-reply
+    /// branch, which originates the reply here on behalf of the
+    /// reply tunnel's path.
+    fn deliver_dispatched(
+        &mut self,
+        dispatch: TransitDispatch,
+        peer: &PeerId,
+        now_ms: u64,
+    ) -> Result<LiveInboundOutcome, TransitLiveError> {
+        if self.is_self_reply(&dispatch) {
+            return self.deliver_self_reply(dispatch, peer, now_ms);
+        }
+        let delivery = {
+            let (owner, cancellation) = (&mut self.owner, &self.cancellation);
+            let gate = &mut owner.gate;
+            let service = gate
+                .service_mut()
+                .ok_or(TransitLiveError::LocalDeliveryFailed)?;
+            match service.deliver_dispatch_with_rollback(&dispatch, cancellation) {
+                Ok(outcome) => outcome,
+                // A missing peer mapping is the same
+                // terminal `NoActiveSession` the
+                // router seam reports for a closed
+                // session; the service already rolled
+                // the registration back, so the live
+                // owner propagates the terminal
+                // result instead of a service error.
+                Err(TransitServiceError::NoActiveSession(_)) => {
+                    RouterDeliveryOutcome::NoActiveSession
+                }
+                Err(other) => {
+                    return Err(TransitLiveError::Service(other));
+                }
+            }
+        };
+        let evidence = TransitBuildEvidence::from_dispatch(&dispatch, delivery);
+        Ok(LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(
+            evidence,
+        )))
+    }
+
+    /// Returns true when the dispatch terminates an OBEP build
+    /// (accept or code-30 rejection) whose decoded reply router is
+    /// this router itself. The reference never sends such a reply
+    /// on a session (`libi2pd/TransitTunnel.cpp`: `IBGW is local`);
+    /// it injects the reply into its own gateway tunnel.
+    fn is_self_reply(&mut self, dispatch: &TransitDispatch) -> bool {
+        let Some(local) = self
+            .owner
+            .gate
+            .service_mut()
+            .map(|service| *service.hop_identity())
+        else {
+            return false;
+        };
+        match dispatch {
+            TransitDispatch::EmitOtbrm { reply_router, .. } => *reply_router == local,
+            TransitDispatch::Rejected {
+                role: TransitDispatchRole::TerminateOtbrm { reply_router, .. },
+                ..
+            } => *reply_router == local,
+            _ => false,
+        }
+    }
+
+    /// Delivers one self-addressed OBEP reply through the local
+    /// IBGW branch with the same rollback and typed-evidence
+    /// semantics as the session path. The payload clone is bounded
+    /// (one count-prefixed record set, at most eight records);
+    /// borrowing the dispatch while the service mutably routes
+    /// would alias the owner through the gate.
+    fn deliver_self_reply(
+        &mut self,
+        dispatch: TransitDispatch,
+        peer: &PeerId,
+        now_ms: u64,
+    ) -> Result<LiveInboundOutcome, TransitLiveError> {
+        let (receive_tunnel, reply_tunnel, reply_message_id, payload) = match &dispatch {
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_tunnel,
+                reply_message_id,
+                payload,
+                ..
+            } => (
+                Some(*receive_tunnel),
+                *reply_tunnel,
+                *reply_message_id,
+                payload.clone(),
+            ),
+            TransitDispatch::Rejected {
+                receive_tunnel,
+                role:
+                    TransitDispatchRole::TerminateOtbrm {
+                        reply_tunnel,
+                        reply_message_id,
+                        ..
+                    },
+                payload,
+                ..
+            } => (
+                *receive_tunnel,
+                *reply_tunnel,
+                *reply_message_id,
+                payload.clone(),
+            ),
+            _ => return Err(TransitLiveError::LocalDeliveryFailed),
+        };
+        let delivery = {
+            let (owner, rng, cancellation) = (&mut self.owner, &mut self.rng, &self.cancellation);
+            let service = owner
+                .gate
+                .service_mut()
+                .ok_or(TransitLiveError::LocalDeliveryFailed)?;
+            service.deliver_self_reply_otbrm(
+                receive_tunnel,
+                reply_tunnel,
+                reply_message_id,
+                &payload,
+                peer,
+                now_ms,
+                rng,
+                cancellation,
+            )?
+        };
+        let evidence = TransitBuildEvidence::from_dispatch(&dispatch, delivery);
+        Ok(LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(
+            evidence,
+        )))
+    }
+
+    /// Routes one count-prefixed short-build body through the
+    /// controlled transit dispatch with rollback and typed
+    /// evidence. Shared by the direct short-build ingress arm and
+    /// the OBEP redispatch below so both paths observe identical
+    /// creator-correlation, admission, rollback, and evidence
+    /// semantics.
+    fn dispatch_build_body(
+        &mut self,
+        body: &[u8],
+        peer: &PeerId,
+        message_id: u32,
+        now_seconds: u64,
+    ) -> Result<LiveInboundOutcome, TransitLiveError> {
+        if self.creator_builds.contains(&(peer.hash(), message_id)) {
+            return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
+        }
+        if !self.is_enabled() {
+            return Ok(LiveInboundOutcome::Build(
+                LiveBuildOutcome::DisabledReserved,
+            ));
+        }
+        let dispatch = {
+            let (owner, rng) = (&mut self.owner, &mut self.rng);
+            let gate = &mut owner.gate;
+            let dispatch = gate.dispatch_short_build(body, peer, now_seconds, false, rng);
+            let Some(dispatch) = dispatch else {
+                return Ok(LiveInboundOutcome::Build(LiveBuildOutcome::CreatorBypass));
+            };
+            dispatch
+        };
+        self.deliver_dispatched(dispatch, peer, now_seconds.saturating_mul(1_000))
     }
 
     fn handle_tunnel_data_inner(
@@ -515,8 +855,8 @@ where
         match dispatch {
             TransitTunnelDataDispatch::Forward {
                 next_router,
+                next_tunnel,
                 cell: next_cell,
-                ..
             } => {
                 if self.cancellation.is_cancelled() {
                     return Ok(LiveInboundOutcome::Data(TransitDataDisposition::Dropped));
@@ -541,13 +881,56 @@ where
                 // The cell is already consumed, so no rollback applies
                 // to data forwards; the terminal outcome is observed.
                 Ok(LiveInboundOutcome::Data(TransitDataDisposition::Forwarded(
-                    delivery,
+                    TransitDataForwardEvidence {
+                        receive_tunnel: tunnel_id,
+                        next_router,
+                        next_tunnel: next_tunnel.get(),
+                        outcome: delivery,
+                    },
                 )))
             }
             TransitTunnelDataDispatch::Deliver(action) => {
+                // A creator whose request-send path used one of its
+                // own outbound tunnels delivers the build request
+                // encapsulated in tunnel data instead of directly.
+                // The inner message is still a first-hop build
+                // request from the same previous peer, so an inner
+                // ShortTunnelBuild re-enters the build dispatch;
+                // every other payload delivers as before. A
+                // same-tunnel retransmit is already suppressed by
+                // the data-plane duplicate window before delivery,
+                // so re-entry cannot double-install a registration.
+                if let Some((body, inner_msgid)) = extract_inner_short_build(&action.message) {
+                    return self.dispatch_build_body(&body, &peer, inner_msgid, now_ms / 1_000);
+                }
+                let message_len = action.message.len();
+                let inner_type = action
+                    .message
+                    .first()
+                    .map(|code| i2pr_proto::MessageType::from_code(*code));
+                // The routing facts the delivered action used ride
+                // with the disposition so lane evidence can bind each
+                // OBEP delivery to its next router/tunnel (Plan 256
+                // section 8 observation fields); LOCAL actions address
+                // no next hop.
+                use i2pr_tunnel::RouterDeliveryKind;
+                let (target_router, target_tunnel) = match action.kind {
+                    RouterDeliveryKind::Local => (None, None),
+                    RouterDeliveryKind::Router => (Some(action.target_router), None),
+                    RouterDeliveryKind::TunnelGateway => (
+                        Some(action.target_router),
+                        action.tunnel_id.map(|id| id.get()),
+                    ),
+                };
                 let outcome = self.deliver_obep_action(&action, message_id)?;
                 Ok(LiveInboundOutcome::Data(
-                    TransitDataDisposition::DeliveredObep(outcome),
+                    TransitDataDisposition::DeliveredObep {
+                        outcome,
+                        message_len,
+                        inner_type,
+                        target_router,
+                        target_tunnel,
+                    },
                 ))
             }
             TransitTunnelDataDispatch::Drop => {
@@ -614,6 +997,7 @@ where
         Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered {
             delivered,
             failures,
+            receive_tunnel: parts.tunnel_id,
         }))
     }
 
@@ -639,18 +1023,33 @@ where
                 let Some(service) = self.owner.gate.service_mut() else {
                     return Err(TransitLiveError::LocalDeliveryFailed);
                 };
-                let delivery = service
-                    .deliver_obep_router(action, &self.cancellation)
-                    .map_err(TransitLiveError::Service)?;
+                // A missing peer mapping is the same terminal
+                // `NoActiveSession` the router seam reports for a
+                // closed session (a lifecycle event, not an
+                // internal failure), so the OBEP action surfaces it
+                // as an observable delivery outcome instead of
+                // aborting the caller's inbound loop.
+                let delivery = match service.deliver_obep_router(action, &self.cancellation) {
+                    Ok(outcome) => outcome,
+                    Err(TransitServiceError::NoActiveSession(_)) => {
+                        RouterDeliveryOutcome::NoActiveSession
+                    }
+                    Err(other) => return Err(TransitLiveError::Service(other)),
+                };
                 Ok(ObepDeliveryOutcome::Router(delivery))
             }
             RouterDeliveryKind::TunnelGateway => {
                 let Some(service) = self.owner.gate.service_mut() else {
                     return Err(TransitLiveError::LocalDeliveryFailed);
                 };
-                let delivery = service
-                    .deliver_obep_tunnel(action, message_id, &self.cancellation)
-                    .map_err(TransitLiveError::Service)?;
+                let delivery =
+                    match service.deliver_obep_tunnel(action, message_id, &self.cancellation) {
+                        Ok(outcome) => outcome,
+                        Err(TransitServiceError::NoActiveSession(_)) => {
+                            RouterDeliveryOutcome::NoActiveSession
+                        }
+                        Err(other) => return Err(TransitLiveError::Service(other)),
+                    };
                 Ok(ObepDeliveryOutcome::Tunnel(delivery))
             }
         }
@@ -671,6 +1070,16 @@ where
         service
             .install_peer(router, peer)
             .map_err(|_| TransitServiceError::DeliveryFailed)
+    }
+
+    /// Sweeps expired registrations at the supplied logical time
+    /// (seconds since the Unix epoch) and returns the removal
+    /// count. The qualification lane advances the injected transit
+    /// clock beyond creation + 600 s and sweeps here after proving
+    /// post-lifetime data drops; the production daemon owns when
+    /// sweeps run.
+    pub fn expire(&mut self, now_seconds: u64) -> usize {
+        self.owner.gate.expire(now_seconds)
     }
 
     /// Removes any transit peer mapping for the closed session peer.

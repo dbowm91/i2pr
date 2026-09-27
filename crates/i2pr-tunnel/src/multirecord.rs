@@ -47,7 +47,8 @@
 
 use std::fmt;
 
-use chacha20::cipher::{KeyIvInit, StreamCipher};
+use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+
 use rand_core::{CryptoRng, RngCore, TryRngCore};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -530,6 +531,13 @@ pub fn chacha20_transform(
 /// [`chacha20_transform`]) so the postprocessor can reuse the same
 /// primitive without re-importing the underlying cipher trait.
 /// The IV follows the canonical record-slot encoding at offset 4.
+/// The keystream starts at block counter 1, matching the pinned
+/// reference (`i2pd` 2.61.0 `Crypto.cpp::ChaCha20` builds a
+/// counter-prefixed OpenSSL IV with the counter word hard-coded to
+/// 1); the seek position is byte 64, i.e. the first byte of
+/// keystream block 1. A counter-0 transform would not cancel
+/// against the reference's creator-side strip and reference hops
+/// would decline every multi-hop build through this hop.
 pub fn chacha20_xor(
     key: &[u8; CHACHA20_KEY_LEN],
     slot: SlotIndex,
@@ -539,6 +547,7 @@ pub fn chacha20_xor(
     let mut nonce = [0_u8; AEAD_NONCE_LEN];
     nonce[RECORD_SLOT_NONCE_OFFSET] = slot.get();
     let mut cipher = <ChaCha20 as KeyIvInit>::new(key.into(), &nonce.into());
+    cipher.seek(64u32);
     cipher.apply_keystream(record);
     Ok(())
 }
@@ -1729,6 +1738,34 @@ mod tests {
         let mut cipher_bad = <ChaCha20 as KeyIvInit>::new((&key).into(), (&bad_nonce).into());
         cipher_bad.apply_keystream(&mut buf_bad);
         assert_ne!(buf_bad, buf_four);
+    }
+
+    #[test]
+    fn chacha20_transform_starts_keystream_at_block_counter_one() {
+        // The pinned reference (i2pd 2.61.0 `Crypto.cpp::ChaCha20`)
+        // hard-codes the OpenSSL counter word to 1, so keystream
+        // block 0 is never used on the wire. The expected bytes are
+        // keystream blocks 1, 2, 3 plus the first 26 bytes of block
+        // 4 for key `0x42 * 32` and nonce `000000000500000000000000`
+        // (slot byte 5 at nonce offset 4), produced by an
+        // independent hand-rolled ChaCha20 block function that was
+        // validated byte-for-byte against this crate at counter 0
+        // (`7c64feaa...`). A counter-0 transform yields
+        // `7c64feaa...` here; reference hops would decline every
+        // multi-hop build through this hop because the
+        // creator-side strip would not cancel.
+        let key = [0x42_u8; 32];
+        let slot = SlotIndex::new(5).expect("ok");
+        let mut record = [0_u8; RECORD_BYTES];
+        chacha20_transform(&key, slot, &mut record).expect("transform");
+        let expected_hex = "6bef0fcc0c38e158f6dc23e15af3ba92bfa2749df125e1139634a70f7f94dc8e1af97c9cf8053c3fee115cee830f8c8f8b4be9bc1b008a965dbe4dbb1019ba5ebd48f2819f88f4255bda09e7faf8c6be9cbb2c60a58b5b6576d2e671fdb0c76cbc2a8da73e16924beb149ebe442cd45689137b7872552f07b09cdbff54604ec575a487dc3ad6af1cbf9e0919003ecd978a3f76d8a2f3c2e67f32ce9107e70ceccaef6ffabfb200f6231d138e2bc968a90ff8c2de2833447216fa97a4125947f469b96dd380571e747159fb287d1c7d4a0553f715681e29dd1a5e";
+        assert_eq!(record.len() * 2, expected_hex.len());
+        for (i, byte) in record.iter().enumerate() {
+            let hi = u8::from_str_radix(&expected_hex[2 * i..2 * i + 1], 16).expect("hex digit");
+            let lo =
+                u8::from_str_radix(&expected_hex[2 * i + 1..2 * i + 2], 16).expect("hex digit");
+            assert_eq!(*byte, hi << 4 | lo, "keystream mismatch at byte {i}");
+        }
     }
 
     #[test]

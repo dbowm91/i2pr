@@ -650,6 +650,18 @@ impl TransitHopRole {
         }
     }
 
+    /// Non-secret role classifier for qualification evidence. The
+    /// returned kind carries no key material, no tunnel ids, and no
+    /// router hashes; it only names the decoded hop role the wire
+    /// already publishes.
+    pub const fn kind(&self) -> TransitHopRoleKind {
+        match self {
+            Self::Participant { .. } => TransitHopRoleKind::Participant,
+            Self::InboundGateway { .. } => TransitHopRoleKind::InboundGateway,
+            Self::OutboundEndpoint { .. } => TransitHopRoleKind::OutboundEndpoint,
+        }
+    }
+
     /// Mutable layer keys regardless of role. Used by [`Drop`] to
     /// zeroize the secret material.
     pub fn layer_keys_mut(&mut self) -> &mut LayerKeys {
@@ -700,6 +712,38 @@ impl Drop for TransitHopRole {
             | Self::OutboundEndpoint { layer_keys } => {
                 layer_keys.zeroize();
             }
+        }
+    }
+}
+
+/// Non-secret decoded hop-role classifier for Plan 256 typed
+/// qualification evidence.
+///
+/// The daemon surfaces this kind on every build dispatch
+/// (accepted and code-30 rejection alike) so the external
+/// qualification driver can bind each role row to the exact
+/// decoded role instead of a generic "some build arrived"
+/// boolean. The enum carries no secrets: no keys, no tunnel
+/// ids, no router hashes. `Copy` is intentional so evidence
+/// recorders can snapshot the kind without touching secret
+/// owners.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitHopRoleKind {
+    /// Intermediate participant: decrypts one layer and forwards.
+    Participant,
+    /// Inbound gateway: first hop of an inbound tunnel.
+    InboundGateway,
+    /// Outbound endpoint: terminates the tunnel path.
+    OutboundEndpoint,
+}
+
+impl TransitHopRoleKind {
+    /// Returns the canonical short label used in sanitized evidence.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Participant => "participant",
+            Self::InboundGateway => "ibgw",
+            Self::OutboundEndpoint => "obep",
         }
     }
 }
@@ -2267,6 +2311,11 @@ pub struct TransitBuildMessageOutcome {
     /// when the request carried `m` or `r`. The sealed reply
     /// record's `Mapping` already encodes the value.
     pub bandwidth_reply: Option<TransitBandwidthReply>,
+    /// Non-secret decoded hop-role kind, present on both the
+    /// accept and the policy-rejection paths. Plan 256 typed
+    /// evidence binds each role row to this kind; the daemon
+    /// copies it onto every build dispatch variant.
+    pub role_kind: TransitHopRoleKind,
 }
 
 /// Locates the unique wire slot whose 16-byte identity prefix
@@ -2482,6 +2531,7 @@ where
     // every other success transition so the daemon cannot observe
     // a registered hop whose transformed payload was never built.
     let route = build_route_from_decoded(&decoded);
+    let role_kind = role.kind();
     if let Some(reason) = rejection {
         if let Some(token) = token.take() {
             context.admission.release(token);
@@ -2495,6 +2545,7 @@ where
             registration: None,
             reject_reason: Some(reason),
             bandwidth_reply: None,
+            role_kind,
         });
     }
     let reservation = match token.take() {
@@ -2524,6 +2575,7 @@ where
         expires_at_seconds: registration.expires_at_seconds,
         data_plane: fresh_data_plane_for(&registration.role, decoded.request_time().as_millis()),
     };
+    let accept_role_kind = registration.role.kind();
     if let Err(error) = context
         .registry
         .insert(decoded.receive_tunnel(), registration)
@@ -2546,6 +2598,7 @@ where
         registration: Some(outcome_registration),
         reject_reason: None,
         bandwidth_reply: Some(bandwidth_reply),
+        role_kind: accept_role_kind,
     })
 }
 

@@ -21,7 +21,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install external-lane build dependencies
-        # Plan 255 lane: building the exact-pinned i2pd C++ reference
+        # Plan 256 lane: building the exact-pinned i2pd C++ reference
         # requires system Boost / OpenSSL / zlib headers.
         run: |
           set -euo pipefail
@@ -31,7 +31,7 @@ jobs:
             libboost-all-dev libssl-dev zlib1g-dev
 
       - name: Fetch and verify exact i2pd reference
-        # Plan 255 pin: i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5
+        # Plan 256 pin: i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5
         run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
 
       - name: Show i2pd build log on failure
@@ -42,8 +42,8 @@ jobs:
         run: bash scripts/check-m11-transit-boundaries.sh
 
       - name: Check M11 transit qualification evidence integrity
-        # Plan 255 §G: static structural checker that binds every
-        # mandatory Plan 255 row to either a `record_guarded` or
+        # Plan 256 §H: static structural checker that binds every
+        # mandatory Plan 256 row to a `record_guarded`, `m11_row`, or
         # `m11_row` invocation in the runner. Routine CI also calls
         # it; the manual workflow re-runs it before any external
         # command so a structural drift is caught fail-closed before
@@ -51,7 +51,7 @@ jobs:
         run: bash scripts/check-m11-transit-qualification-evidence.sh
 
       - name: Run M11 transit qualification runner
-        # Plan 255 §G: the runner verifies exact i2pr HEAD + clean
+        # Plan 256: the runner verifies exact i2pr HEAD + clean
         # i2pd pin, uses fresh loopback datadirs, disables public
         # reseed/network, executes A-F, retains sanitized evidence
         # only, terminates all child process groups, proves cleanup

@@ -54,6 +54,7 @@ use std::time::Duration;
 use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
+    SHORT_BUILD_RECORD_SIZE,
 };
 use i2pr_runtime::{
     CancellationToken, ChildScope, IntroKey, Ssu2DialTarget, Ssu2EstablishedLink,
@@ -267,6 +268,14 @@ pub struct TransitInboundBodies {
     /// Bounded TunnelGateway ingress parts. Present only for
     /// `TunnelGateway`.
     pub tunnel_gateway: Option<TransitGatewayParts>,
+    /// Bounded opaque payload of an inbound `Garlic` message.
+    /// Present only for `Garlic`. The transit service may unwrap
+    /// a Noise-N router garlic (a creator-routed build request
+    /// the reference garlic-wrapped because its own outbound
+    /// tunnel endpoint differs from this hop) and dispatch the
+    /// inner short-build body; every other garlic keeps the
+    /// existing `Unsupported` outcome untouched.
+    pub garlic_opaque: Option<Vec<u8>>,
 }
 
 /// Bounded TunnelGateway ingress parts derived from the single
@@ -379,6 +388,15 @@ pub fn dispatch_router_i2np_with_transit_bodies(
                 });
             }
         }
+        I2npBody::Garlic(opaque)
+            if !opaque.payload.as_bytes().is_empty()
+                && opaque.payload.as_bytes().len() <= MAX_ROUTER_I2NP_BYTES =>
+        {
+            // Bounded copy only; unwrap happens in the transit
+            // service (which owns the static key), never here.
+            bodies.garlic_opaque = Some(opaque.payload.as_bytes().to_vec());
+        }
+        I2npBody::Garlic(_) => {}
         _ => {}
     }
     // Defence in depth: an OutboundTunnelBuildReply must never be
@@ -469,6 +487,31 @@ fn dispatch_inner(
         bytes.len(),
     )?;
     Ok((Some(message), outcome))
+}
+
+/// Extracts a count-prefixed short-build body from reconstructed
+/// OBEP-delivered I2NP bytes when the inner message is a
+/// `ShortTunnelBuild`. Returns the body plus the inner message id
+/// for creator correlation. Returns `None` for any other message
+/// type or undecodable input so opaque deliveries keep their
+/// existing path. Envelope decoding lives here (not in transit
+/// owners) per the router-handoff boundary: the canonical decode
+/// enforces exact consumption, checksum, and bounded shape; the
+/// build dispatch re-validates the `1 + n*218` shape before any
+/// state mutation, so hostile inner bytes fail closed twice.
+pub(crate) fn extract_inner_short_build(message: &[u8]) -> Option<(Vec<u8>, u32)> {
+    let decoded = I2npMessage::decode_standard(message, MAX_ROUTER_I2NP_BYTES).ok()?;
+    let message_id = decoded.header().message_id()?;
+    let I2npBody::ShortTunnelBuild(records) = decoded.body() else {
+        return None;
+    };
+    if usize::from(records.record_size()) != SHORT_BUILD_RECORD_SIZE {
+        return None;
+    }
+    let mut body = Vec::with_capacity(1 + records.records().len());
+    body.push(records.count());
+    body.extend_from_slice(records.records());
+    Some((body, message_id))
 }
 
 fn classify_message(
@@ -1112,8 +1155,8 @@ pub fn daemon_dial_target(
 mod tests {
     use super::*;
     use i2pr_proto::{
-        DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, DeliveryStatusMessage,
-        I2npBody, I2npMessage, OpaqueMessageBody,
+        DatabaseStoreData, DatabaseStoreMessage, Date, DeferredBuildRecords, DeferredPayload,
+        DeliveryStatusMessage, I2npBody, I2npMessage, MessageType, OpaqueMessageBody,
     };
     use i2pr_transport::PeerId;
 
@@ -1320,6 +1363,32 @@ mod tests {
     }
 
     #[test]
+    fn garlic_handoff_carries_bounded_opaque() {
+        // A Garlic message keeps the Unsupported outcome but the
+        // transit handoff carries the bounded opaque payload so
+        // the service can attempt a router-garlic unwrap.
+        let garlic = I2npBody::Garlic(OpaqueMessageBody {
+            payload: DeferredPayload::new(vec![0xCC_u8; 64], MAX_ROUTER_I2NP_BYTES)
+                .expect("payload"),
+        });
+        let message = I2npMessage::new_standard(0xD2, Date::from_millis(NOW_MS + 60_000), garlic)
+            .expect("garlic message");
+        let bytes = message
+            .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
+            .expect("encode garlic");
+        let inbound = inbound_with(bytes);
+        let (outcome, bodies) =
+            dispatch_router_i2np_with_transit_bodies(&inbound, NOW_MS).expect("handoff");
+        assert!(matches!(outcome, RouterI2npOutcome::Unsupported { .. }));
+        assert_eq!(
+            bodies.garlic_opaque,
+            Some(vec![0xCC_u8; 64]),
+            "garlic opaque must travel the handoff verbatim"
+        );
+        assert!(bodies.short_build_body.is_none());
+    }
+
+    #[test]
     fn delivery_request_validates_bounds() {
         let peer = PeerId::from_hash(Hash::from_bytes([0x33; 32]));
         assert!(matches!(
@@ -1400,5 +1469,64 @@ mod tests {
             verify_reference_router_info(b"not-a-routerinfo"),
             Err(Ssu2ServiceError::InvalidIdentity)
         ));
+    }
+
+    #[test]
+    fn inner_short_build_extracts_body_and_msgid() {
+        let records = DeferredBuildRecords::new(1, SHORT_BUILD_RECORD_SIZE, vec![0xAA_u8; 218])
+            .expect("records");
+        let bytes = I2npMessage::new_standard(
+            0x1234_5678,
+            Date::from_millis(1_800_000_000_000),
+            I2npBody::ShortTunnelBuild(records),
+        )
+        .expect("message")
+        .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
+        .expect("encode");
+        let (body, msgid) = extract_inner_short_build(&bytes).expect("extract");
+        assert_eq!(msgid, 0x1234_5678);
+        assert_eq!(body.len(), 1 + 218);
+        assert_eq!(body[0], 1);
+        assert!(body[1..].iter().all(|b| *b == 0xAA));
+    }
+
+    #[test]
+    fn inner_non_build_returns_none() {
+        let garlic = I2npMessage::new_standard(
+            7,
+            Date::from_millis(1_800_000_000_000),
+            I2npBody::Garlic(OpaqueMessageBody {
+                payload: DeferredPayload::new(vec![0xBB_u8; 32], MAX_ROUTER_I2NP_BYTES)
+                    .expect("payload"),
+            }),
+        )
+        .expect("message")
+        .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
+        .expect("encode");
+        assert!(extract_inner_short_build(&garlic).is_none());
+        // Message type must actually be garlic for the negative to be meaningful.
+        assert_eq!(
+            I2npMessage::decode_standard(&garlic, MAX_ROUTER_I2NP_BYTES)
+                .expect("decode")
+                .header()
+                .message_type(),
+            MessageType::Garlic
+        );
+    }
+
+    #[test]
+    fn truncated_inner_returns_none() {
+        let records = DeferredBuildRecords::new(1, SHORT_BUILD_RECORD_SIZE, vec![0xAA_u8; 218])
+            .expect("records");
+        let bytes = I2npMessage::new_standard(
+            9,
+            Date::from_millis(1_800_000_000_000),
+            I2npBody::ShortTunnelBuild(records),
+        )
+        .expect("message")
+        .encode_standard_to_vec(MAX_ROUTER_I2NP_BYTES)
+        .expect("encode");
+        assert!(extract_inner_short_build(&bytes[..bytes.len() - 1]).is_none());
+        assert!(extract_inner_short_build(&[]).is_none());
     }
 }
