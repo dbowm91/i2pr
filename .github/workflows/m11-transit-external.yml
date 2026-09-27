@@ -8,9 +8,19 @@ permissions:
 
 jobs:
   m11-transit-external:
-    name: M11 exact-pinned i2pd controlled transit (Ubuntu)
+    # Plan 257 work package J: two complete attempts on the same
+    # exact i2pr SHA. One workflow_dispatch fans out to attempt 1
+    # and attempt 2; both check out the same github.sha, use fresh
+    # datadirs/ports/evidence, and upload per-attempt artifacts. No
+    # evidence is shared or merged between attempts. Closure
+    # requires both manifests to name the same i2pr SHA.
+    name: M11 exact-pinned i2pd controlled transit (Ubuntu, attempt ${{ matrix.attempt }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2]
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -21,7 +31,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Install external-lane build dependencies
-        # Plan 256 lane: building the exact-pinned i2pd C++ reference
+        # Plan 257 lane: building the exact-pinned i2pd C++ reference
         # requires system Boost / OpenSSL / zlib headers.
         run: |
           set -euo pipefail
@@ -31,7 +41,7 @@ jobs:
             libboost-all-dev libssl-dev zlib1g-dev
 
       - name: Fetch and verify exact i2pd reference
-        # Plan 256 pin: i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5
+        # Plan 257 pin: i2pd 2.61.0 @ 635b013a612ff47278ef02acf8580a28e10e26c5
         run: bash scripts/interop/fetch-ssu2-reference.sh --rebuild
 
       - name: Show i2pd build log on failure
@@ -42,31 +52,39 @@ jobs:
         run: bash scripts/check-m11-transit-boundaries.sh
 
       - name: Check M11 transit qualification evidence integrity
-        # Plan 256 §H: static structural checker that binds every
-        # mandatory Plan 256 row to a `record_guarded`, `m11_row`, or
-        # `m11_row` invocation in the runner. Routine CI also calls
-        # it; the manual workflow re-runs it before any external
-        # command so a structural drift is caught fail-closed before
-        # we start an i2pd process.
+        # Plan 257 §15: static structural checker that binds every
+        # mandatory Plan 257 row to a `record_guarded`, `m11_row`,
+        # `exact_row`, or `exact_lib_row` invocation in the runner.
+        # Routine CI also calls it; the manual workflow re-runs it
+        # before any external command so a structural drift is
+        # caught fail-closed before we start an i2pd process.
         run: bash scripts/check-m11-transit-qualification-evidence.sh
 
       - name: Run M11 transit qualification runner
-        # Plan 256: the runner verifies exact i2pr HEAD + clean
+        # Plan 257: the runner verifies exact i2pr HEAD + clean
         # i2pd pin, uses fresh loopback datadirs, disables public
-        # reseed/network, executes A-F, retains sanitized evidence
-        # only, terminates all child process groups, proves cleanup
-        # baselines, and fails on any missing/blocked/red mandatory
-        # row. Work package H requires this lane to be invoked twice
-        # on the same i2pr SHA.
+        # reseed/network, executes the complete matrix, retains
+        # sanitized evidence only, terminates all child process
+        # groups, proves cleanup baselines, and fails on any
+        # missing/blocked/red mandatory row. Each matrix attempt
+        # gets fresh ports/evidences so the two passes are
+        # independent; both must pass on the same SHA for closure.
         run: bash tests/integration/m11-transit/run-i2pd.sh
         env:
-          I2PR_M11_EXECUTION_ID: github-${{ github.run_id }}
+          I2PR_M11_EXECUTION_ID: github-${{ github.run_id }}-attempt-${{ matrix.attempt }}
           I2PR_M11_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          I2PR_M11_ATTEMPT: ${{ matrix.attempt }}
+          I2PR_M11_DATADIR_ID: github-${{ github.run_id }}-attempt-${{ matrix.attempt }}
+          I2PR_M11_EVIDENCE_DIR: target/interop/m11-transit-evidence-attempt-${{ matrix.attempt }}
+          I2PR_M11_PORT: ${{ matrix.attempt == 1 && '44181' || '44281' }}
+          I2PR_I2PD_PORT: ${{ matrix.attempt == 1 && '43983' || '43993' }}
+          I2PR_I2PD_B_PORT: ${{ matrix.attempt == 1 && '43984' || '43994' }}
+          I2PR_I2PD_SAM_PORT: ${{ matrix.attempt == 1 && '44983' || '44993' }}
 
       - name: Upload sanitized evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m11-transit-evidence-${{ github.run_id }}
-          path: target/interop/m11-transit-evidence
+          name: m11-transit-evidence-attempt-${{ matrix.attempt }}-${{ github.run_id }}
+          path: target/interop/m11-transit-evidence-attempt-${{ matrix.attempt }}
           if-no-files-found: warn

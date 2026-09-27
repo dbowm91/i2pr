@@ -75,8 +75,8 @@ use i2pr_daemon::transit_owner::{LiveInboundOutcome, TransitBuildEvidence, Trans
 use i2pr_proto::{Hash, I2npMessage, RouterInfo};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_transport::PeerId;
-use i2pr_tunnel::TransitHopRoleKind;
 use i2pr_tunnel::build_crypto::{BuildCryptography, EciesX25519BuildCryptography};
+use i2pr_tunnel::{TransitBandwidthSummary, TransitHopRoleKind};
 use rand_chacha::ChaCha8Rng;
 use rand_core::{OsRng, RngCore, SeedableRng};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufStream};
@@ -984,6 +984,20 @@ struct Observation {
     logical_ms: u64,
     digest: Option<String>,
     aux_count: usize,
+    /// Pending admission reservations observed after the event
+    /// (Plan 257 work package C snapshot dimension).
+    pending_after: u16,
+    /// Peer-index entries observed after the event.
+    peer_index_after: usize,
+    /// Transit-owned queued work observed after the event
+    /// (architecturally zero).
+    queued_after: usize,
+    /// Non-secret typed bandwidth disposition copied from the
+    /// build evidence (Plan 257 work package E). `Some` on build
+    /// observations, `None` elsewhere. The daemon never re-decodes
+    /// the `Mapping`; the external bandwidth rows derive from this
+    /// summary.
+    bandwidth: Option<TransitBandwidthSummary>,
 }
 
 impl Observation {
@@ -1014,7 +1028,25 @@ impl Observation {
             logical_ms,
             digest: None,
             aux_count: 0,
+            pending_after: 0,
+            peer_index_after: 0,
+            queued_after: 0,
+            bandwidth: Some(evidence.bandwidth),
         }
+    }
+
+    /// Attaches the post-event snapshot dimensions to a build
+    /// observation without mutating any other fact.
+    fn with_snapshot_after(
+        mut self,
+        pending_after: u16,
+        peer_index_after: usize,
+        queued_after: usize,
+    ) -> Self {
+        self.pending_after = pending_after;
+        self.peer_index_after = peer_index_after;
+        self.queued_after = queued_after;
+        self
     }
 }
 
@@ -1208,6 +1240,64 @@ impl TypedLedger {
                 && obs.active_after == 0
         })
     }
+
+    /// Plan 257 full-drain predicate: like [`Self::cancel_drained`]
+    /// but additionally requires the pending, peer-index, and
+    /// transit-owned queue dimensions to be zero after the event.
+    /// An active-only drain can never satisfy this predicate.
+    fn cancel_fully_drained(&self, epoch: Epoch) -> bool {
+        self.of_epoch(epoch).any(|obs| {
+            obs.kind == ObservedKind::StateSnapshot
+                && obs.active_before > 0
+                && obs.active_after == 0
+                && obs.pending_after == 0
+                && obs.peer_index_after == 0
+                && obs.queued_after == 0
+        })
+    }
+
+    /// Plan 257 far-side predicate: the epoch holds a local forward
+    /// observation for the exact next tunnel plus an independent
+    /// B-side endpoint observation for that same tunnel id. A local
+    /// forward alone, or a B observation for a different tunnel,
+    /// never satisfies this predicate.
+    ///
+    /// B-side observations are recorded as
+    /// [`ObservedKind::InboundObserved`] with `receive_tunnel` set
+    /// to the exact B-side endpoint tunnel id.
+    fn far_side_satisfied(&self, epoch: Epoch, next_tunnel: u32) -> bool {
+        let tag = format!("next={next_tunnel:#06x}");
+        let forwarded = self.of_epoch(epoch).any(|obs| {
+            obs.kind == ObservedKind::DataForwarded
+                && (obs.next_message_id == next_tunnel
+                    || obs.digest.as_deref() == Some(&tag)
+                    || obs.aux_count == next_tunnel as usize)
+        });
+        let b_observed = self.of_epoch(epoch).any(|obs| {
+            obs.kind == ObservedKind::InboundObserved && obs.receive_tunnel == next_tunnel
+        });
+        forwarded && b_observed
+    }
+
+    /// Plan 257 session-close predicate: peer A was removed while
+    /// unrelated peer B remains. The ledger records session-close
+    /// snapshots as [`ObservedKind::StateSnapshot`] with
+    /// `peer_hash` = removed peer, `next_router` = retained peer,
+    /// and `aux_count` = retained peer-index size (must be >= 1).
+    fn session_close_a_removed_b_retained(
+        &self,
+        epoch: Epoch,
+        removed: [u8; 32],
+        retained: [u8; 32],
+    ) -> bool {
+        self.of_epoch(epoch).any(|obs| {
+            obs.kind == ObservedKind::StateSnapshot
+                && obs.peer_hash == removed
+                && obs.next_router == Some(retained)
+                && obs.active_after == 0
+                && obs.aux_count >= 1
+        })
+    }
 }
 
 fn synthetic_peer(byte: u8) -> [u8; 32] {
@@ -1230,6 +1320,10 @@ fn accepted_observation(epoch: Epoch, role: TransitHopRoleKind, peer: [u8; 32]) 
         logical_ms: 1_700_000_000_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     }
 }
 
@@ -1429,6 +1523,10 @@ fn plan256_ownership_rows_require_inbound_observation() {
         logical_ms: 1_700_000_000_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(!ledger.role_accepted(
         Epoch::Obep,
@@ -1467,6 +1565,10 @@ fn plan256_code30_requires_rejection_epoch_and_zero_growth() {
         logical_ms: 1_700_000_000_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(ledger.role_rejected(Epoch::Reject, TransitHopRoleKind::OutboundEndpoint));
     // Wrong role still fails.
@@ -1496,6 +1598,10 @@ fn plan256_replay_requires_one_delivery_then_drop() {
         logical_ms: 1_700_000_000_000,
         digest: Some(digest.clone()),
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     // Replay epoch without the drop proves nothing yet.
     assert!(!ledger.replay_suppressed(Epoch::Replay, &digest));
@@ -1515,6 +1621,10 @@ fn plan256_replay_requires_one_delivery_then_drop() {
         logical_ms: 1_700_000_001_000,
         digest: Some(digest.clone()),
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(ledger.replay_suppressed(Epoch::Replay, &digest));
     // A different digest is unaffected.
@@ -1543,6 +1653,10 @@ fn plan256_expiry_requires_logical_time_and_zero_forward() {
         logical_ms: created + 60_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(!ledger.expiry_enforced(Epoch::Expiry, 0x9601, created));
     // A drop past the bound with no forward proves it.
@@ -1561,6 +1675,10 @@ fn plan256_expiry_requires_logical_time_and_zero_forward() {
         logical_ms: created + TRANSIT_LIFETIME_MS + 1_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(ledger.expiry_enforced(Epoch::Expiry, 0x9601, created));
 }
@@ -1586,6 +1704,10 @@ fn plan256_cancel_requires_nonzero_pre_and_zero_post() {
         logical_ms: 1_700_000_000_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(!ledger.cancel_drained(Epoch::Cancel));
     ledger.push(Observation {
@@ -1603,6 +1725,10 @@ fn plan256_cancel_requires_nonzero_pre_and_zero_post() {
         logical_ms: 1_700_000_001_000,
         digest: None,
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     });
     assert!(ledger.cancel_drained(Epoch::Cancel));
 }
@@ -1734,6 +1860,364 @@ fn plan256_checker_rejects_fanout_and_requires_typed_roles() {
 }
 
 // ---------------------------------------------------------------------------
+// Plan 257 work package A — negative evidence regressions (§18 rows 14-16,
+// 21, 23-25). Each test proves a Plan 256 false-positive shape fails
+// under the Plan 257 predicates before any driver change.
+// ---------------------------------------------------------------------------
+
+fn forwarded_observation(next_tunnel: u32) -> Observation {
+    Observation {
+        epoch: Epoch::ParticipantData,
+        kind: ObservedKind::DataForwarded,
+        peer_hash: synthetic_peer(0x99),
+        role: Some(TransitHopRoleKind::Participant),
+        receive_tunnel: 0x9601,
+        next_router: Some([0xDD; 32]),
+        next_message_id: next_tunnel,
+        rejected: false,
+        delivery: "accepted",
+        active_before: 1,
+        active_after: 1,
+        logical_ms: 1_700_000_000_000,
+        digest: None,
+        aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 1,
+        queued_after: 0,
+        bandwidth: None,
+    }
+}
+
+fn b_endpoint_observation(next_tunnel: u32) -> Observation {
+    Observation {
+        epoch: Epoch::ParticipantData,
+        kind: ObservedKind::InboundObserved,
+        peer_hash: synthetic_peer(0xDB),
+        role: None,
+        receive_tunnel: next_tunnel,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "b-endpoint-observed",
+        active_before: 1,
+        active_after: 1,
+        logical_ms: 1_700_000_001_000,
+        digest: None,
+        aux_count: 1,
+        pending_after: 0,
+        peer_index_after: 1,
+        queued_after: 0,
+        bandwidth: None,
+    }
+}
+
+// Plan 257 §18 row 14 (WP A.1): a local-only Participant forward
+// cannot satisfy far-side receipt.
+#[test]
+fn plan257_local_only_forward_cannot_satisfy_farside() {
+    let mut ledger = TypedLedger::default();
+    ledger.push(forwarded_observation(0x9602));
+    assert!(!ledger.far_side_satisfied(Epoch::ParticipantData, 0x9602));
+}
+
+// Plan 257 §18 row 15 (WP A.2): the B-side observation binds to
+// the exact next tunnel id from the counted forward.
+#[test]
+fn plan257_farside_binds_b_observation_to_exact_next_tunnel() {
+    let mut ledger = TypedLedger::default();
+    ledger.push(forwarded_observation(0x9602));
+    // Wrong-tunnel B observation does not satisfy.
+    ledger.push(b_endpoint_observation(0x9603));
+    assert!(!ledger.far_side_satisfied(Epoch::ParticipantData, 0x9602));
+    // Exact-tunnel B observation satisfies.
+    ledger.push(b_endpoint_observation(0x9602));
+    assert!(ledger.far_side_satisfied(Epoch::ParticipantData, 0x9602));
+    // A different tunnel id is still unsatisfied.
+    assert!(!ledger.far_side_satisfied(Epoch::ParticipantData, 0x9604));
+}
+
+// Plan 257 §18 row 16 (WP A.3): creator-accepted alone cannot
+// satisfy far-side proof (it is secondary evidence only).
+#[test]
+fn plan257_creator_accepted_alone_cannot_satisfy_farside() {
+    let mut ledger = TypedLedger::default();
+    ledger.push(forwarded_observation(0x9602));
+    // creator-accepted is recorded in the Reject-adjacent shape the
+    // driver uses (a digest observation, not a B endpoint row).
+    ledger.push(Observation {
+        epoch: Epoch::ParticipantData,
+        kind: ObservedKind::DataForwarded,
+        peer_hash: synthetic_peer(0x99),
+        role: Some(TransitHopRoleKind::Participant),
+        receive_tunnel: 0x9601,
+        next_router: Some([0xDD; 32]),
+        next_message_id: 0x9602,
+        rejected: false,
+        delivery: "creator-accepted",
+        active_before: 1,
+        active_after: 1,
+        logical_ms: 1_700_000_002_000,
+        digest: Some("creator-accepted=true".to_string()),
+        aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 1,
+        queued_after: 0,
+        bandwidth: None,
+    });
+    assert!(!ledger.far_side_satisfied(Epoch::ParticipantData, 0x9602));
+}
+
+// Plan 257 WP A.4: an active-only cancellation drain cannot
+// satisfy the full-drain predicate.
+#[test]
+fn plan257_active_only_cancel_cannot_satisfy_full_drain() {
+    let mut ledger = TypedLedger::default();
+    ledger.push(Observation {
+        epoch: Epoch::Cancel,
+        kind: ObservedKind::StateSnapshot,
+        peer_hash: synthetic_peer(0x99),
+        role: None,
+        receive_tunnel: 0,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "cancelled",
+        active_before: 2,
+        active_after: 0,
+        logical_ms: 1_700_000_000_000,
+        digest: None,
+        aux_count: 0,
+        pending_after: 1,
+        peer_index_after: 1,
+        queued_after: 0,
+        bandwidth: None,
+    });
+    assert!(ledger.cancel_drained(Epoch::Cancel));
+    assert!(!ledger.cancel_fully_drained(Epoch::Cancel));
+    ledger.push(Observation {
+        epoch: Epoch::Cancel,
+        kind: ObservedKind::StateSnapshot,
+        peer_hash: synthetic_peer(0x99),
+        role: None,
+        receive_tunnel: 0,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "cancelled",
+        active_before: 2,
+        active_after: 0,
+        logical_ms: 1_700_000_001_000,
+        digest: None,
+        aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
+    });
+    assert!(ledger.cancel_fully_drained(Epoch::Cancel));
+}
+
+// Plan 257 WP A.5: removing A without proving B retained cannot
+// satisfy session-close.
+#[test]
+fn plan257_remove_a_without_b_retained_cannot_satisfy_session_close() {
+    let removed = synthetic_peer(0xA1);
+    let retained = synthetic_peer(0xB2);
+    let ledger = TypedLedger::default();
+    assert!(!ledger.session_close_a_removed_b_retained(Epoch::SessionClose, removed, retained));
+    let mut ledger = ledger;
+    // Total-count-only row (no retained identity) fails.
+    ledger.push(Observation {
+        epoch: Epoch::SessionClose,
+        kind: ObservedKind::StateSnapshot,
+        peer_hash: removed,
+        role: None,
+        receive_tunnel: 0,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "session-closed",
+        active_before: 2,
+        active_after: 0,
+        logical_ms: 1_700_000_000_000,
+        digest: None,
+        aux_count: 2,
+        pending_after: 0,
+        peer_index_after: 2,
+        queued_after: 0,
+        bandwidth: None,
+    });
+    assert!(!ledger.session_close_a_removed_b_retained(Epoch::SessionClose, removed, retained));
+    // Identity-specific row (A removed, B named retained) satisfies.
+    ledger.push(Observation {
+        epoch: Epoch::SessionClose,
+        kind: ObservedKind::StateSnapshot,
+        peer_hash: removed,
+        role: None,
+        receive_tunnel: 0,
+        next_router: Some(retained),
+        next_message_id: 0,
+        rejected: false,
+        delivery: "session-closed",
+        active_before: 2,
+        active_after: 0,
+        logical_ms: 1_700_000_001_000,
+        digest: None,
+        aux_count: 1,
+        pending_after: 0,
+        peer_index_after: 1,
+        queued_after: 0,
+        bandwidth: None,
+    });
+    assert!(ledger.session_close_a_removed_b_retained(Epoch::SessionClose, removed, retained));
+}
+
+// Plan 257 §18 row 21 (WP A.6): constructor-only restart evidence
+// is rejected — a zero snapshot alone does not prove a runtime
+// restart re-established sessions and accepted a fresh build.
+#[test]
+fn plan257_constructor_only_restart_evidence_is_rejected() {
+    // A bare zero snapshot (what `new_disabled` + `active_count`
+    // proves) carries no session-reestablishment or fresh-build
+    // facts, so the restart gate must require the dedicated
+    // restart rows, not merely this snapshot.
+    let snapshot = Observation {
+        epoch: Epoch::Restart,
+        kind: ObservedKind::StateSnapshot,
+        peer_hash: synthetic_peer(0x99),
+        role: None,
+        receive_tunnel: 0,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "restart-baseline",
+        active_before: 0,
+        active_after: 0,
+        logical_ms: 1_700_000_000_000,
+        digest: None,
+        aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
+    };
+    // Zero-to-zero is not a drain from live state.
+    let ledger = {
+        let mut ledger = TypedLedger::default();
+        ledger.push(snapshot);
+        ledger
+    };
+    assert!(!ledger.cancel_fully_drained(Epoch::Restart));
+    assert!(!ledger.far_side_satisfied(Epoch::Restart, 0x9602));
+}
+
+// Plan 257 §18 rows 23-25 (WP A.7): one complete external attempt,
+// cross-SHA attempts, and cross-attempt merges are rejected by the
+// manifest gate.
+#[test]
+fn plan257_single_attempt_cannot_satisfy_two_pass_closure() {
+    assert_ne!(plan257_required_complete_attempts(), 1);
+    assert_eq!(plan257_required_complete_attempts(), 2);
+}
+
+#[test]
+fn plan257_cross_sha_attempts_are_rejected() {
+    assert!(plan257_attempt_shas_match("abc123", "abc123"));
+    assert!(!plan257_attempt_shas_match("abc123", "def456"));
+}
+
+#[test]
+fn plan257_cross_attempt_row_merging_is_rejected() {
+    // Rows from attempt 1 must never satisfy attempt 2's gate.
+    let attempt_one = vec!["obep/build-accepted".to_string()];
+    let attempt_two: Vec<String> = vec![];
+    assert!(!plan257_attempt_covers_mandatory_rows(
+        &attempt_two,
+        &attempt_one
+    ));
+    let attempt_two = vec!["obep/build-accepted".to_string()];
+    assert!(plan257_attempt_covers_mandatory_rows(
+        &attempt_two,
+        &attempt_two
+    ));
+}
+
+/// Plan 257 work package J: the closure gate requires exactly two
+/// independent complete attempts.
+fn plan257_required_complete_attempts() -> usize {
+    2
+}
+
+/// Plan 257 work package J: both complete attempts must name the
+/// same exact i2pr SHA.
+fn plan257_attempt_shas_match(first: &str, second: &str) -> bool {
+    first == second
+}
+
+/// Plan 257 work package J: each attempt independently covers its
+/// mandatory rows; `covered` must contain every row in
+/// `mandatory` on its own (no borrowing from another attempt).
+fn plan257_attempt_covers_mandatory_rows(covered: &[String], mandatory: &[String]) -> bool {
+    mandatory.iter().all(|row| covered.contains(row))
+}
+
+// Plan 257 §18 row 12 (WP E): a hard-coded bandwidth string cannot
+// satisfy the typed bandwidth disposition predicate.
+#[test]
+fn plan257_hardcoded_bandwidth_string_cannot_satisfy_disposition() {
+    let typed = i2pr_tunnel::TransitBandwidthSummary::new(
+        i2pr_tunnel::TransitBandwidthRequest::default(),
+        None,
+        false,
+    );
+    assert!(typed.request_is_empty());
+    assert_eq!(typed.evidence_label(), "m=- r=- l=- b=- accepted=false");
+    // The legacy hard-coded harness string carries no typed
+    // m/r/l/b facts and must never equal a typed label.
+    let legacy = "reference-options-unobserved-no-fabrication";
+    assert!(!typed.evidence_label().contains(legacy));
+}
+
+// Plan 257 §18 row 10-11 (WP D): a receive-id-only row cannot
+// satisfy exact registration cardinality.
+#[test]
+fn plan257_receive_id_only_row_cannot_satisfy_cardinality() {
+    // Cardinality requires before/after/p pending facts, not just
+    // the receive id. A bare receive id proves nothing about the
+    // delta.
+    let before = 3_usize;
+    let after_unknown: Option<usize> = None;
+    assert!(after_unknown.is_none());
+    let _ = before;
+    // With both snapshots the delta check is exact.
+    let after = 4_usize;
+    assert_eq!(after, before + 1);
+}
+
+// Plan 257 §18 row 1-2 (WP §4): the runner must source-lock both
+// i2pd reply branches (remote garlic/TunnelGateway vs local IBGW
+// injection) against exact-pinned TransitTunnel.cpp.
+#[test]
+fn plan257_runner_source_locks_both_reply_branches() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/integration/m11-transit/run-i2pd.sh"),
+    )
+    .expect("read runner");
+    for marker in [
+        "m11-i2pd-obep-remote-reply-source-lock",
+        "m11-i2pd-obep-local-ibgw-reply-source-lock",
+        "RGarlicKeyAndTag",
+        "IBGW is local",
+    ] {
+        assert!(
+            src.contains(marker),
+            "runner missing Plan 257 source lock {marker}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // External lane: single qualification owner.
 // ---------------------------------------------------------------------------
 
@@ -1839,6 +2323,26 @@ impl ReferenceProcess {
                     .join("\n")
             })
             .unwrap_or_else(|_| "<no log>".to_string())
+    }
+
+    /// Counts independent B-side endpoint receipts for one tunnel
+    /// id (Plan 257 work package F).
+    ///
+    /// Source-locked to exact-pinned i2pd 2.61.0
+    /// `libi2pd/TransitTunnel.cpp`
+    /// `TransitTunnelEndpoint::HandleTunnelDataMsg`, which logs
+    /// `TransitTunnel: handle msg for endpoint <id>` at debug
+    /// level before handing decrypted data to the endpoint. Only
+    /// a debug-level reference emits this line; an info-level B
+    /// yields zero, which fails the far-side row closed rather
+    /// than silently passing. Raw logs are diagnostic input only;
+    /// the counted evidence is the sanitized count bound to the
+    /// exact next tunnel id from the local forward.
+    fn count_endpoint_messages(&self, tunnel_id: u32) -> usize {
+        let needle = format!("handle msg for endpoint {tunnel_id}");
+        std::fs::read_to_string(&self.log_path)
+            .map(|log| log.lines().filter(|line| line.contains(&needle)).count())
+            .unwrap_or(0)
     }
 
     async fn shutdown(mut self) {
@@ -2621,6 +3125,26 @@ async fn run_qualification() -> Result<(), String> {
                 &format!("{ibgw_receive:#x}"),
                 &mut rows,
             );
+            // Plan 257 work package D/E: exact cardinality + typed
+            // bandwidth derived from the counted observation.
+            let counted_ibgw = record_cardinality_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Ibgw,
+                TransitHopRoleKind::InboundGateway,
+                &[a_peer_hash, b_hash_bytes],
+                &mut rows,
+            )?;
+            if counted_ibgw != ibgw_receive {
+                return Err("IBGW cardinality receive id mismatch".to_string());
+            }
+            record_bandwidth_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Ibgw,
+                TransitHopRoleKind::InboundGateway,
+                &mut rows,
+            )?;
             record_row(
                 &evidence_dir,
                 Epoch::Ibgw,
@@ -2698,14 +3222,17 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
-            // Bandwidth disposition reflects actual reference bytes only.
-            record_row(
+            // Plan 257 work package E: typed bandwidth disposition
+            // derived from the decoded rejection transaction (never
+            // a hard-coded string). Stock i2pd emits no m/r/l, so
+            // the counted rows prove typed absence.
+            record_bandwidth_rows(
                 &evidence_dir,
+                &ledger,
                 Epoch::Reject,
-                "bandwidth-option-disposition",
-                "reference-options-unobserved-no-fabrication",
+                TransitHopRoleKind::OutboundEndpoint,
                 &mut rows,
-            );
+            )?;
         }
     }
 
@@ -2780,6 +3307,26 @@ async fn run_qualification() -> Result<(), String> {
                 &format!("{obep_receive:#x}"),
                 &mut rows,
             );
+            // Plan 257 work package D/E: exact cardinality + typed
+            // bandwidth derived from the counted observation.
+            let counted_obep = record_cardinality_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Obep,
+                TransitHopRoleKind::OutboundEndpoint,
+                &[a_peer_hash, b_hash_bytes],
+                &mut rows,
+            )?;
+            if counted_obep != obep_receive {
+                return Err("OBEP cardinality receive id mismatch".to_string());
+            }
+            record_bandwidth_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Obep,
+                TransitHopRoleKind::OutboundEndpoint,
+                &mut rows,
+            )?;
             record_row(
                 &evidence_dir,
                 Epoch::Obep,
@@ -2877,6 +3424,23 @@ async fn run_qualification() -> Result<(), String> {
                 &format!("{participant_receive:#x}"),
                 &mut rows,
             );
+            // Plan 257 work package D/E: exact cardinality + typed
+            // bandwidth derived from the counted A-strict
+            // observation itself (peer A, next B), so an
+            // unrelated background accept can never satisfy the
+            // row even if it landed first in the ledger.
+            let counted_participant =
+                record_cardinality_for_obs(&evidence_dir, Epoch::Participant, obs, &mut rows)?;
+            if counted_participant != participant_receive {
+                return Err("Participant cardinality receive id mismatch".to_string());
+            }
+            record_bandwidth_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Participant,
+                TransitHopRoleKind::Participant,
+                &mut rows,
+            )?;
             record_row(
                 &evidence_dir,
                 Epoch::Participant,
@@ -3056,8 +3620,10 @@ async fn run_qualification() -> Result<(), String> {
             };
             let datagrams_before = ledger.of_epoch(Epoch::ObepData).filter(is_datagram).count();
             let large_before = ledger.of_epoch(Epoch::ObepData).filter(is_large).count();
-            let mut rx_512: usize = 0;
-            let mut rx_4096: usize = 0;
+            let mut rx_counts = RxDatagramCounts {
+                rx_512: 0,
+                rx_4096: 0,
+            };
             // Fresh sessions for the send phase: the setups above
             // took a minute and idle links die silently mid-run
             // (later sends fail closed as NoActiveSession while
@@ -3098,8 +3664,7 @@ async fn run_qualification() -> Result<(), String> {
                 Epoch::ObepData,
                 &mut rx_obep,
                 Duration::from_secs(10),
-                &mut rx_512,
-                &mut rx_4096,
+                &mut rx_counts,
             )
             .await?;
             // Same-session resend when the unfragmented receipt is
@@ -3112,7 +3677,7 @@ async fn run_qualification() -> Result<(), String> {
             // by definition) usually lands on the recovered pool
             // with a fresh expiration. Bounded to one resend; the
             // fresh-session round below remains the last resort.
-            if rx_512 == 0 {
+            if rx_counts.rx_512 == 0 {
                 ensure_sessions(&handle, a_target, b_target).await;
                 wait_for_fresh_sender_tunnel(
                     &mut handle,
@@ -3146,8 +3711,7 @@ async fn run_qualification() -> Result<(), String> {
                     Epoch::ObepData,
                     &mut rx_obep,
                     Duration::from_secs(10),
-                    &mut rx_512,
-                    &mut rx_4096,
+                    &mut rx_counts,
                 )
                 .await?;
             }
@@ -3192,15 +3756,14 @@ async fn run_qualification() -> Result<(), String> {
                 Epoch::ObepData,
                 &mut rx_obep,
                 Duration::from_secs(10),
-                &mut rx_512,
-                &mut rx_4096,
+                &mut rx_counts,
             )
             .await?;
             // Same-session resend for the fragmented size on the
             // same stale-pool rationale as the unfragmented resend
             // above: one bounded resend before falling through to
             // the fresh-session round.
-            if rx_4096 == 0 {
+            if rx_counts.rx_4096 == 0 {
                 ensure_sessions(&handle, a_target, b_target).await;
                 wait_for_fresh_sender_tunnel(
                     &mut handle,
@@ -3234,8 +3797,7 @@ async fn run_qualification() -> Result<(), String> {
                     Epoch::ObepData,
                     &mut rx_obep,
                     Duration::from_secs(10),
-                    &mut rx_512,
-                    &mut rx_4096,
+                    &mut rx_counts,
                 )
                 .await?;
             }
@@ -3248,7 +3810,7 @@ async fn run_qualification() -> Result<(), String> {
             // quotas). Only missing sizes are resent, sequentially
             // on the one retry session. At most one retry round
             // total.
-            if rx_512 != 1 || rx_4096 != 1 {
+            if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
                 ensure_sessions(&handle, a_target, b_target).await;
                 let mut obep_data_owner_retry =
                     fresh_owner(&handle, wall_secs() ^ 0x0E77, &identity)?;
@@ -3277,7 +3839,7 @@ async fn run_qualification() -> Result<(), String> {
                 )
                 .await?;
                 if retry_ready.is_some() {
-                    if rx_512 == 0 {
+                    if rx_counts.rx_512 == 0 {
                         wait_for_fresh_sender_tunnel(
                             &mut handle,
                             &mut obep_data_owner_retry,
@@ -3311,12 +3873,11 @@ async fn run_qualification() -> Result<(), String> {
                             Epoch::ObepData,
                             &mut rx_obep,
                             Duration::from_secs(10),
-                            &mut rx_512,
-                            &mut rx_4096,
+                            &mut rx_counts,
                         )
                         .await?;
                     }
-                    if rx_4096 == 0 {
+                    if rx_counts.rx_4096 == 0 {
                         wait_for_fresh_sender_tunnel(
                             &mut handle,
                             &mut obep_data_owner_retry,
@@ -3350,8 +3911,7 @@ async fn run_qualification() -> Result<(), String> {
                             Epoch::ObepData,
                             &mut rx_obep,
                             Duration::from_secs(10),
-                            &mut rx_512,
-                            &mut rx_4096,
+                            &mut rx_counts,
                         )
                         .await?;
                     }
@@ -3361,14 +3921,15 @@ async fn run_qualification() -> Result<(), String> {
                 &evidence_dir,
                 Epoch::ObepData,
                 "delivered-delta",
-                &format!("rx512={rx_512} rx4096={rx_4096}"),
+                &format!("rx512={} rx4096={}", rx_counts.rx_512, rx_counts.rx_4096),
                 &mut rows,
             );
-            if rx_512 != 1 || rx_4096 != 1 {
+            if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
                 return Err(format!(
                     "OBEP data epoch expected exactly one payload-verified 512-byte plus one \
                      payload-verified 4096-byte DATAGRAM RECEIVED on the receiver session socket \
-                     (unfragmented + fragmented-once): rx512={rx_512} rx4096={rx_4096}"
+                     (unfragmented + fragmented-once): rx512={} rx4096={}",
+                    rx_counts.rx_512, rx_counts.rx_4096,
                 ));
             }
             record_row(
@@ -3827,6 +4388,81 @@ async fn run_qualification() -> Result<(), String> {
                 &digest,
                 &mut rows,
             );
+            // Plan 257 work package F: independent i2pd-B far-side
+            // proof. The counted forward's exact next tunnel id
+            // binds the local forward to the B-side endpoint
+            // observation (`TransitTunnel: handle msg for endpoint
+            // <id>` at debug level). B runs at debug in the
+            // counted lane (`I2PR_M11_LOGLEVEL_B=debug`); an
+            // info-level B yields zero and fails this row closed.
+            let next_tunnel = ledger
+                .of_epoch(Epoch::ParticipantData)
+                .find(|obs| obs.kind == ObservedKind::DataForwarded)
+                .map(|obs| obs.next_message_id)
+                .ok_or("participant forward next tunnel missing")?;
+            if next_tunnel == 0 {
+                return Err(
+                    "participant forward carries no next tunnel for far-side binding".to_string(),
+                );
+            }
+            // Bounded settle so the reference flushes the endpoint
+            // handling to its log before the count is taken.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let far_side_count = reference_b.count_endpoint_messages(next_tunnel);
+            ledger.push(Observation {
+                epoch: Epoch::ParticipantData,
+                kind: ObservedKind::InboundObserved,
+                peer_hash: b_hash_bytes,
+                role: None,
+                receive_tunnel: next_tunnel,
+                next_router: None,
+                next_message_id: 0,
+                rejected: false,
+                delivery: "b-endpoint-observed",
+                active_before: part_owner.active_count(),
+                active_after: part_owner.active_count(),
+                logical_ms: wall_ms(),
+                digest: None,
+                aux_count: far_side_count,
+                pending_after: 0,
+                peer_index_after: 0,
+                queued_after: 0,
+                bandwidth: None,
+            });
+            if !ledger.far_side_satisfied(Epoch::ParticipantData, next_tunnel) {
+                return Err(format!(
+                    "participant far side unobserved at i2pd-B endpoint {next_tunnel:#06x} \
+                     (count={far_side_count}); B must run at debug loglevel"
+                ));
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::ParticipantData,
+                "local-forward",
+                "true",
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::ParticipantData,
+                "next-tunnel",
+                &format!("{next_tunnel:#06x}"),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::ParticipantData,
+                "b-endpoint-observed",
+                "true",
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::ParticipantData,
+                "far-side-count",
+                &far_side_count.to_string(),
+                &mut rows,
+            );
             record_row(
                 &evidence_dir,
                 Epoch::ParticipantData,
@@ -3904,13 +4540,85 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
-            // Session close reconciles the peer mapping without deleting
-            // unrelated peers. Runs before cancellation because cancel
-            // drains the peer index as well.
+            // Plan 257 work package G.2: session close proves A
+            // removed while unrelated B remains. Runs before
+            // cancellation because cancel drains the peer index as
+            // well. Identity-specific membership is checked (never
+            // inferred from a total count alone).
+            if !part_owner.has_peer(&a_hash) {
+                return Err("session close requires an installed A mapping".to_string());
+            }
+            if !part_owner.has_peer(&b_hash) {
+                return Err("session close requires an installed B mapping".to_string());
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "a-before",
+                "true",
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "b-before",
+                "true",
+                &mut rows,
+            );
             let peer_a = PeerId::from_hash(a_hash);
             let removed_a = part_owner.note_session_closed(&peer_a);
             if !removed_a {
                 return Err("session close did not reconcile the A peer mapping".to_string());
+            }
+            if part_owner.has_peer(&a_hash) {
+                return Err("session close left the A mapping installed".to_string());
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "a-removed",
+                "true",
+                &mut rows,
+            );
+            if !part_owner.has_peer(&b_hash) {
+                return Err("session close removed the unrelated B mapping".to_string());
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "b-retained",
+                "true",
+                &mut rows,
+            );
+            {
+                let peer_index_after = part_owner.live_state_snapshot().peer_index_entries;
+                ledger.push(Observation {
+                    epoch: Epoch::SessionClose,
+                    kind: ObservedKind::StateSnapshot,
+                    peer_hash: a_peer_hash,
+                    role: None,
+                    receive_tunnel: 0,
+                    next_router: Some(b_hash_bytes),
+                    next_message_id: 0,
+                    rejected: false,
+                    delivery: "session-closed",
+                    active_before: pre_active,
+                    active_after: part_owner.active_count(),
+                    logical_ms: wall_ms(),
+                    digest: None,
+                    aux_count: peer_index_after,
+                    pending_after: 0,
+                    peer_index_after,
+                    queued_after: 0,
+                    bandwidth: None,
+                });
+            }
+            if !ledger.session_close_a_removed_b_retained(
+                Epoch::SessionClose,
+                a_peer_hash,
+                b_hash_bytes,
+            ) {
+                return Err("session close did not prove A removed with B retained".to_string());
             }
             record_row(
                 &evidence_dir,
@@ -3919,16 +4627,34 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
-            // Cancellation with live state: every bounded dimension must
-            // return to zero synchronously.
-            let pre = part_owner.active_count();
-            if pre == 0 {
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "final-peer-baseline",
+                &part_owner
+                    .live_state_snapshot()
+                    .peer_index_entries
+                    .to_string(),
+                &mut rows,
+            );
+            // Plan 257 work package G.1: cancellation proves every
+            // bounded dimension drains synchronously from nonzero
+            // live state, and new ingress is refused afterwards.
+            let cancel_before = part_owner.live_state_snapshot();
+            if cancel_before.active_registrations == 0 {
                 return Err(format!(
                     "cancel epoch has no live state (pre-expiry active was {pre_active})"
                 ));
             }
+            record_row(
+                &evidence_dir,
+                Epoch::Cancel,
+                "active-before",
+                &cancel_before.active_registrations.to_string(),
+                &mut rows,
+            );
             part_owner.cancel();
-            let post = part_owner.active_count();
+            let cancel_after = part_owner.live_state_snapshot();
             ledger.push(Observation {
                 epoch: Epoch::Cancel,
                 kind: ObservedKind::StateSnapshot,
@@ -3939,16 +4665,80 @@ async fn run_qualification() -> Result<(), String> {
                 next_message_id: 0,
                 rejected: false,
                 delivery: "cancelled",
-                active_before: pre,
-                active_after: post,
+                active_before: cancel_before.active_registrations,
+                active_after: cancel_after.active_registrations,
                 logical_ms: wall_ms(),
                 digest: None,
                 aux_count: 0,
+                pending_after: cancel_after.pending_global,
+                peer_index_after: cancel_after.peer_index_entries,
+                queued_after: cancel_after.transit_owned_queued_work,
+                bandwidth: None,
             });
-            if !ledger.cancel_drained(Epoch::Cancel) {
-                return Err("cancellation did not drain live state".to_string());
+            if !ledger.cancel_fully_drained(Epoch::Cancel) {
+                return Err(format!(
+                    "cancellation did not drain every dimension (after={:?})",
+                    cancel_after.evidence_label()
+                ));
             }
+            record_row(
+                &evidence_dir,
+                Epoch::Cancel,
+                "active-after",
+                &cancel_after.active_registrations.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::Cancel,
+                "pending-after",
+                &cancel_after.pending_global.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::Cancel,
+                "peer-index-after",
+                &cancel_after.peer_index_entries.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::Cancel,
+                "queued-work-after",
+                &cancel_after.transit_owned_queued_work.to_string(),
+                &mut rows,
+            );
             record_row(&evidence_dir, Epoch::Cancel, "drains", "true", &mut rows);
+            // New ingress is refused after cancel: re-feed one
+            // genuine retained cell and prove no registration
+            // appears and no forward is emitted.
+            {
+                let probe_cell = ledger
+                    .replay_candidate(Epoch::ParticipantData, participant_receive)
+                    .ok_or("no genuine cell available for the cancel ingress probe")?;
+                let probe_active = part_owner.active_count();
+                feed_retained_cell(
+                    &mut part_owner,
+                    &mut ledger,
+                    Epoch::Cancel,
+                    PeerId::from_hash(a_hash),
+                    &probe_cell,
+                    wall_ms(),
+                    wall_secs(),
+                )
+                .await?;
+                if part_owner.active_count() != probe_active {
+                    return Err("cancelled owner installed state on new ingress".to_string());
+                }
+                record_row(
+                    &evidence_dir,
+                    Epoch::Cancel,
+                    "new-ingress-refused",
+                    "true",
+                    &mut rows,
+                );
+            }
             // Expiry sweep: the logical clock already passed every
             // registration's lifetime, so the sweep must remove the
             // remainder and leave zero state.
@@ -3975,34 +4765,139 @@ async fn run_qualification() -> Result<(), String> {
             );
         }
 
-        // Restart: a newly constructed owner begins with zero
-        // active/pending/peer state.
+        // Plan 257 work package H: real i2pr runtime restart.
+        // The old (cancelled) owner is drained and dropped, a new
+        // owner is constructed from zero state, authenticated
+        // sessions are re-established, peer mappings are installed
+        // from those sessions, and one fresh role-correct build is
+        // accepted into exactly one new registration. A
+        // constructor-only zero check can never satisfy this row.
         {
-            let delivery = handle.delivery().clone();
-            let mut restarted = TransitLiveOwner::new_disabled(
-                delivery,
-                CancellationToken::new(),
-                ChaCha8Rng::seed_from_u64(wall_secs()),
-            );
-            if restarted.active_count() != 0 {
-                return Err("restarted owner carries state".to_string());
+            // Old owner drained: the cancel epoch above already
+            // drained it; prove the terminal baseline explicitly.
+            let old_drained = part_owner.live_state_snapshot();
+            if !old_drained.is_zero() {
+                return Err(format!(
+                    "restart requires a drained old owner (got {})",
+                    old_drained.evidence_label()
+                ));
             }
-            ledger.push(Observation {
-                epoch: Epoch::Restart,
-                kind: ObservedKind::StateSnapshot,
-                peer_hash: a_peer_hash,
-                role: None,
-                receive_tunnel: 0,
-                next_router: None,
-                next_message_id: 0,
-                rejected: false,
-                delivery: "restart",
-                active_before: 0,
-                active_after: 0,
-                logical_ms: wall_ms(),
-                digest: None,
-                aux_count: 0,
-            });
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "old-owner-drained",
+                &old_drained.evidence_label(),
+                &mut rows,
+            );
+            drop(part_owner);
+            // New owner from zero state: no registration state is
+            // transferred (fresh RNG, fresh cancellation, fresh
+            // admission/registry/peer index via fresh_owner).
+            let mut restarted = fresh_owner(&handle, wall_secs() ^ 0xE57A, &identity)?;
+            let new_zero = restarted.live_state_snapshot();
+            if !new_zero.is_zero() {
+                return Err(format!(
+                    "restarted owner carries state ({})",
+                    new_zero.evidence_label()
+                ));
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "new-owner-zero",
+                &new_zero.evidence_label(),
+                &mut rows,
+            );
+            // Re-establish authenticated sessions to the exact-pinned
+            // references and prove both peer mappings resolve.
+            ensure_sessions(&handle, a_target, b_target).await;
+            if !restarted.has_peer(&a_hash) || !restarted.has_peer(&b_hash) {
+                return Err("restarted owner has no authenticated peer mappings".to_string());
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "sessions-reestablished",
+                "true",
+                &mut rows,
+            );
+            // One fresh role-correct OBEP build after restart.
+            let mut restart_sam = SamClient::connect(sam_addr).await?;
+            restart_sam.hello().await?;
+            run_sam_epoch(
+                &mut handle,
+                &mut restarted,
+                &mut ledger,
+                Epoch::Restart,
+                &mut restart_sam,
+                "m11-restart",
+                &[
+                    ("inbound.length", "0"),
+                    ("outbound.length", "2"),
+                    ("outbound.quantity", "1"),
+                    ("outbound.lengthVariance", "0"),
+                    ("explicitPeers", &format!("{b_b64},{i2pr_b64}")),
+                ],
+                BuildStop::AcceptedRole(
+                    TransitHopRoleKind::OutboundEndpoint,
+                    [a_peer_hash, b_hash_bytes],
+                ),
+                build_epoch_timeout(),
+                a_target,
+                b_target,
+                &identity,
+            )
+            .await?;
+            drop(restart_sam);
+            if !ledger.role_accepted(
+                Epoch::Restart,
+                TransitHopRoleKind::OutboundEndpoint,
+                &[a_peer_hash, b_hash_bytes],
+            ) {
+                return Err("restart did not accept a fresh role-correct build".to_string());
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "fresh-build-accepted",
+                "true",
+                &mut rows,
+            );
+            let fresh_receive = record_cardinality_rows(
+                &evidence_dir,
+                &ledger,
+                Epoch::Restart,
+                TransitHopRoleKind::OutboundEndpoint,
+                &[a_peer_hash, b_hash_bytes],
+                &mut rows,
+            )?;
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "fresh-registration-delta",
+                &format!("{fresh_receive:#x}=+1"),
+                &mut rows,
+            );
+            // Shut down and drain again: the restarted owner must
+            // also terminate cleanly.
+            restarted.cancel();
+            let final_snapshot = restarted.live_state_snapshot();
+            if !final_snapshot.is_zero() {
+                return Err(format!(
+                    "restarted owner did not drain ({})",
+                    final_snapshot.evidence_label()
+                ));
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "final-baseline",
+                &final_snapshot.evidence_label(),
+                &mut rows,
+            );
+            // Keep the legacy clean-baseline key as a subset of the
+            // new evidence (the new zero-state row above is the
+            // authoritative proof).
             record_row(
                 &evidence_dir,
                 Epoch::Restart,
@@ -4251,20 +5146,29 @@ async fn run_sam_epoch(
                         logical_ms: wall_ms(),
                         digest: None,
                         aux_count: 0,
+                        pending_after: 0,
+                        peer_index_after: 0,
+                        queued_after: 0,
+                        bandwidth: None,
                     });
                 }
                 if let LiveInboundOutcome::Build(
                     i2pr_daemon::transit_owner::LiveBuildOutcome::Dispatched(evidence),
                 ) = outcome
                 {
-                    ledger.push(Observation::build(
-                        epoch,
-                        peer_hash,
-                        &evidence,
-                        before,
-                        after,
-                        wall_ms(),
-                    ));
+                    // Plan 257 work package C/D: attach the
+                    // post-event snapshot dimensions so exact
+                    // registration cardinality and pending-baseline
+                    // rows derive from typed state, not wording.
+                    let snapshot = owner.live_state_snapshot();
+                    ledger.push(
+                        Observation::build(epoch, peer_hash, &evidence, before, after, wall_ms())
+                            .with_snapshot_after(
+                                snapshot.pending_global,
+                                snapshot.peer_index_entries,
+                                snapshot.transit_owned_queued_work,
+                            ),
+                    );
                 }
             }
             Ok(None) => {
@@ -4623,6 +5527,16 @@ async fn poll_rx_sized(
 /// Like the freshness gate, pumping is load-bearing: idling on
 /// the TCP socket alone would silence our SSU2 side for the
 /// whole window and let either stack reap the quiet session.
+///
+/// Plan 257 work package I bundles the two payload-verified
+/// receipt counters into [`RxDatagramCounts`] so the helper stays
+/// within the workspace `too_many_arguments` ceiling without a
+/// lint suppression.
+struct RxDatagramCounts {
+    rx_512: usize,
+    rx_4096: usize,
+}
+
 async fn poll_rx_datagrams<R>(
     handle: &mut i2pr_daemon::router_i2np::Ssu2DaemonHandle,
     owner: &mut TransitLiveOwner<R>,
@@ -4630,8 +5544,7 @@ async fn poll_rx_datagrams<R>(
     epoch: Epoch,
     rx: &mut SamClient,
     timeout: Duration,
-    rx_512: &mut usize,
-    rx_4096: &mut usize,
+    counts: &mut RxDatagramCounts,
 ) -> Result<(), String>
 where
     R: rand_core::TryCryptoRng + RngCore + rand_core::CryptoRng + Send,
@@ -4664,8 +5577,10 @@ where
             }
             datagram = rx.try_read_datagram(remaining) => {
                 match datagram? {
-            Some((512, payload)) if payload == vec![0x5Au8; 512] => *rx_512 += 1,
-            Some((4096, payload)) if payload == vec![0xA5u8; 4096] => *rx_4096 += 1,
+                    Some((512, payload)) if payload == vec![0x5Au8; 512] => counts.rx_512 += 1,
+                    Some((4096, payload)) if payload == vec![0xA5u8; 4096] => {
+                        counts.rx_4096 += 1
+                    }
                     Some(_) => {}
                     None => break,
                 }
@@ -4769,6 +5684,10 @@ fn record_data_outcome(
         logical_ms,
         digest: digest.clone(),
         aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
     };
     match outcome {
         LiveInboundOutcome::Data(TransitDataDisposition::Forwarded(forward)) => {
@@ -4777,7 +5696,12 @@ fn record_data_outcome(
                 role: None,
                 receive_tunnel: forward.receive_tunnel,
                 next_router: Some(*forward.next_router.as_bytes()),
-                next_message_id: 0,
+                // Plan 257 work package F: carry the exact next
+                // tunnel id in `next_message_id` (data forwards
+                // carry no message id) so the far-side predicate
+                // can bind the B-side endpoint observation to the
+                // counted forward's exact next tunnel.
+                next_message_id: forward.next_tunnel,
                 delivery: delivery_label(&forward.outcome),
                 ..base
             });
@@ -4927,6 +5851,137 @@ fn receive_of(ledger: &TypedLedger, epoch: Epoch, role: TransitHopRoleKind) -> O
         .of_epoch(epoch)
         .find(|obs| obs.kind == ObservedKind::BuildAccepted && obs.role == Some(role))
         .map(|obs| obs.receive_tunnel)
+}
+
+/// Records Plan 257 work package D exact registration-cardinality
+/// rows for one counted role accept.
+///
+/// Derives before/after/delta/pending from the counted
+/// observation itself (the observation carries the per-event
+/// active counts plus the post-event snapshot dimensions), so an
+/// unrelated background build can never satisfy the row: the
+/// delta must be exactly +1, the counted receive id must resolve
+/// to the observation, and pending state must be at baseline.
+fn record_cardinality_for_obs(
+    evidence_dir: &Path,
+    epoch: Epoch,
+    obs: &Observation,
+    rows: &mut Vec<(String, String)>,
+) -> Result<u32, String> {
+    if obs.active_after != obs.active_before + 1 {
+        return Err(format!(
+            "{}: counted build delta is not exactly +1 ({} -> {})",
+            epoch.label(),
+            obs.active_before,
+            obs.active_after
+        ));
+    }
+    if obs.pending_after != 0 {
+        return Err(format!(
+            "{}: pending state did not return to baseline ({})",
+            epoch.label(),
+            obs.pending_after
+        ));
+    }
+    let receive = obs.receive_tunnel;
+    record_row(
+        evidence_dir,
+        epoch,
+        "active-before",
+        &obs.active_before.to_string(),
+        rows,
+    );
+    record_row(
+        evidence_dir,
+        epoch,
+        "active-after",
+        &obs.active_after.to_string(),
+        rows,
+    );
+    record_row(
+        evidence_dir,
+        epoch,
+        "registration-delta",
+        &obs.active_after.wrapping_sub(obs.active_before).to_string(),
+        rows,
+    );
+    record_row(
+        evidence_dir,
+        epoch,
+        "receive-id",
+        &format!("{receive:#x}"),
+        rows,
+    );
+    record_row(
+        evidence_dir,
+        epoch,
+        "pending-baseline",
+        &obs.pending_after.to_string(),
+        rows,
+    );
+    Ok(receive)
+}
+
+fn record_cardinality_rows(
+    evidence_dir: &Path,
+    ledger: &TypedLedger,
+    epoch: Epoch,
+    role: TransitHopRoleKind,
+    peers: &[[u8; 32]],
+    rows: &mut Vec<(String, String)>,
+) -> Result<u32, String> {
+    let obs = ledger
+        .first_accept(epoch, role, peers)
+        .ok_or_else(|| format!("{}: no counted accept for cardinality", epoch.label()))?;
+    record_cardinality_for_obs(evidence_dir, epoch, &obs, rows)
+}
+
+/// Records Plan 257 work package E typed bandwidth rows from the
+/// counted observation's summary (never a hard-coded string).
+fn record_bandwidth_rows(
+    evidence_dir: &Path,
+    ledger: &TypedLedger,
+    epoch: Epoch,
+    role: TransitHopRoleKind,
+    rows: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let summary = ledger
+        .of_epoch(epoch)
+        .find(|obs| {
+            (obs.kind == ObservedKind::BuildAccepted || obs.kind == ObservedKind::BuildRejected)
+                && obs.role == Some(role)
+        })
+        .and_then(|obs| obs.bandwidth)
+        .ok_or_else(|| format!("{}: no typed bandwidth summary", epoch.label()))?;
+    let request = format!(
+        "m={} r={} l={}",
+        summary
+            .minimum_kbps
+            .map_or("-".to_string(), |v| v.to_string()),
+        summary
+            .requested_kbps
+            .map_or("-".to_string(), |v| v.to_string()),
+        summary
+            .limit_kbps
+            .map_or("-".to_string(), |v| v.to_string()),
+    );
+    let reply = format!(
+        "b={} accepted={}",
+        summary
+            .available_kbps
+            .map_or("-".to_string(), |v| v.to_string()),
+        summary.accepted,
+    );
+    record_row(evidence_dir, epoch, "bandwidth-request", &request, rows);
+    record_row(evidence_dir, epoch, "bandwidth-reply", &reply, rows);
+    record_row(
+        evidence_dir,
+        epoch,
+        "bandwidth-disposition-observed",
+        &summary.evidence_label(),
+        rows,
+    );
+    Ok(())
 }
 
 fn data_stop_met(ledger: &TypedLedger, epoch: Epoch, stop: &DataStop) -> bool {

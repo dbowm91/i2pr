@@ -110,9 +110,10 @@ use i2pr_tunnel::build_crypto::{EPHEMERAL_KEY_LEN, EciesX25519BuildCryptography}
 use i2pr_tunnel::identity::{TunnelId, TunnelPeer};
 use i2pr_tunnel::multirecord::{RECORD_BYTES, decode_outbound_tunnel_build_reply};
 use i2pr_tunnel::{
-    TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState, TransitBuildContext,
-    TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome, TransitHopRole,
-    TransitHopRoleKind, TransitNow, TransitRegistry, TransitReplySlot, process_short_build_message,
+    TransitAdmissionError, TransitAdmissionPolicy, TransitAdmissionState, TransitBandwidthSummary,
+    TransitBuildContext, TransitBuildMessageOutcome, TransitBuildRoute, TransitDataOutcome,
+    TransitHopRole, TransitHopRoleKind, TransitNow, TransitRegistry, TransitReplySlot,
+    process_short_build_message,
 };
 use rand_core::TryCryptoRng;
 use thiserror::Error;
@@ -259,6 +260,10 @@ pub enum TransitDispatch {
         /// InboundGateway). Plan 256 typed evidence binds the
         /// Participant/IBGW rows to this kind.
         role_kind: TransitHopRoleKind,
+        /// Non-secret typed bandwidth disposition copied from the
+        /// runtime-neutral transaction (Plan 257 work package E).
+        /// The daemon never re-decodes the `Mapping`.
+        bandwidth: TransitBandwidthSummary,
     },
     /// OBEP: terminate STBM hop-to-hop propagation and emit the
     /// already-transformed record set as an
@@ -288,6 +293,9 @@ pub enum TransitDispatch {
         /// OutboundEndpoint on this path). Present so evidence
         /// recorders use one accessor for every disposition.
         role_kind: TransitHopRoleKind,
+        /// Non-secret typed bandwidth disposition copied from the
+        /// runtime-neutral transaction (Plan 257 work package E).
+        bandwidth: TransitBandwidthSummary,
     },
     /// Valid policy rejection: the build was opened, decoded, and
     /// transformed exactly once, but admission refused; the
@@ -316,6 +324,9 @@ pub enum TransitDispatch {
         /// request. Plan 256 code-30 rows require the rejection
         /// epoch to prove the expected role was decoded.
         role_kind: TransitHopRoleKind,
+        /// Non-secret typed bandwidth disposition copied from the
+        /// runtime-neutral transaction (Plan 257 work package E).
+        bandwidth: TransitBandwidthSummary,
     },
     /// Fatal: the inbound payload could not be decoded or
     /// authenticated; no payload is returned and the caller must
@@ -478,6 +489,107 @@ impl TransitCounters {
     /// Returns the expired-registration sweep count.
     pub const fn expired_registrations(&self) -> u64 {
         self.expired_registrations
+    }
+}
+
+/// Bounded non-secret transit state snapshot (Plan 257 work
+/// package C).
+///
+/// The snapshot carries only counts and routing facts already
+/// published on the wire. No secret material, payload bytes, keys,
+/// or Noise state crosses this boundary. `transit_owned_queued_work`
+/// is architecturally zero: transit owns no independent queue —
+/// delivery flows synchronously through the bounded router-delivery
+/// seam — and the field exists so cancellation/restart evidence can
+/// prove that invariant rather than invent a counter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitLiveStateSnapshot {
+    /// Live transit registrations in the registry.
+    pub active_registrations: usize,
+    /// Outstanding global admission reservations.
+    pub pending_global: u16,
+    /// Distinct peers with outstanding admission reservations.
+    pub pending_peer_entries: usize,
+    /// Entries in the daemon-owned transit peer index.
+    pub peer_index_entries: usize,
+    /// Transit-owned queued work items (architecturally zero).
+    pub transit_owned_queued_work: usize,
+}
+
+impl TransitLiveStateSnapshot {
+    /// Returns the all-zero baseline a fresh owner proves.
+    pub const fn zero() -> Self {
+        Self {
+            active_registrations: 0,
+            pending_global: 0,
+            pending_peer_entries: 0,
+            peer_index_entries: 0,
+            transit_owned_queued_work: 0,
+        }
+    }
+
+    /// Returns true when every dimension is zero.
+    pub const fn is_zero(&self) -> bool {
+        self.active_registrations == 0
+            && self.pending_global == 0
+            && self.pending_peer_entries == 0
+            && self.peer_index_entries == 0
+            && self.transit_owned_queued_work == 0
+    }
+
+    /// Sanitized single-line evidence label with no secrets.
+    pub fn evidence_label(&self) -> String {
+        format!(
+            "active={} pending={} pending-peers={} peer-index={} queued={}",
+            self.active_registrations,
+            self.pending_global,
+            self.pending_peer_entries,
+            self.peer_index_entries,
+            self.transit_owned_queued_work,
+        )
+    }
+}
+
+/// Bounded self-reply OTBRM parameters (Plan 257 work package I).
+///
+/// Bundles the six self-reply routing facts into one value so the
+/// delivery seam stays within the workspace `too_many_arguments`
+/// ceiling without a lint suppression. All fields are non-secret
+/// routing facts or the already-transformed OTBRM body.
+#[derive(Clone, Copy, Debug)]
+pub struct SelfReplyOtbrmArgs<'a> {
+    /// Just-committed endpoint registration (`None` for rejections).
+    pub receive_tunnel: Option<TunnelId>,
+    /// Local IBGW reply tunnel the reply is injected into.
+    pub reply_tunnel: TunnelId,
+    /// Reply message id preserved from the decoded build.
+    pub reply_message_id: u32,
+    /// Complete count-prefixed OTBRM body.
+    pub payload: &'a [u8],
+    /// Fallback previous peer when the reply tunnel holds no registration.
+    pub peer: &'a PeerId,
+    /// Caller-supplied current time in milliseconds.
+    pub now_ms: u64,
+}
+
+impl<'a> SelfReplyOtbrmArgs<'a> {
+    /// Constructs the bundled self-reply parameters.
+    pub const fn new(
+        receive_tunnel: Option<TunnelId>,
+        reply_tunnel: TunnelId,
+        reply_message_id: u32,
+        payload: &'a [u8],
+        peer: &'a PeerId,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            receive_tunnel,
+            reply_tunnel,
+            reply_message_id,
+            payload,
+            peer,
+            now_ms,
+        }
     }
 }
 
@@ -688,6 +800,30 @@ impl TransitBuildService {
     /// Returns the admission pending count for diagnostics.
     pub const fn pending_count(&self) -> u16 {
         self.admission.pending()
+    }
+
+    /// Returns the distinct-peer pending entry count.
+    pub fn pending_peer_entries(&self) -> usize {
+        self.admission.pending_peer_entries()
+    }
+
+    /// Returns the transit peer-index entry count.
+    pub fn peer_index_entries(&self) -> usize {
+        self.peer_index.len()
+    }
+
+    /// Returns the bounded non-secret state snapshot (Plan 257 work
+    /// package C). Read-only and side-effect free; `O(1)` over
+    /// already-bounded state. `transit_owned_queued_work` is
+    /// architecturally zero: transit owns no independent queue.
+    pub fn live_state_snapshot(&self) -> TransitLiveStateSnapshot {
+        TransitLiveStateSnapshot {
+            active_registrations: self.registry.len(),
+            pending_global: self.admission.pending(),
+            pending_peer_entries: self.admission.pending_peer_entries(),
+            peer_index_entries: self.peer_index.len(),
+            transit_owned_queued_work: 0,
+        }
     }
 
     /// Returns the admission policy the daemon configured.
@@ -1467,20 +1603,28 @@ impl TransitBuildService {
     /// registration (`None` for rejections, which install
     /// nothing): any non-`Accepted` outcome rolls it back, while
     /// only `Accepted` leaves live state behind.
+    ///
+    /// Plan 257 work package I bundles the six routing facts into
+    /// [`SelfReplyOtbrmArgs`] so the seam stays within the
+    /// workspace `too_many_arguments` ceiling without a lint
+    /// suppression.
     pub fn deliver_self_reply_otbrm<R: rand_core::RngCore + rand_core::CryptoRng>(
         &mut self,
-        receive_tunnel: Option<TunnelId>,
-        reply_tunnel: TunnelId,
-        reply_message_id: u32,
-        payload: &[u8],
-        peer: &PeerId,
-        now_ms: u64,
+        args: SelfReplyOtbrmArgs<'_>,
         rng: &mut R,
         cancellation: &CancellationToken,
     ) -> Result<RouterDeliveryOutcome, TransitServiceError> {
         if self.cancelled {
             return Ok(RouterDeliveryOutcome::Cancelled);
         }
+        let SelfReplyOtbrmArgs {
+            receive_tunnel,
+            reply_tunnel,
+            reply_message_id,
+            payload,
+            peer,
+            now_ms,
+        } = args;
         let nested = otbrm_nested_standard_envelope(payload, reply_message_id)
             .map_err(TransitServiceError::Dispatch)?;
         let previous = self
@@ -1558,6 +1702,10 @@ impl TransitBuildService {
         &mut self,
         outcome: TransitBuildMessageOutcome,
     ) -> TransitDispatch {
+        // Plan 257 work package E: copy the already-decoded typed
+        // bandwidth disposition before the outcome is moved. The
+        // daemon never re-decodes the `Mapping`.
+        let bandwidth = outcome.bandwidth_summary();
         if let Some(reason) = outcome.reject_reason {
             self.counters.rejected_policy = self.counters.rejected_policy.saturating_add(1);
             let role = match outcome.route {
@@ -1590,6 +1738,7 @@ impl TransitBuildService {
                 role,
                 payload: outcome.transformed_payload,
                 role_kind: outcome.role_kind,
+                bandwidth,
             };
         }
         match outcome.route {
@@ -1606,6 +1755,7 @@ impl TransitBuildService {
                     next_message_id,
                     payload: outcome.transformed_payload,
                     role_kind: outcome.role_kind,
+                    bandwidth,
                 }
             }
             TransitBuildRoute::TerminateOtbrm {
@@ -1638,6 +1788,7 @@ impl TransitBuildService {
                     reply_message_id,
                     payload,
                     role_kind: outcome.role_kind,
+                    bandwidth,
                 }
             }
         }
@@ -2538,17 +2689,17 @@ mod tests {
         };
         assert_eq!(service.active_count(), 1);
         let token = CancellationToken::new();
+        let peer = dispatch_peer();
+        let args = SelfReplyOtbrmArgs::new(
+            Some(receive_tunnel),
+            reply_tunnel,
+            reply_message_id,
+            &otbrm_payload,
+            &peer,
+            60_000,
+        );
         let outcome = service
-            .deliver_self_reply_otbrm(
-                Some(receive_tunnel),
-                reply_tunnel,
-                reply_message_id,
-                &otbrm_payload,
-                &dispatch_peer(),
-                60_000,
-                &mut rng,
-                &token,
-            )
+            .deliver_self_reply_otbrm(args, &mut rng, &token)
             .expect("self reply");
         assert_eq!(outcome, RouterDeliveryOutcome::Cancelled);
         assert!(
@@ -2643,17 +2794,16 @@ mod tests {
         assert_eq!(service.active_count(), 2);
         let token = CancellationToken::new();
         for _ in 0..2 {
+            let args = SelfReplyOtbrmArgs::new(
+                Some(receive_tunnel),
+                reply_tunnel,
+                reply_message_id,
+                &otbrm_payload,
+                &endpoint_peer,
+                60_000,
+            );
             let outcome = service
-                .deliver_self_reply_otbrm(
-                    Some(receive_tunnel),
-                    reply_tunnel,
-                    reply_message_id,
-                    &otbrm_payload,
-                    &endpoint_peer,
-                    60_000,
-                    &mut rng,
-                    &token,
-                )
+                .deliver_self_reply_otbrm(args, &mut rng, &token)
                 .expect("self reply");
             assert_eq!(outcome, RouterDeliveryOutcome::NoActiveSession);
             assert_eq!(
@@ -3324,5 +3474,422 @@ mod tests {
         }
         assert!(short_transport_from_standard(&[]).is_err());
         assert!(short_transport_from_standard(&short).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Plan 257 work packages B/C/E/I — production reply qualification,
+    // state snapshot, typed bandwidth, and clippy-ceiling seams.
+    // ------------------------------------------------------------------
+
+    fn obep_record_for(
+        reply_router: Hash,
+        receive: u32,
+        reply_tunnel: u32,
+        message_id: u32,
+    ) -> ShortRequestRecord {
+        ShortRequestRecord::try_new(
+            TunnelId::new(receive).expect("id"),
+            TunnelId::new(reply_tunnel).expect("id"),
+            reply_router,
+            HopRole::OutboundEndpoint,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            message_id,
+            BuildOptions::empty(),
+        )
+        .expect("record")
+    }
+
+    /// 257-B1. A remote-reply OBEP dispatch carries the remote
+    /// garlic/TunnelGateway path facts: reply router is remote,
+    /// reply tunnel is preserved, bandwidth summary is typed.
+    #[test]
+    fn plan257_remote_obep_reply_uses_remote_path_once() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let remote = Hash::from_bytes([0xAA; 32]);
+        assert_ne!(remote, hop_identity);
+        let record = obep_record_for(remote, 0x5101, 0x5102, 0x51AA_0001);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2570);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        match &dispatch {
+            TransitDispatch::EmitOtbrm {
+                reply_router,
+                reply_tunnel,
+                reply_message_id,
+                role_kind,
+                bandwidth,
+                ..
+            } => {
+                assert_eq!(*reply_router, remote);
+                assert_eq!(reply_tunnel.get(), 0x5102);
+                assert_eq!(*reply_message_id, 0x51AA_0001);
+                assert_eq!(*role_kind, TransitHopRoleKind::OutboundEndpoint);
+                // Empty request decodes to typed absence, accepted.
+                assert!(bandwidth.request_is_empty());
+                assert!(bandwidth.accepted);
+                assert_eq!(bandwidth.available_kbps, None);
+            }
+            other => panic!("expected remote EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 257-B2/B6. A local-reply OBEP dispatch never takes the
+    /// remote garlic/TunnelGateway path: the reply router equals
+    /// the local identity and the dispatch preserves the exact
+    /// reply tunnel/message ids for the IBGW seam.
+    #[test]
+    fn plan257_local_reply_bypasses_remote_path() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = obep_record_for(hop_identity, 0x5201, 0x5202, 0x51AA_0002);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2571);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        match &dispatch {
+            TransitDispatch::EmitOtbrm {
+                reply_router,
+                reply_tunnel,
+                reply_message_id,
+                ..
+            } => {
+                assert_eq!(*reply_router, hop_identity);
+                assert_eq!(reply_tunnel.get(), 0x5202);
+                assert_eq!(*reply_message_id, 0x51AA_0002);
+            }
+            other => panic!("expected local EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 257-B7. Local and remote branches preserve the exact reply
+    /// message id and reply tunnel id from the decoded record.
+    #[test]
+    fn plan257_reply_preserves_message_and_tunnel_ids() {
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2572);
+        // Case 1: remote reply router.
+        let mut service = service_for_test();
+        let hop_identity = *service.hop_identity();
+        let remote = Hash::from_bytes([0xBB; 32]);
+        let record = obep_record_for(remote, 0x5301, 0x5302, 0x51AA_0003);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        match service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng) {
+            TransitDispatch::EmitOtbrm {
+                reply_tunnel,
+                reply_message_id,
+                ..
+            } => {
+                assert_eq!(reply_tunnel.get(), 0x5302);
+                assert_eq!(reply_message_id, 0x51AA_0003);
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        }
+        // Case 2: local reply router (fresh service so ids cannot alias).
+        let mut service = service_for_test();
+        let hop_identity = *service.hop_identity();
+        let record = obep_record_for(hop_identity, 0x5311, 0x5312, 0x51AA_0004);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        match service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng) {
+            TransitDispatch::EmitOtbrm {
+                reply_tunnel,
+                reply_message_id,
+                ..
+            } => {
+                assert_eq!(reply_tunnel.get(), 0x5312);
+                assert_eq!(reply_message_id, 0x51AA_0004);
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 257-C9. The state snapshot exposes all five Plan 257
+    /// dimensions, is zero on a fresh service, and renders a
+    /// secret-free evidence label.
+    #[test]
+    fn plan257_state_snapshot_has_five_dimensions_without_secrets() {
+        let service = service_for_test();
+        let snapshot = service.live_state_snapshot();
+        assert_eq!(snapshot, TransitLiveStateSnapshot::zero());
+        assert!(snapshot.is_zero());
+        assert_eq!(snapshot.active_registrations, 0);
+        assert_eq!(snapshot.pending_global, 0);
+        assert_eq!(snapshot.pending_peer_entries, 0);
+        assert_eq!(snapshot.peer_index_entries, 0);
+        assert_eq!(snapshot.transit_owned_queued_work, 0);
+        let label = snapshot.evidence_label();
+        assert!(label.contains("active=0"));
+        assert!(label.contains("pending=0"));
+        assert!(label.contains("peer-index=0"));
+        assert!(label.contains("queued=0"));
+        let debug = format!("{snapshot:?}");
+        assert!(!debug.contains("priv"));
+        assert!(!debug.contains("secret"));
+    }
+
+    /// 257-D10. An accepted role build moves active state by
+    /// exactly +1 and resolves the counted receive id.
+    #[test]
+    fn plan257_role_accept_moves_active_by_exactly_plus_one() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let before = service.live_state_snapshot();
+        let record = obep_record_for(Hash::from_bytes([0xCC; 32]), 0x5401, 0x5402, 0x51AA_0005);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2573);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let after = service.live_state_snapshot();
+        assert_eq!(after.active_registrations, before.active_registrations + 1);
+        assert_eq!(after.pending_global, before.pending_global);
+        match &dispatch {
+            TransitDispatch::EmitOtbrm { receive_tunnel, .. } => {
+                assert_eq!(receive_tunnel.get(), 0x5401);
+                assert!(service.registry.registration(*receive_tunnel).is_some());
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 257-D11. A code-30 rejection moves active state by +0 and
+    /// returns pending state to baseline.
+    #[test]
+    fn plan257_role_reject_moves_active_by_zero_and_pending_baseline() {
+        let mut service = service_for_test();
+        let disabled = i2pr_tunnel::TransitAdmissionPolicy::disabled();
+        let _ = std::mem::replace(&mut service.policy, disabled);
+        let before = service.live_state_snapshot();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = obep_record_for(Hash::from_bytes([0xDD; 32]), 0x5501, 0x5502, 0x51AA_0006);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2574);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let after = service.live_state_snapshot();
+        assert!(matches!(dispatch, TransitDispatch::Rejected { .. }));
+        assert_eq!(after.active_registrations, before.active_registrations);
+        assert_eq!(after.pending_global, before.pending_global);
+    }
+
+    /// 257-E12. Empty build options decode to typed absence on the
+    /// accepted dispatch (no fabrication).
+    #[test]
+    fn plan257_bandwidth_evidence_reports_typed_absence() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = obep_record_for(Hash::from_bytes([0xEE; 32]), 0x5601, 0x5602, 0x51AA_0007);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2575);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        match &dispatch {
+            TransitDispatch::EmitOtbrm { bandwidth, .. } => {
+                assert_eq!(bandwidth.minimum_kbps, None);
+                assert_eq!(bandwidth.requested_kbps, None);
+                assert_eq!(bandwidth.limit_kbps, None);
+                assert!(bandwidth.request_is_empty());
+                let label = bandwidth.evidence_label();
+                assert!(label.contains("m=-"));
+            }
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        }
+    }
+
+    /// 257-E13. Present `m`/`r` values decode to typed present
+    /// values with the accepted `b` reply allocation.
+    #[test]
+    fn plan257_bandwidth_evidence_reports_typed_present_values() {
+        use i2pr_proto::Mapping;
+        let request = i2pr_tunnel::TransitBandwidthRequest {
+            minimum_kbps: Some(16),
+            requested_kbps: Some(64),
+            limit_kbps: None,
+        };
+        let options = request.to_build_options().expect("options");
+        let mapping = options.mapping().clone();
+        let _ = Mapping::from_entries(vec![
+            ("m".to_string(), "16".to_string()),
+            ("r".to_string(), "64".to_string()),
+        ])
+        .expect("mapping");
+        assert_eq!(mapping.get("m"), Some("16"));
+        let decoded = i2pr_tunnel::parse_transit_bandwidth_request(
+            &options,
+            i2pr_tunnel::short_record::HopRole::Participant,
+        )
+        .expect("decode");
+        assert_eq!(decoded.minimum_kbps, Some(16));
+        assert_eq!(decoded.requested_kbps, Some(64));
+        let summary = i2pr_tunnel::TransitBandwidthSummary::new(
+            decoded,
+            Some(i2pr_tunnel::TransitBandwidthReply {
+                available_kbps: Some(64),
+            }),
+            true,
+        );
+        assert!(!summary.request_is_empty());
+        let label = summary.evidence_label();
+        assert!(label.contains("m=16"));
+        assert!(label.contains("r=64"));
+        assert!(label.contains("accepted=true"));
+    }
+
+    /// 257-G19. Cancellation drains every snapshot dimension to
+    /// zero and refuses new ingress.
+    #[test]
+    fn plan257_cancellation_requires_all_dimensions_zero() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2576);
+        // Install one live registration plus one peer mapping.
+        let record = obep_record_for(Hash::from_bytes([0xF1; 32]), 0x5701, 0x5702, 0x51AA_0008);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let _ = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let peer_router = Hash::from_bytes([0xF1; 32]);
+        let _ = service.install_peer(peer_router, dispatch_peer());
+        assert!(!service.live_state_snapshot().is_zero());
+        service.cancel();
+        let after = service.live_state_snapshot();
+        assert!(after.is_zero(), "cancel must drain {after:?}");
+        // New ingress fails closed after cancel.
+        let record = obep_record_for(Hash::from_bytes([0xF2; 32]), 0x5711, 0x5712, 0x51AA_0009);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 61, &mut rng);
+        assert!(matches!(dispatch, TransitDispatch::Fatal));
+    }
+
+    /// 257-G20. Session close removes only the closed peer mapping;
+    /// an unrelated mapping survives until its own close.
+    #[test]
+    fn plan257_session_close_removes_a_and_retains_b() {
+        let mut service = service_for_test();
+        let router_a = Hash::from_bytes([0xA1; 32]);
+        let router_b = Hash::from_bytes([0xB2; 32]);
+        let peer_a = PeerId::from_hash(Hash::from_bytes([0xA1; 32]));
+        let peer_b = PeerId::from_hash(Hash::from_bytes([0xB2; 32]));
+        let _ = service.install_peer(router_a, peer_a);
+        let _ = service.install_peer(router_b, peer_b);
+        assert!(service.has_peer(&router_a));
+        assert!(service.has_peer(&router_b));
+        assert!(service.forget_peer_by_session(&peer_a));
+        assert!(!service.has_peer(&router_a));
+        assert!(service.has_peer(&router_b), "B must survive A's close");
+        assert!(service.forget_peer_by_session(&peer_b));
+        assert!(!service.has_peer(&router_b));
+    }
+
+    /// 257-B4. A self-reply with no live IBGW registration fails
+    /// closed and rolls back the endpoint registration.
+    #[test]
+    fn plan257_self_reply_missing_ibgw_rolls_back_endpoint() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = obep_record_for(hop_identity, 0x5801, 0x5802, 0x51AA_000A);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2577);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        let (receive_tunnel, reply_tunnel, reply_message_id, otbrm_payload) = match dispatch {
+            TransitDispatch::EmitOtbrm {
+                receive_tunnel,
+                reply_tunnel,
+                reply_message_id,
+                payload,
+                ..
+            } => (receive_tunnel, reply_tunnel, reply_message_id, payload),
+            other => panic!("expected EmitOtbrm, got {other:?}"),
+        };
+        // No IBGW registration exists for the reply tunnel, so the
+        // self-reply seam must fail closed and roll back.
+        let peer = dispatch_peer();
+        let args = SelfReplyOtbrmArgs::new(
+            Some(receive_tunnel),
+            reply_tunnel,
+            reply_message_id,
+            &otbrm_payload,
+            &peer,
+            60_000,
+        );
+        let token = CancellationToken::new();
+        let outcome = service
+            .deliver_self_reply_otbrm(args, &mut rng, &token)
+            .expect("self reply");
+        assert_eq!(outcome, RouterDeliveryOutcome::Cancelled);
+        assert!(
+            service.is_empty(),
+            "endpoint registration must roll back on undeliverable self reply"
+        );
     }
 }

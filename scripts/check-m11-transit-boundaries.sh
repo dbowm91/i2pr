@@ -319,4 +319,64 @@ for token in 'observed_build' 'TransitHopRoleKind' 'I2PD_B_DATADIR' 'routerInfo-
     fi
 done
 
+# Plan 257 production self-reply and evidence-completion boundaries.
+#
+# 25. The non-secret snapshot, the self-reply arg bundle, and the
+#     typed bandwidth summary must exist with the exact Plan 257
+#     shapes; the daemon must surface bandwidth from the
+#     runtime-neutral transaction (never re-decode the Mapping).
+for symbol in 'TransitLiveStateSnapshot' 'SelfReplyOtbrmArgs' 'TransitBandwidthSummary'; do
+    if ! rg -q "$symbol" "$daemon_transit"; then
+        fail "daemon transit_compose missing Plan 257 symbol $symbol"
+    fi
+done
+if ! rg -q 'TransitBandwidthSummary' "$source_file"; then
+    fail "i2pr-tunnel transit must expose TransitBandwidthSummary"
+fi
+if ! rg -q 'live_state_snapshot' "$daemon_transit"; then
+    fail "TransitBuildService must expose live_state_snapshot"
+fi
+if ! rg -q 'live_state_snapshot' "$daemon_transit_owner"; then
+    fail "TransitLiveOwner must expose live_state_snapshot"
+fi
+if ! rg -q 'has_peer' "$daemon_transit_owner"; then
+    fail "TransitLiveOwner must expose has_peer for session-close B-retained proof"
+fi
+# 26. The daemon must not re-decode build-option bandwidth: no
+#     Mapping/get("m") lookup in daemon transit code.
+if rg -n 'mapping\.get\(|mapping\(\).get\(|get\("m"\)|get\("r"\)|get\("l"\)|get\("b"\)' "$production_src"; then
+    fail "daemon transit code must not re-decode bandwidth options; copy TransitBandwidthSummary from the transaction"
+fi
+# 27. The self-reply seam must take the bundled args (Plan 257
+#     work package I clippy-ceiling fix without suppression).
+if ! rg -q 'SelfReplyOtbrmArgs' "$daemon_transit_owner"; then
+    fail "transit_owner must route self replies through SelfReplyOtbrmArgs"
+fi
+# 28. The evidence checker must carry the Plan 257 invariants
+#     (reply source-locks, far-side, full-drain, typed bandwidth,
+#     cardinality, two-attempt gate).
+for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_drained' 'record_cardinality' 'record_bandwidth_rows' 'SelfReplyOtbrmArgs' 'I2PR_M11_ATTEMPT'; do
+    if ! rg -qF "$token" "$external_checker"; then
+        fail "evidence checker missing Plan 257 invariant $token"
+    fi
+done
+# 29. The runner must source-lock both i2pd reply branches and
+#     emit the Plan 257 manifest shape (plan 257 + attempt).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 257' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+    if ! rg -qF "$token" "$external_runner"; then
+        fail "external runner missing Plan 257 token $token"
+    fi
+done
+# 30. The external workflow must run the two-attempt matrix on one
+#     SHA with fail-fast disabled and per-attempt artifacts.
+external_workflow="$root/.github/workflows/m11-transit-external.yml"
+if [[ ! -f "$external_workflow" ]]; then
+    fail "M11 external workflow missing: $external_workflow"
+fi
+for token in 'attempt: [1, 2]' 'fail-fast: false' 'I2PR_M11_ATTEMPT' 'm11-transit-evidence-attempt-'; do
+    if ! rg -qF "$token" "$external_workflow"; then
+        fail "external workflow missing Plan 257 token $token"
+    fi
+done
+
 echo "check-m11-transit-boundaries: passed"

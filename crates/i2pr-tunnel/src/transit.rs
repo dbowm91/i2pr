@@ -1712,6 +1712,77 @@ pub struct TransitBuildContext<'a> {
     pub admission: &'a mut TransitAdmissionState,
 }
 
+/// Non-secret typed summary of one decoded build-option
+/// disposition (Plan 257 work package E).
+///
+/// The summary is produced once by the runtime-neutral
+/// transaction from the already-decoded [`TransitBandwidthRequest`]
+/// and the sealed [`TransitBandwidthReply`]. The daemon copies it
+/// onto typed build evidence; it never re-decodes the `Mapping`.
+/// All fields are wire-published routing facts or local delivery
+/// dispositions. No keys, reply material, or payload bytes cross
+/// this boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TransitBandwidthSummary {
+    /// Decoded `m` (minimum KBps) from the request, when present.
+    pub minimum_kbps: Option<u32>,
+    /// Decoded `r` (requested KBps) from the request, when present.
+    pub requested_kbps: Option<u32>,
+    /// Decoded `l` (IBGW-only limit KBps) from the request, when present.
+    pub limit_kbps: Option<u32>,
+    /// Emitted `b` (available KBps) in the reply, when present.
+    /// `None` on the reject path (code 30 carries no `b`) and when
+    /// no `m`/`r` was requested.
+    pub available_kbps: Option<u32>,
+    /// True on the accepted path, false on the code-30 path.
+    pub accepted: bool,
+}
+
+impl TransitBandwidthSummary {
+    /// Builds the summary from the decoded request, the sealed
+    /// reply, and the accept/reject disposition.
+    pub const fn new(
+        request: TransitBandwidthRequest,
+        reply: Option<TransitBandwidthReply>,
+        accepted: bool,
+    ) -> Self {
+        Self {
+            minimum_kbps: request.minimum_kbps,
+            requested_kbps: request.requested_kbps,
+            limit_kbps: request.limit_kbps,
+            available_kbps: match reply {
+                Some(value) => value.available_kbps,
+                None => None,
+            },
+            accepted,
+        }
+    }
+
+    /// Returns true when the decoded request carried no `m`/`r`/`l`.
+    pub const fn request_is_empty(&self) -> bool {
+        self.minimum_kbps.is_none() && self.requested_kbps.is_none() && self.limit_kbps.is_none()
+    }
+
+    /// Sanitized single-line evidence label (`m=.. r=.. l=.. b=.. accepted=..`;
+    /// absent fields render as `-`). Contains only non-secret integers.
+    pub fn evidence_label(&self) -> String {
+        fn render(value: Option<u32>) -> String {
+            match value {
+                Some(v) => v.to_string(),
+                None => "-".to_string(),
+            }
+        }
+        format!(
+            "m={} r={} l={} b={} accepted={}",
+            render(self.minimum_kbps),
+            render(self.requested_kbps),
+            render(self.limit_kbps),
+            render(self.available_kbps),
+            self.accepted,
+        )
+    }
+}
+
 /// Outcome of one short-build request against the transit
 /// transaction. The struct carries the sealed reply record (when
 /// the request was accepted) and a typed status that explains the
@@ -1722,6 +1793,11 @@ pub struct TransitBuildOutcome {
     /// The sealed 218-byte reply record. Always returned so the
     /// caller can dispatch it on every code path.
     pub sealed_reply: [u8; SHORT_BUILD_RECORD_SIZE],
+    /// The decoded non-secret bandwidth request from the
+    /// already-parsed `BuildOptions`. Present on both accept and
+    /// reject paths (Plan 257 work package E); the daemon copies
+    /// it onto typed evidence without re-decoding the `Mapping`.
+    pub bandwidth_request: TransitBandwidthRequest,
     /// The accepted bandwidth reply (when accepted). `None` on
     /// reject.
     pub bandwidth_reply: Option<TransitBandwidthReply>,
@@ -1729,11 +1805,19 @@ pub struct TransitBuildOutcome {
     pub reject_reason: Option<TransitAdmissionError>,
 }
 
+impl TransitBuildOutcome {
+    /// Returns the non-secret typed bandwidth summary for evidence.
+    pub const fn bandwidth_summary(&self, accepted: bool) -> TransitBandwidthSummary {
+        TransitBandwidthSummary::new(self.bandwidth_request, self.bandwidth_reply, accepted)
+    }
+}
+
 impl fmt::Debug for TransitBuildOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TransitBuildOutcome")
             .field("response", &self.response)
             .field("sealed_reply", &"<redacted>")
+            .field("bandwidth_request", &self.bandwidth_request)
             .field("bandwidth_reply", &self.bandwidth_reply)
             .field("reject_reason", &self.reject_reason)
             .finish()
@@ -1796,6 +1880,11 @@ impl TransitAdmissionState {
     /// Number of currently reserved admissions for a peer.
     pub fn pending_for_peer(&self, peer: TunnelPeer) -> u16 {
         self.pending_by_peer.get(&peer.hash()).copied().unwrap_or(0)
+    }
+    /// Number of distinct peers with outstanding reservations
+    /// (Plan 257 work package C snapshot dimension).
+    pub fn pending_peer_entries(&self) -> usize {
+        self.pending_by_peer.len()
     }
 
     fn release(&mut self, token: TransitAdmissionToken) -> bool {
@@ -2060,6 +2149,7 @@ where
         return Ok(TransitBuildOutcome {
             response,
             sealed_reply,
+            bandwidth_request: bandwidth,
             bandwidth_reply: None,
             reject_reason: Some(reason),
         });
@@ -2093,6 +2183,7 @@ where
     Ok(TransitBuildOutcome {
         response,
         sealed_reply,
+        bandwidth_request: bandwidth,
         bandwidth_reply: Some(bandwidth_reply),
         reject_reason: None,
     })
@@ -2307,6 +2398,10 @@ pub struct TransitBuildMessageOutcome {
     /// Local admission reject reason; `Some` only on the
     /// policy-rejection path, `None` on accept.
     pub reject_reason: Option<TransitAdmissionError>,
+    /// Decoded non-secret bandwidth request from the
+    /// already-parsed `BuildOptions`. Present on both accept and
+    /// reject paths (Plan 257 work package E).
+    pub bandwidth_request: TransitBandwidthRequest,
     /// Accepted bandwidth reply; `Some` only on the accept path
     /// when the request carried `m` or `r`. The sealed reply
     /// record's `Mapping` already encodes the value.
@@ -2316,6 +2411,17 @@ pub struct TransitBuildMessageOutcome {
     /// evidence binds each role row to this kind; the daemon
     /// copies it onto every build dispatch variant.
     pub role_kind: TransitHopRoleKind,
+}
+
+impl TransitBuildMessageOutcome {
+    /// Returns the non-secret typed bandwidth summary for evidence.
+    pub fn bandwidth_summary(&self) -> TransitBandwidthSummary {
+        TransitBandwidthSummary::new(
+            self.bandwidth_request,
+            self.bandwidth_reply,
+            self.reject_reason.is_none(),
+        )
+    }
 }
 
 /// Locates the unique wire slot whose 16-byte identity prefix
@@ -2544,6 +2650,7 @@ where
             route,
             registration: None,
             reject_reason: Some(reason),
+            bandwidth_request: bandwidth,
             bandwidth_reply: None,
             role_kind,
         });
@@ -2597,6 +2704,7 @@ where
         route,
         registration: Some(outcome_registration),
         reject_reason: None,
+        bandwidth_request: bandwidth,
         bandwidth_reply: Some(bandwidth_reply),
         role_kind: accept_role_kind,
     })

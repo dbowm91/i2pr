@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Plan 256 — M11 exact-pinned i2pd qualification evidence/topology corrective runner.
+# Plan 257 — M11 production self-reply qualification and external evidence completion runner.
 #
 # The external lane is owned by the single Rust qualification driver
 # `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`, which generates
@@ -37,7 +37,7 @@ I2PD_SAM_PORT="${I2PR_I2PD_SAM_PORT:-44983}"
 DRIVER_TIMEOUT="1500s"
 
 mkdir -p "${EVIDENCE_DIR}"
-SCRATCH="$(mktemp -d -t i2pr-m11-plan256.XXXXXX)"
+SCRATCH="$(mktemp -d -t i2pr-m11-plan257.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
 # Fresh per-run reference datadirs. The driver installs the public
@@ -60,7 +60,7 @@ if [[ ! -x "${I2PD_BIN}" ]]; then
 fi
 if [[ ! -f "${I2PD_CACHE}/source-revision.txt" ]] ||
    [[ "$(<"${I2PD_CACHE}/source-revision.txt")" != "${I2PD_PIN}" ]]; then
-  echo "i2pd cache has no verified Plan 256 source revision" >&2
+  echo "i2pd cache has no verified Plan 257 source revision" >&2
   echo "run scripts/interop/fetch-ssu2-reference.sh --rebuild first" >&2
   exit 1
 fi
@@ -111,7 +111,28 @@ exact_row() {
   record_guarded "${label}" "${detail}" "${rc}"
 }
 
+# Runs one exact library unit test by name (Plan 257 production
+# reply/snapshot/bandwidth/lifecycle regressions live in the
+# transit composition unit surface, not the external driver
+# binary); the row passes only when that named test passes.
+exact_lib_row() {
+  local label="$1"
+  local test_name="$2"
+  local detail="$3"
+  local log="${EVIDENCE_DIR}/local-${label}.log"
+  : > "${log}"
+  local rc=0
+  if cargo test --locked -p i2pr-daemon --lib \
+       "${test_name}" -- --exact --test-threads=1 >>"${log}" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  record_guarded "${label}" "${detail}" "${rc}"
+}
+
 echo "==> local Plan 256 corrective rows (identity, ledger, anti-fan-out)"
+echo "==> local Plan 257 production-qualification rows (reply, snapshot, bandwidth, negatives)"
 LOCAL_LOG="${EVIDENCE_DIR}/local-foundation.log"
 : > "${LOCAL_LOG}"
 local_rc=0
@@ -200,6 +221,78 @@ exact_row "m11-i2pd-epoch-uniqueness-unit" \
 exact_row "m11-i2pd-checker-invariants-unit" \
   "plan256_checker_rejects_fanout_and_requires_typed_roles" \
   "static checker carries the Plan 256 corrective invariants"
+
+# Plan 257 work package A/B/C/E/I — one exact test per row so a
+# single generic pass can never fan out into unrelated rows.
+exact_lib_row "m11-i2pd-obep-remote-reply-unit" \
+  "plan257_remote_obep_reply_uses_remote_path_once" \
+  "remote OBEP reply uses the remote garlic/TunnelGateway path once (lib test)"
+exact_lib_row "m11-i2pd-local-reply-bypass-unit" \
+  "plan257_local_reply_bypasses_remote_path" \
+  "local reply bypasses the remote garlic/TunnelGateway path (lib test)"
+exact_lib_row "m11-i2pd-reply-id-preservation-unit" \
+  "plan257_reply_preserves_message_and_tunnel_ids" \
+  "local/remote reply preserves exact reply message id and tunnel id (lib test)"
+exact_lib_row "m11-i2pd-snapshot-dimensions-unit" \
+  "plan257_state_snapshot_has_five_dimensions_without_secrets" \
+  "state snapshot exposes five secret-free dimensions (lib test)"
+exact_lib_row "m11-i2pd-cardinality-plus-one-unit" \
+  "plan257_role_accept_moves_active_by_exactly_plus_one" \
+  "role accept moves active state by exactly +1 (lib test)"
+exact_lib_row "m11-i2pd-reject-zero-growth-unit" \
+  "plan257_role_reject_moves_active_by_zero_and_pending_baseline" \
+  "role reject moves active state by +0 with pending baseline (lib test)"
+exact_lib_row "m11-i2pd-bandwidth-absence-unit" \
+  "plan257_bandwidth_evidence_reports_typed_absence" \
+  "bandwidth evidence reports typed absence (lib test)"
+exact_lib_row "m11-i2pd-bandwidth-present-unit" \
+  "plan257_bandwidth_evidence_reports_typed_present_values" \
+  "bandwidth evidence reports typed present values (lib test)"
+exact_lib_row "m11-i2pd-cancel-full-drain-unit" \
+  "plan257_cancellation_requires_all_dimensions_zero" \
+  "cancellation drains every snapshot dimension (lib test)"
+exact_lib_row "m11-i2pd-session-close-ab-unit" \
+  "plan257_session_close_removes_a_and_retains_b" \
+  "session close removes A and retains B (lib test)"
+exact_lib_row "m11-i2pd-self-reply-rollback-unit" \
+  "plan257_self_reply_missing_ibgw_rolls_back_endpoint" \
+  "self reply with missing IBGW rolls back the endpoint (lib test)"
+exact_row "m11-i2pd-farside-local-only-unit" \
+  "plan257_local_only_forward_cannot_satisfy_farside" \
+  "local-only forward cannot satisfy far-side receipt"
+exact_row "m11-i2pd-farside-binding-unit" \
+  "plan257_farside_binds_b_observation_to_exact_next_tunnel" \
+  "B observation binds to the exact next tunnel id"
+exact_row "m11-i2pd-farside-creator-secondary-unit" \
+  "plan257_creator_accepted_alone_cannot_satisfy_farside" \
+  "creator-accepted alone cannot satisfy far-side proof"
+exact_row "m11-i2pd-cancel-narrow-unit" \
+  "plan257_active_only_cancel_cannot_satisfy_full_drain" \
+  "active-only cancel cannot satisfy the full drain"
+exact_row "m11-i2pd-session-close-narrow-unit" \
+  "plan257_remove_a_without_b_retained_cannot_satisfy_session_close" \
+  "removing A without B retained cannot satisfy session close"
+exact_row "m11-i2pd-restart-narrow-unit" \
+  "plan257_constructor_only_restart_evidence_is_rejected" \
+  "constructor-only restart evidence is rejected"
+exact_row "m11-i2pd-two-pass-gate-unit" \
+  "plan257_single_attempt_cannot_satisfy_two_pass_closure" \
+  "one complete external attempt cannot satisfy two-pass closure"
+exact_row "m11-i2pd-cross-sha-unit" \
+  "plan257_cross_sha_attempts_are_rejected" \
+  "two attempts with different i2pr SHAs are rejected"
+exact_row "m11-i2pd-no-merge-unit" \
+  "plan257_cross_attempt_row_merging_is_rejected" \
+  "cross-attempt row merging is rejected"
+exact_row "m11-i2pd-bandwidth-hardcoded-unit" \
+  "plan257_hardcoded_bandwidth_string_cannot_satisfy_disposition" \
+  "a hard-coded bandwidth string cannot satisfy disposition"
+exact_row "m11-i2pd-cardinality-receive-only-unit" \
+  "plan257_receive_id_only_row_cannot_satisfy_cardinality" \
+  "a receive-id-only row cannot satisfy cardinality"
+exact_row "m11-i2pd-reply-source-lock-unit" \
+  "plan257_runner_source_locks_both_reply_branches" \
+  "runner source-locks both i2pd reply branches"
 
 # Local row: the driver must be #[ignore]-gated so ordinary CI stays green
 if grep -qE '#\[ignore\s*=.*Plan 256' \
@@ -366,6 +459,59 @@ else
     "1"
 fi
 
+# Plan 257 §4 source locks: the short-build endpoint reply branch
+# has two distinct paths in exact-pinned TransitTunnel.cpp. The
+# remote path derives RGarlicKeyAndTag, ECIES-garlic-wraps the
+# ShortTunnelBuildReply, nests it in a TunnelGateway envelope, and
+# sends it to the requested reply router. The local path detects
+# the reply router hash is local (`IBGW is local`), resolves the
+# requested local tunnel id, injects the reply with
+# SendTunnelDataMsg, and flushes — never the remote garlic path.
+if grep -qF 'RGarlicKeyAndTag' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null &&
+   grep -qF 'CreateTunnelGatewayMsg' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null &&
+   grep -qF 'WrapECIESX25519Message' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-obep-remote-reply-source-lock" \
+    "OBEP remote reply branch source-locked (RGarlicKeyAndTag + ECIES garlic + TunnelGateway)" \
+    "0"
+else
+  record_guarded "m11-i2pd-obep-remote-reply-source-lock" \
+    "OBEP remote reply branch source-locked (RGarlicKeyAndTag + ECIES garlic + TunnelGateway)" \
+    "1"
+fi
+
+if grep -qF 'IBGW is local' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null &&
+   grep -qF 'SendTunnelDataMsg (replyMsg)' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null &&
+   grep -qF 'FlushTunnelDataMsgs' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null &&
+   grep -qF 'not found for short tunnel build reply' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-obep-local-ibgw-reply-source-lock" \
+    "OBEP local-IBGW reply branch source-locked (IBGW is local + SendTunnelDataMsg + Flush + fail-closed drop)" \
+    "0"
+else
+  record_guarded "m11-i2pd-obep-local-ibgw-reply-source-lock" \
+    "OBEP local-IBGW reply branch source-locked (IBGW is local + SendTunnelDataMsg + Flush + fail-closed drop)" \
+    "1"
+fi
+
+# Plan 257 §10 far-side source lock: the B-side endpoint receipt
+# observable the Participant far-side row binds to.
+if grep -qF 'TransitTunnel: handle msg for endpoint ' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-b-endpoint-source-lock" \
+    "i2pd-B endpoint receipt line source-locked (TransitTunnelEndpoint::HandleTunnelDataMsg)" \
+    "0"
+else
+  record_guarded "m11-i2pd-b-endpoint-source-lock" \
+    "i2pd-B endpoint receipt line source-locked (TransitTunnelEndpoint::HandleTunnelDataMsg)" \
+    "1"
+fi
+
 # Static guard rows --------------------------------------------------------
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 : > "${GATES_LOG}"
@@ -440,6 +586,11 @@ rm -f "${DRIVER_EVIDENCE}/driver-evidence.tsv" \
 DRIVER_LOG="${EVIDENCE_DIR}/external-driver.log"
 : > "${DRIVER_LOG}"
 driver_rc=0
+# Plan 257 work package F: the dedicated Participant B reference
+# runs at debug level for the bounded Participant data epoch so
+# the source-locked `TransitTunnel: handle msg for endpoint <id>`
+# line is emitted. Debug volume on B only (A stays at info);
+# triage may override via I2PR_M11_LOGLEVEL_B.
 if I2PD_BIN="${I2PD_BIN}" \
    I2PD_PIN="${I2PD_PIN}" \
    I2PD_VERSION="${I2PD_VERSION}" \
@@ -449,6 +600,7 @@ if I2PD_BIN="${I2PD_BIN}" \
    I2PD_B_PORT="${I2PD_B_PORT}" \
    I2PD_A_SAM_PORT="${I2PD_SAM_PORT}" \
    I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
+   I2PR_M11_LOGLEVEL_B="${I2PR_M11_LOGLEVEL_B:-debug}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
    cargo test --locked -p i2pr-daemon --test m11_transit_i2pd_external \
@@ -502,26 +654,84 @@ m11_row "m11-i2pd-obep-build-accepted" "obep/build-accepted" \
   "OBEP build accepted with typed role evidence and live registration"
 m11_row "m11-i2pd-obep-registration-live" "obep/registration-live" \
   "exactly one OBEP live registration installed after acceptance"
+# Plan 257 work package D/E — exact cardinality + typed bandwidth per role
+m11_row "m11-i2pd-obep-active-before" "obep/active-before" \
+  "OBEP counted build active state before"
+m11_row "m11-i2pd-obep-active-after" "obep/active-after" \
+  "OBEP counted build active state after"
+m11_row "m11-i2pd-obep-registration-delta" "obep/registration-delta" \
+  "OBEP counted build registration delta exactly +1"
+m11_row "m11-i2pd-obep-receive-id" "obep/receive-id" \
+  "OBEP counted receive tunnel id"
+m11_row "m11-i2pd-obep-pending-baseline" "obep/pending-baseline" \
+  "OBEP pending state returned to baseline"
+m11_row "m11-i2pd-obep-bandwidth-request" "obep/bandwidth-request" \
+  "OBEP typed decoded m/r/l request (absence is typed)"
+m11_row "m11-i2pd-obep-bandwidth-reply" "obep/bandwidth-reply" \
+  "OBEP typed emitted b reply disposition"
+m11_row "m11-i2pd-obep-bandwidth-disposition-observed" "obep/bandwidth-disposition-observed" \
+  "OBEP bandwidth disposition from typed decoded evidence"
 m11_row "m11-i2pd-ibgw-build-received" "ibgw/build-received" \
   "real i2pd-A inbound tunnel build reaches i2pr as IBGW"
 m11_row "m11-i2pd-ibgw-build-accepted" "ibgw/build-accepted" \
   "IBGW build accepted with typed role evidence and live registration"
 m11_row "m11-i2pd-ibgw-registration-live" "ibgw/registration-live" \
   "exactly one IBGW live registration installed after acceptance"
+m11_row "m11-i2pd-ibgw-active-before" "ibgw/active-before" \
+  "IBGW counted build active state before"
+m11_row "m11-i2pd-ibgw-active-after" "ibgw/active-after" \
+  "IBGW counted build active state after"
+m11_row "m11-i2pd-ibgw-registration-delta" "ibgw/registration-delta" \
+  "IBGW counted build registration delta exactly +1"
+m11_row "m11-i2pd-ibgw-receive-id" "ibgw/receive-id" \
+  "IBGW counted receive tunnel id"
+m11_row "m11-i2pd-ibgw-pending-baseline" "ibgw/pending-baseline" \
+  "IBGW pending state returned to baseline"
+m11_row "m11-i2pd-ibgw-bandwidth-request" "ibgw/bandwidth-request" \
+  "IBGW typed decoded m/r/l request (absence is typed)"
+m11_row "m11-i2pd-ibgw-bandwidth-reply" "ibgw/bandwidth-reply" \
+  "IBGW typed emitted b reply disposition"
+m11_row "m11-i2pd-ibgw-bandwidth-disposition-observed" "ibgw/bandwidth-disposition-observed" \
+  "IBGW bandwidth disposition from typed decoded evidence"
 m11_row "m11-i2pd-participant-build-received" "participant/build-received" \
   "real i2pd-A -> i2pr -> i2pd-B intermediate build reaches i2pr as Participant"
 m11_row "m11-i2pd-participant-build-accepted" "participant/build-accepted" \
   "Participant build accepted with typed role evidence and live registration"
 m11_row "m11-i2pd-participant-registration-live" "participant/registration-live" \
   "exactly one Participant live registration installed after acceptance"
+m11_row "m11-i2pd-participant-active-before" "participant/active-before" \
+  "Participant counted build active state before"
+m11_row "m11-i2pd-participant-active-after" "participant/active-after" \
+  "Participant counted build active state after"
+m11_row "m11-i2pd-participant-registration-delta" "participant/registration-delta" \
+  "Participant counted build registration delta exactly +1"
+m11_row "m11-i2pd-participant-receive-id" "participant/receive-id" \
+  "Participant counted receive tunnel id"
+m11_row "m11-i2pd-participant-pending-baseline" "participant/pending-baseline" \
+  "Participant pending state returned to baseline"
+m11_row "m11-i2pd-participant-bandwidth-request" "participant/bandwidth-request" \
+  "Participant typed decoded m/r/l request (absence is typed)"
+m11_row "m11-i2pd-participant-bandwidth-reply" "participant/bandwidth-reply" \
+  "Participant typed emitted b reply disposition"
+m11_row "m11-i2pd-participant-bandwidth-disposition-observed" "participant/bandwidth-disposition-observed" \
+  "Participant bandwidth disposition from typed decoded evidence"
 
 # Work package D/E — role data plane (genuine reference traffic)
 m11_row "m11-i2pd-participant-data-forward" "participant-data/forward" \
   "Participant TunnelData transforms and forwards to i2pd-B"
 m11_row "m11-i2pd-participant-data-digest" "participant-data/digest" \
   "cell digest proves the transform observation is not a no-op"
+# Plan 257 work package F — independent i2pd-B far-side proof
+m11_row "m11-i2pd-participant-data-local-forward" "participant-data/local-forward" \
+  "Participant local forward half of the far-side proof"
+m11_row "m11-i2pd-participant-data-next-tunnel" "participant-data/next-tunnel" \
+  "exact next tunnel id binding the forward to the B observation"
+m11_row "m11-i2pd-participant-data-b-endpoint-observed" "participant-data/b-endpoint-observed" \
+  "independent i2pd-B endpoint receipt for the exact next tunnel"
+m11_row "m11-i2pd-participant-data-far-side-count" "participant-data/far-side-count" \
+  "sanitized B-side endpoint receipt count"
 m11_row "m11-i2pd-participant-creator-accepted" "participant-data/creator-accepted" \
-  "A reuses the tunnel, proving the creator accepted the build"
+  "A reuses the tunnel, proving the creator accepted the build (secondary only)"
 m11_row "m11-i2pd-obep-delivery" "obep-data/delivery" \
   "OBEP semantic delivery emits exactly one routing action"
 m11_row "m11-i2pd-obep-fragmented-once" "obep-data/fragmented-once" \
@@ -540,18 +750,60 @@ m11_row "m11-i2pd-code30-no-registration" "reject/no-registration" \
   "code 30 leaves zero live registrations"
 m11_row "m11-i2pd-code30-pending-baseline" "reject/pending-baseline" \
   "all pending / per-peer / global counters return to baseline"
-m11_row "m11-i2pd-bandwidth-option-disposition" "reject/bandwidth-option-disposition" \
-  "m/r/l/b option disposition is truthful (no fabrication)"
+# Plan 257 work package E — typed bandwidth from the decoded transaction
+m11_row "m11-i2pd-bandwidth-request" "reject/bandwidth-request" \
+  "typed decoded m/r/l request (absence is typed, never fabricated)"
+m11_row "m11-i2pd-bandwidth-reply" "reject/bandwidth-reply" \
+  "typed emitted b reply disposition on the code-30 path"
+m11_row "m11-i2pd-bandwidth-disposition-observed" "reject/bandwidth-disposition-observed" \
+  "bandwidth disposition from typed decoded evidence"
 
 # Work package G — expiry / cancellation / restart
 m11_row "m11-i2pd-expiry-drops-live-data" "expiry/drops-live-data" \
   "logical 600-second expiry drops later genuine TunnelData"
 m11_row "m11-i2pd-expiry-resource-baseline" "expiry/resource-baseline" \
   "expiry sweep removes registration and clears secret-owning state"
+# Plan 257 work package G.1 — full cancellation drain
+m11_row "m11-i2pd-cancel-active-before" "cancel/active-before" \
+  "cancellation starts from nonzero live state"
+m11_row "m11-i2pd-cancel-active-after" "cancel/active-after" \
+  "cancellation leaves zero active registrations"
+m11_row "m11-i2pd-cancel-pending-after" "cancel/pending-after" \
+  "cancellation leaves zero pending reservations"
+m11_row "m11-i2pd-cancel-peer-index-after" "cancel/peer-index-after" \
+  "cancellation leaves zero peer-index entries"
+m11_row "m11-i2pd-cancel-queued-work-after" "cancel/queued-work-after" \
+  "cancellation leaves zero transit-owned queued work"
 m11_row "m11-i2pd-cancel-drains" "cancel/drains" \
   "cancellation drains live transit synchronously from nonzero pre-state"
+m11_row "m11-i2pd-cancel-new-ingress-refused" "cancel/new-ingress-refused" \
+  "new build/data ingress fails closed after cancellation"
+# Plan 257 work package G.2 — session close with B retained
+m11_row "m11-i2pd-session-close-a-before" "session-close/a-before" \
+  "A mapping exists before close"
+m11_row "m11-i2pd-session-close-b-before" "session-close/b-before" \
+  "B mapping exists before close"
+m11_row "m11-i2pd-session-close-a-removed" "session-close/a-removed" \
+  "A mapping absent after close"
+m11_row "m11-i2pd-session-close-b-retained" "session-close/b-retained" \
+  "unrelated B mapping survives A's close"
 m11_row "m11-i2pd-session-close-peer-baseline" "session-close/peer-baseline" \
   "session close returns the peer mapping to baseline"
+m11_row "m11-i2pd-session-close-final-peer-baseline" "session-close/final-peer-baseline" \
+  "final peer-index baseline after session close"
+# Plan 257 work package H — real runtime restart
+m11_row "m11-i2pd-restart-old-owner-drained" "restart/old-owner-drained" \
+  "old owner drained before restart"
+m11_row "m11-i2pd-restart-new-owner-zero" "restart/new-owner-zero" \
+  "new owner starts from zero state (no state transferred)"
+m11_row "m11-i2pd-restart-sessions-reestablished" "restart/sessions-reestablished" \
+  "authenticated sessions re-established after restart"
+m11_row "m11-i2pd-restart-fresh-build-accepted" "restart/fresh-build-accepted" \
+  "fresh role-correct build accepted after restart"
+m11_row "m11-i2pd-restart-fresh-registration-delta" "restart/fresh-registration-delta" \
+  "fresh build installs exactly one new registration"
+m11_row "m11-i2pd-restart-final-baseline" "restart/final-baseline" \
+  "restarted owner drains cleanly at the end"
 m11_row "m11-i2pd-restart-clean-baseline" "restart/clean-baseline" \
   "newly constructed owner proves zero transit state"
 
@@ -611,15 +863,22 @@ if ledger_tsv.exists():
     for line in ledger_tsv.read_text(encoding="utf-8").splitlines():
         ledger_keys.append(line.split("\t", 1)[0])
 all_passed = all(row["status"] == "passed" for row in rows)
+import os
+attempt = os.environ.get("I2PR_M11_ATTEMPT", "1")
+datadir_id = os.environ.get(
+    "I2PR_M11_DATADIR_ID", Path(evidence_dir).name or "local",
+)
 evidence = {
     "schema": "i2pr-m11-transit-qualification-v2",
-    "plan": 256,
+    "plan": 257,
+    "attempt": attempt,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
     "os_image": platform.platform(),
     "rust_toolchain": rustc,
     "execution_lane": "m11-transit-external",
     "ssu2_bind_policy": "127.0.0.1 loopback only, advertise=false, no introducer",
+    "fresh_datadir_id": datadir_id,
     "i2pd": {
         "repository": "https://github.com/PurpleI2P/i2pd.git",
         "revision": i2pd_pin,
@@ -637,15 +896,16 @@ evidence = {
         "controlled transit qualification only; no public transit, RouterInfo capability, or public-network participation",
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
-        "two complete same-SHA external passes remain owned by hosted Actions or manual execution",
+        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 257",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 256 M11 exact-pinned i2pd qualification (evidence/topology corrective)\n\n")
+    stream.write("# Plan 257 M11 production self-reply and external evidence completion (corrective)\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
+    stream.write(f"- attempt: `{attempt}` (fresh datadirs per attempt; no cross-attempt merge)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
@@ -656,7 +916,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 256 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 257 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 256 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 257 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"

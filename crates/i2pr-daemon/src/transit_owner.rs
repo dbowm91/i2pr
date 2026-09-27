@@ -48,8 +48,8 @@ use crate::router_i2np::{
     dispatch_router_i2np_with_transit_bodies, extract_inner_short_build,
 };
 use crate::transit_compose::{
-    TransitBuildService, TransitDispatch, TransitDispatchRole, TransitIngressGate,
-    TransitServiceError, TransitTunnelDataDispatch,
+    SelfReplyOtbrmArgs, TransitBuildService, TransitDispatch, TransitDispatchRole,
+    TransitIngressGate, TransitLiveStateSnapshot, TransitServiceError, TransitTunnelDataDispatch,
 };
 
 /// Live transit owner errors.
@@ -298,6 +298,10 @@ pub struct TransitBuildEvidence {
     pub rejected: bool,
     /// Terminal delivery outcome observed on the router seam.
     pub delivery: RouterDeliveryOutcome,
+    /// Non-secret typed bandwidth disposition copied from the
+    /// runtime-neutral transaction (Plan 257 work package E).
+    /// Fatal inputs carry the empty (absent) summary.
+    pub bandwidth: i2pr_tunnel::TransitBandwidthSummary,
 }
 
 impl TransitBuildEvidence {
@@ -321,6 +325,7 @@ impl TransitBuildEvidence {
                 next_router,
                 next_message_id,
                 role_kind,
+                bandwidth,
                 ..
             } => Self {
                 role: Some(*role_kind),
@@ -329,12 +334,14 @@ impl TransitBuildEvidence {
                 next_message_id: *next_message_id,
                 rejected: false,
                 delivery,
+                bandwidth: *bandwidth,
             },
             TransitDispatch::EmitOtbrm {
                 receive_tunnel,
                 reply_router,
                 reply_message_id,
                 role_kind,
+                bandwidth,
                 ..
             } => Self {
                 role: Some(*role_kind),
@@ -343,6 +350,7 @@ impl TransitBuildEvidence {
                 next_message_id: *reply_message_id,
                 rejected: false,
                 delivery,
+                bandwidth: *bandwidth,
             },
             TransitDispatch::Rejected {
                 receive_tunnel,
@@ -350,6 +358,7 @@ impl TransitBuildEvidence {
                 payload: _,
                 role_kind,
                 reason: _,
+                bandwidth,
             } => {
                 let (next_router, next_message_id) = match role {
                     TransitDispatchRole::ContinueStbm {
@@ -369,6 +378,7 @@ impl TransitBuildEvidence {
                     next_message_id,
                     rejected: true,
                     delivery,
+                    bandwidth: *bandwidth,
                 }
             }
             TransitDispatch::Fatal => Self {
@@ -378,6 +388,11 @@ impl TransitBuildEvidence {
                 next_message_id: 0,
                 rejected: false,
                 delivery,
+                bandwidth: i2pr_tunnel::TransitBandwidthSummary::new(
+                    i2pr_tunnel::TransitBandwidthRequest::default(),
+                    None,
+                    false,
+                ),
             },
         }
     }
@@ -540,6 +555,29 @@ where
             .gate
             .service_mut()
             .map_or(0, |service| service.active_count())
+    }
+
+    /// Returns the bounded non-secret state snapshot (Plan 257 work
+    /// package C). Read-only and side-effect free; zero while
+    /// disabled. The qualification driver binds exact registration
+    /// cardinality, cancellation drain, restart baseline,
+    /// session-close, and pending-baseline rows to this snapshot.
+    pub fn live_state_snapshot(&mut self) -> TransitLiveStateSnapshot {
+        self.owner
+            .gate
+            .service_mut()
+            .map_or(TransitLiveStateSnapshot::zero(), |service| {
+                service.live_state_snapshot()
+            })
+    }
+
+    /// Returns whether the transit peer index holds the supplied
+    /// router (session-close B-retained proof). False while disabled.
+    pub fn has_peer(&mut self, router: &i2pr_proto::Hash) -> bool {
+        self.owner
+            .gate
+            .service_mut()
+            .is_some_and(|service| service.has_peer(router))
     }
 
     /// Handles one real authenticated inbound message through the
@@ -765,22 +803,21 @@ where
             ),
             _ => return Err(TransitLiveError::LocalDeliveryFailed),
         };
+        let args = SelfReplyOtbrmArgs::new(
+            receive_tunnel,
+            reply_tunnel,
+            reply_message_id,
+            &payload,
+            peer,
+            now_ms,
+        );
         let delivery = {
             let (owner, rng, cancellation) = (&mut self.owner, &mut self.rng, &self.cancellation);
             let service = owner
                 .gate
                 .service_mut()
                 .ok_or(TransitLiveError::LocalDeliveryFailed)?;
-            service.deliver_self_reply_otbrm(
-                receive_tunnel,
-                reply_tunnel,
-                reply_message_id,
-                &payload,
-                peer,
-                now_ms,
-                rng,
-                cancellation,
-            )?
+            service.deliver_self_reply_otbrm(args, rng, cancellation)?
         };
         let evidence = TransitBuildEvidence::from_dispatch(&dispatch, delivery);
         Ok(LiveInboundOutcome::Build(LiveBuildOutcome::Dispatched(
