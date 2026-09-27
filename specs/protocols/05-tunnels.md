@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-257
+### Current M11 qualification authority — Plans 254-258
 
 Plan 254 is closed
 (`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
@@ -306,15 +306,29 @@ stop condition, Participant lacks independent B-side far-side receipt, registrat
 cancellation/session-close/restart evidence remains incomplete, no complete counted external
 pass exists, and the implementation head's macOS Quality job failed Clippy.
 
-Plan 257 is registered ready as the corrective/qualification-completion authority. It
-source-locks and qualifies the local-IBGW versus remote OBEP reply branches against exact-pinned
-unmodified i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`), adds independent
-i2pd-B Participant receipt, exact registration deltas, typed bandwidth disposition, full
-lifecycle state and real runtime restart evidence, restores exact-head ordinary CI, and then
-requires two complete fresh-datadir same-SHA external passes.
+Plan 257 is retained with its reply/state/evidence repairs locally proven on
+1784ff8 (SelfReplyOtbrmArgs clippy-ceiling fix, TransitLiveStateSnapshot seam,
+typed TransitBandwidthSummary plumbing, i2pd reply-branch source locks,
+cardinality/bandwidth/far-side/full-drain/session-close/restart evidence
+shapes, two-attempt gate). Three same-SHA external executions stop at the
+systematic retained IBGW multicell boundary: genuine single-cell-only
+gateway ingress (9/13/14 deliveries to the accepted registration), zero
+end-to-end receipt, healthy sessions, B-debug exonerated by an info-B
+diagnostic with the identical signature. Its external rows (cardinality,
+role-tier bandwidth, far-side, replay/expiry, full-drain cancel, session
+close, real restart) never execute because the driver aborts fail-closed
+at the multicell gate.
 
-M11 remains non-advertised. Only passed Plan 257 may satisfy the ADR 0026 one-family
-experimental progression gate; full two-family router conformance/public transit advertisement
+Plan 258 is registered ready as the IBGW data-plane multicell diagnostic
+corrective. It adds gateway failure/nested-size telemetry, classifies the
+emission/delivery/production hypotheses in one non-counted diagnostic,
+lands the narrow fix with regressions, and then requires two complete
+fresh-datadir same-SHA external passes carrying the unexecuted Plan 257
+rows to green. No gate redefinition and no retry-tuning to go green.
+
+M11 remains non-advertised. Only a passed two-pass lane closure (owned by
+Plan 258) may satisfy the ADR 0026 one-family experimental progression
+gate; full two-family router conformance/public transit advertisement
 remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
