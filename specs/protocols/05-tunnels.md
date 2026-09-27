@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-256
+### Current M11 qualification authority — Plans 254-257
 
 Plan 254 is closed
 (`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
@@ -298,15 +298,23 @@ not proven against the active reference NetDB before selection; the transit resp
 key is unrelated to the X25519 encryption public key in the signed RouterIdentity; and the
 rejection/replay/expiry/cancel/restart rows are not backed by those external experiments.
 
-Plan 256 is registered ready as the corrective authority. It keeps exact-pinned unmodified
-i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`) and requires RouterIdentity
-build-key coherence, exact reference NetDB load proof, separate typed OBEP/IBGW/Participant
-epochs with a real second reference for Participant, typed per-row event predicates, genuine
-role data-plane traffic, genuine code-30/replay/logical-expiry/cancel/session-close/restart
-experiments, and two complete same-SHA passes.
+Plan 256 is retained after implementing most of that corrective: RouterIdentity/build-key
+coherence, exact reference NetDB bootstrap, a real i2pd-B, typed role epochs, anti-fan-out
+evidence, and substantial OBEP/IBGW/Participant data-plane work are retained. It did not close
+qualification: local-IBGW/OBEP reply production behavior landed after the plan's production
+stop condition, Participant lacks independent B-side far-side receipt, registration/bandwidth/
+cancellation/session-close/restart evidence remains incomplete, no complete counted external
+pass exists, and the implementation head's macOS Quality job failed Clippy.
 
-M11 remains non-advertised. Plan 256 may satisfy ADR 0026 experimental progression only after
-those two complete passes; full two-family router conformance/public transit advertisement
+Plan 257 is registered ready as the corrective/qualification-completion authority. It
+source-locks and qualifies the local-IBGW versus remote OBEP reply branches against exact-pinned
+unmodified i2pd 2.61.0 (`635b013a612ff47278ef02acf8580a28e10e26c5`), adds independent
+i2pd-B Participant receipt, exact registration deltas, typed bandwidth disposition, full
+lifecycle state and real runtime restart evidence, restores exact-head ordinary CI, and then
+requires two complete fresh-datadir same-SHA external passes.
+
+M11 remains non-advertised. Only passed Plan 257 may satisfy the ADR 0026 one-family
+experimental progression gate; full two-family router conformance/public transit advertisement
 remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective

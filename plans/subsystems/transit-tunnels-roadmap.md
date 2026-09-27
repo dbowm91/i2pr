@@ -50,7 +50,7 @@ knowledge.
 
 ## 3. Non-goals
 
-No public-network transit in Plans 249-256; no floodfill (M12); no new ElGamal generation;
+No public-network transit in Plans 249-257; no floodfill (M12); no new ElGamal generation;
 no Proposal 153 data layer; no broad RouterInfo/router.version change in Plan 249; no Java
 full-router gate for experimental M11 progression; no resource-governor bypass.
 
@@ -71,7 +71,7 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
   active reference NetDB before selection, the transit responder key is unrelated to the
   advertised RouterIdentity encryption key, and rejection/replay/expiry/cancel/restart are not
   real external experiments.
-- Plan 256 is registered ready as the evidence/topology corrective. Ordinary product construction
+- Plan 256 is retained after implementing the evidence/topology corrective but leaving production reply qualification and closure evidence incomplete. Plan 257 is registered ready as the production self-reply and external evidence completion corrective. Ordinary product construction
   remains transit-disabled; its SSU2 pump consults only the disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
@@ -80,7 +80,7 @@ advertises public transit support.
 
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
 ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
-post-closure audit. Plan 256 is the next executable authority; repeated Plan 255 hosted dispatches
+post-closure audit. Plan 257 is the next executable authority; repeated Plan 255 hosted dispatches
 do not count until the evidence/topology defects are corrected.
 
 ## 5. Target architecture
@@ -159,7 +159,7 @@ Plan 251 Java source-lock CI corrective ---------------/         |
 Plans 250 and 251 are closed. Plan 252's full-message STBM core is retained. Plan 253
 retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live-owner
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
-its post-closure defects recorded. Plan 256 is registered ready and is the next executable M11
+its post-closure defects recorded. Plan 256 is retained and Plan 257 is registered ready as the next executable M11
 plan.
 
 ## 7. Milestones
@@ -173,7 +173,8 @@ plan.
 | 253 | retained | retained-m11-live-daemon-transit-data-plane-corrective-required-via-plan254 | plans/implementation/transit-tunnels/253-m11-live-daemon-transit-data-plane-corrective.md | plans/closure/transit-tunnels/253-status.md |
 | 254 | closed | passed-m11-live-ingress-body-threading-closure-corrective | plans/implementation/transit-tunnels/254-m11-live-ingress-body-threading-closure-corrective.md | plans/closure/transit-tunnels/254-status.md |
 | 255 | retained | retained-m11-i2pd-qualification-infrastructure-evidence-topology-corrective-required-via-plan256 | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | plans/closure/transit-tunnels/255-status.md |
-| 256 | ready | registered-m11-i2pd-qualification-evidence-topology-corrective-ready | plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md | — |
+| 256 | retained | retained-m11-i2pd-qualification-evidence-topology-corrective-required-via-plan257 | plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md | plans/closure/transit-tunnels/256-status.md |
+| 257 | ready | registered-m11-production-self-reply-and-external-evidence-completion-corrective-ready | plans/implementation/transit-tunnels/257-m11-production-self-reply-and-external-evidence-completion-corrective.md | plans/closure/transit-tunnels/257-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -256,7 +257,7 @@ twice and counted.
 
 ### Plan 256 — qualification evidence/topology corrective
 
-Plan 256 is the current executable authority. It keeps the exact i2pd 2.61.0 / 635b013a... pin
+Plan 256 is retained corrective infrastructure; Plan 257 is the current executable authority. It keeps the exact i2pd 2.61.0 / 635b013a... pin
 and repairs the counted lane by requiring:
 
 - RouterIdentity/build-responder X25519 key coherence;
@@ -269,8 +270,23 @@ and repairs the counted lane by requiring:
   experiments;
 - two complete fresh-datadir external passes on the same i2pr SHA.
 
-M12 remains blocked until Plan 256 closes. Public transit and broad two-family conformance remain
+M12 remains blocked until Plan 257 closes. Public transit and broad two-family conformance remain
 separate.
+
+### Plan 257 — production self-reply and external evidence completion corrective
+
+Plan 257 is the current executable authority after post-implementation review of Plan 256.
+It retains Plan 256's coherent RouterIdentity build key, exact NetDB bootstrap, real i2pd-B,
+typed role epochs, anti-fan-out evidence, and genuine OBEP/IBGW data work. It adds the missing
+closure authority: exact-pinned source-lock/qualification for the local-IBGW versus remote OBEP
+reply branches introduced during Plan 256, independent i2pd-B Participant far-side receipt,
+exact registration deltas, typed bandwidth request/reply evidence, full cancellation and
+session-close state, real i2pr runtime restart, correction of the Plan 256 macOS Clippy failure,
+and two complete fresh-datadir same-SHA external passes.
+
+Plan 257 does not advertise transit or change product defaults. M12 remains blocked until its
+closure record proves every acceptance criterion and the unblock audit explicitly advances the
+ADR 0026 one-family experimental gate.
 
 ## 10. Risks and decision points
 
@@ -298,6 +314,5 @@ Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed
 ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
 retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
 live-owner corrective completed by passed Plan 254. Plan 255 qualification scaffolding is
-retained after post-closure evidence/topology audit. Plan 256 is registered ready as the
-corrective authority. M12 floodfill remains deferred until Plan 256 closes with two complete
+retained after post-closure evidence/topology audit. Plan 256 is retained after implementation review; Plan 257 is registered ready as the corrective/qualification-completion authority. M12 floodfill remains deferred until Plan 257 closes with two complete
 same-SHA exact-pinned i2pd passes.
