@@ -5742,6 +5742,109 @@ mod tests {
         );
     }
 
+    // Plan 258 WP C receipt-gap tiebreak: simulates the reference
+    // endpoint's byte-level parse over OUR emitted cells (tunnel-layer
+    // inversion + zero-delimiter sync + record parse + fragment
+    // reassembly, the same shape as i2pd's
+    // `HandleDecryptedTunnelDataMsg`). The lane's 1,500-byte
+    // datagram nested must reassemble to the exact nested bytes
+    // with a Local first-fragment flag (0x08), proving the
+    // reference parses our emission exactly as emitted — any
+    // onward silence downstream of reassembly is reference-side
+    // dispatch dynamics, not our encoding.
+    #[test]
+    fn plan258_ibgw_emission_parses_as_local_at_reference_endpoint() {
+        use crate::data::TunnelMessageParser;
+        use crate::fragment::TunnelFragment;
+        use crate::layer::{TUNNEL_IV_LEN, TUNNEL_PAYLOAD_LEN};
+        let registered_peer = next_router(0x99);
+        let layer_keys = canonical_role_keys(0x22);
+        let role = TransitHopRole::InboundGateway {
+            next_router: next_router(0xBB),
+            next_tunnel: TunnelId::new(0x4000).expect("id"),
+            layer_keys: layer_keys.clone(),
+        };
+        let mut registration = TransitHopRegistration {
+            previous_peer: TunnelPeer::from_hash(registered_peer),
+            role,
+            expires_at_seconds: 1_000,
+            data_plane: TransitDataPlane::InboundGateway(TransitGatewayData::new()),
+        };
+        let gateway = ibgw_gateway_with_payload(1_500);
+        let nested = gateway
+            .message
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode nested");
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
+        let cells = registration
+            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .expect("gateway processing")
+            .expect("gateway accepted");
+        assert_eq!(cells.len(), 2);
+        let mut first_body: Option<Vec<u8>> = None;
+        let mut follow_bodies: Vec<(u8, Vec<u8>)> = Vec::new();
+        for (index, cell) in cells.iter().enumerate() {
+            let (iv, payload) = split_cell(&cell.cell);
+            assert_eq!(iv.len(), TUNNEL_IV_LEN);
+            assert_eq!(payload.len(), TUNNEL_PAYLOAD_LEN);
+            // Invert the participant layer exactly as the next hop
+            // decrypts it, recovering the tunnel-message plaintext.
+            let (plain_iv, plain_payload) =
+                crate::layer::TunnelLayerTransform::creator_inverse_one_hop(
+                    &layer_keys,
+                    &iv,
+                    &payload,
+                );
+            // Reference zero-delimiter sync: first zero at or after
+            // offset 4 (past the checksum); padding is nonzero.
+            let delimiter = plain_payload
+                .iter()
+                .skip(4)
+                .position(|byte| *byte == 0x00)
+                .expect("delimiter")
+                + 4;
+            let flag = plain_payload[delimiter + 1];
+            if index == 0 {
+                // First fragment: Local delivery (bits 5-6 clear),
+                // fragmented bit set — the exact byte the reference
+                // endpoint reads as `eDeliveryTypeLocal`.
+                assert_eq!(flag, 0x08, "first flag must encode Local+fragmented");
+            } else {
+                // Follow-on: high bit set, sequence 1, last bit set.
+                assert_eq!(flag, 0x80 | (1 << 1) | 0x01);
+            }
+            let records = TunnelMessageParser::new()
+                .parse(&plain_iv, &plain_payload)
+                .expect("reference-shaped parse");
+            assert_eq!(records.len(), 1);
+            match &records[0].fragment {
+                TunnelFragment::First { body, .. } => {
+                    assert!(first_body.is_none());
+                    first_body = Some(body.clone());
+                }
+                TunnelFragment::FollowOn {
+                    sequence,
+                    is_last,
+                    body,
+                    ..
+                } => {
+                    follow_bodies.push((*sequence, body.clone()));
+                    assert!(*is_last, "single follow-on must be last");
+                }
+                TunnelFragment::Unfragmented { .. } => panic!("expected fragmented records"),
+            }
+        }
+        // Reference reassembly order: first body plus follow-on
+        // bodies in sequence order must reproduce the nested bytes.
+        follow_bodies.sort_by_key(|(sequence, _)| *sequence);
+        let mut reassembled = first_body.expect("first fragment");
+        for (sequence, body) in &follow_bodies {
+            assert_eq!(*sequence, 1);
+            reassembled.extend_from_slice(body);
+        }
+        assert_eq!(reassembled, nested);
+    }
+
     #[test]
     fn plan258_ibgw_emission_single_cell_for_small_nested() {
         let registered_peer = next_router(0x99);

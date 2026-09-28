@@ -3,7 +3,9 @@
 Status at registration:
 **registered-m11-ibgw-receipt-topology-adjudication-diagnostic-ready**
 
-Baseline: `38c939a`
+Baseline: `38c939a` (production tree; the reference-endpoint parse
+simulation regression lands immediately after with test-only code,
+production-identical)
 
 Corrects:
 - plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md
