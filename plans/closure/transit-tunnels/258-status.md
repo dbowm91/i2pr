@@ -204,9 +204,13 @@ On `38c939a` (head): workspace check + clippy + fmt clean;
 1 ignored (the `#[ignore]`-gated external lane); both M11
 checkers green (148 guarded + 43 epoch + 13 diagnostic keys).
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): NOT YET RUN on
-the Plan 258 line — owned by the closing plan (Plan 259 or the
-post-259 WP D execution), same as the Plan 257 precedent.
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on the
+closure line — Actions run `36461901007` on head `51bd472`
+(Quality ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+Dependency policy: all success). The run covers the complete
+Plan 258 implementation plus the closure record itself; the only
+delta past the `38c939a` diagnostic head is test-only. Plan 259
+still requires green on its own closing head per its §6.
 
 External executions (all fail-closed, sanitized, unmerged; raw
 reference logs read for diagnosis only, never as evidence):
