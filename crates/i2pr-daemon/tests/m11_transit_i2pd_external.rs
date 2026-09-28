@@ -1363,6 +1363,31 @@ struct GatewayDropDiagCounts {
     dropped_nested_multi: usize,
 }
 
+/// Plan 258 per-ingress drop label: `(scope, size class)` where
+/// scope binds the addressed id to the accepted registration set
+/// and class flows through the shared production threshold.
+/// Sanitized routing facts only (id + labels, no payload).
+fn gateway_drop_diag_label(
+    obs: &Observation,
+    accepted_gateways: &[u32],
+) -> (&'static str, &'static str) {
+    let scope = if accepted_gateways.contains(&obs.receive_tunnel) {
+        "accepted"
+    } else {
+        "stale"
+    };
+    let class = if obs
+        .nested_len
+        .map(i2pr_tunnel::gateway_nested_is_multicell_capable)
+        .unwrap_or(false)
+    {
+        "multi"
+    } else {
+        "single"
+    };
+    (scope, class)
+}
+
 /// Plan 258 drop-side fold: binds each drop to the accepted
 /// registration set (accepted-id drops indicate an owner-side
 /// disposition worth dissecting; stale-id drops indicate the
@@ -2568,6 +2593,42 @@ fn plan258_drop_fold_separates_stale_from_accepted() {
     assert_eq!(counts.dropped_accepted_id, 1);
     assert_eq!(counts.dropped_stale_id, 2);
     assert_eq!(counts.dropped_nested_multi, 1);
+}
+
+// Plan 258 per-ingress drop labels bind the addressed id to the
+// accepted set and classify the nested size: stale relays vs
+// accepted-id drops separate without the external lane.
+#[test]
+fn plan258_drop_label_separates_scope_and_class() {
+    let mut ledger = TypedLedger::default();
+    for (tunnel_id, nested_len) in [(0x9201_u32, 500_usize), (0x9999, 1_900)] {
+        let outcome = LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+            tunnel_id,
+            nested_len,
+        });
+        record_data_outcome(
+            &mut ledger,
+            Epoch::IbgwData,
+            synthetic_peer(0x71),
+            "plan258drop",
+            &outcome,
+            1,
+            b"",
+            1_700_000_002_000,
+        );
+    }
+    let dropped: Vec<&Observation> = ledger
+        .of_epoch(Epoch::IbgwData)
+        .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
+        .collect();
+    assert_eq!(dropped.len(), 2);
+    let accepted = [0x9201_u32];
+    let labels: Vec<(&str, &str)> = dropped
+        .iter()
+        .map(|obs| gateway_drop_diag_label(obs, &accepted))
+        .collect();
+    assert!(labels.contains(&("accepted", "single")));
+    assert!(labels.contains(&("stale", "multi")));
 }
 
 // ---------------------------------------------------------------------------
@@ -4663,6 +4724,22 @@ async fn run_qualification() -> Result<(), String> {
                 .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
                 .collect();
             let drop_diag = gateway_drop_diag_counts(&dropped, &accepted_gateways);
+            // Per-ingress drop rows (diagnostic-only): addressed
+            // id + scope + size class. Sanitized routing facts;
+            // never an input to any pass predicate.
+            for obs in &dropped {
+                let (scope, class) = gateway_drop_diag_label(obs, &accepted_gateways);
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "gateway-diag-drop",
+                    &format!(
+                        "{receive:#010x}-{scope}-{class}",
+                        receive = obs.receive_tunnel
+                    ),
+                    &mut rows,
+                );
+            }
             for (key, value) in [
                 ("gateway-diag-dropped", drop_diag.dropped),
                 (

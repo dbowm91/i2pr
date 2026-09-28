@@ -612,6 +612,9 @@ fi
 if ! grep -qF 'fn gateway_drop_diag_counts' "${DRIVER}"; then
   fail "driver must fold the drop-side diagnostic distribution (gateway_drop_diag_counts)"
 fi
+if ! grep -qF 'fn gateway_drop_diag_label' "${DRIVER}"; then
+  fail "driver must label per-ingress drops by scope + size class (gateway_drop_diag_label)"
+fi
 if ! grep -qF 'Dropped {' "${DRIVER}"; then
   fail "driver GatewayDropped arm must record the addressed id + nested size (Dropped { .. })"
 fi
@@ -634,6 +637,7 @@ DIAG_KEYS=(
   "gateway-diag-dropped-accepted-id"
   "gateway-diag-dropped-stale-id"
   "gateway-diag-dropped-nested-multi"
+  "gateway-diag-drop"
 )
 for key in "${DIAG_KEYS[@]}"; do
   if ! grep -qF "\"${key}\"" "${DRIVER}"; then
