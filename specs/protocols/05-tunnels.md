@@ -335,18 +335,33 @@ and reassembled foreign garlics are never routed onward here. Our
 emission is byte-proven correct against the reference parse rules;
 no row was weakened and no retry tuning applied.
 
-Plan 259 is registered ready as the receipt-topology adjudication
-diagnostic. It inventories the B-endpoint dispatch silence against
-pinned source, surveys lane topologies for A-ending chains across
-retained evidence, then forks: exhibit a closing topology and
-replan the two-pass WP D, or record the receipt-row premise
-revision. No gate redefinition, no delivery-type deviation, no
-lane forcing to go green.
+Plan 259 is retained with the Fork 2 adjudication. WP A
+source-locked the transit-endpoint dispatch against pinned
+source: reassembled foreign-destined Local garlics reach only
+the router-context garlic handler (tag-table lookup, then
+Noise_N decrypt with the router's own key — a
+destination-addressed garlic fails the key domain, and success
+would execute cloves locally), while the pool-owned
+local-destination delivery arm is structurally unreachable
+from pool-less transit endpoints. WP B tabulated all nine
+datagram-carrying IBGW chains across the seven retained Plan
+257/258 runs (8 B-ending, 1 A-ending; 99 emissions, 0
+receipts, 0 forward failures). Fork 1 is refuted — the
+exhibited A-ending chain does not close and no lane-buildable
+chain could — so the receipt-row premise is revised: receipt
+is an OBEP property, and the IBGW lane's terminal rows are
+ingress + multicell-bounded emission + byte-exact
+conformance. No WP D replan; constant-msgid hardening
+deferred; no row weakened, no delivery-type deviation, no
+lane forcing.
 
-M11 remains non-advertised. Only a passed two-pass lane closure
-(owned by the Plan 259 fork outcome) may satisfy the ADR 0026
-one-family experimental progression gate; full two-family router
-conformance/public transit advertisement remain separate.
+M11 remains non-advertised with the restated claim:
+experimental one-family transit emission plus the retained
+OBEP receipt direction. Full receipt-capable transit
+qualification is unclaimed (the IBGW receipt row is retired
+as unexhibitable); M12 floodfill stays deferred. Full
+two-family router conformance/public transit advertisement
+remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
 

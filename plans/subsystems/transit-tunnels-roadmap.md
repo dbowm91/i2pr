@@ -81,7 +81,7 @@ advertises public transit support.
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
 ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
 post-closure audit. Repeated Plan 255 hosted dispatches
-do not count until the evidence/topology defects are corrected. Plan 259 is the next executable authority; it adjudicates the receipt-topology boundary before any WP D replan.
+do not count until the evidence/topology defects are corrected. Plan 259 closed retained with the Fork 2 adjudication; there is no next executable M11 plan — the IBGW receipt row is retired as unexhibitable, and M12 stays deferred.
 
 ## 5. Target architecture
 
@@ -161,7 +161,7 @@ retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
 its post-closure defects recorded. Plan 256 is retained, Plan 257 is retained with its
 reply/state/evidence repairs locally proven but externally stopped at the IBGW multicell
-boundary, Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded, and Plan 259 is registered ready as the next executable M11 plan.
+boundary, Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded, and Plan 259 is retained with the Fork 2 adjudication (receipt is an OBEP property; IBGW terminal rows are ingress + multicell-bounded emission + byte-exact conformance; M11 restated as experimental one-family emission, non-advertised).
 
 ## 7. Milestones
 
@@ -177,7 +177,7 @@ boundary, Plan 258 is retained with the emission correction proven and the recei
 | 256 | retained | retained-m11-i2pd-qualification-evidence-topology-corrective-required-via-plan257 | plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md | plans/closure/transit-tunnels/256-status.md |
 | 257 | retained | retained-m11-production-self-reply-and-external-evidence-completion-corrective-required-via-plan258 | plans/implementation/transit-tunnels/257-m11-production-self-reply-and-external-evidence-completion-corrective.md | plans/closure/transit-tunnels/257-status.md |
 | 258 | retained | retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259 | plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md | plans/closure/transit-tunnels/258-status.md |
-| 259 | ready | registered-m11-ibgw-receipt-topology-adjudication-diagnostic-ready | plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md | plans/closure/transit-tunnels/259-status.md |
+| 259 | retained | retained-m11-ibgw-receipt-premise-adjudicated-fork2-obep-owns-receipt | plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md | plans/closure/transit-tunnels/259-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -308,12 +308,24 @@ recorded [i2pr→B-endpoint] topology boundary, owned by Plan 259.
 
 ### Plan 259 — IBGW receipt-topology adjudication diagnostic
 
-Plan 259 is the current executable authority. It inventories the
-B-endpoint dispatch silence against pinned source, surveys lane
-topologies for A-ending chains across retained evidence, then
-forks: exhibit a closing topology and replan WP D, or record the
-receipt-row premise revision. No row weakening, no delivery-type
-deviation, no lane forcing, no public transit.
+Plan 259 is closed retained with the Fork 2 adjudication. WP A
+source-locked the transit-endpoint dispatch (reassembled
+foreign garlics reach only the router-context handler —
+wrong key domain, no destination sessions consulted — while
+the pool-owned delivery arm is structurally unreachable from
+transit endpoints). WP B tabulated all nine datagram-carrying
+IBGW chains across seven retained runs (8 B-ending, 1
+A-ending; 99 emissions, 0 receipts, 0 forward failures). Fork
+1 is refuted: the exhibited A-ending chain does not close,
+and no lane-buildable chain could. The receipt-row premise is
+revised (receipt is an OBEP property; the IBGW lane's
+terminal rows are ingress + multicell-bounded emission +
+byte-exact conformance), the M11 claim is restated to
+experimental one-family emission (non-advertised), WP D
+hardening (constant fragment message-id) is deferred to the
+next emission-touching plan, and M12 floodfill stays
+deferred. No row weakened, no delivery-type deviation, no
+lane forcing, no public transit.
 
 ## 10. Risks and decision points
 
