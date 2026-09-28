@@ -312,9 +312,13 @@ code changed by this plan — WP A/B/C are reading-only):
 - Plan 258 emission/telemetry/checker rows re-verified
   green as part of the workspace run (no suppression).
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): pending
-at write time on the closing head; recorded in a
-follow-up commit per the Plan 258 (`7f28ffe`) precedent.
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on
+the closing line — Actions run `36470821009` on head
+`a175a4f` (Quality ubuntu-latest, Quality macos-latest,
+MSRV Ubuntu, Dependency policy: all success). The run
+covers the closure record plus all planning/spec updates;
+the production tree is unchanged since `51bd472` (whose
+run `36461901007` was likewise green).
 Note: the Plan 258 line's hosted CI (run `36461901007`,
 all four jobs green on `51bd472`) already covers the
 production tree this plan retains unchanged.
