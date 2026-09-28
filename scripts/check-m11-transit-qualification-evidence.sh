@@ -631,6 +631,22 @@ MULTI_BODY="$(grep -n -A 4 'fn gateway_multicell_satisfied' "${DRIVER}" || true)
 if printf '%s\n' "${MULTI_BODY}" | grep -q 'gateway-diag\|GatewayDiagCounts'; then
   fail "multicell pass predicate must not read diagnostic keys (diagnostic-only)"
 fi
+# ---- Plan 258 WP C (H3-production): the IBGW emission path must
+# route every nested batch through the canonical
+# fragment_complete_message + build_cells path. A single-cell
+# fast-path branch on the complete-message ceiling reintroduces
+# the H3 defect (batches in (976, 61440] bytes dropped as
+# MessageTooLarge instead of fragmented).
+GATEWAY_FN="$(awk '/pub fn process_tunnel_gateway/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if ! printf '%s\n' "${GATEWAY_FN}" | grep -q 'fragment_complete_message'; then
+  fail "IBGW emission path must fragment through fragment_complete_message"
+fi
+if printf '%s\n' "${GATEWAY_FN}" | grep -q 'build_single'; then
+  fail "IBGW emission path must not use the single-cell build_single branch"
+fi
+if grep -vE '^[[:space:]]*(//|//!|///)' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" | grep -q 'MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES'; then
+  fail "transit must not keep the misleading 61,440-byte duplicate threshold"
+fi
 
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then

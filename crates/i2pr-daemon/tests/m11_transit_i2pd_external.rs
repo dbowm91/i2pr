@@ -2403,24 +2403,17 @@ fn plan258_gateway_observation_zero_failures_is_explicit() {
 // threshold; a missing length folds single-cell (fail closed).
 #[test]
 fn plan258_nested_size_class_distinguishes_single_from_multi() {
-    let single = gateway_observation(0x9201, 1, 0, 1_500);
-    let at_ceiling = gateway_observation(
-        0x9201,
-        1,
-        0,
-        i2pr_tunnel::transit::MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES,
-    );
-    let above_ceiling = gateway_observation(
-        0x9201,
-        1,
-        0,
-        i2pr_tunnel::transit::MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES + 1,
-    );
-    let refs: Vec<&Observation> = vec![&single, &at_ceiling, &above_ceiling];
+    let small = gateway_observation(0x9201, 1, 0, 500);
+    let at_ceiling = gateway_observation(0x9201, 1, 0, i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES);
+    let above_ceiling = gateway_observation(0x9201, 2, 0, i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES + 1);
+    // The lane's 1,500-byte datagram nested is multi-cell-capable
+    // under the corrected emission boundary (two fragments).
+    let datagram = gateway_observation(0x9201, 2, 0, 1_500);
+    let refs: Vec<&Observation> = vec![&small, &at_ceiling, &above_ceiling, &datagram];
     let counts = gateway_diag_counts(&refs);
-    assert_eq!(counts.ingress, 3);
+    assert_eq!(counts.ingress, 4);
     assert_eq!(counts.nested_single, 2);
-    assert_eq!(counts.nested_multi, 1);
+    assert_eq!(counts.nested_multi, 2);
 }
 
 // Plan 258 §5 row 6: the multicell gate still rejects

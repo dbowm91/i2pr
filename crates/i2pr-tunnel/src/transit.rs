@@ -53,7 +53,7 @@ use i2pr_proto::{
     Hash, SHORT_BUILD_RECORD_SIZE, SHORT_REPLY_PLAINTEXT_SIZE, TunnelDataMessage,
     TunnelGatewayMessage,
 };
-use rand_core::{CryptoRng, RngCore, TryCryptoRng, TryRngCore};
+use rand_core::{CryptoRng, RngCore, TryCryptoRng};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -1259,9 +1259,18 @@ impl TransitHopRegistration {
         // The IBGW canonical path accepts the standard I2NP
         // message the gateway carries, applies the first
         // participant layer, and emits one or more next-hop
-        // TunnelData cells. Use the canonical TunnelMessageBuilder
-        // API: build_single for the single-cell case, build_cells
-        // for the fragmented case.
+        // TunnelData cells. Plan 258 corrective: every nested
+        // message routes through the canonical
+        // `fragment_complete_message` + `build_cells` path (the
+        // same shape as `OutboundEndpointRole::fragment`) — small
+        // batches yield one unfragmented record (one cell), large
+        // batches yield 2+ cells. The previous
+        // single-cell/fast-path branch compared against the
+        // 61,440-byte complete-message ceiling but called
+        // `build_single`, whose per-cell capacity is 976 bytes, so
+        // every nested batch in (976, 61_440] bytes failed closed
+        // as `MessageTooLarge` and never emitted (H3 production
+        // defect: the lane's ~1.5 KB datagram batches died here).
         let inner_bytes = gateway
             .message
             .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
@@ -1273,22 +1282,6 @@ impl TransitHopRegistration {
             message_id: 1,
             expiration_ms: 0,
         };
-        if inner_bytes.len() <= MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES {
-            let mut iv = [0_u8; TUNNEL_IV_LEN];
-            rng.try_fill_bytes(&mut iv)
-                .map_err(|_| TransitDataFatalError::RandomnessUnavailable)?;
-            let plaintext = TunnelMessageBuilder::new()
-                .build_single(&header, &inner_bytes, iv, rng)
-                .map_err(|error| TransitDataFatalError::TunnelMessage(format!("{error:?}")))?;
-            let (next_iv, next_payload) =
-                TunnelLayerTransform::participant_forward(layer_keys, &iv, &plaintext);
-            let cell = next_cell_from_transform(next_tunnel, next_iv, next_payload);
-            return Ok(Some(vec![TransitGatewayForward {
-                next_router,
-                next_tunnel,
-                cell,
-            }]));
-        }
         let fragments = TunnelMessageBuilder::fragment_complete_message(
             &header.delivery,
             header.message_id,
@@ -1472,22 +1465,21 @@ fn cell_split_payload(cell: &TunnelDataMessage) -> [u8; TUNNEL_PAYLOAD_LEN] {
     out
 }
 
-/// Hard cap on the bytes the IBGW extracts from a TunnelGateway
-/// nested envelope. The value matches the canonical I2P
-/// `MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES` ceiling.
-pub const MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES: usize = 61_440;
-
 /// Plan 258 failure telemetry: classifies one IBGW nested-message
-/// length with the exact threshold `process_tunnel_gateway` uses to
-/// choose single-cell emission versus fragmentation. Returns `true`
-/// when the nested message is multi-cell-capable (the emission path
-/// must fragment), `false` for single-cell nested batches. The
-/// classifier shares the threshold (no duplication) so lane evidence
-/// can distinguish "reference only sent single-cell batches" (H1)
-/// from "multi-cell-capable batches emitted single-cell" (H3).
+/// length with the exact per-cell capacity the canonical
+/// `fragment_complete_message` + `build_cells` emission path
+/// enforces. Returns `true` when the nested message is
+/// multi-cell-capable (the emission path fragments into 2+
+/// cells), `false` for single-cell nested batches. The classifier
+/// shares [`crate::data::MAX_FRAGMENT_BODY_BYTES`] (no
+/// duplication) so lane evidence reads the true emission
+/// boundary: the previous 61,440-byte complete-message ceiling
+/// duplicated under this module's old `MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES`
+/// name was the H3 defect's threshold half (removed with the
+/// single-cell fast-path branch it guarded).
 /// Counts/sizes only; no payload inspection.
 pub const fn gateway_nested_is_multicell_capable(nested_len: usize) -> bool {
-    nested_len > MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES
+    nested_len > crate::data::MAX_FRAGMENT_BODY_BYTES
 }
 
 /// Failure modes for [`TransitRegistry`].
@@ -2762,24 +2754,27 @@ mod tests {
     use rand_core::{RngCore, SeedableRng};
 
     // Plan 258 §5.2: the nested size classifier shares the exact
-    // emission threshold — single-cell at/below the ceiling,
-    // multi-cell-capable strictly above it.
+    // per-cell emission boundary — single-cell at/below
+    // `MAX_FRAGMENT_BODY_BYTES`, multi-cell-capable strictly
+    // above it. The lane's 1,500-byte datagram batches are
+    // multi-cell-capable (two fragments), which is why the old
+    // 61,440-byte threshold misclassified them as single-cell.
     #[test]
     fn plan258_nested_size_class_single_cell_at_ceiling() {
         assert!(!gateway_nested_is_multicell_capable(0));
-        assert!(!gateway_nested_is_multicell_capable(1_500));
         assert!(!gateway_nested_is_multicell_capable(
-            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES
+            crate::data::MAX_FRAGMENT_BODY_BYTES
         ));
     }
 
     #[test]
     fn plan258_nested_size_class_multi_cell_above_ceiling() {
+        assert!(gateway_nested_is_multicell_capable(1_500));
         assert!(gateway_nested_is_multicell_capable(
-            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES + 1
+            crate::data::MAX_FRAGMENT_BODY_BYTES + 1
         ));
         assert!(gateway_nested_is_multicell_capable(
-            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES * 2
+            crate::data::MAX_FRAGMENT_BODY_BYTES * 2
         ));
     }
 
@@ -5656,6 +5651,109 @@ mod tests {
         // runs without panic and produces a single forward.
         let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
         let _ = registration.process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng);
+    }
+
+    fn canonical_ibgw_registration(
+        registered_peer: Hash,
+        next_router_hash: Hash,
+        next_tunnel_id: u32,
+    ) -> TransitHopRegistration {
+        let role = TransitHopRole::InboundGateway {
+            next_router: next_router_hash,
+            next_tunnel: TunnelId::new(next_tunnel_id).expect("id"),
+            layer_keys: canonical_role_keys(0x22),
+        };
+        let data_plane = data_plane_for_role(&role, 60_000);
+        TransitHopRegistration {
+            previous_peer: TunnelPeer::from_hash(registered_peer),
+            role,
+            expires_at_seconds: 1_000,
+            data_plane,
+        }
+    }
+
+    fn ibgw_gateway_with_payload(payload_len: usize) -> TunnelGatewayMessage {
+        let payload: Vec<u8> = (0..payload_len as u32)
+            .map(|value| (value & 0xFF) as u8)
+            .collect();
+        let inner = i2pr_proto::I2npMessage::new_standard(
+            0x1234_5678,
+            i2pr_proto::Date::from_millis(60_000),
+            i2pr_proto::I2npBody::Data(i2pr_proto::OpaqueMessageBody {
+                payload: i2pr_proto::DeferredPayload::new(
+                    payload,
+                    i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+                )
+                .expect("payload size"),
+            }),
+        )
+        .expect("inner");
+        TunnelGatewayMessage {
+            tunnel_id: 0x3000,
+            message: Box::new(inner),
+        }
+    }
+
+    // Plan 258 WP C (H3-production): the corrected emission path
+    // fragments every nested batch above the per-cell capacity. A
+    // 62,000-byte nested message emits 2+ next-hop cells; the
+    // lane's 1,500-byte datagram size emits exactly two fragments
+    // (the shape the old fast-path branch dropped as
+    // `MessageTooLarge`); a 500-byte batch emits exactly one cell.
+    #[test]
+    fn plan258_ibgw_emission_fragments_multi_cell_capable_nested() {
+        let registered_peer = next_router(0x99);
+        let mut registration =
+            canonical_ibgw_registration(registered_peer, next_router(0xBB), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
+        let gateway = ibgw_gateway_with_payload(62_000);
+        let nested_len = gateway
+            .message
+            .encode_standard_to_vec(i2pr_proto::MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode nested")
+            .len();
+        assert!(gateway_nested_is_multicell_capable(nested_len));
+        let cells = registration
+            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .expect("gateway processing")
+            .expect("gateway accepted");
+        assert!(
+            cells.len() >= 2,
+            "multi-cell-capable nested must emit 2+ cells, emitted {}",
+            cells.len()
+        );
+    }
+
+    #[test]
+    fn plan258_ibgw_emission_fragments_datagram_sized_nested() {
+        let registered_peer = next_router(0x99);
+        let mut registration =
+            canonical_ibgw_registration(registered_peer, next_router(0xBB), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
+        let gateway = ibgw_gateway_with_payload(1_500);
+        let cells = registration
+            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .expect("gateway processing")
+            .expect("gateway accepted");
+        assert_eq!(
+            cells.len(),
+            2,
+            "the lane's 1,500-byte datagram nested must emit two fragments"
+        );
+    }
+
+    #[test]
+    fn plan258_ibgw_emission_single_cell_for_small_nested() {
+        let registered_peer = next_router(0x99);
+        let mut registration =
+            canonical_ibgw_registration(registered_peer, next_router(0xBB), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
+        let gateway = ibgw_gateway_with_payload(500);
+        let cells = registration
+            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .expect("gateway processing")
+            .expect("gateway accepted");
+        assert_eq!(cells.len(), 1);
     }
 
     /// 18. Role-mismatched inputs fail closed. An OBEP registration
