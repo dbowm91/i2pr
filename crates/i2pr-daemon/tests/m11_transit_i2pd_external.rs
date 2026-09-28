@@ -1352,6 +1352,46 @@ fn gateway_multicell_satisfied(gatewayed: &[&Observation]) -> bool {
     gatewayed.iter().any(|obs| obs.aux_count >= 2)
 }
 
+/// Plan 258 drop-side diagnostic distribution over one epoch's
+/// gateway-drop observations (any addressed id). Sanitized counts
+/// only; never an input to any pass gate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GatewayDropDiagCounts {
+    dropped: usize,
+    dropped_accepted_id: usize,
+    dropped_stale_id: usize,
+    dropped_nested_multi: usize,
+}
+
+/// Plan 258 drop-side fold: binds each drop to the accepted
+/// registration set (accepted-id drops indicate an owner-side
+/// disposition worth dissecting; stale-id drops indicate the
+/// relay holds an older LeaseSet) and classifies the nested size
+/// through the shared production threshold (datagram-sized drops
+/// prove the relay path is live for the multicell stimulus).
+fn gateway_drop_diag_counts(
+    dropped: &[&Observation],
+    accepted_gateways: &[u32],
+) -> GatewayDropDiagCounts {
+    let mut counts = GatewayDropDiagCounts::default();
+    for obs in dropped {
+        counts.dropped += 1;
+        if accepted_gateways.contains(&obs.receive_tunnel) {
+            counts.dropped_accepted_id += 1;
+        } else {
+            counts.dropped_stale_id += 1;
+        }
+        if obs
+            .nested_len
+            .map(i2pr_tunnel::gateway_nested_is_multicell_capable)
+            .unwrap_or(false)
+        {
+            counts.dropped_nested_multi += 1;
+        }
+    }
+    counts
+}
+
 /// Plan 258 diagnostic fold: nested size class via the shared
 /// production threshold (`gateway_nested_is_multicell_capable`),
 /// emission via `aux_count`, failures via the failure dimension.
@@ -2463,6 +2503,71 @@ fn plan258_diag_counts_fold_failures_and_emission() {
     assert_eq!(counts.emitted_max, 4);
     assert_eq!(counts.failures_total, 3);
     assert_eq!(counts.failed_ingress, 1);
+}
+
+// Plan 258 §5 row 1 (drop side): a dropped gateway ingress
+// records the ADDRESSED id (accepted or stale) plus the nested
+// size fact; the failure dimension stays absent (no forward was
+// attempted).
+#[test]
+fn plan258_drop_observation_records_addressed_id_and_size() {
+    let mut ledger = TypedLedger::default();
+    let outcome = LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+        tunnel_id: 0x9999,
+        nested_len: 1_900,
+    });
+    record_data_outcome(
+        &mut ledger,
+        Epoch::IbgwData,
+        synthetic_peer(0x71),
+        "plan258drop",
+        &outcome,
+        1,
+        b"",
+        1_700_000_002_000,
+    );
+    let obs = ledger
+        .of_epoch(Epoch::IbgwData)
+        .find(|obs| obs.kind == ObservedKind::GatewayDropped)
+        .expect("drop observation recorded");
+    assert_eq!(obs.receive_tunnel, 0x9999);
+    assert_eq!(obs.nested_len, Some(1_900));
+    assert_eq!(obs.gateway_failures, None);
+    // Drops never satisfy the acceptance filter, even when they
+    // address an accepted id.
+    assert!(!gateway_ingress_accepted(obs, &[0x9999]));
+}
+
+// Plan 258 drop-side fold: stale-id vs accepted-id drops separate,
+// and datagram-sized drops are visible even when nothing delivers.
+#[test]
+fn plan258_drop_fold_separates_stale_from_accepted() {
+    let mut ledger = TypedLedger::default();
+    for (tunnel_id, nested_len) in [(0x9201_u32, 500_usize), (0x9999, 1_900), (0x9998, 300)] {
+        let outcome = LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+            tunnel_id,
+            nested_len,
+        });
+        record_data_outcome(
+            &mut ledger,
+            Epoch::IbgwData,
+            synthetic_peer(0x71),
+            "plan258drop",
+            &outcome,
+            1,
+            b"",
+            1_700_000_002_000,
+        );
+    }
+    let dropped: Vec<&Observation> = ledger
+        .of_epoch(Epoch::IbgwData)
+        .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
+        .collect();
+    let counts = gateway_drop_diag_counts(&dropped, &[0x9201]);
+    assert_eq!(counts.dropped, 3);
+    assert_eq!(counts.dropped_accepted_id, 1);
+    assert_eq!(counts.dropped_stale_id, 2);
+    assert_eq!(counts.dropped_nested_multi, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -4547,6 +4652,37 @@ async fn run_qualification() -> Result<(), String> {
                     &mut rows,
                 );
             }
+            // Plan 258 drop-side diagnostic rows: every gateway
+            // ingress that did not deliver, folded by addressed id
+            // (accepted vs stale) and nested size class. Recorded
+            // before the gates alongside the delivered fold so a
+            // failing lane still classifies the relay path;
+            // diagnostic-only keys never feed any pass predicate.
+            let dropped: Vec<&Observation> = ledger
+                .of_epoch(Epoch::IbgwData)
+                .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
+                .collect();
+            let drop_diag = gateway_drop_diag_counts(&dropped, &accepted_gateways);
+            for (key, value) in [
+                ("gateway-diag-dropped", drop_diag.dropped),
+                (
+                    "gateway-diag-dropped-accepted-id",
+                    drop_diag.dropped_accepted_id,
+                ),
+                ("gateway-diag-dropped-stale-id", drop_diag.dropped_stale_id),
+                (
+                    "gateway-diag-dropped-nested-multi",
+                    drop_diag.dropped_nested_multi,
+                ),
+            ] {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    key,
+                    &value.to_string(),
+                    &mut rows,
+                );
+            }
             // Recorded before the gates so failures still show
             // whether anything reached the receiver socket (e.g. a
             // B-gatewayed delivery that bypassed our IBGW id).
@@ -6068,6 +6204,23 @@ fn record_data_outcome(
                 // multicell emission (H1/H2/H3).
                 receive_tunnel: *receive_tunnel,
                 gateway_failures: Some(*failures),
+                nested_len: Some(*nested_len),
+                ..base
+            });
+        }
+        LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+            tunnel_id,
+            nested_len,
+        }) => {
+            ledger.push(Observation {
+                kind: ObservedKind::GatewayDropped,
+                // The ADDRESSED id (accepted or stale) plus the
+                // nested size fact. Drops never satisfy pass rows
+                // (the acceptance filter reads Delivered only);
+                // the drop-side diagnostic fold below separates
+                // stale-id relays from accepted-id drops and
+                // datagram-sized batches from maintenance trickle.
+                receive_tunnel: *tunnel_id,
                 nested_len: Some(*nested_len),
                 ..base
             });

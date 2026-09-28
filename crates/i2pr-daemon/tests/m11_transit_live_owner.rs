@@ -893,7 +893,7 @@ fn plan254_f33_unknown_gateway_fails_closed() {
         .expect("handle");
     assert!(matches!(
         outcome,
-        LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped)
+        LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped { .. })
             | LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered { .. })
     ));
 }
@@ -967,10 +967,16 @@ fn plan254_f36_cancel_stops_gateway_delivery() {
     let outcome = owner
         .handle_inbound(&inbound_with(bytes), NOW_MS, NOW_SECONDS)
         .expect("handle");
-    assert_eq!(
-        outcome,
-        LiveInboundOutcome::Gateway(i2pr_daemon::transit_owner::LiveGatewayOutcome::Dropped)
-    );
+    match outcome {
+        LiveInboundOutcome::Gateway(i2pr_daemon::transit_owner::LiveGatewayOutcome::Dropped {
+            tunnel_id,
+            nested_len,
+        }) => {
+            assert_eq!(tunnel_id, 0x4321);
+            assert_eq!(nested_len, nested.len());
+        }
+        other => panic!("expected cancelled gateway drop, observed {other:?}"),
+    }
 }
 
 /// Plan 254 §G.39: owner cancellation drains state immediately.

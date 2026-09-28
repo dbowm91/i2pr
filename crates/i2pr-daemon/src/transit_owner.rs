@@ -426,8 +426,14 @@ pub enum LiveGatewayOutcome {
         nested_len: usize,
     },
     /// Unknown gateway tunnel id, wrong peer, non-IBGW role, or
-    /// expiry. Fail closed.
-    Dropped,
+    /// expiry. Fail closed. `tunnel_id` is the gateway tunnel id
+    /// the ingress ADDRESSED (accepted or not) and `nested_len`
+    /// the encoded nested length it carried (Plan 258 work
+    /// package A drop-side telemetry: distinguishes relays to
+    /// stale ids from drops at the accepted registration, and
+    /// datagram-sized batches from maintenance trickle — the
+    /// WP B attempt-1 evidence cannot tell them apart).
+    Dropped { tunnel_id: u32, nested_len: usize },
 }
 
 /// Typed outcome of one real inbound message through the production
@@ -997,7 +1003,10 @@ where
             return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Disabled));
         }
         if self.cancellation.is_cancelled() {
-            return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped));
+            return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+                tunnel_id: parts.tunnel_id,
+                nested_len: parts.nested.len(),
+            }));
         }
         let forwards = {
             let (owner, rng) = (&mut self.owner, &mut self.rng);
@@ -1009,7 +1018,10 @@ where
                 .unwrap_or_default()
         };
         let Some(forwards) = forwards else {
-            return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped));
+            return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+                tunnel_id: parts.tunnel_id,
+                nested_len: parts.nested.len(),
+            }));
         };
         // Deliver every emitted cell through the existing bounded
         // router seam. Partial multi-cell failure is explicit and

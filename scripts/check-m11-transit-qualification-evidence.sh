@@ -609,6 +609,15 @@ fi
 if ! grep -qF 'gateway_diag_counts(&gatewayed)' "${DRIVER}"; then
   fail "driver IBGW epoch must fold the diagnostic distribution over the accepted observations"
 fi
+if ! grep -qF 'fn gateway_drop_diag_counts' "${DRIVER}"; then
+  fail "driver must fold the drop-side diagnostic distribution (gateway_drop_diag_counts)"
+fi
+if ! grep -qF 'Dropped {' "${DRIVER}"; then
+  fail "driver GatewayDropped arm must record the addressed id + nested size (Dropped { .. })"
+fi
+if ! grep -qF 'tunnel_id: parts.tunnel_id' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs"; then
+  fail "production gateway drop must carry the addressed tunnel id"
+fi
 # Diagnostic-only keys: every key must be emitted, and the pass
 # predicate must not read them (gate reads only the multicell
 # predicate over accepted observations plus the socket receipt).
@@ -621,6 +630,10 @@ DIAG_KEYS=(
   "gateway-diag-emitted-max"
   "gateway-diag-failures-total"
   "gateway-diag-failed-ingress"
+  "gateway-diag-dropped"
+  "gateway-diag-dropped-accepted-id"
+  "gateway-diag-dropped-stale-id"
+  "gateway-diag-dropped-nested-multi"
 )
 for key in "${DIAG_KEYS[@]}"; do
   if ! grep -qF "\"${key}\"" "${DRIVER}"; then
