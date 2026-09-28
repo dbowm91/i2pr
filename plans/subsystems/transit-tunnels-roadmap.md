@@ -71,7 +71,7 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
   active reference NetDB before selection, the transit responder key is unrelated to the
   advertised RouterIdentity encryption key, and rejection/replay/expiry/cancel/restart are not
   real external experiments.
-- Plan 256 is retained after implementing the evidence/topology corrective but leaving production reply qualification and closure evidence incomplete. Plan 257 is retained with its reply/state/evidence repairs locally proven on 1784ff8 but stopped at the systematic IBGW multicell boundary (three same-SHA executions, identical single-cell-only signature, B-debug exonerated). Plan 258 is registered ready as the IBGW data-plane multicell diagnostic corrective. Ordinary product construction
+- Plan 256 is retained after implementing the evidence/topology corrective but leaving production reply qualification and closure evidence incomplete. Plan 257 is retained with its reply/state/evidence repairs locally proven on 1784ff8 but stopped at the systematic IBGW multicell boundary (three same-SHA executions, identical single-cell-only signature, B-debug exonerated). Plan 258 is retained with the H3 emission defect corrected and the multicell row passing externally on 38c939a but stopped at the receipt-topology boundary ([i2pr→B-endpoint] tunnels cannot deliver to rx@A; four Plan 258 executions, identical receipt silence). Plan 259 is registered ready as the receipt-topology adjudication diagnostic. Ordinary product construction
   remains transit-disabled; its SSU2 pump consults only the disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
@@ -80,8 +80,8 @@ advertises public transit support.
 
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
 ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
-post-closure audit. Plan 258 is the next executable authority; repeated Plan 255 hosted dispatches
-do not count until the evidence/topology defects are corrected.
+post-closure audit. Repeated Plan 255 hosted dispatches
+do not count until the evidence/topology defects are corrected. Plan 259 is the next executable authority; it adjudicates the receipt-topology boundary before any WP D replan.
 
 ## 5. Target architecture
 
@@ -161,7 +161,7 @@ retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
 its post-closure defects recorded. Plan 256 is retained, Plan 257 is retained with its
 reply/state/evidence repairs locally proven but externally stopped at the IBGW multicell
-boundary, and Plan 258 is registered ready as the next executable M11 plan.
+boundary, Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded, and Plan 259 is registered ready as the next executable M11 plan.
 
 ## 7. Milestones
 
@@ -176,7 +176,8 @@ boundary, and Plan 258 is registered ready as the next executable M11 plan.
 | 255 | retained | retained-m11-i2pd-qualification-infrastructure-evidence-topology-corrective-required-via-plan256 | plans/implementation/transit-tunnels/255-m11-exact-pinned-i2pd-transit-qualification.md | plans/closure/transit-tunnels/255-status.md |
 | 256 | retained | retained-m11-i2pd-qualification-evidence-topology-corrective-required-via-plan257 | plans/implementation/transit-tunnels/256-m11-i2pd-qualification-evidence-topology-corrective.md | plans/closure/transit-tunnels/256-status.md |
 | 257 | retained | retained-m11-production-self-reply-and-external-evidence-completion-corrective-required-via-plan258 | plans/implementation/transit-tunnels/257-m11-production-self-reply-and-external-evidence-completion-corrective.md | plans/closure/transit-tunnels/257-status.md |
-| 258 | ready | registered-m11-ibgw-data-plane-multicell-diagnostic-corrective-ready | plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md | plans/closure/transit-tunnels/258-status.md |
+| 258 | retained | retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259 | plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md | plans/closure/transit-tunnels/258-status.md |
+| 259 | ready | registered-m11-ibgw-receipt-topology-adjudication-diagnostic-ready | plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md | plans/closure/transit-tunnels/259-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -297,14 +298,22 @@ ADR 0026 one-family experimental gate.
 
 ### Plan 258 — IBGW data-plane multicell diagnostic corrective
 
-Plan 258 is the current executable authority. It owns the systematic IBGW
-multicell/receipt boundary: gateway failure/nested-size telemetry, one
-non-counted H1/H2/H3 classification run, the narrow correction with
-regressions (emission-side, delivery-side, or production reassembly — or a
-recorded stop if redesign is required), and then two complete
-fresh-datadir same-SHA external passes carrying the unexecuted Plan 257
-rows to green with exact-head CI green. No gate redefinition, no
-retry-tuning to go green, no public transit.
+Plan 258 is retained. It delivered the gateway failure/nested-size
+telemetry, classified H1/H2/H3 across four non-counted diagnostics
+(H2 excluded, H3 confirmed), and landed the narrow production
+emission correction (fragment-for-all-sizes path mirroring the
+reference IBGW) with regressions and checker guards — the
+multicell row passes externally on 38c939a. Receipt stops on the
+recorded [i2pr→B-endpoint] topology boundary, owned by Plan 259.
+
+### Plan 259 — IBGW receipt-topology adjudication diagnostic
+
+Plan 259 is the current executable authority. It inventories the
+B-endpoint dispatch silence against pinned source, surveys lane
+topologies for A-ending chains across retained evidence, then
+forks: exhibit a closing topology and replan WP D, or record the
+receipt-row premise revision. No row weakening, no delivery-type
+deviation, no lane forcing, no public transit.
 
 ## 10. Risks and decision points
 
@@ -332,5 +341,5 @@ Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed
 ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
 retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
 live-owner corrective completed by passed Plan 254. Plan 255 qualification scaffolding is
-retained after post-closure evidence/topology audit. Plan 256 is retained after implementation review; Plan 257 is retained with reply/state/evidence repairs locally proven but stopped at the systematic IBGW multicell boundary; Plan 258 is registered ready as the diagnostic corrective authority. M12 floodfill remains deferred until two complete
+retained after post-closure evidence/topology audit. Plan 256 is retained after implementation review; Plan 257 is retained with reply/state/evidence repairs locally proven but stopped at the systematic IBGW multicell boundary; Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded; Plan 259 is registered ready as the adjudication authority. M12 floodfill remains deferred until two complete
 same-SHA exact-pinned i2pd passes close the lane.

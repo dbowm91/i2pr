@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-258
+### Current M11 qualification authority — Plans 254-259
 
 Plan 254 is closed
 (`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
@@ -319,17 +319,34 @@ role-tier bandwidth, far-side, replay/expiry, full-drain cancel, session
 close, real restart) never execute because the driver aborts fail-closed
 at the multicell gate.
 
-Plan 258 is registered ready as the IBGW data-plane multicell diagnostic
-corrective. It adds gateway failure/nested-size telemetry, classifies the
-emission/delivery/production hypotheses in one non-counted diagnostic,
-lands the narrow fix with regressions, and then requires two complete
-fresh-datadir same-SHA external passes carrying the unexecuted Plan 257
-rows to green. No gate redefinition and no retry-tuning to go green.
+Plan 258 is retained with its H3-production emission correction locally
+proven and externally demonstrated on 38c939a: the old single-cell
+fast-path branch compared nested length against the 61,440-byte
+complete-message ceiling but called `build_single` (per-cell capacity
+976 bytes), dropping every datagram-sized batch; the corrected path
+routes all sizes through canonical fragmentation, mirroring the
+reference IBGW field for field. Three datagram relays each emit
+exactly 2 cells with zero forward failures (`multicell-bounded:
+true`), and the reference endpoint reassembles the garlics — but no
+payload reaches the receiver socket in any of the four Plan 258
+executions. The residual boundary is topological: our IBGW
+registration chains to B-as-endpoint while the receiver lives on A,
+and reassembled foreign garlics are never routed onward here. Our
+emission is byte-proven correct against the reference parse rules;
+no row was weakened and no retry tuning applied.
 
-M11 remains non-advertised. Only a passed two-pass lane closure (owned by
-Plan 258) may satisfy the ADR 0026 one-family experimental progression
-gate; full two-family router conformance/public transit advertisement
-remain separate.
+Plan 259 is registered ready as the receipt-topology adjudication
+diagnostic. It inventories the B-endpoint dispatch silence against
+pinned source, surveys lane topologies for A-ending chains across
+retained evidence, then forks: exhibit a closing topology and
+replan the two-pass WP D, or record the receipt-row premise
+revision. No gate redefinition, no delivery-type deviation, no
+lane forcing to go green.
+
+M11 remains non-advertised. Only a passed two-pass lane closure
+(owned by the Plan 259 fork outcome) may satisfy the ADR 0026
+one-family experimental progression gate; full two-family router
+conformance/public transit advertisement remain separate.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
