@@ -39,15 +39,17 @@ Exact-pinned i2pd Plan 193 satisfies M6 experimental mixed-router progression. T
 full-router lane remains compatibility debt at Plan 247. Full two-family M6 router
 conformance remains not claimed.
 
-Plan 255's exact-pinned i2pd M11 qualification scaffold is retained after post-closure source
-audit found that its external evidence/topology cannot establish the claimed role/data-plane
-matrix. Plan 256 is registered as the corrective authority: counted evidence must use the
-RouterIdentity's actual tunnel-build X25519 static key, prove the active reference NetDB loaded
-the genuine signed RI before peer selection, run separate typed OBEP/IBGW/Participant epochs
-with a real second reference for Participant, and execute real rejection/replay/expiry/cancel/
-restart experiments. Two complete same-SHA exact-pinned i2pd passes remain required. M11
-capability remains unclaimed and `advertised=false`. Public transit, RouterInfo capability,
-router.version, public-network participation, and Java-router compatibility are not authorized.
+M11 transit remains retained/unclaimed and `advertised=false`. Plans 255-258 retain their
+documented infrastructure/corrections, including Plan 258's externally proven canonical
+multicell IBGW emission. Plan 259's transit-endpoint topology inventory is retained but its
+receipt-is-OBEP-only conclusion is not current authority: exact-pinned i2pd distinguishes
+`TransitTunnelEndpoint(false)` from a creator-owned `InboundTunnel` that sets the incoming
+message owner to a destination-pool tunnel before LOCAL garlic dispatch. Plan 260 is the
+current corrective authority and must bind the receiver LeaseSet, i2pr IBGW registration,
+creator-local inbound tunnel id, destination pool ownership, and live receiver receipt, then
+complete two same-SHA exact-pinned i2pd passes. Public transit, RouterInfo capability,
+router.version, public-network participation, and broad two-family conformance remain
+unauthorized.
 
 ## Source-to-code traceability
 
@@ -135,7 +137,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | NTCP2 | responder | pending | pending | family duplicate | optional | test log/vector |
 | NetDB lookup | requester | pending | pending | family duplicate | optional | trace/result |
 | Tunnel build | creator | pending | pending | family duplicate | optional | testnet artifact |
-| Transit tunnel | participant | retained/deferred | Plan 255 scaffold retained; Plan 256 corrective ready, external qualification not yet passed | family duplicate | optional | Plan 254 live-owner evidence + future Plan 256 exact-pinned i2pd evidence |
+| Transit tunnel | participant / IBGW / OBEP | retained/deferred | Plan 258 multicell emission retained; Plan 259 endpoint-model conclusion corrected via ready Plan 260; full receipt-capable M11 qualification not yet passed | family duplicate | optional | Plans 254-259 retained evidence + future Plan 260 creator-owned inbound receipt and two-pass evidence |
 | Streaming | connect/listen | retained/deferred full-router compatibility at Plan 247 | passed bidirectional matrix via Plan 193 | family duplicate | optional | Plan 193 external transcript + Plan 247 retained Java boundary |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
 | SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/closure/ssu2/161-status.md`, `tests/integration/ssu2/run-independent.sh` |

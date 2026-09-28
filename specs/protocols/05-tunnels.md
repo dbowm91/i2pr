@@ -277,91 +277,40 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-259
+### Current M11 qualification authority — Plans 254-260
 
-Plan 254 is closed
-(`passed-m11-live-ingress-body-threading-closure-corrective`). It established the
-single-decode STBM/TunnelData/TunnelGateway handoff, controlled
-`TransitLiveOwner::handle_inbound`, creator/service ownership precedence, OBEP delivery,
-IBGW ingress, outer cancellation, and session-close reconciliation. Plan 253 remains retained
-authority for the runtime-neutral data plane, bounded peer index, complete build envelopes,
-code-30 route preservation, terminal rollback, drain, and move-only secrets.
+Plan 254 remains the passed live-owner/body-threading boundary. Plans 255-257 retain their
+documented qualification infrastructure and evidence corrections. Plan 258 retains the
+production H3 correction: IBGW nested messages now use the canonical
+`fragment_complete_message` + `build_cells` path for all sizes, with externally observed
+multicell emission and zero forwarding failures.
 
-Ordinary product construction intentionally remains transit-disabled; its SSU2 pump only
-references `controlled_transit_disabled_probe`. That is not external capability evidence.
+Plan 259 remains useful historical evidence for two narrower facts: seven retained runs exposed
+nine datagram-carrying IBGW chains (8 B-ending, 1 A-ending), and a
+`TransitTunnelEndpoint(false)` receiving a foreign-destination LOCAL garlic has no destination
+TunnelPool owner. Its global conclusion that receipt is therefore an OBEP-only/unexhibitable
+property is superseded as current authority by Plan 260.
 
-Plan 255 is retained as qualification scaffolding after post-closure source audit. The driver,
-runner, evidence checker, and hosted workflow remain useful, but the counted external matrix is
-not authoritative: one generic observed build can emit unrelated success keys; role evidence is
-not typed; i2pd-B is absent for the claimed intermediate Participant topology; RI bootstrap is
-not proven against the active reference NetDB before selection; the transit responder private
-key is unrelated to the X25519 encryption public key in the signed RouterIdentity; and the
-rejection/replay/expiry/cancel/restart rows are not backed by those external experiments.
+Exact-pinned i2pd has a distinct creator-owned inbound path. The inbound
+`TunnelConfig(peers)` sets the last remote hop's next identity to the local creator router via
+`SetNextIdent`, which clears the endpoint flag and allocates a local next tunnel id. For an
+inbound config, `GetTunnelID()` is that last-hop next id, while `GetNextTunnelID()` /
+`GetNextIdentHash()` expose the first-hop gateway tuple used by the LeaseSet. When TunnelData
+arrives at the creator's local tunnel id, `InboundTunnel::HandleTunnelDataMsg` sets
+`msg->from` to the creator-owned inbound tunnel. LOCAL garlic dispatch then calls
+`msg->from->GetTunnelPool()->ProcessGarlicMessage` when that tunnel owns the receiver
+destination pool.
 
-Plan 256 is retained after implementing most of that corrective: RouterIdentity/build-key
-coherence, exact reference NetDB bootstrap, a real i2pd-B, typed role epochs, anti-fan-out
-evidence, and substantial OBEP/IBGW/Participant data-plane work are retained. It did not close
-qualification: local-IBGW/OBEP reply production behavior landed after the plan's production
-stop condition, Participant lacks independent B-side far-side receipt, registration/bandwidth/
-cancellation/session-close/restart evidence remains incomplete, no complete counted external
-pass exists, and the implementation head's macOS Quality job failed Clippy.
+Plan 260 is registered ready to exercise that exact topology: a dedicated receiver destination
+on reference A builds a source-supported one-hop inbound tunnel through i2pr, i2pr accepts the
+typed IBGW record, the evidence binds receive id + A + creator-local tunnel id + receiver pool +
+LeaseSet tuple, and a genuine sender on reference B must reach the receiver SAM socket through
+multicell IBGW emission. Plan 260 also owns the known constant fragmented IBGW message-id
+hardening and carries all remaining Plan 257 lifecycle/evidence rows to two complete same-SHA
+external passes.
 
-Plan 257 is retained with its reply/state/evidence repairs locally proven on
-1784ff8 (SelfReplyOtbrmArgs clippy-ceiling fix, TransitLiveStateSnapshot seam,
-typed TransitBandwidthSummary plumbing, i2pd reply-branch source locks,
-cardinality/bandwidth/far-side/full-drain/session-close/restart evidence
-shapes, two-attempt gate). Three same-SHA external executions stop at the
-systematic retained IBGW multicell boundary: genuine single-cell-only
-gateway ingress (9/13/14 deliveries to the accepted registration), zero
-end-to-end receipt, healthy sessions, B-debug exonerated by an info-B
-diagnostic with the identical signature. Its external rows (cardinality,
-role-tier bandwidth, far-side, replay/expiry, full-drain cancel, session
-close, real restart) never execute because the driver aborts fail-closed
-at the multicell gate.
-
-Plan 258 is retained with its H3-production emission correction locally
-proven and externally demonstrated on 38c939a: the old single-cell
-fast-path branch compared nested length against the 61,440-byte
-complete-message ceiling but called `build_single` (per-cell capacity
-976 bytes), dropping every datagram-sized batch; the corrected path
-routes all sizes through canonical fragmentation, mirroring the
-reference IBGW field for field. Three datagram relays each emit
-exactly 2 cells with zero forward failures (`multicell-bounded:
-true`), and the reference endpoint reassembles the garlics — but no
-payload reaches the receiver socket in any of the four Plan 258
-executions. The residual boundary is topological: our IBGW
-registration chains to B-as-endpoint while the receiver lives on A,
-and reassembled foreign garlics are never routed onward here. Our
-emission is byte-proven correct against the reference parse rules;
-no row was weakened and no retry tuning applied.
-
-Plan 259 is retained with the Fork 2 adjudication. WP A
-source-locked the transit-endpoint dispatch against pinned
-source: reassembled foreign-destined Local garlics reach only
-the router-context garlic handler (tag-table lookup, then
-Noise_N decrypt with the router's own key — a
-destination-addressed garlic fails the key domain, and success
-would execute cloves locally), while the pool-owned
-local-destination delivery arm is structurally unreachable
-from pool-less transit endpoints. WP B tabulated all nine
-datagram-carrying IBGW chains across the seven retained Plan
-257/258 runs (8 B-ending, 1 A-ending; 99 emissions, 0
-receipts, 0 forward failures). Fork 1 is refuted — the
-exhibited A-ending chain does not close and no lane-buildable
-chain could — so the receipt-row premise is revised: receipt
-is an OBEP property, and the IBGW lane's terminal rows are
-ingress + multicell-bounded emission + byte-exact
-conformance. No WP D replan; constant-msgid hardening
-deferred; no row weakened, no delivery-type deviation, no
-lane forcing.
-
-M11 remains non-advertised with the restated claim:
-experimental one-family transit emission plus the retained
-OBEP receipt direction. Full receipt-capable transit
-qualification is unclaimed (the IBGW receipt row is retired
-as unexhibitable); M12 floodfill stays deferred. Full
-two-family router conformance/public transit advertisement
-remain separate.
+M11 remains non-advertised and receipt-capable qualification remains unclaimed until Plan 260
+passes. M12 floodfill remains deferred.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -416,8 +365,8 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 `ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
-This is still non-advertised infrastructure. Plan 256 exact-pinned i2pd qualification
-evidence/topology corrective is registered ready and is the next M11 execution authority.
+This is still non-advertised infrastructure. Plan 260 creator-owned inbound receipt topology
+and planning-authority corrective is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

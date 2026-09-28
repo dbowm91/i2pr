@@ -1,3 +1,32 @@
+# Current authority amendment — Plan 260 corrective registered
+
+Current status:
+**retained-m11-ibgw-receipt-adjudication-endpoint-model-corrective-required-via-plan260**
+
+The historical Plan 259 evidence below is preserved. Its seven-run/nine-chain inventory and its
+source analysis of `TransitTunnelEndpoint(false)` remain valid for transit endpoints.
+
+Its global conclusion is narrowed: the record did not model the distinct creator-owned
+`InboundTunnel` path in exact-pinned i2pd. In an inbound tunnel, the last remote hop is
+configured with `SetNextIdent(local_router)` and endpoint flag cleared; the creator-local
+`InboundTunnel::HandleTunnelDataMsg` sets `msg->from` to the pool-owned tunnel; LOCAL garlic
+dispatch can therefore reach `msg->from->GetTunnelPool()->ProcessGarlicMessage`.
+
+The one historical A-ending chain did not bind its `next_tunnel` to a receiver-owned local
+`InboundTunnel` and destination pool. It does not prove that such a controlled topology cannot
+close receipt.
+
+Accordingly:
+- the Plan 259 "receipt is OBEP-only" interpretation is not current authority;
+- the IBGW receipt row is restored as an open qualification requirement;
+- Plan 260 is the corrective authority;
+- M11 remains unclaimed/non-advertised;
+- M12 remains deferred.
+
+Original Plan 259 record follows unchanged below.
+
+---
+
 # Plan 259 — M11 IBGW receipt-topology adjudication diagnostic: status
 
 **retained-m11-ibgw-receipt-premise-adjudicated-fork2-obep-owns-receipt**
