@@ -34,7 +34,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | I2CP | closed | `plans/subsystems/i2cp-roadmap.md` | Plan 172 final acceptance (experimental, loopback-only) | No `HostLookup`/`HostReply` |
 | Service tunnels | closed | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 product authority; Plan 204 superseded by Plan 248 | No product blocker. |
 | M6 mixed-router interop | closed | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 248 policy reconciliation; Plan 193 i2pd progression authority | Java full-router compatibility retained/deferred at Plan 247; full two-family conformance not claimed. |
-| M11 transit tunnels | active | `plans/subsystems/transit-tunnels-roadmap.md` | Plan 259 IBGW receipt-topology adjudication diagnostic ready | Plan 258 is retained: the H3 emission defect is corrected and the multicell row passes externally, but receipt stops on the [i2pr→B-endpoint] topology boundary (B reassembles our garlics, never routes them to rx@A; our emission byte-proven correct). Plan 259 adjudicates the receipt premise. M12 remains deferred until two complete same-SHA exact-pinned i2pd passes close the lane; no public transit or advertisement. |
+| M11 transit tunnels | active | `plans/subsystems/transit-tunnels-roadmap.md` | Plan 259 IBGW receipt-topology adjudication diagnostic active (WP A+B underway) | Plan 258 is retained: the H3 emission defect is corrected and the multicell row passes externally, but receipt stops on the [i2pr→B-endpoint] topology boundary (B reassembles our garlics, never routes them to rx@A; our emission byte-proven correct). Plan 259 adjudicates the receipt premise. M12 remains deferred until two complete same-SHA exact-pinned i2pd passes close the lane; no public transit or advertisement. |
 
 ## Current milestone authorities
 
@@ -58,7 +58,7 @@ Current authority: Plan 248 closes policy reconciliation. Plan 193 i2pd evidence
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
 | M11 transit tunnels | 258 IBGW data-plane multicell diagnostic corrective | retained (corrective required) | `plans/closure/transit-tunnels/258-status.md` (`retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259`; H3 emission defect corrected with multicell row passing externally on `38c939a`; receipt stops on the [i2pr→B-endpoint] topology boundary with stop provenance; constant-msgid medium finding recorded) |
-| M11 transit tunnels | 259 IBGW receipt-topology adjudication diagnostic | ready | `plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md` | Corrects retained Plan 258: inventory the B-endpoint dispatch silence against pinned source, survey lane topologies for A-ending chains, then fork — exhibit a closing topology and replan WP D, or record the receipt-row premise revision. No row weakening, no delivery-type deviation, no lane forcing. |
+| M11 transit tunnels | 259 IBGW receipt-topology adjudication diagnostic | active | `plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md` | Corrects retained Plan 258: inventory the B-endpoint dispatch silence against pinned source, survey lane topologies for A-ending chains, then fork — exhibit a closing topology and replan WP D, or record the receipt-row premise revision. No row weakening, no delivery-type deviation, no lane forcing. |
 
 ## Blocked work
 
