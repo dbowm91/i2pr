@@ -57,7 +57,7 @@ Current authority: Plan 248 closes policy reconciliation. Plan 193 i2pd evidence
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| M11 transit tunnels | 258 IBGW data-plane multicell diagnostic corrective | ready | `plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md` | Corrects retained Plan 257: add gateway failure/nested-size telemetry, classify H1/H2/H3 in one non-counted diagnostic, land the narrow fix with regressions, then execute the complete matrix twice on one SHA (carrying the unexecuted Plan 257 cardinality/bandwidth/far-side/lifecycle/restart rows to green) with exact-head CI green. |
+| M11 transit tunnels | 258 IBGW data-plane multicell diagnostic corrective | active | `plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md` | Corrects retained Plan 257: WP A telemetry implemented (failure dimension + nested size class + diagnostic fold + checker §A); WP B diagnostic execution next, then narrow fix and two same-SHA passes. |
 
 ## Blocked work
 

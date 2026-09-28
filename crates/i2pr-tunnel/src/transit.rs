@@ -1477,6 +1477,19 @@ fn cell_split_payload(cell: &TunnelDataMessage) -> [u8; TUNNEL_PAYLOAD_LEN] {
 /// `MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES` ceiling.
 pub const MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES: usize = 61_440;
 
+/// Plan 258 failure telemetry: classifies one IBGW nested-message
+/// length with the exact threshold `process_tunnel_gateway` uses to
+/// choose single-cell emission versus fragmentation. Returns `true`
+/// when the nested message is multi-cell-capable (the emission path
+/// must fragment), `false` for single-cell nested batches. The
+/// classifier shares the threshold (no duplication) so lane evidence
+/// can distinguish "reference only sent single-cell batches" (H1)
+/// from "multi-cell-capable batches emitted single-cell" (H3).
+/// Counts/sizes only; no payload inspection.
+pub const fn gateway_nested_is_multicell_capable(nested_len: usize) -> bool {
+    nested_len > MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES
+}
+
 /// Failure modes for [`TransitRegistry`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
 pub enum TransitRegistryError {
@@ -2747,6 +2760,28 @@ mod tests {
 
     use rand_chacha::ChaCha8Rng;
     use rand_core::{RngCore, SeedableRng};
+
+    // Plan 258 §5.2: the nested size classifier shares the exact
+    // emission threshold — single-cell at/below the ceiling,
+    // multi-cell-capable strictly above it.
+    #[test]
+    fn plan258_nested_size_class_single_cell_at_ceiling() {
+        assert!(!gateway_nested_is_multicell_capable(0));
+        assert!(!gateway_nested_is_multicell_capable(1_500));
+        assert!(!gateway_nested_is_multicell_capable(
+            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES
+        ));
+    }
+
+    #[test]
+    fn plan258_nested_size_class_multi_cell_above_ceiling() {
+        assert!(gateway_nested_is_multicell_capable(
+            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES + 1
+        ));
+        assert!(gateway_nested_is_multicell_capable(
+            MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES * 2
+        ));
+    }
 
     struct ReplySealFailure(crate::build_crypto::EciesX25519BuildCryptography);
 

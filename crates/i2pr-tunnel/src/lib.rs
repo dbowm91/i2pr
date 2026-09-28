@@ -192,8 +192,8 @@ pub use transit::{
     TransitEndpointData, TransitFatalError, TransitGatewayData, TransitGatewayForward,
     TransitHopRegistration, TransitHopRole, TransitHopRoleKind, TransitMode, TransitNow,
     TransitParticipantData, TransitRegistry, TransitRegistryError, TransitReplySlot,
-    build_rejected_reply_record, parse_transit_bandwidth_request, process_short_build_message,
-    process_short_build_request,
+    build_rejected_reply_record, gateway_nested_is_multicell_capable,
+    parse_transit_bandwidth_request, process_short_build_message, process_short_build_request,
 };
 pub use zero_hop::{
     LocalZeroHopInbound, LocalZeroHopOutbound, MAX_ZERO_HOP_LIFETIME_SECONDS, ZeroHopError,

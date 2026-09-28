@@ -418,6 +418,12 @@ pub enum LiveGatewayOutcome {
         failures: usize,
         /// Gateway tunnel id the ingress addressed.
         receive_tunnel: u32,
+        /// Encoded nested standard I2NP message length the
+        /// ingress carried (Plan 258 failure telemetry: the
+        /// already-decoded byte count, no new decode, no payload
+        /// retention — the lane derives the single-cell versus
+        /// multi-cell-capable size class from this fact).
+        nested_len: usize,
     },
     /// Unknown gateway tunnel id, wrong peer, non-IBGW role, or
     /// expiry. Fail closed.
@@ -1035,6 +1041,7 @@ where
             delivered,
             failures,
             receive_tunnel: parts.tunnel_id,
+            nested_len: parts.nested.len(),
         }))
     }
 

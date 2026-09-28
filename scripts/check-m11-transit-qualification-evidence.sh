@@ -575,6 +575,63 @@ if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
 fi
 
+# ---- Plan 258 work package A: gateway failure/nested-size telemetry ----
+# The GatewayDelivered observation must carry the failure dimension
+# (explicit even when zero) plus the nested size fact; an arm
+# without either fails structurally here.
+if ! grep -qF 'pub const fn gateway_nested_is_multicell_capable' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs"; then
+  fail "production size classifier missing (gateway_nested_is_multicell_capable in i2pr-tunnel)"
+fi
+if ! grep -qF 'gateway_nested_is_multicell_capable' "${REPO_ROOT}/crates/i2pr-tunnel/src/lib.rs"; then
+  fail "production size classifier must be exported from i2pr-tunnel"
+fi
+if ! grep -qF 'nested_len: parts.nested.len()' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs"; then
+  fail "production gateway outcome must carry the nested length fact (parts.nested.len())"
+fi
+if ! grep -qF 'gateway_failures: Some(' "${DRIVER}"; then
+  fail "driver GatewayDelivered arm must record the failure dimension (gateway_failures: Some(..))"
+fi
+if ! grep -qF 'nested_len: Some(' "${DRIVER}"; then
+  fail "driver GatewayDelivered arm must record the nested size fact (nested_len: Some(..))"
+fi
+if ! grep -qF 'fn gateway_diag_counts' "${DRIVER}"; then
+  fail "driver must fold the diagnostic distribution (gateway_diag_counts)"
+fi
+if ! grep -qF 'fn gateway_multicell_satisfied' "${DRIVER}"; then
+  fail "driver must gate multicell on the extracted predicate (gateway_multicell_satisfied)"
+fi
+if ! grep -qF 'fn gateway_ingress_accepted' "${DRIVER}"; then
+  fail "driver must filter gateway ingress through the acceptance predicate (gateway_ingress_accepted)"
+fi
+if ! grep -qF 'gateway_nested_is_multicell_capable' "${DRIVER}"; then
+  fail "driver diagnostic fold must classify through the shared production threshold"
+fi
+if ! grep -qF 'gateway_diag_counts(&gatewayed)' "${DRIVER}"; then
+  fail "driver IBGW epoch must fold the diagnostic distribution over the accepted observations"
+fi
+# Diagnostic-only keys: every key must be emitted, and the pass
+# predicate must not read them (gate reads only the multicell
+# predicate over accepted observations plus the socket receipt).
+DIAG_KEYS=(
+  "gateway-diag-ingress"
+  "gateway-diag-nested-single"
+  "gateway-diag-nested-multi"
+  "gateway-diag-emitted-single"
+  "gateway-diag-emitted-multi"
+  "gateway-diag-emitted-max"
+  "gateway-diag-failures-total"
+  "gateway-diag-failed-ingress"
+)
+for key in "${DIAG_KEYS[@]}"; do
+  if ! grep -qF "\"${key}\"" "${DRIVER}"; then
+    fail "gateway diagnostic helper never emits evidence key '${key}'"
+  fi
+done
+MULTI_BODY="$(grep -n -A 4 'fn gateway_multicell_satisfied' "${DRIVER}" || true)"
+if printf '%s\n' "${MULTI_BODY}" | grep -q 'gateway-diag\|GatewayDiagCounts'; then
+  fail "multicell pass predicate must not read diagnostic keys (diagnostic-only)"
+fi
+
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then
   fail "record_guarded helper lost its exit-code gate"
@@ -692,4 +749,4 @@ if [[ "${failures}" -ne 0 ]]; then
   echo "check-m11-transit-qualification-evidence: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "check-m11-transit-qualification-evidence: ${#GUARDED[@]} guarded Plan 257 rows + ${#EPOCH_KEYS[@]} epoch keys command-derived, no literal pass records"
+echo "check-m11-transit-qualification-evidence: ${#GUARDED[@]} guarded Plan 257 rows + ${#EPOCH_KEYS[@]} epoch keys + ${#DIAG_KEYS[@]} Plan 258 diagnostic keys command-derived, no literal pass records"

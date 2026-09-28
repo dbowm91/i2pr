@@ -71,7 +71,9 @@ use i2pr_daemon::router_i2np::{
     verify_reference_router_info,
 };
 use i2pr_daemon::transit_compose::{TransitBuildService, TransitHopMaterial};
-use i2pr_daemon::transit_owner::{LiveInboundOutcome, TransitBuildEvidence, TransitLiveOwner};
+use i2pr_daemon::transit_owner::{
+    LiveGatewayOutcome, LiveInboundOutcome, TransitBuildEvidence, TransitLiveOwner,
+};
 use i2pr_proto::{Hash, I2npMessage, RouterInfo};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_transport::PeerId;
@@ -998,6 +1000,18 @@ struct Observation {
     /// the `Mapping`; the external bandwidth rows derive from this
     /// summary.
     bandwidth: Option<TransitBandwidthSummary>,
+    /// Bounded per-ingress forward failures counted by the router
+    /// seam (Plan 258 work package A failure telemetry). `Some`
+    /// on gateway-delivery observations (explicit even when zero),
+    /// `None` elsewhere. A `GatewayDelivered` observation with
+    /// `None` here is structurally incomplete.
+    gateway_failures: Option<usize>,
+    /// Encoded nested standard I2NP message length the gateway
+    /// ingress carried (Plan 258 work package A nested size
+    /// telemetry). `Some` on gateway-delivery observations, `None`
+    /// elsewhere; the single-cell versus multi-cell-capable class
+    /// derives from the shared production threshold.
+    nested_len: Option<usize>,
 }
 
 impl Observation {
@@ -1032,6 +1046,8 @@ impl Observation {
             peer_index_after: 0,
             queued_after: 0,
             bandwidth: Some(evidence.bandwidth),
+            gateway_failures: None,
+            nested_len: None,
         }
     }
 
@@ -1300,6 +1316,78 @@ impl TypedLedger {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Plan 258 work package A — gateway failure/nested-size telemetry.
+// ---------------------------------------------------------------------------
+
+/// Plan 258 diagnostic distribution over one epoch's accepted
+/// gateway observations. Sanitized counts only; never an input to
+/// any pass gate (the gate reads only the multicell predicate and
+/// the receiver-socket receipt).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GatewayDiagCounts {
+    ingress: usize,
+    nested_single: usize,
+    nested_multi: usize,
+    emitted_single: usize,
+    emitted_multi: usize,
+    emitted_max: usize,
+    failures_total: usize,
+    failed_ingress: usize,
+}
+
+/// Plan 258 acceptance filter: a gateway delivery counts only when
+/// bound to an accepted registration id. Background gateway
+/// traffic to other ids (stale or foreign tunnels) is recorded
+/// but never satisfies rows.
+fn gateway_ingress_accepted(obs: &Observation, accepted_gateways: &[u32]) -> bool {
+    obs.kind == ObservedKind::GatewayDelivered && accepted_gateways.contains(&obs.receive_tunnel)
+}
+
+/// Plan 258 multicell pass predicate: at least one accepted gateway
+/// observation emitted 2+ cells. Semantics identical to the Plan 257
+/// inline gate; extracted so unit rows prove the single-cell-only
+/// rejection without the external lane.
+fn gateway_multicell_satisfied(gatewayed: &[&Observation]) -> bool {
+    gatewayed.iter().any(|obs| obs.aux_count >= 2)
+}
+
+/// Plan 258 diagnostic fold: nested size class via the shared
+/// production threshold (`gateway_nested_is_multicell_capable`),
+/// emission via `aux_count`, failures via the failure dimension.
+/// An observation without the failure dimension (`None`) folds as
+/// zero failures but the structural checker rejects such arms, so
+/// genuine lanes always carry the explicit dimension. A missing
+/// nested length folds as single-cell (fail closed: never invent
+/// a multi-cell-capable batch).
+fn gateway_diag_counts(gatewayed: &[&Observation]) -> GatewayDiagCounts {
+    let mut counts = GatewayDiagCounts::default();
+    for obs in gatewayed {
+        counts.ingress += 1;
+        if obs
+            .nested_len
+            .map(i2pr_tunnel::gateway_nested_is_multicell_capable)
+            .unwrap_or(false)
+        {
+            counts.nested_multi += 1;
+        } else {
+            counts.nested_single += 1;
+        }
+        if obs.aux_count >= 2 {
+            counts.emitted_multi += 1;
+        } else {
+            counts.emitted_single += 1;
+        }
+        counts.emitted_max = counts.emitted_max.max(obs.aux_count);
+        let failures = obs.gateway_failures.unwrap_or(0);
+        counts.failures_total += failures;
+        if failures > 0 {
+            counts.failed_ingress += 1;
+        }
+    }
+    counts
+}
+
 fn synthetic_peer(byte: u8) -> [u8; 32] {
     [byte; 32]
 }
@@ -1324,6 +1412,8 @@ fn accepted_observation(epoch: Epoch, role: TransitHopRoleKind, peer: [u8; 32]) 
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     }
 }
 
@@ -1527,6 +1617,8 @@ fn plan256_ownership_rows_require_inbound_observation() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(!ledger.role_accepted(
         Epoch::Obep,
@@ -1569,6 +1661,8 @@ fn plan256_code30_requires_rejection_epoch_and_zero_growth() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.role_rejected(Epoch::Reject, TransitHopRoleKind::OutboundEndpoint));
     // Wrong role still fails.
@@ -1602,6 +1696,8 @@ fn plan256_replay_requires_one_delivery_then_drop() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     // Replay epoch without the drop proves nothing yet.
     assert!(!ledger.replay_suppressed(Epoch::Replay, &digest));
@@ -1625,6 +1721,8 @@ fn plan256_replay_requires_one_delivery_then_drop() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.replay_suppressed(Epoch::Replay, &digest));
     // A different digest is unaffected.
@@ -1657,6 +1755,8 @@ fn plan256_expiry_requires_logical_time_and_zero_forward() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(!ledger.expiry_enforced(Epoch::Expiry, 0x9601, created));
     // A drop past the bound with no forward proves it.
@@ -1679,6 +1779,8 @@ fn plan256_expiry_requires_logical_time_and_zero_forward() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.expiry_enforced(Epoch::Expiry, 0x9601, created));
 }
@@ -1708,6 +1810,8 @@ fn plan256_cancel_requires_nonzero_pre_and_zero_post() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(!ledger.cancel_drained(Epoch::Cancel));
     ledger.push(Observation {
@@ -1729,6 +1833,8 @@ fn plan256_cancel_requires_nonzero_pre_and_zero_post() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.cancel_drained(Epoch::Cancel));
 }
@@ -1885,6 +1991,8 @@ fn forwarded_observation(next_tunnel: u32) -> Observation {
         peer_index_after: 1,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     }
 }
 
@@ -1908,6 +2016,8 @@ fn b_endpoint_observation(next_tunnel: u32) -> Observation {
         peer_index_after: 1,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     }
 }
 
@@ -1963,6 +2073,8 @@ fn plan257_creator_accepted_alone_cannot_satisfy_farside() {
         peer_index_after: 1,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(!ledger.far_side_satisfied(Epoch::ParticipantData, 0x9602));
 }
@@ -1991,6 +2103,8 @@ fn plan257_active_only_cancel_cannot_satisfy_full_drain() {
         peer_index_after: 1,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.cancel_drained(Epoch::Cancel));
     assert!(!ledger.cancel_fully_drained(Epoch::Cancel));
@@ -2013,6 +2127,8 @@ fn plan257_active_only_cancel_cannot_satisfy_full_drain() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.cancel_fully_drained(Epoch::Cancel));
 }
@@ -2046,6 +2162,8 @@ fn plan257_remove_a_without_b_retained_cannot_satisfy_session_close() {
         peer_index_after: 2,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(!ledger.session_close_a_removed_b_retained(Epoch::SessionClose, removed, retained));
     // Identity-specific row (A removed, B named retained) satisfies.
@@ -2068,6 +2186,8 @@ fn plan257_remove_a_without_b_retained_cannot_satisfy_session_close() {
         peer_index_after: 1,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     });
     assert!(ledger.session_close_a_removed_b_retained(Epoch::SessionClose, removed, retained));
 }
@@ -2100,6 +2220,8 @@ fn plan257_constructor_only_restart_evidence_is_rejected() {
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     };
     // Zero-to-zero is not a drain from live state.
     let ledger = {
@@ -2215,6 +2337,139 @@ fn plan257_runner_source_locks_both_reply_branches() {
             "runner missing Plan 257 source lock {marker}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Plan 258 work package A — gateway failure/nested-size telemetry
+// regressions (§5 rows 1, 2, 6, 7). Each test proves the typed
+// ledger carries the failure dimension and the nested size fact,
+// and that the extracted pass predicates keep their Plan 257
+// semantics without the external lane.
+// ---------------------------------------------------------------------------
+
+fn gateway_observation(
+    receive_tunnel: u32,
+    delivered: usize,
+    failures: usize,
+    nested_len: usize,
+) -> Observation {
+    let mut ledger = TypedLedger::default();
+    let outcome = LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered {
+        delivered,
+        failures,
+        receive_tunnel,
+        nested_len,
+    });
+    record_data_outcome(
+        &mut ledger,
+        Epoch::IbgwData,
+        synthetic_peer(0x71),
+        "plan258",
+        &outcome,
+        1,
+        b"",
+        1_700_000_002_000,
+    );
+    ledger
+        .of_epoch(Epoch::IbgwData)
+        .find(|obs| obs.kind == ObservedKind::GatewayDelivered)
+        .expect("gateway observation recorded")
+        .clone()
+}
+
+// Plan 258 §5 row 1: the ledger observation carries the failure
+// dimension alongside the delivered-cell count.
+#[test]
+fn plan258_gateway_observation_carries_failure_dimension() {
+    let obs = gateway_observation(0x9201, 1, 2, 1_500);
+    assert_eq!(obs.kind, ObservedKind::GatewayDelivered);
+    assert_eq!(obs.receive_tunnel, 0x9201);
+    assert_eq!(obs.aux_count, 1);
+    assert_eq!(obs.gateway_failures, Some(2));
+    assert_eq!(obs.nested_len, Some(1_500));
+}
+
+// Plan 258 §5 row 1 (zero case): the dimension is explicit even
+// when no forward failed — `Some(0)`, never a missing field.
+#[test]
+fn plan258_gateway_observation_zero_failures_is_explicit() {
+    let obs = gateway_observation(0x9201, 3, 0, 1_500);
+    assert_eq!(obs.gateway_failures, Some(0));
+    assert_eq!(obs.aux_count, 3);
+}
+
+// Plan 258 §5 row 2: nested size classes distinguish single-cell
+// from multi-cell-capable batches at the shared production
+// threshold; a missing length folds single-cell (fail closed).
+#[test]
+fn plan258_nested_size_class_distinguishes_single_from_multi() {
+    let single = gateway_observation(0x9201, 1, 0, 1_500);
+    let at_ceiling = gateway_observation(
+        0x9201,
+        1,
+        0,
+        i2pr_tunnel::transit::MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES,
+    );
+    let above_ceiling = gateway_observation(
+        0x9201,
+        1,
+        0,
+        i2pr_tunnel::transit::MAX_TUNNEL_MESSAGE_PAYLOAD_BYTES + 1,
+    );
+    let refs: Vec<&Observation> = vec![&single, &at_ceiling, &above_ceiling];
+    let counts = gateway_diag_counts(&refs);
+    assert_eq!(counts.ingress, 3);
+    assert_eq!(counts.nested_single, 2);
+    assert_eq!(counts.nested_multi, 1);
+}
+
+// Plan 258 §5 row 6: the multicell gate still rejects
+// single-cell-only batches and accepts one 2+ cell emission.
+#[test]
+fn plan258_multicell_gate_rejects_single_cell_only() {
+    let one_a = gateway_observation(0x9201, 1, 0, 1_500);
+    let one_b = gateway_observation(0x9201, 1, 0, 1_500);
+    let refs: Vec<&Observation> = vec![&one_a, &one_b];
+    assert!(!gateway_multicell_satisfied(&refs));
+    let two = gateway_observation(0x9201, 2, 0, 70_000);
+    let mixed: Vec<&Observation> = vec![&one_a, &two];
+    assert!(gateway_multicell_satisfied(&mixed));
+}
+
+// Plan 258 §5 row 7: background gateway traffic to unaccepted ids
+// still cannot satisfy the acceptance filter.
+#[test]
+fn plan258_background_gateway_to_unaccepted_id_is_rejected() {
+    let genuine = gateway_observation(0x9201, 1, 0, 1_500);
+    let background = gateway_observation(0x9202, 2, 0, 70_000);
+    let accepted = [0x9201_u32];
+    assert!(gateway_ingress_accepted(&genuine, &accepted));
+    assert!(!gateway_ingress_accepted(&background, &accepted));
+    // A multi-cell background emission alone satisfies neither
+    // acceptance nor (through the filter) the multicell row.
+    let filtered: Vec<&Observation> = [&background]
+        .into_iter()
+        .filter(|obs| gateway_ingress_accepted(obs, &accepted))
+        .collect();
+    assert!(filtered.is_empty());
+    assert!(!gateway_multicell_satisfied(&filtered));
+}
+
+// Plan 258 §5 row 1 (fold): the diagnostic distribution sums the
+// failure dimension and separates emission classes.
+#[test]
+fn plan258_diag_counts_fold_failures_and_emission() {
+    let clean_single = gateway_observation(0x9201, 1, 0, 1_500);
+    let failed_single = gateway_observation(0x9201, 1, 3, 1_500);
+    let clean_multi = gateway_observation(0x9201, 4, 0, 70_000);
+    let refs: Vec<&Observation> = vec![&clean_single, &failed_single, &clean_multi];
+    let counts = gateway_diag_counts(&refs);
+    assert_eq!(counts.ingress, 3);
+    assert_eq!(counts.emitted_single, 2);
+    assert_eq!(counts.emitted_multi, 1);
+    assert_eq!(counts.emitted_max, 4);
+    assert_eq!(counts.failures_total, 3);
+    assert_eq!(counts.failed_ingress, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -4265,10 +4520,7 @@ async fn run_qualification() -> Result<(), String> {
                 .collect();
             let gatewayed: Vec<&Observation> = ledger
                 .of_epoch(Epoch::IbgwData)
-                .filter(|obs| {
-                    obs.kind == ObservedKind::GatewayDelivered
-                        && accepted_gateways.contains(&obs.receive_tunnel)
-                })
+                .filter(|obs| gateway_ingress_accepted(obs, &accepted_gateways))
                 .collect();
             record_row(
                 &evidence_dir,
@@ -4277,6 +4529,31 @@ async fn run_qualification() -> Result<(), String> {
                 &gatewayed.len().to_string(),
                 &mut rows,
             );
+            // Plan 258 work package A diagnostic rows: sanitized
+            // counts only (ingress, nested size distribution,
+            // emitted-cell distribution, failure distribution).
+            // Recorded before the gates so a failing lane still
+            // classifies H1/H2/H3; diagnostic-only keys never
+            // feed any pass predicate.
+            let diag = gateway_diag_counts(&gatewayed);
+            for (key, value) in [
+                ("gateway-diag-ingress", diag.ingress),
+                ("gateway-diag-nested-single", diag.nested_single),
+                ("gateway-diag-nested-multi", diag.nested_multi),
+                ("gateway-diag-emitted-single", diag.emitted_single),
+                ("gateway-diag-emitted-multi", diag.emitted_multi),
+                ("gateway-diag-emitted-max", diag.emitted_max),
+                ("gateway-diag-failures-total", diag.failures_total),
+                ("gateway-diag-failed-ingress", diag.failed_ingress),
+            ] {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    key,
+                    &value.to_string(),
+                    &mut rows,
+                );
+            }
             // Recorded before the gates so failures still show
             // whether anything reached the receiver socket (e.g. a
             // B-gatewayed delivery that bypassed our IBGW id).
@@ -4297,7 +4574,7 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
-            let multicell = gatewayed.iter().any(|obs| obs.aux_count >= 2);
+            let multicell = gateway_multicell_satisfied(&gatewayed);
             record_row(
                 &evidence_dir,
                 Epoch::IbgwData,
@@ -4428,6 +4705,8 @@ async fn run_qualification() -> Result<(), String> {
                 peer_index_after: 0,
                 queued_after: 0,
                 bandwidth: None,
+                gateway_failures: None,
+                nested_len: None,
             });
             if !ledger.far_side_satisfied(Epoch::ParticipantData, next_tunnel) {
                 return Err(format!(
@@ -4611,6 +4890,8 @@ async fn run_qualification() -> Result<(), String> {
                     peer_index_after,
                     queued_after: 0,
                     bandwidth: None,
+                    gateway_failures: None,
+                    nested_len: None,
                 });
             }
             if !ledger.session_close_a_removed_b_retained(
@@ -4674,6 +4955,8 @@ async fn run_qualification() -> Result<(), String> {
                 peer_index_after: cancel_after.peer_index_entries,
                 queued_after: cancel_after.transit_owned_queued_work,
                 bandwidth: None,
+                gateway_failures: None,
+                nested_len: None,
             });
             if !ledger.cancel_fully_drained(Epoch::Cancel) {
                 return Err(format!(
@@ -5150,6 +5433,8 @@ async fn run_sam_epoch(
                         peer_index_after: 0,
                         queued_after: 0,
                         bandwidth: None,
+                        gateway_failures: None,
+                        nested_len: None,
                     });
                 }
                 if let LiveInboundOutcome::Build(
@@ -5688,6 +5973,8 @@ fn record_data_outcome(
         peer_index_after: 0,
         queued_after: 0,
         bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
     };
     match outcome {
         LiveInboundOutcome::Data(TransitDataDisposition::Forwarded(forward)) => {
@@ -5771,8 +6058,9 @@ fn record_data_outcome(
         }
         LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered {
             delivered,
+            failures,
             receive_tunnel,
-            ..
+            nested_len,
         }) => {
             ledger.push(Observation {
                 kind: ObservedKind::GatewayDelivered,
@@ -5780,8 +6068,14 @@ fn record_data_outcome(
                 // Bind the delivery to the addressed gateway
                 // tunnel so the lane predicate can require the
                 // accepted registration (background ingress to
-                // other ids never counts).
+                // other ids never counts). Plan 258 work package
+                // A: carry the failure dimension (explicit even
+                // when zero) plus the nested size fact so one
+                // diagnostic execution can classify the missing
+                // multicell emission (H1/H2/H3).
                 receive_tunnel: *receive_tunnel,
+                gateway_failures: Some(*failures),
+                nested_len: Some(*nested_len),
                 ..base
             });
         }
