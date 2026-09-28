@@ -147,7 +147,7 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    Plan 254 live ingress/body closure corrective
                                                                  |
                                                                  v
-                                                   Plan 256 corrected exact-pinned i2pd qualification
+                                                   Plan 260 corrected exact-pinned i2pd qualification
                                                                  |
                                                                  v
                                                    M11 experimental closure
@@ -161,7 +161,7 @@ retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
 its post-closure defects recorded. Plan 256 is retained, Plan 257 is retained with its
 reply/state/evidence repairs locally proven but externally stopped at the IBGW multicell
-boundary, Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded, and Plan 259 is retained with the Fork 2 adjudication (receipt is an OBEP property; IBGW terminal rows are ingress + multicell-bounded emission + byte-exact conformance; M11 restated as experimental one-family emission, non-advertised).
+boundary, Plan 258 is retained with the emission correction proven, Plan 259's topology inventory/transit-endpoint findings are retained with its global receipt conclusion corrected via Plan 260, and Plan 260 is registered ready as the current creator-owned inbound receipt qualification authority.
 
 ## 7. Milestones
 
@@ -261,7 +261,7 @@ twice and counted.
 
 ### Plan 256 — qualification evidence/topology corrective
 
-Plan 256 is retained corrective infrastructure; Plan 257 is the current executable authority. It keeps the exact i2pd 2.61.0 / 635b013a... pin
+Plan 256 is retained corrective infrastructure. Its exact i2pd 2.61.0 / 635b013a... pin and corrected evidence/topology requirements remain inherited by Plan 260
 and repairs the counted lane by requiring:
 
 - RouterIdentity/build-responder X25519 key coherence;
@@ -274,7 +274,7 @@ and repairs the counted lane by requiring:
   experiments;
 - two complete fresh-datadir external passes on the same i2pr SHA.
 
-M12 remains blocked until Plan 257 closes. Public transit and broad two-family conformance remain
+M12 remains blocked until Plan 260 closes the corrected receipt-capable external matrix. Public transit and broad two-family conformance remain
 separate.
 
 ### Plan 257 — production self-reply and external evidence completion corrective
