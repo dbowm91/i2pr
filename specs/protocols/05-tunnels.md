@@ -314,8 +314,29 @@ floodfill). A genuine sender on reference B must reach the receiver SAM socket
 through multicell IBGW emission under Plan 261, which owns B-side LeaseSet
 resolution and the receipt-first matrix.
 
+Plan 261 is retained-blocked with the B-sender topology proven
+through addressing: on a fresh mesh the A receiver established
+with four counted `[A,A]` IBGW registrations, B's `m11-tx-b`
+sender established outbound `[i2pr]` via its stock SAM bridge,
+B resolved A's receiver LeaseSet from its floodfill local store
+(store + found + added lines, zero lookup failures), and all
+four 1400-byte sends named counted ids (`0x2276888c` ×3,
+`0xda72a534` ×1) — but delivery stops on one exact boundary,
+B3: each send decrypts at i2pr's OBEP registration as a
+delivery-type-TUNNEL action with `target_router == self` (the
+lease gateway IS i2pr) and terminates `NoActiveSession` at the
+session peer seam, which maps only remote peers (4/4 rounds
+plus 33 background self-terminals, zero ingress, zero socket
+receipt). Stock i2pd performs the missing step in
+`Transports::PostMessages` (self comparison into the local
+`LoopbackHandler`); i2pr has no equivalent. Plan 262 owns the
+bounded self-delivery corrective: reroute the already-decoded
+self-targeted TUNNEL action into the existing local
+`route_tunnel_gateway` IBGW ingress, with unknown id / wrong
+peer / non-IBGW / expired still dropping.
+
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
-Plan 261 is the current authority. M12 floodfill remains deferred.
+Plan 262 is the current authority. M12 floodfill remains deferred.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -370,9 +391,10 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 `ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
-This is still non-advertised infrastructure. Plan 260 is retained-blocked with the
-build half proven and B1/B2 delivery boundaries localized; Plan 261 B-sender
-receipt requalification is registered ready and is the next M11 execution authority.
+This is still non-advertised infrastructure. Plan 261 is retained-blocked with the
+B-sender topology proven through counted-id addressing and the B3 self-delivery
+boundary localized; Plan 262 self-delivery loopback corrective is registered
+ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

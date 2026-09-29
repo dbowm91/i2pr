@@ -52,9 +52,22 @@ rows green, and the dedicated receiver 1-hop `[i2pr]` inbound was exhibited live
 on two exact boundaries: forward-path garlic death at B's endpoint for A-side
 senders (zero ingress on counted ids over four multicell-forcing rounds) and
 late-run mesh sustainability (establishment 1/3, outbound collapse without
-floodfill). Plan 261 is the forward authority (B-sender requalification) and must
-bind the receiver LeaseSet, i2pr IBGW registration, creator-local inbound tunnel
-id, destination pool ownership, and live receiver receipt, then complete two
+floodfill). Plan 261 is retained-blocked: its B-sender lane work
+all landed with local rows green and zero production diff (four
+B-side source locks, B SAM plumbing with fail-closed env gate,
+`m11-tx-b` sender shape, terminal-signature instrumentation), and
+live execution proved the B-sender topology through addressing (B
+outbound `[i2pr]` established, B-side LeaseSet resolved from the
+floodfill store, 4/4 sends naming counted `[A,A]` ids) — but
+delivery stops on one exact boundary: the B3 self-delivery
+loopback gap (self-targeted OBEP TUNNEL actions terminate
+`NoActiveSession` at the session peer seam, zero ingress, zero
+socket receipt). Plan 262 is the forward authority
+(self-delivery loopback corrective) and must reroute decoded
+self-targeted TUNNEL actions into the existing local IBGW
+ingress, then bind the receiver LeaseSet, i2pr IBGW
+registration, creator-local inbound tunnel id, destination pool
+ownership, and live receiver receipt, then complete two
 same-SHA exact-pinned i2pd passes. Public transit, RouterInfo capability,
 router.version, public-network participation, and broad two-family conformance remain
 unauthorized.
@@ -145,7 +158,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | NTCP2 | responder | pending | pending | family duplicate | optional | test log/vector |
 | NetDB lookup | requester | pending | pending | family duplicate | optional | trace/result |
 | Tunnel build | creator | pending | pending | family duplicate | optional | testnet artifact |
-| Transit tunnel | participant / IBGW / OBEP | retained/deferred | Plan 258 multicell emission retained; Plan 259 endpoint-model conclusion corrected via retained-blocked Plan 260 (creator-owned build exhibited, receipt blocked on forward/sustainability boundaries); full receipt-capable M11 qualification not yet passed | family duplicate | optional | Plans 254-260 retained evidence + Plan 261 B-sender receipt and two-pass evidence |
+| Transit tunnel | participant / IBGW / OBEP | retained/deferred | Plan 258 multicell emission retained; Plan 259 endpoint-model conclusion corrected via retained-blocked Plan 260 (creator-owned build exhibited, receipt blocked on forward/sustainability boundaries); Plan 261 B-sender topology proven through counted-id addressing, receipt blocked on the B3 self-delivery loopback boundary; full receipt-capable M11 qualification not yet passed | family duplicate | optional | Plans 254-261 retained evidence + Plan 262 self-delivery loopback and two-pass evidence |
 | Streaming | connect/listen | retained/deferred full-router compatibility at Plan 247 | passed bidirectional matrix via Plan 193 | family duplicate | optional | Plan 193 external transcript + Plan 247 retained Java boundary |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
 | SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/closure/ssu2/161-status.md`, `tests/integration/ssu2/run-independent.sh` |
