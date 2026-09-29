@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-261
+### Current M11 qualification authority — Plans 254-262
 
 Plan 254 remains the passed live-owner/body-threading boundary. Plans 255-257 retain their
 documented qualification infrastructure and evidence corrections. Plan 258 retains the
@@ -334,28 +334,29 @@ receipt). Stock i2pd performs the missing step in
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
 Plan 262 is the current authority. M12 floodfill remains deferred.
 
-### Current M11 daemon authority — Plan 253 corrective
+### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
 Plan 252 remains authoritative for the runtime-neutral full-message ShortTunnelBuild
-transaction only. Post-closure source review narrowed its daemon/data-plane completion
+transaction only. Post-closure source review narrowed its original daemon/data-plane completion
 claim.
 
-The current daemon surface still contains an explicit no-op TunnelData transform
-placeholder, does not wire `TransitIngressGate` into the live authenticated SSU2/router-I2NP
-owner, drops valid code-30 routing metadata at delivery, rolls back accepted state only for
-`NoActiveSession`, does not drain registrations on cancellation, and keeps an unconstrained
-peer map.
+Plan 253 subsequently landed the bounded transit data plane, complete role-correct I2NP
+envelopes, terminal-delivery rollback, deterministic cancellation/shutdown drain, and bounded
+peer/session state. Its closure was retained because the production caller still lacked the
+final live-owner/body-threading boundary; those defects are historical findings, not current
+daemon-state descriptions.
 
-Plan 253 is the corrective authority. It must keep build cryptography in `i2pr-tunnel`,
-compose canonical participant/OBEP/IBGW role behavior with bounded replay/reassembly state,
-wire the controlled gate into the real ingress owner, construct complete outbound I2NP
-messages, route valid code-30 replies, clean all terminal delivery failures, and
-deterministically drain secrets on shutdown.
+Plan 254 is the passed daemon/live-owner authority. It supplies the canonical single-decode
+`TransitInboundBodies` handoff and controlled `TransitLiveOwner::handle_inbound` over real
+authenticated `Ssu2InboundI2np`, with creator/service ownership ordering, OBEP semantic
+delivery, IBGW ingress, and outer cancellation/session lifecycle. Ordinary product profiles
+remain transit-disabled and non-advertised.
 
-Plan 255's exact-pinned i2pd driver/runner/checker/workflow are retained scaffolding only after
-post-closure audit. Plan 256 owns correction of the external topology and evidence semantics;
-no Plan 255 external row is promoted to M11 capability evidence until the corrected complete
-matrix passes twice on one SHA.
+Plans 255-261 qualify and correct external topology/evidence above that live-owner boundary;
+they do not reopen the Plan 253/254 composition work. Plan 262 is the current forward authority
+for the remaining IBGW ingress semantics: remove inherited build-creator peer affinity from
+`TunnelGateway` data, bind processing to the live receive id/role/expiry state, and route
+decoded self-targeted OBEP TUNNEL actions through the same source-neutral local IBGW seam.
 
 ### Plan 252 full-message transit composition invariant
 
