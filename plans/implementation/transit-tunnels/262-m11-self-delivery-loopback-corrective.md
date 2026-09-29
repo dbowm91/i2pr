@@ -6,6 +6,14 @@ Status at registration:
 Scope refinement baseline:
 `3289051d368dda1aa4ea5e0cc9c88807e708d183`
 
+Planning reconciliation through `f4325248e72967f7d71b348ff405869fc6166fc2` is
+planning/specification-only; it does not change the production source baseline inherited from
+Plan 261. Subsequent planning-only reconciliation commits may advance `main` again. The
+implementation agent MUST start from the latest `main`, record the exact pre-implementation
+HEAD in the handoff, and bind every counted external attempt to the eventual implementation SHA.
+The historical registration/scope-refinement SHAs are planning provenance, not qualification
+SHAs.
+
 Original registration baseline and Plan 261 closure authority remain recorded in
 `plans/closure/transit-tunnels/261-status.md`.
 
@@ -36,6 +44,19 @@ Retains:
 
 Reference authority remains exact-pinned, unmodified i2pd 2.61.0 at
 `635b013a612ff47278ef02acf8580a28e10e26c5`.
+
+Normative protocol authority is independent of that behavioral source lock:
+
+- `https://www.i2p.net/en/docs/specs/tunnel-creation-ecies/` defines the IBGW flag as
+  "allow messages from anyone"; build-creator identity is therefore not an IBGW data-plane
+  authorization predicate.
+- `https://www.i2p.net/en/docs/specs/i2np/` defines `TunnelGateway` routing by its nonzero
+  destination tunnel id.
+- `https://www.i2p.net/en/docs/specs/tunnel-implementation/` defines tunnel ids as the
+  per-hop receive/forward routing identifiers.
+
+The exact-pinned i2pd source lock remains the required independent behavioral corroboration; it
+is not the sole authority for removing creator-peer affinity.
 
 ## 1. Objective
 
@@ -128,8 +149,9 @@ No new plan number is needed before execution:
   local IBGW registration.
 - The exact reference supplies stable contracts for both self-delivery and receive-id dispatch.
 - The B-sender external topology already exists and is the consumer.
-- A separate Plan 263 cannot be registered yet under repository rules because Plan 262 is a
-  hard dependency and has not closed.
+- Do not pre-register Plan 263. The M11 dependency graph remains linear at Plan 262; register a
+  successor only if execution satisfies a Plan 262 stop condition and exposes a new bounded
+  defect or qualification boundary.
 
 If execution exposes a defect outside this boundary, stop and register the narrow successor.
 
@@ -559,7 +581,8 @@ Plan 262 closes only when all are directly evidenced:
 2. Plan 261 B3 signature remains the starting boundary.
 3. Exact-pinned self-loopback source lock holds.
 4. Exact-pinned TunnelGateway-by-receive-id source lock holds.
-5. Reference gateway dispatch has no build-creator sender affinity.
+5. Normative IBGW role semantics and exact-pinned reference gateway dispatch both establish
+   receive-id routing without build-creator sender affinity.
 6. `TransitGatewayData` no longer inherits participant previous-peer locking.
 7. Build creator provenance remains retained for build admission/accounting/reply routing.
 8. IBGW gateway processing asserts exact receive-id equality.
@@ -583,7 +606,8 @@ Plan 262 closes only when all are directly evidenced:
 26. Complete external attempt 2 passes every mandatory row on the same SHA with fresh datadirs.
 27. Full workspace verification passes.
 28. Exact-head ordinary CI passes all four jobs.
-29. Registry/roadmap/support/conformance/dossier agree.
+29. README/registry/roadmap/support/conformance/dossier agree on Plan 262 as the sole
+    dependency-ready M11 closure authority.
 30. No product default/capability/version/public-network change.
 31. No critical/high finding remains open.
 
