@@ -308,9 +308,14 @@ On the implementation head (all green):
 - `git diff --check` — clean.
 - `crates/*/src` diff is EMPTY (criterion 20 evidence).
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): PENDING at
-write time (follow-up commit per Plan 258/259/260 precedent;
-local floor is the current truth).
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on the
+closure head — Actions run `36576319272` on head `df4c9c1`
+(Quality ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+Dependency policy: all success). The run covers the complete
+Plan 261 implementation plus the closure record, Plan 262
+registration, and all planning/spec updates. No external
+execution is required to close under retained/blocked (two
+fail-closed diagnostics already bound the B1/B3 signatures).
 
 ## Invariant / failure / migration / security reviews
 
