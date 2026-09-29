@@ -55,6 +55,10 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 Current authority: Plan 248 closes policy reconciliation. Plan 193 i2pd evidence is sufficient for experimental progression under ADR 0026. Plan 247 remains the latest trustworthy Java full-router diagnostic boundary and is retained/deferred.
 
+For M11, Plan 262 is the sole dependency-ready closure authority. No Plan 263 is
+pre-registered; a successor is registered only if Plan 262 execution hits one of its explicit
+stop conditions and records a new bounded defect or qualification-sustainability boundary.
+
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
 | M11 transit tunnels | 258 IBGW data-plane multicell diagnostic corrective | retained (corrective required) | `plans/closure/transit-tunnels/258-status.md` (`retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259`; H3 emission defect corrected with multicell row passing externally on `38c939a`; receipt stops on the [i2pr→B-endpoint] topology boundary with stop provenance; constant-msgid medium finding recorded) |
