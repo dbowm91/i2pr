@@ -321,11 +321,11 @@ Test/lane/checker/workflow code:
     44993/44994): 201.5 s, stops before any data epoch on a SAM
     read timeout. No production row failed.
 27. **Full workspace verification passes** — PASS local
-    (§"Verification"); **exact-head CI PENDING** at write time
-    (follow-up commit per precedent).
-28. **Exact-head ordinary CI passes all four jobs** — PENDING
-    (follow-up commit records the run ID; local floor is the
-    current truth).
+    (§"Verification"); exact-head CI GREEN (run `36604101824`
+    on head `f6ecf4a`, four jobs success).
+28. **Exact-head ordinary CI passes all four jobs** — PASS (run
+    `36604101824` on head `f6ecf4a`: Quality ubuntu-latest,
+    Quality macos-latest, MSRV Ubuntu, Dependency policy).
 29. **README/registry/roadmap/support/conformance/dossier agree on
     Plan 262 as the sole dependency-ready M11 closure authority**
     — PASS (closure commit reconciles all five; Plan 263
@@ -512,9 +512,15 @@ On the implementation head `514bf12` (all green):
   NTCP2 harness 18 ok.
 - `git diff --check` — clean.
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): PENDING at
-write time (follow-up commit per precedent; local floor above
-is the current truth).
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on the
+closure head — Actions run `36604101824` on head `f6ecf4a`
+(Quality ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+Dependency policy: all success). The run covers the complete
+Plan 262 implementation plus the closure record, Plan 263
+registration, and all planning/spec updates. No external
+execution is required to close under retained-blocked (one
+receipt-closed diagnostic plus two fail-closed full-matrix
+attempts already bound the sustainability signature).
 
 ## Invariant / failure / migration / security reviews
 
