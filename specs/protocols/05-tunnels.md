@@ -346,11 +346,17 @@ socket receipt on a healthy mesh (diag4 `terminal-garlic-self:0/
 ingress:6/socket:1` with tuple-bound multicell on `514bf12`),
 but two same-SHA full-matrix attempts stop on
 mesh-sustainability signatures (IBGW-data relay, SAM timeout).
-Plan 262 is retained-blocked; Plan 263 owns the harness-only
-sustainability corrective.
+Plan 262 is retained-blocked; Plan 263 landed the harness-only
+sustainability corrective (mesh-liveness, relay-NetDB,
+B-floodfill prerequisites, canonical SAM tail, zero production
+diff) and re-proved receipt (`0/18/1` tuple-bound) + IBGW
+multicell (max 2) on `9bd2f39a`, but two same-SHA single-mesh
+attempts stop on sustainability signatures (single-cell-only
+window; receipt starvation). Plan 263 is retained-blocked;
+Plan 264 owns the single-mesh sustainability scoping.
 
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
-Plan 263 is the current authority. M12 floodfill remains deferred.
+Plan 264 is the current authority. M12 floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -373,8 +379,11 @@ remain transit-disabled and non-advertised.
 Plans 255-262 qualify and correct external topology/evidence above that live-owner boundary;
 they do not reopen the Plan 253/254 composition work. Plan 262 corrected the remaining IBGW
 ingress semantics (dedicated gateway state, live receive-id/role/expiry binding, self-loop
-local seam with socket receipt proven). Plan 263 is the current forward authority for the
-remaining qualification-sustainability seam (harness-only, zero production diff).
+local seam with socket receipt proven). Plan 263 landed the sustainability harness
+(mesh-liveness + relay-NetDB + B-floodfill prerequisites, canonical SAM tail, zero
+production diff) with receipt + multicell re-proven. Plan 264 is the current forward
+authority for the remaining single-mesh scoping seam (per-epoch fresh-mesh qualification,
+zero production diff).
 
 ### Plan 252 full-message transit composition invariant
 
@@ -410,7 +419,9 @@ This is still non-advertised infrastructure. Plan 261 is retained-blocked with t
 B-sender topology proven through counted-id addressing and the B3 self-delivery
 boundary localized; Plan 262 is retained-blocked with IBGW ownership corrected and
 receipt proven live (diag4 `0/6/1` tuple-bound on `514bf12`), full matrix stopped on
-sustainability; Plan 263 qualification-sustainability corrective is registered ready and
+sustainability; Plan 263 is retained-blocked with the sustainability harness landed
+and receipt + multicell re-proven on `9bd2f39a`, single-mesh two-pass stopped on
+sustainability; Plan 264 single-mesh sustainability scoping is registered ready and
 is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
