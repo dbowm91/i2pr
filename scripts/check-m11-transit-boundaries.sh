@@ -363,7 +363,7 @@ done
 # 29. The runner must source-lock both i2pd reply branches and
 #     emit the Plan 264 manifest shape (plan 264 + attempt + epoch
 #     + epoch pass).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 264' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'exact_lib_row'; do
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 264' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_DRIVER_RC' 'EPOCH_TERMINAL_KEY' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
         fail "external runner missing Plan 264 token $token"
     fi

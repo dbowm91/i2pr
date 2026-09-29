@@ -895,6 +895,9 @@ else
   driver_rc=$?
 fi
 DRIVER_TSV="${DRIVER_EVIDENCE}/driver-evidence.tsv"
+# Plan 264: the per-epoch verdict reads the driver exit code; export
+# it for the manifest python block below.
+export I2PR_M11_DRIVER_RC="${driver_rc}"
 m11_row() {
   local label="$1"
   local key="$2"
@@ -1178,6 +1181,28 @@ ledger_tsv = Path(evidence_dir) / "driver" / "ledger-evidence.tsv"
 if ledger_tsv.exists():
     for line in ledger_tsv.read_text(encoding="utf-8").splitlines():
         ledger_keys.append(line.split("\t", 1)[0])
+# Plan 264 per-epoch verdict: the driver exits 0 only when the
+# requested epoch's fail-closed gates all passed on this fresh
+# mesh, and the epoch's terminal key is recorded only after its
+# final gate. The whole-lane verdict below stays full-matrix
+# (per-epoch runs never pass it); the composition gate reads
+# epoch_qualification only.
+EPOCH_TERMINAL_KEY = {
+    "obep": "obep/build-accepted",
+    "ibgw": "ibgw/build-accepted",
+    "participant": "participant/build-accepted",
+    "reject": "reject/build-rejected",
+    "obep-data": "obep-data/fragmented-once",
+    "ibgw-data": "ibgw-data/multicell-bounded",
+    "receipt": "ibgw-receipt/gateway-receipt-once",
+    "ibgw-receipt": "ibgw-receipt/gateway-receipt-once",
+    "participant-data": "participant-data/far-side-count",
+    "replay": "replay/no-second-delivery",
+    "expiry": "expiry/resource-baseline",
+    "cancel": "cancel/drains",
+    "session-close": "session-close/peer-baseline",
+    "restart": "restart/final-baseline",
+}
 all_passed = all(row["status"] == "passed" for row in rows)
 import os
 attempt = os.environ.get("I2PR_M11_ATTEMPT", "1")
@@ -1187,6 +1212,9 @@ epoch_pass = os.environ.get("I2PR_M11_EPOCH_PASS", attempt)
 # the per-epoch pass id. A full-matrix run without a selector is
 # diagnostic-only (epoch "full-matrix", never counted).
 manifest_epoch = only_epoch if only_epoch else "full-matrix"
+terminal_key = EPOCH_TERMINAL_KEY.get(manifest_epoch, "")
+driver_rc = int(os.environ.get("I2PR_M11_DRIVER_RC", "1"))
+epoch_qualified = bool(terminal_key) and driver_rc == 0 and terminal_key in driver_keys
 datadir_id = os.environ.get(
     "I2PR_M11_DATADIR_ID", Path(evidence_dir).name or "local",
 )
@@ -1196,6 +1224,8 @@ evidence = {
     "attempt": attempt,
     "epoch": manifest_epoch,
     "epoch_pass": epoch_pass,
+    "epoch_terminal_key": terminal_key,
+    "epoch_qualification": ("passed" if epoch_qualified else "failed"),
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
     "os_image": platform.platform(),

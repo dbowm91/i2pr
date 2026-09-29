@@ -76,7 +76,7 @@ if ! grep -qF 'run_participant_data_epoch' "${DRIVER}"; then
 fi
 
 # ---- Static invariants: runner manifest shape -------------------------
-for token in '"plan": 264' '"epoch": manifest_epoch' '"epoch_pass": epoch_pass' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS'; do
+for token in '"plan": 264' '"epoch": manifest_epoch' '"epoch_pass": epoch_pass' '"epoch_qualification"' '"epoch_terminal_key"' 'EPOCH_TERMINAL_KEY' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_DRIVER_RC'; do
   if ! grep -qF "${token}" "${HARNESS}"; then
     fail "runner missing Plan 264 per-epoch manifest token ${token}"
   fi
@@ -148,9 +148,17 @@ for root in sys.argv[1:]:
         failures.append(f"{root}: manifest carries no i2pr_commit")
         continue
     shas.add(sha)
-    passed = doc.get("m11_transit_qualification") == "passed-via-i2pd-2.61.0"
-    if not passed:
-        failures.append(f"{root}: epoch {epoch} pass did not pass")
+    # Plan 264 per-epoch verdict: the manifest's epoch_qualification
+    # is passed only when the driver exited 0 with the epoch's
+    # terminal key present (fail-closed gates all green on that
+    # fresh mesh). The whole-lane m11_transit_qualification stays
+    # full-matrix and is never the per-epoch criterion.
+    if doc.get("epoch_qualification") != "passed":
+        failures.append(f"{root}: epoch {epoch} pass did not pass (epoch_qualification)")
+        continue
+    terminal = doc.get("epoch_terminal_key", "")
+    if not terminal or terminal not in doc.get("driver_evidence_keys", []):
+        failures.append(f"{root}: epoch {epoch} terminal key missing from driver evidence")
         continue
     by_epoch.setdefault(epoch, []).append(
         (str(doc.get("epoch_pass", "")), sha, root)
