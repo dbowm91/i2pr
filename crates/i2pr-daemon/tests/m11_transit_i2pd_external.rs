@@ -2097,6 +2097,30 @@ fn check_reference_pin(pin: &str, version: &str) -> Result<(), String> {
     Ok(())
 }
 
+// Plan 261 §11.15: missing B-SAM env fails before network startup.
+// The B-side sender port parses exactly like the A SAM port (fixed
+// nonzero loopback port); absence or garbage fails closed with no
+// socket, process, or file mutation.
+fn check_b_sam_port(raw: Option<String>) -> Result<u16, String> {
+    let text = raw.ok_or_else(|| "I2PD_B_SAM_PORT must be a loopback port".to_string())?;
+    let port: u16 = text
+        .parse()
+        .map_err(|_| "I2PD_B_SAM_PORT must be a loopback port".to_string())?;
+    if port == 0 {
+        return Err("I2PD_B_SAM_PORT must be a loopback port".to_string());
+    }
+    Ok(port)
+}
+
+#[test]
+fn plan261_b_sam_port_missing_fails_before_network_startup() {
+    assert!(check_b_sam_port(None).is_err());
+    assert!(check_b_sam_port(Some(String::new())).is_err());
+    assert!(check_b_sam_port(Some("not-a-port".to_string())).is_err());
+    assert!(check_b_sam_port(Some("0".to_string())).is_err());
+    assert_eq!(check_b_sam_port(Some("44984".to_string())), Ok(44_984));
+}
+
 // Plan 256 §14.3: the Participant row fails without a running and
 // proven i2pd-B topology. The predicate requires the B-topology
 // proof flag, which only the B epoch handshake sets.
@@ -3424,6 +3448,11 @@ async fn run_qualification() -> Result<(), String> {
     let a_sam_port: u16 = env_value("I2PD_A_SAM_PORT")
         .parse()
         .map_err(|_| "I2PD_A_SAM_PORT must be a loopback port".to_string())?;
+    // Plan 261 work package A: the B-side sender needs B's stock SAM
+    // bridge. The port is a required lane input like the A SAM port:
+    // a missing/invalid value fails before any socket, process, or
+    // file mutation (same fail-closed position as the pin gate).
+    let b_sam_port: u16 = check_b_sam_port(std::env::var("I2PD_B_SAM_PORT").ok())?;
     let bind: SocketAddr = env_value("I2PR_SSU2_BIND")
         .parse()
         .map_err(|_| "I2PR_SSU2_BIND must be a loopback socket address".to_string())?;
@@ -3438,7 +3467,7 @@ async fn run_qualification() -> Result<(), String> {
     }
     // No evidence-directory-derived NetDB fallback exists in this
     // lane: both reference datadirs are explicit required inputs.
-    for port in [a_port, b_port, a_sam_port] {
+    for port in [a_port, b_port, a_sam_port, b_sam_port] {
         if port == 0 {
             return Err("reference ports must be fixed loopback ports".to_string());
         }
@@ -3562,7 +3591,11 @@ async fn run_qualification() -> Result<(), String> {
     std::fs::create_dir_all(&a_home).map_err(|e| format!("a home: {e}"))?;
     std::fs::create_dir_all(&b_home).map_err(|e| format!("b home: {e}"))?;
     let a_conf = write_i2pd_conf(&a_home, a_port, Some(a_sam_port), true, false, &loglevel)?;
-    let b_conf = write_i2pd_conf(&b_home, b_port, None, true, true, &loglevel_b)?;
+    // Plan 261 work package A: B enables its stock SAM bridge via the
+    // same conf mechanism as A (loopback port from the lane env). B
+    // stays floodfill (last arg true) so publishes and lookups keep
+    // completing genuinely through stock reference behavior.
+    let b_conf = write_i2pd_conf(&b_home, b_port, Some(b_sam_port), true, true, &loglevel_b)?;
     let a_log = evidence_dir.join("i2pd-a-driver.log");
     let b_log = evidence_dir.join("i2pd-b-driver.log");
 
@@ -3740,6 +3773,11 @@ async fn run_qualification() -> Result<(), String> {
     let sam_addr: SocketAddr = format!("127.0.0.1:{a_sam_port}")
         .parse()
         .map_err(|e| format!("SAM addr: {e}"))?;
+    // Plan 261 work package A: the B-side sender speaks to B's own
+    // stock SAM bridge (separate session, separate socket).
+    let b_sam_addr: SocketAddr = format!("127.0.0.1:{b_sam_port}")
+        .parse()
+        .map_err(|e| format!("B SAM addr: {e}"))?;
 
     let run_ibgw = run_epoch("ibgw");
     if run_ibgw {
@@ -5190,21 +5228,31 @@ async fn run_qualification() -> Result<(), String> {
                 &receiver_hash_hex,
                 &mut rows,
             );
-            let mut tx_receipt = SamClient::connect(sam_addr).await?;
-            tx_receipt.hello().await?;
+            // Plan 261 work package B: the counted send leg is the
+            // B-side sender (the A-side sender leg is deleted from
+            // the counted matrix; its B-endpoint death stays
+            // retained as the Plan 260 B2 boundary, not retried).
+            // `m11-tx-b` is outbound-only through i2pr
+            // (`outbound.length = 1`, zero variance, explicit peer
+            // i2pr), so B's outbound `[i2pr]` puts i2pr — not B —
+            // at the outbound endpoint and no destination garlic
+            // transits B's endpoint. The receiver construction
+            // above is unchanged (proven by Plan 260).
+            let mut tx_b = SamClient::connect(b_sam_addr).await?;
+            tx_b.hello().await?;
             run_sam_epoch(
                 &mut handle,
                 &mut receipt_owner,
                 &mut ledger,
                 Epoch::IbgwReceipt,
-                &mut tx_receipt,
-                "m11-tx-receipt",
+                &mut tx_b,
+                "m11-tx-b",
                 &[
                     ("inbound.length", "0"),
                     ("outbound.length", "1"),
                     ("outbound.quantity", "1"),
                     ("outbound.lengthVariance", "0"),
-                    ("explicitPeers", &b_b64),
+                    ("explicitPeers", &i2pr_b64),
                 ],
                 BuildStop::SessionReady,
                 build_epoch_timeout(),
@@ -5213,14 +5261,37 @@ async fn run_qualification() -> Result<(), String> {
                 &identity,
             )
             .await?
-            .ok_or("Plan 260 receipt epoch: sender session never reported ready")?;
+            .ok_or("Plan 261 receipt epoch: B-side sender session never reported ready")?;
+            // Plan 261 §11.5: the B sender establishes outbound
+            // `[i2pr]` — the typed OBEP accept must reply to B
+            // (the A-side sender's `[B]` accept shape is gone with
+            // the deleted leg).
+            if !ledger.role_accepted(
+                Epoch::IbgwReceipt,
+                TransitHopRoleKind::OutboundEndpoint,
+                &[b_hash_bytes],
+            ) {
+                return Err(
+                    "Plan 261 receipt epoch: B-side sender produced no typed OBEP accept"
+                        .to_string(),
+                );
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "b-sender-obep-accepted",
+                "true",
+                &mut rows,
+            );
             // 1400-byte stimulus: the nested encoding exceeds the
             // 976-byte per-cell capacity, so the counted emission
             // must split into at least two TunnelData cells; the
             // 0xA5 pattern distinguishes this epoch from the
             // legacy 1500 x 0x7E stimulus on its own sockets.
             ensure_sessions(&handle, a_target, b_target).await;
-            let tx_receipt_baseline = reference_a.count_outbound_created();
+            // Plan 261: the sender freshness gate watches B (the
+            // B-side sender's outbound pool), not A.
+            let tx_b_baseline = reference_b.count_outbound_created();
             let receipt_floor_ms = wall_ms();
             let mut receipt_baseline: Vec<u32> = Vec::new();
             let mut rx_receipt_count: usize = 0;
@@ -5256,14 +5327,13 @@ async fn run_qualification() -> Result<(), String> {
                     &mut receipt_owner,
                     &mut ledger,
                     Epoch::IbgwReceipt,
-                    &reference_a,
-                    tx_receipt_baseline,
+                    &reference_b,
+                    tx_b_baseline,
                     Duration::from_secs(12),
                 )
                 .await?;
-                eprintln!("m11-tx-receipt send round started wall_ms={}", wall_ms());
-                tx_receipt
-                    .send_datagram("m11-tx-receipt", &rx_receipt_dest, &vec![0xA5u8; 1400])
+                eprintln!("m11-tx-b send round started wall_ms={}", wall_ms());
+                tx_b.send_datagram("m11-tx-b", &rx_receipt_dest, &vec![0xA5u8; 1400])
                     .await?;
                 drain_data_epoch(
                     &mut handle,
@@ -5310,10 +5380,72 @@ async fn run_qualification() -> Result<(), String> {
                 &rx_receipt_count.to_string(),
                 &mut rows,
             );
+            // Plan 261 work package A.3 + B: B-side LeaseSet
+            // resolution proof and the B-sender terminal outcome.
+            // Resolution is proven behaviorally, never inferred: B
+            // resolving A's receiver LeaseSet is the only way
+            // B-originated tunnel data reaches i2pr's OBEP
+            // registration in this epoch (a failed lookup dies
+            // inside B with `Can't request LeaseSet` and emits
+            // nothing). The outcome key carries the sanitized
+            // terminal signature (B-originated terminal garlics /
+            // genuine ingress / socket receipts) so a stop lands
+            // with exact provenance instead of a bare abort.
+            let i2pr_self_hash = *local_hash.as_bytes();
+            let b_originated: Vec<&Observation> = ledger
+                .of_epoch(Epoch::IbgwReceipt)
+                .filter(|obs| {
+                    obs.kind == ObservedKind::DataDeliveredObep && obs.peer_hash == b_hash_bytes
+                })
+                .collect();
+            let b_terminal_garlic = b_originated
+                .iter()
+                .filter(|obs| {
+                    obs.delivery == "obep-terminal-garlic"
+                        && obs.next_router == Some(i2pr_self_hash)
+                })
+                .count();
+            let b_leaseset_resolved =
+                !b_originated.is_empty() && !reference_b.log_contains("Can't request LeaseSet");
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "b-leaseset-resolved",
+                &b_leaseset_resolved.to_string(),
+                &mut rows,
+            );
+            if !b_leaseset_resolved {
+                return Err(format!(
+                    "Plan 261 receipt epoch: B-side LeaseSet resolution unproven (b-originated OBEP \
+                     observations: {}, B log tail: {})",
+                    b_originated.len(),
+                    reference_b.log_tail(8).replace('\n', " | ")
+                ));
+            }
+            // Plan 261 work package C: the send-leg wall window is
+            // counted evidence for the mesh-sustainability budget
+            // (the matrix must fit the healthy window, §7).
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "send-window-ms",
+                &wall_ms().saturating_sub(receipt_floor_ms).to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "b-sender-outcome",
+                &format!(
+                    "terminal-garlic-self:{b_terminal_garlic}/ingress:{}/socket:{rx_receipt_count}",
+                    gatewayed_receipt.len()
+                ),
+                &mut rows,
+            );
             if gatewayed_receipt.is_empty() {
                 return Err(
-                    "Plan 260 receipt epoch observed no genuine gateway ingress on the \
-                    one-hop creator-owned topology"
+                    "Plan 261 receipt epoch observed no genuine gateway ingress on the \
+                    B-sender topology"
                         .to_string(),
                 );
             }
@@ -5449,7 +5581,7 @@ async fn run_qualification() -> Result<(), String> {
                 &mut rows,
             );
             drop(rx_receipt);
-            drop(tx_receipt);
+            drop(tx_b);
         }
         if receipt_only {
             // Diagnostic subset ends here: ledger/driver TSVs are

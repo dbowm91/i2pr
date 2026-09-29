@@ -107,6 +107,16 @@ GUARDED=(
   m11-i2pd-transit-endpoint-vs-inbound-owner-distinction-source-lock
   # Plan 260 work package B — explicit-peer inbound selection
   m11-i2pd-explicit-peer-inbound-selection-source-lock
+  # Plan 261 work package A — B-side sender source locks + gate
+  m11-i2pd-b-sam-bridge-enabled-source-lock
+  m11-i2pd-explicit-peer-outbound-selection-source-lock
+  m11-i2pd-outbound-endpoint-tunnel-forward-source-lock
+  m11-i2pd-b-leaseset-resolution-source-lock
+  m11-i2pd-b-sam-missing-env-fails
+  # Plan 261 work package B — B-sender receipt rows
+  m11-i2pd-ibgw-b-sender-obep-accepted
+  m11-i2pd-ibgw-b-leaseset-resolved
+  m11-i2pd-ibgw-b-sender-outcome
   # Plan 260 work package D — creator-owned receipt rows
   m11-i2pd-ibgw-creator-local-tunnel-bound
   m11-i2pd-ibgw-pool-owned-local-dispatch
@@ -259,6 +269,10 @@ EPOCH_KEYS=(
   "ibgw-receipt/full-tuple-bound"
   "ibgw-receipt/gateway-receipt"
   "ibgw-receipt/gateway-receipt-once"
+  "ibgw-receipt/b-sender-obep-accepted"
+  "ibgw-receipt/b-leaseset-resolved"
+  "ibgw-receipt/b-sender-outcome"
+  "ibgw-receipt/send-window-ms"
   "participant-data/forward"
   "participant-data/creator-accepted"
   "participant-data/local-forward"
@@ -591,14 +605,17 @@ fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 260' "${HARNESS}"; then
-  fail "runner manifest must name plan 260 (Plan 259/257 authority superseded)"
+if ! grep -qF '"plan": 261' "${HARNESS}"; then
+  fail "runner manifest must name plan 261 (Plan 260 receipt authority superseded)"
 fi
 if grep -qF '"plan": 257' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
 fi
 if grep -qF '"plan": 259' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 259 (Fork-2 receipt-is-OBEP-only conclusion narrowed)"
+fi
+if grep -qF '"plan": 260' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 260 (A-side sender leg deleted; B-sender authority is Plan 261)"
 fi
 if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
@@ -741,6 +758,37 @@ if ! grep -qF 'MissingCreatorLocalTunnel' "${DRIVER}"; then
 fi
 if ! grep -qF 'Epoch::IbgwReceipt' "${DRIVER}"; then
   fail "driver must scope counted receipt evidence to Epoch::IbgwReceipt"
+fi
+
+# ---- Plan 261 work package A/B: B-side sender lane ----
+# The driver must require the B SAM port, own a B-side sender
+# session on B's stock bridge, and prove B-side LeaseSet
+# resolution behaviorally. The deleted A-side receipt sender
+# (`m11-tx-receipt`, whose B-endpoint death is the retained Plan
+# 260 B2 boundary) must not reappear as a counted send leg.
+if ! grep -qF 'I2PD_B_SAM_PORT' "${DRIVER}"; then
+  fail "driver must require the B-side SAM port (I2PD_B_SAM_PORT)"
+fi
+if ! grep -qF 'I2PD_B_SAM_PORT' "${HARNESS}"; then
+  fail "runner must provision the B-side SAM port (I2PD_B_SAM_PORT)"
+fi
+if ! grep -qF 'm11-tx-b' "${DRIVER}"; then
+  fail "driver must own the B-side sender session (m11-tx-b)"
+fi
+if ! grep -qF '"b-sender-obep-accepted"' "${DRIVER}"; then
+  fail "driver must record the B-sender OBEP accept evidence key"
+fi
+if ! grep -qF '"b-leaseset-resolved"' "${DRIVER}"; then
+  fail "driver must record the B-side LeaseSet resolution evidence key"
+fi
+if ! grep -qF '"b-sender-outcome"' "${DRIVER}"; then
+  fail "driver must record the B-sender terminal outcome evidence key"
+fi
+if ! grep -qF 'plan261_b_sam_port_missing_fails_before_network_startup' "${DRIVER}"; then
+  fail "driver must gate missing B-SAM env before network startup"
+fi
+if grep -qF 'm11-tx-receipt' "${DRIVER}"; then
+  fail "driver must not retain the deleted A-side receipt sender leg (retained Plan 260 B2 boundary, not retried)"
 fi
 
 # ---- record_guarded must gate on the exit code ---------------------------

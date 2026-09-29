@@ -34,6 +34,9 @@ I2PD_PORT="${I2PR_I2PD_PORT:-43983}"
 I2PD_B_PORT="${I2PR_I2PD_B_PORT:-43984}"
 I2PR_PORT="${I2PR_M11_PORT:-44181}"
 I2PD_SAM_PORT="${I2PR_I2PD_SAM_PORT:-44983}"
+# Plan 261 work package A: B's stock SAM bridge port (required lane
+# input; the driver fails closed when I2PR_I2PD_B_SAM_PORT is absent).
+I2PD_B_SAM_PORT="${I2PR_I2PD_B_SAM_PORT:-44984}"
 DRIVER_TIMEOUT="1500s"
 
 mkdir -p "${EVIDENCE_DIR}"
@@ -640,6 +643,85 @@ else
     "1"
 fi
 
+# Plan 261 work package A source locks: the B-side sender lane
+# rests on four stock reference behaviors, each pinned to the exact
+# tree. The B SAM bridge is a config surface (`sam.enabled` in
+# i2pd.conf); B's outbound pool selects explicit peers
+# (`CreateOutboundTunnel` → `SelectPeers(path, false)` with the
+# nonempty-explicit preference); the outbound endpoint forwards
+# TUNNEL-delivery garlics to the lease gateway
+# (`TunnelEndpoint::HandleNextMessage` → `SendMessageTo` with a
+# `CreateTunnelGatewayMsg` envelope); and B-side LeaseSet
+# resolution is source-supported because a floodfill lists itself
+# (`m_Floodfills.Insert(GetSharedRouterInfo())`), answers
+# LeaseSet lookups from its local store (`FindLeaseSet` →
+# `CreateDatabaseStoreMsg`), and the client request path asks the
+# closest floodfill (`RequestLeaseSet` → `GetClosestFloodfill` →
+# `SendLeaseSetRequest`).
+if grep -qF '("sam.enabled", value<bool>()->default_value(true)' \
+     "${I2PD_SOURCES}/libi2pd/Config.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-b-sam-bridge-enabled-source-lock" \
+    "B stock SAM bridge config surface source-locked (sam.enabled in Config.cpp)" \
+    "0"
+else
+  record_guarded "m11-i2pd-b-sam-bridge-enabled-source-lock" \
+    "B stock SAM bridge config surface source-locked (sam.enabled in Config.cpp)" \
+    "1"
+fi
+
+if grep -qF 'void TunnelPool::CreateOutboundTunnel (uint64_t ts)' \
+     "${I2PD_SOURCES}/libi2pd/TunnelPool.cpp" 2>/dev/null &&
+   grep -qF 'if (SelectPeers (path, false))' \
+     "${I2PD_SOURCES}/libi2pd/TunnelPool.cpp" 2>/dev/null &&
+   grep -qF 'if (!m_ExplicitPeers.empty ()) return SelectExplicitPeers (path, isInbound);' \
+     "${I2PD_SOURCES}/libi2pd/TunnelPool.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-explicit-peer-outbound-selection-source-lock" \
+    "explicit-peer outbound selection source-locked (CreateOutboundTunnel + SelectPeers false + explicit preference)" \
+    "0"
+else
+  record_guarded "m11-i2pd-explicit-peer-outbound-selection-source-lock" \
+    "explicit-peer outbound selection source-locked (CreateOutboundTunnel + SelectPeers false + explicit preference)" \
+    "1"
+fi
+
+if grep -qF 'case eDeliveryTypeTunnel:' \
+     "${I2PD_SOURCES}/libi2pd/TunnelEndpoint.cpp" 2>/dev/null &&
+   grep -qF 'SendMessageTo (msg.hash, i2p::CreateTunnelGatewayMsg (msg.tunnelID, msg.data));' \
+     "${I2PD_SOURCES}/libi2pd/TunnelEndpoint.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-outbound-endpoint-tunnel-forward-source-lock" \
+    "outbound-endpoint TUNNEL-forward to lease gateway source-locked (TunnelEndpoint::HandleNextMessage + TunnelGateway)" \
+    "0"
+else
+  record_guarded "m11-i2pd-outbound-endpoint-tunnel-forward-source-lock" \
+    "outbound-endpoint TUNNEL-forward to lease gateway source-locked (TunnelEndpoint::HandleNextMessage + TunnelGateway)" \
+    "1"
+fi
+
+if grep -qF 'm_Floodfills.Insert (i2p::context.GetSharedRouterInfo ());' \
+     "${I2PD_SOURCES}/libi2pd/NetDb.cpp" 2>/dev/null &&
+   grep -qF 'auto leaseSet = FindLeaseSet (ident);' \
+     "${I2PD_SOURCES}/libi2pd/NetDb.cpp" 2>/dev/null &&
+   grep -qF 'replyMsg = CreateDatabaseStoreMsg (ident, leaseSet);' \
+     "${I2PD_SOURCES}/libi2pd/NetDb.cpp" 2>/dev/null &&
+   grep -qF 'auto floodfill = i2p::data::netdb.GetClosestFloodfill (dest, excluded);' \
+     "${I2PD_SOURCES}/libi2pd/Destination.cpp" 2>/dev/null &&
+   grep -qF 'if (!SendLeaseSetRequest (dest, floodfill, request))' \
+     "${I2PD_SOURCES}/libi2pd/Destination.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-b-leaseset-resolution-source-lock" \
+    "B-side LeaseSet resolution source-locked (floodfill self-listing + local-store lookup reply + client request path)" \
+    "0"
+else
+  record_guarded "m11-i2pd-b-leaseset-resolution-source-lock" \
+    "B-side LeaseSet resolution source-locked (floodfill self-listing + local-store lookup reply + client request path)" \
+    "1"
+fi
+
+# Plan 261 §11.15: missing B-SAM env fails before network startup
+# (one exact test so a generic pass can never fan out).
+exact_row "m11-i2pd-b-sam-missing-env-fails" \
+  "plan261_b_sam_port_missing_fails_before_network_startup" \
+  "absent/invalid I2PD_B_SAM_PORT fails closed before any socket, process, or file mutation"
+
 # Static guard rows --------------------------------------------------------
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 : > "${GATES_LOG}"
@@ -726,8 +808,9 @@ if I2PD_BIN="${I2PD_BIN}" \
    I2PD_B_DATADIR="${I2PD_B_DATADIR}" \
    I2PD_A_PORT="${I2PD_PORT}" \
    I2PD_B_PORT="${I2PD_B_PORT}" \
-   I2PD_A_SAM_PORT="${I2PD_SAM_PORT}" \
-   I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
+    I2PD_A_SAM_PORT="${I2PD_SAM_PORT}" \
+    I2PD_B_SAM_PORT="${I2PD_B_SAM_PORT}" \
+    I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
    I2PR_M11_LOGLEVEL_B="${I2PR_M11_LOGLEVEL_B:-debug}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
@@ -881,6 +964,17 @@ m11_row "m11-i2pd-ibgw-gateway-receipt" "ibgw-receipt/gateway-receipt" \
   "creator-owned IBGW receipt at the receiver SAM socket"
 m11_row "m11-i2pd-ibgw-gateway-receipt-once" "ibgw-receipt/gateway-receipt-once" \
   "creator-owned IBGW receipt exactly once (no duplicate delivery)"
+# Plan 261 work package B — B-sender receipt rows. The A-side
+# sender leg is deleted from the counted matrix (its B-endpoint
+# death stays retained as the Plan 260 B2 boundary); these rows
+# bind the B-side sender establishment, the B-side LeaseSet
+# resolution proof, and the terminal send-leg signature.
+m11_row "m11-i2pd-ibgw-b-sender-obep-accepted" "ibgw-receipt/b-sender-obep-accepted" \
+  "B-side sender establishes outbound [i2pr] (typed OBEP accept replying to B)"
+m11_row "m11-i2pd-ibgw-b-leaseset-resolved" "ibgw-receipt/b-leaseset-resolved" \
+  "B-side LeaseSet resolution proven behaviorally (B-originated tunnel data, no lookup failure)"
+m11_row "m11-i2pd-ibgw-b-sender-outcome" "ibgw-receipt/b-sender-outcome" \
+  "B-sender terminal send-leg signature (sanitized counts only)"
 m11_row "m11-i2pd-replay-no-second-delivery" "replay/no-second-delivery" \
   "duplicate TunnelData produces no second delivery"
 
@@ -1019,7 +1113,7 @@ datadir_id = os.environ.get(
 )
 evidence = {
     "schema": "i2pr-m11-transit-qualification-v3",
-    "plan": 260,
+    "plan": 261,
     "attempt": attempt,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
@@ -1057,7 +1151,7 @@ evidence = {
         "controlled transit qualification only; no public transit, RouterInfo capability, or public-network participation",
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
-        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 260",
+        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 261",
         "creator-local tunnel id and pool ownership bind behaviorally (typed i2pr evidence + receiver-socket receipt through the one-hop topology); stock i2pd exposes no independent numeric read of InboundTunnel::GetTunnelID",
     ],
 }
@@ -1065,7 +1159,7 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 260 M11 creator-owned inbound receipt topology and planning-authority corrective\n\n")
+    stream.write("# Plan 261 M11 B-sender receipt requalification\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- attempt: `{attempt}` (fresh datadirs per attempt; no cross-attempt merge)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
@@ -1078,7 +1172,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 260 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 261 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 260 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 261 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"

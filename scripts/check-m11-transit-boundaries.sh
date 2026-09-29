@@ -305,7 +305,7 @@ fi
 # 23. The runner must provision explicit fresh datadirs for both
 #     references, drive the corrected lane once per invocation, and
 #     keep the exact pin/version/loopback/reseed gates.
-for token in 'I2PD_A_DATADIR' 'I2PD_B_DATADIR' 'I2PD_A_SAM_PORT' 'DRIVER_TIMEOUT' 'm11_row' 'exact_row'; do
+for token in 'I2PD_A_DATADIR' 'I2PD_B_DATADIR' 'I2PD_A_SAM_PORT' 'I2PD_B_SAM_PORT' 'DRIVER_TIMEOUT' 'm11_row' 'exact_row'; do
     if ! rg -qF "$token" "$external_runner"; then
         fail "external runner missing Plan 256 token $token"
     fi
@@ -361,12 +361,23 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 260 manifest shape (plan 260 + attempt).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 260' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+#     emit the Plan 261 manifest shape (plan 261 + attempt).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 261' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 260 token $token"
+        fail "external runner missing Plan 261 token $token"
     fi
 done
+# 31. Plan 261 work package A: the runner must source-lock the
+#     B-side sender behaviors and provision the B SAM port; the
+#     manifest must not name the superseded A-sender plan 260.
+for token in 'm11-i2pd-b-sam-bridge-enabled-source-lock' 'm11-i2pd-explicit-peer-outbound-selection-source-lock' 'm11-i2pd-outbound-endpoint-tunnel-forward-source-lock' 'm11-i2pd-b-leaseset-resolution-source-lock' 'I2PD_B_SAM_PORT'; do
+    if ! rg -qF "$token" "$external_runner"; then
+        fail "external runner missing Plan 261 token $token"
+    fi
+done
+if rg -qF '"plan": 260' "$external_runner"; then
+    fail "external runner must not name stale plan 260 (B-sender authority is Plan 261)"
+fi
 # 30. The external workflow must run the two-attempt matrix on one
 #     SHA with fail-fast disabled and per-attempt artifacts.
 external_workflow="$root/.github/workflows/m11-transit-external.yml"

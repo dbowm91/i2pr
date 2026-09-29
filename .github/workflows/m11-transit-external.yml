@@ -80,6 +80,7 @@ jobs:
           I2PR_I2PD_PORT: ${{ matrix.attempt == 1 && '43983' || '43993' }}
           I2PR_I2PD_B_PORT: ${{ matrix.attempt == 1 && '43984' || '43994' }}
           I2PR_I2PD_SAM_PORT: ${{ matrix.attempt == 1 && '44983' || '44993' }}
+          I2PR_I2PD_B_SAM_PORT: ${{ matrix.attempt == 1 && '44984' || '44994' }}
 
       - name: Upload sanitized evidence
         if: always()
