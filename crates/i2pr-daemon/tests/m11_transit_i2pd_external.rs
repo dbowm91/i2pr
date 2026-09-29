@@ -6220,6 +6220,13 @@ async fn run_qualification() -> Result<(), String> {
                 wall_secs(),
             )
             .await?;
+            // Plan 264 failure forensics: persist the ledger before
+            // the fail-closed predicate so a predicate failure
+            // retains the Replay-epoch outcome observation (forward
+            // vs drop vs unrecorded containment) instead of losing
+            // it to the early return. The final flush below still
+            // overwrites with complete state on success.
+            ledger.write_evidence(&evidence_dir);
             if !ledger.replay_suppressed(Epoch::Replay, &digest) {
                 return Err("replay epoch produced a second semantic delivery".to_string());
             }
