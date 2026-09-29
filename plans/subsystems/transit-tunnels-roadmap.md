@@ -71,7 +71,7 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
   active reference NetDB before selection, the transit responder key is unrelated to the
   advertised RouterIdentity encryption key, and rejection/replay/expiry/cancel/restart are not
   real external experiments.
-- Plan 256/257 are retained as documented. Plan 258's H3 fragmentation correction is retained and externally proven. Plan 259's nine-chain inventory and transit-endpoint dispatch findings are retained, but its global receipt-is-OBEP-only conclusion is narrowed because it did not model the creator-owned `InboundTunnel` pool path. Plan 260 is registered ready as the creator-owned inbound receipt topology and planning-authority corrective. Ordinary product construction
+- Plan 256/257 are retained as documented. Plan 258's H3 fragmentation correction is retained and externally proven. Plan 259's nine-chain inventory and transit-endpoint dispatch findings are retained, but its global receipt-is-OBEP-only conclusion is narrowed because it did not model the creator-owned `InboundTunnel` pool path. Plan 260 is retained-blocked: its seven creator-owned source locks, explicit-peer lock, fragment-id hardening, tuple validator, and receipt harness all landed with local rows green, and the dedicated receiver 1-hop `[i2pr]` inbound was exhibited live (four `[A,A]` IBGW accepts + SAM STATUS OK on a fresh mesh) — but delivery stops on two exact boundaries: B2 forward-path garlic death at B's endpoint (zero ingress on counted ids over four multicell rounds) and B1 late-run mesh sustainability (establishment 1/3, outbound collapse without floodfill). Plan 261 is registered ready as the B-sender receipt requalification. Ordinary product construction
   remains transit-disabled; its SSU2 pump consults only the disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
@@ -81,7 +81,7 @@ advertises public transit support.
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
 ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
 post-closure audit. Repeated Plan 255 hosted dispatches
-do not count until the evidence/topology defects are corrected. Plan 259 is retained with its topology inventory but corrected by Plan 260 on endpoint ownership; Plan 260 is the next executable M11 plan and restores the IBGW receipt row. M12 stays deferred.
+do not count until the evidence/topology defects are corrected. Plan 259 is retained with its topology inventory but corrected by Plan 260 on endpoint ownership; Plan 260 is retained-blocked with the creator-owned build half proven and B1/B2 delivery boundaries localized; Plan 261 is the next executable M11 plan and executes the §8 B-sender receipt with B-side LeaseSet resolution. M12 stays deferred.
 
 ## 5. Target architecture
 
@@ -147,10 +147,13 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                    Plan 254 live ingress/body closure corrective
                                                                  |
                                                                  v
-                                                   Plan 260 corrected exact-pinned i2pd qualification
-                                                                 |
-                                                                 v
-                                                   M11 experimental closure
+                                                    Plan 260 corrected exact-pinned i2pd qualification
+                                                                  |
+                                                                  v
+                                                    Plan 261 B-sender receipt requalification
+                                                                  |
+                                                                  v
+                                                    M11 experimental closure
                                                                  |
                                                                  v
                                                    M12 floodfill planning
@@ -161,7 +164,7 @@ retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
 its post-closure defects recorded. Plan 256 is retained, Plan 257 is retained with its
 reply/state/evidence repairs locally proven but externally stopped at the IBGW multicell
-boundary, Plan 258 is retained with the emission correction proven, Plan 259's topology inventory/transit-endpoint findings are retained with its global receipt conclusion corrected via Plan 260, and Plan 260 is registered ready as the current creator-owned inbound receipt qualification authority.
+boundary, Plan 258 is retained with the emission correction proven, Plan 259's topology inventory/transit-endpoint findings are retained with its global receipt conclusion corrected via Plan 260, Plan 260 is retained-blocked with source locks, fragment-id hardening, tuple validator, and receipt harness landed plus the receiver 1-hop `[i2pr]` build exhibited live, stopped on the B2-forward/B1-sustainability delivery boundaries, and Plan 261 is registered ready as the B-sender receipt requalification.
 
 ## 7. Milestones
 
@@ -178,7 +181,8 @@ boundary, Plan 258 is retained with the emission correction proven, Plan 259's t
 | 257 | retained | retained-m11-production-self-reply-and-external-evidence-completion-corrective-required-via-plan258 | plans/implementation/transit-tunnels/257-m11-production-self-reply-and-external-evidence-completion-corrective.md | plans/closure/transit-tunnels/257-status.md |
 | 258 | retained | retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259 | plans/implementation/transit-tunnels/258-m11-ibgw-data-plane-multicell-diagnostic-corrective.md | plans/closure/transit-tunnels/258-status.md |
 | 259 | retained | retained-m11-ibgw-receipt-adjudication-endpoint-model-corrective-required-via-plan260 | plans/implementation/transit-tunnels/259-m11-ibgw-receipt-topology-adjudication-diagnostic.md | plans/closure/transit-tunnels/259-status.md |
-| 260 | ready | registered-m11-creator-owned-inbound-receipt-topology-and-planning-authority-corrective-ready | plans/implementation/transit-tunnels/260-m11-creator-owned-inbound-receipt-topology-and-planning-authority-corrective.md | plans/closure/transit-tunnels/260-status.md |
+| 260 | retained | retained-m11-creator-owned-inbound-partially-proven-forward-sustainability-boundary-corrective-required-via-plan261 | plans/implementation/transit-tunnels/260-m11-creator-owned-inbound-receipt-topology-and-planning-authority-corrective.md | plans/closure/transit-tunnels/260-status.md |
+| 261 | ready | registered-m11-b-sender-receipt-requalification-ready | plans/implementation/transit-tunnels/261-m11-b-sender-receipt-requalification.md | plans/closure/transit-tunnels/261-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -274,7 +278,7 @@ and repairs the counted lane by requiring:
   experiments;
 - two complete fresh-datadir external passes on the same i2pr SHA.
 
-M12 remains blocked until Plan 260 closes the corrected receipt-capable external matrix. Public transit and broad two-family conformance remain
+M12 remains blocked until Plan 261 closes the corrected receipt-capable external matrix. Public transit and broad two-family conformance remain
 separate.
 
 ### Plan 257 — production self-reply and external evidence completion corrective
@@ -318,14 +322,27 @@ id to that receiver-owned local tunnel/pool, so it cannot retire the receipt row
 
 ### Plan 260 — creator-owned inbound receipt topology and planning-authority corrective
 
-Plan 260 is the current executable authority. It source-locks the full creator-owned inbound
-construction/dispatch path, uses stock explicit-peer controls to construct a dedicated receiver
-one-hop inbound tunnel through i2pr, binds the i2pr IBGW receive/next tuple to the receiver's
-LeaseSet and creator-local `InboundTunnel`, restores live multicell receipt at the receiver SAM
-socket, hardens constant fragmented IBGW message ids, then carries all remaining Plan 257
-lifecycle/evidence rows through two complete same-SHA external attempts.
+Plan 260 is retained-blocked. It landed the full creator-owned inbound
+source-lock set (seven rows), the explicit-peer inbound-selection lock,
+the six-field receipt-tuple validator with endpoint-class-ordered
+rejections, the `Epoch::IbgwReceipt` evidence shape, per-registration
+and per-role fragmented IBGW message-id hardening with five
+regressions, and the receipt-epoch harness with a non-counted
+receipt-only diagnostic gate — all with local rows green and zero
+regressions in the legacy matrix. Live execution exhibited the
+dedicated receiver 1-hop `[i2pr]` inbound (four `[A,A]` IBGW accepts,
+two with exact +1 cardinality, plus SAM STATUS OK on a fresh mesh),
+then stopped on two exact boundaries with stop provenance: B2
+forward-path garlic death at B's endpoint for A-side senders (zero
+ingress on counted ids over four multicell-forcing rounds; B
+reassembles type-11 fragments with no onward delivery) and B1
+late-run mesh sustainability (receiver establishment 1/3; A's
+outbound plane collapses within ~2 minutes with no floodfill). The
+`[i2pr]`-sender diagnostic variant was statically refuted (no
+data-plane self-loopback by design) and reverted. Plan 261 owns the
+B-sender requalification.
 
-M11 remains non-advertised/unclaimed. M12 remains deferred until Plan 260 closure.
+M11 remains non-advertised/unclaimed. M12 remains deferred until Plan 261 closure.
 
 ## 10. Risks and decision points
 
@@ -353,4 +370,4 @@ Plan 249 is retained with findings corrected by closed Plan 250. Plan 251 closed
 ordinary-CI/source-lock corrective. Plan 252 retains the full-message STBM core. Plan 253
 retains the runtime-neutral data-plane/envelope/rollback/drain/bounded-peer work, with its
 live-owner corrective completed by passed Plan 254. Plan 255 qualification scaffolding is
-retained after post-closure evidence/topology audit. Plan 256 is retained after implementation review; Plan 257 is retained with reply/state/evidence repairs locally proven but stopped at the systematic IBGW multicell boundary; Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded; Plan 259 is retained with corrective required via Plan 260. Plan 260 is registered ready as the current M11 qualification authority. M12 floodfill remains deferred until Plan 260 closes with two complete same-SHA exact-pinned i2pd passes.
+retained after post-closure evidence/topology audit. Plan 256 is retained after implementation review; Plan 257 is retained with reply/state/evidence repairs locally proven but stopped at the systematic IBGW multicell boundary; Plan 258 is retained with the emission correction proven and the receipt-topology boundary recorded; Plan 259 is retained with corrective required via Plan 260. Plan 260 is retained-blocked with the creator-owned build half proven and B1/B2 delivery boundaries localized, corrective required via Plan 261. Plan 261 is registered ready as the B-sender receipt requalification. M12 floodfill remains deferred until Plan 261 closes with two complete same-SHA exact-pinned i2pd passes.

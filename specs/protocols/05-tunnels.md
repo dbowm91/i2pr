@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-260
+### Current M11 qualification authority — Plans 254-261
 
 Plan 254 remains the passed live-owner/body-threading boundary. Plans 255-257 retain their
 documented qualification infrastructure and evidence corrections. Plan 258 retains the
@@ -301,16 +301,21 @@ arrives at the creator's local tunnel id, `InboundTunnel::HandleTunnelDataMsg` s
 `msg->from->GetTunnelPool()->ProcessGarlicMessage` when that tunnel owns the receiver
 destination pool.
 
-Plan 260 is registered ready to exercise that exact topology: a dedicated receiver destination
-on reference A builds a source-supported one-hop inbound tunnel through i2pr, i2pr accepts the
-typed IBGW record, the evidence binds receive id + A + creator-local tunnel id + receiver pool +
-LeaseSet tuple, and a genuine sender on reference B must reach the receiver SAM socket through
-multicell IBGW emission. Plan 260 also owns the known constant fragmented IBGW message-id
-hardening and carries all remaining Plan 257 lifecycle/evidence rows to two complete same-SHA
-external passes.
+Plan 260 is retained-blocked with the creator-owned build half proven live: a
+dedicated receiver destination on reference A builds a source-supported one-hop
+inbound tunnel through i2pr, i2pr accepts the typed IBGW record (`[A,A]`
+accepts with exact cardinality plus SAM STATUS OK on a fresh mesh), the
+fragment-id hardening and six-field tuple validator landed with local rows
+green — but delivery stops on two exact boundaries: forward-path garlic death
+at B's endpoint for A-side senders (zero ingress on counted ids over four
+multicell-forcing rounds despite B-endpoint type-11 reassembly) and late-run
+mesh sustainability (receiver establishment 1/3, outbound collapse without
+floodfill). A genuine sender on reference B must reach the receiver SAM socket
+through multicell IBGW emission under Plan 261, which owns B-side LeaseSet
+resolution and the receipt-first matrix.
 
-M11 remains non-advertised and receipt-capable qualification remains unclaimed until Plan 260
-passes. M12 floodfill remains deferred.
+M11 remains non-advertised and receipt-capable qualification remains unclaimed;
+Plan 261 is the current authority. M12 floodfill remains deferred.
 
 ### Current M11 daemon authority — Plan 253 corrective
 
@@ -365,8 +370,9 @@ role-specific dispatch, TunnelData previous-peer routing, expiry/cancellation,
 `ExploratoryBuildCoordinator` behavior). Ordinary profiles never enable the gate, so
 inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
-This is still non-advertised infrastructure. Plan 260 creator-owned inbound receipt topology
-and planning-authority corrective is registered ready and is the next M11 execution authority.
+This is still non-advertised infrastructure. Plan 260 is retained-blocked with the
+build half proven and B1/B2 delivery boundaries localized; Plan 261 B-sender
+receipt requalification is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
