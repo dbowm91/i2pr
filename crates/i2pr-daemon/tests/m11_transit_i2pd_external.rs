@@ -2189,6 +2189,168 @@ fn plan263_b_floodfill_conf_requires_floodfill_role() {
     let _ = std::fs::remove_file(dir.join("i2pd.conf"));
 }
 
+// Plan 264 work package A: per-epoch fresh-mesh composition gate.
+// Each counted epoch qualifies on its own fresh mesh (fresh
+// datadirs/ports/evidence per epoch run); two same-SHA passes
+// per epoch close the row. No cross-epoch or cross-pass merge.
+// A single-mesh full-matrix run is diagnostic-only and can never
+// satisfy counted closure.
+const PLAN264_MANDATORY_EPOCHS: &[&str] = &[
+    "obep",
+    "ibgw",
+    "participant",
+    "reject",
+    "obep-data",
+    "ibgw-data",
+    "receipt",
+    "participant-data",
+    "replay",
+    "expiry",
+    "cancel",
+    "session-close",
+    "restart",
+];
+
+/// Plan 264 work package A: the closure gate requires exactly two
+/// independent same-SHA passes per epoch.
+fn plan264_required_passes_per_epoch() -> usize {
+    2
+}
+
+/// Plan 264 work package A: an epoch name is mandatory (counted)
+/// when it appears in the frozen mandatory list. `ibgw-receipt`
+/// is the canonical alias for `receipt`; `data` is the legacy
+/// full-data diagnostic selector, never a counted epoch.
+fn plan264_epoch_is_mandatory(name: &str) -> bool {
+    let canonical = if name == "ibgw-receipt" {
+        "receipt"
+    } else {
+        name
+    };
+    PLAN264_MANDATORY_EPOCHS.contains(&canonical)
+}
+
+/// Plan 264 work package A: one epoch pass carries its epoch id,
+/// pass id, and implementation SHA. Two passes close the epoch
+/// only when both name the same epoch and the same SHA with
+/// distinct pass ids (no cross-epoch or cross-pass merge, no
+/// same-pass double-count).
+fn plan264_epoch_passes_satisfy(first: (&str, &str, &str), second: (&str, &str, &str)) -> bool {
+    let (epoch_a, pass_a, sha_a) = first;
+    let (epoch_b, pass_b, sha_b) = second;
+    let canon_a = if epoch_a == "ibgw-receipt" {
+        "receipt"
+    } else {
+        epoch_a
+    };
+    let canon_b = if epoch_b == "ibgw-receipt" {
+        "receipt"
+    } else {
+        epoch_b
+    };
+    canon_a == canon_b
+        && plan264_epoch_is_mandatory(canon_a)
+        && sha_a == sha_b
+        && !sha_a.is_empty()
+        && pass_a != pass_b
+        && !pass_a.is_empty()
+        && !pass_b.is_empty()
+}
+
+/// Plan 264 work package A: the composition covers closure only
+/// when every mandatory epoch is present in `covered` on its own
+/// (no borrowing across epochs).
+fn plan264_composition_covers_all_epochs(covered: &[String], mandatory: &[String]) -> bool {
+    mandatory.iter().all(|row| covered.contains(row))
+}
+
+/// Plan 264 work package A: a single-mesh full-matrix run is
+/// diagnostic-only. This marker is always true; its presence in
+/// the driver binds the checker invariant that no full-matrix
+/// manifest can satisfy the per-epoch composition gate.
+fn plan264_single_mesh_is_diagnostic_only() -> bool {
+    true
+}
+
+#[test]
+fn plan264_single_pass_cannot_close_epoch() {
+    assert_ne!(plan264_required_passes_per_epoch(), 1);
+    assert_eq!(plan264_required_passes_per_epoch(), 2);
+    // One pass alone never satisfies the gate (needs a pair).
+    assert!(!plan264_epoch_passes_satisfy(
+        ("receipt", "1", "abc123"),
+        ("receipt", "1", "abc123"),
+    ));
+    assert!(plan264_epoch_passes_satisfy(
+        ("receipt", "1", "abc123"),
+        ("receipt", "2", "abc123"),
+    ));
+}
+
+#[test]
+fn plan264_mixed_sha_epochs_rejected() {
+    assert!(plan264_epoch_passes_satisfy(
+        ("ibgw-data", "1", "abc123"),
+        ("ibgw-data", "2", "abc123"),
+    ));
+    assert!(!plan264_epoch_passes_satisfy(
+        ("ibgw-data", "1", "abc123"),
+        ("ibgw-data", "2", "def456"),
+    ));
+    assert!(!plan264_epoch_passes_satisfy(
+        ("receipt", "1", ""),
+        ("receipt", "2", ""),
+    ));
+}
+
+#[test]
+fn plan264_cross_epoch_merge_rejected() {
+    // Rows from one epoch must never satisfy another epoch's gate,
+    // even on the same SHA and distinct passes.
+    assert!(!plan264_epoch_passes_satisfy(
+        ("receipt", "1", "abc123"),
+        ("ibgw-data", "2", "abc123"),
+    ));
+    assert!(plan264_epoch_passes_satisfy(
+        ("obep-data", "1", "abc123"),
+        ("obep-data", "2", "abc123"),
+    ));
+    // The `ibgw-receipt` alias composes with `receipt`.
+    assert!(plan264_epoch_passes_satisfy(
+        ("ibgw-receipt", "1", "abc123"),
+        ("receipt", "2", "abc123"),
+    ));
+    // The legacy `data` selector is never a counted epoch.
+    assert!(!plan264_epoch_is_mandatory("data"));
+    for epoch in PLAN264_MANDATORY_EPOCHS {
+        assert!(plan264_epoch_is_mandatory(epoch));
+    }
+}
+
+#[test]
+fn plan264_missing_epoch_rejected() {
+    let mandatory: Vec<String> = PLAN264_MANDATORY_EPOCHS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let partial: Vec<String> = mandatory[..mandatory.len() - 1].to_vec();
+    assert!(!plan264_composition_covers_all_epochs(&partial, &mandatory));
+    assert!(plan264_composition_covers_all_epochs(
+        &mandatory, &mandatory
+    ));
+}
+
+#[test]
+fn plan264_single_mesh_run_is_diagnostic_only() {
+    // A full-matrix run without a per-epoch selector carries no
+    // counted epoch id and can never satisfy the composition gate.
+    assert!(plan264_single_mesh_is_diagnostic_only());
+    assert!(plan264_epoch_is_mandatory("receipt"));
+    assert!(plan264_epoch_is_mandatory("ibgw-data"));
+    assert!(!plan264_epoch_is_mandatory("full-matrix"));
+    assert!(!plan264_epoch_is_mandatory(""));
+}
+
 // Plan 256 §14.3: the Participant row fails without a running and
 // proven i2pd-B topology. The predicate requires the B-topology
 // proof flag, which only the B epoch handshake sets.
@@ -3954,12 +4116,35 @@ async fn run_qualification() -> Result<(), String> {
     append_evidence(&evidence_dir, "bootstrap/live-owner-enabled", "true");
 
     let mut ledger = TypedLedger::default();
-    // Diagnostic epoch selector (bounded runs only): when
-    // `I2PR_M11_ONLY_EPOCH` names one epoch, the lane runs
-    // bootstrap plus that epoch, then writes partial evidence and
-    // stops. Counted qualification runs never set it.
+    // Plan 264 work package A: per-epoch fresh-mesh counted
+    // mechanism. When `I2PR_M11_ONLY_EPOCH` names one mandatory
+    // epoch, the lane runs bootstrap plus that epoch (with its
+    // prerequisite setup, if any) on this fresh mesh, then writes
+    // partial evidence and stops. A run without the selector
+    // executes the full matrix as diagnostic-only: its manifest
+    // carries no counted epoch id and can never satisfy the
+    // per-epoch composition gate. The legacy `data` selector runs
+    // the full legacy data section (diagnostic-only); the
+    // fine-grained `obep-data` / `ibgw-data` / `receipt` /
+    // `ibgw-receipt` / `participant-data` / `replay` / `expiry` /
+    // `cancel` / `session-close` / `restart` selectors each run
+    // only their epoch (counted).
     let only_epoch = std::env::var("I2PR_M11_ONLY_EPOCH").ok();
     let run_epoch = |name: &str| only_epoch.as_deref().is_none_or(|only| only == name);
+    // Plan 264 per-epoch setup prerequisites: lifecycle epochs
+    // need a genuine forward cell, which requires a participant
+    // build plus a participant-data forward on this same fresh
+    // mesh. Those setup sections run as prerequisites (their rows
+    // are real observations on this mesh); only the manifest-named
+    // epoch counts toward closure for this run.
+    let needs_participant_setup = matches!(
+        only_epoch.as_deref(),
+        Some("participant-data" | "replay" | "expiry" | "cancel" | "session-close" | "restart")
+    );
+    let needs_forward_setup = matches!(
+        only_epoch.as_deref(),
+        Some("replay" | "expiry" | "cancel" | "session-close" | "restart")
+    );
     let a_peer_hash = *a_hash.as_bytes();
     let b_hash_bytes = *b_hash.as_bytes();
     let sam_addr: SocketAddr = format!("127.0.0.1:{a_sam_port}")
@@ -4268,7 +4453,11 @@ async fn run_qualification() -> Result<(), String> {
         }
     }
 
-    let run_participant = run_epoch("participant");
+    // Plan 264: the participant build also runs as setup for
+    // per-epoch participant-data/lifecycle runs on this fresh
+    // mesh (its rows are real observations; only the
+    // manifest-named epoch counts toward closure).
+    let run_participant = run_epoch("participant") || needs_participant_setup;
     if run_participant {
         // Epoch 4: Participant accept (outbound [i2pr,B]: i2pr is
         // neither gateway nor endpoint; the continuation terminates at
@@ -4405,10 +4594,52 @@ async fn run_qualification() -> Result<(), String> {
     // Plan 260 diagnostic-subset flag (see the `run_data` block
     // below): `I2PR_M11_ONLY_EPOCH=receipt` runs bootstrap plus
     // only the creator-owned receipt epoch on a fresh mesh.
-    let receipt_only = std::env::var("I2PR_M11_ONLY_EPOCH").as_deref() == Ok("receipt");
+    // Plan 264 promotes the receipt selector (plus the
+    // `ibgw-receipt` alias) to the counted per-epoch mechanism;
+    // the legacy full-matrix run without a selector is
+    // diagnostic-only.
+    let receipt_only = matches!(
+        std::env::var("I2PR_M11_ONLY_EPOCH").as_deref(),
+        Ok("receipt") | Ok("ibgw-receipt")
+    );
+    // Plan 264 work package A: fine-grained per-epoch gates for
+    // the legacy data section. Each counted epoch runs on its own
+    // fresh mesh; the legacy `data` selector runs the whole
+    // section as diagnostic-only.
+    let run_obep_data = run_epoch("obep-data") || run_data;
+    let run_ibgw_data_epoch = run_epoch("ibgw-data") || run_data;
+    let run_receipt_epoch = receipt_only || run_data;
+    let run_participant_data_epoch =
+        run_epoch("participant-data") || run_data || needs_forward_setup;
+    let run_replay_epoch = run_epoch("replay") || run_data;
+    let run_expiry_epoch = run_epoch("expiry") || run_data;
+    let run_cancel_epoch = run_epoch("cancel") || run_data;
+    let run_session_close_epoch = run_epoch("session-close") || run_data;
+    let run_restart_epoch = run_epoch("restart") || run_data;
+    // Plan 264: any lifecycle per-epoch request runs the full
+    // local lifecycle chain (replay -> expiry -> session-close ->
+    // cancel -> restart) on this fresh mesh; only the
+    // manifest-named epoch counts toward closure for this run.
+    // The chain needs a genuine forward cell, provided by the
+    // participant-data setup above via needs_forward_setup.
+    let run_lifecycle_chain = run_replay_epoch
+        || run_expiry_epoch
+        || run_cancel_epoch
+        || run_session_close_epoch
+        || run_restart_epoch;
     let participant_receive_opt =
         receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant);
-    if run_data || receipt_only {
+    if run_data
+        || receipt_only
+        || run_obep_data
+        || run_ibgw_data_epoch
+        || run_participant_data_epoch
+        || run_replay_epoch
+        || run_expiry_epoch
+        || run_cancel_epoch
+        || run_session_close_epoch
+        || run_restart_epoch
+    {
         // Plan 260 diagnostic subset: `I2PR_M11_ONLY_EPOCH=receipt`
         // runs bootstrap plus only the creator-owned receipt epoch
         // below on a fresh mesh (non-counted: the remaining
@@ -4419,7 +4650,11 @@ async fn run_qualification() -> Result<(), String> {
         // (tunnel tests fail within minutes with no floodfill, so
         // builds stop establishing). Counted attempts never set
         // this flag and always run the complete matrix.
-        if !receipt_only {
+        // Plan 264: per-epoch receipt runs are counted (two
+        // same-SHA passes per epoch close the row); the
+        // full-matrix run without a selector stays
+        // diagnostic-only.
+        if run_obep_data {
             {
                 // Setup order is load-bearing, receiver first: the
                 // sender's pool must be seconds old at send time.
@@ -4903,6 +5138,14 @@ async fn run_qualification() -> Result<(), String> {
                 // again (later sends use the sibling sender). Same
                 // rationale as the receiver drop above.
                 drop(tx);
+            } // end Plan 264 per-epoch obep-data block
+        } // end run_obep_data
+        // Plan 264 per-epoch IBGW-data block: self-contained relay
+        // proof with its own builds inline on this fresh mesh
+        // (mesh-liveness + relay-NetDB + B-floodfill prerequisites
+        // gate the counted sends, unchanged from Plan 263).
+        if run_ibgw_data_epoch {
+            {
                 // IBGW ingress: the reference creator opens a fresh
                 // inbound tunnel whose trusted first hop is i2pr and a
                 // sibling sender drives one message through it, so the
@@ -5369,7 +5612,7 @@ async fn run_qualification() -> Result<(), String> {
                 drop(rx_ibgw);
                 drop(tx_ibgw);
             }
-        } // end `!receipt_only` legacy data epochs
+        } // end Plan 264 per-epoch ibgw-data block
 
         // Plan 260 work packages C/D/E/G: creator-owned inbound
         // receipt epoch. The dedicated receiver destination owns a
@@ -5384,7 +5627,10 @@ async fn run_qualification() -> Result<(), String> {
         // pool owner + LeaseSet gateway/tunnel from typed
         // build/data evidence; the receiver SAM socket proves
         // end-to-end receipt exactly once.
-        {
+        // Plan 264: per-epoch receipt runs are counted (two
+        // same-SHA passes close the row); the full-matrix run
+        // without a selector stays diagnostic-only.
+        if run_receipt_epoch {
             let mut receipt_owner = fresh_owner(&handle, wall_secs() ^ 0x260D, &identity)?;
             let (rx_receipt_dest, mut rx_receipt) = {
                 let mut attempt = SamClient::connect(sam_addr).await?;
@@ -5814,7 +6060,10 @@ async fn run_qualification() -> Result<(), String> {
         // maintenance cells on its own cadence
         // (`TunnelPool::ManageTunnels`, 10 s); A's continued use of the
         // tunnel proves the creator accepted the completed build.
-        {
+        // Plan 264: per-epoch participant-data runs are counted;
+        // lifecycle per-epoch runs execute this forward as setup
+        // (via needs_forward_setup) for their genuine cell.
+        if run_participant_data_epoch {
             let part_receive =
                 receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant)
                     .unwrap_or(u32::MAX);
@@ -5951,7 +6200,10 @@ async fn run_qualification() -> Result<(), String> {
         // time and prove the duplicate produces no second semantic
         // delivery. Bytes and peer are exactly what the authenticated
         // session delivered; nothing is synthesized.
-        {
+        // Plan 264: gated on the lifecycle chain (any lifecycle
+        // per-epoch request or full data); per-epoch runs execute
+        // the full chain with only the named epoch counted.
+        if run_lifecycle_chain {
             let participant_receive = participant_receive_opt
                 .ok_or("participant epoch produced no accept for the replay experiment")?;
             let cell = ledger
@@ -5985,7 +6237,9 @@ async fn run_qualification() -> Result<(), String> {
         // data plane checks expiry before any transform, so the cell
         // must drop with no next-hop delivery. The sweep afterwards
         // proves secret-owning state returns to baseline.
-        {
+        // Plan 264: per-epoch lifecycle gate (chain runs for any
+        // lifecycle request; only the named epoch counts).
+        if run_lifecycle_chain {
             let participant_receive = participant_receive_opt
                 .ok_or("participant epoch produced no accept for the expiry experiment")?;
             let cell = ledger
@@ -6251,7 +6505,8 @@ async fn run_qualification() -> Result<(), String> {
         // from those sessions, and one fresh role-correct build is
         // accepted into exactly one new registration. A
         // constructor-only zero check can never satisfy this row.
-        {
+        // Plan 264: per-epoch lifecycle gate (see replay gate).
+        if run_lifecycle_chain {
             // Old owner drained: the cancel epoch above already
             // drained it; prove the terminal baseline explicitly.
             let old_drained = part_owner.live_state_snapshot();

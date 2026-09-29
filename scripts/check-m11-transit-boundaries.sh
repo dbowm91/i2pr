@@ -361,14 +361,18 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 263 manifest shape (plan 263 + attempt).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 263' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+#     emit the Plan 264 manifest shape (plan 264 + attempt + epoch
+#     + epoch pass).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 264' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 263 token $token"
+        fail "external runner missing Plan 264 token $token"
     fi
 done
+if rg -qF '"plan": 263' "$external_runner"; then
+    fail "external runner must not name stale plan 263 (scoping authority is Plan 264)"
+fi
 if rg -qF '"plan": 262' "$external_runner"; then
-    fail "external runner must not name stale plan 262 (sustainability authority is Plan 263)"
+    fail "external runner must not name stale plan 262 (scoping authority is Plan 264)"
 fi
 # 31. Plan 261 work package A: the runner must source-lock the
 #     B-side sender behaviors and provision the B SAM port; the
@@ -459,15 +463,31 @@ for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOU
     fi
 done
 # 30. The external workflow must run the two-attempt matrix on one
-#     SHA with fail-fast disabled and per-attempt artifacts.
+#     SHA with fail-fast disabled and per-attempt artifacts, plus
+#     the Plan 264 per-epoch inputs (epoch selector + pass id).
+#     Full-matrix runs without an epoch are diagnostic-only.
 external_workflow="$root/.github/workflows/m11-transit-external.yml"
 if [[ ! -f "$external_workflow" ]]; then
     fail "M11 external workflow missing: $external_workflow"
 fi
-for token in 'attempt: [1, 2]' 'fail-fast: false' 'I2PR_M11_ATTEMPT' 'm11-transit-evidence-attempt-'; do
+for token in 'attempt: [1, 2]' 'fail-fast: false' 'I2PR_M11_ATTEMPT' 'm11-transit-evidence-attempt-' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS'; do
     if ! rg -qF "$token" "$external_workflow"; then
-        fail "external workflow missing Plan 257 token $token"
+        fail "external workflow missing Plan 264 token $token"
     fi
 done
+# 37. Plan 264 work package A: the driver must own the per-epoch
+#     fresh-mesh lane (fine-grained epoch gates, setup
+#     prerequisites, lifecycle chain) plus the composition-gate
+#     predicates and regressions, without tuning any lane
+#     constant (frozen values locked below alongside rule 36).
+for symbol in 'PLAN264_MANDATORY_EPOCHS' 'plan264_epoch_is_mandatory' 'plan264_epoch_passes_satisfy' 'plan264_composition_covers_all_epochs' 'plan264_single_mesh_is_diagnostic_only' 'needs_participant_setup' 'needs_forward_setup' 'run_lifecycle_chain' 'run_obep_data' 'run_ibgw_data_epoch' 'run_receipt_epoch' 'run_participant_data_epoch' 'plan264_single_pass_cannot_close_epoch' 'plan264_mixed_sha_epochs_rejected' 'plan264_cross_epoch_merge_rejected' 'plan264_missing_epoch_rejected' 'plan264_single_mesh_run_is_diagnostic_only'; do
+    if ! rg -qF "$symbol" "$external_driver"; then
+        fail "external driver missing Plan 264 per-epoch symbol $symbol"
+    fi
+done
+# The per-epoch composition checker must exist and be wired.
+if [[ ! -f "$root/scripts/check-m11-per-epoch-composition.sh" ]]; then
+    fail "Plan 264 per-epoch composition checker missing: scripts/check-m11-per-epoch-composition.sh"
+fi
 
 echo "check-m11-transit-boundaries: passed"

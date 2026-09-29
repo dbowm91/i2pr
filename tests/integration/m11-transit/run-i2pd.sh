@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
-# Plan 263 — M11 qualification-sustainability corrective runner (inherits the
-# Plan 255-262 lane: single Rust qualification driver + exact-pinned i2pd A+B).
+# Plan 264 — M11 single-mesh sustainability scoping runner (inherits the
+# Plan 255-263 lane: single Rust qualification driver + exact-pinned i2pd A+B).
+#
+# Per-epoch fresh-mesh counted mechanism: set I2PR_M11_ONLY_EPOCH to one
+# mandatory epoch (obep | ibgw | participant | reject | obep-data |
+# ibgw-data | receipt | ibgw-receipt | participant-data | replay |
+# expiry | cancel | session-close | restart) and I2PR_M11_EPOCH_PASS to
+# 1 or 2; the driver runs bootstrap plus that epoch on a fresh mesh
+# and the manifest below records plan:264 + epoch + pass for the
+# per-epoch composition gate (two same-SHA passes per epoch, no
+# cross-epoch merge). A run without I2PR_M11_ONLY_EPOCH executes the
+# full matrix as diagnostic-only (manifest epoch "full-matrix",
+# never counted).
 #
 # The external lane is owned by the single Rust qualification driver
 # `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`, which generates
@@ -41,7 +52,7 @@ I2PD_B_SAM_PORT="${I2PR_I2PD_B_SAM_PORT:-44984}"
 DRIVER_TIMEOUT="1500s"
 
 mkdir -p "${EVIDENCE_DIR}"
-SCRATCH="$(mktemp -d -t i2pr-m11-plan263.XXXXXX)"
+SCRATCH="$(mktemp -d -t i2pr-m11-plan264.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
 # Fresh per-run reference datadirs. The driver installs the public
@@ -789,8 +800,9 @@ GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 gates_rc=0
 bash "${REPO_ROOT}/scripts/check-m11-transit-boundaries.sh" >>"${GATES_LOG}" 2>&1 || gates_rc=1
 bash "${REPO_ROOT}/scripts/check-m11-transit-qualification-evidence.sh" >>"${GATES_LOG}" 2>&1 || gates_rc=1
+bash "${REPO_ROOT}/scripts/check-m11-per-epoch-composition.sh" >>"${GATES_LOG}" 2>&1 || gates_rc=1
 record_guarded "m11-i2pd-runner-pinned" \
-  "static boundary + Plan 256 evidence checkers (check-m11-transit-{boundaries,qualification-evidence}.sh)" \
+  "static boundary + Plan 256 evidence + Plan 264 composition checkers (check-m11-transit-{boundaries,qualification-evidence}.sh + check-m11-per-epoch-composition.sh)" \
   "${gates_rc}"
 
 if grep -qF '127.0.0.1' "${REPO_ROOT}/tests/integration/m11-transit/run-i2pd.sh"; then
@@ -1110,7 +1122,7 @@ ws_rc=0
 cargo fmt --all --check >>"${WS_GATES_LOG}" 2>&1 || ws_rc=1
 cargo check --locked --workspace --all-targets >>"${WS_GATES_LOG}" 2>&1 || ws_rc=1
 for gate in check-dependency-direction check-runtime-boundaries check-service-tunnel-boundaries \
-           check-m11-transit-boundaries check-m11-transit-qualification-evidence \
+           check-m11-transit-boundaries check-m11-transit-qualification-evidence check-m11-per-epoch-composition \
            check-fixture-manifest check-ntcp2-vectors check-ssu2-vectors check-i2cp-vectors \
            check-ntcp2-interoperability check-constrained-host-lane-boundary \
            check-sam-acceptance-evidence check-ssu2-acceptance-evidence \
@@ -1124,7 +1136,7 @@ for gate in check-dependency-direction check-runtime-boundaries check-service-tu
   fi
 done
 record_guarded "m11-i2pd-driver-exists" \
-  "fmt + workspace check + 18 static gate scripts (full test/clippy/doc/deny floor stays in routine CI)" \
+  "fmt + workspace check + 19 static gate scripts (full test/clippy/doc/deny floor stays in routine CI)" \
   "${ws_rc}"
 
 python3 - "${RESULTS_FILE}" "${EVIDENCE_DIR}" "${REPO_ROOT}" "${I2PD_PIN}" "${I2PD_VERSION}" <<'PY'
@@ -1169,13 +1181,21 @@ if ledger_tsv.exists():
 all_passed = all(row["status"] == "passed" for row in rows)
 import os
 attempt = os.environ.get("I2PR_M11_ATTEMPT", "1")
+only_epoch = os.environ.get("I2PR_M11_ONLY_EPOCH", "")
+epoch_pass = os.environ.get("I2PR_M11_EPOCH_PASS", attempt)
+# Counted per-epoch manifests name plan 264 + the manifest epoch +
+# the per-epoch pass id. A full-matrix run without a selector is
+# diagnostic-only (epoch "full-matrix", never counted).
+manifest_epoch = only_epoch if only_epoch else "full-matrix"
 datadir_id = os.environ.get(
     "I2PR_M11_DATADIR_ID", Path(evidence_dir).name or "local",
 )
 evidence = {
-    "schema": "i2pr-m11-transit-qualification-v3",
-    "plan": 263,
+    "schema": "i2pr-m11-transit-qualification-v4",
+    "plan": 264,
     "attempt": attempt,
+    "epoch": manifest_epoch,
+    "epoch_pass": epoch_pass,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
     "os_image": platform.platform(),
@@ -1212,18 +1232,20 @@ evidence = {
         "controlled transit qualification only; no public transit, RouterInfo capability, or public-network participation",
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
-        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 263",
+        "closure requires two same-SHA fresh-mesh passes per mandatory epoch (epoch + epoch_pass recorded per manifest); one pass never closes an epoch; cross-epoch merge never closes; a full-matrix run without an epoch selector is diagnostic-only and never counted",
         "creator-local tunnel id and pool ownership bind behaviorally (typed i2pr evidence + receiver-socket receipt through the one-hop topology); stock i2pd exposes no independent numeric read of InboundTunnel::GetTunnelID",
-        "Plan 263 harness-only sustainability corrective: mesh-liveness + relay-NetDB + B-floodfill prerequisites fail closed before counted sends; no timeout/quota/ceiling/retry/message-size change from Plan 262",
+        "Plan 264 scoping-only corrective: per-epoch fresh-mesh isolation + composition gate with zero production diff; mesh-liveness + relay-NetDB + B-floodfill prerequisites still fail closed before counted sends; no timeout/quota/ceiling/retry/message-size change from Plan 263",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 263 M11 qualification-sustainability corrective\n\n")
+    stream.write("# Plan 264 M11 single-mesh sustainability scoping\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
-    stream.write(f"- attempt: `{attempt}` (fresh datadirs per attempt; no cross-attempt merge)\n")
+    stream.write(f"- attempt: `{attempt}` (fresh datadirs per run; no cross-run merge)\n")
+    stream.write(f"- epoch: `{manifest_epoch}` (per-epoch counted manifest; `full-matrix` is diagnostic-only)\n")
+    stream.write(f"- epoch_pass: `{epoch_pass}` (two same-SHA passes per epoch close the row)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
     stream.write(f"- OS/image: `{platform.platform()}`\n")
     stream.write(f"- Rust: `{rustc}`\n")
@@ -1234,7 +1256,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 263 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 264 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 263 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 264 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"

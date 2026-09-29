@@ -609,8 +609,8 @@ fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 263' "${HARNESS}"; then
-  fail "runner manifest must name plan 263 (Plan 262 sustainability authority superseded)"
+if ! grep -qF '"plan": 264' "${HARNESS}"; then
+  fail "runner manifest must name plan 264 (Plan 263 single-mesh authority superseded)"
 fi
 if grep -qF '"plan": 257' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
@@ -624,8 +624,11 @@ fi
 if grep -qF '"plan": 261' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 261 (B3 self-delivery boundary corrected by Plan 262)"
 fi
+if grep -qF '"plan": 263' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 263 (scoping authority is Plan 264)"
+fi
 if grep -qF '"plan": 262' "${HARNESS}"; then
-  fail "runner manifest must not name stale plan 262 (sustainability authority is Plan 263)"
+  fail "runner manifest must not name stale plan 262 (scoping authority is Plan 264)"
 fi
 if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
@@ -938,6 +941,42 @@ done
 # Enforced at closure review via `git diff --stat`; the harness
 # proves it here by requiring the Plan 262 production shapes
 # above unchanged (dedicated struct, exact receive-id, seam).
+
+# ---- Plan 264 work package A: per-epoch scoping, zero prod diff ----
+# The per-epoch lane (fine-grained epoch gates + setup
+# prerequisites + lifecycle chain + composition predicates) is
+# proven above in the boundary checker (rule 37) and the
+# dedicated composition checker. This section locks the
+# composition regressions + manifest epoch/pass shape + the
+# diagnostic-only full-matrix rule at the evidence level.
+for test_row in 'plan264_single_pass_cannot_close_epoch' 'plan264_mixed_sha_epochs_rejected' 'plan264_cross_epoch_merge_rejected' 'plan264_missing_epoch_rejected' 'plan264_single_mesh_run_is_diagnostic_only'; do
+  if ! grep -qF "${test_row}" "${DRIVER}"; then
+    fail "Plan 264 composition regression missing: ${test_row}"
+  fi
+done
+for symbol in 'PLAN264_MANDATORY_EPOCHS' 'plan264_epoch_passes_satisfy' 'run_obep_data' 'run_ibgw_data_epoch' 'run_receipt_epoch' 'run_participant_data_epoch' 'run_lifecycle_chain'; do
+  if ! grep -qF "${symbol}" "${DRIVER}"; then
+    fail "driver missing Plan 264 per-epoch symbol ${symbol}"
+  fi
+done
+if ! grep -qF '"epoch": manifest_epoch' "${HARNESS}"; then
+  fail "runner manifest must carry the per-epoch id (epoch)"
+fi
+if ! grep -qF '"epoch_pass": epoch_pass' "${HARNESS}"; then
+  fail "runner manifest must carry the per-epoch pass id (epoch_pass)"
+fi
+if ! grep -qF 'I2PR_M11_EPOCH_PASS' "${HARNESS}"; then
+  fail "runner must provision the per-epoch pass input (I2PR_M11_EPOCH_PASS)"
+fi
+# No tuning under Plan 264 either: the frozen Plan 262 lane
+# numerics must be intact (same list as the Plan 263 section).
+for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOUT: Duration = Duration::from_secs(15)' 'SETUP_HEARTBEAT_SECS: u64 = 30' 'MAX_SAM_DATAGRAM_RX_BYTES: usize = 8192' 'MAX_LEDGER_OBSERVATIONS: usize = 4096'; do
+  if ! grep -qF "${binding}" "${DRIVER}"; then
+    fail "driver changed a frozen Plan 262 lane constant: ${binding}"
+  fi
+done
+# Zero production diff under Plan 264 as well (scoping-only
+# corrective): enforced at closure review via `git diff --stat`.
 
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then
