@@ -347,11 +347,14 @@ On the implementation head (all green):
   11 evidence/boundary checkers incl. both M11 checkers).
 - `git diff --check` — clean.
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): PENDING at
-write time; recorded in a follow-up commit per the Plan 258/259
-precedent. No external execution is required to close under
-retained/blocked (three fail-closed executions already bound
-the B1/B2 signatures).
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on the
+closure head — Actions run `36527386456` on head `ab1faac`
+(Quality ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+Dependency policy: all success). The run covers the complete Plan
+260 implementation plus the closure record, Plan 261 registration,
+and all planning/spec updates. No external execution is required
+to close under retained/blocked (three fail-closed executions
+already bound the B1/B2 signatures).
 
 ## Invariant / failure / migration / security reviews
 
