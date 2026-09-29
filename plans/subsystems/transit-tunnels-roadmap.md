@@ -50,7 +50,7 @@ knowledge.
 
 ## 3. Non-goals
 
-No public-network transit in Plans 249-260; no floodfill (M12); no new ElGamal generation;
+No public-network transit in Plans 249-262; no floodfill (M12); no new ElGamal generation;
 no Proposal 153 data layer; no broad RouterInfo/router.version change in Plan 249; no Java
 full-router gate for experimental M11 progression; no resource-governor bypass.
 
@@ -71,7 +71,7 @@ The runtime-neutral and controlled-owner substrate is substantially complete:
   active reference NetDB before selection, the transit responder key is unrelated to the
   advertised RouterIdentity encryption key, and rejection/replay/expiry/cancel/restart are not
   real external experiments.
-- Plan 256/257 are retained as documented. Plan 258's H3 fragmentation correction is retained and externally proven. Plan 259's nine-chain inventory and transit-endpoint dispatch findings are retained, but its global receipt-is-OBEP-only conclusion is narrowed because it did not model the creator-owned `InboundTunnel` pool path. Plan 260 is retained-blocked: its seven creator-owned source locks, explicit-peer lock, fragment-id hardening, tuple validator, and receipt harness all landed with local rows green, and the dedicated receiver 1-hop `[i2pr]` inbound was exhibited live (four `[A,A]` IBGW accepts + SAM STATUS OK on a fresh mesh) — but delivery stops on two exact boundaries: B2 forward-path garlic death at B's endpoint (zero ingress on counted ids over four multicell rounds) and B1 late-run mesh sustainability (establishment 1/3, outbound collapse without floodfill). Plan 261 is retained-blocked: its B-sender lane work all landed with local rows green (four B-side source locks, B SAM plumbing with fail-closed env gate, `m11-tx-b` sender shape, terminal-signature instrumentation), and live execution proved the B-sender topology through addressing (B outbound `[i2pr]` established, B-side LeaseSet resolved from the floodfill store, all four sends naming counted `[A,A]` ids) — but delivery stops on one exact boundary: B3 self-delivery loopback gap (self-targeted OBEP TUNNEL actions terminate `NoActiveSession`, zero ingress, zero socket receipt). Plan 262 is registered ready as the self-delivery loopback corrective. Ordinary product construction
+- Plan 256/257 are retained as documented. Plan 258's H3 fragmentation correction is retained and externally proven. Plan 259's nine-chain inventory and transit-endpoint dispatch findings are retained, but its global receipt-is-OBEP-only conclusion is narrowed because it did not model the creator-owned `InboundTunnel` pool path. Plan 260 is retained-blocked: its seven creator-owned source locks, explicit-peer lock, fragment-id hardening, tuple validator, and receipt harness all landed with local rows green, and the dedicated receiver 1-hop `[i2pr]` inbound was exhibited live (four `[A,A]` IBGW accepts + SAM STATUS OK on a fresh mesh) — but delivery stops on two exact boundaries: B2 forward-path garlic death at B's endpoint (zero ingress on counted ids over four multicell rounds) and B1 late-run mesh sustainability (establishment 1/3, outbound collapse without floodfill). Plan 261 is retained-blocked: its B-sender lane work all landed with local rows green (four B-side source locks, B SAM plumbing with fail-closed env gate, `m11-tx-b` sender shape, terminal-signature instrumentation), and live execution proved the B-sender topology through addressing (B outbound `[i2pr]` established, B-side LeaseSet resolved from the floodfill store, all four sends naming counted `[A,A]` ids) — but delivery stops on one exact boundary: B3 self-delivery loopback gap (self-targeted OBEP TUNNEL actions terminate `NoActiveSession`, zero ingress, zero socket receipt). Plan 262 is registered ready as the IBGW ingress ownership + self-delivery loopback corrective; pre-execution source review additionally requires removing inherited build-creator peer affinity from IBGW TunnelGateway data while preserving Participant/OBEP peer locks. Ordinary product construction
   remains transit-disabled; its SSU2 pump consults only the disabled probe.
 
 Current I2NP API 0.9.65 defines m/r/l/b bandwidth parameters. API 0.9.68+ requires tunnel
@@ -81,7 +81,7 @@ advertises public transit support.
 Plan 249 remains retained historical work corrected by Plan 250. Plan 251 repaired the
 ordinary CI/source-lock boundary. Plan 255 qualification infrastructure is retained after the
 post-closure audit. Repeated Plan 255 hosted dispatches
-do not count until the evidence/topology defects are corrected. Plan 259 is retained with its topology inventory but corrected by Plan 260 on endpoint ownership; Plan 260 is retained-blocked with the creator-owned build half proven and B1/B2 delivery boundaries localized; Plan 261 is retained-blocked with the B-sender topology proven through counted-id addressing and the B3 self-delivery boundary localized; Plan 262 is the next executable M11 plan and lands the bounded self-delivery loopback arm. M12 stays deferred.
+do not count until the evidence/topology defects are corrected. Plan 259 is retained with its topology inventory but corrected by Plan 260 on endpoint ownership; Plan 260 is retained-blocked with the creator-owned build half proven and B1/B2 delivery boundaries localized; Plan 261 is retained-blocked with the B-sender topology proven through counted-id addressing and the B3 self-delivery boundary localized; Plan 262 is the next executable M11 plan: it corrects IBGW receive-id ownership / creator-peer affinity and lands the bounded self-delivery loopback arm through one source-neutral IBGW seam. M12 stays deferred.
 
 ## 5. Target architecture
 
@@ -371,6 +371,8 @@ receipt). The receipt-first reorder and the full lifecycle
 matrix were not executed (stop fired in the diagnostic
 subset) and belong to Plan 262's qualification. Plan 262 owns
 the bounded self-delivery loopback corrective.
+
+Pre-execution Plan 262 source review also found that current i2pr IBGW `TunnelGateway` processing inherits Participant-style build-creator `previous_peer` affinity, while exact-pinned i2pd dispatches gateway data by live tunnel id without creator-peer comparison. Plan 262 therefore owns that ingress-authorization correction and a source-neutral IBGW seam in addition to the B3 local loopback arm. Participant/OBEP previous-peer locks remain unchanged.
 
 M11 remains non-advertised/unclaimed. M12 remains deferred until Plan 262 closure.
 

@@ -329,11 +329,7 @@ session peer seam, which maps only remote peers (4/4 rounds
 plus 33 background self-terminals, zero ingress, zero socket
 receipt). Stock i2pd performs the missing step in
 `Transports::PostMessages` (self comparison into the local
-`LoopbackHandler`); i2pr has no equivalent. Plan 262 owns the
-bounded self-delivery corrective: reroute the already-decoded
-self-targeted TUNNEL action into the existing local
-`route_tunnel_gateway` IBGW ingress, with unknown id / wrong
-peer / non-IBGW / expired still dropping.
+`LoopbackHandler`); i2pr has no equivalent. Plan 262 owns the bounded IBGW ingress ownership + self-delivery corrective. Exact-pinned i2pd `Tunnels` routes `TunnelGateway` by live tunnel id (`GetTunnel(tunnelID)` -> `HandleTunnelGatewayMsg` -> `SendTunnelDataMsg`) without comparing the data sender to the tunnel builder, so i2pr must first remove the inherited Participant-style build-creator `previous_peer` restriction from IBGW gateway data while retaining it for Participant/OBEP TunnelData. The daemon then reroutes an already-decoded self-targeted OBEP TUNNEL action into the same source-neutral local IBGW seam without fabricating a `PeerId`; unknown/zero/non-IBGW/expired/cancelled ids still fail closed.
 
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
 Plan 262 is the current authority. M12 floodfill remains deferred.
@@ -393,8 +389,7 @@ inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
 This is still non-advertised infrastructure. Plan 261 is retained-blocked with the
 B-sender topology proven through counted-id addressing and the B3 self-delivery
-boundary localized; Plan 262 self-delivery loopback corrective is registered
-ready and is the next M11 execution authority.
+boundary localized; Plan 262 IBGW ingress ownership + self-delivery loopback corrective is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
