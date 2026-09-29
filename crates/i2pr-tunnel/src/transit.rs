@@ -848,6 +848,18 @@ pub struct TransitParticipantData {
     /// Bounded exact-replay window. Tokens are derived from the
     /// received `(iv, ciphertext)` pair; duplicates are rejected.
     pub duplicates: DuplicateWindow,
+    /// Next IBGW fragment message id for this registration.
+    ///
+    /// Plan 260 corrective: IBGW fragmentation must not reuse the
+    /// constant `message_id: 1` across ingresses, or concurrent
+    /// fragmented ingresses to the same downstream reassembler
+    /// can cross-assemble. The counter is per-registration state
+    /// (no global lock, no sharing across registrations),
+    /// seeded nonzero from the caller RNG on first use and
+    /// advanced with wrap-skips-zero on every fragmented
+    /// emission. Zero means unseeded. The value is a routing
+    /// nonce, never secret material.
+    next_ibgw_fragment_id: u32,
 }
 
 impl TransitParticipantData {
@@ -856,7 +868,42 @@ impl TransitParticipantData {
         Self {
             locked_previous_peer: None,
             duplicates: DuplicateWindow::new(MAX_TRANSIT_DUPLICATE_WINDOW),
+            next_ibgw_fragment_id: 0,
         }
+    }
+
+    /// Claims the fragment message id for one IBGW ingress and
+    /// advances the per-registration sequence.
+    ///
+    /// The first call seeds the sequence from the caller RNG
+    /// (retrying a zero draw); every call returns the current id
+    /// and advances with wrapping arithmetic that skips zero, so
+    /// two ingresses on one registration never share an id while
+    /// every fragment of one ingress shares its ingress id. The
+    /// counter dies with the registration; no state crosses
+    /// registrations.
+    pub fn claim_ibgw_fragment_id<R: CryptoRng + RngCore>(&mut self, rng: &mut R) -> u32 {
+        if self.next_ibgw_fragment_id == 0 {
+            let mut seed = rng.next_u32();
+            if seed == 0 {
+                seed = 1;
+            }
+            self.next_ibgw_fragment_id = seed;
+        }
+        let claimed = self.next_ibgw_fragment_id;
+        self.next_ibgw_fragment_id = self.next_ibgw_fragment_id.wrapping_add(1);
+        if self.next_ibgw_fragment_id == 0 {
+            self.next_ibgw_fragment_id = 1;
+        }
+        claimed
+    }
+
+    /// Test-only sequence setter for the wrap-skips-zero
+    /// regression. Production code advances only through
+    /// [`Self::claim_ibgw_fragment_id`].
+    #[cfg(test)]
+    pub(crate) fn set_next_ibgw_fragment_id_for_test(&mut self, id: u32) {
+        self.next_ibgw_fragment_id = id;
     }
 }
 
@@ -1251,9 +1298,9 @@ impl TransitHopRegistration {
         // TunnelGateway exactly the same way the participant lock
         // locks. The data_plane is the same `TransitParticipantData`
         // type for both Participant and InboundGateway variants.
-        if let TransitDataPlane::InboundGateway(data) = &mut self.data_plane
-            && data.locked_previous_peer.is_none()
-        {
+        // The first borrow above already proved the variant; reuse
+        // it for the lock so no second borrow is needed.
+        if data.locked_previous_peer.is_none() {
             data.locked_previous_peer = Some(*previous_peer);
         }
         // The IBGW canonical path accepts the standard I2NP
@@ -1277,9 +1324,15 @@ impl TransitHopRegistration {
             .map_err(|error| {
                 TransitDataFatalError::TunnelMessage(format!("nested-encode: {error:?}"))
             })?;
+        // Plan 260 corrective: claim a per-registration fragment
+        // message id instead of the historical constant `1`, so
+        // concurrent fragmented ingresses on this registration
+        // cannot cross-assemble at the downstream reassembler.
+        // Every fragment of this ingress shares the claimed id.
+        let fragment_message_id = data.claim_ibgw_fragment_id(rng);
         let header = TunnelPayloadHeader {
             delivery: DeliveryInstruction::Local,
-            message_id: 1,
+            message_id: fragment_message_id,
             expiration_ms: 0,
         };
         let fragments = TunnelMessageBuilder::fragment_complete_message(
@@ -5857,6 +5910,257 @@ mod tests {
             .expect("gateway processing")
             .expect("gateway accepted");
         assert_eq!(cells.len(), 1);
+    }
+
+    /// Decrypts IBGW-emitted cells with the role keys and parses
+    /// them exactly as the next hop does, returning the fragment
+    /// message id carried by every fragment record. Used by the
+    /// Plan 260 fragment-id regressions to prove per-ingress
+    /// uniqueness without touching the wire format.
+    fn ibgw_emitted_fragment_ids(
+        cells: &[TransitGatewayForward],
+        layer_keys: &LayerKeys,
+    ) -> Vec<u32> {
+        use crate::data::TunnelMessageParser;
+        use crate::fragment::TunnelFragment;
+        use crate::layer::{TUNNEL_IV_LEN, TUNNEL_PAYLOAD_LEN};
+        let mut ids = Vec::new();
+        for cell in cells {
+            let (iv, payload) = split_cell(&cell.cell);
+            assert_eq!(iv.len(), TUNNEL_IV_LEN);
+            assert_eq!(payload.len(), TUNNEL_PAYLOAD_LEN);
+            let (plain_iv, plain_payload) =
+                crate::layer::TunnelLayerTransform::creator_inverse_one_hop(
+                    layer_keys, &iv, &payload,
+                );
+            let records = TunnelMessageParser::new()
+                .parse(&plain_iv, &plain_payload)
+                .expect("next-hop parse");
+            for record in &records {
+                match &record.fragment {
+                    TunnelFragment::First { message_id, .. }
+                    | TunnelFragment::FollowOn { message_id, .. } => ids.push(*message_id),
+                    TunnelFragment::Unfragmented { .. } => {}
+                }
+            }
+        }
+        ids
+    }
+
+    fn ibgw_role_keys_of(registration: &TransitHopRegistration) -> LayerKeys {
+        match &registration.role {
+            TransitHopRole::InboundGateway { layer_keys, .. } => layer_keys.clone(),
+            _ => panic!("expected IBGW role"),
+        }
+    }
+
+    // Plan 260 §16.17: two fragmented ingresses on one IBGW
+    // registration use distinct fragment message ids. The lane's
+    // 1,500-byte datagram nested emits exactly two cells per
+    // ingress; the claimed ids must both be nonzero and differ.
+    #[test]
+    fn plan260_ibgw_fragment_ids_distinct_across_ingresses() {
+        let registered_peer = next_router(0x99);
+        let mut registration =
+            canonical_ibgw_registration(registered_peer, next_router(0xBB), 0x4000);
+        let layer_keys = ibgw_role_keys_of(&registration);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x260A);
+        let first = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_payload(1_500),
+                &registered_peer,
+                60_000,
+                &mut rng,
+            )
+            .expect("first gateway processing")
+            .expect("first gateway accepted");
+        assert_eq!(first.len(), 2);
+        let second = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_payload(1_500),
+                &registered_peer,
+                60_000,
+                &mut rng,
+            )
+            .expect("second gateway processing")
+            .expect("second gateway accepted");
+        assert_eq!(second.len(), 2);
+        let first_ids = ibgw_emitted_fragment_ids(&first, &layer_keys);
+        let second_ids = ibgw_emitted_fragment_ids(&second, &layer_keys);
+        assert_eq!(first_ids.len(), 2, "first ingress must carry 2 fragments");
+        assert_eq!(second_ids.len(), 2, "second ingress must carry 2 fragments");
+        assert_ne!(first_ids[0], 0, "fragment ids must never be zero");
+        assert_ne!(second_ids[0], 0, "fragment ids must never be zero");
+        assert_ne!(
+            first_ids[0], second_ids[0],
+            "concurrent fragmented ingresses on one registration must not share a message id"
+        );
+    }
+
+    // Plan 260 §16.18: every fragment of one IBGW ingress shares
+    // the claimed id, so the downstream reassembler groups the
+    // ingress as one message.
+    #[test]
+    fn plan260_ibgw_fragments_of_one_ingress_share_id() {
+        let registered_peer = next_router(0x99);
+        let mut registration =
+            canonical_ibgw_registration(registered_peer, next_router(0xBB), 0x4000);
+        let layer_keys = ibgw_role_keys_of(&registration);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x260B);
+        let cells = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_payload(1_500),
+                &registered_peer,
+                60_000,
+                &mut rng,
+            )
+            .expect("gateway processing")
+            .expect("gateway accepted");
+        assert_eq!(cells.len(), 2);
+        let ids = ibgw_emitted_fragment_ids(&cells, &layer_keys);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], 0);
+        assert_eq!(
+            ids[0], ids[1],
+            "follow-on fragments must retain their ingress message id"
+        );
+    }
+
+    // Plan 260 §16.19: the per-registration sequence wraps while
+    // skipping zero, so the zero id (rejected by the bounded
+    // reassembler) is never emitted.
+    #[test]
+    fn plan260_ibgw_fragment_id_wrap_skips_zero() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x260C);
+        let mut data = TransitParticipantData::new();
+        // Fresh state seeds nonzero from the caller RNG.
+        let seeded = data.claim_ibgw_fragment_id(&mut rng);
+        assert_ne!(seeded, 0, "seeded fragment id must be nonzero");
+        // Drive the sequence to the wrap boundary and prove the
+        // zero id is skipped, not emitted.
+        data.set_next_ibgw_fragment_id_for_test(u32::MAX);
+        assert_eq!(data.claim_ibgw_fragment_id(&mut rng), u32::MAX);
+        assert_eq!(
+            data.claim_ibgw_fragment_id(&mut rng),
+            1,
+            "wrap must skip zero"
+        );
+        assert_eq!(data.claim_ibgw_fragment_id(&mut rng), 2);
+        // Distinct registrations do not share mutable counter
+        // state: a fresh registration reseeds independently.
+        let mut other = TransitParticipantData::new();
+        let other_seed = other.claim_ibgw_fragment_id(&mut rng);
+        assert_ne!(other_seed, 0);
+    }
+
+    // Plan 260 §16.20: interleaved two-message downstream
+    // reassembly returns both exact byte strings once with no
+    // cross-assembly. Two fragmented messages with distinct ids
+    // arrive interleaved at one bounded reassembler keyed by
+    // (context, message id); each must complete exactly once to
+    // its own bytes.
+    #[test]
+    fn plan260_ibgw_interleaved_reassembly_no_cross_assembly() {
+        use crate::data::{DeliveryInstruction, TunnelMessageBuilder, TunnelMessageParser};
+        use crate::fragment::{BoundedReassembler, ReassemblyKey};
+        let context_id = 0x4000;
+        let first_bytes: Vec<u8> = (0..1_500_u32).map(|value| (value & 0xFF) as u8).collect();
+        let second_bytes: Vec<u8> = (0..1_500_u32)
+            .map(|value| (value.wrapping_mul(7) & 0xFF) as u8)
+            .collect();
+        assert_ne!(first_bytes, second_bytes);
+        let first_id = 0x51A6_0001;
+        let second_id = 0x51A6_0002;
+        let mut rng = ChaCha8Rng::seed_from_u64(0x260D);
+        let first_fragments = TunnelMessageBuilder::fragment_complete_message(
+            &DeliveryInstruction::Local,
+            first_id,
+            &first_bytes,
+        )
+        .expect("fragment first");
+        let second_fragments = TunnelMessageBuilder::fragment_complete_message(
+            &DeliveryInstruction::Local,
+            second_id,
+            &second_bytes,
+        )
+        .expect("fragment second");
+        let first_cells = TunnelMessageBuilder::new()
+            .build_cells(&first_fragments, &mut rng)
+            .expect("cells first");
+        let second_cells = TunnelMessageBuilder::new()
+            .build_cells(&second_fragments, &mut rng)
+            .expect("cells second");
+        assert!(first_cells.len() >= 2 && second_cells.len() >= 2);
+        // Parse every cell exactly as the downstream endpoint
+        // does, collecting per-message fragment records.
+        let mut first_records = Vec::new();
+        for (iv, plaintext) in &first_cells {
+            let records = TunnelMessageParser::new()
+                .parse(iv, plaintext)
+                .expect("parse first");
+            first_records.extend(records);
+        }
+        let mut second_records = Vec::new();
+        for (iv, plaintext) in &second_cells {
+            let records = TunnelMessageParser::new()
+                .parse(iv, plaintext)
+                .expect("parse second");
+            second_records.extend(records);
+        }
+        assert_eq!(first_records.len(), first_cells.len());
+        assert_eq!(second_records.len(), second_cells.len());
+        // Interleave the two messages cell-by-cell at one
+        // downstream reassembler.
+        let mut reassembler = BoundedReassembler::new(16, 1 << 20, 60_000, 0);
+        let first_key = ReassemblyKey {
+            context_id,
+            message_id: first_id,
+        };
+        let second_key = ReassemblyKey {
+            context_id,
+            message_id: second_id,
+        };
+        let mut completions: Vec<(u32, Vec<u8>)> = Vec::new();
+        let rounds = first_records.len().max(second_records.len());
+        for round in 0..rounds {
+            if let Some(record) = first_records.get(round)
+                && let Some(completed) = reassembler
+                    .insert_with_delivery(
+                        first_key,
+                        record.fragment.clone(),
+                        record.delivery.clone(),
+                    )
+                    .expect("insert first")
+            {
+                completions.push((first_id, completed.message));
+            }
+            if let Some(record) = second_records.get(round)
+                && let Some(completed) = reassembler
+                    .insert_with_delivery(
+                        second_key,
+                        record.fragment.clone(),
+                        record.delivery.clone(),
+                    )
+                    .expect("insert second")
+            {
+                completions.push((second_id, completed.message));
+            }
+        }
+        assert_eq!(
+            completions.len(),
+            2,
+            "both interleaved messages must complete exactly once"
+        );
+        let first_done = completions
+            .iter()
+            .find(|(id, _)| *id == first_id)
+            .expect("first completion");
+        let second_done = completions
+            .iter()
+            .find(|(id, _)| *id == second_id)
+            .expect("second completion");
+        assert_eq!(first_done.1, first_bytes, "no cross-assembly into first");
+        assert_eq!(second_done.1, second_bytes, "no cross-assembly into second");
     }
 
     /// 18. Role-mismatched inputs fail closed. An OBEP registration

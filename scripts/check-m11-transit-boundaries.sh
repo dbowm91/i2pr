@@ -361,10 +361,10 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 257 manifest shape (plan 257 + attempt).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 257' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+#     emit the Plan 260 manifest shape (plan 260 + attempt).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 260' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 257 token $token"
+        fail "external runner missing Plan 260 token $token"
     fi
 done
 # 30. The external workflow must run the two-attempt matrix on one

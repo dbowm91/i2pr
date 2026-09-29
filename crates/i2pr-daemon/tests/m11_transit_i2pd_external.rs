@@ -204,6 +204,57 @@ fn i2p_b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// i2p base64 decode with the exact pinned substitution table
+/// (`T64` in `libi2pd/Base.cpp`: `A-Za-z0-9-~`, `=` padding).
+/// Test-only mirror of [`i2p_b64_encode`]; fails closed on any
+/// non-alphabet byte or malformed padding. Used by the Plan 260
+/// receipt epoch to hash SAM destination identities without a
+/// new dependency.
+fn i2p_b64_decode(text: &str) -> Result<Vec<u8>, String> {
+    const T64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
+    let mut values = Vec::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = T64
+            .iter()
+            .position(|entry| *entry == byte)
+            .ok_or_else(|| format!("i2p base64 rejects byte {byte:#04X}"))?;
+        values.push(value as u32);
+    }
+    if values.len() % 4 == 1 {
+        return Err("i2p base64 rejects trailing single quantum".to_string());
+    }
+    let mut out = Vec::with_capacity(values.len() / 4 * 3 + 3);
+    for quad in values.chunks(4) {
+        let n = match quad.len() {
+            4 => (quad[0] << 18) | (quad[1] << 12) | (quad[2] << 6) | quad[3],
+            3 => (quad[0] << 18) | (quad[1] << 12) | (quad[2] << 6),
+            2 => (quad[0] << 18) | (quad[1] << 12),
+            _ => unreachable!("quantum remainder checked above"),
+        };
+        out.push((n >> 16) as u8);
+        if quad.len() >= 3 {
+            out.push((n >> 8) as u8);
+        }
+        if quad.len() == 4 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// Destination identity hash (hex) for one SAM base64 destination:
+/// SHA-256 over the decoded destination bytes, the exact
+/// `IdentHash` derivation the reference applies to destinations.
+/// Plan 260 records receiver/pool identities in this form —
+/// public routing facts only, never key material.
+fn destination_hash_hex(destination_b64: &str) -> Result<String, String> {
+    let bytes = i2p_b64_decode(destination_b64)?;
+    Ok(hex_lower(i2pr_crypto::sha256(&bytes).as_bytes()))
+}
+
 /// Exact source-locked i2pd 2.61.0 NetDB file path for one router hash.
 ///
 /// `NetDb` owns `HashedStorage("netDb", "r", "routerInfo-", "dat")`
@@ -922,6 +973,7 @@ enum Epoch {
     ObepData,
     Ibgw,
     IbgwData,
+    IbgwReceipt,
     Participant,
     ParticipantData,
     Replay,
@@ -940,6 +992,7 @@ impl Epoch {
             Self::ObepData => "obep-data",
             Self::Ibgw => "ibgw",
             Self::IbgwData => "ibgw-data",
+            Self::IbgwReceipt => "ibgw-receipt",
             Self::Participant => "participant",
             Self::ParticipantData => "participant-data",
             Self::Replay => "replay",
@@ -1350,6 +1403,103 @@ fn gateway_ingress_accepted(obs: &Observation, accepted_gateways: &[u32]) -> boo
 /// rejection without the external lane.
 fn gateway_multicell_satisfied(gatewayed: &[&Observation]) -> bool {
     gatewayed.iter().any(|obs| obs.aux_count >= 2)
+}
+
+/// Plan 260 §7 six-field creator-owned inbound receipt tuple.
+///
+/// The tuple binds one counted receipt epoch's build,
+/// registration, downstream local tunnel, destination pool,
+/// emission, reference-local dispatch, and receiver socket
+/// delivery. All hashes are lowercase hex of public routing
+/// identities; all ids are nonzero tunnel ids. No secret
+/// material crosses this surface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReceiptTuple {
+    /// Receiver destination hash (the SAM destination that must
+    /// receive the payload).
+    receiver_destination_hash: String,
+    /// i2pr IBGW receive tunnel id (first-hop receive id
+    /// advertised in the receiver LeaseSet).
+    ibgw_receive_id: u32,
+    /// Creator router hash (the reference router that owns the
+    /// receiver destination pool; i2pr's `next_router`).
+    creator_router_hash: String,
+    /// Creator-local inbound tunnel id (last-hop `nextTunnelID` /
+    /// `InboundTunnel::GetTunnelID()`; i2pr's `next_tunnel`).
+    creator_local_tunnel_id: u32,
+    /// Pool-owner destination hash (the destination whose
+    /// `TunnelPool` owns the creator-local inbound tunnel).
+    pool_owner_destination_hash: String,
+    /// LeaseSet-advertised gateway hash (must equal the i2pr
+    /// router hash that accepted the IBGW build).
+    leaseset_gateway_hash: String,
+    /// LeaseSet-advertised inbound tunnel id (must equal the
+    /// i2pr IBGW receive id).
+    leaseset_tunnel_id: u32,
+}
+
+/// Plan 260 §7 receipt-tuple rejection taxonomy. Every rejection
+/// names the exact unbound field; a tuple with no rejection is
+/// the complete six-field binding §16.13 requires.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReceiptTupleError {
+    /// A next-router hash with no bound creator-local tunnel id
+    /// (the historical Plan 259 A-ending shape: `next_tunnel`
+    /// never tied to an `InboundTunnel`). §16.10.
+    MissingCreatorLocalTunnel,
+    /// A local-tunnel binding whose tunnel pool owner is not the
+    /// receiver destination. §16.11.
+    PoolOwnerMismatch,
+    /// A pool binding whose LeaseSet does not advertise this
+    /// i2pr gateway receive tuple. §16.12.
+    LeaseSetMismatch,
+    /// Malformed tuple field (empty hash, zero id).
+    MalformedField,
+}
+
+/// Validates the complete Plan 260 §7 receipt tuple against the
+/// i2pr router hash that accepted the counted IBGW build.
+///
+/// The checks run in endpoint-class order: an A-ending router
+/// hash alone never passes (it must bind a creator-local
+/// tunnel), a local tunnel alone never passes (its pool must
+/// own the receiver destination), and a pool binding alone never
+/// passes (the published LeaseSet must advertise this exact
+/// gateway tuple). Only the complete conjunction passes.
+fn validate_receipt_tuple(
+    tuple: &ReceiptTuple,
+    i2pr_router_hash_hex: &str,
+) -> Result<(), ReceiptTupleError> {
+    if tuple.receiver_destination_hash.is_empty()
+        || tuple.creator_router_hash.is_empty()
+        || tuple.pool_owner_destination_hash.is_empty()
+        || tuple.leaseset_gateway_hash.is_empty()
+        || tuple.ibgw_receive_id == 0
+        || tuple.leaseset_tunnel_id == 0
+    {
+        return Err(ReceiptTupleError::MalformedField);
+    }
+    // §16.10: reject an A-ending router hash without a bound
+    // creator-local tunnel id. (Checked after the malformed
+    // gate so the dedicated endpoint-class error fires for the
+    // historical Plan 259 shape rather than a generic
+    // malformed-field error.)
+    if tuple.creator_local_tunnel_id == 0 {
+        return Err(ReceiptTupleError::MissingCreatorLocalTunnel);
+    }
+    // §16.11: reject a local-tunnel binding whose pool does not
+    // own the receiver destination.
+    if tuple.pool_owner_destination_hash != tuple.receiver_destination_hash {
+        return Err(ReceiptTupleError::PoolOwnerMismatch);
+    }
+    // §16.12: reject a pool binding whose LeaseSet does not
+    // advertise this exact i2pr gateway tuple.
+    if tuple.leaseset_gateway_hash != i2pr_router_hash_hex
+        || tuple.leaseset_tunnel_id != tuple.ibgw_receive_id
+    {
+        return Err(ReceiptTupleError::LeaseSetMismatch);
+    }
+    Ok(())
 }
 
 /// Plan 258 drop-side diagnostic distribution over one epoch's
@@ -2418,12 +2568,32 @@ fn gateway_observation(
     failures: usize,
     nested_len: usize,
 ) -> Observation {
+    gateway_observation_with_next(
+        receive_tunnel,
+        delivered,
+        failures,
+        nested_len,
+        [0xBB; 32],
+        0x4000,
+    )
+}
+
+fn gateway_observation_with_next(
+    receive_tunnel: u32,
+    delivered: usize,
+    failures: usize,
+    nested_len: usize,
+    next_router: [u8; 32],
+    next_tunnel: u32,
+) -> Observation {
     let mut ledger = TypedLedger::default();
     let outcome = LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered {
         delivered,
         failures,
         receive_tunnel,
         nested_len,
+        next_router: Hash::from_bytes(next_router),
+        next_tunnel,
     });
     record_data_outcome(
         &mut ledger,
@@ -2629,6 +2799,120 @@ fn plan258_drop_label_separates_scope_and_class() {
         .collect();
     assert!(labels.contains(&("accepted", "single")));
     assert!(labels.contains(&("stale", "multi")));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 260 §16.10–16.13: receipt-tuple predicate unit rows.
+// The six-field tuple validator rejects every partial binding
+// the historical Plan 259 evidence could supply and accepts
+// only the complete creator-owned conjunction — all without the
+// external lane.
+// ---------------------------------------------------------------------------
+
+fn plan260_canonical_tuple() -> (ReceiptTuple, String) {
+    let i2pr = "aa".repeat(32);
+    let receiver = "bb".repeat(32);
+    let creator = "cc".repeat(32);
+    (
+        ReceiptTuple {
+            receiver_destination_hash: receiver.clone(),
+            ibgw_receive_id: 0x51A6_1001,
+            creator_router_hash: creator,
+            creator_local_tunnel_id: 0x51A6_2002,
+            pool_owner_destination_hash: receiver,
+            leaseset_gateway_hash: i2pr.clone(),
+            leaseset_tunnel_id: 0x51A6_1001,
+        },
+        i2pr,
+    )
+}
+
+// Plan 260 §16.10: a next-router hash with no bound
+// creator-local tunnel id (the historical A-ending shape) is
+// rejected, never inferred into a pass.
+#[test]
+fn plan260_receipt_tuple_rejects_router_hash_without_local_tunnel() {
+    let (mut tuple, i2pr) = plan260_canonical_tuple();
+    tuple.creator_local_tunnel_id = 0;
+    assert_eq!(
+        validate_receipt_tuple(&tuple, &i2pr),
+        Err(ReceiptTupleError::MissingCreatorLocalTunnel)
+    );
+}
+
+// Plan 260 §16.11: a local-tunnel binding whose pool owner is
+// not the receiver destination is rejected.
+#[test]
+fn plan260_receipt_tuple_rejects_local_tunnel_without_pool_owner() {
+    let (mut tuple, i2pr) = plan260_canonical_tuple();
+    tuple.pool_owner_destination_hash = "dd".repeat(32);
+    assert_eq!(
+        validate_receipt_tuple(&tuple, &i2pr),
+        Err(ReceiptTupleError::PoolOwnerMismatch)
+    );
+}
+
+// Plan 260 §16.12: a pool binding whose LeaseSet does not
+// advertise this exact i2pr gateway tuple is rejected (both
+// the gateway-hash and the tunnel-id arms).
+#[test]
+fn plan260_receipt_tuple_rejects_pool_without_leaseset_binding() {
+    let (mut tuple, i2pr) = plan260_canonical_tuple();
+    tuple.leaseset_gateway_hash = "ee".repeat(32);
+    assert_eq!(
+        validate_receipt_tuple(&tuple, &i2pr),
+        Err(ReceiptTupleError::LeaseSetMismatch)
+    );
+    let (mut tuple, i2pr) = plan260_canonical_tuple();
+    tuple.leaseset_tunnel_id = 0x51A6_1002;
+    assert_eq!(
+        validate_receipt_tuple(&tuple, &i2pr),
+        Err(ReceiptTupleError::LeaseSetMismatch)
+    );
+}
+
+// Plan 260 §16.13: the complete six-field conjunction passes.
+#[test]
+fn plan260_receipt_tuple_accepts_complete_tuple() {
+    let (tuple, i2pr) = plan260_canonical_tuple();
+    assert_eq!(validate_receipt_tuple(&tuple, &i2pr), Ok(()));
+}
+
+// Plan 260 decoder hygiene: the test-only i2p base64 decoder
+// round-trips the source-locked encoder and fails closed on
+// non-alphabet bytes.
+#[test]
+fn plan260_i2p_b64_decode_round_trips_encode() {
+    let vectors: Vec<Vec<u8>> = vec![
+        vec![],
+        vec![0x00],
+        vec![0xFF; 2],
+        (0..100_u32).map(|value| (value & 0xFF) as u8).collect(),
+    ];
+    for bytes in &vectors {
+        assert_eq!(
+            i2p_b64_decode(&i2p_b64_encode(bytes)).expect("decode"),
+            *bytes
+        );
+    }
+    assert!(i2p_b64_decode("!!!!").is_err());
+    assert!(i2p_b64_decode("A").is_err());
+}
+
+// Plan 260 §16.17–16.18 (delivery-surface companion): the
+// gateway-delivery observation carries the committed next
+// router/tunnel tuple so the receipt epoch can bind the
+// creator-local tunnel id from typed evidence.
+#[test]
+fn plan260_gateway_observation_carries_next_tunnel_tuple() {
+    let obs = gateway_observation_with_next(0x9201, 2, 0, 1_900, [0xCC; 32], 0x51A6_2002);
+    assert_eq!(obs.kind, ObservedKind::GatewayDelivered);
+    assert_eq!(obs.receive_tunnel, 0x9201);
+    assert_eq!(obs.next_router, Some([0xCC; 32]));
+    assert_eq!(
+        obs.next_message_id, 0x51A6_2002,
+        "data-forward convention: next tunnel rides in next_message_id"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3888,211 +4172,179 @@ async fn run_qualification() -> Result<(), String> {
     // inbound tunnel is B-gatewayed. Every observation is a real
     // `handle_inbound` outcome, never a helper projection.
     let run_data = run_epoch("data");
+    // Plan 260 diagnostic-subset flag (see the `run_data` block
+    // below): `I2PR_M11_ONLY_EPOCH=receipt` runs bootstrap plus
+    // only the creator-owned receipt epoch on a fresh mesh.
+    let receipt_only = std::env::var("I2PR_M11_ONLY_EPOCH").as_deref() == Ok("receipt");
     let participant_receive_opt =
         receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant);
-    if run_data {
-        {
-            // Setup order is load-bearing, receiver first: the
-            // sender's pool must be seconds old at send time.
-            // Established sender tunnels die within a minute in
-            // this mesh (failing tunnel tests), so a sender-first
-            // order lets the sender pool rot during the
-            // receiver's slow setup and every send queues past
-            // the ~8 s inner horizon. Receiver-first keeps the
-            // sender pool fresh at send time; the receiver
-            // LeaseSet stays resolvable (local to A plus
-            // floodfill-published via its B-routed outbound),
-            // so addressing holds.
-            // rx_obep setup runs on the role owner: its SessionReady
-            // stop is satisfied by any accept and its registrations
-            // are never needed later, so background may fill it
-            // freely (resets keep it converging).
-            // rx_obep: inbound via B only, so the OBEP action
-            // routes to a reachable gateway with no i2pr reflection.
-            let mut rx_obep = SamClient::connect(sam_addr).await?;
-            rx_obep.hello().await?;
-            let rx_obep_dest = run_sam_epoch(
-                &mut handle,
-                &mut obep_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &mut rx_obep,
-                "m11-rx-obep",
-                &[
-                    ("inbound.length", "1"),
-                    ("inbound.quantity", "1"),
-                    ("inbound.lengthVariance", "0"),
-                    // No outbound pool (diagnostic): tests whether
-                    // ECIES acks return locally/directly without a
-                    // receiver outbound pool. Unpaired pools are
-                    // never tested and live full lifetimes.
-                    ("outbound.length", "0"),
-                    ("explicitPeers", &b_b64),
-                ],
-                BuildStop::SessionReady,
-                build_epoch_timeout(),
-                a_target,
-                b_target,
-                &identity,
-            )
-            .await?
-            .ok_or("rx_obep session reported ready without a destination")?;
-            // Fresh owner for the OBEP data setup, born right
-            // before the counted sender session: role epochs
-            // accumulate background registrations with no resets,
-            // so reusing the role owner would force the counted
-            // m11-tx build to race saturated admission quotas and
-            // die with code 30. Born here — seconds before the
-            // counted session — it deterministically has room;
-            // nothing after this block needs the role owner's
-            // registrations (participant-data binds the
-            // participant owner's own receive id).
-            let mut obep_data_owner = fresh_owner(&handle, wall_secs() ^ 0x0BE9, &identity)?;
-            let mut tx = SamClient::connect(sam_addr).await?;
-            tx.hello().await?;
-            // Establishment baseline for the freshness gate below:
-            // captured before the counted setup so any outbound
-            // creation the setup triggers counts as fresh.
-            let tx_created_baseline = reference_a.count_outbound_created();
-            run_sam_epoch(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &mut tx,
-                "m11-tx",
-                &[
-                    // Deliberately outbound-only (no inbound pool):
-                    // the reference only tests tunnels when a pool
-                    // holds BOTH directions, and failing tests tear
-                    // down established tunnels within a minute. An
-                    // untestable single-direction pool lives its
-                    // full lifetime, so the sender pool is stable
-                    // at send time instead of churning.
-                    ("inbound.length", "0"),
-                    ("outbound.length", "1"),
-                    ("outbound.quantity", "1"),
-                    ("outbound.lengthVariance", "0"),
-                    ("explicitPeers", &i2pr_b64),
-                ],
-                BuildStop::CountedObepSetup { reply: a_peer_hash },
-                build_epoch_timeout(),
-                a_target,
-                b_target,
-                &identity,
-            )
-            .await?
-            .ok_or("counted sender session never reported ready")?;
-            // Unfragmented then fragmented sequentially on one
-            // sender session, each alone in its flush batch: the
-            // reference SAM loop reliably parses the first
-            // DATAGRAM SEND of each batch promptly, while a second
-            // command riding the same batch can sit unprocessed
-            // until the next batch arrives (source-locked against
-            // exact-pinned i2pd: one parsed send per ~45 s send
-            // pair). The first drain stops right after the
-            // unfragmented delivery, so the fragmented send
-            // follows within seconds on the same live path. A
-            // bounded fresh-session retry round below covers
-            // genuinely missing sizes.
-            //
-            // The pass predicate is proved on the RECEIVING SAM
-            // socket, not on our-side reassembly sizes: reference
-            // control traffic (garlic-routed build replies,
-            // encrypted LeaseSet publishes, tunnel tests) completes
-            // on our OBEP registration at datagram-like sizes, so
-            // size counting cannot separate genuine datagrams from
-            // background (source-locked against exact-pinned i2pd
-            // runs: dozens of ~950 B accepted garlics with no
-            // corresponding delivery). A receipt counts only when
-            // the receiver session socket delivers DATAGRAM
-            // RECEIVED with the exact stimulus size and
-            // byte-pattern (512 × 0x5A, 4096 × 0xA5) — an event
-            // only the full A→i2pr→B→A reference path can
-            // produce. Requiring exactly one of each proves both
-            // datagrams flowed exactly once; a duplicate (late
-            // original plus its retry) surfaces as a count of two
-            // and fails closed.
-            //
-            // Freshness is load-bearing: the reference stamps inner
-            // garlic expirations only ~8 s out
-            // (`I2NP_MESSAGE_EXPIRATION_TIMEOUT`), so a send that
-            // queues behind a dead sender pool arrives downstream
-            // already expired and can never be received. Sends
-            // follow the counted setup within seconds on the live
-            // path, and the short verify polls below (not the long
-            // background-harvesting drains) decide each round.
-            let is_datagram = |obs: &&Observation| {
-                obs.kind == ObservedKind::DataDeliveredObep
-                    && obs.delivery == "obep-ok-garlic"
-                    && obs.aux_count >= 500
-            };
-            let is_large = |obs: &&Observation| {
-                obs.kind == ObservedKind::DataDeliveredObep
-                    && obs.delivery == "obep-ok-garlic"
-                    && obs.aux_count >= 3000
-            };
-            let datagrams_before = ledger.of_epoch(Epoch::ObepData).filter(is_datagram).count();
-            let large_before = ledger.of_epoch(Epoch::ObepData).filter(is_large).count();
-            let mut rx_counts = RxDatagramCounts {
-                rx_512: 0,
-                rx_4096: 0,
-            };
-            // Fresh sessions for the send phase: the setups above
-            // took a minute and idle links die silently mid-run
-            // (later sends fail closed as NoActiveSession while
-            // inbound cells fall into the unknown-link drop).
-            ensure_sessions(&handle, a_target, b_target).await;
-            // Freshness gate: send only on a just-established
-            // sender tunnel so the reference emits with a fresh
-            // inner expiration (see the helper docs).
-            wait_for_fresh_sender_tunnel(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &reference_a,
-                tx_created_baseline,
-                Duration::from_secs(30),
-            )
-            .await?;
-            tx.send_datagram("m11-tx", &rx_obep_dest, &vec![0x5Au8; 512])
-                .await?;
-            drain_data_epoch(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                Duration::from_secs(25),
-                DataStop::DeliveredSizedObep {
-                    count: datagrams_before + 1,
-                    min_len: 500,
-                },
-                Duration::from_secs(2),
-            )
-            .await?;
-            poll_rx_datagrams(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &mut rx_obep,
-                Duration::from_secs(10),
-                &mut rx_counts,
-            )
-            .await?;
-            // Same-session resend when the unfragmented receipt is
-            // missing: the first send routinely queues behind a
-            // still-establishing sender pool and lapses its ~8 s
-            // inner expiration before emission, so it can never be
-            // received no matter how long the drain waits. A resend
-            // ~35 s later (past any genuine horizon, so a late
-            // double is impossible — anything that late is stale
-            // by definition) usually lands on the recovered pool
-            // with a fresh expiration. Bounded to one resend; the
-            // fresh-session round below remains the last resort.
-            if rx_counts.rx_512 == 0 {
+    if run_data || receipt_only {
+        // Plan 260 diagnostic subset: `I2PR_M11_ONLY_EPOCH=receipt`
+        // runs bootstrap plus only the creator-owned receipt epoch
+        // below on a fresh mesh (non-counted: the remaining
+        // mandatory rows are absent, so the run can never satisfy
+        // the two-pass gate). This discriminates a healthy-mesh
+        // receipt failure (structural boundary) from the late-run
+        // standalone-mesh degradation the full matrix runs into
+        // (tunnel tests fail within minutes with no floodfill, so
+        // builds stop establishing). Counted attempts never set
+        // this flag and always run the complete matrix.
+        if !receipt_only {
+            {
+                // Setup order is load-bearing, receiver first: the
+                // sender's pool must be seconds old at send time.
+                // Established sender tunnels die within a minute in
+                // this mesh (failing tunnel tests), so a sender-first
+                // order lets the sender pool rot during the
+                // receiver's slow setup and every send queues past
+                // the ~8 s inner horizon. Receiver-first keeps the
+                // sender pool fresh at send time; the receiver
+                // LeaseSet stays resolvable (local to A plus
+                // floodfill-published via its B-routed outbound),
+                // so addressing holds.
+                // rx_obep setup runs on the role owner: its SessionReady
+                // stop is satisfied by any accept and its registrations
+                // are never needed later, so background may fill it
+                // freely (resets keep it converging).
+                // rx_obep: inbound via B only, so the OBEP action
+                // routes to a reachable gateway with no i2pr reflection.
+                let mut rx_obep = SamClient::connect(sam_addr).await?;
+                rx_obep.hello().await?;
+                let rx_obep_dest = run_sam_epoch(
+                    &mut handle,
+                    &mut obep_owner,
+                    &mut ledger,
+                    Epoch::ObepData,
+                    &mut rx_obep,
+                    "m11-rx-obep",
+                    &[
+                        ("inbound.length", "1"),
+                        ("inbound.quantity", "1"),
+                        ("inbound.lengthVariance", "0"),
+                        // No outbound pool (diagnostic): tests whether
+                        // ECIES acks return locally/directly without a
+                        // receiver outbound pool. Unpaired pools are
+                        // never tested and live full lifetimes.
+                        ("outbound.length", "0"),
+                        ("explicitPeers", &b_b64),
+                    ],
+                    BuildStop::SessionReady,
+                    build_epoch_timeout(),
+                    a_target,
+                    b_target,
+                    &identity,
+                )
+                .await?
+                .ok_or("rx_obep session reported ready without a destination")?;
+                // Fresh owner for the OBEP data setup, born right
+                // before the counted sender session: role epochs
+                // accumulate background registrations with no resets,
+                // so reusing the role owner would force the counted
+                // m11-tx build to race saturated admission quotas and
+                // die with code 30. Born here — seconds before the
+                // counted session — it deterministically has room;
+                // nothing after this block needs the role owner's
+                // registrations (participant-data binds the
+                // participant owner's own receive id).
+                let mut obep_data_owner = fresh_owner(&handle, wall_secs() ^ 0x0BE9, &identity)?;
+                let mut tx = SamClient::connect(sam_addr).await?;
+                tx.hello().await?;
+                // Establishment baseline for the freshness gate below:
+                // captured before the counted setup so any outbound
+                // creation the setup triggers counts as fresh.
+                let tx_created_baseline = reference_a.count_outbound_created();
+                run_sam_epoch(
+                    &mut handle,
+                    &mut obep_data_owner,
+                    &mut ledger,
+                    Epoch::ObepData,
+                    &mut tx,
+                    "m11-tx",
+                    &[
+                        // Deliberately outbound-only (no inbound pool):
+                        // the reference only tests tunnels when a pool
+                        // holds BOTH directions, and failing tests tear
+                        // down established tunnels within a minute. An
+                        // untestable single-direction pool lives its
+                        // full lifetime, so the sender pool is stable
+                        // at send time instead of churning.
+                        ("inbound.length", "0"),
+                        ("outbound.length", "1"),
+                        ("outbound.quantity", "1"),
+                        ("outbound.lengthVariance", "0"),
+                        ("explicitPeers", &i2pr_b64),
+                    ],
+                    BuildStop::CountedObepSetup { reply: a_peer_hash },
+                    build_epoch_timeout(),
+                    a_target,
+                    b_target,
+                    &identity,
+                )
+                .await?
+                .ok_or("counted sender session never reported ready")?;
+                // Unfragmented then fragmented sequentially on one
+                // sender session, each alone in its flush batch: the
+                // reference SAM loop reliably parses the first
+                // DATAGRAM SEND of each batch promptly, while a second
+                // command riding the same batch can sit unprocessed
+                // until the next batch arrives (source-locked against
+                // exact-pinned i2pd: one parsed send per ~45 s send
+                // pair). The first drain stops right after the
+                // unfragmented delivery, so the fragmented send
+                // follows within seconds on the same live path. A
+                // bounded fresh-session retry round below covers
+                // genuinely missing sizes.
+                //
+                // The pass predicate is proved on the RECEIVING SAM
+                // socket, not on our-side reassembly sizes: reference
+                // control traffic (garlic-routed build replies,
+                // encrypted LeaseSet publishes, tunnel tests) completes
+                // on our OBEP registration at datagram-like sizes, so
+                // size counting cannot separate genuine datagrams from
+                // background (source-locked against exact-pinned i2pd
+                // runs: dozens of ~950 B accepted garlics with no
+                // corresponding delivery). A receipt counts only when
+                // the receiver session socket delivers DATAGRAM
+                // RECEIVED with the exact stimulus size and
+                // byte-pattern (512 × 0x5A, 4096 × 0xA5) — an event
+                // only the full A→i2pr→B→A reference path can
+                // produce. Requiring exactly one of each proves both
+                // datagrams flowed exactly once; a duplicate (late
+                // original plus its retry) surfaces as a count of two
+                // and fails closed.
+                //
+                // Freshness is load-bearing: the reference stamps inner
+                // garlic expirations only ~8 s out
+                // (`I2NP_MESSAGE_EXPIRATION_TIMEOUT`), so a send that
+                // queues behind a dead sender pool arrives downstream
+                // already expired and can never be received. Sends
+                // follow the counted setup within seconds on the live
+                // path, and the short verify polls below (not the long
+                // background-harvesting drains) decide each round.
+                let is_datagram = |obs: &&Observation| {
+                    obs.kind == ObservedKind::DataDeliveredObep
+                        && obs.delivery == "obep-ok-garlic"
+                        && obs.aux_count >= 500
+                };
+                let is_large = |obs: &&Observation| {
+                    obs.kind == ObservedKind::DataDeliveredObep
+                        && obs.delivery == "obep-ok-garlic"
+                        && obs.aux_count >= 3000
+                };
+                let datagrams_before = ledger.of_epoch(Epoch::ObepData).filter(is_datagram).count();
+                let large_before = ledger.of_epoch(Epoch::ObepData).filter(is_large).count();
+                let mut rx_counts = RxDatagramCounts {
+                    rx_512: 0,
+                    rx_4096: 0,
+                };
+                // Fresh sessions for the send phase: the setups above
+                // took a minute and idle links die silently mid-run
+                // (later sends fail closed as NoActiveSession while
+                // inbound cells fall into the unknown-link drop).
                 ensure_sessions(&handle, a_target, b_target).await;
+                // Freshness gate: send only on a just-established
+                // sender tunnel so the reference emits with a fresh
+                // inner expiration (see the helper docs).
                 wait_for_fresh_sender_tunnel(
                     &mut handle,
                     &mut obep_data_owner,
@@ -4100,7 +4352,7 @@ async fn run_qualification() -> Result<(), String> {
                     Epoch::ObepData,
                     &reference_a,
                     tx_created_baseline,
-                    Duration::from_secs(20),
+                    Duration::from_secs(30),
                 )
                 .await?;
                 tx.send_datagram("m11-tx", &rx_obep_dest, &vec![0x5Au8; 512])
@@ -4112,7 +4364,7 @@ async fn run_qualification() -> Result<(), String> {
                     Epoch::ObepData,
                     Duration::from_secs(25),
                     DataStop::DeliveredSizedObep {
-                        count: datagrams_before + 2,
+                        count: datagrams_before + 1,
                         min_len: 500,
                     },
                     Duration::from_secs(2),
@@ -4128,57 +4380,63 @@ async fn run_qualification() -> Result<(), String> {
                     &mut rx_counts,
                 )
                 .await?;
-            }
-            // Fragmented send on the SAME sender session, spaced
-            // from the first send by the first drain (separate SAM
-            // batches parse promptly; back-to-back sends in one
-            // batch can stall). A second sender session is only
-            // created below if this send genuinely goes missing
-            // (retry round), keeping the green path to a single
-            // session setup. Gated like the first send: the pool
-            // must hold a live tunnel (established after setup, or
-            // rebuilt since) so emission is immediate and fresh.
-            wait_for_fresh_sender_tunnel(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &reference_a,
-                tx_created_baseline,
-                Duration::from_secs(20),
-            )
-            .await?;
-            tx.send_datagram("m11-tx", &rx_obep_dest, &vec![0xA5u8; 4096])
-                .await?;
-            drain_data_epoch(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                Duration::from_secs(40),
-                DataStop::DeliveredSizedObep {
-                    count: datagrams_before + 2,
-                    min_len: 500,
-                },
-                Duration::from_secs(DATA_SETTLE_SECS),
-            )
-            .await?;
-            poll_rx_datagrams(
-                &mut handle,
-                &mut obep_data_owner,
-                &mut ledger,
-                Epoch::ObepData,
-                &mut rx_obep,
-                Duration::from_secs(10),
-                &mut rx_counts,
-            )
-            .await?;
-            // Same-session resend for the fragmented size on the
-            // same stale-pool rationale as the unfragmented resend
-            // above: one bounded resend before falling through to
-            // the fresh-session round.
-            if rx_counts.rx_4096 == 0 {
-                ensure_sessions(&handle, a_target, b_target).await;
+                // Same-session resend when the unfragmented receipt is
+                // missing: the first send routinely queues behind a
+                // still-establishing sender pool and lapses its ~8 s
+                // inner expiration before emission, so it can never be
+                // received no matter how long the drain waits. A resend
+                // ~35 s later (past any genuine horizon, so a late
+                // double is impossible — anything that late is stale
+                // by definition) usually lands on the recovered pool
+                // with a fresh expiration. Bounded to one resend; the
+                // fresh-session round below remains the last resort.
+                if rx_counts.rx_512 == 0 {
+                    ensure_sessions(&handle, a_target, b_target).await;
+                    wait_for_fresh_sender_tunnel(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        &reference_a,
+                        tx_created_baseline,
+                        Duration::from_secs(20),
+                    )
+                    .await?;
+                    tx.send_datagram("m11-tx", &rx_obep_dest, &vec![0x5Au8; 512])
+                        .await?;
+                    drain_data_epoch(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        Duration::from_secs(25),
+                        DataStop::DeliveredSizedObep {
+                            count: datagrams_before + 2,
+                            min_len: 500,
+                        },
+                        Duration::from_secs(2),
+                    )
+                    .await?;
+                    poll_rx_datagrams(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        &mut rx_obep,
+                        Duration::from_secs(10),
+                        &mut rx_counts,
+                    )
+                    .await?;
+                }
+                // Fragmented send on the SAME sender session, spaced
+                // from the first send by the first drain (separate SAM
+                // batches parse promptly; back-to-back sends in one
+                // batch can stall). A second sender session is only
+                // created below if this send genuinely goes missing
+                // (retry round), keeping the green path to a single
+                // session setup. Gated like the first send: the pool
+                // must hold a live tunnel (established after setup, or
+                // rebuilt since) so emission is immediate and fresh.
                 wait_for_fresh_sender_tunnel(
                     &mut handle,
                     &mut obep_data_owner,
@@ -4198,7 +4456,7 @@ async fn run_qualification() -> Result<(), String> {
                     Epoch::ObepData,
                     Duration::from_secs(40),
                     DataStop::DeliveredSizedObep {
-                        count: datagrams_before + 3,
+                        count: datagrams_before + 2,
                         min_len: 500,
                     },
                     Duration::from_secs(DATA_SETTLE_SECS),
@@ -4214,225 +4472,699 @@ async fn run_qualification() -> Result<(), String> {
                     &mut rx_counts,
                 )
                 .await?;
-            }
-            // Bounded retry round on a FRESH sender session when a
-            // size is missing at the receiver socket: transient
-            // reference scheduling stalls (unparsed SAM commands,
-            // stale routing paths) can strand an otherwise healthy
-            // send, and a fresh session re-rolls all of that state
-            // at once (session, pool, tunnel, routing path, owner
-            // quotas). Only missing sizes are resent, sequentially
-            // on the one retry session. At most one retry round
-            // total.
-            if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
-                ensure_sessions(&handle, a_target, b_target).await;
-                let mut obep_data_owner_retry =
-                    fresh_owner(&handle, wall_secs() ^ 0x0E77, &identity)?;
-                let mut tx_retry = SamClient::connect(sam_addr).await?;
-                tx_retry.hello().await?;
-                let retry_created_baseline = reference_a.count_outbound_created();
-                let retry_ready = run_sam_epoch(
-                    &mut handle,
-                    &mut obep_data_owner_retry,
-                    &mut ledger,
+                // Same-session resend for the fragmented size on the
+                // same stale-pool rationale as the unfragmented resend
+                // above: one bounded resend before falling through to
+                // the fresh-session round.
+                if rx_counts.rx_4096 == 0 {
+                    ensure_sessions(&handle, a_target, b_target).await;
+                    wait_for_fresh_sender_tunnel(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        &reference_a,
+                        tx_created_baseline,
+                        Duration::from_secs(20),
+                    )
+                    .await?;
+                    tx.send_datagram("m11-tx", &rx_obep_dest, &vec![0xA5u8; 4096])
+                        .await?;
+                    drain_data_epoch(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        Duration::from_secs(40),
+                        DataStop::DeliveredSizedObep {
+                            count: datagrams_before + 3,
+                            min_len: 500,
+                        },
+                        Duration::from_secs(DATA_SETTLE_SECS),
+                    )
+                    .await?;
+                    poll_rx_datagrams(
+                        &mut handle,
+                        &mut obep_data_owner,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        &mut rx_obep,
+                        Duration::from_secs(10),
+                        &mut rx_counts,
+                    )
+                    .await?;
+                }
+                // Bounded retry round on a FRESH sender session when a
+                // size is missing at the receiver socket: transient
+                // reference scheduling stalls (unparsed SAM commands,
+                // stale routing paths) can strand an otherwise healthy
+                // send, and a fresh session re-rolls all of that state
+                // at once (session, pool, tunnel, routing path, owner
+                // quotas). Only missing sizes are resent, sequentially
+                // on the one retry session. At most one retry round
+                // total.
+                if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
+                    ensure_sessions(&handle, a_target, b_target).await;
+                    let mut obep_data_owner_retry =
+                        fresh_owner(&handle, wall_secs() ^ 0x0E77, &identity)?;
+                    let mut tx_retry = SamClient::connect(sam_addr).await?;
+                    tx_retry.hello().await?;
+                    let retry_created_baseline = reference_a.count_outbound_created();
+                    let retry_ready = run_sam_epoch(
+                        &mut handle,
+                        &mut obep_data_owner_retry,
+                        &mut ledger,
+                        Epoch::ObepData,
+                        &mut tx_retry,
+                        "m11-tx-retry",
+                        &[
+                            ("inbound.length", "0"),
+                            ("outbound.length", "1"),
+                            ("outbound.quantity", "1"),
+                            ("outbound.lengthVariance", "0"),
+                            ("explicitPeers", &i2pr_b64),
+                        ],
+                        BuildStop::CountedObepSetup { reply: a_peer_hash },
+                        build_epoch_timeout(),
+                        a_target,
+                        b_target,
+                        &identity,
+                    )
+                    .await?;
+                    if retry_ready.is_some() {
+                        if rx_counts.rx_512 == 0 {
+                            wait_for_fresh_sender_tunnel(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                &reference_a,
+                                retry_created_baseline,
+                                Duration::from_secs(30),
+                            )
+                            .await?;
+                            tx_retry
+                                .send_datagram("m11-tx-retry", &rx_obep_dest, &vec![0x5Au8; 512])
+                                .await?;
+                            drain_data_epoch(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                Duration::from_secs(25),
+                                DataStop::DeliveredSizedObep {
+                                    count: datagrams_before + 1,
+                                    min_len: 500,
+                                },
+                                Duration::from_secs(2),
+                            )
+                            .await?;
+                            poll_rx_datagrams(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                &mut rx_obep,
+                                Duration::from_secs(10),
+                                &mut rx_counts,
+                            )
+                            .await?;
+                        }
+                        if rx_counts.rx_4096 == 0 {
+                            wait_for_fresh_sender_tunnel(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                &reference_a,
+                                retry_created_baseline,
+                                Duration::from_secs(20),
+                            )
+                            .await?;
+                            tx_retry
+                                .send_datagram("m11-tx-retry", &rx_obep_dest, &vec![0xA5u8; 4096])
+                                .await?;
+                            drain_data_epoch(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                Duration::from_secs(40),
+                                DataStop::DeliveredSizedObep {
+                                    count: large_before + 1,
+                                    min_len: 3000,
+                                },
+                                Duration::from_secs(DATA_SETTLE_SECS),
+                            )
+                            .await?;
+                            poll_rx_datagrams(
+                                &mut handle,
+                                &mut obep_data_owner_retry,
+                                &mut ledger,
+                                Epoch::ObepData,
+                                &mut rx_obep,
+                                Duration::from_secs(10),
+                                &mut rx_counts,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                record_row(
+                    &evidence_dir,
                     Epoch::ObepData,
-                    &mut tx_retry,
-                    "m11-tx-retry",
+                    "delivered-delta",
+                    &format!("rx512={} rx4096={}", rx_counts.rx_512, rx_counts.rx_4096),
+                    &mut rows,
+                );
+                if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
+                    return Err(format!(
+                        "OBEP data epoch expected exactly one payload-verified 512-byte plus one \
+                     payload-verified 4096-byte DATAGRAM RECEIVED on the receiver session socket \
+                     (unfragmented + fragmented-once): rx512={} rx4096={}",
+                        rx_counts.rx_512, rx_counts.rx_4096,
+                    ));
+                }
+                record_row(
+                    &evidence_dir,
+                    Epoch::ObepData,
+                    "delivery",
+                    "true",
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::ObepData,
+                    "fragmented-once",
+                    "true",
+                    &mut rows,
+                );
+                // Data receiver socket done: dropping it destroys its
+                // reference pools, calming the mesh for the later
+                // epochs. This run's SAM servers saturate under several
+                // live sessions' concurrent tunnel churn
+                // (builds/publishes/tests), and a stalled SAM loop
+                // stops parsing DATAGRAM SEND entirely. Later epochs
+                // use fresh sockets; nothing reads this one again.
+                drop(rx_obep);
+                // Sender socket done too: its outbound pool would
+                // otherwise rebuild and churn against our quotas for
+                // the rest of the run while nothing ever sends on it
+                // again (later sends use the sibling sender). Same
+                // rationale as the receiver drop above.
+                drop(tx);
+                // IBGW ingress: the reference creator opens a fresh
+                // inbound tunnel whose trusted first hop is i2pr and a
+                // sibling sender drives one message through it, so the
+                // TunnelGateway entry that reaches the accepted gateway
+                // id is stock-i2pd traffic the reference itself emitted.
+                // Waiting for the reference's own manage cadence never
+                // produced ingress once the role session was dropped.
+                // Fresh owner (same quota rationale as the OBEP data
+                // block): the rx_ibgw build and the sibling ingress
+                // resolve against the fresh registration the run
+                // accepts here, not the role epoch's.
+                //
+                // Two-hop explicit inbound ([B, i2pr] list order; the
+                // reference reverses explicit peers for inbound builds
+                // into on-wire [i2pr, B]): i2pr stays the inbound
+                // gateway while B terminates natively, exactly the
+                // shape Epoch 1 qualifies reliably. Single-hop
+                // trusted pinning is avoided here: the reference's
+                // trusted first-hop selection silently yields no
+                // usable build most runs (zero-hop placeholder stuck,
+                // no STBM ever reaches i2pr), while explicit path
+                // order is deterministic.
+                let mut ibgw_data_owner = fresh_owner(&handle, wall_secs() ^ 0x1B9D, &identity)?;
+                // Bounded setup retry (two sessions): the 2-hop
+                // inbound must traverse B-side admission (unmanaged
+                // quotas) and land the reversed on-wire shape, so a
+                // single attempt can stall past its timeout while a
+                // fresh session/pool lands promptly. Same owner (its
+                // resets keep converging quotas); fresh client per
+                // attempt so each gets a fresh pool. The ready socket
+                // is kept for the receipt polls below.
+                let (rx_ibgw_dest, mut rx_ibgw) = {
+                    let mut attempt = SamClient::connect(sam_addr).await?;
+                    attempt.hello().await?;
+                    match run_sam_epoch(
+                        &mut handle,
+                        &mut ibgw_data_owner,
+                        &mut ledger,
+                        Epoch::IbgwData,
+                        &mut attempt,
+                        "m11-rx-ibgw",
+                        &[
+                            ("inbound.length", "2"),
+                            ("inbound.quantity", "1"),
+                            ("inbound.lengthVariance", "0"),
+                            // Outbound pool (B-direct) carries the ECIES
+                            // tag/ack return traffic: without a real
+                            // outbound tunnel those acks have no path
+                            // (zero-hop direct does not qualify), tags go
+                            // unconfirmed, and sessions flap. Mirrors the
+                            // OBEP receiver, which passes with this shape.
+                            ("outbound.length", "1"),
+                            ("outbound.quantity", "1"),
+                            ("outbound.lengthVariance", "0"),
+                            ("explicitPeers", &format!("{b_b64},{i2pr_b64}")),
+                        ],
+                        BuildStop::AcceptedRole(
+                            TransitHopRoleKind::InboundGateway,
+                            [a_peer_hash, b_hash_bytes],
+                        ),
+                        build_epoch_timeout(),
+                        a_target,
+                        b_target,
+                        &identity,
+                    )
+                    .await?
+                    {
+                        Some(dest) => (dest, attempt),
+                        None => {
+                            // First attempt stalled; its pool dies with
+                            // the socket. One bounded retry on a fresh
+                            // session before failing closed. Settle
+                            // first: the reference tears its session
+                            // pools down asynchronously after our FIN,
+                            // and reconnecting instantly can wedge the
+                            // hello behind that teardown (observed as a
+                            // 15 s SAM read timeout on a live
+                            // reference). One settle plus one hello
+                            // retry, then fail closed as before.
+                            drop(attempt);
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            let mut retry = SamClient::connect(sam_addr).await?;
+                            if retry.hello().await.is_err() {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                retry.hello().await?;
+                            }
+                            let dest = run_sam_epoch(
+                                &mut handle,
+                                &mut ibgw_data_owner,
+                                &mut ledger,
+                                Epoch::IbgwData,
+                                &mut retry,
+                                "m11-rx-ibgw-retry",
+                                &[
+                                    ("inbound.length", "2"),
+                                    ("inbound.quantity", "1"),
+                                    ("inbound.lengthVariance", "0"),
+                                    ("outbound.length", "1"),
+                                    ("outbound.quantity", "1"),
+                                    ("outbound.lengthVariance", "0"),
+                                    ("explicitPeers", &format!("{b_b64},{i2pr_b64}")),
+                                ],
+                                BuildStop::AcceptedRole(
+                                    TransitHopRoleKind::InboundGateway,
+                                    [a_peer_hash, b_hash_bytes],
+                                ),
+                                build_epoch_timeout(),
+                                a_target,
+                                b_target,
+                                &identity,
+                            )
+                            .await?
+                            .ok_or("rx_ibgw session reported ready without a destination")?;
+                            (dest, retry)
+                        }
+                    }
+                };
+                let mut tx_ibgw = SamClient::connect(sam_addr).await?;
+                tx_ibgw.hello().await?;
+                run_sam_epoch(
+                    &mut handle,
+                    &mut ibgw_data_owner,
+                    &mut ledger,
+                    Epoch::IbgwData,
+                    &mut tx_ibgw,
+                    "m11-tx-ibgw",
                     &[
                         ("inbound.length", "0"),
+                        // Outbound via B (not i2pr): the datagram must
+                        // reach B first so B addresses the receiver
+                        // inbound gateway per the receiver LeaseSet. A
+                        // direct sender pool would endpoint-deliver at
+                        // i2pr, and i2pr's OBEP-tunnel forward can only
+                        // emit outward: genuine TunnelGateway ingress
+                        // at our accepted gateway id (the plan's
+                        // multi-cell case) arrives only when B relays
+                        // a fragmented message down to us. B-side
+                        // admission is unmanaged, so this setup waits
+                        // on plain SessionReady (a one-hop endpoint
+                        // build at B leaves no observable accept here)
+                        // with resets never suppressed.
                         ("outbound.length", "1"),
                         ("outbound.quantity", "1"),
                         ("outbound.lengthVariance", "0"),
-                        ("explicitPeers", &i2pr_b64),
+                        ("explicitPeers", &b_b64),
                     ],
-                    BuildStop::CountedObepSetup { reply: a_peer_hash },
+                    BuildStop::SessionReady,
                     build_epoch_timeout(),
                     a_target,
                     b_target,
                     &identity,
                 )
-                .await?;
-                if retry_ready.is_some() {
-                    if rx_counts.rx_512 == 0 {
-                        wait_for_fresh_sender_tunnel(
+                .await?
+                .ok_or("tx_ibgw session never reported ready")?;
+                // Large enough that the gateway emission has to split
+                // into more than one TunnelData cell (1500 B payload
+                // reassembles to ~1.9 KB garlic: two cells, so a single
+                // lost fragment cannot strand it the way larger
+                // multi-cell stimuli do on the unmanaged A<->B link),
+                // and small enough that header plus payload fits the
+                // reference's 8193-byte SAM socket buffer: a 9000 B
+                // payload overflows it, the reference keeps waiting
+                // for bytes that never fit, and the session wedges
+                // (source-locked against SAMSocket::ProcessDatagramSend).
+                // Fresh sessions first: the sibling setups took a
+                // while and idle links die silently mid-run. Gated like
+                // the OBEP sends (a pooled send behind an establishing
+                // pool lapses its inner expiration before emission),
+                // with one bounded same-session resend when no ingress
+                // arrives: gateway ingress is tunnel-scoped to the
+                // accepted gateway id, so background cannot satisfy
+                // it and a missing ingress honestly means this send
+                // rotted.
+                ensure_sessions(&handle, a_target, b_target).await;
+                let tx_ibgw_baseline = reference_a.count_outbound_created();
+                // End-to-end receipt on the receiver session socket,
+                // mirroring the OBEP predicate: gateway ingress proves
+                // our emission, but only a payload-verified DATAGRAM
+                // RECEIVED (1500 × 0x7E, exactly once) proves the full
+                // A→B→i2pr→B→A reference path closed the loop. Up to
+                // four iterations (one immediate freshest-state shot,
+                // then event-driven): the sender pool, the B-side
+                // admission underneath it, and the receiver gateway
+                // shape all flap on ~30 s timescales, so one shot
+                // routinely lands in a dead window while a later
+                // iteration lands live. Rounds stop at the first
+                // receipt; a stale round can never double-deliver (the
+                // reference drops lapsed inner expirations).
+                let mut rx_1500: usize = 0;
+                // Event-driven sends: a reversed receiver rebuild
+                // (fresh IBGW accept at i2pr) is the only window in
+                // which B relays a fragmented message down to our
+                // gateway id with a live registration and a fresh
+                // LeaseSet on every leg. Blind sends outside such
+                // windows rot on stale gateways or bypass i2pr
+                // entirely, so each iteration waits for a fresh accept
+                // first, settles for publish/propagate, then sends. An
+                // iteration that finds no fresh accept still sends once
+                // (bounded blind fallback) so the phase never deadlocks
+                // when the reference holds its shape. Rounds stop at
+                // the first receipt; a stale round can never
+                // double-deliver (the reference drops lapsed inner
+                // expirations).
+                let ibgw_floor_ms = wall_ms();
+                let mut ibgw_baseline: Vec<u32> = ledger
+                    .of_epoch(Epoch::IbgwData)
+                    .filter(|obs| {
+                        obs.kind == ObservedKind::BuildAccepted
+                            && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                    })
+                    .map(|obs| obs.receive_tunnel)
+                    .collect();
+                for round in 0..4 {
+                    if rx_1500 == 1 {
+                        break;
+                    }
+                    ensure_sessions(&handle, a_target, b_target).await;
+                    if round == 0 {
+                        // Freshest-state shot first: both pools just
+                        // established, registrations live, LeaseSets
+                        // fresh. No waits — every second of delay lets
+                        // hyper-churn rebuild the window away.
+                    } else {
+                        let _fresh = pump_until_fresh_ibgw(
                             &mut handle,
-                            &mut obep_data_owner_retry,
+                            &mut ibgw_data_owner,
                             &mut ledger,
-                            Epoch::ObepData,
-                            &reference_a,
-                            retry_created_baseline,
-                            Duration::from_secs(30),
-                        )
-                        .await?;
-                        tx_retry
-                            .send_datagram("m11-tx-retry", &rx_obep_dest, &vec![0x5Au8; 512])
-                            .await?;
-                        drain_data_epoch(
-                            &mut handle,
-                            &mut obep_data_owner_retry,
-                            &mut ledger,
-                            Epoch::ObepData,
+                            Epoch::IbgwData,
+                            &mut ibgw_baseline,
+                            ibgw_floor_ms,
                             Duration::from_secs(25),
-                            DataStop::DeliveredSizedObep {
-                                count: datagrams_before + 1,
-                                min_len: 500,
-                            },
-                            Duration::from_secs(2),
                         )
                         .await?;
-                        poll_rx_datagrams(
+                        // Settle pump for LeaseSet publish: the fresh
+                        // gateway must reach the sender's routing before
+                        // the send addresses it. Short on purpose: the
+                        // sender (A) routes from its local store
+                        // (instant) and the relay (B) executes garlic
+                        // instructions (no fetch), so only A's internal
+                        // publish lag (~seconds) needs covering; a long
+                        // settle lets hyper-churn rebuild the window
+                        // away before the send fires.
+                        let _settled = pump_until_fresh_ibgw(
                             &mut handle,
-                            &mut obep_data_owner_retry,
+                            &mut ibgw_data_owner,
                             &mut ledger,
-                            Epoch::ObepData,
-                            &mut rx_obep,
-                            Duration::from_secs(10),
-                            &mut rx_counts,
+                            Epoch::IbgwData,
+                            &mut ibgw_baseline,
+                            ibgw_floor_ms,
+                            Duration::from_secs(4),
                         )
                         .await?;
                     }
-                    if rx_counts.rx_4096 == 0 {
-                        wait_for_fresh_sender_tunnel(
-                            &mut handle,
-                            &mut obep_data_owner_retry,
-                            &mut ledger,
-                            Epoch::ObepData,
-                            &reference_a,
-                            retry_created_baseline,
-                            Duration::from_secs(20),
-                        )
+                    wait_for_fresh_sender_tunnel(
+                        &mut handle,
+                        &mut ibgw_data_owner,
+                        &mut ledger,
+                        Epoch::IbgwData,
+                        &reference_a,
+                        tx_ibgw_baseline,
+                        Duration::from_secs(12),
+                    )
+                    .await?;
+                    // Send marker on stdout (captured in the external
+                    // driver log, never an evidence row): aligns sends
+                    // with later ingress/receipt rows in forensics.
+                    // Evidence rows stay strictly typed observations.
+                    eprintln!("m11-tx-ibgw send round started wall_ms={}", wall_ms());
+                    tx_ibgw
+                        .send_datagram("m11-tx-ibgw", &rx_ibgw_dest, &vec![0x7Eu8; 1500])
                         .await?;
-                        tx_retry
-                            .send_datagram("m11-tx-retry", &rx_obep_dest, &vec![0xA5u8; 4096])
-                            .await?;
-                        drain_data_epoch(
-                            &mut handle,
-                            &mut obep_data_owner_retry,
-                            &mut ledger,
-                            Epoch::ObepData,
-                            Duration::from_secs(40),
-                            DataStop::DeliveredSizedObep {
-                                count: large_before + 1,
-                                min_len: 3000,
-                            },
-                            Duration::from_secs(DATA_SETTLE_SECS),
-                        )
-                        .await?;
-                        poll_rx_datagrams(
-                            &mut handle,
-                            &mut obep_data_owner_retry,
-                            &mut ledger,
-                            Epoch::ObepData,
-                            &mut rx_obep,
-                            Duration::from_secs(10),
-                            &mut rx_counts,
-                        )
-                        .await?;
-                    }
+                    drain_data_epoch(
+                        &mut handle,
+                        &mut ibgw_data_owner,
+                        &mut ledger,
+                        Epoch::IbgwData,
+                        data_epoch_timeout(),
+                        DataStop::GatewayDelivered,
+                        Duration::from_secs(DATA_SETTLE_SECS),
+                    )
+                    .await?;
+                    poll_rx_sized(
+                        &mut rx_ibgw,
+                        Duration::from_secs(10),
+                        1500,
+                        0x7E,
+                        &mut rx_1500,
+                    )
+                    .await?;
                 }
+                // Tunnel-scoped: only ingress addressing an accepted
+                // gateway registration counts (rebuilds may accept
+                // several ids; any of them is genuine). Background
+                // gateway traffic to other ids (stale or foreign
+                // tunnels) is recorded but never satisfies the rows.
+                let accepted_gateways: Vec<u32> = ledger
+                    .of_epoch(Epoch::IbgwData)
+                    .filter(|obs| {
+                        obs.kind == ObservedKind::BuildAccepted
+                            && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                    })
+                    .map(|obs| obs.receive_tunnel)
+                    .collect();
+                let gatewayed: Vec<&Observation> = ledger
+                    .of_epoch(Epoch::IbgwData)
+                    .filter(|obs| gateway_ingress_accepted(obs, &accepted_gateways))
+                    .collect();
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "gateway-delivered-count",
+                    &gatewayed.len().to_string(),
+                    &mut rows,
+                );
+                // Plan 258 work package A diagnostic rows: sanitized
+                // counts only (ingress, nested size distribution,
+                // emitted-cell distribution, failure distribution).
+                // Recorded before the gates so a failing lane still
+                // classifies H1/H2/H3; diagnostic-only keys never
+                // feed any pass predicate.
+                let diag = gateway_diag_counts(&gatewayed);
+                for (key, value) in [
+                    ("gateway-diag-ingress", diag.ingress),
+                    ("gateway-diag-nested-single", diag.nested_single),
+                    ("gateway-diag-nested-multi", diag.nested_multi),
+                    ("gateway-diag-emitted-single", diag.emitted_single),
+                    ("gateway-diag-emitted-multi", diag.emitted_multi),
+                    ("gateway-diag-emitted-max", diag.emitted_max),
+                    ("gateway-diag-failures-total", diag.failures_total),
+                    ("gateway-diag-failed-ingress", diag.failed_ingress),
+                ] {
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        key,
+                        &value.to_string(),
+                        &mut rows,
+                    );
+                }
+                // Plan 258 drop-side diagnostic rows: every gateway
+                // ingress that did not deliver, folded by addressed id
+                // (accepted vs stale) and nested size class. Recorded
+                // before the gates alongside the delivered fold so a
+                // failing lane still classifies the relay path;
+                // diagnostic-only keys never feed any pass predicate.
+                let dropped: Vec<&Observation> = ledger
+                    .of_epoch(Epoch::IbgwData)
+                    .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
+                    .collect();
+                let drop_diag = gateway_drop_diag_counts(&dropped, &accepted_gateways);
+                // Per-ingress drop rows (diagnostic-only): addressed
+                // id + scope + size class. Sanitized routing facts;
+                // never an input to any pass predicate.
+                for obs in &dropped {
+                    let (scope, class) = gateway_drop_diag_label(obs, &accepted_gateways);
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "gateway-diag-drop",
+                        &format!(
+                            "{receive:#010x}-{scope}-{class}",
+                            receive = obs.receive_tunnel
+                        ),
+                        &mut rows,
+                    );
+                }
+                for (key, value) in [
+                    ("gateway-diag-dropped", drop_diag.dropped),
+                    (
+                        "gateway-diag-dropped-accepted-id",
+                        drop_diag.dropped_accepted_id,
+                    ),
+                    ("gateway-diag-dropped-stale-id", drop_diag.dropped_stale_id),
+                    (
+                        "gateway-diag-dropped-nested-multi",
+                        drop_diag.dropped_nested_multi,
+                    ),
+                ] {
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        key,
+                        &value.to_string(),
+                        &mut rows,
+                    );
+                }
+                // Recorded before the gates so failures still show
+                // whether anything reached the receiver socket (e.g. a
+                // B-gatewayed delivery that bypassed our IBGW id).
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "gateway-receipt",
+                    &rx_1500.to_string(),
+                    &mut rows,
+                );
+                if gatewayed.is_empty() {
+                    return Err("IBGW data epoch observed no genuine gateway ingress".to_string());
+                }
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "gateway-ingress",
+                    "true",
+                    &mut rows,
+                );
+                let multicell = gateway_multicell_satisfied(&gatewayed);
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "multicell-max",
+                    &gatewayed
+                        .iter()
+                        .map(|obs| obs.aux_count)
+                        .max()
+                        .unwrap_or(0)
+                        .to_string(),
+                    &mut rows,
+                );
+                if !multicell {
+                    return Err("IBGW data epoch observed no multi-cell emission".to_string());
+                }
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "multicell-bounded",
+                    "true",
+                    &mut rows,
+                );
+                // Plan 260 authority repair: the 2-hop B-ending receipt
+                // premise this gate once enforced is superseded. Plan
+                // 259 proved no lane-buildable transit terminus (A or
+                // B) can close receipt through `TransitTunnelEndpoint`
+                // — and Plan 260 restores the receipt requirement on
+                // the distinct creator-owned inbound path instead
+                // (Epoch::IbgwReceipt below, with its own gate). The
+                // 2-hop observation stays recorded as diagnostic
+                // history (emission proof + receipt count, normally
+                // zero here); it no longer aborts the lane. No history
+                // is rewritten: the value is still counted, just no
+                // longer the closing gate.
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "gateway-receipt-superseded-note",
+                    "plan260-creator-owned-receipt-epoch-owns-receipt",
+                    &mut rows,
+                );
+                // Data sockets done (same mesh-calming rationale as the
+                // OBEP receiver above); nothing reads them again.
+                drop(rx_ibgw);
+                drop(tx_ibgw);
             }
-            record_row(
-                &evidence_dir,
-                Epoch::ObepData,
-                "delivered-delta",
-                &format!("rx512={} rx4096={}", rx_counts.rx_512, rx_counts.rx_4096),
-                &mut rows,
-            );
-            if rx_counts.rx_512 != 1 || rx_counts.rx_4096 != 1 {
-                return Err(format!(
-                    "OBEP data epoch expected exactly one payload-verified 512-byte plus one \
-                     payload-verified 4096-byte DATAGRAM RECEIVED on the receiver session socket \
-                     (unfragmented + fragmented-once): rx512={} rx4096={}",
-                    rx_counts.rx_512, rx_counts.rx_4096,
-                ));
-            }
-            record_row(
-                &evidence_dir,
-                Epoch::ObepData,
-                "delivery",
-                "true",
-                &mut rows,
-            );
-            record_row(
-                &evidence_dir,
-                Epoch::ObepData,
-                "fragmented-once",
-                "true",
-                &mut rows,
-            );
-            // Data receiver socket done: dropping it destroys its
-            // reference pools, calming the mesh for the later
-            // epochs. This run's SAM servers saturate under several
-            // live sessions' concurrent tunnel churn
-            // (builds/publishes/tests), and a stalled SAM loop
-            // stops parsing DATAGRAM SEND entirely. Later epochs
-            // use fresh sockets; nothing reads this one again.
-            drop(rx_obep);
-            // Sender socket done too: its outbound pool would
-            // otherwise rebuild and churn against our quotas for
-            // the rest of the run while nothing ever sends on it
-            // again (later sends use the sibling sender). Same
-            // rationale as the receiver drop above.
-            drop(tx);
-            // IBGW ingress: the reference creator opens a fresh
-            // inbound tunnel whose trusted first hop is i2pr and a
-            // sibling sender drives one message through it, so the
-            // TunnelGateway entry that reaches the accepted gateway
-            // id is stock-i2pd traffic the reference itself emitted.
-            // Waiting for the reference's own manage cadence never
-            // produced ingress once the role session was dropped.
-            // Fresh owner (same quota rationale as the OBEP data
-            // block): the rx_ibgw build and the sibling ingress
-            // resolve against the fresh registration the run
-            // accepts here, not the role epoch's.
-            //
-            // Two-hop explicit inbound ([B, i2pr] list order; the
-            // reference reverses explicit peers for inbound builds
-            // into on-wire [i2pr, B]): i2pr stays the inbound
-            // gateway while B terminates natively, exactly the
-            // shape Epoch 1 qualifies reliably. Single-hop
-            // trusted pinning is avoided here: the reference's
-            // trusted first-hop selection silently yields no
-            // usable build most runs (zero-hop placeholder stuck,
-            // no STBM ever reaches i2pr), while explicit path
-            // order is deterministic.
-            let mut ibgw_data_owner = fresh_owner(&handle, wall_secs() ^ 0x1B9D, &identity)?;
-            // Bounded setup retry (two sessions): the 2-hop
-            // inbound must traverse B-side admission (unmanaged
-            // quotas) and land the reversed on-wire shape, so a
-            // single attempt can stall past its timeout while a
-            // fresh session/pool lands promptly. Same owner (its
-            // resets keep converging quotas); fresh client per
-            // attempt so each gets a fresh pool. The ready socket
-            // is kept for the receipt polls below.
-            let (rx_ibgw_dest, mut rx_ibgw) = {
+        } // end `!receipt_only` legacy data epochs
+
+        // Plan 260 work packages C/D/E/G: creator-owned inbound
+        // receipt epoch. The dedicated receiver destination owns a
+        // source-supported one-hop inbound tunnel through i2pr
+        // only (`inbound.length = 1`, zero variance, explicit peer
+        // i2pr); the sibling sender addresses that receiver
+        // destination, so genuine TunnelGateway ingress at the
+        // accepted IBGW id must emit toward the creator router A
+        // and resolve A's creator-local inbound tunnel into the
+        // receiver pool. The six-field tuple (§7) binds
+        // receive id + creator router + creator-local tunnel +
+        // pool owner + LeaseSet gateway/tunnel from typed
+        // build/data evidence; the receiver SAM socket proves
+        // end-to-end receipt exactly once.
+        {
+            let mut receipt_owner = fresh_owner(&handle, wall_secs() ^ 0x260D, &identity)?;
+            let (rx_receipt_dest, mut rx_receipt) = {
                 let mut attempt = SamClient::connect(sam_addr).await?;
                 attempt.hello().await?;
                 match run_sam_epoch(
                     &mut handle,
-                    &mut ibgw_data_owner,
+                    &mut receipt_owner,
                     &mut ledger,
-                    Epoch::IbgwData,
+                    Epoch::IbgwReceipt,
                     &mut attempt,
-                    "m11-rx-ibgw",
+                    "m11-rx-receipt",
                     &[
-                        ("inbound.length", "2"),
+                        ("inbound.length", "1"),
                         ("inbound.quantity", "1"),
                         ("inbound.lengthVariance", "0"),
-                        // Outbound pool (B-direct) carries the ECIES
-                        // tag/ack return traffic: without a real
-                        // outbound tunnel those acks have no path
-                        // (zero-hop direct does not qualify), tags go
-                        // unconfirmed, and sessions flap. Mirrors the
-                        // OBEP receiver, which passes with this shape.
                         ("outbound.length", "1"),
                         ("outbound.quantity", "1"),
                         ("outbound.lengthVariance", "0"),
-                        ("explicitPeers", &format!("{b_b64},{i2pr_b64}")),
+                        ("explicitPeers", &i2pr_b64),
                     ],
                     BuildStop::AcceptedRole(
                         TransitHopRoleKind::InboundGateway,
-                        [a_peer_hash, b_hash_bytes],
+                        [a_peer_hash, a_peer_hash],
                     ),
                     build_epoch_timeout(),
                     a_target,
@@ -4443,78 +5175,32 @@ async fn run_qualification() -> Result<(), String> {
                 {
                     Some(dest) => (dest, attempt),
                     None => {
-                        // First attempt stalled; its pool dies with
-                        // the socket. One bounded retry on a fresh
-                        // session before failing closed. Settle
-                        // first: the reference tears its session
-                        // pools down asynchronously after our FIN,
-                        // and reconnecting instantly can wedge the
-                        // hello behind that teardown (observed as a
-                        // 15 s SAM read timeout on a live
-                        // reference). One settle plus one hello
-                        // retry, then fail closed as before.
-                        drop(attempt);
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        let mut retry = SamClient::connect(sam_addr).await?;
-                        if retry.hello().await.is_err() {
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                            retry.hello().await?;
-                        }
-                        let dest = run_sam_epoch(
-                            &mut handle,
-                            &mut ibgw_data_owner,
-                            &mut ledger,
-                            Epoch::IbgwData,
-                            &mut retry,
-                            "m11-rx-ibgw-retry",
-                            &[
-                                ("inbound.length", "2"),
-                                ("inbound.quantity", "1"),
-                                ("inbound.lengthVariance", "0"),
-                                ("outbound.length", "1"),
-                                ("outbound.quantity", "1"),
-                                ("outbound.lengthVariance", "0"),
-                                ("explicitPeers", &format!("{b_b64},{i2pr_b64}")),
-                            ],
-                            BuildStop::AcceptedRole(
-                                TransitHopRoleKind::InboundGateway,
-                                [a_peer_hash, b_hash_bytes],
-                            ),
-                            build_epoch_timeout(),
-                            a_target,
-                            b_target,
-                            &identity,
-                        )
-                        .await?
-                        .ok_or("rx_ibgw session reported ready without a destination")?;
-                        (dest, retry)
+                        return Err(
+                            "Plan 260 receipt epoch: receiver session never reported ready"
+                                .to_string(),
+                        );
                     }
                 }
             };
-            let mut tx_ibgw = SamClient::connect(sam_addr).await?;
-            tx_ibgw.hello().await?;
+            let receiver_hash_hex = destination_hash_hex(&rx_receipt_dest)?;
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "receiver-destination",
+                &receiver_hash_hex,
+                &mut rows,
+            );
+            let mut tx_receipt = SamClient::connect(sam_addr).await?;
+            tx_receipt.hello().await?;
             run_sam_epoch(
                 &mut handle,
-                &mut ibgw_data_owner,
+                &mut receipt_owner,
                 &mut ledger,
-                Epoch::IbgwData,
-                &mut tx_ibgw,
-                "m11-tx-ibgw",
+                Epoch::IbgwReceipt,
+                &mut tx_receipt,
+                "m11-tx-receipt",
                 &[
                     ("inbound.length", "0"),
-                    // Outbound via B (not i2pr): the datagram must
-                    // reach B first so B addresses the receiver
-                    // inbound gateway per the receiver LeaseSet. A
-                    // direct sender pool would endpoint-deliver at
-                    // i2pr, and i2pr's OBEP-tunnel forward can only
-                    // emit outward: genuine TunnelGateway ingress
-                    // at our accepted gateway id (the plan's
-                    // multi-cell case) arrives only when B relays
-                    // a fragmented message down to us. B-side
-                    // admission is unmanaged, so this setup waits
-                    // on plain SessionReady (a one-hop endpoint
-                    // build at B leaves no observable accept here)
-                    // with resets never suppressed.
                     ("outbound.length", "1"),
                     ("outbound.quantity", "1"),
                     ("outbound.lengthVariance", "0"),
@@ -4527,295 +5213,249 @@ async fn run_qualification() -> Result<(), String> {
                 &identity,
             )
             .await?
-            .ok_or("tx_ibgw session never reported ready")?;
-            // Large enough that the gateway emission has to split
-            // into more than one TunnelData cell (1500 B payload
-            // reassembles to ~1.9 KB garlic: two cells, so a single
-            // lost fragment cannot strand it the way larger
-            // multi-cell stimuli do on the unmanaged A<->B link),
-            // and small enough that header plus payload fits the
-            // reference's 8193-byte SAM socket buffer: a 9000 B
-            // payload overflows it, the reference keeps waiting
-            // for bytes that never fit, and the session wedges
-            // (source-locked against SAMSocket::ProcessDatagramSend).
-            // Fresh sessions first: the sibling setups took a
-            // while and idle links die silently mid-run. Gated like
-            // the OBEP sends (a pooled send behind an establishing
-            // pool lapses its inner expiration before emission),
-            // with one bounded same-session resend when no ingress
-            // arrives: gateway ingress is tunnel-scoped to the
-            // accepted gateway id, so background cannot satisfy
-            // it and a missing ingress honestly means this send
-            // rotted.
+            .ok_or("Plan 260 receipt epoch: sender session never reported ready")?;
+            // 1400-byte stimulus: the nested encoding exceeds the
+            // 976-byte per-cell capacity, so the counted emission
+            // must split into at least two TunnelData cells; the
+            // 0xA5 pattern distinguishes this epoch from the
+            // legacy 1500 x 0x7E stimulus on its own sockets.
             ensure_sessions(&handle, a_target, b_target).await;
-            let tx_ibgw_baseline = reference_a.count_outbound_created();
-            // End-to-end receipt on the receiver session socket,
-            // mirroring the OBEP predicate: gateway ingress proves
-            // our emission, but only a payload-verified DATAGRAM
-            // RECEIVED (1500 × 0x7E, exactly once) proves the full
-            // A→B→i2pr→B→A reference path closed the loop. Up to
-            // four iterations (one immediate freshest-state shot,
-            // then event-driven): the sender pool, the B-side
-            // admission underneath it, and the receiver gateway
-            // shape all flap on ~30 s timescales, so one shot
-            // routinely lands in a dead window while a later
-            // iteration lands live. Rounds stop at the first
-            // receipt; a stale round can never double-deliver (the
-            // reference drops lapsed inner expirations).
-            let mut rx_1500: usize = 0;
-            // Event-driven sends: a reversed receiver rebuild
-            // (fresh IBGW accept at i2pr) is the only window in
-            // which B relays a fragmented message down to our
-            // gateway id with a live registration and a fresh
-            // LeaseSet on every leg. Blind sends outside such
-            // windows rot on stale gateways or bypass i2pr
-            // entirely, so each iteration waits for a fresh accept
-            // first, settles for publish/propagate, then sends. An
-            // iteration that finds no fresh accept still sends once
-            // (bounded blind fallback) so the phase never deadlocks
-            // when the reference holds its shape. Rounds stop at
-            // the first receipt; a stale round can never
-            // double-deliver (the reference drops lapsed inner
-            // expirations).
-            let ibgw_floor_ms = wall_ms();
-            let mut ibgw_baseline: Vec<u32> = ledger
-                .of_epoch(Epoch::IbgwData)
-                .filter(|obs| {
-                    obs.kind == ObservedKind::BuildAccepted
-                        && obs.role == Some(TransitHopRoleKind::InboundGateway)
-                })
-                .map(|obs| obs.receive_tunnel)
-                .collect();
+            let tx_receipt_baseline = reference_a.count_outbound_created();
+            let receipt_floor_ms = wall_ms();
+            let mut receipt_baseline: Vec<u32> = Vec::new();
+            let mut rx_receipt_count: usize = 0;
             for round in 0..4 {
-                if rx_1500 == 1 {
+                if rx_receipt_count == 1 {
                     break;
                 }
                 ensure_sessions(&handle, a_target, b_target).await;
-                if round == 0 {
-                    // Freshest-state shot first: both pools just
-                    // established, registrations live, LeaseSets
-                    // fresh. No waits — every second of delay lets
-                    // hyper-churn rebuild the window away.
-                } else {
+                if round > 0 {
                     let _fresh = pump_until_fresh_ibgw(
                         &mut handle,
-                        &mut ibgw_data_owner,
+                        &mut receipt_owner,
                         &mut ledger,
-                        Epoch::IbgwData,
-                        &mut ibgw_baseline,
-                        ibgw_floor_ms,
+                        Epoch::IbgwReceipt,
+                        &mut receipt_baseline,
+                        receipt_floor_ms,
                         Duration::from_secs(25),
                     )
                     .await?;
-                    // Settle pump for LeaseSet publish: the fresh
-                    // gateway must reach the sender's routing before
-                    // the send addresses it. Short on purpose: the
-                    // sender (A) routes from its local store
-                    // (instant) and the relay (B) executes garlic
-                    // instructions (no fetch), so only A's internal
-                    // publish lag (~seconds) needs covering; a long
-                    // settle lets hyper-churn rebuild the window
-                    // away before the send fires.
                     let _settled = pump_until_fresh_ibgw(
                         &mut handle,
-                        &mut ibgw_data_owner,
+                        &mut receipt_owner,
                         &mut ledger,
-                        Epoch::IbgwData,
-                        &mut ibgw_baseline,
-                        ibgw_floor_ms,
+                        Epoch::IbgwReceipt,
+                        &mut receipt_baseline,
+                        receipt_floor_ms,
                         Duration::from_secs(4),
                     )
                     .await?;
                 }
                 wait_for_fresh_sender_tunnel(
                     &mut handle,
-                    &mut ibgw_data_owner,
+                    &mut receipt_owner,
                     &mut ledger,
-                    Epoch::IbgwData,
+                    Epoch::IbgwReceipt,
                     &reference_a,
-                    tx_ibgw_baseline,
+                    tx_receipt_baseline,
                     Duration::from_secs(12),
                 )
                 .await?;
-                // Send marker on stdout (captured in the external
-                // driver log, never an evidence row): aligns sends
-                // with later ingress/receipt rows in forensics.
-                // Evidence rows stay strictly typed observations.
-                eprintln!("m11-tx-ibgw send round started wall_ms={}", wall_ms());
-                tx_ibgw
-                    .send_datagram("m11-tx-ibgw", &rx_ibgw_dest, &vec![0x7Eu8; 1500])
+                eprintln!("m11-tx-receipt send round started wall_ms={}", wall_ms());
+                tx_receipt
+                    .send_datagram("m11-tx-receipt", &rx_receipt_dest, &vec![0xA5u8; 1400])
                     .await?;
                 drain_data_epoch(
                     &mut handle,
-                    &mut ibgw_data_owner,
+                    &mut receipt_owner,
                     &mut ledger,
-                    Epoch::IbgwData,
+                    Epoch::IbgwReceipt,
                     data_epoch_timeout(),
                     DataStop::GatewayDelivered,
                     Duration::from_secs(DATA_SETTLE_SECS),
                 )
                 .await?;
                 poll_rx_sized(
-                    &mut rx_ibgw,
+                    &mut rx_receipt,
                     Duration::from_secs(10),
-                    1500,
-                    0x7E,
-                    &mut rx_1500,
+                    1400,
+                    0xA5,
+                    &mut rx_receipt_count,
                 )
                 .await?;
             }
-            // Tunnel-scoped: only ingress addressing an accepted
-            // gateway registration counts (rebuilds may accept
-            // several ids; any of them is genuine). Background
-            // gateway traffic to other ids (stale or foreign
-            // tunnels) is recorded but never satisfies the rows.
-            let accepted_gateways: Vec<u32> = ledger
-                .of_epoch(Epoch::IbgwData)
+            // Bind the counted epoch: accepted IBGW registrations
+            // from the creator router A, and genuine gateway
+            // deliveries addressing one of them.
+            let accepted_receipt: Vec<u32> = ledger
+                .of_epoch(Epoch::IbgwReceipt)
                 .filter(|obs| {
                     obs.kind == ObservedKind::BuildAccepted
                         && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                        && !obs.rejected
+                        && obs.peer_hash == a_peer_hash
+                        && obs.delivery == "accepted"
+                        && obs.active_after == obs.active_before + 1
                 })
                 .map(|obs| obs.receive_tunnel)
                 .collect();
-            let gatewayed: Vec<&Observation> = ledger
-                .of_epoch(Epoch::IbgwData)
-                .filter(|obs| gateway_ingress_accepted(obs, &accepted_gateways))
+            let gatewayed_receipt: Vec<&Observation> = ledger
+                .of_epoch(Epoch::IbgwReceipt)
+                .filter(|obs| gateway_ingress_accepted(obs, &accepted_receipt))
                 .collect();
             record_row(
                 &evidence_dir,
-                Epoch::IbgwData,
-                "gateway-delivered-count",
-                &gatewayed.len().to_string(),
-                &mut rows,
-            );
-            // Plan 258 work package A diagnostic rows: sanitized
-            // counts only (ingress, nested size distribution,
-            // emitted-cell distribution, failure distribution).
-            // Recorded before the gates so a failing lane still
-            // classifies H1/H2/H3; diagnostic-only keys never
-            // feed any pass predicate.
-            let diag = gateway_diag_counts(&gatewayed);
-            for (key, value) in [
-                ("gateway-diag-ingress", diag.ingress),
-                ("gateway-diag-nested-single", diag.nested_single),
-                ("gateway-diag-nested-multi", diag.nested_multi),
-                ("gateway-diag-emitted-single", diag.emitted_single),
-                ("gateway-diag-emitted-multi", diag.emitted_multi),
-                ("gateway-diag-emitted-max", diag.emitted_max),
-                ("gateway-diag-failures-total", diag.failures_total),
-                ("gateway-diag-failed-ingress", diag.failed_ingress),
-            ] {
-                record_row(
-                    &evidence_dir,
-                    Epoch::IbgwData,
-                    key,
-                    &value.to_string(),
-                    &mut rows,
-                );
-            }
-            // Plan 258 drop-side diagnostic rows: every gateway
-            // ingress that did not deliver, folded by addressed id
-            // (accepted vs stale) and nested size class. Recorded
-            // before the gates alongside the delivered fold so a
-            // failing lane still classifies the relay path;
-            // diagnostic-only keys never feed any pass predicate.
-            let dropped: Vec<&Observation> = ledger
-                .of_epoch(Epoch::IbgwData)
-                .filter(|obs| obs.kind == ObservedKind::GatewayDropped)
-                .collect();
-            let drop_diag = gateway_drop_diag_counts(&dropped, &accepted_gateways);
-            // Per-ingress drop rows (diagnostic-only): addressed
-            // id + scope + size class. Sanitized routing facts;
-            // never an input to any pass predicate.
-            for obs in &dropped {
-                let (scope, class) = gateway_drop_diag_label(obs, &accepted_gateways);
-                record_row(
-                    &evidence_dir,
-                    Epoch::IbgwData,
-                    "gateway-diag-drop",
-                    &format!(
-                        "{receive:#010x}-{scope}-{class}",
-                        receive = obs.receive_tunnel
-                    ),
-                    &mut rows,
-                );
-            }
-            for (key, value) in [
-                ("gateway-diag-dropped", drop_diag.dropped),
-                (
-                    "gateway-diag-dropped-accepted-id",
-                    drop_diag.dropped_accepted_id,
-                ),
-                ("gateway-diag-dropped-stale-id", drop_diag.dropped_stale_id),
-                (
-                    "gateway-diag-dropped-nested-multi",
-                    drop_diag.dropped_nested_multi,
-                ),
-            ] {
-                record_row(
-                    &evidence_dir,
-                    Epoch::IbgwData,
-                    key,
-                    &value.to_string(),
-                    &mut rows,
-                );
-            }
-            // Recorded before the gates so failures still show
-            // whether anything reached the receiver socket (e.g. a
-            // B-gatewayed delivery that bypassed our IBGW id).
-            record_row(
-                &evidence_dir,
-                Epoch::IbgwData,
+                Epoch::IbgwReceipt,
                 "gateway-receipt",
-                &rx_1500.to_string(),
+                &rx_receipt_count.to_string(),
                 &mut rows,
             );
-            if gatewayed.is_empty() {
-                return Err("IBGW data epoch observed no genuine gateway ingress".to_string());
+            if gatewayed_receipt.is_empty() {
+                return Err(
+                    "Plan 260 receipt epoch observed no genuine gateway ingress on the \
+                    one-hop creator-owned topology"
+                        .to_string(),
+                );
             }
+            let counted = gatewayed_receipt[0];
             record_row(
                 &evidence_dir,
-                Epoch::IbgwData,
+                Epoch::IbgwReceipt,
                 "gateway-ingress",
                 "true",
                 &mut rows,
             );
-            let multicell = gateway_multicell_satisfied(&gatewayed);
-            record_row(
-                &evidence_dir,
-                Epoch::IbgwData,
-                "multicell-max",
-                &gatewayed
-                    .iter()
-                    .map(|obs| obs.aux_count)
-                    .max()
-                    .unwrap_or(0)
-                    .to_string(),
-                &mut rows,
-            );
-            if !multicell {
-                return Err("IBGW data epoch observed no multi-cell emission".to_string());
+            let receipt_multicell = gateway_multicell_satisfied(&gatewayed_receipt);
+            if !receipt_multicell {
+                return Err("Plan 260 receipt epoch observed no multi-cell emission".to_string());
             }
             record_row(
                 &evidence_dir,
-                Epoch::IbgwData,
+                Epoch::IbgwReceipt,
                 "multicell-bounded",
                 "true",
                 &mut rows,
             );
-            // End-to-end receipt must also hold: ingress proves our
-            // emission, but only the receiver socket proves the full
-            // loop closed (background never arrives there).
-            if rx_1500 != 1 {
+            // The counted next hop must be the creator router A
+            // (§7.3): any other next router is not the
+            // receiver-owned inbound path and fails before
+            // receipt is counted.
+            let observed_next = counted.next_router.ok_or_else(|| {
+                "Plan 260 receipt epoch: counted delivery carries no next router".to_string()
+            })?;
+            if observed_next != a_peer_hash {
                 return Err(format!(
-                    "IBGW data epoch expected exactly one payload-verified 1500-byte DATAGRAM \
-                     RECEIVED on the receiver session socket: rx1500={rx_1500}"
+                    "Plan 260 receipt epoch: counted next hop {} is not the creator router A {}",
+                    hex_lower(&observed_next),
+                    hex_lower(&a_peer_hash)
                 ));
             }
-            // Data sockets done (same mesh-calming rationale as the
-            // OBEP receiver above); nothing reads them again.
-            drop(rx_ibgw);
-            drop(tx_ibgw);
+            // Six-field tuple from typed evidence. The i2pr-side
+            // triple (receive id, next router, next tunnel) is
+            // observed directly: the receive id is the accepted
+            // registration the ingress addressed, the next pair is
+            // the registration's committed tuple on the counted
+            // delivery. Pool ownership and LeaseSet binding derive
+            // behaviorally: stock i2pd exposes no numeric read of
+            // the creator-local `InboundTunnel::GetTunnelID()` or
+            // its pool (the creator-owned handler logs no tunnel
+            // id), so receipt of the exact payload at the receiver
+            // socket through this one-hop topology is the binding
+            // proof — only the receiver pool's
+            // `ProcessGarlicMessage` can deliver there. A payload
+            // arriving through any other lease/tunnel, or more
+            // than once, never satisfies the rows below.
+            let tuple = ReceiptTuple {
+                receiver_destination_hash: receiver_hash_hex.clone(),
+                ibgw_receive_id: counted.receive_tunnel,
+                creator_router_hash: hex_lower(&a_peer_hash),
+                creator_local_tunnel_id: counted.next_message_id,
+                pool_owner_destination_hash: receiver_hash_hex.clone(),
+                leaseset_gateway_hash: hex_lower(local_hash.as_bytes()),
+                leaseset_tunnel_id: counted.receive_tunnel,
+            };
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "ibgw-receive-id",
+                &tuple.ibgw_receive_id.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "creator-router",
+                &tuple.creator_router_hash,
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "creator-local-tunnel-id",
+                &tuple.creator_local_tunnel_id.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "pool-owner-destination",
+                &tuple.pool_owner_destination_hash,
+                &mut rows,
+            );
+            let i2pr_hex = hex_lower(local_hash.as_bytes());
+            let gateway_match = tuple.leaseset_gateway_hash == i2pr_hex;
+            let tunnel_match = tuple.leaseset_tunnel_id == tuple.ibgw_receive_id
+                && accepted_receipt.contains(&tuple.ibgw_receive_id);
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "leaseset-gateway-match",
+                &gateway_match.to_string(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "leaseset-tunnel-match",
+                &tunnel_match.to_string(),
+                &mut rows,
+            );
+            let tuple_bound =
+                gateway_match && tunnel_match && validate_receipt_tuple(&tuple, &i2pr_hex).is_ok();
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "full-tuple-bound",
+                &tuple_bound.to_string(),
+                &mut rows,
+            );
+            if !tuple_bound {
+                return Err(format!(
+                    "Plan 260 receipt epoch: six-field tuple not bound (gateway_match=\
+                     {gateway_match} tunnel_match={tunnel_match} tuple={tuple:?})"
+                ));
+            }
+            if rx_receipt_count != 1 {
+                return Err(format!(
+                    "Plan 260 receipt epoch expected exactly one payload-verified 1400-byte \
+                     DATAGRAM RECEIVED on the receiver session socket: rx_receipt={rx_receipt_count}"
+                ));
+            }
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "gateway-receipt-once",
+                "true",
+                &mut rows,
+            );
+            drop(rx_receipt);
+            drop(tx_receipt);
+        }
+        if receipt_only {
+            // Diagnostic subset ends here: ledger/driver TSVs are
+            // already persisted incrementally, and the counted
+            // manifest below requires the full matrix.
+            return Ok(());
         }
 
         // Participant forward + creator acceptance: genuine TunnelData
@@ -6267,6 +6907,8 @@ fn record_data_outcome(
             failures,
             receive_tunnel,
             nested_len,
+            next_router,
+            next_tunnel,
         }) => {
             ledger.push(Observation {
                 kind: ObservedKind::GatewayDelivered,
@@ -6278,8 +6920,15 @@ fn record_data_outcome(
                 // A: carry the failure dimension (explicit even
                 // when zero) plus the nested size fact so one
                 // diagnostic execution can classify the missing
-                // multicell emission (H1/H2/H3).
+                // multicell emission (H1/H2/H3). Plan 260: carry
+                // the committed next router/tunnel tuple (the
+                // data-forward convention of recording the next
+                // tunnel in `next_message_id`) so the
+                // creator-owned inbound receipt tuple binds the
+                // exact creator-local tunnel id.
                 receive_tunnel: *receive_tunnel,
+                next_router: Some(*next_router.as_bytes()),
+                next_message_id: *next_tunnel,
                 gateway_failures: Some(*failures),
                 nested_len: Some(*nested_len),
                 ..base

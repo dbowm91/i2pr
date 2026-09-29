@@ -512,6 +512,134 @@ else
     "1"
 fi
 
+# Plan 260 work package A source locks: the creator-owned inbound
+# tunnel path is a distinct endpoint class from the transit
+# endpoint Plan 259 modeled. An inbound `TunnelConfig(peers)`
+# targets the last remote hop at the creator's local router via
+# `SetNextIdent` (endpoint flag cleared, fresh nonzero local
+# tunnel id); the creator-local `InboundTunnel` sets `msg->from`
+# to the pool-owned tunnel; LOCAL garlic with a pool owner
+# dispatches to `TunnelPool::ProcessGarlicMessage` (the
+# destination session), with router-context processing only as
+# the pool-less fallback.
+if grep -qF 'CreatePeers (peers);' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.cpp" 2>/dev/null &&
+   grep -qF 'm_LastHop->SetNextIdent (i2p::context.GetIdentHash ());' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-inbound-last-hop-targets-creator-source-lock" \
+    "inbound last remote hop targets creator router source-locked (CreatePeers + SetNextIdent(GetIdentHash))" \
+    "0"
+else
+  record_guarded "m11-i2pd-inbound-last-hop-targets-creator-source-lock" \
+    "inbound last remote hop targets creator router source-locked (CreatePeers + SetNextIdent(GetIdentHash))" \
+    "1"
+fi
+
+if grep -qF 'isEndpoint = false;' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.cpp" 2>/dev/null &&
+   grep -qF 'if (!nextTunnelID) nextTunnelID = 1; // tunnelID can'"'"'t be zero' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-inbound-last-hop-not-transit-endpoint-source-lock" \
+    "SetNextIdent clears endpoint flag with nonzero local tunnel id source-locked" \
+    "0"
+else
+  record_guarded "m11-i2pd-inbound-last-hop-not-transit-endpoint-source-lock" \
+    "SetNextIdent clears endpoint flag with nonzero local tunnel id source-locked" \
+    "1"
+fi
+
+if grep -qF 'return IsInbound () ? m_LastHop->nextTunnelID : m_FirstHop->tunnelID;' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.h" 2>/dev/null &&
+   grep -qF 'return m_FirstHop->tunnelID;' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.h" 2>/dev/null &&
+   grep -qF 'return m_FirstHop->ident->GetIdentHash ();' \
+     "${I2PD_SOURCES}/libi2pd/TunnelConfig.h" 2>/dev/null; then
+  record_guarded "m11-i2pd-inbound-local-tunnel-id-source-lock" \
+    "inbound GetTunnelID is last-hop next id, first-hop gateway tuple source-locked" \
+    "0"
+else
+  record_guarded "m11-i2pd-inbound-local-tunnel-id-source-lock" \
+    "inbound GetTunnelID is last-hop next id, first-hop gateway tuple source-locked" \
+    "1"
+fi
+
+if grep -qF 'tunnel = GetTunnel (tunnelID);' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'tunnel->HandleTunnelDataMsg' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-tunnel-data-local-lookup-source-lock" \
+    "TunnelData local id lookup invokes resolved tunnel source-locked" \
+    "0"
+else
+  record_guarded "m11-i2pd-tunnel-data-local-lookup-source-lock" \
+    "TunnelData local id lookup invokes resolved tunnel source-locked" \
+    "1"
+fi
+
+if grep -qF 'void InboundTunnel::HandleTunnelDataMsg' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'msg->from = GetSharedFromThis ();' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-inbound-sets-message-owner-source-lock" \
+    "creator-owned InboundTunnel sets msg->from source-locked" \
+    "0"
+else
+  record_guarded "m11-i2pd-inbound-sets-message-owner-source-lock" \
+    "creator-owned InboundTunnel sets msg->from source-locked" \
+    "1"
+fi
+
+if grep -qF 'if (msg->from && msg->from->GetTunnelPool ())' \
+     "${I2PD_SOURCES}/libi2pd/I2NPProtocol.cpp" 2>/dev/null &&
+   grep -qF 'msg->from->GetTunnelPool ()->ProcessGarlicMessage (msg);' \
+     "${I2PD_SOURCES}/libi2pd/I2NPProtocol.cpp" 2>/dev/null &&
+   grep -qF 'i2p::context.ProcessGarlicMessage (msg);' \
+     "${I2PD_SOURCES}/libi2pd/I2NPProtocol.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-local-garlic-pool-dispatch-source-lock" \
+    "pool-owned LOCAL garlic dispatch source-locked (pool path with router-context fallback)" \
+    "0"
+else
+  record_guarded "m11-i2pd-local-garlic-pool-dispatch-source-lock" \
+    "pool-owned LOCAL garlic dispatch source-locked (pool path with router-context fallback)" \
+    "1"
+fi
+
+if grep -qF 'class InboundTunnel: public Tunnel' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.h" 2>/dev/null &&
+   grep -qF 'class TransitTunnelEndpoint: public TransitTunnel' \
+     "${I2PD_SOURCES}/libi2pd/TransitTunnel.h" 2>/dev/null; then
+  record_guarded "m11-i2pd-transit-endpoint-vs-inbound-owner-distinction-source-lock" \
+    "transit endpoint and creator-owned inbound endpoint are distinct classes source-locked" \
+    "0"
+else
+  record_guarded "m11-i2pd-transit-endpoint-vs-inbound-owner-distinction-source-lock" \
+    "transit endpoint and creator-owned inbound endpoint are distinct classes source-locked" \
+    "1"
+fi
+
+# Plan 260 work package B source lock: stock explicit-peer
+# controls select the dedicated destination inbound pool. The
+# pool prefers the explicit set when nonempty; the destination
+# layer wires `inbound.length` / `inbound.lengthVariance` /
+# `inbound.quantity` / `explicitPeers` from SAM SESSION CREATE
+# params into that pool.
+if grep -qF 'bool TunnelPool::SelectExplicitPeers (Path& path, bool isInbound)' \
+     "${I2PD_SOURCES}/libi2pd/TunnelPool.cpp" 2>/dev/null &&
+   grep -qF 'if (!m_ExplicitPeers.empty ()) return SelectExplicitPeers (path, isInbound);' \
+     "${I2PD_SOURCES}/libi2pd/TunnelPool.cpp" 2>/dev/null &&
+   grep -qF 'I2CP_PARAM_EXPLICIT_PEERS[] = "explicitPeers"' \
+     "${I2PD_SOURCES}/libi2pd/Destination.h" 2>/dev/null &&
+   grep -qF 'I2CP_PARAM_INBOUND_TUNNEL_LENGTH[] = "inbound.length"' \
+     "${I2PD_SOURCES}/libi2pd/Destination.h" 2>/dev/null; then
+  record_guarded "m11-i2pd-explicit-peer-inbound-selection-source-lock" \
+    "explicit-peer one-hop inbound pool selection source-locked (SelectExplicitPeers + inbound.length + explicitPeers)" \
+    "0"
+else
+  record_guarded "m11-i2pd-explicit-peer-inbound-selection-source-lock" \
+    "explicit-peer one-hop inbound pool selection source-locked (SelectExplicitPeers + inbound.length + explicitPeers)" \
+    "1"
+fi
+
 # Static guard rows --------------------------------------------------------
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 : > "${GATES_LOG}"
@@ -740,6 +868,19 @@ m11_row "m11-i2pd-ibgw-gateway-ingress" "ibgw-data/gateway-ingress" \
   "IBGW TunnelGateway ingress emits bounded TunnelData cells"
 m11_row "m11-i2pd-ibgw-multicell-bounded" "ibgw-data/multicell-bounded" \
   "IBGW multi-cell delivery is bounded (multi-cell case observed)"
+# Plan 260 work package D — creator-owned inbound receipt. The
+# dedicated one-hop receiver topology binds the six-field tuple
+# (receive id + creator router + creator-local tunnel + pool
+# owner + LeaseSet gateway/tunnel) and proves receiver-socket
+# receipt exactly once through the pool-owned inbound path.
+m11_row "m11-i2pd-ibgw-creator-local-tunnel-bound" "ibgw-receipt/creator-local-tunnel-id" \
+  "counted emission addresses the bound creator-local inbound tunnel id"
+m11_row "m11-i2pd-ibgw-pool-owned-local-dispatch" "ibgw-receipt/pool-owner-destination" \
+  "pool-owner destination bound to the receiver destination"
+m11_row "m11-i2pd-ibgw-gateway-receipt" "ibgw-receipt/gateway-receipt" \
+  "creator-owned IBGW receipt at the receiver SAM socket"
+m11_row "m11-i2pd-ibgw-gateway-receipt-once" "ibgw-receipt/gateway-receipt-once" \
+  "creator-owned IBGW receipt exactly once (no duplicate delivery)"
 m11_row "m11-i2pd-replay-no-second-delivery" "replay/no-second-delivery" \
   "duplicate TunnelData produces no second delivery"
 
@@ -852,11 +993,19 @@ commit = subprocess.check_output(
 ).strip()
 rustc = subprocess.check_output(["rustc", "--version"], text=True).strip()
 driver_keys = []
+driver_values = {}
 driver_tsv = Path(evidence_dir) / "driver" / "driver-evidence.tsv"
 if driver_tsv.exists():
     for line in driver_tsv.read_text(encoding="utf-8").splitlines():
         label = line.split("\t", 1)[0]
         driver_keys.append(label)
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[0] not in driver_values:
+            driver_values[parts[0]] = parts[1]
+
+
+def receipt_value(key):
+    return driver_values.get(f"ibgw-receipt/{key}", "")
 ledger_keys = []
 ledger_tsv = Path(evidence_dir) / "driver" / "ledger-evidence.tsv"
 if ledger_tsv.exists():
@@ -869,8 +1018,8 @@ datadir_id = os.environ.get(
     "I2PR_M11_DATADIR_ID", Path(evidence_dir).name or "local",
 )
 evidence = {
-    "schema": "i2pr-m11-transit-qualification-v2",
-    "plan": 257,
+    "schema": "i2pr-m11-transit-qualification-v3",
+    "plan": 260,
     "attempt": attempt,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
@@ -886,6 +1035,18 @@ evidence = {
         "build_command": "make USE_UPNP=no DEBUG=0 (via scripts/interop/fetch-ssu2-reference.sh)",
         "role": "mandatory independent M11 controlled transit reference, unmodified (A + B)",
     },
+    "ibgw_receipt": {
+        "receiver_destination": receipt_value("receiver-destination"),
+        "ibgw_receive_id": receipt_value("ibgw-receive-id"),
+        "creator_router": receipt_value("creator-router"),
+        "creator_local_tunnel_id": receipt_value("creator-local-tunnel-id"),
+        "pool_owner_destination": receipt_value("pool-owner-destination"),
+        "leaseset_gateway_match": receipt_value("leaseset-gateway-match"),
+        "leaseset_tunnel_match": receipt_value("leaseset-tunnel-match"),
+        "full_tuple_bound": receipt_value("full-tuple-bound"),
+        "gateway_receipt": receipt_value("gateway-receipt"),
+        "gateway_receipt_once": receipt_value("gateway-receipt-once"),
+    },
     "driver_evidence_keys": driver_keys,
     "ledger_epochs": sorted(set(ledger_keys)),
     "results": rows,
@@ -896,14 +1057,15 @@ evidence = {
         "controlled transit qualification only; no public transit, RouterInfo capability, or public-network participation",
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
-        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 257",
+        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 260",
+        "creator-local tunnel id and pool ownership bind behaviorally (typed i2pr evidence + receiver-socket receipt through the one-hop topology); stock i2pd exposes no independent numeric read of InboundTunnel::GetTunnelID",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 257 M11 production self-reply and external evidence completion (corrective)\n\n")
+    stream.write("# Plan 260 M11 creator-owned inbound receipt topology and planning-authority corrective\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- attempt: `{attempt}` (fresh datadirs per attempt; no cross-attempt merge)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
@@ -916,7 +1078,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 257 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 260 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 257 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 260 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"

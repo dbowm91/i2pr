@@ -29,6 +29,7 @@
     missing_docs
 )]
 
+use std::cell::Cell;
 use std::fmt;
 
 use i2pr_proto::{Hash, I2npMessage, TunnelDataMessage, TunnelGatewayMessage};
@@ -240,7 +241,7 @@ impl OutboundGatewayRole {
 
     /// Returns whether the role is usable at the supplied time.
     pub fn is_usable(&self, now_ms: u64) -> bool {
-        now_ms < self.expires_at_ms && self.established.direction() == TunnelDirection::Outbound
+        now_ms < self.expires_at_ms
     }
 
     /// Fragments a complete standard I2NP message into the ordered
@@ -829,6 +830,20 @@ pub struct InboundGatewayRole {
     layer_keys: LayerKeys,
     duplicates: DuplicateWindow,
     expires_at_ms: u64,
+    /// Next fragment message id for this role instance.
+    ///
+    /// Plan 260 corrective: IBGW fragmentation must not reuse the
+    /// constant `message_id: 1` across ingresses, or concurrent
+    /// fragmented ingresses to the same downstream reassembler
+    /// can cross-assemble. The counter is per-role state (no
+    /// global lock, no sharing across roles), seeded nonzero
+    /// from the caller RNG on first use and advanced with
+    /// wrap-skips-zero on every fragmented emission. Zero means
+    /// unseeded. `Cell` keeps the existing `&self` emission
+    /// signatures; the role is already `!Sync`, so no new
+    /// sharing is introduced. The value is a routing nonce,
+    /// never secret material.
+    next_fragment_id: Cell<u32>,
 }
 
 impl InboundGatewayRole {
@@ -846,6 +861,7 @@ impl InboundGatewayRole {
             layer_keys: hop.layer_keys().clone(),
             duplicates,
             expires_at_ms,
+            next_fragment_id: Cell::new(0),
         })
     }
 
@@ -862,6 +878,28 @@ impl InboundGatewayRole {
     /// Returns whether the role is usable at the supplied time.
     pub fn is_usable(&self, now_ms: u64) -> bool {
         now_ms < self.expires_at_ms
+    }
+
+    /// Claims the fragment message id for one IBGW ingress and
+    /// advances the per-role sequence. First use seeds nonzero
+    /// from the caller RNG; advancement wraps while skipping
+    /// zero. Every fragment of one ingress shares its ingress
+    /// id; two ingresses on one role never share an id.
+    fn claim_fragment_id<R: CryptoRng + RngCore>(&self, rng: &mut R) -> u32 {
+        if self.next_fragment_id.get() == 0 {
+            let mut seed = rng.next_u32();
+            if seed == 0 {
+                seed = 1;
+            }
+            self.next_fragment_id.set(seed);
+        }
+        let claimed = self.next_fragment_id.get();
+        let mut advanced = claimed.wrapping_add(1);
+        if advanced == 0 {
+            advanced = 1;
+        }
+        self.next_fragment_id.set(advanced);
+        claimed
     }
 
     /// Wraps the supplied standard I2NP message in a
@@ -886,7 +924,9 @@ impl InboundGatewayRole {
         let iv = fresh_iv(rng)?;
         let header = TunnelPayloadHeader {
             delivery: DeliveryInstruction::Local,
-            message_id: 1,
+            // Plan 260 corrective: per-role fragment id, not the
+            // historical constant `1`.
+            message_id: self.claim_fragment_id(rng),
             expiration_ms: 0,
         };
         // The standard I2NP message already carries its own
@@ -935,7 +975,9 @@ impl InboundGatewayRole {
         }
         let header = TunnelPayloadHeader {
             delivery: DeliveryInstruction::Local,
-            message_id: 1,
+            // Plan 260 corrective: per-role fragment id, not the
+            // historical constant `1`.
+            message_id: self.claim_fragment_id(rng),
             expiration_ms: 0,
         };
         let inner_bytes = gateway
@@ -2062,6 +2104,78 @@ mod tests {
                 assert_eq!(data.payload.as_bytes(), expected_payload.as_slice());
             }
             other => panic!("expected Data body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan260_ibgw_role_fragment_ids_distinct_across_ingresses() {
+        // Plan 260 §16.17 (local-role surface): two fragmented
+        // ingresses on one `InboundGatewayRole` must claim
+        // distinct nonzero fragment message ids, so concurrent
+        // fragmented ingresses cannot cross-assemble downstream.
+        use i2pr_proto::{Date, I2npBody};
+        let (_local_receive, inbound_tunnel) =
+            build_three_hop_inbound_established(TunnelId::new(2).expect("id"));
+        let payload: Vec<u8> = (0..2048_u32).map(|value| (value & 0xFF) as u8).collect();
+        let inner = I2npMessage::new_standard(
+            0x51A6_2601,
+            Date::from_millis(0),
+            I2npBody::Data(i2pr_proto::OpaqueMessageBody {
+                payload: i2pr_proto::DeferredPayload::new(
+                    payload,
+                    i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+                )
+                .expect("payload size"),
+            }),
+        )
+        .expect("inner");
+        let ibgw_hop = &inbound_tunnel.hops()[0];
+        let gateway_msg = TunnelGatewayMessage {
+            tunnel_id: ibgw_hop.receive_tunnel().get(),
+            message: Box::new(inner),
+        };
+        let ibgw =
+            InboundGatewayRole::new(ibgw_hop, DuplicateWindow::new(16), 60_000).expect("ibgw role");
+        let mut rng = rng_seed(0x260E);
+        let first = ibgw
+            .process_cells(&gateway_msg, &mut rng, 0)
+            .expect("first cells");
+        let second = ibgw
+            .process_cells(&gateway_msg, &mut rng, 0)
+            .expect("second cells");
+        assert!(first.len() > 1, "payload must fragment");
+        assert!(second.len() > 1, "payload must fragment");
+        let layer_keys = ibgw_hop.layer_keys().clone();
+        let first_id = role_emitted_first_id(&first[0], &layer_keys);
+        let second_id = role_emitted_first_id(&second[0], &layer_keys);
+        assert_ne!(first_id, 0, "fragment ids must never be zero");
+        assert_ne!(second_id, 0, "fragment ids must never be zero");
+        assert_ne!(
+            first_id, second_id,
+            "two ingresses on one role must not share a fragment message id"
+        );
+    }
+
+    /// Decrypts one role-emitted cell with the hop keys and
+    /// returns the first-fragment message id exactly as the next
+    /// hop parses it.
+    fn role_emitted_first_id(cell: &OutboundCell, layer_keys: &LayerKeys) -> u32 {
+        use crate::layer::{TUNNEL_IV_LEN, TUNNEL_PAYLOAD_LEN};
+        let bytes = &cell.cell.data;
+        assert_eq!(bytes.len(), TUNNEL_IV_LEN + TUNNEL_PAYLOAD_LEN);
+        let mut iv = [0_u8; TUNNEL_IV_LEN];
+        iv.copy_from_slice(&bytes[..TUNNEL_IV_LEN]);
+        let mut payload = [0_u8; TUNNEL_PAYLOAD_LEN];
+        payload.copy_from_slice(&bytes[TUNNEL_IV_LEN..]);
+        let (plain_iv, plain_payload) =
+            crate::layer::TunnelLayerTransform::creator_inverse_one_hop(layer_keys, &iv, &payload);
+        let records = crate::data::TunnelMessageParser::new()
+            .parse(&plain_iv, &plain_payload)
+            .expect("next-hop parse");
+        assert_eq!(records.len(), 1);
+        match &records[0].fragment {
+            TunnelFragment::First { message_id, .. } => *message_id,
+            other => panic!("expected first fragment, got {other:?}"),
         }
     }
 }

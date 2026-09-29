@@ -424,6 +424,17 @@ pub enum LiveGatewayOutcome {
         /// retention — the lane derives the single-cell versus
         /// multi-cell-capable size class from this fact).
         nested_len: usize,
+        /// Next-hop router hash every emitted cell addressed (all
+        /// cells of one ingress share the registration's committed
+        /// tuple). Plan 260 binds the creator-owned inbound
+        /// receipt tuple from this wire-published fact.
+        next_router: i2pr_proto::Hash,
+        /// Next-hop receive tunnel id every emitted cell addressed
+        /// (the registration's committed next tunnel — the
+        /// creator-local inbound tunnel id on the creator-owned
+        /// path). Plan 260 binds the receipt tuple from this
+        /// wire-published fact.
+        next_tunnel: u32,
     },
     /// Unknown gateway tunnel id, wrong peer, non-IBGW role, or
     /// expiry. Fail closed. `tunnel_id` is the gateway tunnel id
@@ -1049,11 +1060,24 @@ where
                 Ok(_) | Err(_) => failures += 1,
             }
         }
+        // Every emitted cell shares the registration's committed
+        // next tuple; the first cell's facts name the whole
+        // ingress (Plan 260 receipt-tuple binding). An empty
+        // forward vector cannot name a tuple, so it fails closed
+        // as a drop rather than fabricating routing facts.
+        let Some(first) = forwards.first() else {
+            return Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Dropped {
+                tunnel_id: parts.tunnel_id,
+                nested_len: parts.nested.len(),
+            }));
+        };
         Ok(LiveInboundOutcome::Gateway(LiveGatewayOutcome::Delivered {
             delivered,
             failures,
             receive_tunnel: parts.tunnel_id,
             nested_len: parts.nested.len(),
+            next_router: first.next_router,
+            next_tunnel: first.next_tunnel.get(),
         }))
     }
 

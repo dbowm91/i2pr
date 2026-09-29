@@ -97,6 +97,21 @@ GUARDED=(
   m11-i2pd-bandwidth-hardcoded-unit
   m11-i2pd-cardinality-receive-only-unit
   m11-i2pd-reply-source-lock-unit
+  # Plan 260 work package A — creator-owned inbound source locks
+  m11-i2pd-inbound-last-hop-targets-creator-source-lock
+  m11-i2pd-inbound-last-hop-not-transit-endpoint-source-lock
+  m11-i2pd-inbound-local-tunnel-id-source-lock
+  m11-i2pd-tunnel-data-local-lookup-source-lock
+  m11-i2pd-inbound-sets-message-owner-source-lock
+  m11-i2pd-local-garlic-pool-dispatch-source-lock
+  m11-i2pd-transit-endpoint-vs-inbound-owner-distinction-source-lock
+  # Plan 260 work package B — explicit-peer inbound selection
+  m11-i2pd-explicit-peer-inbound-selection-source-lock
+  # Plan 260 work package D — creator-owned receipt rows
+  m11-i2pd-ibgw-creator-local-tunnel-bound
+  m11-i2pd-ibgw-pool-owned-local-dispatch
+  m11-i2pd-ibgw-gateway-receipt
+  m11-i2pd-ibgw-gateway-receipt-once
   # Plan 257 work package D — exact cardinality per role
   m11-i2pd-obep-active-before
   m11-i2pd-obep-active-after
@@ -234,6 +249,16 @@ EPOCH_KEYS=(
   "obep-data/fragmented-once"
   "ibgw-data/gateway-ingress"
   "ibgw-data/multicell-bounded"
+  "ibgw-receipt/receiver-destination"
+  "ibgw-receipt/ibgw-receive-id"
+  "ibgw-receipt/creator-router"
+  "ibgw-receipt/creator-local-tunnel-id"
+  "ibgw-receipt/pool-owner-destination"
+  "ibgw-receipt/leaseset-gateway-match"
+  "ibgw-receipt/leaseset-tunnel-match"
+  "ibgw-receipt/full-tuple-bound"
+  "ibgw-receipt/gateway-receipt"
+  "ibgw-receipt/gateway-receipt-once"
   "participant-data/forward"
   "participant-data/creator-accepted"
   "participant-data/local-forward"
@@ -566,10 +591,14 @@ fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 257' "${HARNESS}" && ! grep -qF "'plan': 257" "${HARNESS}"; then
-  if ! grep -qF '"plan": 257' "${HARNESS}"; then
-    fail "runner manifest must name plan 257"
-  fi
+if ! grep -qF '"plan": 260' "${HARNESS}"; then
+  fail "runner manifest must name plan 260 (Plan 259/257 authority superseded)"
+fi
+if grep -qF '"plan": 257' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
+fi
+if grep -qF '"plan": 259' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 259 (Fork-2 receipt-is-OBEP-only conclusion narrowed)"
 fi
 if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
@@ -665,6 +694,55 @@ if grep -vE '^[[:space:]]*(//|//!|///)' "${REPO_ROOT}/crates/i2pr-tunnel/src/tra
   fail "transit must not keep the misleading 61,440-byte duplicate threshold"
 fi
 
+# ---- Plan 260 work package F: per-registration fragment ids ----
+# The IBGW emission paths must claim a per-registration fragment
+# message id instead of the historical constant `1`. Both the
+# runtime-neutral transit path and the local role path carry the
+# claim; the regression rows below prove distinctness, same-id
+# follow-ons, wrap-skips-zero, and interleaved no-cross-assembly.
+if ! printf '%s\n' "${GATEWAY_FN}" | grep -q 'claim_ibgw_fragment_id'; then
+  fail "IBGW emission path must claim a per-registration fragment id (claim_ibgw_fragment_id)"
+fi
+ROLE_CELLS_FN="$(awk '/pub fn process_cells/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "${REPO_ROOT}/crates/i2pr-tunnel/src/roles.rs" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if ! printf '%s\n' "${ROLE_CELLS_FN}" | grep -q 'claim_fragment_id'; then
+  fail "local IBGW role process_cells must claim a per-role fragment id (claim_fragment_id)"
+fi
+for test_row in 'plan260_ibgw_fragment_ids_distinct_across_ingresses' 'plan260_ibgw_fragments_of_one_ingress_share_id' 'plan260_ibgw_fragment_id_wrap_skips_zero' 'plan260_ibgw_interleaved_reassembly_no_cross_assembly' 'plan260_ibgw_role_fragment_ids_distinct_across_ingresses'; do
+  if ! grep -qF "${test_row}" "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" &&
+     ! grep -qF "${test_row}" "${REPO_ROOT}/crates/i2pr-tunnel/src/roles.rs"; then
+    fail "Plan 260 fragment-id regression missing: ${test_row}"
+  fi
+done
+for test_row in 'plan260_receipt_tuple_rejects_router_hash_without_local_tunnel' 'plan260_receipt_tuple_rejects_local_tunnel_without_pool_owner' 'plan260_receipt_tuple_rejects_pool_without_leaseset_binding' 'plan260_receipt_tuple_accepts_complete_tuple' 'plan260_gateway_observation_carries_next_tunnel_tuple'; do
+  if ! grep -qF "${test_row}" "${DRIVER}"; then
+    fail "Plan 260 receipt-tuple predicate row missing: ${test_row}"
+  fi
+done
+
+# ---- Plan 260 §16.27: stale Plan 259 authority rejected ---------
+# The superseded 2-hop receipt hard gate (which demanded receipt
+# on B-ending transit chains) must be gone from the driver; the
+# re-scope note records that the creator-owned epoch owns
+# receipt. Its presence would mean the lane still gates on the
+# narrowed Fork-2 premise.
+if grep -qF 'IBGW data epoch expected exactly one payload-verified 1500-byte' "${DRIVER}"; then
+  fail "driver must not retain the superseded 2-hop receipt hard gate (receipt owned by the Plan 260 creator-owned epoch)"
+fi
+if ! grep -qF 'gateway-receipt-superseded-note' "${DRIVER}"; then
+  fail "driver must record the Plan 260 receipt re-scope note"
+fi
+# The endpoint-class conflation Plan 260 corrects must not
+# reappear: no counted receipt row may be satisfiable from a
+# bare next-router hash without the creator-local tunnel
+# binding (the validator enforces this; its absence here would
+# mean the conflation returned).
+if ! grep -qF 'MissingCreatorLocalTunnel' "${DRIVER}"; then
+  fail "driver must reject router-hash-only bindings (MissingCreatorLocalTunnel)"
+fi
+if ! grep -qF 'Epoch::IbgwReceipt' "${DRIVER}"; then
+  fail "driver must scope counted receipt evidence to Epoch::IbgwReceipt"
+fi
+
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then
   fail "record_guarded helper lost its exit-code gate"
@@ -692,6 +770,7 @@ for key in "${EPOCH_KEYS[@]}"; do
     obep-data) variant="Epoch::ObepData" ;;
     ibgw) variant="Epoch::Ibgw" ;;
     ibgw-data) variant="Epoch::IbgwData" ;;
+    ibgw-receipt) variant="Epoch::IbgwReceipt" ;;
     participant) variant="Epoch::Participant" ;;
     participant-data) variant="Epoch::ParticipantData" ;;
     replay) variant="Epoch::Replay" ;;
