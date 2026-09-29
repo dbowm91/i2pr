@@ -161,11 +161,11 @@ quota, timeout, config/CLI/API/RI/version change; verified
    accepted, LeaseSet resolved, zero ingress on the
    counted registration). No production row failed.
 8. **Full workspace verification passes** — PASS local
-   (§"Verification"); exact-head CI follows per precedent
-   (this commit + follow-up run-ID record).
-9. **Exact-head ordinary CI passes all four jobs** —
-   PENDING at write time (follow-up commit records the run
-   ID; local floor is the current truth).
+   (§"Verification"); exact-head CI GREEN (run `36617070707`
+   on head `4539f40`, four jobs success).
+9. **Exact-head ordinary CI passes all four jobs** — PASS (run
+   `36617070707` on head `4539f40`: Quality ubuntu-latest,
+   Quality macos-latest, MSRV Ubuntu, Dependency policy).
 10. **Registry/roadmap/support/conformance/dossier agree on
     Plan 263** — PASS (this commit reconciles all five;
     Plan 264 registered as the narrow scoping successor,
@@ -330,9 +330,15 @@ On the implementation head `9bd2f39a` (all green):
   grep -E '^crates/.*/src/'` empty on the implementation
   commit.
 
-Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): PENDING at
-write time (follow-up commit per precedent; local floor
-above is the current truth).
+Hosted exact-head CI (Ubuntu/macOS/MSRV/policy): GREEN on the
+closure head — Actions run `36617070707` on head `4539f40`
+(Quality ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+Dependency policy: all success). The run covers the complete
+Plan 263 implementation plus the closure record, Plan 264
+registration, and all planning/spec updates. No external
+execution is required to close under retained-blocked (receipt
++ multicell re-proofs plus two fail-closed single-mesh
+attempts already bound the sustainability signature).
 
 ## Invariant / failure / migration / security reviews
 
