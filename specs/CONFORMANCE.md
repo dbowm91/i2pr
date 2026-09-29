@@ -63,7 +63,7 @@ delivery stops on one exact boundary: the B3 self-delivery
 loopback gap (self-targeted OBEP TUNNEL actions terminate
 `NoActiveSession` at the session peer seam, zero ingress, zero
 socket receipt). Plan 262 is the forward authority; its pre-execution source review additionally corrects inherited IBGW TunnelGateway build-creator peer affinity to receive-id/role/expiry ownership while retaining Participant/OBEP previous-peer locks
-(self-delivery loopback corrective) and must reroute decoded
+(IBGW ingress ownership + self-delivery loopback corrective) and must reroute decoded
 self-targeted TUNNEL actions into the existing local IBGW
 ingress, then bind the receiver LeaseSet, i2pr IBGW
 registration, creator-local inbound tunnel id, destination pool

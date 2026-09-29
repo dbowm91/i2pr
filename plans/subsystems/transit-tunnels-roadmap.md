@@ -153,7 +153,7 @@ Plan 251 Java source-lock CI corrective ---------------/         |
                                                     Plan 261 B-sender receipt requalification
                                                                   |
                                                                   v
-                                                    Plan 262 self-delivery loopback corrective
+                                                    Plan 262 IBGW ingress ownership + self-delivery loopback corrective
                                                                   |
                                                                   v
                                                     M11 experimental closure
@@ -167,7 +167,7 @@ retains its bounded data-plane/envelope/rollback/drain/peer-state work; its live
 corrective is closed by passed Plan 254. Plan 255 qualification scaffolding is retained with
 its post-closure defects recorded. Plan 256 is retained, Plan 257 is retained with its
 reply/state/evidence repairs locally proven but externally stopped at the IBGW multicell
-boundary, Plan 258 is retained with the emission correction proven, Plan 259's topology inventory/transit-endpoint findings are retained with its global receipt conclusion corrected via Plan 260, Plan 260 is retained-blocked with source locks, fragment-id hardening, tuple validator, and receipt harness landed plus the receiver 1-hop `[i2pr]` build exhibited live, stopped on the B2-forward/B1-sustainability delivery boundaries, Plan 261 is retained-blocked with the B-sender topology proven through counted-id addressing (B outbound `[i2pr]`, floodfill-store LeaseSet resolution, 4/4 sends naming counted ids), stopped on the B3 self-delivery loopback boundary, and Plan 262 is registered ready as the self-delivery loopback corrective.
+boundary, Plan 258 is retained with the emission correction proven, Plan 259's topology inventory/transit-endpoint findings are retained with its global receipt conclusion corrected via Plan 260, Plan 260 is retained-blocked with source locks, fragment-id hardening, tuple validator, and receipt harness landed plus the receiver 1-hop `[i2pr]` build exhibited live, stopped on the B2-forward/B1-sustainability delivery boundaries, Plan 261 is retained-blocked with the B-sender topology proven through counted-id addressing (B outbound `[i2pr]`, floodfill-store LeaseSet resolution, 4/4 sends naming counted ids), stopped on the B3 self-delivery loopback boundary, and Plan 262 is registered ready as the IBGW ingress ownership + self-delivery loopback corrective.
 
 ## 7. Milestones
 
@@ -370,7 +370,7 @@ with `target_router == self` and terminates
 receipt). The receipt-first reorder and the full lifecycle
 matrix were not executed (stop fired in the diagnostic
 subset) and belong to Plan 262's qualification. Plan 262 owns
-the bounded self-delivery loopback corrective.
+the bounded IBGW ingress ownership + self-delivery loopback corrective.
 
 Pre-execution Plan 262 source review also found that current i2pr IBGW `TunnelGateway` processing inherits Participant-style build-creator `previous_peer` affinity, while exact-pinned i2pd dispatches gateway data by live tunnel id without creator-peer comparison. Plan 262 therefore owns that ingress-authorization correction and a source-neutral IBGW seam in addition to the B3 local loopback arm. Participant/OBEP previous-peer locks remain unchanged.
 
