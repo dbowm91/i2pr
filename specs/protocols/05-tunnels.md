@@ -329,10 +329,28 @@ session peer seam, which maps only remote peers (4/4 rounds
 plus 33 background self-terminals, zero ingress, zero socket
 receipt). Stock i2pd performs the missing step in
 `Transports::PostMessages` (self comparison into the local
-`LoopbackHandler`); i2pr has no equivalent. Plan 262 owns the bounded IBGW ingress ownership + self-delivery corrective. Exact-pinned i2pd `Tunnels` routes `TunnelGateway` by live tunnel id (`GetTunnel(tunnelID)` -> `HandleTunnelGatewayMsg` -> `SendTunnelDataMsg`) without comparing the data sender to the tunnel builder, so i2pr must first remove the inherited Participant-style build-creator `previous_peer` restriction from IBGW gateway data while retaining it for Participant/OBEP TunnelData. The daemon then reroutes an already-decoded self-targeted OBEP TUNNEL action into the same source-neutral local IBGW seam without fabricating a `PeerId`; unknown/zero/non-IBGW/expired/cancelled ids still fail closed.
+`LoopbackHandler`); i2pr had no equivalent. Plan 262 corrected
+the bounded IBGW ingress ownership + self-delivery seam:
+exact-pinned i2pd `Tunnels` routes `TunnelGateway` by live tunnel
+id (`GetTunnel(tunnelID)` -> `HandleTunnelGatewayMsg` ->
+`SendTunnelDataMsg`) without comparing the data sender to the
+tunnel builder, so i2pr removed the inherited Participant-style
+build-creator `previous_peer` restriction from IBGW gateway data
+(dedicated `TransitGatewayData`, exact receive-id equality via
+the registry key) while retaining it for Participant/OBEP
+TunnelData. The daemon reroutes an already-decoded self-targeted
+OBEP TUNNEL action into the same source-neutral local IBGW seam
+without fabricating a `PeerId`; unknown/zero/non-IBGW/expired/
+cancelled ids still fail closed. Live execution flipped B3 with
+socket receipt on a healthy mesh (diag4 `terminal-garlic-self:0/
+ingress:6/socket:1` with tuple-bound multicell on `514bf12`),
+but two same-SHA full-matrix attempts stop on
+mesh-sustainability signatures (IBGW-data relay, SAM timeout).
+Plan 262 is retained-blocked; Plan 263 owns the harness-only
+sustainability corrective.
 
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
-Plan 262 is the current authority. M12 floodfill remains deferred.
+Plan 263 is the current authority. M12 floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -352,11 +370,11 @@ authenticated `Ssu2InboundI2np`, with creator/service ownership ordering, OBEP s
 delivery, IBGW ingress, and outer cancellation/session lifecycle. Ordinary product profiles
 remain transit-disabled and non-advertised.
 
-Plans 255-261 qualify and correct external topology/evidence above that live-owner boundary;
-they do not reopen the Plan 253/254 composition work. Plan 262 is the current forward authority
-for the remaining IBGW ingress semantics: remove inherited build-creator peer affinity from
-`TunnelGateway` data, bind processing to the live receive id/role/expiry state, and route
-decoded self-targeted OBEP TUNNEL actions through the same source-neutral local IBGW seam.
+Plans 255-262 qualify and correct external topology/evidence above that live-owner boundary;
+they do not reopen the Plan 253/254 composition work. Plan 262 corrected the remaining IBGW
+ingress semantics (dedicated gateway state, live receive-id/role/expiry binding, self-loop
+local seam with socket receipt proven). Plan 263 is the current forward authority for the
+remaining qualification-sustainability seam (harness-only, zero production diff).
 
 ### Plan 252 full-message transit composition invariant
 
@@ -390,7 +408,10 @@ inbound `ShortTunnelBuild` keeps the existing `TunnelBuildReserved` outcome.
 
 This is still non-advertised infrastructure. Plan 261 is retained-blocked with the
 B-sender topology proven through counted-id addressing and the B3 self-delivery
-boundary localized; Plan 262 IBGW ingress ownership + self-delivery loopback corrective is registered ready and is the next M11 execution authority.
+boundary localized; Plan 262 is retained-blocked with IBGW ownership corrected and
+receipt proven live (diag4 `0/6/1` tuple-bound on `514bf12`), full matrix stopped on
+sustainability; Plan 263 qualification-sustainability corrective is registered ready and
+is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 

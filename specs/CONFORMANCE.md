@@ -62,10 +62,16 @@ floodfill store, 4/4 sends naming counted `[A,A]` ids) — but
 delivery stops on one exact boundary: the B3 self-delivery
 loopback gap (self-targeted OBEP TUNNEL actions terminate
 `NoActiveSession` at the session peer seam, zero ingress, zero
-socket receipt). Plan 262 is the forward authority; its pre-execution source review additionally corrects inherited IBGW TunnelGateway build-creator peer affinity to receive-id/role/expiry ownership while retaining Participant/OBEP previous-peer locks
-(IBGW ingress ownership + self-delivery loopback corrective) and must reroute decoded
-self-targeted TUNNEL actions into the existing local IBGW
-ingress, then bind the receiver LeaseSet, i2pr IBGW
+socket receipt). Plan 262 is retained-blocked: its dedicated IBGW
+state, exact receive-id ownership, source-neutral seam, and
+self-delivery loopback arm all landed with local rows green and
+live execution flipped B3 with socket receipt on a healthy mesh
+(diag4 `terminal-garlic-self:0/ingress:6/socket:1` with
+tuple-bound multicell on `514bf12`), but two same-SHA full-matrix
+attempts stop on mesh-sustainability signatures (IBGW-data relay,
+SAM timeout). Plan 263 is the forward authority (harness-only
+sustainability corrective with zero production diff) and must
+re-prove receipt, then bind the receiver LeaseSet, i2pr IBGW
 registration, creator-local inbound tunnel id, destination pool
 ownership, and live receiver receipt, then complete two
 same-SHA exact-pinned i2pd passes. Public transit, RouterInfo capability,
@@ -158,7 +164,7 @@ Each milestone should maintain an executable or machine-readable matrix similar 
 | NTCP2 | responder | pending | pending | family duplicate | optional | test log/vector |
 | NetDB lookup | requester | pending | pending | family duplicate | optional | trace/result |
 | Tunnel build | creator | pending | pending | family duplicate | optional | testnet artifact |
-| Transit tunnel | participant / IBGW / OBEP | retained/deferred | Plan 258 multicell emission retained; Plan 259 endpoint-model conclusion corrected via retained-blocked Plan 260 (creator-owned build exhibited, receipt blocked on forward/sustainability boundaries); Plan 261 B-sender topology proven through counted-id addressing, receipt blocked on the B3 self-delivery loopback boundary; full receipt-capable M11 qualification not yet passed | family duplicate | optional | Plans 254-261 retained evidence + Plan 262 IBGW receive-id ownership, creator-peer-affinity correction, self-delivery loopback, receiver receipt, and two-pass evidence |
+| Transit tunnel | participant / IBGW / OBEP | retained/deferred | Plan 258 multicell emission retained; Plan 259 endpoint-model conclusion corrected via retained-blocked Plan 260 (creator-owned build exhibited, receipt blocked on forward/sustainability boundaries); Plan 261 B-sender topology proven through counted-id addressing, receipt blocked on the B3 self-delivery loopback boundary; Plan 262 ownership corrected with receipt proven live (diag4 `0/6/1` tuple-bound) but full matrix stopped on sustainability; full receipt-capable M11 qualification not yet passed | family duplicate | optional | Plans 254-262 retained evidence + Plan 263 harness-only sustainability, receiver receipt, and two-pass evidence |
 | Streaming | connect/listen | retained/deferred full-router compatibility at Plan 247 | passed bidirectional matrix via Plan 193 | family duplicate | optional | Plan 193 external transcript + Plan 247 retained Java boundary |
 | SAM | client-facing server | client tests | client tests | client tests | optional | protocol transcript |
 | SSU2 | initiator/responder | pending (secondary debt) | direct IPv4 loopback both directions via Plan 161 lane | family duplicate | optional | `plans/closure/ssu2/161-status.md`, `tests/integration/ssu2/run-independent.sh` |
