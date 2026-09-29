@@ -361,12 +361,15 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 262 manifest shape (plan 262 + attempt).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 262' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+#     emit the Plan 263 manifest shape (plan 263 + attempt).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 263' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 262 token $token"
+        fail "external runner missing Plan 263 token $token"
     fi
 done
+if rg -qF '"plan": 262' "$external_runner"; then
+    fail "external runner must not name stale plan 262 (sustainability authority is Plan 263)"
+fi
 # 31. Plan 261 work package A: the runner must source-lock the
 #     B-side sender behaviors and provision the B SAM port; the
 #     manifest must not name the superseded A-sender plan 260.
@@ -430,10 +433,29 @@ if printf '%s\n' "$self_fn" | rg -q 'install_peer'; then
     fail "self-loop must never insert the local router into the peer index"
 fi
 # 35. Plan 262 work package A: the runner must source-lock the
-#     self-loopback and receive-id gateway dispatch.
+#     self-loopback and receive-id gateway dispatch (retained).
 for token in 'm11-i2pd-self-loopback-source-lock' 'm11-i2pd-tunnel-gateway-by-receive-id-source-lock' 'm11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock'; do
     if ! rg -qF "$token" "$external_runner"; then
         fail "external runner missing Plan 262 token $token"
+    fi
+done
+# 36. Plan 263 work package A: the driver must prove mesh
+#     sustainability before counted sends without tuning any
+#     timeout/quota/ceiling/retry/message-size constant.
+#     Session freshness (explicit SSU2 liveness after the
+#     best-effort redial), relay robustness (NetDB placements +
+#     B floodfill role), and SAM discipline (canonical fatal
+#     read-timeout tail) are all locked here.
+for symbol in 'mesh_liveness_status' 'verify_relay_netdb_prerequisites' 'verify_b_floodfill_conf' 'SAM_READ_TIMEOUT_MSG' 'plan263_sam_read_timeout_tail_is_canonical_and_fatal' 'plan263_mesh_liveness_error_names_missing_links' 'plan263_relay_netdb_prerequisites_require_all_placements' 'plan263_b_floodfill_conf_requires_floodfill_role'; do
+    if ! rg -qF "$symbol" "$external_driver"; then
+        fail "external driver missing Plan 263 sustainability symbol $symbol"
+    fi
+done
+# No timeout/quota/ceiling/retry/message-size inflation: the
+# Plan 262 numeric lane constants must keep their exact values.
+for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOUT: Duration = Duration::from_secs(15)' 'SETUP_HEARTBEAT_SECS: u64 = 30' 'MAX_SAM_DATAGRAM_RX_BYTES: usize = 8192' 'MAX_LEDGER_OBSERVATIONS: usize = 4096'; do
+    if ! rg -qF "$binding" "$external_driver"; then
+        fail "external driver changed a frozen Plan 262 lane constant: $binding"
     fi
 done
 # 30. The external workflow must run the two-attempt matrix on one

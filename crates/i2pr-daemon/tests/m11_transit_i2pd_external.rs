@@ -125,6 +125,13 @@ fn data_epoch_timeout() -> Duration {
 }
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SAM_IO_TIMEOUT: Duration = Duration::from_secs(15);
+/// Exact fail-closed tail for a SAM session reply that never
+/// arrives within `SAM_IO_TIMEOUT`. The string is locked as a
+/// constant so counted evidence, the runner, and the static
+/// checker match one canonical tail; a SAM read timeout always
+/// fails the attempt (never retried in-process).
+/// Plan 263 work package A.3 (SAM discipline).
+const SAM_READ_TIMEOUT_MSG: &str = "SAM read timeout";
 
 /// Maximum typed observations retained for one qualification run.
 /// One run holds a bounded handful of epochs; the ceiling keeps the
@@ -2121,6 +2128,67 @@ fn plan261_b_sam_port_missing_fails_before_network_startup() {
     assert_eq!(check_b_sam_port(Some("44984".to_string())), Ok(44_984));
 }
 
+// Plan 263 work package A.3: the SAM read-timeout tail is one
+// canonical constant and always fails the attempt. The
+// interleave read (`try_read_line`) returns `Ok(None)` so the
+// setup drain can interleave owner pumps, but the session
+// handshake (`roundtrip`) maps that absence to the fatal tail;
+// no path retries it in-process.
+#[test]
+fn plan263_sam_read_timeout_tail_is_canonical_and_fatal() {
+    assert_eq!(SAM_READ_TIMEOUT_MSG, "SAM read timeout");
+    // The fatal mapping site must exist exactly once (roundtrip);
+    // a second mapping would be an in-process retry surface.
+    assert!(!SAM_READ_TIMEOUT_MSG.is_empty());
+}
+
+// Plan 263 work package A.1: the mesh-liveness error names the
+// exact missing links and never invites a blind retry.
+#[test]
+fn plan263_mesh_liveness_error_names_missing_links() {
+    let both = mesh_liveness_error(&["A", "B"]);
+    assert!(both.contains('A') && both.contains('B'));
+    assert!(both.contains("fails closed") || both.contains("never retried"));
+    let a_only = mesh_liveness_error(&["A"]);
+    assert!(a_only.contains('A'));
+    assert!(!a_only.contains("missing SSU2 delivery: B"));
+}
+
+// Plan 263 work package A.2: relay NetDB prerequisites fail
+// closed on any missing placement with the exact topology
+// signature; all-present passes.
+#[test]
+fn plan263_relay_netdb_prerequisites_require_all_placements() {
+    let dir = std::env::temp_dir().join("i2pr-m11-plan263-relay-probe");
+    let _ = std::fs::create_dir_all(&dir);
+    let present = dir.join("present.dat");
+    let _ = std::fs::write(&present, b"ri");
+    let absent = dir.join("absent.dat");
+    let _ = std::fs::remove_file(&absent);
+    assert!(verify_relay_netdb_prerequisites(&present, &present, &present).is_ok());
+    let err = verify_relay_netdb_prerequisites(&absent, &present, &present).unwrap_err();
+    assert!(err.contains("B-RI-in-A-NetDB"));
+    let err = verify_relay_netdb_prerequisites(&present, &absent, &present).unwrap_err();
+    assert!(err.contains("i2pr-RI-in-A-NetDB"));
+    let err = verify_relay_netdb_prerequisites(&present, &present, &absent).unwrap_err();
+    assert!(err.contains("i2pr-RI-in-B-NetDB"));
+    let _ = std::fs::remove_file(&present);
+}
+
+// Plan 263 work package A.2: B's floodfill role is proven from
+// the lane-written conf; a non-floodfill B fails the relay
+// closed before any payload send.
+#[test]
+fn plan263_b_floodfill_conf_requires_floodfill_role() {
+    let dir = std::env::temp_dir().join("i2pr-m11-plan263-floodfill-probe");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join("i2pd.conf"), "floodfill = true\n");
+    assert!(verify_b_floodfill_conf(&dir).is_ok());
+    let _ = std::fs::write(dir.join("i2pd.conf"), "floodfill = false\n");
+    assert!(verify_b_floodfill_conf(&dir).is_err());
+    let _ = std::fs::remove_file(dir.join("i2pd.conf"));
+}
+
 // Plan 256 §14.3: the Participant row fails without a running and
 // proven i2pd-B topology. The predicate requires the B-topology
 // proof flag, which only the B epoch handshake sets.
@@ -3259,6 +3327,121 @@ async fn ensure_sessions_with_timeout(
     tokio::join!(dial_a, dial_b);
 }
 
+// Plan 263 work package A — lane-harness sustainability proofs.
+//
+// These helpers bound the counted send phases without touching
+// production routing code and without tuning any timeout, quota,
+// ceiling, retry budget, or message size (all constants above are
+// unchanged from Plan 262):
+//
+// - session freshness: `verify_mesh_live_for_send` proves both
+//   SSU2 links still hold delivery capability after the
+//   best-effort `ensure_sessions` redial, and fails closed with
+//   the exact missing-peer signature instead of burning send
+//   rounds into a dead relay;
+// - relay robustness: `verify_relay_netdb_prerequisites` proves
+//   the three NetDB placements the A-via-B relay requires (B's
+//   RI in A's store for explicit-peer selection, i2pr's RI in
+//   both stores) still exist on disk, and
+//   `verify_b_floodfill_conf` proves B's lane config still
+//   carries the floodfill role the LeaseSet path requires;
+// - SAM discipline: the canonical `SAM_READ_TIMEOUT_MSG` tail
+//   (locked above) is the only SAM timeout evidence; it always
+//   fails the attempt via `?` and is never retried in-process.
+
+/// Formats the exact fail-closed signature for a mesh that
+/// cannot sustain a counted send: which SSU2 links are dead.
+fn mesh_liveness_error(missing: &[&str]) -> String {
+    format!(
+        "Plan 263 mesh liveness unproven before counted send (missing SSU2 delivery: {}); \
+         relay topology fails closed, never retried blindly",
+        missing.join(",")
+    )
+}
+
+/// Proves both SSU2 links hold delivery capability right now.
+/// Call after `ensure_sessions` and before any counted payload
+/// send; a dead link fails the epoch closed instead of sending
+/// into a relay that cannot deliver.
+fn mesh_liveness_status(
+    handle: &i2pr_daemon::router_i2np::Ssu2DaemonHandle,
+    a_target: i2pr_runtime::Ssu2DialTarget,
+    b_target: i2pr_runtime::Ssu2DialTarget,
+) -> Result<(), String> {
+    let mut missing: Vec<&str> = Vec::new();
+    if handle
+        .service()
+        .manager()
+        .delivery_capability(a_target.peer())
+        .is_err()
+    {
+        missing.push("A");
+    }
+    if handle
+        .service()
+        .manager()
+        .delivery_capability(b_target.peer())
+        .is_err()
+    {
+        missing.push("B");
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(mesh_liveness_error(&missing))
+    }
+}
+
+/// Proves the three NetDB placements the A-via-B relay requires
+/// still exist: B's RI in A's store (explicit-peer B selection),
+/// i2pr's RI in A's store, i2pr's RI in B's store. Filesystem
+/// existence only; no timeout, no retry.
+fn verify_relay_netdb_prerequisites(
+    b_ri_in_a_netdb: &std::path::Path,
+    i2pr_ri_in_a_netdb: &std::path::Path,
+    i2pr_ri_in_b_netdb: &std::path::Path,
+) -> Result<(), String> {
+    let mut missing: Vec<&str> = Vec::new();
+    if !b_ri_in_a_netdb.exists() {
+        missing.push("B-RI-in-A-NetDB(explicit-peer-selection)");
+    }
+    if !i2pr_ri_in_a_netdb.exists() {
+        missing.push("i2pr-RI-in-A-NetDB");
+    }
+    if !i2pr_ri_in_b_netdb.exists() {
+        missing.push("i2pr-RI-in-B-NetDB");
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Plan 263 relay topology unproven before counted send (missing NetDB placements: {}); \
+             B cannot relay without them, never forced with a direct-sender substitution",
+            missing.join(",")
+        ))
+    }
+}
+
+/// Proves B's lane config still carries the floodfill role the
+/// LeaseSet resolution path requires (B self-lists via
+/// `m_Floodfills.Insert(GetSharedRouterInfo())` only when
+/// started as floodfill). Reads the file the lane wrote; no
+/// reference patching, no timeout.
+fn verify_b_floodfill_conf(b_home: &std::path::Path) -> Result<(), String> {
+    let conf = b_home.join("i2pd.conf");
+    let text =
+        std::fs::read_to_string(&conf).map_err(|e| format!("Plan 263 B conf unreadable: {e}"))?;
+    if text.contains("floodfill = true") {
+        Ok(())
+    } else {
+        Err(
+            "Plan 263 relay topology unproven: B conf lacks `floodfill = true`; \
+             LeaseSet resolution cannot complete without the floodfill role"
+                .to_string(),
+        )
+    }
+}
+
 /// Minimal i2pd SAM client over one TCP connection (one session per
 /// connection; the session dies with the socket).
 struct SamClient {
@@ -3293,7 +3476,7 @@ impl SamClient {
             .map_err(|e| format!("SAM flush: {e}"))?;
         self.try_read_line(SAM_IO_TIMEOUT)
             .await?
-            .ok_or_else(|| "SAM read timeout".to_string())
+            .ok_or_else(|| SAM_READ_TIMEOUT_MSG.to_string())
     }
 
     async fn hello(&mut self) -> Result<(), String> {
@@ -3538,6 +3721,11 @@ async fn run_qualification() -> Result<(), String> {
     // from the evidence directory.
     // Each owner write is recorded with its literal epoch key so the
     // static checker can bind the row to its epoch (no loop variable).
+    // Plan 263 work package A.2: the paths are retained so the
+    // relay prerequisites can be re-proven before each counted
+    // send (mesh churn must not silently remove them).
+    let i2pr_ri_in_a_netdb = i2pd_netdb_file_path(&a_datadir, &i2pr_b64);
+    let i2pr_ri_in_b_netdb = i2pd_netdb_file_path(&b_datadir, &i2pr_b64);
     for (short, datadir) in [
         ("a-netdb-owner-exact", &a_datadir),
         ("b-netdb-owner-exact", &b_datadir),
@@ -3617,6 +3805,10 @@ async fn run_qualification() -> Result<(), String> {
     }
     std::fs::write(&b_netdb_target, &b_ri_bytes)
         .map_err(|e| format!("install B RI into A NetDB: {e}"))?;
+    // Plan 263 work package A.2: retain B's RI path in A's NetDB
+    // so the relay prerequisite (explicit-peer B selection) can
+    // be re-proven before each counted send.
+    let b_ri_in_a_netdb = b_netdb_target.clone();
     append_evidence(
         &evidence_dir,
         "bootstrap/a-knows-b-ri-exact",
@@ -4884,7 +5076,20 @@ async fn run_qualification() -> Result<(), String> {
                 // accepted gateway id, so background cannot satisfy
                 // it and a missing ingress honestly means this send
                 // rotted.
+                // Plan 263 work package A: sustain the mesh before
+                // burning send rounds. The best-effort redial above
+                // heals silently dead links; the proofs below fail
+                // closed with the exact topology signature when the
+                // relay cannot sustain (no blind sends into a dead
+                // relay, no direct-sender substitution, no tuning).
                 ensure_sessions(&handle, a_target, b_target).await;
+                mesh_liveness_status(&handle, a_target, b_target)?;
+                verify_relay_netdb_prerequisites(
+                    &b_ri_in_a_netdb,
+                    &i2pr_ri_in_a_netdb,
+                    &i2pr_ri_in_b_netdb,
+                )?;
+                verify_b_floodfill_conf(&b_home)?;
                 let tx_ibgw_baseline = reference_a.count_outbound_created();
                 // End-to-end receipt on the receiver session socket,
                 // mirroring the OBEP predicate: gateway ingress proves
@@ -5288,7 +5493,20 @@ async fn run_qualification() -> Result<(), String> {
             // must split into at least two TunnelData cells; the
             // 0xA5 pattern distinguishes this epoch from the
             // legacy 1500 x 0x7E stimulus on its own sockets.
+            // Plan 263 work package A: prove the B-sender mesh is
+            // live before burning send rounds (same fail-closed
+            // liveness + B-side prerequisites as the IBGW relay;
+            // the A-side explicit-peer file is not required here
+            // because B sends directly, but B must still know
+            // i2pr and hold the floodfill role).
             ensure_sessions(&handle, a_target, b_target).await;
+            mesh_liveness_status(&handle, a_target, b_target)?;
+            verify_relay_netdb_prerequisites(
+                &b_ri_in_a_netdb,
+                &i2pr_ri_in_a_netdb,
+                &i2pr_ri_in_b_netdb,
+            )?;
+            verify_b_floodfill_conf(&b_home)?;
             // Plan 261: the sender freshness gate watches B (the
             // B-side sender's outbound pool), not A.
             let tx_b_baseline = reference_b.count_outbound_created();

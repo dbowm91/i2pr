@@ -609,8 +609,8 @@ fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 262' "${HARNESS}"; then
-  fail "runner manifest must name plan 262 (Plan 261 B3 authority superseded)"
+if ! grep -qF '"plan": 263' "${HARNESS}"; then
+  fail "runner manifest must name plan 263 (Plan 262 sustainability authority superseded)"
 fi
 if grep -qF '"plan": 257' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
@@ -623,6 +623,9 @@ if grep -qF '"plan": 260' "${HARNESS}"; then
 fi
 if grep -qF '"plan": 261' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 261 (B3 self-delivery boundary corrected by Plan 262)"
+fi
+if grep -qF '"plan": 262' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 262 (sustainability authority is Plan 263)"
 fi
 if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
@@ -896,6 +899,45 @@ fi
 if ! grep -qF 'LocalIbgwDropped' "${DRIVER}"; then
   fail "driver must map LocalIbgwDropped to GatewayDropped"
 fi
+
+# ---- Plan 263 work package A: harness sustainability, zero prod diff ----
+# Session freshness (explicit SSU2 liveness after the best-effort
+# redial), relay robustness (NetDB placements + B floodfill role),
+# and SAM discipline (canonical fatal read-timeout tail) are
+# proven before counted sends. No timeout/quota/ceiling/retry/
+# message-size constant may change from the Plan 262 values.
+for symbol in 'mesh_liveness_status' 'verify_relay_netdb_prerequisites' 'verify_b_floodfill_conf' 'SAM_READ_TIMEOUT_MSG' 'mesh_liveness_error'; do
+  if ! grep -qF "${symbol}" "${DRIVER}"; then
+    fail "driver missing Plan 263 sustainability symbol ${symbol}"
+  fi
+done
+for test_row in 'plan263_sam_read_timeout_tail_is_canonical_and_fatal' 'plan263_mesh_liveness_error_names_missing_links' 'plan263_relay_netdb_prerequisites_require_all_placements' 'plan263_b_floodfill_conf_requires_floodfill_role'; do
+  if ! grep -qF "${test_row}" "${DRIVER}"; then
+    fail "Plan 263 harness regression missing: ${test_row}"
+  fi
+done
+# The sustainability proofs must actually gate the counted sends
+# (both the IBGW A-via-B relay and the B-sender receipt legs).
+if ! grep -qF 'mesh_liveness_status(&handle, a_target, b_target)?' "${DRIVER}"; then
+  fail "counted sends must verify mesh liveness before payload (mesh_liveness_status ?)"
+fi
+if ! grep -qF 'verify_relay_netdb_prerequisites(' "${DRIVER}"; then
+  fail "counted sends must verify relay NetDB prerequisites before payload"
+fi
+if ! grep -qF 'verify_b_floodfill_conf(&b_home)?' "${DRIVER}"; then
+  fail "counted sends must verify B floodfill role before payload"
+fi
+# No tuning: the frozen Plan 262 lane numerics must be intact.
+for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOUT: Duration = Duration::from_secs(15)' 'SETUP_HEARTBEAT_SECS: u64 = 30' 'MAX_SAM_DATAGRAM_RX_BYTES: usize = 8192' 'MAX_LEDGER_OBSERVATIONS: usize = 4096'; do
+  if ! grep -qF "${binding}" "${DRIVER}"; then
+    fail "driver changed a frozen Plan 262 lane constant: ${binding}"
+  fi
+done
+# Zero production diff: no production source file may change under
+# Plan 263 (test/lane/checker/workflow + planning/spec only).
+# Enforced at closure review via `git diff --stat`; the harness
+# proves it here by requiring the Plan 262 production shapes
+# above unchanged (dedicated struct, exact receive-id, seam).
 
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then

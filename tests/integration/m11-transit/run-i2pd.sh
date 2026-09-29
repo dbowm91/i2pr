@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Plan 257 — M11 production self-reply qualification and external evidence completion runner.
+# Plan 263 — M11 qualification-sustainability corrective runner (inherits the
+# Plan 255-262 lane: single Rust qualification driver + exact-pinned i2pd A+B).
 #
 # The external lane is owned by the single Rust qualification driver
 # `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`, which generates
@@ -40,7 +41,7 @@ I2PD_B_SAM_PORT="${I2PR_I2PD_B_SAM_PORT:-44984}"
 DRIVER_TIMEOUT="1500s"
 
 mkdir -p "${EVIDENCE_DIR}"
-SCRATCH="$(mktemp -d -t i2pr-m11-plan257.XXXXXX)"
+SCRATCH="$(mktemp -d -t i2pr-m11-plan263.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
 # Fresh per-run reference datadirs. The driver installs the public
@@ -63,7 +64,7 @@ if [[ ! -x "${I2PD_BIN}" ]]; then
 fi
 if [[ ! -f "${I2PD_CACHE}/source-revision.txt" ]] ||
    [[ "$(<"${I2PD_CACHE}/source-revision.txt")" != "${I2PD_PIN}" ]]; then
-  echo "i2pd cache has no verified Plan 257 source revision" >&2
+  echo "i2pd cache has no verified exact-pinned source revision" >&2
   echo "run scripts/interop/fetch-ssu2-reference.sh --rebuild first" >&2
   exit 1
 fi
@@ -1173,7 +1174,7 @@ datadir_id = os.environ.get(
 )
 evidence = {
     "schema": "i2pr-m11-transit-qualification-v3",
-    "plan": 262,
+    "plan": 263,
     "attempt": attempt,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,
@@ -1211,15 +1212,16 @@ evidence = {
         "controlled transit qualification only; no public transit, RouterInfo capability, or public-network participation",
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
-        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 261",
+        "closure requires two complete same-SHA attempts (attempt ids recorded per manifest); one attempt never closes Plan 263",
         "creator-local tunnel id and pool ownership bind behaviorally (typed i2pr evidence + receiver-socket receipt through the one-hop topology); stock i2pd exposes no independent numeric read of InboundTunnel::GetTunnelID",
+        "Plan 263 harness-only sustainability corrective: mesh-liveness + relay-NetDB + B-floodfill prerequisites fail closed before counted sends; no timeout/quota/ceiling/retry/message-size change from Plan 262",
     ],
 }
 out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 261 M11 B-sender receipt requalification\n\n")
+    stream.write("# Plan 263 M11 qualification-sustainability corrective\n\n")
     stream.write(f"- i2pr commit: `{commit}`\n")
     stream.write(f"- attempt: `{attempt}` (fresh datadirs per attempt; no cross-attempt merge)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
@@ -1232,7 +1234,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 261 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 263 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 261 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 263 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
