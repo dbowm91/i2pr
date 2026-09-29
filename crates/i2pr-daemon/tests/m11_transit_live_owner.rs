@@ -328,7 +328,9 @@ fn plan254_a5_obep_deliver_reaches_local_sink() {
         message_id: 0x1234,
         expiration_ms: NOW_MS + 60_000,
     };
-    let outcome = owner.deliver_obep_action(&action, 0x1234).expect("deliver");
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1234, NOW_MS)
+        .expect("deliver");
     assert_eq!(outcome, ObepDeliveryOutcome::LocalOk);
     assert_eq!(*seen.lock().expect("lock"), vec![0x1234]);
 }
@@ -773,7 +775,9 @@ fn plan254_e27_local_reaches_consumer() {
         expiration_ms: NOW_MS,
     };
     assert_eq!(
-        owner.deliver_obep_action(&action, 0xA1).expect("local"),
+        owner
+            .deliver_obep_action(&action, 0xA1, NOW_MS)
+            .expect("local"),
         ObepDeliveryOutcome::LocalOk
     );
     assert_eq!(*seen.lock().expect("lock"), vec![0xA1]);
@@ -802,7 +806,7 @@ fn plan254_e28_router_bounded_delivery() {
         expiration_ms: NOW_MS,
     };
     // No peer installed: typed failure, no state corruption.
-    let result = owner.deliver_obep_action(&action, 0xA2);
+    let result = owner.deliver_obep_action(&action, 0xA2, NOW_MS);
     assert!(matches!(
         result,
         Err(TransitLiveError::Service(_)) | Ok(ObepDeliveryOutcome::Router(_))
@@ -832,7 +836,7 @@ fn plan254_e29_tunnel_preserves_target() {
         message_id: 0xA3,
         expiration_ms: NOW_MS,
     };
-    let result = owner.deliver_obep_action(&action, 0xA3);
+    let result = owner.deliver_obep_action(&action, 0xA3, NOW_MS);
     assert!(matches!(
         result,
         Err(TransitLiveError::Service(_)) | Ok(ObepDeliveryOutcome::Tunnel(_))
@@ -855,7 +859,7 @@ fn plan254_e30_local_without_sink_is_explicit() {
         expiration_ms: NOW_MS,
     };
     assert_eq!(
-        owner.deliver_obep_action(&action, 0xB0),
+        owner.deliver_obep_action(&action, 0xB0, NOW_MS),
         Err(TransitLiveError::NoLocalConsumer)
     );
 }
@@ -1032,6 +1036,250 @@ fn plan254_g41_cancelled_build_leaves_no_registration() {
         .handle_inbound(&inbound_with(bytes), NOW_MS, NOW_SECONDS)
         .expect("handle");
     assert_eq!(owner.active_count(), 0);
+}
+
+/// Plan 262 WP D/E — self-delivery loopback corrective.
+// A decoded OBEP TUNNEL action whose target router is i2pr itself
+// must enter the local IBGW registration through the
+// source-neutral seam without synthetic peer state. Unknown/zero/
+// non-IBGW/expired/cancelled targets fail closed. Non-self targets
+// and self ROUTER actions retain existing remote behavior.
+fn ibgw_record_for_self_test(
+    next_router: Hash,
+    receive: u32,
+    next: u32,
+    message_id: u32,
+) -> ShortRequestRecord {
+    ShortRequestRecord::try_new(
+        TunnelId::new(receive).expect("id"),
+        TunnelId::new(next).expect("id"),
+        next_router,
+        HopRole::InboundGateway,
+        LayerEncryptionType::Aes,
+        Date::from_millis(NOW_MS),
+        REQUEST_EXPIRATION_SECONDS,
+        message_id,
+        BuildOptions::empty(),
+    )
+    .expect("record")
+}
+
+fn nested_standard_for_self_test() -> Vec<u8> {
+    I2npMessage::new_standard(
+        0x1234_5678,
+        Date::from_millis(NOW_MS + 60_000),
+        I2npBody::DeliveryStatus(i2pr_proto::DeliveryStatusMessage::new(
+            0x51A4_ABCD,
+            Date::from_millis(NOW_MS),
+        )),
+    )
+    .expect("message")
+    .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+    .expect("encode")
+}
+
+fn owner_with_live_ibgw_for_self_test(receive_id: u32) -> TransitLiveOwner<ChaCha8Rng> {
+    let mut service = service_for_test();
+    let next_router = Hash::from_bytes([0xBB; 32]);
+    let record = ibgw_record_for_self_test(next_router, receive_id, 0x4000, 0x2620_0001);
+    let payload = stbm_payload_for(&service, &record);
+    let mut rng = ChaCha8Rng::seed_from_u64(0x2620);
+    let creator = PeerId::from_bytes([0xAA; 32]);
+    let dispatch = service.route_short_build(&payload, &creator, NOW_SECONDS, &mut rng);
+    assert!(
+        matches!(
+            dispatch,
+            i2pr_daemon::transit_compose::TransitDispatch::ForwardStbm { .. }
+        ),
+        "IBGW install must accept"
+    );
+    let mut owner = live_owner_for_test();
+    owner.enable(service);
+    owner
+}
+
+#[test]
+fn m11_i2pr_self_tunnel_live_ibgw_ingresses_locally_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    let local = Hash::from_bytes([0x55; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x3000).expect("id")),
+        message: nested.clone(),
+        message_id: 0x1111,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1111, NOW_MS)
+        .expect("self ingress");
+    match outcome {
+        ObepDeliveryOutcome::LocalIbgwDelivered {
+            receive_id,
+            next_router,
+            next_tunnel,
+            delivered,
+            failures: _,
+            nested_len,
+        } => {
+            assert_eq!(receive_id, 0x3000);
+            assert_eq!(next_router, Hash::from_bytes([0xBB; 32]));
+            assert_eq!(next_tunnel, 0x4000);
+            assert_eq!(nested_len, nested.len());
+            // Ingress emitted at least one cell (forward delivery
+            // may fail without live sessions, but cells exist).
+            assert!(delivered + 1 >= 1);
+        }
+        other => panic!("expected LocalIbgwDelivered, got {other:?}"),
+    }
+}
+
+#[test]
+fn m11_i2pr_self_tunnel_unknown_id_drops_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    let local = Hash::from_bytes([0x55; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x9999).expect("id")),
+        message: nested,
+        message_id: 0x1112,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1112, NOW_MS)
+        .expect("unknown drop");
+    assert!(matches!(
+        outcome,
+        ObepDeliveryOutcome::LocalIbgwDropped { .. }
+    ));
+}
+
+#[test]
+fn m11_i2pr_self_tunnel_non_ibgw_drops_unit() {
+    // Install a Participant registration instead of IBGW; self
+    // TUNNEL to that id must drop (non-IBGW role).
+    let mut service = service_for_test();
+    let record = participant_record(Hash::from_bytes([0xBB; 32]), 0x3000, 0x4000, 0x2620_0002);
+    let payload = stbm_payload_for(&service, &record);
+    let mut rng = ChaCha8Rng::seed_from_u64(0x2621);
+    let creator = PeerId::from_bytes([0xAA; 32]);
+    let _ = service.route_short_build(&payload, &creator, NOW_SECONDS, &mut rng);
+    let mut owner = live_owner_for_test();
+    owner.enable(service);
+    let local = Hash::from_bytes([0x55; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x3000).expect("id")),
+        message: nested,
+        message_id: 0x1113,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1113, NOW_MS)
+        .expect("non-ibgw drop");
+    assert!(matches!(
+        outcome,
+        ObepDeliveryOutcome::LocalIbgwDropped { .. }
+    ));
+}
+
+#[test]
+fn m11_i2pr_self_tunnel_does_not_mutate_peer_index_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    let local = Hash::from_bytes([0x55; 32]);
+    assert!(!owner.has_peer(&local));
+    let before = owner.live_state_snapshot();
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x3000).expect("id")),
+        message: nested,
+        message_id: 0x1114,
+        expiration_ms: NOW_MS,
+    };
+    let _ = owner
+        .deliver_obep_action(&action, 0x1114, NOW_MS)
+        .expect("self ingress");
+    // The local router must never appear in the remote peer index.
+    assert!(!owner.has_peer(&local));
+    let after = owner.live_state_snapshot();
+    assert_eq!(before.peer_index_entries, after.peer_index_entries);
+}
+
+#[test]
+fn m11_i2pr_non_self_tunnel_remote_behavior_unchanged_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    let remote = Hash::from_bytes([0x99; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: remote,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x3000).expect("id")),
+        message: nested,
+        message_id: 0x1115,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1115, NOW_MS)
+        .expect("remote");
+    // No peer installed for the remote router: existing
+    // NoActiveSession terminal, bit-identical to pre-262.
+    assert!(matches!(
+        outcome,
+        ObepDeliveryOutcome::Tunnel(
+            i2pr_daemon::router_i2np::RouterDeliveryOutcome::NoActiveSession
+        )
+    ));
+}
+
+#[test]
+fn m11_i2pr_self_router_behavior_unchanged_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    let local = Hash::from_bytes([0x55; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::Router,
+        tunnel_id: None,
+        message: nested,
+        message_id: 0x1116,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1116, NOW_MS)
+        .expect("self router");
+    // Self ROUTER retains existing remote-peer behavior (no
+    // loopback widening beyond TUNNEL-to-self).
+    assert!(matches!(outcome, ObepDeliveryOutcome::Router(_)));
+}
+
+#[test]
+fn m11_i2pr_self_tunnel_cancelled_owner_refuses_unit() {
+    let mut owner = owner_with_live_ibgw_for_self_test(0x3000);
+    owner.cancel();
+    let local = Hash::from_bytes([0x55; 32]);
+    let nested = nested_standard_for_self_test();
+    let action = RouterDeliveryAction {
+        target_router: local,
+        kind: RouterDeliveryKind::TunnelGateway,
+        tunnel_id: Some(TunnelId::new(0x3000).expect("id")),
+        message: nested,
+        message_id: 0x1117,
+        expiration_ms: NOW_MS,
+    };
+    let outcome = owner
+        .deliver_obep_action(&action, 0x1117, NOW_MS)
+        .expect("cancelled");
+    assert!(matches!(
+        outcome,
+        ObepDeliveryOutcome::LocalIbgwDropped { .. }
+    ));
 }
 
 /// Plan 254 §G.42 covered by `plan254_g39` (repeated shutdown/drop

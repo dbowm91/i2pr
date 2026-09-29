@@ -361,10 +361,10 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 261 manifest shape (plan 261 + attempt).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 261' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
+#     emit the Plan 262 manifest shape (plan 262 + attempt).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 262' 'I2PR_M11_ATTEMPT' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 261 token $token"
+        fail "external runner missing Plan 262 token $token"
     fi
 done
 # 31. Plan 261 work package A: the runner must source-lock the
@@ -378,6 +378,64 @@ done
 if rg -qF '"plan": 260' "$external_runner"; then
     fail "external runner must not name stale plan 260 (B-sender authority is Plan 261)"
 fi
+if rg -qF '"plan": 261' "$external_runner"; then
+    fail "external runner must not name stale plan 261 (B3 self-delivery boundary corrected by Plan 262)"
+fi
+# 32. Plan 262 work package B: the dedicated IBGW state must not
+#     inherit participant previous-peer locking. The type alias is
+#     gone; the struct owns only the fragment sequence.
+if rg -q 'pub type TransitGatewayData' "$source_file"; then
+    fail "TransitGatewayData must be a dedicated struct, not a type alias for TransitParticipantData"
+fi
+if ! rg -q 'pub struct TransitGatewayData' "$source_file"; then
+    fail "i2pr-tunnel transit must own dedicated TransitGatewayData"
+fi
+gateway_struct="$(sed -n '/pub struct TransitGatewayData/,/^}/p' "$source_file")"
+if printf '%s\n' "$gateway_struct" | rg -q 'locked_previous_peer'; then
+    fail "TransitGatewayData must not contain locked_previous_peer"
+fi
+if printf '%s\n' "$gateway_struct" | rg -q 'duplicates'; then
+    fail "TransitGatewayData must not inherit the participant replay window"
+fi
+# 33. Plan 262 work package C: the runtime-neutral IBGW gateway API
+#     must not accept or check a previous-peer argument; exact
+#     receive-id equality is required.
+gateway_fn="$(awk '/pub fn process_tunnel_gateway/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "$source_file" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if printf '%s\n' "$gateway_fn" | rg -q 'previous_peer'; then
+    fail "process_tunnel_gateway must not accept or check previous_peer"
+fi
+if ! printf '%s\n' "$gateway_fn" | rg -q 'expected_receive'; then
+    fail "process_tunnel_gateway must bind the registry key for exact receive-id equality"
+fi
+# 34. Plan 262 work package D: one canonical source-neutral IBGW
+#     seam for network and local ingress; the OBEP TUNNEL-to-self
+#     branch must not synthesize peer state.
+if ! rg -q 'pub fn route_ibgw_gateway' "$daemon_transit"; then
+    fail "daemon transit_compose must own source-neutral route_ibgw_gateway"
+fi
+if ! rg -q 'deliver_obep_tunnel_to_self' "$daemon_transit_owner"; then
+    fail "transit_owner must own the OBEP TUNNEL-to-self local branch"
+fi
+if ! rg -q 'LocalIbgwDelivered' "$daemon_transit_owner"; then
+    fail "transit_owner must expose LocalIbgwDelivered"
+fi
+if ! rg -q 'LocalIbgwDropped' "$daemon_transit_owner"; then
+    fail "transit_owner must expose LocalIbgwDropped"
+fi
+self_fn="$(awk '/fn deliver_obep_tunnel_to_self/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "$daemon_transit_owner" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if printf '%s\n' "$self_fn" | rg -q 'PeerId::from_hash|PeerId::from_bytes'; then
+    fail "self-loop must not synthesize a PeerId"
+fi
+if printf '%s\n' "$self_fn" | rg -q 'install_peer'; then
+    fail "self-loop must never insert the local router into the peer index"
+fi
+# 35. Plan 262 work package A: the runner must source-lock the
+#     self-loopback and receive-id gateway dispatch.
+for token in 'm11-i2pd-self-loopback-source-lock' 'm11-i2pd-tunnel-gateway-by-receive-id-source-lock' 'm11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock'; do
+    if ! rg -qF "$token" "$external_runner"; then
+        fail "external runner missing Plan 262 token $token"
+    fi
+done
 # 30. The external workflow must run the two-attempt matrix on one
 #     SHA with fail-fast disabled and per-attempt artifacts.
 external_workflow="$root/.github/workflows/m11-transit-external.yml"

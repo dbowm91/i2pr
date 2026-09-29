@@ -113,6 +113,10 @@ GUARDED=(
   m11-i2pd-outbound-endpoint-tunnel-forward-source-lock
   m11-i2pd-b-leaseset-resolution-source-lock
   m11-i2pd-b-sam-missing-env-fails
+  # Plan 262 work package A — self-loopback + receive-id source locks
+  m11-i2pd-self-loopback-source-lock
+  m11-i2pd-tunnel-gateway-by-receive-id-source-lock
+  m11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock
   # Plan 261 work package B — B-sender receipt rows
   m11-i2pd-ibgw-b-sender-obep-accepted
   m11-i2pd-ibgw-b-leaseset-resolved
@@ -605,8 +609,8 @@ fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 261' "${HARNESS}"; then
-  fail "runner manifest must name plan 261 (Plan 260 receipt authority superseded)"
+if ! grep -qF '"plan": 262' "${HARNESS}"; then
+  fail "runner manifest must name plan 262 (Plan 261 B3 authority superseded)"
 fi
 if grep -qF '"plan": 257' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
@@ -616,6 +620,9 @@ if grep -qF '"plan": 259' "${HARNESS}"; then
 fi
 if grep -qF '"plan": 260' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 260 (A-side sender leg deleted; B-sender authority is Plan 261)"
+fi
+if grep -qF '"plan": 261' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 261 (B3 self-delivery boundary corrected by Plan 262)"
 fi
 if ! grep -qF 'I2PR_M11_ATTEMPT' "${HARNESS}"; then
   fail "runner manifest must carry the per-attempt id (I2PR_M11_ATTEMPT)"
@@ -789,6 +796,105 @@ if ! grep -qF 'plan261_b_sam_port_missing_fails_before_network_startup' "${DRIVE
 fi
 if grep -qF 'm11-tx-receipt' "${DRIVER}"; then
   fail "driver must not retain the deleted A-side receipt sender leg (retained Plan 260 B2 boundary, not retried)"
+fi
+
+# ---- Plan 262 work package A: exact-pinned source locks ----
+# The runner must source-lock both reference semantics before any
+# production corrective counts.
+for token in 'm11-i2pd-self-loopback-source-lock' 'm11-i2pd-tunnel-gateway-by-receive-id-source-lock' 'm11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock'; do
+  if ! grep -qF "${token}" "${HARNESS}"; then
+    fail "runner missing Plan 262 source-lock row ${token}"
+  fi
+done
+if ! grep -qF 'Transports::PostMessages' "${HARNESS}"; then
+  fail "runner self-loopback source lock must name Transports::PostMessages"
+fi
+if ! grep -qF 'm_LoopbackHandler.PutNextMessage' "${HARNESS}"; then
+  fail "runner self-loopback source lock must name m_LoopbackHandler.PutNextMessage"
+fi
+if ! grep -qF 'eI2NPTunnelGateway' "${HARNESS}"; then
+  fail "runner gateway source lock must name eI2NPTunnelGateway"
+fi
+
+# ---- Plan 262 work packages B/C: dedicated IBGW state + exact receive-id ----
+# The runtime-neutral IBGW state must not inherit participant
+# previous-peer locking; the gateway entry point must not accept
+# or check a previous-peer argument; exact receive-id equality is
+# required.
+if ! grep -qF 'pub struct TransitGatewayData' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs"; then
+  fail "production must own dedicated TransitGatewayData (no type alias)"
+fi
+if grep -vE '^[[:space:]]*(//|//!|///)' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" | grep -q 'pub type TransitGatewayData'; then
+  fail "production must not alias TransitGatewayData to TransitParticipantData"
+fi
+GATEWAY_DATA_BLOCK="$(awk '/pub struct TransitGatewayData/,/^}/' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" || true)"
+if printf '%s\n' "${GATEWAY_DATA_BLOCK}" | grep -q 'locked_previous_peer'; then
+  fail "TransitGatewayData must not contain locked_previous_peer"
+fi
+if printf '%s\n' "${GATEWAY_DATA_BLOCK}" | grep -q 'duplicates'; then
+  fail "TransitGatewayData must not inherit the participant replay window"
+fi
+GATEWAY_FN262="$(awk '/pub fn process_tunnel_gateway/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if printf '%s\n' "${GATEWAY_FN262}" | grep -q 'previous_peer'; then
+  fail "process_tunnel_gateway must not accept or check a previous_peer argument"
+fi
+if ! printf '%s\n' "${GATEWAY_FN262}" | grep -q 'expected_receive'; then
+  fail "process_tunnel_gateway must bind the registry key for exact receive-id equality (expected_receive)"
+fi
+if ! printf '%s\n' "${GATEWAY_FN262}" | grep -q 'claim_ibgw_fragment_id'; then
+  fail "IBGW emission path must claim a per-registration fragment id (claim_ibgw_fragment_id)"
+fi
+for test_row in 'm11_i2pr_ibgw_dedicated_state_has_no_peer_lock_unit' 'm11_i2pr_ibgw_exact_receive_id_unit' 'm11_i2pr_ibgw_creator_peer_not_data_auth_unit' 'm11_i2pr_ibgw_third_party_authenticated_peer_accepted_unit' 'm11_i2pr_participant_peer_lock_unchanged_unit'; do
+  if ! grep -qF "${test_row}" "${REPO_ROOT}/crates/i2pr-tunnel/src/transit.rs"; then
+    fail "Plan 262 runtime-neutral regression missing: ${test_row}"
+  fi
+done
+
+# ---- Plan 262 work package D: source-neutral seam + self-loop ----
+# The daemon must own one source-neutral IBGW operation used by
+# both network and local ingress; the self-loop must compare the
+# decoded OBEP target with the local hash without synthetic peer
+# state.
+if ! grep -qF 'pub fn route_ibgw_gateway' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_compose.rs"; then
+  fail "daemon must own source-neutral route_ibgw_gateway seam"
+fi
+if ! grep -qF 'deliver_obep_tunnel_to_self' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs"; then
+  fail "daemon must own the OBEP TUNNEL-to-self local branch (deliver_obep_tunnel_to_self)"
+fi
+if ! grep -qF 'LocalIbgwDelivered' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs"; then
+  fail "daemon must expose LocalIbgwDelivered typed outcome"
+fi
+if ! grep -qF 'LocalIbgwDropped' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs"; then
+  fail "daemon must expose LocalIbgwDropped typed outcome"
+fi
+# The self-loop must not fabricate peer state to satisfy the old
+# lock. Any synthetic PeerId construction on the self path fails
+# here.
+SELF_FN="$(awk '/fn deliver_obep_tunnel_to_self/{on=1} on{print; o+=gsub(/{/,"{"); c+=gsub(/}/,"}"); if(o>0 && o==c){exit}}' "${REPO_ROOT}/crates/i2pr-daemon/src/transit_owner.rs" | grep -vE '^[[:space:]]*(//|//!|///)' || true)"
+if printf '%s\n' "${SELF_FN}" | grep -q 'PeerId::from_hash\|PeerId::from_bytes\|synthetic'; then
+  fail "self-loop must not synthesize a PeerId (no fake local/creator peer)"
+fi
+if printf '%s\n' "${SELF_FN}" | grep -q 'install_peer'; then
+  fail "self-loop must never insert the local router into the remote peer index"
+fi
+for test_row in 'm11_i2pr_ibgw_exact_receive_id_unit' 'm11_i2pr_ibgw_creator_peer_not_data_auth_unit' 'm11_i2pr_ibgw_third_party_authenticated_peer_accepted_unit' 'm11_i2pr_participant_peer_lock_unchanged_unit'; do
+  if ! grep -qF "${test_row}" "${REPO_ROOT}/crates/i2pr-daemon/src/transit_compose.rs"; then
+    fail "Plan 262 daemon regression missing: ${test_row}"
+  fi
+done
+for test_row in 'm11_i2pr_self_tunnel_live_ibgw_ingresses_locally_unit' 'm11_i2pr_self_tunnel_unknown_id_drops_unit' 'm11_i2pr_self_tunnel_non_ibgw_drops_unit' 'm11_i2pr_self_tunnel_does_not_mutate_peer_index_unit' 'm11_i2pr_non_self_tunnel_remote_behavior_unchanged_unit' 'm11_i2pr_self_router_behavior_unchanged_unit' 'm11_i2pr_self_tunnel_cancelled_owner_refuses_unit'; do
+  if ! grep -qF "${test_row}" "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_live_owner.rs"; then
+    fail "Plan 262 live-owner regression missing: ${test_row}"
+  fi
+done
+# The driver must map self-loop ingress to GatewayDelivered (so
+# the B-sender receipt flip is genuine local IBGW ingress, not a
+# relabeled terminal).
+if ! grep -qF 'LocalIbgwDelivered' "${DRIVER}"; then
+  fail "driver must map LocalIbgwDelivered to GatewayDelivered ingress"
+fi
+if ! grep -qF 'LocalIbgwDropped' "${DRIVER}"; then
+  fail "driver must map LocalIbgwDropped to GatewayDropped"
 fi
 
 # ---- record_guarded must gate on the exit code ---------------------------

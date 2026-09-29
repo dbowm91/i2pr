@@ -817,8 +817,7 @@ impl fmt::Debug for TransitDataPlane {
                 .finish(),
             Self::InboundGateway(data) => formatter
                 .debug_struct("InboundGateway")
-                .field("previous_locked", &data.locked_previous_peer.is_some())
-                .field("duplicates", &data.duplicates.len())
+                .field("fragment_seeded", &data.is_seeded())
                 .finish(),
             Self::OutboundEndpoint(data) => formatter
                 .debug_struct("OutboundEndpoint")
@@ -914,10 +913,95 @@ impl Default for TransitParticipantData {
 }
 
 /// IBGW data-plane state. The IBGW accepts a `TunnelGateway`
-/// message, builds one or more `TunnelData` cells, and forwards
-/// them; the same locked previous peer + duplicate window applies
-/// to the inbound gateway-message stream.
-pub type TransitGatewayData = TransitParticipantData;
+/// message addressed by live receive tunnel id, builds one or more
+/// `TunnelData` cells, and forwards them.
+///
+/// Plan 262 corrective: this is a dedicated move-only object that
+/// owns only IBGW-specific bounded state. It deliberately does NOT
+/// contain `locked_previous_peer` and does NOT inherit the
+/// Participant-only exact-replay window or source-affinity
+/// semantics. IBGW authorization is by live receive tunnel id +
+/// IBGW role + expiry + bounded resource state, matching the
+/// exact-pinned reference dispatch (`Tunnel.cpp` receive-id lookup
+/// without creator-peer comparison) and the normative IBGW role
+/// ("allow messages from anyone"). The build creator identity
+/// remains on [`TransitHopRegistration::previous_peer`] for build
+/// admission/accounting/reply routing; it is not an IBGW
+/// data-plane authorization predicate.
+///
+/// The per-registration fragment-id sequence (Plan 260: nonzero
+/// seed, per-registration sequence, wrap skips zero, distinct
+/// concurrent ingresses) lives here. The value is a routing nonce,
+/// never secret material. No global counter or lock.
+pub struct TransitGatewayData {
+    /// Next IBGW fragment message id for this registration. Zero
+    /// means unseeded.
+    next_ibgw_fragment_id: u32,
+}
+
+impl fmt::Debug for TransitGatewayData {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransitGatewayData")
+            .field("fragment_seeded", &self.is_seeded())
+            .finish()
+    }
+}
+
+impl TransitGatewayData {
+    /// Constructs fresh IBGW state.
+    pub fn new() -> Self {
+        Self {
+            next_ibgw_fragment_id: 0,
+        }
+    }
+
+    /// Returns whether the fragment sequence has been seeded.
+    /// Non-secret routing fact for `Debug` only.
+    fn is_seeded(&self) -> bool {
+        self.next_ibgw_fragment_id != 0
+    }
+
+    /// Claims the fragment message id for one IBGW ingress and
+    /// advances the per-registration sequence.
+    ///
+    /// The first call seeds the sequence from the caller RNG
+    /// (retrying a zero draw); every call returns the current id
+    /// and advances with wrapping arithmetic that skips zero, so
+    /// two ingresses on one registration never share an id while
+    /// every fragment of one ingress shares its ingress id. The
+    /// counter dies with the registration; no state crosses
+    /// registrations.
+    pub fn claim_ibgw_fragment_id<R: CryptoRng + RngCore>(&mut self, rng: &mut R) -> u32 {
+        if self.next_ibgw_fragment_id == 0 {
+            let mut seed = rng.next_u32();
+            if seed == 0 {
+                seed = 1;
+            }
+            self.next_ibgw_fragment_id = seed;
+        }
+        let claimed = self.next_ibgw_fragment_id;
+        self.next_ibgw_fragment_id = self.next_ibgw_fragment_id.wrapping_add(1);
+        if self.next_ibgw_fragment_id == 0 {
+            self.next_ibgw_fragment_id = 1;
+        }
+        claimed
+    }
+
+    /// Test-only sequence setter for the wrap-skips-zero
+    /// regression. Production code advances only through
+    /// [`Self::claim_ibgw_fragment_id`].
+    #[cfg(test)]
+    pub(crate) fn set_next_ibgw_fragment_id_for_test(&mut self, id: u32) {
+        self.next_ibgw_fragment_id = id;
+    }
+}
+
+impl Default for TransitGatewayData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// OBEP data-plane state: replay window plus the bounded
 /// reassembler that collects fragments.
@@ -1150,27 +1234,20 @@ impl TransitHopRegistration {
                 next_tunnel,
                 layer_keys,
             } => {
-                let data = match &mut self.data_plane {
+                // Plan 262: the IBGW TunnelData path shares the
+                // registration's build-provenance gate above
+                // (`registration.previous_peer`, checked before the
+                // role dispatch) but owns no data-plane peer lock or
+                // replay window. The canonical IBGW ingress is
+                // `TunnelGateway` via `process_tunnel_gateway`
+                // (receive-id authorization, no creator affinity);
+                // TunnelData arriving at an IBGW id is forwarded
+                // through the same one-layer transform without
+                // Participant-style source-affinity state.
+                let _data = match &mut self.data_plane {
                     TransitDataPlane::InboundGateway(data) => data,
                     _ => unreachable!("role/data-plane variant mismatch"),
                 };
-                let token =
-                    DuplicateToken::compute(&cell_split_iv(cell), &cell_split_payload(cell));
-                if data
-                    .duplicates
-                    .observe(token)
-                    .map_err(|error| match error {
-                        DuplicateWindowError::CapacityExceeded { capacity } => {
-                            TransitDataFatalError::DuplicateWindowAtCapacity { capacity }
-                        }
-                    })?
-                {
-                    if data.locked_previous_peer.is_none() {
-                        data.locked_previous_peer = Some(*previous_peer);
-                    }
-                } else {
-                    return Ok(TransitDataOutcome::DuplicateOrReplay);
-                }
                 let (iv, payload) = split_cell(cell);
                 let (next_iv, next_payload) =
                     TunnelLayerTransform::participant_forward(layer_keys, &iv, &payload);
@@ -1224,20 +1301,39 @@ impl TransitHopRegistration {
         }
     }
 
-    /// Processes one inbound authenticated `TunnelGateway` message
-    /// addressed to an IBGW receive tunnel id. The function builds
-    /// one or more `TunnelData` cells with the canonical first layer
-    /// applied and returns the next-hop cells the daemon dispatches
-    /// through the bounded router-delivery seam.
+    /// Processes one inbound `TunnelGateway` message addressed to
+    /// an IBGW receive tunnel id. The function builds one or more
+    /// `TunnelData` cells with the canonical first layer applied
+    /// and returns the next-hop cells the daemon dispatches through
+    /// the bounded router-delivery seam.
+    ///
+    /// Plan 262 corrective: authorization is by live receive tunnel
+    /// id + IBGW role + expiry + bounded resource state. The
+    /// function deliberately takes NO `previous_peer` argument and
+    /// performs NO creator-peer affinity check. The build creator
+    /// (`registration.previous_peer`) remains for build
+    /// admission/accounting/reply routing but is not consulted
+    /// here. A valid `TunnelGateway` from any authenticated sender
+    /// (including a third-party non-creator router and the local
+    /// self-loop) reaches the live IBGW registration when the
+    /// receive id is correct.
+    ///
+    /// `expected_receive` MUST be the registry key the caller
+    /// looked the registration up under. The function asserts
+    /// exact equality between the gateway's tunnel id and that
+    /// key; any mismatch (including unknown, zero, or non-IBGW
+    /// ids, which never reach here with a matching key) fails
+    /// closed with `Ok(None)`. Do not duplicate the receive id in
+    /// multiple mutable owners: the registry key is the single
+    /// owner, passed by value for the equality check.
     ///
     /// Returns `Ok(None)` when the registration role is not an
     /// inbound gateway. Returns `Err` only on a typed failure that
     /// the runtime-neutral module commits to fail-closing.
-    #[allow(clippy::too_many_arguments)]
     pub fn process_tunnel_gateway<R>(
         &mut self,
         gateway: &TunnelGatewayMessage,
-        previous_peer: &Hash,
+        expected_receive: TunnelId,
         now_ms: u64,
         rng: &mut R,
     ) -> Result<Option<Vec<TransitGatewayForward>>, TransitDataFatalError>
@@ -1246,9 +1342,6 @@ impl TransitHopRegistration {
     {
         let now_seconds = now_ms / 1000;
         if self.expires_at_seconds <= now_seconds {
-            return Ok(None);
-        }
-        if self.previous_peer.hash() != *previous_peer {
             return Ok(None);
         }
         let data = match &mut self.data_plane {
@@ -1265,43 +1358,21 @@ impl TransitHopRegistration {
         };
         // Verify the gateway is addressed to this IBGW tunnel id
         // before doing any work; the canonical role rejects
-        // GatewayTunnelMismatch before any layer transform.
+        // GatewayTunnelMismatch before any layer transform. The
+        // expected id is the registry key the caller already
+        // resolved; exact equality is required.
         let actual_tunnel_id = TunnelId::new(gateway.tunnel_id).map_err(|_| {
             TransitDataFatalError::TunnelMessage(format!(
                 "ibgw zero tunnel id {actual}",
                 actual = gateway.tunnel_id
             ))
         })?;
-        let expected_tunnel_id = match &self.role {
-            TransitHopRole::InboundGateway { layer_keys: _, .. } => {
-                // IBGW receive id is the registration's key;
-                // callers query that via `TransitRegistry::contains`.
-                // For the post-`accept` case, the receive id sits on
-                // the registry key itself — re-derive here by
-                // walking the registry in the daemon. We cannot
-                // recover the receive id from the role alone, so we
-                // accept any nonzero gateway tunnel id and let the
-                // locked_previous_peer logic gate dispatch.
-                actual_tunnel_id
-            }
-            _ => unreachable!("role/data-plane variant mismatch"),
-        };
-        if actual_tunnel_id != expected_tunnel_id {
+        if actual_tunnel_id != expected_receive {
             // Mismatched gateway tunnel id — silently drop; the
             // canonical `InboundGatewayRole` surfaces
             // `GatewayTunnelMismatch` to the caller; the daemon
             // owner filters this branch the same way.
             return Ok(None);
-        }
-        let _ = data;
-        // Lock the IBGW previous peer on first accepted
-        // TunnelGateway exactly the same way the participant lock
-        // locks. The data_plane is the same `TransitParticipantData`
-        // type for both Participant and InboundGateway variants.
-        // The first borrow above already proved the variant; reuse
-        // it for the lock so no second borrow is needed.
-        if data.locked_previous_peer.is_none() {
-            data.locked_previous_peer = Some(*previous_peer);
         }
         // The IBGW canonical path accepts the standard I2NP
         // message the gateway carries, applies the first
@@ -5703,7 +5774,12 @@ mod tests {
         // exercise the forward path to ensure the wrapped code
         // runs without panic and produces a single forward.
         let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
-        let _ = registration.process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng);
+        let _ = registration.process_tunnel_gateway(
+            &gateway,
+            TunnelId::new(receive_tunnel_id).expect("id"),
+            60_000,
+            &mut rng,
+        );
     }
 
     fn canonical_ibgw_registration(
@@ -5767,7 +5843,12 @@ mod tests {
             .len();
         assert!(gateway_nested_is_multicell_capable(nested_len));
         let cells = registration
-            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .process_tunnel_gateway(
+                &gateway,
+                TunnelId::new(0x3000).expect("id"),
+                60_000,
+                &mut rng,
+            )
             .expect("gateway processing")
             .expect("gateway accepted");
         assert!(
@@ -5785,7 +5866,12 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
         let gateway = ibgw_gateway_with_payload(1_500);
         let cells = registration
-            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .process_tunnel_gateway(
+                &gateway,
+                TunnelId::new(0x3000).expect("id"),
+                60_000,
+                &mut rng,
+            )
             .expect("gateway processing")
             .expect("gateway accepted");
         assert_eq!(
@@ -5830,7 +5916,12 @@ mod tests {
             .expect("encode nested");
         let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
         let cells = registration
-            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .process_tunnel_gateway(
+                &gateway,
+                TunnelId::new(0x3000).expect("id"),
+                60_000,
+                &mut rng,
+            )
             .expect("gateway processing")
             .expect("gateway accepted");
         assert_eq!(cells.len(), 2);
@@ -5906,7 +5997,12 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(0xCACA);
         let gateway = ibgw_gateway_with_payload(500);
         let cells = registration
-            .process_tunnel_gateway(&gateway, &registered_peer, 60_000, &mut rng)
+            .process_tunnel_gateway(
+                &gateway,
+                TunnelId::new(0x3000).expect("id"),
+                60_000,
+                &mut rng,
+            )
             .expect("gateway processing")
             .expect("gateway accepted");
         assert_eq!(cells.len(), 1);
@@ -5968,7 +6064,7 @@ mod tests {
         let first = registration
             .process_tunnel_gateway(
                 &ibgw_gateway_with_payload(1_500),
-                &registered_peer,
+                TunnelId::new(0x3000).expect("id"),
                 60_000,
                 &mut rng,
             )
@@ -5978,7 +6074,7 @@ mod tests {
         let second = registration
             .process_tunnel_gateway(
                 &ibgw_gateway_with_payload(1_500),
-                &registered_peer,
+                TunnelId::new(0x3000).expect("id"),
                 60_000,
                 &mut rng,
             )
@@ -6010,7 +6106,7 @@ mod tests {
         let cells = registration
             .process_tunnel_gateway(
                 &ibgw_gateway_with_payload(1_500),
-                &registered_peer,
+                TunnelId::new(0x3000).expect("id"),
                 60_000,
                 &mut rng,
             )
@@ -6161,6 +6257,268 @@ mod tests {
             .expect("second completion");
         assert_eq!(first_done.1, first_bytes, "no cross-assembly into first");
         assert_eq!(second_done.1, second_bytes, "no cross-assembly into second");
+    }
+
+    // Plan 262 WP C — IBGW ingress ownership corrective.
+    //
+    // The IBGW `TunnelGateway` authorization is by live receive
+    // tunnel id + IBGW role + expiry + bounded resource state. It
+    // is NOT bound to the build creator's transport identity. The
+    // dedicated `TransitGatewayData` owns only the fragment-id
+    // sequence; Participant/OBEP previous-peer locks are unchanged.
+
+    fn ibgw_gateway_with_id(payload_len: usize, tunnel_id: u32) -> TunnelGatewayMessage {
+        let payload: Vec<u8> = (0..payload_len as u32)
+            .map(|value| (value & 0xFF) as u8)
+            .collect();
+        let inner = i2pr_proto::I2npMessage::new_standard(
+            0x1234_5678,
+            i2pr_proto::Date::from_millis(60_000),
+            i2pr_proto::I2npBody::Data(i2pr_proto::OpaqueMessageBody {
+                payload: i2pr_proto::DeferredPayload::new(
+                    payload,
+                    i2pr_proto::MAX_I2NP_PAYLOAD_SIZE,
+                )
+                .expect("payload size"),
+            }),
+        )
+        .expect("inner");
+        TunnelGatewayMessage {
+            tunnel_id,
+            message: Box::new(inner),
+        }
+    }
+
+    /// Plan 262 §16.4: dedicated `TransitGatewayData` has no
+    /// previous-peer lock. The `Debug` shape reports only
+    /// IBGW-specific bounded state and never exposes peer-lock or
+    /// replay state.
+    #[test]
+    fn m11_i2pr_ibgw_dedicated_state_has_no_peer_lock_unit() {
+        let data = TransitGatewayData::new();
+        let debug = format!("{data:?}");
+        assert!(
+            !debug.contains("previous_locked"),
+            "IBGW debug must not report peer-lock state, got {debug}"
+        );
+        assert!(
+            !debug.contains("duplicates"),
+            "IBGW debug must not report replay state, got {debug}"
+        );
+        assert!(
+            debug.contains("fragment_seeded") || debug.contains("InboundGateway"),
+            "IBGW debug must report IBGW-specific bounded state, got {debug}"
+        );
+        // The type must not contain a `locked_previous_peer` field:
+        // this is enforced statically by
+        // `scripts/check-m11-transit-boundaries.sh` (rule 32), and
+        // the unit proves the runtime shape carries only the
+        // fragment sequence.
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262A);
+        let mut data = TransitGatewayData::new();
+        let first = data.claim_ibgw_fragment_id(&mut rng);
+        assert_ne!(first, 0);
+        // Wrap-skips-zero holds for the dedicated IBGW sequence.
+        data.set_next_ibgw_fragment_id_for_test(u32::MAX);
+        assert_eq!(data.claim_ibgw_fragment_id(&mut rng), u32::MAX);
+        assert_eq!(data.claim_ibgw_fragment_id(&mut rng), 1);
+    }
+
+    /// Plan 262 §16.5/6: IBGW exact receive-id match required;
+    /// wrong receive id drops, zero id fails closed, non-IBGW and
+    /// expired registrations drop.
+    #[test]
+    fn m11_i2pr_ibgw_exact_receive_id_unit() {
+        let creator = next_router(0x99);
+        let mut registration = canonical_ibgw_registration(creator, next_router(0xBB), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262B);
+        let expected = TunnelId::new(0x3000).expect("id");
+        // Correct id ingresses.
+        let good = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3000),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("good gateway processing");
+        assert!(good.is_some(), "exact receive id must ingress");
+        // Wrong nonzero id drops (Ok(None)), even though the
+        // registry lookup would have found this registration for
+        // 0x3000. The caller passes the registry key; a gateway
+        // naming a different id must not ingress here.
+        let wrong = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3001),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("wrong-id gateway processing");
+        assert!(wrong.is_none(), "wrong receive id must drop without cells");
+        // Zero id fails closed (typed error, no ingress).
+        let zero_result = registration.process_tunnel_gateway(
+            &ibgw_gateway_with_id(500, 0),
+            expected,
+            60_000,
+            &mut rng,
+        );
+        assert!(
+            zero_result.is_err() || zero_result.expect("zero check").is_none(),
+            "zero tunnel id must fail closed"
+        );
+        // Non-IBGW registration drops.
+        let mut participant = TransitHopRegistration {
+            previous_peer: TunnelPeer::from_hash(creator),
+            role: TransitHopRole::Participant {
+                next_router: next_router(0xBB),
+                next_tunnel: TunnelId::new(0x4000).expect("id"),
+                layer_keys: canonical_role_keys(0x11),
+            },
+            expires_at_seconds: 1_000,
+            data_plane: TransitDataPlane::Participant(TransitParticipantData::new()),
+        };
+        let non_ibgw = participant
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3000),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("non-ibgw processing");
+        assert!(
+            non_ibgw.is_none(),
+            "non-IBGW registration must drop gateway ingress"
+        );
+        // Expired IBGW drops.
+        let mut expired = canonical_ibgw_registration(creator, next_router(0xBB), 0x4000);
+        expired.expires_at_seconds = 10;
+        let expired_out = expired
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3000),
+                expected,
+                200_000,
+                &mut rng,
+            )
+            .expect("expired processing");
+        assert!(expired_out.is_none(), "expired IBGW must drop");
+    }
+
+    /// Plan 262 §16.7: IBGW data sender may differ from build
+    /// creator. The build creator provenance stays on the
+    /// registration for admission/accounting/reply routing but is
+    /// never consulted for gateway authorization. Ingress succeeds
+    /// regardless of the stored creator value and never mutates it.
+    #[test]
+    fn m11_i2pr_ibgw_creator_peer_not_data_auth_unit() {
+        let creator_a = next_router(0xAA);
+        let creator_b = next_router(0xBB);
+        let mut registration = canonical_ibgw_registration(creator_a, next_router(0xCC), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262C);
+        let expected = TunnelId::new(0x3000).expect("id");
+        // Ingress with creator A stored succeeds.
+        let first = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3000),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("first ingress")
+            .expect("first accepted");
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            registration.previous_peer.hash(),
+            creator_a,
+            "gateway ingress must not mutate build creator provenance"
+        );
+        // Rewrite the stored creator to a different router (as if
+        // the tunnel had been built by B). Ingress still succeeds
+        // with the same receive id — creator identity is not a
+        // data-plane predicate.
+        registration.previous_peer = TunnelPeer::from_hash(creator_b);
+        let second = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(500, 0x3000),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("second ingress")
+            .expect("second accepted");
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            registration.previous_peer.hash(),
+            creator_b,
+            "second ingress must preserve the rewritten creator"
+        );
+    }
+
+    /// Plan 262 §16.7/24: third-party authenticated peer accepted.
+    /// A valid `TunnelGateway` from a different router than the
+    /// build creator reaches the live IBGW registration when the
+    /// receive id is correct. This is the runtime-neutral half;
+    /// the daemon-level test proves the same through
+    /// `route_ibgw_gateway` with a non-creator `PeerId`.
+    #[test]
+    fn m11_i2pr_ibgw_third_party_authenticated_peer_accepted_unit() {
+        // Build creator A, data sender B (third party). The
+        // runtime-neutral entry point takes no peer at all, so any
+        // authenticated sender reaches the same path; the test
+        // proves acceptance is independent of the stored creator.
+        let creator_a = next_router(0xA1);
+        let mut registration = canonical_ibgw_registration(creator_a, next_router(0xCC), 0x4000);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262D);
+        let expected = TunnelId::new(0x3000).expect("id");
+        let cells = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(1_500, 0x3000),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("third-party ingress")
+            .expect("third-party accepted");
+        assert_eq!(cells.len(), 2, "third-party ingress must emit multicell");
+        // Wrong receive id from the same third-party sender still drops.
+        let dropped = registration
+            .process_tunnel_gateway(
+                &ibgw_gateway_with_id(1_500, 0x9999),
+                expected,
+                60_000,
+                &mut rng,
+            )
+            .expect("wrong-id processing");
+        assert!(dropped.is_none(), "wrong id must drop even for third party");
+    }
+
+    /// Plan 262 §16.8: Participant wrong previous peer still drops.
+    /// The IBGW corrective must not change Participant/OBEP
+    /// hop-provenance semantics.
+    #[test]
+    fn m11_i2pr_participant_peer_lock_unchanged_unit() {
+        let registered_peer = next_router(0x99);
+        let wrong_peer = next_router(0x77);
+        let mut registration = TransitHopRegistration {
+            previous_peer: TunnelPeer::from_hash(registered_peer),
+            role: TransitHopRole::Participant {
+                next_router: next_router(0xAA),
+                next_tunnel: TunnelId::new(0x2000).expect("id"),
+                layer_keys: canonical_role_keys(0x11),
+            },
+            expires_at_seconds: 1_000,
+            data_plane: TransitDataPlane::Participant(TransitParticipantData::new()),
+        };
+        let input = canonical_tunnel_data_cell(0x1000, 0x55);
+        let outcome = registration
+            .process_tunnel_data(&input, &wrong_peer, 60_000)
+            .expect("wrong peer");
+        assert!(matches!(outcome, TransitDataOutcome::PreviousPeerMismatch));
+        // Correct peer still forwards.
+        let good = registration
+            .process_tunnel_data(&input, &registered_peer, 60_000)
+            .expect("correct peer");
+        assert!(matches!(good, TransitDataOutcome::Forward { .. }));
     }
 
     /// 18. Role-mismatched inputs fail closed. An OBEP registration

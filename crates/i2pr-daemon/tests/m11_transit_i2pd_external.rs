@@ -6979,6 +6979,45 @@ fn record_data_outcome(
             target_router,
             target_tunnel,
         }) => {
+            use i2pr_daemon::transit_owner::ObepDeliveryOutcome;
+            // Plan 262 WP D2: a self-target TUNNEL action that
+            // entered the local IBGW registration surfaces as
+            // LocalIbgwDelivered/Dropped. Delivered maps to the
+            // same GatewayDelivered observation the network
+            // gateway path emits (so `gatewayed_receipt` counts
+            // genuine self-loop ingress); Dropped maps to
+            // GatewayDropped (so `terminal-garlic-self` stays zero
+            // and the ingress predicate fails closed).
+            if let ObepDeliveryOutcome::LocalIbgwDelivered {
+                receive_id,
+                next_router,
+                next_tunnel,
+                delivered,
+                failures,
+                nested_len,
+            } = obep
+            {
+                ledger.push(Observation {
+                    kind: ObservedKind::GatewayDelivered,
+                    aux_count: *delivered,
+                    receive_tunnel: *receive_id,
+                    next_router: Some(*next_router.as_bytes()),
+                    next_message_id: *next_tunnel,
+                    gateway_failures: Some(*failures),
+                    nested_len: Some(*nested_len),
+                    ..base
+                });
+                return;
+            }
+            if let ObepDeliveryOutcome::LocalIbgwDropped { receive_id, .. } = obep {
+                ledger.push(Observation {
+                    kind: ObservedKind::GatewayDropped,
+                    receive_tunnel: receive_id.unwrap_or(0),
+                    nested_len: Some(*message_len),
+                    ..base
+                });
+                return;
+            }
             // Record whether the OBEP action actually delivered
             // (accepted/local-ok) plus the inner message type
             // instead of the placeholder: datagrams arrive as
@@ -6990,7 +7029,6 @@ fn record_data_outcome(
             // predicate filters on both acceptance and type; the
             // labels are a closed outcome × type vocabulary (all
             // branches const).
-            use i2pr_daemon::transit_owner::ObepDeliveryOutcome;
             use i2pr_proto::MessageType;
             let accepted = matches!(
                 obep,

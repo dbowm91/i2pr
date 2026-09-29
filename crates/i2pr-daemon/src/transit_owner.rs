@@ -245,8 +245,43 @@ pub enum ObepDeliveryOutcome {
     /// ROUTER action produced one bounded router delivery.
     Router(RouterDeliveryOutcome),
     /// TUNNEL action preserved target gateway/tunnel and produced
-    /// one bounded gateway delivery.
+    /// one bounded gateway delivery (remote path: target != local).
     Tunnel(RouterDeliveryOutcome),
+    /// Self-target TUNNEL action entered the local IBGW
+    /// registration through the source-neutral seam (Plan 262 work
+    /// package D2). No synthetic `PeerId` was created, the local
+    /// router was never inserted into the remote peer index, and
+    /// the message never serialized through an artificial SSU2
+    /// path. `delivered`/`failures` count per-cell router-seam
+    /// outcomes; `nested_len` is the reconstructed standard I2NP
+    /// byte count.
+    LocalIbgwDelivered {
+        /// IBGW receive id the self-loop addressed.
+        receive_id: u32,
+        /// Committed next-hop router every emitted cell addressed.
+        next_router: i2pr_proto::Hash,
+        /// Committed next-hop receive tunnel every emitted cell addressed.
+        next_tunnel: u32,
+        /// Cells accepted by the router seam.
+        delivered: usize,
+        /// Cells that failed delivery (bounded, explicit, no retry).
+        failures: usize,
+        /// Reconstructed nested standard I2NP length.
+        nested_len: usize,
+    },
+    /// Self-target TUNNEL action failed closed without local
+    /// ingress (unknown/zero/non-IBGW/expired/cancelled/malformed
+    /// id or empty forward set). The `reason` is a
+    /// secret-free reason class; `receive_id` is `Some` when the
+    /// action carried a nonzero tunnel id.
+    LocalIbgwDropped {
+        /// Addressed tunnel id when nonzero.
+        receive_id: Option<u32>,
+        /// Secret-free reason class (`unknown-id`, `zero-id`,
+        /// `non-ibgw-or-expired`, `cancelled`, `malformed-nested`,
+        /// `empty-forward`, `delivery-overflow`).
+        reason: &'static str,
+    },
 }
 
 /// Typed outcome of one live short-build ingress.
@@ -982,7 +1017,7 @@ where
                         action.tunnel_id.map(|id| id.get()),
                     ),
                 };
-                let outcome = self.deliver_obep_action(&action, message_id)?;
+                let outcome = self.deliver_obep_action(&action, message_id, now_ms)?;
                 Ok(LiveInboundOutcome::Data(
                     TransitDataDisposition::DeliveredObep {
                         outcome,
@@ -1084,11 +1119,25 @@ where
     /// Delivers one OBEP semantic action through the existing daemon
     /// seams: LOCAL via the installed bounded sink, ROUTER via
     /// bounded direct router delivery, TUNNEL via canonical
-    /// TunnelGateway delivery.
+    /// TunnelGateway delivery with a Plan 262 self-loop arm.
+    ///
+    /// Plan 262 work package D2/D3: when a decoded OBEP TUNNEL
+    /// action targets the local router itself
+    /// (`action.target_router == local_router_hash`), the daemon
+    /// takes `action.tunnel_id` and the already reconstructed
+    /// standard I2NP bytes and calls the same source-neutral
+    /// `route_ibgw_gateway` IBGW operation directly. It never
+    /// creates a synthetic `PeerId`, never inserts the local
+    /// router into the remote peer index, and never serializes
+    /// the message through an artificial SSU2 path. When
+    /// `target_router != local`, behavior remains bit-identical
+    /// (authenticated remote peer resolution + bounded
+    /// router-delivery seam).
     pub fn deliver_obep_action(
         &mut self,
         action: &i2pr_tunnel::RouterDeliveryAction,
         message_id: u32,
+        now_ms: u64,
     ) -> Result<ObepDeliveryOutcome, TransitLiveError> {
         use i2pr_tunnel::RouterDeliveryKind;
         match action.kind {
@@ -1119,6 +1168,21 @@ where
                 Ok(ObepDeliveryOutcome::Router(delivery))
             }
             RouterDeliveryKind::TunnelGateway => {
+                // Self-loop check first: compare the decoded OBEP
+                // target router with the service's own RouterIdentity
+                // hash. This is trusted router-internal delivery
+                // after OBEP decryption and local-router comparison;
+                // it must not synthesize or spoof an authenticated
+                // network peer.
+                let local = {
+                    let Some(service) = self.owner.gate.service_mut() else {
+                        return Err(TransitLiveError::LocalDeliveryFailed);
+                    };
+                    *service.hop_identity()
+                };
+                if action.target_router == local {
+                    return self.deliver_obep_tunnel_to_self(action, now_ms);
+                }
                 let Some(service) = self.owner.gate.service_mut() else {
                     return Err(TransitLiveError::LocalDeliveryFailed);
                 };
@@ -1133,6 +1197,121 @@ where
                 Ok(ObepDeliveryOutcome::Tunnel(delivery))
             }
         }
+    }
+
+    /// Local self-loop for a decoded OBEP TUNNEL action whose
+    /// target router is this router itself (Plan 262 WP D2).
+    ///
+    /// Takes the already reconstructed standard I2NP bytes and the
+    /// addressed tunnel id and enters the same source-neutral
+    /// `route_ibgw_gateway` seam the network `TunnelGateway` path
+    /// uses. Unknown/zero/non-IBGW/expired/cancelled/malformed ids
+    /// and empty forward sets fail closed as
+    /// `LocalIbgwDropped` with a secret-free reason class. No
+    /// synthetic peer, no peer-index mutation, no artificial SSU2
+    /// serialization.
+    fn deliver_obep_tunnel_to_self(
+        &mut self,
+        action: &i2pr_tunnel::RouterDeliveryAction,
+        now_ms: u64,
+    ) -> Result<ObepDeliveryOutcome, TransitLiveError> {
+        if self.cancellation.is_cancelled() {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: action.tunnel_id.map(|id| id.get()),
+                reason: "cancelled",
+            });
+        }
+        let Some(tunnel_id) = action.tunnel_id.map(|id| id.get()) else {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: None,
+                reason: "zero-id",
+            });
+        };
+        if tunnel_id == 0 {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: None,
+                reason: "zero-id",
+            });
+        }
+        let nested_len = action.message.len();
+        if nested_len == 0 {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: Some(tunnel_id),
+                reason: "malformed-nested",
+            });
+        }
+        // Source-neutral local ingress: the same seam the network
+        // path uses, with no peer argument at all.
+        let forwards = {
+            let (owner, rng) = (&mut self.owner, &mut self.rng);
+            let Some(service) = owner.gate.service_mut() else {
+                return Err(TransitLiveError::LocalDeliveryFailed);
+            };
+            service
+                .route_ibgw_gateway(tunnel_id, &action.message, now_ms, rng)
+                .unwrap_or_default()
+        };
+        let Some(forwards) = forwards else {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: Some(tunnel_id),
+                reason: "unknown-id-or-expired",
+            });
+        };
+        if forwards.is_empty() {
+            return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                receive_id: Some(tunnel_id),
+                reason: "empty-forward",
+            });
+        }
+        // Every emitted cell shares the registration's committed
+        // next tuple; the first cell's facts name the whole
+        // ingress for receipt-tuple binding.
+        let (next_router, next_tunnel) = {
+            let Some(first) = forwards.first() else {
+                return Ok(ObepDeliveryOutcome::LocalIbgwDropped {
+                    receive_id: Some(tunnel_id),
+                    reason: "empty-forward",
+                });
+            };
+            (first.next_router, first.next_tunnel.get())
+        };
+        let mut delivered = 0_usize;
+        let mut failures = 0_usize;
+        let mut out_message_id = tunnel_id;
+        for forward in &forwards {
+            if self.cancellation.is_cancelled() {
+                break;
+            }
+            out_message_id = out_message_id.wrapping_add(1);
+            let service = self
+                .owner
+                .gate
+                .service_mut()
+                .ok_or(TransitLiveError::LocalDeliveryFailed)?;
+            match service.deliver_tunnel_data_forward(
+                &forward.next_router,
+                &forward.cell,
+                out_message_id,
+                &self.cancellation,
+            ) {
+                Ok(RouterDeliveryOutcome::Accepted) => delivered += 1,
+                Ok(_) | Err(_) => failures += 1,
+            }
+        }
+        // Ingress itself succeeded (the IBGW registration emitted
+        // cells); per-cell forward failures are counted explicitly
+        // in `failures` and the external receipt row requires zero
+        // failures. Unit tests with no live sessions observe
+        // `delivered == 0` with `failures > 0` but still prove
+        // local ingress and cell emission.
+        Ok(ObepDeliveryOutcome::LocalIbgwDelivered {
+            receive_id: tunnel_id,
+            next_router,
+            next_tunnel,
+            delivered,
+            failures,
+            nested_len,
+        })
     }
 
     /// Installs the bounded next/reply-router -> session-peer mapping

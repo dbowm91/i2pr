@@ -716,6 +716,66 @@ else
     "1"
 fi
 
+# Plan 262 work package A source locks: the self-delivery
+# loopback arm and the receive-id gateway dispatch are both
+# source-locked against exact-pinned i2pd 2.61.0. The self arm
+# compares the target identity with the local RouterInfo hash and
+# queues to the loopback handler; the gateway arm dispatches by
+# payload tunnel id without creator-peer affinity.
+if grep -qF 'Transports::PostMessages' \
+     "${I2PD_SOURCES}/libi2pd/Transports.cpp" 2>/dev/null &&
+   grep -qF 'GetRouterInfo ().GetIdentHash ()' \
+     "${I2PD_SOURCES}/libi2pd/Transports.cpp" 2>/dev/null &&
+   grep -qF 'm_LoopbackHandler.PutNextMessage' \
+     "${I2PD_SOURCES}/libi2pd/Transports.cpp" 2>/dev/null &&
+   grep -qF 'm_LoopbackHandler.Flush ()' \
+     "${I2PD_SOURCES}/libi2pd/Transports.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-self-loopback-source-lock" \
+    "self-delivery loopback source-locked (PostMessages ident==local + LoopbackHandler PutNextMessage + Flush)" \
+    "0"
+else
+  record_guarded "m11-i2pd-self-loopback-source-lock" \
+    "self-delivery loopback source-locked (PostMessages ident==local + LoopbackHandler PutNextMessage + Flush)" \
+    "1"
+fi
+
+if grep -qF 'eI2NPTunnelGateway' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'tunnelID = bufbe32toh (msg->GetPayload ())' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'tunnel = GetTunnel (tunnelID);' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'HandleTunnelGatewayMsg (tunnel, msg);' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null &&
+   grep -qF 'tunnel->SendTunnelDataMsg (msg);' \
+     "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null; then
+  record_guarded "m11-i2pd-tunnel-gateway-by-receive-id-source-lock" \
+    "TunnelGateway receive-id dispatch source-locked (eI2NPTunnelGateway + GetTunnel(tunnelID) + HandleTunnelGatewayMsg + SendTunnelDataMsg)" \
+    "0"
+else
+  record_guarded "m11-i2pd-tunnel-gateway-by-receive-id-source-lock" \
+    "TunnelGateway receive-id dispatch source-locked (eI2NPTunnelGateway + GetTunnel(tunnelID) + HandleTunnelGatewayMsg + SendTunnelDataMsg)" \
+    "1"
+fi
+
+# The counted gateway dispatch must contain no sender/build-creator
+# identity comparison between TunnelGateway dispatch and
+# SendTunnelDataMsg. A future implementation that inserts a fake
+# local or creator PeerId to satisfy the old i2pr peer lock would
+# require such a comparison here; its absence is the static guard.
+GATEWAY_DISPATCH="$(awk '/case eI2NPTunnelGateway:/,/SendTunnelDataMsg/' "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null || true)"
+GATEWAY_HANDLER="$(awk '/void Tunnels::HandleTunnelGatewayMsg/,/^	}/' "${I2PD_SOURCES}/libi2pd/Tunnel.cpp" 2>/dev/null || true)"
+if [[ -n "${GATEWAY_DISPATCH}" ]] && [[ -n "${GATEWAY_HANDLER}" ]] &&
+   ! printf '%s\n%s\n' "${GATEWAY_DISPATCH}" "${GATEWAY_HANDLER}" | grep -qE 'GetIdentHash|previous_peer|creator|build-creator'; then
+  record_guarded "m11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock" \
+    "gateway dispatch carries no creator-peer affinity (no ident/creator comparison in dispatch + handler)" \
+    "0"
+else
+  record_guarded "m11-i2pd-tunnel-gateway-no-creator-peer-affinity-source-lock" \
+    "gateway dispatch carries no creator-peer affinity (no ident/creator comparison in dispatch + handler)" \
+    "1"
+fi
+
 # Plan 261 §11.15: missing B-SAM env fails before network startup
 # (one exact test so a generic pass can never fan out).
 exact_row "m11-i2pd-b-sam-missing-env-fails" \
@@ -1113,7 +1173,7 @@ datadir_id = os.environ.get(
 )
 evidence = {
     "schema": "i2pr-m11-transit-qualification-v3",
-    "plan": 261,
+    "plan": 262,
     "attempt": attempt,
     "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "i2pr_commit": commit,

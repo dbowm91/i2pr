@@ -894,25 +894,27 @@ impl TransitBuildService {
         removed
     }
 
-    /// Routes one inbound authenticated `TunnelGateway` against the
-    /// transit IBGW registration (Plan 254 work package F).
+    /// Source-neutral IBGW ingress operation (Plan 262 work package
+    /// D). Both the authenticated network path and the local
+    /// self-loop path enter through this seam with the same
+    /// authorization: live receive tunnel id + IBGW role + expiry +
+    /// bounded resource state. No transport peer is consulted.
     ///
-    /// `tunnel_id` is the gateway destination tunnel id from the
-    /// canonical decode; `nested` is the complete encoded nested
-    /// standard I2NP message from the same decode. The helper
-    /// decodes the nested message exactly once here (construction
-    /// of the already-decoded gateway, not a second network
-    /// decode), looks up the IBGW registration by `tunnel_id`,
-    /// and calls the runtime-neutral
-    /// `process_tunnel_gateway`. Unknown tunnel ids, wrong peers,
-    /// non-IBGW roles, and expired registrations return
-    /// `Ok(None)` (fail closed, no state mutation beyond the
-    /// duplicate/peer-lock path the data plane owns).
-    pub fn route_tunnel_gateway<R: rand_core::RngCore + rand_core::CryptoRng>(
+    /// `tunnel_id` is the gateway destination tunnel id (registry
+    /// key for the IBGW registration); `nested` is the complete
+    /// encoded nested standard I2NP message (already reconstructed
+    /// for the self-loop, decoded once for the network path). The
+    /// helper decodes the nested message exactly once here,
+    /// looks up the IBGW registration by `tunnel_id`, and calls
+    /// the runtime-neutral `process_tunnel_gateway` with the
+    /// registry key for exact receive-id equality. Unknown tunnel
+    /// ids, zero ids, non-IBGW roles, expired registrations,
+    /// malformed nested messages, cancelled owners, and empty
+    /// forward sets fail closed with `Ok(None)`.
+    pub fn route_ibgw_gateway<R: rand_core::RngCore + rand_core::CryptoRng>(
         &mut self,
         tunnel_id: u32,
         nested: &[u8],
-        peer: &PeerId,
         now_ms: u64,
         rng: &mut R,
     ) -> Result<Option<Vec<i2pr_tunnel::TransitGatewayForward>>, TransitServiceError> {
@@ -931,15 +933,38 @@ impl TransitBuildService {
             tunnel_id,
             message: Box::new(nested_message),
         };
-        let previous_peer_hash = peer_to_hash(*peer);
         let registration = match self.registry.registration_mut(receive) {
             Some(value) => value,
             None => return Ok(None),
         };
-        match registration.process_tunnel_gateway(&gateway, &previous_peer_hash, now_ms, rng) {
+        match registration.process_tunnel_gateway(&gateway, receive, now_ms, rng) {
             Ok(cells) => Ok(cells),
             Err(_) => Ok(None),
         }
+    }
+
+    /// Routes one inbound authenticated `TunnelGateway` against the
+    /// transit IBGW registration (Plan 254 work package F, Plan 262
+    /// work package D1 network path).
+    ///
+    /// `tunnel_id` is the gateway destination tunnel id from the
+    /// canonical decode; `nested` is the complete encoded nested
+    /// standard I2NP message from the same decode. The helper
+    /// delegates to the source-neutral [`Self::route_ibgw_gateway`]
+    /// after the normal SSU2/router-I2NP owner has authenticated
+    /// and decoded the transport message. The authenticated
+    /// network peer remains in diagnostic evidence only; it is NOT
+    /// an IBGW authorization predicate (Plan 262: receive-id
+    /// routing without build-creator sender affinity).
+    pub fn route_tunnel_gateway<R: rand_core::RngCore + rand_core::CryptoRng>(
+        &mut self,
+        tunnel_id: u32,
+        nested: &[u8],
+        _peer: &PeerId,
+        now_ms: u64,
+        rng: &mut R,
+    ) -> Result<Option<Vec<i2pr_tunnel::TransitGatewayForward>>, TransitServiceError> {
+        self.route_ibgw_gateway(tunnel_id, nested, now_ms, rng)
     }
 
     /// Delivers one transit `TunnelData` forward cell through the
@@ -3841,6 +3866,199 @@ mod tests {
         assert!(service.has_peer(&router_b), "B must survive A's close");
         assert!(service.forget_peer_by_session(&peer_b));
         assert!(!service.has_peer(&router_b));
+    }
+
+    // Plan 262 WP C/D/G — IBGW ingress ownership + third-party
+    // sender regressions (service level).
+    //
+    // The IBGW gateway authorization is by live receive tunnel id
+    // + IBGW role + expiry + bounded resource state. The build
+    // creator (`registration.previous_peer`) is retained for build
+    // admission/accounting/reply routing but is never an IBGW
+    // data-plane predicate. A valid `TunnelGateway` from a
+    // different authenticated router than the build creator
+    // reaches the live registration when the receive id is
+    // correct; a wrong id still drops.
+
+    fn ibgw_nested_standard_for_test() -> Vec<u8> {
+        use i2pr_proto::{Date, DeliveryStatusMessage, I2npBody, I2npMessage};
+        let inner = I2npMessage::new_standard(
+            0x1234_5678,
+            Date::from_millis(60_000),
+            I2npBody::DeliveryStatus(DeliveryStatusMessage::new(
+                0x51A4_ABCD,
+                Date::from_millis(60_000),
+            )),
+        )
+        .expect("inner");
+        inner
+            .encode_standard_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+            .expect("encode nested")
+    }
+
+    fn install_ibgw_registration_for_test(
+        service: &mut TransitBuildService,
+        rng: &mut ChaCha8Rng,
+        receive_id: u32,
+        creator: PeerId,
+    ) {
+        let cryptography = EciesX25519BuildCryptography::new();
+        // The hop static key is owned by the service; tests use the
+        // same seed the service fixture uses (0xA3) to seal a
+        // build addressed to this service.
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(receive_id).expect("id"),
+            TunnelId::new(0x4000).expect("id"),
+            Hash::from_bytes([0xBB; 32]),
+            HopRole::InboundGateway,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0x2620_0001,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let payload =
+            make_stbm_with_local_slot(&cryptography, &responder_priv, &hop_identity, &record, rng);
+        let dispatch = service.route_short_build(&payload, &creator, 60, rng);
+        assert!(
+            matches!(dispatch, TransitDispatch::ForwardStbm { .. }),
+            "IBGW build must accept, got {dispatch:?}"
+        );
+    }
+
+    /// Plan 262 §16.5/6: IBGW exact receive-id match required at
+    /// the service seam; wrong/zero/non-IBGW/expired ids drop.
+    #[test]
+    fn m11_i2pr_ibgw_exact_receive_id_unit() {
+        let mut service = service_for_test();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262E);
+        let creator = dispatch_peer();
+        install_ibgw_registration_for_test(&mut service, &mut rng, 0x3000, creator);
+        let nested = ibgw_nested_standard_for_test();
+        // Exact id ingresses through the source-neutral seam.
+        let good = service
+            .route_ibgw_gateway(0x3000, &nested, 60_000, &mut rng)
+            .expect("good ingress")
+            .expect("good accepted");
+        assert!(!good.is_empty(), "exact id must emit cells");
+        // Wrong nonzero id drops (no registration under that key).
+        let wrong = service
+            .route_ibgw_gateway(0x3001, &nested, 60_000, &mut rng)
+            .expect("wrong-id processing");
+        assert!(wrong.is_none(), "wrong receive id must drop");
+        // Zero id drops.
+        let zero = service
+            .route_ibgw_gateway(0, &nested, 60_000, &mut rng)
+            .expect("zero processing");
+        assert!(zero.is_none(), "zero id must drop");
+        // Malformed nested drops.
+        let malformed = service
+            .route_ibgw_gateway(0x3000, &[0xFF; 16], 60_000, &mut rng)
+            .expect("malformed processing");
+        assert!(malformed.is_none(), "malformed nested must drop");
+    }
+
+    /// Plan 262 §16.7: IBGW data sender may differ from build
+    /// creator at the service seam. The network entry point takes
+    /// the authenticated peer for evidence only; authorization
+    /// does not consult it.
+    #[test]
+    fn m11_i2pr_ibgw_creator_peer_not_data_auth_unit() {
+        let mut service = service_for_test();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x262F);
+        let creator_a = dispatch_peer();
+        install_ibgw_registration_for_test(&mut service, &mut rng, 0x3000, creator_a);
+        let nested = ibgw_nested_standard_for_test();
+        // Same ingress through the network path with the creator
+        // peer succeeds.
+        let via_creator = service
+            .route_tunnel_gateway(0x3000, &nested, &creator_a, 60_000, &mut rng)
+            .expect("creator ingress")
+            .expect("creator accepted");
+        assert!(!via_creator.is_empty());
+        // The stored creator provenance is unchanged by ingress.
+        let stored = service
+            .registry
+            .registration(TunnelId::new(0x3000).expect("id"))
+            .expect("registered");
+        assert_eq!(stored.previous_peer.hash(), creator_a.hash());
+    }
+
+    /// Plan 262 §16.7/24 + WP G: third-party authenticated peer
+    /// accepted. An IBGW registration built by A accepts a valid
+    /// `TunnelGateway` delivered over an authenticated session
+    /// whose router identity is B when the receive id is correct;
+    /// a wrong id still drops.
+    #[test]
+    fn m11_i2pr_ibgw_third_party_authenticated_peer_accepted_unit() {
+        let mut service = service_for_test();
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2630);
+        let creator_a = dispatch_peer();
+        let sender_b = PeerId::from_hash(Hash::from_bytes([0xB0; 32]));
+        assert_ne!(creator_a.hash(), sender_b.hash());
+        install_ibgw_registration_for_test(&mut service, &mut rng, 0x3000, creator_a);
+        let nested = ibgw_nested_standard_for_test();
+        // Third-party sender B ingresses on the correct id.
+        let third_party = service
+            .route_tunnel_gateway(0x3000, &nested, &sender_b, 60_000, &mut rng)
+            .expect("third-party ingress")
+            .expect("third-party accepted");
+        assert!(
+            !third_party.is_empty(),
+            "third-party sender must ingress on correct id"
+        );
+        // Same third-party sender with a wrong id drops.
+        let wrong = service
+            .route_tunnel_gateway(0x3001, &nested, &sender_b, 60_000, &mut rng)
+            .expect("wrong-id processing");
+        assert!(wrong.is_none(), "third-party wrong id must still drop");
+    }
+
+    /// Plan 262 §16.8: Participant wrong previous peer still drops
+    /// at the service seam (IBGW corrective must not change
+    /// Participant/OBEP provenance).
+    #[test]
+    fn m11_i2pr_participant_peer_lock_unchanged_unit() {
+        let mut service = service_for_test();
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x1000).expect("id"),
+            TunnelId::new(0x2000).expect("id"),
+            Hash::from_bytes([0xAA; 32]),
+            HopRole::Participant,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0x1234_5678,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2631);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let dispatch = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+        assert!(matches!(dispatch, TransitDispatch::ForwardStbm { .. }));
+        // Wrong peer TunnelData drops.
+        let cell = TunnelDataMessage {
+            tunnel_id: 0x1000,
+            data: [0x55; 1024],
+        };
+        let wrong_peer = PeerId::from_hash(Hash::from_bytes([0x77; 32]));
+        let outcome = service.route_tunnel_data(&cell, &wrong_peer, 60_000);
+        assert!(
+            matches!(outcome, TransitTunnelDataDispatch::Drop),
+            "participant wrong peer must drop, got {outcome:?}"
+        );
     }
 
     /// 257-B4. A self-reply with no live IBGW registration fails
