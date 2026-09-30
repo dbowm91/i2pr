@@ -277,7 +277,7 @@ creation-time/expiry direction, actual bounded pending reservations, move-only s
 owners, panic-free removal, and direct wire/state assertions. This remains infrastructure
 only; no M11 capability is advertised before daemon composition and external qualification.
 
-### Current M11 qualification authority — Plans 254-262
+### Current M11 qualification authority — Plans 254-265
 
 Plan 254 remains the passed live-owner/body-threading boundary. Plans 255-257 retain their
 documented qualification infrastructure and evidence corrections. Plan 258 retains the
@@ -358,8 +358,16 @@ Plan 264 landed the per-epoch lane + composition gate
 epochs 2/2 on `6ab9dc2d`), but emission epochs stop on window
 signatures (ibgw-data 1/2, receipt 0/2, participant-data 1/2,
 replay 0/2 setup stops). Plan 264 is retained-blocked;
-Plan 265 owns the per-epoch emission sustainability
-(counting shape + replay hardening).
+Plan 265 owns the fixed-budget opportunity-qualified emission closure.
+Its pre-execution research refinement freezes manifest v5 and three
+scenario families (`ibgw-data`, `receipt`, `participant-lifecycle`)
+at exactly 8 retained fresh-mesh attempts each on one qualification
+SHA. Opportunity is classified from an input-side boundary before
+semantic output; any opportunity-present i2pr contradiction hard-fails;
+successful closure requires >=2 qualifying successes per family. The
+Participant family carries forward + B far-side + replay/expiry/
+session-close/cancel/restart as one same-attempt lifecycle chain.
+Production `crates/*/src` remains frozen at the Plan 262 source tree.
 
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
 Plan 265 is the current authority. M12 floodfill remains deferred.
@@ -382,7 +390,7 @@ authenticated `Ssu2InboundI2np`, with creator/service ownership ordering, OBEP s
 delivery, IBGW ingress, and outer cancellation/session lifecycle. Ordinary product profiles
 remain transit-disabled and non-advertised.
 
-Plans 255-262 qualify and correct external topology/evidence above that live-owner boundary;
+Plans 255-265 qualify and correct external topology/evidence above that live-owner boundary;
 they do not reopen the Plan 253/254 composition work. Plan 262 corrected the remaining IBGW
 ingress semantics (dedicated gateway state, live receive-id/role/expiry binding, self-loop
 local seam with socket receipt proven). Plan 263 landed the sustainability harness
@@ -390,7 +398,11 @@ local seam with socket receipt proven). Plan 263 landed the sustainability harne
 production diff) with receipt + multicell re-proven. Plan 264 landed the per-epoch
 lane + composition gate (zero production diff) with 5 epochs closed 2/2 and emission
 windows bound. Plan 265 is the current forward authority for the remaining emission
-seam (counting shape + replay hardening, zero production diff).
+seam with the counting rule no longer open: manifest v5, 3 scenario
+families × exactly 8 retained attempts, input-side opportunity
+classification, no success-based early stop, hard failure on any i2pr
+semantic contradiction, >=2 required family successes, and zero
+production source diff.
 
 ### Plan 252 full-message transit composition invariant
 
@@ -429,8 +441,11 @@ receipt proven live (diag4 `0/6/1` tuple-bound on `514bf12`), full matrix stoppe
 sustainability; Plan 263 is retained-blocked with the sustainability harness landed
 and receipt + multicell re-proven on `9bd2f39a`, single-mesh two-pass stopped on
 sustainability; Plan 264 is retained-blocked with the per-epoch gate proven (5
-epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 per-epoch emission
-sustainability is registered ready and is the next M11 execution authority.
+epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 fixed-budget opportunity-qualified emission sustainability is
+registered ready and is the next M11 execution authority. It must implement
+the manifest-v5/opportunity/replay classification gates before freezing the
+qualification SHA, then run the complete 24-attempt fixed budget without
+post-result rule changes.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
