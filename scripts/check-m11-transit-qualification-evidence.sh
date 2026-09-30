@@ -1028,7 +1028,7 @@ for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOU
 done
 # The Plan 265 fixed-budget composer and its negative fixtures must be
 # present, and the composer must stay wired into both runner gate slices.
-for token in 'compose-265' 'self-test' 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected'; do
+for token in 'compose-265' 'receipt-only' 'self-test' 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'receipt-only-two-successes-accepted' 'receipt-only-refuses-fresh-ibgw-set' 'receipt-only-rung5-as-opportunity-rejected'; do
   if ! grep -qF "${token}" "${REPO_ROOT}/scripts/check-m11-per-epoch-composition.sh"; then
     fail "Plan 265 composition gate missing ${token}"
   fi

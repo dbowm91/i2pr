@@ -498,9 +498,9 @@ fi
 #     the composer owns the fixed-budget closure gate and its negative
 #     fixtures. Production crates/*/src must stay untouched (rule 36's
 #     frozen numerics and this plan's diff guard both hold).
-for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET: usize = 8' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_LIFECYCLE_ROWS' 'registration_live_at_input' 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_classify_ibgw' 'plan265_receipt_opportunity' 'plan265_receipt_semantic_pass' 'plan265_classify_receipt' 'plan265_participant_opportunity' 'plan265_classify_participant' 'ReplayOutcomeKind'; do
+for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET: usize = 8' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_LIFECYCLE_ROWS' 'registration_live_at_input' 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_classify_ibgw' 'plan265_receipt_opportunity' 'plan265_receipt_semantic_pass' 'plan265_classify_receipt' 'plan265_participant_opportunity' 'plan265_classify_participant' 'ReplayOutcomeKind' 'PLAN266_RECEIPT_CREATOR_LOST_ID' 'plan266_receipt_ladder_rung' 'plan266-ladder'; do
     if ! rg -qF "$symbol" "$external_driver"; then
-        fail "external driver missing Plan 265 symbol $symbol"
+        fail "external driver missing Plan 265/266 symbol $symbol"
     fi
 done
 for row in 'm11-i2pd-plan265-production-source-lock' 'm11-i2pd-plan265-frozen-attempt-budget' 'm11-i2pd-plan265-closed-terminal-vocabulary' 'm11-i2pd-plan265-opportunity-is-input-side'; do
@@ -508,9 +508,9 @@ for row in 'm11-i2pd-plan265-production-source-lock' 'm11-i2pd-plan265-frozen-at
         fail "external runner missing Plan 265 row $row"
     fi
 done
-for token in 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
+for token in 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard' 'plan266_receipt_ladder_names_each_unsatisfied_rung' 'plan266_receipt_creator_lost_id_is_typed_no_opportunity' 'plan266_receipt_counted_live_action_keeps_opportunity_without_advertisement' 'plan266_receipt_unobservable_advertisement_falls_back_to_plan265'; do
     if ! rg -qF "$token" "$external_driver"; then
-        fail "external driver missing Plan 265 focused test $token"
+        fail "external driver missing Plan 265/266 focused test $token"
     fi
 done
 # The composer must carry the Plan 265 fixed-budget contract and its
@@ -531,9 +531,9 @@ fi
 if rg -qF 'PYOPPORTUNITY' "$external_runner"; then
     fail "external runner must not carry its own copy of the input-side opportunity guard"
 fi
-for fixture in 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'two-successes-then-missing-ordinals-rejected' 'duplicate-ordinal-rejected' 'mixed-qualification-sha-rejected' 'changed-attempt-budget-rejected' 'unclassified-terminal-rejected' 'opportunity-inferred-from-output-rejected' 'static-opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'plan264-manifest-promotion-rejected' 'missing-retained-manifest-rejected'; do
+for fixture in 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'two-successes-then-missing-ordinals-rejected' 'duplicate-ordinal-rejected' 'mixed-qualification-sha-rejected' 'changed-attempt-budget-rejected' 'unclassified-terminal-rejected' 'opportunity-inferred-from-output-rejected' 'static-opportunity-inferred-from-output-rejected' 'static-ladder-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'plan264-manifest-promotion-rejected' 'missing-retained-manifest-rejected' 'receipt-only-two-successes-accepted' 'receipt-only-refuses-fresh-ibgw-set' 'receipt-only-refuses-fresh-participant-set' 'receipt-only-miss-labeled-pass-rejected' 'receipt-only-rung5-as-opportunity-rejected' 'receipt-only-nine-attempts-rejected' 'receipt-only-mixed-sha-rejected'; do
     if ! rg -qF "$fixture" "$root/scripts/check-m11-per-epoch-composition.sh"; then
-        fail "Plan 265 composition fixture missing: $fixture"
+        fail "Plan 265/266 composition fixture missing: $fixture"
     fi
 done
 if [[ ! -f "$root/plans/closure/transit-tunnels/265-retained-plan264-evidence.tsv" ]]; then

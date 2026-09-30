@@ -2413,6 +2413,12 @@ const PLAN265_IBGW_NO_OPPORTUNITY: &str = "ibgw-large-input-not-observed";
 /// terminals for scenario family B.
 const PLAN265_RECEIPT_NO_SELF_ACTION: &str = "receipt-no-b-originated-self-action";
 const PLAN265_RECEIPT_NO_COUNTED_TARGET: &str = "receipt-no-live-counted-ibgw-target";
+/// Plan 266 §4 rung 5: a B-originated self-targeted action named only
+/// receive ids the creator's own LeaseSet no longer advertises. This
+/// is a creator-side pool-churn fact, not an i2pr fact: it is a
+/// declared no-opportunity terminal, never a semantic verdict, and no
+/// existing terminal's meaning changes.
+const PLAN266_RECEIPT_CREATOR_LOST_ID: &str = "receipt-creator-leaseset-lost-ibgw-id";
 /// Plan 265 §7.1: the only declared opportunity-absent terminal for
 /// scenario family C.
 const PLAN265_PARTICIPANT_NO_OPPORTUNITY: &str = "participant-input-not-observed";
@@ -2447,12 +2453,15 @@ const PLAN265_SETUP_STOPS: &[&str] = &[
     "participant-setup-stop",
 ];
 
-/// Plan 265 §4: the complete closed terminal vocabulary. The
+/// Plan 265 §4 as extended by Plan 266 §4: the complete closed
+/// terminal vocabulary. Plan 266 adds exactly one declared
+/// no-opportunity terminal (rung 5) and removes none. The
 /// composition gate rejects any terminal outside this set.
 const PLAN265_TERMINAL_VOCABULARY: &[&str] = &[
     PLAN265_IBGW_NO_OPPORTUNITY,
     PLAN265_RECEIPT_NO_SELF_ACTION,
     PLAN265_RECEIPT_NO_COUNTED_TARGET,
+    PLAN266_RECEIPT_CREATOR_LOST_ID,
     PLAN265_PARTICIPANT_NO_OPPORTUNITY,
     PLAN265_IBGW_SUCCESS,
     PLAN265_RECEIPT_SUCCESS,
@@ -2638,6 +2647,7 @@ fn plan265_is_no_opportunity_terminal(terminal: &str) -> bool {
             PLAN265_IBGW_NO_OPPORTUNITY,
             PLAN265_RECEIPT_NO_SELF_ACTION,
             PLAN265_RECEIPT_NO_COUNTED_TARGET,
+            PLAN266_RECEIPT_CREATOR_LOST_ID,
             PLAN265_PARTICIPANT_NO_OPPORTUNITY,
         ],
         terminal,
@@ -2897,6 +2907,12 @@ fn plan265_classify_ibgw(
 /// `next_router`, `tuple_bound` and `socket_receipts` are the output
 /// side, read only by the semantic and external-completion
 /// predicates.
+///
+/// Plan 266 §4 adds three more input-side facts for the opportunity
+/// ladder's upper rungs: `creator_session_ready` (rung 1),
+/// `b_outbound_i2pr` (rung 2) and `creator_advertisement_observable`
+/// (rung 5). The creator-advertised id set itself travels beside the
+/// facts as a slice, exactly like the counted set does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReceiptInputFacts {
     /// A B-originated self-targeted OBEP action was decoded at all.
@@ -2906,6 +2922,22 @@ struct ReceiptInputFacts {
     /// The action's tunnel id (the counted creator-A IBGW receive id
     /// when the seam was reached).
     receive_tunnel: u32,
+    /// Plan 266 §4 rung 1: the reference creator's counted receiver
+    /// session reported ready. Classification is unreachable unless
+    /// it did (the unready arm returns before any verdict), so this
+    /// is always true where a verdict is built; it is a field rather
+    /// than a constant so the ladder order stays explicit and the
+    /// rung-1 terminal stays reachable in unit scope.
+    creator_session_ready: bool,
+    /// Plan 266 §4 rung 2: B's outbound session reached `[i2pr]` and
+    /// the typed OBEP accept replied to B.
+    b_outbound_i2pr: bool,
+    /// Plan 266 §4 rung 5: the creator's advertised inbound gateway
+    /// receive id set could be derived from harness-observable facts.
+    /// `false` records the rung as unobservable and falls back to
+    /// the Plan 265 rung-6 terminal unchanged; the ladder never
+    /// requires a fact the lane cannot see.
+    creator_advertisement_observable: bool,
     emitted_cells: usize,
     failures: usize,
     next_router: Option<[u8; 32]>,
@@ -2950,6 +2982,65 @@ impl ReceiptInputFacts {
         }
         false
     }
+
+    /// Plan 266 §4: the input-side opportunity ladder for the receipt
+    /// family. Evaluated top-down, it returns the first unsatisfied
+    /// rung: 1..=3 name setup stops, 4 names the missing B action, 5
+    /// names creator-side pool churn, 6 names the missing live counted
+    /// target, and 7 means every rung through the local seam holds so
+    /// the attempt is opportunity-present and the semantic half runs.
+    ///
+    /// Rung 5 fires only when no addressed id is counted-live: a
+    /// counted-live action keeps its opportunity even if the creator
+    /// rotated its advertisement afterwards, because the local seam
+    /// can still evaluate it. When the advertisement is not
+    /// observable the rung is skipped and rung 6 decides exactly as
+    /// Plan 265 did.
+    ///
+    /// This function must never read the output side; the static
+    /// checker rejects a body that mentions `emitted_cells`,
+    /// `failures`, `next_router`, `next_tunnel`, `tuple_bound` or
+    /// `socket_receipts`.
+    fn plan266_receipt_ladder_rung(
+        &self,
+        counted_ibgw: &[u32],
+        creator_advertised: &[u32],
+        addressed: &[u32],
+    ) -> u8 {
+        // Rung 1: the creator session reported ready and at least one
+        // counted creator-A receive id was accepted.
+        if !self.creator_session_ready || counted_ibgw.is_empty() {
+            return 1;
+        }
+        // Rung 2: B outbound reached the local endpoint with a typed
+        // accept back to B.
+        if !self.b_outbound_i2pr {
+            return 2;
+        }
+        // Rung 3: B-side resolution was never contradicted by the
+        // reference log.
+        if self.b_leaseset_contradiction {
+            return 3;
+        }
+        // Rung 4: B originated a self-targeted action at all.
+        if !self.b_self_targeted {
+            return 4;
+        }
+        // Rung 5: every addressed id the seam cannot count is
+        // explained by the creator no longer advertising it.
+        let any_counted = addressed.iter().any(|id| counted_ibgw.contains(id));
+        if !any_counted && !addressed.is_empty() && self.creator_advertisement_observable {
+            let any_advertised = addressed.iter().any(|id| creator_advertised.contains(id));
+            if !any_advertised {
+                return 5;
+            }
+        }
+        // Rung 6: the rung-6 conjunction from Plan 265 §6.1.
+        if !self.plan265_receipt_opportunity(counted_ibgw) {
+            return 6;
+        }
+        7
+    }
 }
 
 /// Plan 265 §6.2: the i2pr semantic predicate for an
@@ -2980,25 +3071,61 @@ fn plan265_receipt_absent_terminal(facts: &ReceiptInputFacts) -> &'static str {
     }
 }
 
-/// Plan 265 §6: classifies one family-B attempt.
+/// Plan 265 §6 as extended by Plan 266 §4: classifies one family-B
+/// attempt through the opportunity ladder. Rungs 1..=3 are setup
+/// stops, rungs 4..=6 are typed no-opportunity terminals, and rung 7
+/// runs the unchanged opportunity-present semantic half. The extra
+/// slices are the creator-advertised receive id set and the addressed
+/// id set; both are input-side observations beside the facts.
 fn plan265_classify_receipt(
     facts: &ReceiptInputFacts,
     counted_ibgw: &[u32],
     creator_router: [u8; 32],
+    creator_advertised: &[u32],
+    addressed: &[u32],
 ) -> Plan265Verdict {
-    if !facts.plan265_receipt_opportunity(counted_ibgw) {
-        if facts.b_leaseset_contradiction || (facts.b_self_targeted && !facts.b_leaseset_resolved) {
-            // A LeaseSet-resolution contradiction is a setup stop, not
-            // a harmless opportunity absence.
-            return Plan265Verdict::new(
-                "not-observed",
-                "b-leaseset-resolution-unproven",
-                "not-applicable",
-                "not-applicable",
-                PLAN265_SETUP_STOPS[1],
-            )
-            .expect("declared receipt setup-stop verdict");
-        }
+    let rung = facts.plan266_receipt_ladder_rung(counted_ibgw, creator_advertised, addressed);
+    if rung <= 3 {
+        // The input-side boundary was never established: a setup
+        // stop, never a harmless opportunity absence.
+        let reason = match rung {
+            1 => "creator-counted-ibgw-id-unaccepted",
+            2 => "b-outbound-i2pr-unproven",
+            _ => "b-leaseset-resolution-unproven",
+        };
+        return Plan265Verdict::new(
+            "not-observed",
+            reason,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_SETUP_STOPS[1],
+        )
+        .expect("declared receipt setup-stop verdict");
+    }
+    if rung == 4 {
+        return Plan265Verdict::new(
+            "absent",
+            PLAN265_RECEIPT_NO_SELF_ACTION,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_RECEIPT_NO_SELF_ACTION,
+        )
+        .expect("declared receipt no-action verdict");
+    }
+    if rung == 5 {
+        // Creator-side pool churn: B addressed only receive ids the
+        // creator no longer advertises. No opportunity and no i2pr
+        // verdict.
+        return Plan265Verdict::new(
+            "absent",
+            PLAN266_RECEIPT_CREATOR_LOST_ID,
+            "not-applicable",
+            "not-applicable",
+            PLAN266_RECEIPT_CREATOR_LOST_ID,
+        )
+        .expect("declared receipt creator-lost-id verdict");
+    }
+    if rung == 6 {
         let terminal = plan265_receipt_absent_terminal(facts);
         return Plan265Verdict::new(
             "absent",
@@ -3493,6 +3620,9 @@ fn plan265_receipt_self_action_opportunity_classification() {
         socket_receipts: 1,
         b_leaseset_resolved: true,
         b_leaseset_contradiction: false,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
     };
     assert!(observed.plan265_receipt_opportunity(&counted));
     // No B-originated self-targeted action at all.
@@ -3503,7 +3633,7 @@ fn plan265_receipt_self_action_opportunity_classification() {
         ..observed
     };
     assert!(!no_action.plan265_receipt_opportunity(&counted));
-    let verdict = plan265_classify_receipt(&no_action, &counted, creator);
+    let verdict = plan265_classify_receipt(&no_action, &counted, creator, &[], &[]);
     assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_SELF_ACTION);
     assert_eq!(verdict.opportunity, "absent");
     // A B self-targeted action that never names a live counted
@@ -3513,7 +3643,7 @@ fn plan265_receipt_self_action_opportunity_classification() {
         receive_tunnel: 0,
         ..observed
     };
-    let verdict = plan265_classify_receipt(&no_counted_target, &counted, creator);
+    let verdict = plan265_classify_receipt(&no_counted_target, &counted, creator, &[], &[]);
     assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_COUNTED_TARGET);
     assert_eq!(verdict.opportunity, "absent");
     // A LeaseSet-resolution contradiction is a setup stop, never a
@@ -3522,7 +3652,7 @@ fn plan265_receipt_self_action_opportunity_classification() {
         b_leaseset_contradiction: true,
         ..no_action
     };
-    let verdict = plan265_classify_receipt(&unproven, &counted, creator);
+    let verdict = plan265_classify_receipt(&unproven, &counted, creator, &[], &[]);
     assert_eq!(verdict.opportunity, "not-observed");
     assert_eq!(verdict.terminal_class, PLAN265_SETUP_STOPS[1]);
 }
@@ -3543,8 +3673,11 @@ fn plan265_receipt_semantic_and_socket_completion_pass() {
         socket_receipts: 1,
         b_leaseset_resolved: true,
         b_leaseset_contradiction: false,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
     };
-    let verdict = plan265_classify_receipt(&facts, &counted, creator);
+    let verdict = plan265_classify_receipt(&facts, &counted, creator, &[], &[]);
     assert_eq!(verdict.opportunity, "present");
     assert_eq!(verdict.semantic, "pass");
     assert_eq!(verdict.external_completion, "pass");
@@ -3568,8 +3701,11 @@ fn plan265_receipt_reference_completion_miss_is_not_a_semantic_failure() {
         socket_receipts: 0,
         b_leaseset_resolved: true,
         b_leaseset_contradiction: false,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
     };
-    let verdict = plan265_classify_receipt(&facts, &counted, creator);
+    let verdict = plan265_classify_receipt(&facts, &counted, creator, &[], &[]);
     assert_eq!(verdict.semantic, "pass");
     assert_eq!(verdict.external_completion, "miss");
     assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_COMPLETION_MISS);
@@ -3582,7 +3718,7 @@ fn plan265_receipt_reference_completion_miss_is_not_a_semantic_failure() {
         ..facts
     };
     assert_eq!(
-        plan265_classify_receipt(&doubled, &counted, creator).external_completion,
+        plan265_classify_receipt(&doubled, &counted, creator, &[], &[]).external_completion,
         "miss"
     );
 }
@@ -3603,6 +3739,9 @@ fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
         socket_receipts: 1,
         b_leaseset_resolved: true,
         b_leaseset_contradiction: false,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
     };
     // No local ingress on the exact counted receive id.
     let no_ingress = ReceiptInputFacts {
@@ -3612,7 +3751,7 @@ fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
         tuple_bound: false,
         ..base
     };
-    let verdict = plan265_classify_receipt(&no_ingress, &counted, creator);
+    let verdict = plan265_classify_receipt(&no_ingress, &counted, creator, &[], &[]);
     assert_eq!(verdict.opportunity, "present");
     assert_eq!(verdict.semantic, "fail");
     assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_SEMANTIC_FAILURE);
@@ -3622,7 +3761,7 @@ fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
         ..base
     };
     assert_eq!(
-        plan265_classify_receipt(&failing, &counted, creator).semantic,
+        plan265_classify_receipt(&failing, &counted, creator, &[], &[]).semantic,
         "fail"
     );
     // Next router is not the creator router A.
@@ -3631,7 +3770,7 @@ fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
         ..base
     };
     assert_eq!(
-        plan265_classify_receipt(&misrouted, &counted, creator).semantic,
+        plan265_classify_receipt(&misrouted, &counted, creator, &[], &[]).semantic,
         "fail"
     );
     // The six-field receipt tuple does not validate.
@@ -3640,9 +3779,221 @@ fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
         ..base
     };
     assert_eq!(
-        plan265_classify_receipt(&unbound, &counted, creator).semantic,
+        plan265_classify_receipt(&unbound, &counted, creator, &[], &[]).semantic,
         "fail"
     );
+}
+
+#[test]
+fn plan266_receipt_ladder_names_each_unsatisfied_rung() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    let base = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 1,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    // Rung 7: every rung through the local seam holds.
+    assert_eq!(
+        base.plan266_receipt_ladder_rung(&counted, &[], &[0x8100]),
+        7
+    );
+    // Rung 1: no counted creator-A receive id was ever accepted.
+    let empty: &[u32] = &[];
+    assert_eq!(base.plan266_receipt_ladder_rung(empty, &[], &[]), 1);
+    let verdict = plan265_classify_receipt(&base, empty, creator, &[], &[]);
+    assert_eq!(verdict.opportunity, "not-observed");
+    assert_eq!(verdict.terminal_class, PLAN265_SETUP_STOPS[1]);
+    assert_eq!(
+        verdict.opportunity_reason,
+        "creator-counted-ibgw-id-unaccepted"
+    );
+    // Rung 1 also fires when the creator session never reported ready.
+    let unready = ReceiptInputFacts {
+        creator_session_ready: false,
+        ..base
+    };
+    assert_eq!(
+        unready.plan266_receipt_ladder_rung(&counted, &[], &[0x8100]),
+        1
+    );
+    // Rung 2: B outbound never reached the local endpoint.
+    let no_b_outbound = ReceiptInputFacts {
+        b_outbound_i2pr: false,
+        ..base
+    };
+    assert_eq!(
+        no_b_outbound.plan266_receipt_ladder_rung(&counted, &[], &[0x8100]),
+        2
+    );
+    let verdict = plan265_classify_receipt(&no_b_outbound, &counted, creator, &[], &[]);
+    assert_eq!(verdict.opportunity, "not-observed");
+    assert_eq!(verdict.opportunity_reason, "b-outbound-i2pr-unproven");
+    // Rung 3: the reference contradicted B-side resolution.
+    let contradicted = ReceiptInputFacts {
+        b_self_targeted: false,
+        b_leaseset_resolved: false,
+        b_leaseset_contradiction: true,
+        ..base
+    };
+    assert_eq!(
+        contradicted.plan266_receipt_ladder_rung(&counted, &[], &[]),
+        3
+    );
+    // Rung 4: no B-originated self-targeted action at all.
+    let no_action = ReceiptInputFacts {
+        b_self_targeted: false,
+        reached_local_ibgw_seam: false,
+        receive_tunnel: 0,
+        b_leaseset_resolved: false,
+        ..base
+    };
+    assert_eq!(no_action.plan266_receipt_ladder_rung(&counted, &[], &[]), 4);
+    // Rung 6: the action named an advertised but never-counted id.
+    // (The advertisement is observable here and still carries the
+    // addressed id, so the gap is i2pr-side liveness, not creator
+    // churn.)
+    let advertised = [0x8300_u32];
+    let addressed = [0x8300_u32];
+    let observable = ReceiptInputFacts {
+        creator_advertisement_observable: true,
+        reached_local_ibgw_seam: false,
+        receive_tunnel: 0x8300,
+        ..base
+    };
+    assert_eq!(
+        observable.plan266_receipt_ladder_rung(&counted, &advertised, &addressed),
+        6
+    );
+    let verdict = plan265_classify_receipt(&observable, &counted, creator, &advertised, &addressed);
+    assert_eq!(verdict.opportunity, "absent");
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_COUNTED_TARGET);
+}
+
+#[test]
+fn plan266_receipt_creator_lost_id_is_typed_no_opportunity() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    // B addressed only ids the creator no longer advertises while
+    // nothing counted-live was addressed: creator-side pool churn,
+    // never an i2pr verdict.
+    let churned = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8300,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: true,
+        emitted_cells: 0,
+        failures: 0,
+        next_router: None,
+        next_tunnel: 0,
+        tuple_bound: false,
+        socket_receipts: 0,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    let advertised = [0x8200_u32];
+    let addressed = [0x8300_u32];
+    assert_eq!(
+        churned.plan266_receipt_ladder_rung(&counted, &advertised, &addressed),
+        5
+    );
+    let verdict = plan265_classify_receipt(&churned, &counted, creator, &advertised, &addressed);
+    assert_eq!(verdict.opportunity, "absent");
+    assert_eq!(verdict.semantic, "not-applicable");
+    assert_eq!(verdict.external_completion, "not-applicable");
+    assert_eq!(verdict.terminal_class, PLAN266_RECEIPT_CREATOR_LOST_ID);
+    assert!(!verdict.is_family_success());
+    // The new terminal is declared and belongs to the no-opportunity
+    // set, so the closed vocabulary accepts exactly this shape.
+    assert!(plan265_is_declared(
+        PLAN265_TERMINAL_VOCABULARY,
+        PLAN266_RECEIPT_CREATOR_LOST_ID
+    ));
+    assert!(plan265_is_no_opportunity_terminal(
+        PLAN266_RECEIPT_CREATOR_LOST_ID
+    ));
+}
+
+#[test]
+fn plan266_receipt_counted_live_action_keeps_opportunity_without_advertisement() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    // A counted-live action keeps its opportunity even when the
+    // creator rotated its advertisement afterwards: the local seam
+    // can still evaluate it, so it must never be typed as
+    // creator-side churn.
+    let live = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: true,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 1,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    let advertised = [0x8200_u32];
+    let addressed = [0x8100_u32];
+    assert_eq!(
+        live.plan266_receipt_ladder_rung(&counted, &advertised, &addressed),
+        7
+    );
+    let verdict = plan265_classify_receipt(&live, &counted, creator, &advertised, &addressed);
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_SUCCESS);
+    assert!(verdict.is_family_success());
+}
+
+#[test]
+fn plan266_receipt_unobservable_advertisement_falls_back_to_plan265() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    // The same addressed set that types as creator churn when the
+    // advertisement is observable must type as the Plan 265 rung-6
+    // terminal when it is not: the ladder never requires a fact the
+    // lane cannot see.
+    let stale = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8300,
+        creator_session_ready: true,
+        b_outbound_i2pr: true,
+        creator_advertisement_observable: false,
+        emitted_cells: 0,
+        failures: 0,
+        next_router: None,
+        next_tunnel: 0,
+        tuple_bound: false,
+        socket_receipts: 0,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    let addressed = [0x8300_u32];
+    assert_eq!(
+        stale.plan266_receipt_ladder_rung(&counted, &[], &addressed),
+        6
+    );
+    let verdict = plan265_classify_receipt(&stale, &counted, creator, &[], &addressed);
+    assert_eq!(verdict.opportunity, "absent");
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_COUNTED_TARGET);
 }
 
 #[test]
@@ -4047,7 +4398,7 @@ fn plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified() {
         assert!(payload.starts_with("opportunity="));
         assert!(payload.contains(&format!("terminal={}", verdict.terminal_class)));
     }
-    assert_eq!(PLAN265_TERMINAL_VOCABULARY.len(), 16);
+    assert_eq!(PLAN265_TERMINAL_VOCABULARY.len(), 17);
 }
 
 #[test]
@@ -7893,6 +8244,29 @@ async fn run_qualification() -> Result<(), String> {
                     .first()
                     .map(|obs| obs.receive_tunnel)
                     .unwrap_or(0),
+                // Plan 266 §4 rung 1: the creator receiver session
+                // reported ready (the unready arm returned before any
+                // verdict) and its destination artifact is present.
+                creator_session_ready: !rx_receipt_dest.is_empty(),
+                // Plan 266 §4 rung 2: re-read from the typed ledger
+                // rather than trusting the earlier gate.
+                b_outbound_i2pr: ledger.role_accepted(
+                    Epoch::IbgwReceipt,
+                    TransitHopRoleKind::OutboundEndpoint,
+                    &[b_hash_bytes],
+                ),
+                // Plan 266 §4 rung 5: the creator-advertised receive
+                // id set is not harness-observable, so the rung is
+                // recorded unobservable and rung 6 decides exactly as
+                // Plan 265 did. Verified empirically on a diagnostic
+                // probe: A's reference log carries only A's local
+                // inbound ids ("Inbound tunnel <id> has been
+                // created"), never the gateway-side lease ids it
+                // advertises; B's log carries no lease contents; no
+                // disk or API surface exposes the published LeaseSet.
+                // The ladder never requires a fact the lane cannot
+                // see.
+                creator_advertisement_observable: false,
                 emitted_cells: b_counted_delivered
                     .iter()
                     .map(|obs| obs.aux_count)
@@ -7912,6 +8286,15 @@ async fn run_qualification() -> Result<(), String> {
                 b_leaseset_resolved,
                 b_leaseset_contradiction,
             };
+            // Plan 266 §4: the addressed id set beside the facts is
+            // every tunnel id the B-originated self-targeted actions
+            // named; the creator-advertised set travels empty until
+            // the rung-5 probe lands it (unobservable fallback).
+            let addressed_receipt: Vec<u32> = b_self_targeted
+                .iter()
+                .map(|obs| obs.receive_tunnel)
+                .collect();
+            let creator_advertised_receipt: Vec<u32> = Vec::new();
             // Plan 265 §6: the opportunity classification is decided
             // before the pre-existing Plan 260 gates, so the family
             // either passes, fails semantically, or records a typed
@@ -7919,19 +8302,36 @@ async fn run_qualification() -> Result<(), String> {
             // opportunity value is meaningful at this point; the
             // semantic half is recomputed with the real six-field tuple
             // once the Plan 260 gates have run.
-            let opportunity_present = receipt_inputs.plan265_receipt_opportunity(&accepted_receipt);
+            let ladder_rung = receipt_inputs.plan266_receipt_ladder_rung(
+                &accepted_receipt,
+                &creator_advertised_receipt,
+                &addressed_receipt,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "plan266-ladder",
+                &format!(
+                    "first-unsatisfied={ladder_rung}/creator-advertised-observable=false/addressed={}/accepted={}",
+                    addressed_receipt.len(),
+                    accepted_receipt.len(),
+                ),
+                &mut rows,
+            );
             // Only the absence/contradiction branches need a verdict at
             // this stage. The opportunity-present branch continues into
             // the Plan 260 gates and is classified once the real
             // six-field tuple is known, so no verdict is synthesized
             // here.
-            let pre_verdict = if opportunity_present {
+            let pre_verdict = if ladder_rung >= 7 {
                 None
             } else {
                 Some(plan265_classify_receipt(
                     &receipt_inputs,
                     &accepted_receipt,
                     a_peer_hash,
+                    &creator_advertised_receipt,
+                    &addressed_receipt,
                 ))
             };
             if pre_verdict.is_some_and(|verdict| verdict.opportunity == "not-observed") {
@@ -8122,6 +8522,8 @@ async fn run_qualification() -> Result<(), String> {
                 },
                 &accepted_receipt,
                 a_peer_hash,
+                &creator_advertised_receipt,
+                &addressed_receipt,
             );
             record_row(
                 &evidence_dir,

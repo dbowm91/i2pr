@@ -133,12 +133,12 @@ for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET' 'PLAN265_PROD
     fail "driver missing Plan 265 symbol ${symbol}"
   fi
 done
-for symbol in 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_classify_ibgw' 'plan265_receipt_opportunity' 'plan265_receipt_semantic_pass' 'plan265_classify_receipt' 'plan265_participant_opportunity' 'plan265_classify_participant' 'plan265_gateway_seam_observed' 'plan265_lifecycle_chain_complete' 'plan265_family_c_failure' 'ReplayOutcomeKind'; do
+for symbol in 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_classify_ibgw' 'plan265_receipt_opportunity' 'plan265_receipt_semantic_pass' 'plan265_classify_receipt' 'plan266_receipt_ladder_rung' 'PLAN266_RECEIPT_CREATOR_LOST_ID' 'plan265_participant_opportunity' 'plan265_classify_participant' 'plan265_gateway_seam_observed' 'plan265_lifecycle_chain_complete' 'plan265_family_c_failure' 'ReplayOutcomeKind'; do
   if ! grep -qF "${symbol}" "${DRIVER}"; then
     fail "driver missing Plan 265 predicate ${symbol}"
   fi
 done
-for test_row in 'plan265_ibgw_opportunity_is_input_side_only' 'plan265_ibgw_large_input_multicell_passes' 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_ibgw_opportunity_absent_is_typed' 'plan265_receipt_self_action_opportunity_classification' 'plan265_receipt_semantic_and_socket_completion_pass' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_receipt_opportunity_present_with_failed_local_ingress_fails' 'plan265_participant_input_side_opportunity_classification' 'plan265_participant_input_present_without_local_forward_fails' 'plan265_participant_local_forward_with_b_completion_miss' 'plan265_participant_lifecycle_chain_passes' 'plan265_replay_duplicate_dropped_passes' 'plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
+for test_row in 'plan265_ibgw_opportunity_is_input_side_only' 'plan265_ibgw_large_input_multicell_passes' 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_ibgw_opportunity_absent_is_typed' 'plan265_receipt_self_action_opportunity_classification' 'plan265_receipt_semantic_and_socket_completion_pass' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_receipt_opportunity_present_with_failed_local_ingress_fails' 'plan266_receipt_ladder_names_each_unsatisfied_rung' 'plan266_receipt_creator_lost_id_is_typed_no_opportunity' 'plan266_receipt_counted_live_action_keeps_opportunity_without_advertisement' 'plan266_receipt_unobservable_advertisement_falls_back_to_plan265' 'plan265_participant_input_side_opportunity_classification' 'plan265_participant_input_present_without_local_forward_fails' 'plan265_participant_local_forward_with_b_completion_miss' 'plan265_participant_lifecycle_chain_passes' 'plan265_replay_duplicate_dropped_passes' 'plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
   if ! grep -qF "${test_row}" "${DRIVER}"; then
     fail "Plan 265 focused test missing: ${test_row}"
   fi
@@ -176,6 +176,16 @@ FORBIDDEN = {
         "tuple_bound",
         "socket_receipts",
     ),
+    # Plan 266 §4 rung ladder: the same input-side-only rule covers
+    # the new predicate on the same terms as the existing three.
+    "plan266_receipt_ladder_rung": (
+        "emitted_cells",
+        "failures",
+        "next_router",
+        "next_tunnel",
+        "tuple_bound",
+        "socket_receipts",
+    ),
     "plan265_participant_opportunity": (
         "local_forward",
         "b_endpoint_observations",
@@ -187,7 +197,7 @@ OPENERS = "{(["
 
 
 def body_of(name):
-    start = source.find("fn " + name + "(&self")
+    start = source.find("fn " + name + "(")
     if start < 0:
         return None
     index = source.index("{", start)
@@ -355,7 +365,13 @@ index_path = Path(sys.argv[1])
 retained_roots = []
 attempt_roots = []
 mode = "retained"
-for arg in sys.argv[2:]:
+raw_args = [a for a in sys.argv[2:] if a != "--receipt-only"]
+# Plan 266 WP C: receipt-only composition composes exactly eight fresh
+# `receipt` attempts against the retained Plan 265/264 evidence. The
+# closed `ibgw-data` / `participant-lifecycle` families cannot be
+# re-rolled through this mode.
+RECEIPT_ONLY = "--receipt-only" in sys.argv[2:]
+for arg in raw_args:
     if arg == "--retained":
         mode = "retained"
         continue
@@ -365,6 +381,7 @@ for arg in sys.argv[2:]:
     (retained_roots if mode == "retained" else attempt_roots).append(arg)
 
 FAMILIES = ("ibgw-data", "receipt", "participant-lifecycle")
+COMPOSED_FAMILIES = ("receipt",) if RECEIPT_ONLY else FAMILIES
 BUDGET = 8
 PRODUCTION_BASELINE = "514bf1237e86fde21e17fc98c743eb52852edd99"
 RETAINED_EPOCHS = ("obep", "ibgw", "participant", "reject", "obep-data")
@@ -372,6 +389,7 @@ TERMINAL_VOCABULARY = {
     "ibgw-large-input-not-observed",
     "receipt-no-b-originated-self-action",
     "receipt-no-live-counted-ibgw-target",
+    "receipt-creator-leaseset-lost-ibgw-id",
     "participant-input-not-observed",
     "ibgw-large-input-multicell-verified",
     "receipt-tuple-bound-socket-verified",
@@ -390,6 +408,7 @@ NO_OPPORTUNITY_TERMINALS = {
     "ibgw-large-input-not-observed",
     "receipt-no-b-originated-self-action",
     "receipt-no-live-counted-ibgw-target",
+    "receipt-creator-leaseset-lost-ibgw-id",
     "participant-input-not-observed",
 }
 SEMANTIC_FAILURE_TERMINALS = {
@@ -535,6 +554,12 @@ for root in attempt_roots:
     if scenario not in FAMILIES:
         failures.append(f"{root}: scenario {scenario!r} is not a frozen family")
         continue
+    if RECEIPT_ONLY and scenario != "receipt":
+        failures.append(
+            f"{root}: receipt-only composition refuses fresh {scenario} evidence; "
+            f"that family is closed by Plan 265 and cannot be re-rolled"
+        )
+        continue
     try:
         ordinal = int(doc.get("attempt"))
     except (TypeError, ValueError):
@@ -622,8 +647,8 @@ if len(budgets) > 1:
 if len(shas) > 1:
     failures.append(f"mixed qualification SHAs across Plan 265 attempts: {sorted(shas)}")
 
-# ---- 4. attempt ordinals are exactly 1..8 for each family ----
-for scenario in FAMILIES:
+# ---- 4. attempt ordinals are exactly 1..8 for each composed family ----
+for scenario in COMPOSED_FAMILIES:
     ordinals = sorted(o for (_r, s, o, *_rest) in attempts if s == scenario)
     if ordinals != list(range(1, BUDGET + 1)):
         failures.append(
@@ -632,7 +657,7 @@ for scenario in FAMILIES:
 
 # ---- 5-9. family gates ----
 summary = []
-for scenario in FAMILIES:
+for scenario in COMPOSED_FAMILIES:
     family = [(root, terminal) for (root, s, _o, terminal, *_r) in attempts if s == scenario]
     if not family:
         continue
@@ -655,10 +680,16 @@ for scenario, total, successes in summary:
         f"check-m11-per-epoch-composition: family {scenario}: {total} retained attempts, "
         f"{successes} qualified successes"
     )
-print(
-    "check-m11-per-epoch-composition: composed 3 families x 8 retained attempts on one "
-    f"qualification SHA with integrity-checked retained Plan 264 evidence"
-)
+if RECEIPT_ONLY:
+    print(
+        "check-m11-per-epoch-composition: composed receipt-only 8 retained attempts on one "
+        f"qualification SHA with integrity-checked retained Plan 264 evidence"
+    )
+else:
+    print(
+        "check-m11-per-epoch-composition: composed 3 families x 8 retained attempts on one "
+        f"qualification SHA with integrity-checked retained Plan 264 evidence"
+    )
 PY
 }
 
@@ -667,6 +698,9 @@ if [[ "${1:-}" == "--compose-265" ]]; then
   if [[ "$#" -eq 0 ]]; then
     fail "--compose-265 requires --retained and attempt evidence roots"
   fi
+  # Plan 266 WP C: `--compose-265 --receipt-only --attempt <8 receipt
+  # roots>` composes the fresh receipt family against the retained
+  # Plan 265/264 evidence and refuses every fresh non-receipt set.
   compose_265 "${RETAINED_INDEX}" "$@" || failures=$((failures + 1))
 fi
 # ---- Negative/positive composition fixtures ----------------------------
@@ -770,6 +804,23 @@ JSON
     fi
   }
 
+  expect_compose_receipt_only() {
+    # Same contract through the Plan 266 receipt-only mode: the
+    # `--receipt-only` token travels with the attempt roots into the
+    # shared composer, which then refuses every non-receipt family.
+    local want="$1" index="$2" label="$3"
+    shift 3
+    local -a retained=()
+    local dir
+    for dir in "${fixture_root}"/retained/*/; do retained+=("${dir%/}"); done
+    local got=0
+    compose_265 "${index}" --retained "${retained[@]}" --receipt-only --attempt "$@" >/dev/null 2>&1 || got=1
+    if [[ "${got}" -ne "${want}" ]]; then
+      echo "check-m11-per-epoch-composition: self-test fixture ${label} expected reject=${want} got ${got}" >&2
+      fixture_rc=1
+    fi
+  }
+
   # Retained Plan 264 evidence: the synthetic fixtures cannot reproduce
   # the recorded manifests' bytes, so the integrity index is regenerated
   # from the synthetic set. Epoch and pass are read from each manifest
@@ -825,6 +876,45 @@ PYINDEX
     'ibgw-data|8|present|fail|not-applicable|ibgw-large-input-emission-semantic-failure|'"${SHA}"'|8|-')
   expect_compose 1 "${fixture_root}/index.tsv" \
     seven-successes-plus-one-semantic-failure-rejected "${D[@]}" "${B[@]}" "${C[@]}"
+
+  # -- Plan 266 receipt-only mode --------------------------------------
+  # The closed families compose by reference only: eight fresh
+  # receipt attempts plus the retained index must accept, and every
+  # fresh non-receipt set must be refused.
+  mapfile -t R < <(emit_family receipt 2 0 - absent)
+  expect_compose_receipt_only 0 "${fixture_root}/index.tsv" \
+    receipt-only-two-successes-accepted "${R[@]}"
+
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-refuses-fresh-ibgw-set "${R[@]}" "${A[@]}"
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-refuses-fresh-participant-set "${R[@]}" "${C[@]}"
+
+  # A reference-completion miss relabeled as a socket completion must
+  # be rejected in receipt-only mode exactly as in full mode.
+  mapfile -t Rmiss < <(emit_family receipt 2 3 \
+    'receipt|3|present|pass|pass|receipt-reference-completion-miss|'"${SHA}"'|8|-')
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-miss-labeled-pass-rejected "${Rmiss[@]}"
+
+  # The new rung-5 terminal composed as an opportunity (present) must
+  # be rejected: it is a declared no-opportunity terminal only.
+  mapfile -t Rrung5 < <(emit_family receipt 2 3 \
+    'receipt|3|present|pass|pass|receipt-creator-leaseset-lost-ibgw-id|'"${SHA}"'|8|-')
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-rung5-as-opportunity-rejected "${Rrung5[@]}"
+
+  # Nine receipt attempts must be rejected: there is no attempt nine.
+  attempt_manifest "${fixture_root}/ninth" receipt 9 absent not-applicable \
+    not-applicable receipt-no-b-originated-self-action "${SHA}" 8 "-"
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-nine-attempts-rejected "${R[@]}" "${fixture_root}/ninth"
+
+  # Mixed qualification SHAs must be rejected in receipt-only mode.
+  mapfile -t Rsha < <(emit_family receipt 2 3 \
+    'receipt|3|present|pass|pass|receipt-tuple-bound-socket-verified|'"${OTHER}"'|8|-')
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-mixed-sha-rejected "${Rsha[@]}"
 
   mapfile -t E < <(emit_family ibgw-data 2 0 - absent 2)
   expect_compose 1 "${fixture_root}/index.tsv" \
@@ -906,6 +996,26 @@ Path(sys.argv[2]).write_text(
 PYMUTATE
   if check_input_side "${mutated}" >/dev/null 2>&1; then
     echo "check-m11-per-epoch-composition: self-test fixture static-opportunity-inferred-from-output-rejected expected reject=1 got 0" >&2
+    fixture_rc=1
+  fi
+
+  # The same static half covers the Plan 266 ladder predicate: a
+  # rung that reads the socket-completion result must be rejected.
+  mutated_ladder="${fixture_root}/driver-mutated-ladder.rs"
+  python3 - "${DRIVER}" "${mutated_ladder}" <<'PYMUTATE'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = "if !self.b_outbound_i2pr {"
+if needle not in source:
+    raise SystemExit("ladder rung-2 conjunct not found; guard fixture cannot be built")
+Path(sys.argv[2]).write_text(
+    source.replace(needle, "if self.socket_receipts == 0 {", 1), encoding="utf-8"
+)
+PYMUTATE
+  if check_input_side "${mutated_ladder}" >/dev/null 2>&1; then
+    echo "check-m11-per-epoch-composition: self-test fixture static-ladder-inferred-from-output-rejected expected reject=1 got 0" >&2
     fixture_rc=1
   fi
 
