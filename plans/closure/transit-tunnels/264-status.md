@@ -185,11 +185,12 @@ empty):
    No production row failed; B3 holds (0 self-terminals
    in both receipt runs with sends occurring).
 6. **Full workspace verification passes** — PASS local
-   (§"Verification"); exact-head CI follows per precedent
-   (this commit + follow-up run-ID record).
-7. **Exact-head ordinary CI passes all four jobs** —
-   PENDING at write time (follow-up commit records the run
-   ID; local floor is the current truth).
+   (§"Verification"); exact-head CI GREEN (run `36656668694`
+   on head `f768870`, four jobs success).
+7. **Exact-head ordinary CI passes all four jobs** — PASS
+   (run `36656668694` on head `f768870`: Quality
+   ubuntu-latest, Quality macos-latest, MSRV Ubuntu,
+   Dependency policy).
 8. **Registry/roadmap/support/conformance/dossier agree on
    Plan 264** — PASS (this commit reconciles all five;
    Plan 265 registered as the narrow emission successor,
