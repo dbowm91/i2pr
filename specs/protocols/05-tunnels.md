@@ -358,19 +358,29 @@ Plan 264 landed the per-epoch lane + composition gate
 epochs 2/2 on `6ab9dc2d`), but emission epochs stop on window
 signatures (ibgw-data 1/2, receipt 0/2, participant-data 1/2,
 replay 0/2 setup stops). Plan 264 is retained-blocked;
-Plan 265 owns the fixed-budget opportunity-qualified emission closure.
-Its pre-execution research refinement freezes manifest v5 and three
-scenario families (`ibgw-data`, `receipt`, `participant-lifecycle`)
-at exactly 8 retained fresh-mesh attempts each on one qualification
-SHA. Opportunity is classified from an input-side boundary before
-semantic output; any opportunity-present i2pr contradiction hard-fails;
-successful closure requires >=2 qualifying successes per family. The
-Participant family carries forward + B far-side + replay/expiry/
-session-close/cancel/restart as one same-attempt lifecycle chain.
-Production `crates/*/src` remains frozen at the Plan 262 source tree.
+Plan 265 executed the fixed-budget opportunity-qualified contract and
+is retained-blocked. It landed manifest v5, a closed 16-token terminal
+vocabulary, three input-side opportunity predicates with a static guard
+that rejects any predicate reading an output-side field, explicit replay
+outcome kinds, and `scripts/check-m11-per-epoch-composition.sh` extended
+into `--compose-265` with 13 positive/negative fixtures — all with **zero**
+production `crates/*/src` diff from the Plan 262 source tree `514bf12`.
+It then ran 24 retained attempts, ordinals exactly 1..8 per scenario
+family, on one qualification SHA `4682920e`. **Zero i2pr semantic
+failures occurred anywhere.** `ibgw-data` closed 4/8 and
+`participant-lifecycle` closed 5/8, each success carrying all five
+lifecycle rows on that one retained genuine cell with replay classified
+`duplicate-dropped` and a zero B-side delta. `receipt` reached 1/8 against
+a required 2: 5 typed no-opportunity terminals, 1 setup stop, and 1
+reference-completion miss; both opportunity-present attempts passed
+i2pr's local source-neutral IBGW seam (multicell, correct next router,
+six-field tuple bound) and one completed at the creator receiver SAM
+socket. The composition gate was run once and failed closed on exactly
+that one violation.
 
-M11 remains non-advertised and receipt-capable qualification remains unclaimed;
-Plan 265 is the current authority. M12 floodfill remains deferred.
+M11 remains non-advertised and receipt-capable qualification remains
+unclaimed. Plan 266 owns receipt-family opportunity generation only and is
+the current authority. M12 floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -397,9 +407,10 @@ local seam with socket receipt proven). Plan 263 landed the sustainability harne
 (mesh-liveness + relay-NetDB + B-floodfill prerequisites, canonical SAM tail, zero
 production diff) with receipt + multicell re-proven. Plan 264 landed the per-epoch
 lane + composition gate (zero production diff) with 5 epochs closed 2/2 and emission
-windows bound. Plan 265 is the current forward authority for the remaining emission
-seam with the counting rule no longer open: manifest v5, 3 scenario
-families × exactly 8 retained attempts, input-side opportunity
+windows bound. Plan 265 executed the closed counting rule and is retained-blocked with
+two of three families closed on `4682920e`; Plan 266 is the current
+forward authority for the remaining emission seam: manifest v5, input-side
+opportunity
 classification, no success-based early stop, hard failure on any i2pr
 semantic contradiction, >=2 required family successes, and zero
 production source diff.
@@ -441,11 +452,12 @@ receipt proven live (diag4 `0/6/1` tuple-bound on `514bf12`), full matrix stoppe
 sustainability; Plan 263 is retained-blocked with the sustainability harness landed
 and receipt + multicell re-proven on `9bd2f39a`, single-mesh two-pass stopped on
 sustainability; Plan 264 is retained-blocked with the per-epoch gate proven (5
-epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 fixed-budget opportunity-qualified emission sustainability is
-registered ready and is the next M11 execution authority. It must implement
-the manifest-v5/opportunity/replay classification gates before freezing the
-qualification SHA, then run the complete 24-attempt fixed budget without
-post-result rule changes.
+epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 executed the fixed-budget opportunity-qualified contract on
+`4682920e` with zero production diff and zero i2pr semantic failures across
+24 retained attempts, closing `ibgw-data` (4/8) and `participant-lifecycle`
+(5/8) while `receipt` reached 1/8 against a required 2; it is
+retained-blocked and Plan 266 — a narrow receipt-family
+opportunity-generation corrective — is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
