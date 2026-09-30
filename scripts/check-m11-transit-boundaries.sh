@@ -361,19 +361,20 @@ for token in 'count_endpoint_messages' 'far_side_satisfied' 'cancel_fully_draine
     fi
 done
 # 29. The runner must source-lock both i2pd reply branches and
-#     emit the Plan 264 manifest shape (plan 264 + attempt + epoch
-#     + epoch pass).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 264' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_DRIVER_RC' 'EPOCH_TERMINAL_KEY' 'exact_lib_row'; do
+#     emit the Plan 265 manifest-v5 shape (plan 265 + scenario +
+#     attempt + attempt budget + qualification SHA + production
+#     baseline + opportunity + semantic + external completion +
+#     terminal class, plus the retained per-epoch ids).
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 265' 'i2pr-m11-transit-qualification-v5' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_SCENARIO' 'I2PR_M11_DRIVER_RC' 'EPOCH_TERMINAL_KEY' 'exact_lib_row'; do
     if ! rg -qF "$token" "$external_runner"; then
-        fail "external runner missing Plan 264 token $token"
+        fail "external runner missing Plan 265 token $token"
     fi
 done
-if rg -qF '"plan": 263' "$external_runner"; then
-    fail "external runner must not name stale plan 263 (scoping authority is Plan 264)"
-fi
-if rg -qF '"plan": 262' "$external_runner"; then
-    fail "external runner must not name stale plan 262 (scoping authority is Plan 264)"
-fi
+for stale in '"plan": 263' '"plan": 262' '"plan": 264'; do
+    if rg -qF "$stale" "$external_runner"; then
+        fail "external runner must not name stale plan $stale (closure authority is Plan 265)"
+    fi
+done
 # 31. Plan 261 work package A: the runner must source-lock the
 #     B-side sender behaviors and provision the B SAM port; the
 #     manifest must not name the superseded A-sender plan 260.
@@ -470,9 +471,9 @@ external_workflow="$root/.github/workflows/m11-transit-external.yml"
 if [[ ! -f "$external_workflow" ]]; then
     fail "M11 external workflow missing: $external_workflow"
 fi
-for token in 'attempt: [1, 2]' 'fail-fast: false' 'I2PR_M11_ATTEMPT' 'm11-transit-evidence-attempt-' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS'; do
+for token in 'attempt: [1, 2, 3, 4, 5, 6, 7, 8]' 'fail-fast: false' 'I2PR_M11_ATTEMPT' 'I2PR_M11_SCENARIO' 'm11-transit-evidence-' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS'; do
     if ! rg -qF "$token" "$external_workflow"; then
-        fail "external workflow missing Plan 264 token $token"
+        fail "external workflow missing Plan 265 token $token"
     fi
 done
 # 37. Plan 264 work package A: the driver must own the per-epoch
@@ -488,6 +489,42 @@ done
 # The per-epoch composition checker must exist and be wired.
 if [[ ! -f "$root/scripts/check-m11-per-epoch-composition.sh" ]]; then
     fail "Plan 264 per-epoch composition checker missing: scripts/check-m11-per-epoch-composition.sh"
+fi
+
+# 38. Plan 265 work packages A-D: the fixed-budget
+#     opportunity-qualified qualification surface. The driver owns the
+#     closed terminal vocabulary and the three input-side opportunity
+#     predicates; the runner owns the four Plan 265 source-lock rows;
+#     the composer owns the fixed-budget closure gate and its negative
+#     fixtures. Production crates/*/src must stay untouched (rule 36's
+#     frozen numerics and this plan's diff guard both hold).
+for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET: usize = 8' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_LIFECYCLE_ROWS' 'plan265_ibgw_opportunity' 'plan265_receipt_opportunity' 'plan265_participant_opportunity' 'ReplayOutcomeKind'; do
+    if ! rg -qF "$symbol" "$external_driver"; then
+        fail "external driver missing Plan 265 symbol $symbol"
+    fi
+done
+for row in 'm11-i2pd-plan265-production-source-lock' 'm11-i2pd-plan265-frozen-attempt-budget' 'm11-i2pd-plan265-closed-terminal-vocabulary' 'm11-i2pd-plan265-opportunity-is-input-side'; do
+    if ! rg -qF "$row" "$external_runner"; then
+        fail "external runner missing Plan 265 row $row"
+    fi
+done
+for token in 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
+    if ! rg -qF "$token" "$external_driver"; then
+        fail "external driver missing Plan 265 focused test $token"
+    fi
+done
+# The composer must carry the Plan 265 fixed-budget contract and its
+# negative fixtures, and the retained Plan 264 evidence index.
+if ! rg -qF 'compose-265' "$root/scripts/check-m11-per-epoch-composition.sh"; then
+    fail "Plan 265 fixed-budget composition mode missing from check-m11-per-epoch-composition.sh"
+fi
+for fixture in 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'two-successes-then-missing-ordinals-rejected' 'duplicate-ordinal-rejected' 'mixed-qualification-sha-rejected' 'changed-attempt-budget-rejected' 'unclassified-terminal-rejected' 'opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'plan264-manifest-promotion-rejected' 'missing-retained-manifest-rejected'; do
+    if ! rg -qF "$fixture" "$root/scripts/check-m11-per-epoch-composition.sh"; then
+        fail "Plan 265 composition fixture missing: $fixture"
+    fi
+done
+if [[ ! -f "$root/plans/closure/transit-tunnels/265-retained-plan264-evidence.tsv" ]]; then
+    fail "retained Plan 264 evidence index missing: plans/closure/transit-tunnels/265-retained-plan264-evidence.tsv"
 fi
 
 echo "check-m11-transit-boundaries: passed"

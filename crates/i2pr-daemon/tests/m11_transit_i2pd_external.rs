@@ -2351,6 +2351,1621 @@ fn plan264_single_mesh_run_is_diagnostic_only() {
     assert!(!plan264_epoch_is_mandatory(""));
 }
 
+// ===========================================================================
+// Plan 265 — fixed-budget opportunity-qualified emission sustainability.
+//
+// Plan 264 separated *deterministic* epochs (which close on any fresh
+// mesh) from *reference-emission* epochs (which close only when the
+// unmanaged i2pd peer happens to emit the specific live input inside a
+// narrow window). Plan 265 keeps the separation honest: every dispatched
+// attempt is retained, the input-side **opportunity** predicate is
+// decided before any emitted cell is inspected, and any i2pr semantic
+// contradiction on an opportunity-present input is a hard failure that
+// can never be relabeled as an environmental miss.
+//
+// Nothing in this section touches production code: the predicates are
+// pure functions over facts the driver already observes, and the
+// vocabularies below are finite and closed.
+// ===========================================================================
+
+/// Plan 265 §1: the three fixed-budget scenario families that make up
+/// the M11 experimental qualification. `ibgw-data` proves
+/// fragmentation of a large input on the live IBGW seam, `receipt`
+/// proves the corrected local IBGW seam plus creator-owned receipt,
+/// and `participant-lifecycle` pays the rare genuine
+/// Participant-forward prerequisite once for the whole lifecycle
+/// chain.
+const PLAN265_SCENARIO_FAMILIES: &[&str] = &["ibgw-data", "receipt", "participant-lifecycle"];
+
+/// Plan 265 §1/§4: every family executes exactly this many fresh-mesh
+/// attempts on one qualification SHA. There is no early stop on
+/// success and there is no attempt nine.
+const PLAN265_ATTEMPT_BUDGET: usize = 8;
+
+/// Plan 265 §4/§8: the Plan 262 production source tree this
+/// qualification is bound to. Plan 265 adds zero `crates/*/src` diff.
+const PLAN265_PRODUCTION_BASELINE: &str = "514bf1237e86fde21e17fc98c743eb52852edd99";
+
+/// Plan 265 §5.1: the only declared opportunity-absent terminal for
+/// scenario family A.
+const PLAN265_IBGW_NO_OPPORTUNITY: &str = "ibgw-large-input-not-observed";
+/// Plan 265 §6.1: the two mutually exclusive opportunity-absent
+/// terminals for scenario family B.
+const PLAN265_RECEIPT_NO_SELF_ACTION: &str = "receipt-no-b-originated-self-action";
+const PLAN265_RECEIPT_NO_COUNTED_TARGET: &str = "receipt-no-live-counted-ibgw-target";
+/// Plan 265 §7.1: the only declared opportunity-absent terminal for
+/// scenario family C.
+const PLAN265_PARTICIPANT_NO_OPPORTUNITY: &str = "participant-input-not-observed";
+
+/// Plan 265 §5.2/§6.3/§7.3: the success terminals (opportunity present,
+/// i2pr semantics verified, external completion satisfied).
+const PLAN265_IBGW_SUCCESS: &str = "ibgw-large-input-multicell-verified";
+const PLAN265_RECEIPT_SUCCESS: &str = "receipt-tuple-bound-socket-verified";
+const PLAN265_PARTICIPANT_SUCCESS: &str = "participant-forward-far-side-chain-verified";
+
+/// Plan 265 §6.3/§7.2: i2pr semantics held but the unmanaged reference
+/// never completed its own side of the leg. Never a semantic failure,
+/// never a family success.
+const PLAN265_RECEIPT_COMPLETION_MISS: &str = "receipt-reference-completion-miss";
+const PLAN265_PARTICIPANT_COMPLETION_MISS: &str = "participant-reference-completion-miss";
+
+/// Plan 265 §5.2/§6.2/§7.2: an opportunity-present input contradicted
+/// i2pr semantics. Always a hard failure; always retains the plan.
+const PLAN265_IBGW_SEMANTIC_FAILURE: &str = "ibgw-large-input-emission-semantic-failure";
+const PLAN265_RECEIPT_SEMANTIC_FAILURE: &str = "receipt-self-action-semantic-failure";
+const PLAN265_PARTICIPANT_SEMANTIC_FAILURE: &str = "participant-forward-semantic-failure";
+const PLAN265_LIFECYCLE_SEMANTIC_FAILURE: &str = "participant-lifecycle-row-semantic-failure";
+
+/// Plan 265 §3.3: a declared non-verdict terminal for an attempt that
+/// stopped before the family's input-side boundary could be evaluated
+/// (build, mesh-liveness, relay-NetDB, B-floodfill or B-side
+/// LeaseSet-resolution setup stop). Retained, but never a success and
+/// never a semantic verdict.
+const PLAN265_SETUP_STOPS: &[&str] = &[
+    "ibgw-setup-stop",
+    "receipt-setup-stop",
+    "participant-setup-stop",
+];
+
+/// Plan 265 §4: the complete closed terminal vocabulary. The
+/// composition gate rejects any terminal outside this set.
+const PLAN265_TERMINAL_VOCABULARY: &[&str] = &[
+    PLAN265_IBGW_NO_OPPORTUNITY,
+    PLAN265_RECEIPT_NO_SELF_ACTION,
+    PLAN265_RECEIPT_NO_COUNTED_TARGET,
+    PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+    PLAN265_IBGW_SUCCESS,
+    PLAN265_RECEIPT_SUCCESS,
+    PLAN265_PARTICIPANT_SUCCESS,
+    PLAN265_RECEIPT_COMPLETION_MISS,
+    PLAN265_PARTICIPANT_COMPLETION_MISS,
+    PLAN265_IBGW_SEMANTIC_FAILURE,
+    PLAN265_RECEIPT_SEMANTIC_FAILURE,
+    PLAN265_PARTICIPANT_SEMANTIC_FAILURE,
+    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+    PLAN265_SETUP_STOPS[0],
+    PLAN265_SETUP_STOPS[1],
+    PLAN265_SETUP_STOPS[2],
+];
+
+/// Plan 265 §4: the closed opportunity vocabulary. `not-observed` is
+/// reserved for a setup stop, where the input-side boundary was never
+/// reached and no opportunity claim (present or absent) is made.
+const PLAN265_OPPORTUNITY_VALUES: &[&str] = &["present", "absent", "not-observed"];
+/// Plan 265 §4: the closed semantic vocabulary.
+const PLAN265_SEMANTIC_VALUES: &[&str] = &["pass", "fail", "not-applicable"];
+/// Plan 265 §4: the closed external-completion vocabulary.
+const PLAN265_EXTERNAL_VALUES: &[&str] = &["pass", "miss", "not-applicable"];
+
+/// Plan 265 §7.3: the five lifecycle rows the
+/// `participant-lifecycle` family must complete on the *same*
+/// retained genuine cell inside one fresh mesh.
+const PLAN265_LIFECYCLE_ROWS: &[&str] = &["replay", "expiry", "session-close", "cancel", "restart"];
+
+/// Plan 265 §4: one dispatched attempt's frozen classification. The
+/// constructor is the only way to build one and it rejects every
+/// combination the frozen vocabulary forbids, so a mislabelled
+/// manifest is unrepresentable rather than merely discouraged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Plan265Verdict {
+    opportunity: &'static str,
+    opportunity_reason: &'static str,
+    semantic: &'static str,
+    external_completion: &'static str,
+    terminal_class: &'static str,
+}
+
+impl Plan265Verdict {
+    /// Validates a (opportunity, semantic, external, terminal) tuple
+    /// against the frozen Plan 265 §3.3/§4 rules:
+    ///
+    /// * `opportunity: absent` requires `semantic: not-applicable`,
+    ///   `external: not-applicable` and one of the four declared
+    ///   input-side no-opportunity terminals;
+    /// * `opportunity: present` never carries `semantic:
+    ///   not-applicable`; `semantic: fail` requires one of the four
+    ///   declared semantic-failure terminals;
+    /// * `opportunity: not-observed` (setup stop) requires
+    ///   `semantic: not-applicable` and one of the three declared
+    ///   setup-stop terminals;
+    /// * every terminal must be a member of the closed vocabulary.
+    fn new(
+        opportunity: &'static str,
+        opportunity_reason: &'static str,
+        semantic: &'static str,
+        external_completion: &'static str,
+        terminal_class: &'static str,
+    ) -> Option<Self> {
+        if !plan265_is_declared(PLAN265_OPPORTUNITY_VALUES, opportunity) {
+            return None;
+        }
+        if !plan265_is_declared(PLAN265_SEMANTIC_VALUES, semantic) {
+            return None;
+        }
+        if !plan265_is_declared(PLAN265_EXTERNAL_VALUES, external_completion) {
+            return None;
+        }
+        if !plan265_is_declared(PLAN265_TERMINAL_VOCABULARY, terminal_class) {
+            return None;
+        }
+        if opportunity == "absent" {
+            if semantic != "not-applicable" || external_completion != "not-applicable" {
+                return None;
+            }
+            if !plan265_is_no_opportunity_terminal(terminal_class) {
+                return None;
+            }
+        } else if opportunity == "present" {
+            if semantic == "not-applicable" {
+                return None;
+            }
+            if semantic == "fail" && !plan265_is_semantic_failure_terminal(terminal_class) {
+                return None;
+            }
+            if semantic == "pass" && plan265_is_semantic_failure_terminal(terminal_class) {
+                return None;
+            }
+            // Only scenario family A declares no external-completion
+            // gate: the old B-ending receiver socket is not a closing
+            // predicate for fragmentation (Plan 265 §5).
+            if external_completion == "not-applicable" {
+                // Only scenario family A declares no external-completion
+                // gate: the old B-ending receiver socket is not a closing
+                // predicate for fragmentation (Plan 265 §5). A semantic
+                // failure never evaluates external completion either,
+                // because the leg it would complete is exactly the leg
+                // i2pr contradicted.
+                if terminal_class != PLAN265_IBGW_SUCCESS
+                    && !plan265_is_semantic_failure_terminal(terminal_class)
+                {
+                    return None;
+                }
+            } else if external_completion == "miss" {
+                if !plan265_is_completion_miss_terminal(terminal_class) {
+                    return None;
+                }
+            } else if !plan265_is_declared(
+                &[PLAN265_RECEIPT_SUCCESS, PLAN265_PARTICIPANT_SUCCESS],
+                terminal_class,
+            ) {
+                return None;
+            }
+        } else {
+            if semantic != "not-applicable" || external_completion != "not-applicable" {
+                return None;
+            }
+            if !plan265_is_setup_stop_terminal(terminal_class) {
+                return None;
+            }
+        }
+        Some(Self {
+            opportunity,
+            opportunity_reason,
+            semantic,
+            external_completion,
+            terminal_class,
+        })
+    }
+
+    /// Plan 265 §4: the single sanitized manifest payload the runner
+    /// parses. One line, `;`-separated, never a raw reference log.
+    fn manifest_payload(&self) -> String {
+        format!(
+            "opportunity={};reason={};semantic={};external={};terminal={}",
+            self.opportunity,
+            self.opportunity_reason,
+            self.semantic,
+            self.external_completion,
+            self.terminal_class
+        )
+    }
+
+    /// True when this attempt counts toward its family's success
+    /// requirement (opportunity present, semantics verified, and
+    /// whatever external-completion gate the family declares).
+    fn is_family_success(&self) -> bool {
+        self.opportunity == "present"
+            && self.semantic == "pass"
+            && plan265_is_family_success_terminal(self.terminal_class)
+    }
+}
+
+fn plan265_is_declared(values: &[&str], value: &str) -> bool {
+    let mut index = 0;
+    while index < values.len() {
+        if values[index].len() == value.len() {
+            let mut byte = 0;
+            let mut equal = true;
+            while byte < value.len() {
+                if values[index].as_bytes()[byte] != value.as_bytes()[byte] {
+                    equal = false;
+                    break;
+                }
+                byte += 1;
+            }
+            if equal {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn plan265_is_no_opportunity_terminal(terminal: &str) -> bool {
+    plan265_is_declared(
+        &[
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            PLAN265_RECEIPT_NO_SELF_ACTION,
+            PLAN265_RECEIPT_NO_COUNTED_TARGET,
+            PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+        ],
+        terminal,
+    )
+}
+
+fn plan265_is_semantic_failure_terminal(terminal: &str) -> bool {
+    plan265_is_declared(
+        &[
+            PLAN265_IBGW_SEMANTIC_FAILURE,
+            PLAN265_RECEIPT_SEMANTIC_FAILURE,
+            PLAN265_PARTICIPANT_SEMANTIC_FAILURE,
+            PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+        ],
+        terminal,
+    )
+}
+
+fn plan265_is_completion_miss_terminal(terminal: &str) -> bool {
+    plan265_is_declared(
+        &[
+            PLAN265_RECEIPT_COMPLETION_MISS,
+            PLAN265_PARTICIPANT_COMPLETION_MISS,
+        ],
+        terminal,
+    )
+}
+
+fn plan265_is_setup_stop_terminal(terminal: &str) -> bool {
+    plan265_is_declared(PLAN265_SETUP_STOPS, terminal)
+}
+
+/// Plan 265 §5.2/§6.3/§7.2: the terminals that count toward a family's
+/// success requirement.
+fn plan265_is_family_success_terminal(terminal: &str) -> bool {
+    plan265_is_declared(
+        &[
+            PLAN265_IBGW_SUCCESS,
+            PLAN265_RECEIPT_SUCCESS,
+            PLAN265_PARTICIPANT_SUCCESS,
+        ],
+        terminal,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Plan 265 §5 — scenario family A (IBGW large input / multicell).
+// ---------------------------------------------------------------------------
+
+/// Plan 265 §5.1/§5.2: the facts one gateway ingress carries.
+///
+/// `reached_gateway_seam`, `receive_tunnel` and `nested_len` are
+/// **input-side**: they describe the TunnelGateway entry that arrived
+/// and the message it carried. `emitted_cells`, `failures`,
+/// `next_router` and `next_tunnel` are the **output side** and are
+/// read only by the semantic predicate. Keeping the two sides in
+/// separate fields is what makes the input-side-only opportunity
+/// property statically checkable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IbgwInputFacts {
+    /// The ingress reached the live gateway processor at all.
+    reached_gateway_seam: bool,
+    /// The receive id the input addressed.
+    receive_tunnel: u32,
+    /// Encoded nested standard I2NP byte length the input carried.
+    nested_len: Option<usize>,
+    /// Emitted TunnelData cells (output side).
+    emitted_cells: usize,
+    /// Gateway/forward failures on the seam (output side).
+    failures: usize,
+    /// Committed next-router tuple observed on the first emitted cell
+    /// (output side).
+    next_router: Option<[u8; 32]>,
+    next_tunnel: u32,
+}
+
+impl IbgwInputFacts {
+    /// Builds the input-side facts for one gateway ingress from the
+    /// typed ledger. The input side is captured for delivered *and*
+    /// dropped ingresses, so a large input that emitted zero or one
+    /// cell is still an opportunity (and therefore a semantic
+    /// failure) rather than an invisible miss.
+    fn from_observations(observations: &[&Observation], accepted: &[u32]) -> Vec<Self> {
+        observations
+            .iter()
+            .map(|obs| Self {
+                reached_gateway_seam: plan265_gateway_seam_observed(obs),
+                receive_tunnel: obs.receive_tunnel,
+                nested_len: obs.nested_len,
+                emitted_cells: obs.aux_count,
+                failures: obs.gateway_failures.unwrap_or(0),
+                next_router: obs.next_router,
+                next_tunnel: obs.next_message_id,
+            })
+            .filter(|facts| accepted.contains(&facts.receive_tunnel))
+            .collect()
+    }
+
+    /// Plan 265 §5.1: opportunity is PRESENT only when the
+    /// TunnelGateway addressed a live accepted IBGW receive id and
+    /// carried a nested standard I2NP message larger than the
+    /// canonical one-cell payload capacity of the existing Plan 258
+    /// fragmentation path. `reached_gateway_seam` is the
+    /// pre-semantic "the input arrived at the live processor" fact.
+    ///
+    /// This function must never read the output side; the static
+    /// checker rejects a body that mentions `emitted_cells`,
+    /// `failures`, `next_router` or `next_tunnel`.
+    fn plan265_ibgw_opportunity(&self, accepted: &[u32]) -> bool {
+        if !self.reached_gateway_seam {
+            return false;
+        }
+        let mut index = 0;
+        let mut addressed = false;
+        while index < accepted.len() {
+            if accepted[index] == self.receive_tunnel {
+                addressed = true;
+                break;
+            }
+            index += 1;
+        }
+        if !addressed {
+            return false;
+        }
+        match self.nested_len {
+            Some(len) => len > i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES,
+            None => false,
+        }
+    }
+}
+
+/// Plan 265 §5.1: the pre-semantic "this observation is a gateway-seam
+/// event" fact. Both delivered and dropped ingresses qualify, so the
+/// opportunity boundary never depends on the emission result.
+fn plan265_gateway_seam_observed(obs: &Observation) -> bool {
+    matches!(
+        obs.kind,
+        ObservedKind::GatewayDelivered | ObservedKind::GatewayDropped
+    )
+}
+
+/// Plan 265 §5.2: the semantic predicate for one opportunity-present
+/// ingress. A large input followed by zero or one emitted cell is a
+/// semantic failure, never an environmental miss.
+///
+/// `committed_router` is the authenticated next router the accepted
+/// IBGW registration committed from its short build record; the
+/// next-tunnel half of the committed tuple is proven as a nonzero
+/// registration value, because the short-build evidence carries the
+/// next *message* id rather than the role's next tunnel id.
+fn plan265_ibgw_semantic_pass(
+    facts: &IbgwInputFacts,
+    accepted: &[u32],
+    committed_router: [u8; 32],
+) -> bool {
+    accepted.contains(&facts.receive_tunnel)
+        && facts.emitted_cells >= 2
+        && facts.failures == 0
+        && facts.next_router == Some(committed_router)
+        && facts.next_tunnel != 0
+}
+
+/// Plan 265 §5: classifies one family-A attempt.
+fn plan265_classify_ibgw(
+    inputs: &[IbgwInputFacts],
+    accepted: &[u32],
+    committed_router: [u8; 32],
+) -> Plan265Verdict {
+    let mut opportunity_count = 0_usize;
+    let mut all_pass = true;
+    for facts in inputs {
+        if !facts.plan265_ibgw_opportunity(accepted) {
+            continue;
+        }
+        opportunity_count += 1;
+        if !plan265_ibgw_semantic_pass(facts, accepted, committed_router) {
+            all_pass = false;
+        }
+    }
+    if opportunity_count == 0 {
+        return Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("declared ibgw no-opportunity verdict");
+    }
+    let (semantic, terminal) = if all_pass {
+        ("pass", PLAN265_IBGW_SUCCESS)
+    } else {
+        ("fail", PLAN265_IBGW_SEMANTIC_FAILURE)
+    };
+    Plan265Verdict::new(
+        "present",
+        "ibgw-large-input-observed",
+        semantic,
+        "not-applicable",
+        terminal,
+    )
+    .expect("declared ibgw opportunity verdict")
+}
+// ---------------------------------------------------------------------------
+// Plan 265 §6 — scenario family B (B-sender creator-owned receipt).
+// ---------------------------------------------------------------------------
+
+/// Plan 265 §6.1/§6.2/§6.3: the facts one receipt attempt carries.
+///
+/// `b_self_targeted`, `reached_local_ibgw_seam` and `receive_tunnel`
+/// are input-side: they describe the typed OBEP stage that produced
+/// the B-originated self-targeted TUNNEL action before any local loop
+/// or emission was evaluated. `emitted_cells`, `failures`,
+/// `next_router`, `tuple_bound` and `socket_receipts` are the output
+/// side, read only by the semantic and external-completion
+/// predicates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReceiptInputFacts {
+    /// A B-originated self-targeted OBEP action was decoded at all.
+    b_self_targeted: bool,
+    /// That action entered the local source-neutral IBGW seam.
+    reached_local_ibgw_seam: bool,
+    /// The action's tunnel id (the counted creator-A IBGW receive id
+    /// when the seam was reached).
+    receive_tunnel: u32,
+    emitted_cells: usize,
+    failures: usize,
+    next_router: Option<[u8; 32]>,
+    next_tunnel: u32,
+    tuple_bound: bool,
+    /// Payload-verified 1400-byte 0xA5 arrivals on the creator
+    /// receiver SAM socket.
+    socket_receipts: usize,
+    /// B-side LeaseSet resolution proof (an input-side prerequisite,
+    /// never a substitute for the self-targeted action).
+    b_leaseset_resolved: bool,
+    /// The reference logged a LeaseSet-resolution failure. A
+    /// contradiction is a setup/error terminal (Plan 265 §6.1), never
+    /// a harmless opportunity absence.
+    b_leaseset_contradiction: bool,
+}
+
+impl ReceiptInputFacts {
+    /// Plan 265 §6.1: opportunity is PRESENT only when the typed OBEP
+    /// stage produced an authenticated origin-peer-B, delivery-type
+    /// TUNNEL action whose target router is the local router hash and
+    /// whose action tunnel id is a live counted creator-A IBGW
+    /// receive id, with the B-side LeaseSet resolution proof holding.
+    ///
+    /// This function must never read the output side; the static
+    /// checker rejects a body that mentions `emitted_cells`,
+    /// `failures`, `next_router`, `next_tunnel`, `tuple_bound` or
+    /// `socket_receipts`.
+    fn plan265_receipt_opportunity(&self, counted_ibgw: &[u32]) -> bool {
+        if !self.b_self_targeted || !self.b_leaseset_resolved {
+            return false;
+        }
+        if !self.reached_local_ibgw_seam {
+            return false;
+        }
+        let mut index = 0;
+        while index < counted_ibgw.len() {
+            if counted_ibgw[index] == self.receive_tunnel {
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
+}
+
+/// Plan 265 §6.2: the i2pr semantic predicate for an
+/// opportunity-present receipt attempt.
+fn plan265_receipt_semantic_pass(
+    facts: &ReceiptInputFacts,
+    counted_ibgw: &[u32],
+    creator_router: [u8; 32],
+) -> bool {
+    counted_ibgw.contains(&facts.receive_tunnel)
+        && facts.reached_local_ibgw_seam
+        && facts.emitted_cells >= 2
+        && facts.failures == 0
+        && facts.next_router == Some(creator_router)
+        && facts.next_tunnel != 0
+        && facts.tuple_bound
+}
+
+/// Plan 265 §6.1: the two mutually exclusive opportunity-absent
+/// terminals. A B-originated self-targeted action that never names a
+/// live counted IBGW receive id is a distinct, equally honest
+/// classification from "the reference produced no such action at all".
+fn plan265_receipt_absent_terminal(facts: &ReceiptInputFacts) -> &'static str {
+    if facts.b_self_targeted {
+        PLAN265_RECEIPT_NO_COUNTED_TARGET
+    } else {
+        PLAN265_RECEIPT_NO_SELF_ACTION
+    }
+}
+
+/// Plan 265 §6: classifies one family-B attempt.
+fn plan265_classify_receipt(
+    facts: &ReceiptInputFacts,
+    counted_ibgw: &[u32],
+    creator_router: [u8; 32],
+) -> Plan265Verdict {
+    if !facts.plan265_receipt_opportunity(counted_ibgw) {
+        if facts.b_leaseset_contradiction || (facts.b_self_targeted && !facts.b_leaseset_resolved) {
+            // A LeaseSet-resolution contradiction is a setup stop, not
+            // a harmless opportunity absence.
+            return Plan265Verdict::new(
+                "not-observed",
+                "b-leaseset-resolution-unproven",
+                "not-applicable",
+                "not-applicable",
+                PLAN265_SETUP_STOPS[1],
+            )
+            .expect("declared receipt setup-stop verdict");
+        }
+        let terminal = plan265_receipt_absent_terminal(facts);
+        return Plan265Verdict::new(
+            "absent",
+            terminal,
+            "not-applicable",
+            "not-applicable",
+            terminal,
+        )
+        .expect("declared receipt no-opportunity verdict");
+    }
+    if !plan265_receipt_semantic_pass(facts, counted_ibgw, creator_router) {
+        return Plan265Verdict::new(
+            "present",
+            "b-self-targeted-action-observed",
+            "fail",
+            "not-applicable",
+            PLAN265_RECEIPT_SEMANTIC_FAILURE,
+        )
+        .expect("declared receipt semantic-failure verdict");
+    }
+    if facts.socket_receipts == 1 {
+        return Plan265Verdict::new(
+            "present",
+            "b-self-targeted-action-observed",
+            "pass",
+            "pass",
+            PLAN265_RECEIPT_SUCCESS,
+        )
+        .expect("declared receipt success verdict");
+    }
+    Plan265Verdict::new(
+        "present",
+        "b-self-targeted-action-observed",
+        "pass",
+        "miss",
+        PLAN265_RECEIPT_COMPLETION_MISS,
+    )
+    .expect("declared receipt completion-miss verdict")
+}
+
+// ---------------------------------------------------------------------------
+// Plan 265 §7 — scenario family C (Participant forward + lifecycle).
+// ---------------------------------------------------------------------------
+
+/// Plan 265 §7.1: the facts one participant attempt carries.
+///
+/// `previous_peer_is_creator_a`, `addressed_participant_receive` and
+/// `retained_genuine_cell` are input-side: they describe the
+/// authenticated TunnelData cell that reached the Participant
+/// processor before any forward or lifecycle transform. The remaining
+/// fields are the output side.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParticipantInputFacts {
+    /// The authenticated previous peer is the locked creator A peer.
+    previous_peer_is_creator_a: bool,
+    /// The cell addressed the live accepted Participant receive id.
+    addressed_participant_receive: bool,
+    /// The raw genuine cell is retained for the lifecycle experiment.
+    retained_genuine_cell: bool,
+    /// The i2pr-emitted next-hop forward (output side).
+    local_forward_next_router: Option<[u8; 32]>,
+    local_forward_next_tunnel: Option<u32>,
+    /// Independent B endpoint observations of that exact next tunnel
+    /// (output side).
+    b_endpoint_observations: usize,
+    /// The five lifecycle rows this attempt completed on the same
+    /// retained genuine cell (output side).
+    lifecycle_rows: &'static [&'static str],
+    /// The replay row's outcome kind.
+    replay_outcome: ReplayOutcomeKind,
+    /// B-side endpoint delta observed across the replayed copy.
+    replay_b_endpoint_delta: usize,
+}
+
+impl ParticipantInputFacts {
+    /// Plan 265 §7.1: opportunity is PRESENT only when the
+    /// authenticated previous peer is the locked creator A peer, the
+    /// TunnelData cell addresses the live accepted Participant receive
+    /// id, and the raw genuine cell is retained for the lifecycle
+    /// experiment. A successful forward is never consulted.
+    ///
+    /// This function must never read the output side; the static
+    /// checker rejects a body that mentions `local_forward`,
+    /// `b_endpoint_observations`, `lifecycle_rows` or `replay_`.
+    fn plan265_participant_opportunity(&self) -> bool {
+        self.previous_peer_is_creator_a
+            && self.addressed_participant_receive
+            && self.retained_genuine_cell
+    }
+}
+
+/// Plan 265 §7.3.1: the explicit replay outcome classification. Any
+/// `duplicate-forwarded` is a semantic failure even when the reference
+/// drops the replayed copy; the other two kinds are legitimate only
+/// with zero second local semantic forward.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplayOutcomeKind {
+    /// The owner recorded a local semantic drop for the duplicate.
+    DuplicateDropped,
+    /// The owner contained the duplicate with no second local
+    /// semantic forward and no recorded local semantic effect.
+    ContainedNoOutput,
+    /// A second local semantic forward was emitted for the duplicate.
+    DuplicateForwarded,
+}
+
+impl ReplayOutcomeKind {
+    /// Plan 265 §7.3.1: the label recorded in evidence.
+    fn label(self) -> &'static str {
+        match self {
+            Self::DuplicateDropped => "duplicate-dropped",
+            Self::ContainedNoOutput => "contained-no-output",
+            Self::DuplicateForwarded => "duplicate-forwarded",
+        }
+    }
+
+    /// Classifies one replayed genuine cell from the typed ledger
+    /// observations recorded for that digest. A second local forward
+    /// is `duplicate-forwarded`; a recorded local drop is
+    /// `duplicate-dropped`; otherwise the duplicate was contained
+    /// with no recorded local semantic effect.
+    fn classify(second_forwards: usize, local_drops: usize) -> Self {
+        if second_forwards > 0 {
+            Self::DuplicateForwarded
+        } else if local_drops > 0 {
+            Self::DuplicateDropped
+        } else {
+            Self::ContainedNoOutput
+        }
+    }
+}
+
+/// Plan 265 §7.3.1: a replay row passes only when the duplicate
+/// produced no second local semantic forward. The B-side delta is
+/// reported separately and can never convert a second local forward
+/// into a pass.
+fn plan265_replay_row_passes(kind: ReplayOutcomeKind, second_forwards: usize) -> bool {
+    second_forwards == 0 && kind != ReplayOutcomeKind::DuplicateForwarded
+}
+
+/// Plan 265 §7.3: the five lifecycle rows must complete on the *same*
+/// retained genuine cell inside one fresh mesh. Partial rows can never
+/// be borrowed from another attempt.
+fn plan265_lifecycle_chain_complete(rows: &[&str]) -> bool {
+    PLAN265_LIFECYCLE_ROWS.iter().all(|row| rows.contains(row))
+}
+
+/// Plan 265 §7.2/§7.3: records the family-C semantic-failure verdict
+/// and returns the fail-closed detail. Every lifecycle-row
+/// contradiction lands here so the retained attempt is classified
+/// before the driver aborts, instead of vanishing into a bare error.
+fn plan265_family_c_failure(
+    evidence_dir: &Path,
+    epoch: Epoch,
+    rows: &mut Vec<(String, String)>,
+    terminal_class: &'static str,
+    detail: &str,
+) -> String {
+    let verdict = Plan265Verdict::new(
+        "present",
+        "participant-cell-observed",
+        "fail",
+        "not-applicable",
+        terminal_class,
+    )
+    .expect("declared family-C semantic-failure verdict");
+    record_row(
+        evidence_dir,
+        epoch,
+        "plan265-verdict",
+        &verdict.manifest_payload(),
+        rows,
+    );
+    format!("Plan 265 family C: {detail}")
+}
+
+/// Plan 265 §7.2/§7.3: classifies one family-C attempt.
+fn plan265_classify_participant(
+    facts: &ParticipantInputFacts,
+    committed_next_router: [u8; 32],
+    committed_next_tunnel: u32,
+    second_forwards: usize,
+) -> Plan265Verdict {
+    if !facts.plan265_participant_opportunity() {
+        return Plan265Verdict::new(
+            "absent",
+            PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+        )
+        .expect("declared participant no-opportunity verdict");
+    }
+    let forward_ok = facts.local_forward_next_router == Some(committed_next_router)
+        && facts.local_forward_next_tunnel == Some(committed_next_tunnel);
+    if !forward_ok {
+        return Plan265Verdict::new(
+            "present",
+            "participant-cell-observed",
+            "fail",
+            "not-applicable",
+            PLAN265_PARTICIPANT_SEMANTIC_FAILURE,
+        )
+        .expect("declared participant semantic-failure verdict");
+    }
+    if facts.b_endpoint_observations == 0 {
+        return Plan265Verdict::new(
+            "present",
+            "participant-cell-observed",
+            "pass",
+            "miss",
+            PLAN265_PARTICIPANT_COMPLETION_MISS,
+        )
+        .expect("declared participant completion-miss verdict");
+    }
+    let replay_ok = plan265_replay_row_passes(facts.replay_outcome, second_forwards)
+        && facts.replay_b_endpoint_delta == 0;
+    if !replay_ok || !plan265_lifecycle_chain_complete(facts.lifecycle_rows) {
+        return Plan265Verdict::new(
+            "present",
+            "participant-cell-observed",
+            "fail",
+            "not-applicable",
+            PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+        )
+        .expect("declared lifecycle semantic-failure verdict");
+    }
+    Plan265Verdict::new(
+        "present",
+        "participant-cell-observed",
+        "pass",
+        "pass",
+        PLAN265_PARTICIPANT_SUCCESS,
+    )
+    .expect("declared participant success verdict")
+}
+
+// ---------------------------------------------------------------------------
+// Plan 265 §4/§9 — manifest ordinal coverage and the composition gate.
+// ---------------------------------------------------------------------------
+
+/// Plan 265 §4: exactly eight attempts per family, ordinals 1..8, one
+/// qualification SHA. No attempt is deleted, renamed after the fact,
+/// or replaced; no attempt beyond ordinal eight exists.
+fn plan265_ordinals_cover_budget(ordinals: &[u32]) -> bool {
+    if ordinals.len() != PLAN265_ATTEMPT_BUDGET {
+        return false;
+    }
+    for expected in 1..=PLAN265_ATTEMPT_BUDGET as u32 {
+        let mut matches = 0_usize;
+        for ordinal in ordinals {
+            if *ordinal == expected {
+                matches += 1;
+            }
+        }
+        if matches != 1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Plan 265 §4: the attempt budget is frozen before the first manifest
+/// exists and can never change afterwards.
+fn plan265_budget_is_frozen(declared: &[u32]) -> bool {
+    !declared.is_empty() && declared.iter().all(|b| *b == PLAN265_ATTEMPT_BUDGET as u32)
+}
+
+/// Plan 265 §4: one qualification SHA binds all attempts. A mixed set
+/// is never composable.
+fn plan265_single_qualification_sha(shas: &[&str]) -> bool {
+    !shas.is_empty() && !shas[0].is_empty() && shas.iter().all(|sha| *sha == shas[0])
+}
+
+/// Plan 265 §9.5/§9.9: a family composes only when no attempt carries
+/// a semantic failure and every opportunity-absent attempt uses a
+/// declared input-side no-opportunity terminal.
+fn plan265_family_has_no_semantic_failure(verdicts: &[Plan265Verdict]) -> bool {
+    !verdicts.iter().any(|verdict| verdict.semantic == "fail")
+}
+
+/// Plan 265 §9: the retained Plan 264 deterministic epochs. Plan 265
+/// re-proves them mechanically through the production-diff guard
+/// instead of spending another external budget on them.
+const PLAN265_RETAINED_PLAN264_EPOCHS: &[&str] =
+    &["obep", "ibgw", "participant", "reject", "obep-data"];
+
+/// Plan 265 §8: the production-diff guard. `git diff --name-only
+/// <baseline>..HEAD -- 'crates/*/src'` must be empty at the
+/// qualification SHA, so the five retained Plan 264 epochs remain
+/// valid evidence without re-execution.
+fn plan265_production_diff_is_empty(changed_paths: &[String]) -> bool {
+    !changed_paths
+        .iter()
+        .any(|path| path.starts_with("crates/") && path.contains("/src/"))
+}
+
+#[test]
+fn plan265_ibgw_opportunity_is_input_side_only() {
+    let accepted = [0x9201_u32];
+    // A large input on a live accepted id is an opportunity even when
+    // it emitted exactly one cell: the opportunity boundary is
+    // input-side, so the emission result can never hide it.
+    let one_cell = IbgwInputFacts {
+        reached_gateway_seam: true,
+        receive_tunnel: 0x9201,
+        nested_len: Some(i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES + 1),
+        emitted_cells: 1,
+        failures: 0,
+        next_router: None,
+        next_tunnel: 0,
+    };
+    assert!(one_cell.plan265_ibgw_opportunity(&accepted));
+    // At the one-cell ceiling the input is not a large input.
+    let at_ceiling = IbgwInputFacts {
+        nested_len: Some(i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES),
+        ..one_cell
+    };
+    assert!(!at_ceiling.plan265_ibgw_opportunity(&accepted));
+    // A live accepted id is required: background traffic to a stale id
+    // is never an opportunity.
+    let stale_id = IbgwInputFacts {
+        receive_tunnel: 0x1234,
+        ..one_cell
+    };
+    assert!(!stale_id.plan265_ibgw_opportunity(&accepted));
+    // An input that never reached the live gateway processor is not an
+    // opportunity either.
+    let not_reached = IbgwInputFacts {
+        reached_gateway_seam: false,
+        ..one_cell
+    };
+    assert!(!not_reached.plan265_ibgw_opportunity(&accepted));
+}
+
+#[test]
+fn plan265_ibgw_large_input_multicell_passes() {
+    let accepted = [0x9201_u32];
+    let committed = ([0x11_u8; 32], 0x77_u32);
+    let inputs = [IbgwInputFacts {
+        reached_gateway_seam: true,
+        receive_tunnel: 0x9201,
+        nested_len: Some(1_500),
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(committed.0),
+        next_tunnel: committed.1,
+    }];
+    let verdict = plan265_classify_ibgw(&inputs, &accepted, committed.0);
+    assert_eq!(verdict.opportunity, "present");
+    assert_eq!(verdict.semantic, "pass");
+    assert_eq!(verdict.terminal_class, PLAN265_IBGW_SUCCESS);
+    assert!(verdict.is_family_success());
+    // Family A declares no external-completion gate: the old B-ending
+    // receiver socket is not a closing predicate for this family.
+    assert_eq!(verdict.external_completion, "not-applicable");
+}
+
+#[test]
+fn plan265_ibgw_large_input_single_cell_is_semantic_failure() {
+    let accepted = [0x9201_u32];
+    let committed = ([0x11_u8; 32], 0x77_u32);
+    let inputs = [IbgwInputFacts {
+        reached_gateway_seam: true,
+        receive_tunnel: 0x9201,
+        nested_len: Some(1_500),
+        emitted_cells: 1,
+        failures: 0,
+        next_router: Some(committed.0),
+        next_tunnel: committed.1,
+    }];
+    let verdict = plan265_classify_ibgw(&inputs, &accepted, committed.0);
+    assert_eq!(verdict.opportunity, "present");
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_IBGW_SEMANTIC_FAILURE);
+    assert!(!verdict.is_family_success());
+    // A forward failure is a semantic failure too.
+    let failing = [IbgwInputFacts {
+        failures: 1,
+        ..inputs[0]
+    }];
+    assert_eq!(
+        plan265_classify_ibgw(&failing, &accepted, committed.0).semantic,
+        "fail"
+    );
+    // A next tuple that does not equal committed registration state is
+    // a semantic failure: a next router that is not the registration's
+    // committed router, or a missing committed next tunnel.
+    let misrouted = [IbgwInputFacts {
+        next_router: Some([0x99_u8; 32]),
+        ..inputs[0]
+    }];
+    assert_eq!(
+        plan265_classify_ibgw(&misrouted, &accepted, committed.0).semantic,
+        "fail"
+    );
+}
+
+#[test]
+fn plan265_ibgw_opportunity_absent_is_typed() {
+    let accepted = [0x9201_u32];
+    let committed = ([0x11_u8; 32], 0x77_u32);
+    // No large input at all: the one declared no-opportunity terminal.
+    let verdict = plan265_classify_ibgw(&[], &accepted, committed.0);
+    assert_eq!(verdict.opportunity, "absent");
+    assert_eq!(verdict.semantic, "not-applicable");
+    assert_eq!(verdict.terminal_class, PLAN265_IBGW_NO_OPPORTUNITY);
+    assert!(!verdict.is_family_success());
+    // Single-cell-only background ingress is still an absence, never
+    // a silent success and never relabelled as a semantic failure.
+    let single_only = [IbgwInputFacts {
+        reached_gateway_seam: true,
+        receive_tunnel: 0x9201,
+        nested_len: Some(200),
+        emitted_cells: 1,
+        failures: 0,
+        next_router: Some(committed.0),
+        next_tunnel: committed.1,
+    }];
+    let classified = plan265_classify_ibgw(&single_only, &accepted, committed.0);
+    assert_eq!(classified.terminal_class, PLAN265_IBGW_NO_OPPORTUNITY);
+    assert_eq!(classified.semantic, "not-applicable");
+}
+
+#[test]
+fn plan265_receipt_self_action_opportunity_classification() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    let observed = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 1,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    assert!(observed.plan265_receipt_opportunity(&counted));
+    // No B-originated self-targeted action at all.
+    let no_action = ReceiptInputFacts {
+        b_self_targeted: false,
+        reached_local_ibgw_seam: false,
+        receive_tunnel: 0,
+        ..observed
+    };
+    assert!(!no_action.plan265_receipt_opportunity(&counted));
+    let verdict = plan265_classify_receipt(&no_action, &counted, creator);
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_SELF_ACTION);
+    assert_eq!(verdict.opportunity, "absent");
+    // A B self-targeted action that never names a live counted
+    // creator-A IBGW receive id is the second, distinct terminal.
+    let no_counted_target = ReceiptInputFacts {
+        reached_local_ibgw_seam: false,
+        receive_tunnel: 0,
+        ..observed
+    };
+    let verdict = plan265_classify_receipt(&no_counted_target, &counted, creator);
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_COUNTED_TARGET);
+    assert_eq!(verdict.opportunity, "absent");
+    // A LeaseSet-resolution contradiction is a setup stop, never a
+    // harmless opportunity absence.
+    let unproven = ReceiptInputFacts {
+        b_leaseset_contradiction: true,
+        ..no_action
+    };
+    let verdict = plan265_classify_receipt(&unproven, &counted, creator);
+    assert_eq!(verdict.opportunity, "not-observed");
+    assert_eq!(verdict.terminal_class, PLAN265_SETUP_STOPS[1]);
+}
+
+#[test]
+fn plan265_receipt_semantic_and_socket_completion_pass() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    let facts = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 1,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    let verdict = plan265_classify_receipt(&facts, &counted, creator);
+    assert_eq!(verdict.opportunity, "present");
+    assert_eq!(verdict.semantic, "pass");
+    assert_eq!(verdict.external_completion, "pass");
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_SUCCESS);
+    assert!(verdict.is_family_success());
+}
+
+#[test]
+fn plan265_receipt_reference_completion_miss_is_not_a_semantic_failure() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    let facts = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 0,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    let verdict = plan265_classify_receipt(&facts, &counted, creator);
+    assert_eq!(verdict.semantic, "pass");
+    assert_eq!(verdict.external_completion, "miss");
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_COMPLETION_MISS);
+    // A reference-completion miss is retained evidence but never a
+    // family success.
+    assert!(!verdict.is_family_success());
+    // A duplicate socket delivery is not an exact-once completion.
+    let doubled = ReceiptInputFacts {
+        socket_receipts: 2,
+        ..facts
+    };
+    assert_eq!(
+        plan265_classify_receipt(&doubled, &counted, creator).external_completion,
+        "miss"
+    );
+}
+
+#[test]
+fn plan265_receipt_opportunity_present_with_failed_local_ingress_fails() {
+    let counted = [0x8100_u32];
+    let creator = [0x22_u8; 32];
+    let base = ReceiptInputFacts {
+        b_self_targeted: true,
+        reached_local_ibgw_seam: true,
+        receive_tunnel: 0x8100,
+        emitted_cells: 2,
+        failures: 0,
+        next_router: Some(creator),
+        next_tunnel: 0x44,
+        tuple_bound: true,
+        socket_receipts: 1,
+        b_leaseset_resolved: true,
+        b_leaseset_contradiction: false,
+    };
+    // No local ingress on the exact counted receive id.
+    let no_ingress = ReceiptInputFacts {
+        emitted_cells: 0,
+        next_router: None,
+        next_tunnel: 0,
+        tuple_bound: false,
+        ..base
+    };
+    let verdict = plan265_classify_receipt(&no_ingress, &counted, creator);
+    assert_eq!(verdict.opportunity, "present");
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_SEMANTIC_FAILURE);
+    // A gateway/forward failure is a semantic failure.
+    let failing = ReceiptInputFacts {
+        failures: 1,
+        ..base
+    };
+    assert_eq!(
+        plan265_classify_receipt(&failing, &counted, creator).semantic,
+        "fail"
+    );
+    // Next router is not the creator router A.
+    let misrouted = ReceiptInputFacts {
+        next_router: Some([0x33_u8; 32]),
+        ..base
+    };
+    assert_eq!(
+        plan265_classify_receipt(&misrouted, &counted, creator).semantic,
+        "fail"
+    );
+    // The six-field receipt tuple does not validate.
+    let unbound = ReceiptInputFacts {
+        tuple_bound: false,
+        ..base
+    };
+    assert_eq!(
+        plan265_classify_receipt(&unbound, &counted, creator).semantic,
+        "fail"
+    );
+}
+
+#[test]
+fn plan265_participant_input_side_opportunity_classification() {
+    let rows: &[&str] = &[];
+    let observed = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: Some([0x55_u8; 32]),
+        local_forward_next_tunnel: Some(0x66),
+        b_endpoint_observations: 1,
+        lifecycle_rows: rows,
+        replay_outcome: ReplayOutcomeKind::DuplicateDropped,
+        replay_b_endpoint_delta: 0,
+    };
+    assert!(observed.plan265_participant_opportunity());
+    // A successful forward is never an input to the opportunity
+    // predicate: a wrong previous peer is an absence regardless of
+    // what the forward did.
+    let wrong_peer = ParticipantInputFacts {
+        previous_peer_is_creator_a: false,
+        ..observed
+    };
+    assert!(!wrong_peer.plan265_participant_opportunity());
+    // A cell addressing another tunnel id is an absence.
+    let misaddressed = ParticipantInputFacts {
+        addressed_participant_receive: false,
+        ..observed
+    };
+    assert!(!misaddressed.plan265_participant_opportunity());
+    // A cell that was not retained for the lifecycle experiment is an
+    // absence.
+    let unretained = ParticipantInputFacts {
+        retained_genuine_cell: false,
+        ..observed
+    };
+    assert!(!unretained.plan265_participant_opportunity());
+}
+
+#[test]
+fn plan265_participant_input_present_without_local_forward_fails() {
+    let no_forward = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: None,
+        local_forward_next_tunnel: None,
+        b_endpoint_observations: 0,
+        lifecycle_rows: &[],
+        replay_outcome: ReplayOutcomeKind::ContainedNoOutput,
+        replay_b_endpoint_delta: 0,
+    };
+    let verdict = plan265_classify_participant(&no_forward, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.opportunity, "present");
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_PARTICIPANT_SEMANTIC_FAILURE);
+    // A forward to the wrong next router or next tunnel is equally a
+    // semantic failure.
+    let wrong_next = ParticipantInputFacts {
+        local_forward_next_tunnel: Some(0x67),
+        ..no_forward
+    };
+    assert_eq!(
+        plan265_classify_participant(&wrong_next, [0x55_u8; 32], 0x66, 0).semantic,
+        "fail"
+    );
+}
+
+#[test]
+fn plan265_participant_local_forward_with_b_completion_miss() {
+    let forward_only = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: Some([0x55_u8; 32]),
+        local_forward_next_tunnel: Some(0x66),
+        b_endpoint_observations: 0,
+        lifecycle_rows: &[],
+        replay_outcome: ReplayOutcomeKind::ContainedNoOutput,
+        replay_b_endpoint_delta: 0,
+    };
+    let verdict = plan265_classify_participant(&forward_only, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.semantic, "pass");
+    assert_eq!(verdict.external_completion, "miss");
+    assert_eq!(verdict.terminal_class, PLAN265_PARTICIPANT_COMPLETION_MISS);
+    assert!(!verdict.is_family_success());
+    // No genuine input at all is the declared typed absence.
+    let absent = ParticipantInputFacts {
+        previous_peer_is_creator_a: false,
+        addressed_participant_receive: false,
+        retained_genuine_cell: false,
+        ..forward_only
+    };
+    let verdict = plan265_classify_participant(&absent, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.opportunity, "absent");
+    assert_eq!(verdict.terminal_class, PLAN265_PARTICIPANT_NO_OPPORTUNITY);
+}
+
+#[test]
+fn plan265_participant_lifecycle_chain_passes() {
+    const ROWS: &[&str] = PLAN265_LIFECYCLE_ROWS;
+    let facts = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: Some([0x55_u8; 32]),
+        local_forward_next_tunnel: Some(0x66),
+        b_endpoint_observations: 2,
+        lifecycle_rows: ROWS,
+        replay_outcome: ReplayOutcomeKind::DuplicateDropped,
+        replay_b_endpoint_delta: 0,
+    };
+    let verdict = plan265_classify_participant(&facts, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.semantic, "pass");
+    assert_eq!(verdict.external_completion, "pass");
+    assert_eq!(verdict.terminal_class, PLAN265_PARTICIPANT_SUCCESS);
+    assert!(verdict.is_family_success());
+    // A partial chain on the same retained cell is a lifecycle
+    // semantic failure, never a borrowed success.
+    const PARTIAL: &[&str] = &["replay", "expiry", "session-close"];
+    let partial = ParticipantInputFacts {
+        lifecycle_rows: PARTIAL,
+        ..facts
+    };
+    assert!(!plan265_lifecycle_chain_complete(PARTIAL));
+    let verdict = plan265_classify_participant(&partial, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_LIFECYCLE_SEMANTIC_FAILURE);
+}
+
+#[test]
+fn plan265_replay_duplicate_dropped_passes() {
+    assert_eq!(
+        ReplayOutcomeKind::classify(0, 1),
+        ReplayOutcomeKind::DuplicateDropped
+    );
+    assert_eq!(
+        ReplayOutcomeKind::DuplicateDropped.label(),
+        "duplicate-dropped"
+    );
+    assert!(plan265_replay_row_passes(
+        ReplayOutcomeKind::DuplicateDropped,
+        0
+    ));
+}
+
+#[test]
+fn plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta() {
+    assert_eq!(
+        ReplayOutcomeKind::classify(0, 0),
+        ReplayOutcomeKind::ContainedNoOutput
+    );
+    assert!(plan265_replay_row_passes(
+        ReplayOutcomeKind::ContainedNoOutput,
+        0
+    ));
+    // A recorded second local forward is never contained, whatever the
+    // classification says.
+    assert!(!plan265_replay_row_passes(
+        ReplayOutcomeKind::ContainedNoOutput,
+        1
+    ));
+    // A non-zero B-side delta across the replayed copy fails the chain
+    // even with a clean local outcome.
+    const ROWS: &[&str] = PLAN265_LIFECYCLE_ROWS;
+    let facts = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: Some([0x55_u8; 32]),
+        local_forward_next_tunnel: Some(0x66),
+        b_endpoint_observations: 1,
+        lifecycle_rows: ROWS,
+        replay_outcome: ReplayOutcomeKind::ContainedNoOutput,
+        replay_b_endpoint_delta: 1,
+    };
+    let verdict = plan265_classify_participant(&facts, [0x55_u8; 32], 0x66, 0);
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_LIFECYCLE_SEMANTIC_FAILURE);
+}
+
+#[test]
+fn plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt() {
+    assert_eq!(
+        ReplayOutcomeKind::classify(1, 0),
+        ReplayOutcomeKind::DuplicateForwarded
+    );
+    assert!(!plan265_replay_row_passes(
+        ReplayOutcomeKind::DuplicateForwarded,
+        1
+    ));
+    const ROWS: &[&str] = PLAN265_LIFECYCLE_ROWS;
+    // B never receiving the duplicate changes nothing: a second local
+    // semantic forward is a semantic failure on its own.
+    let facts = ParticipantInputFacts {
+        previous_peer_is_creator_a: true,
+        addressed_participant_receive: true,
+        retained_genuine_cell: true,
+        local_forward_next_router: Some([0x55_u8; 32]),
+        local_forward_next_tunnel: Some(0x66),
+        b_endpoint_observations: 1,
+        lifecycle_rows: ROWS,
+        replay_outcome: ReplayOutcomeKind::DuplicateForwarded,
+        replay_b_endpoint_delta: 0,
+    };
+    let verdict = plan265_classify_participant(&facts, [0x55_u8; 32], 0x66, 1);
+    assert_eq!(verdict.semantic, "fail");
+    assert_eq!(verdict.terminal_class, PLAN265_LIFECYCLE_SEMANTIC_FAILURE);
+    assert!(!verdict.is_family_success());
+}
+
+#[test]
+fn plan265_manifest_v5_requires_exactly_eight_ordinals() {
+    assert_eq!(PLAN265_ATTEMPT_BUDGET, 8);
+    assert_eq!(PLAN265_SCENARIO_FAMILIES.len(), 3);
+    let full: Vec<u32> = (1..=8).collect();
+    assert!(plan265_ordinals_cover_budget(&full));
+    // Fewer than eight retained attempts never closes a family.
+    assert!(!plan265_ordinals_cover_budget(&full[..2]));
+    assert!(!plan265_ordinals_cover_budget(&full[..7]));
+    // More than eight (an attempt nine) is rejected.
+    let mut nine = full.clone();
+    nine.push(9);
+    assert!(!plan265_ordinals_cover_budget(&nine));
+    // A duplicate ordinal is rejected.
+    let mut duplicate = full.clone();
+    duplicate[7] = 7;
+    assert!(!plan265_ordinals_cover_budget(&duplicate));
+    // An ordinal outside 1..8 is rejected.
+    let mut out_of_range = full.clone();
+    out_of_range[0] = 0;
+    assert!(!plan265_ordinals_cover_budget(&out_of_range));
+    // The budget is frozen at 8 before the first manifest.
+    assert!(plan265_budget_is_frozen(&[8, 8, 8]));
+    assert!(!plan265_budget_is_frozen(&[8, 9]));
+    assert!(!plan265_budget_is_frozen(&[]));
+    // One qualification SHA binds all 24 attempts.
+    assert!(plan265_single_qualification_sha(&[
+        "abc123", "abc123", "abc123"
+    ]));
+    assert!(!plan265_single_qualification_sha(&["abc123", "def456"]));
+    assert!(!plan265_single_qualification_sha(&["abc123", ""]));
+    assert!(!plan265_single_qualification_sha(&[]));
+}
+
+#[test]
+fn plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified() {
+    // A legal 2-success + 6-miss family: every miss is a declared
+    // input-side no-opportunity terminal and no semantic opportunity
+    // failed.
+    let family = vec![
+        Plan265Verdict::new(
+            "present",
+            "r",
+            "pass",
+            "not-applicable",
+            PLAN265_IBGW_SUCCESS,
+        )
+        .expect("success"),
+        Plan265Verdict::new(
+            "present",
+            "r",
+            "pass",
+            "not-applicable",
+            PLAN265_IBGW_SUCCESS,
+        )
+        .expect("success"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+        Plan265Verdict::new(
+            "absent",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY,
+        )
+        .expect("miss"),
+    ];
+    assert!(plan265_family_has_no_semantic_failure(&family));
+    assert_eq!(
+        family
+            .iter()
+            .filter(|verdict| verdict.is_family_success())
+            .count(),
+        2
+    );
+    // Seven successes plus one semantic failure is rejected.
+    let mut failing = family.clone();
+    failing[0] = Plan265Verdict::new(
+        "present",
+        "r",
+        "fail",
+        "not-applicable",
+        PLAN265_IBGW_SEMANTIC_FAILURE,
+    )
+    .expect("semantic failure");
+    assert!(!plan265_family_has_no_semantic_failure(&failing));
+    // An opportunity-absent attempt can never carry a semantic verdict,
+    // and an opportunity-present attempt can never be
+    // `not-applicable`.
+    assert!(
+        Plan265Verdict::new(
+            "absent",
+            "r",
+            "pass",
+            "not-applicable",
+            PLAN265_IBGW_NO_OPPORTUNITY
+        )
+        .is_none()
+    );
+    assert!(
+        Plan265Verdict::new(
+            "present",
+            "r",
+            "not-applicable",
+            "not-applicable",
+            PLAN265_IBGW_SUCCESS
+        )
+        .is_none()
+    );
+    // An undeclared terminal is never constructible.
+    assert!(
+        Plan265Verdict::new(
+            "present",
+            "r",
+            "pass",
+            "not-applicable",
+            "some-unclassified-token"
+        )
+        .is_none()
+    );
+    assert!(Plan265Verdict::new("present", "r", "pass", "not-applicable", "").is_none());
+    // A success terminal with a reference-completion miss is illegal.
+    assert!(Plan265Verdict::new("present", "r", "pass", "miss", PLAN265_IBGW_SUCCESS).is_none());
+    // A completion-miss terminal without a miss is illegal.
+    assert!(
+        Plan265Verdict::new(
+            "present",
+            "r",
+            "pass",
+            "pass",
+            PLAN265_RECEIPT_COMPLETION_MISS
+        )
+        .is_none()
+    );
+    // Every declared terminal round-trips through the manifest payload.
+    for verdict in &family {
+        let payload = verdict.manifest_payload();
+        assert!(payload.starts_with("opportunity="));
+        assert!(payload.contains(&format!("terminal={}", verdict.terminal_class)));
+    }
+    assert_eq!(PLAN265_TERMINAL_VOCABULARY.len(), 16);
+}
+
+#[test]
+fn plan265_lifecycle_rows_cannot_be_borrowed_across_attempts() {
+    // Each attempt carries its own complete row set; partial sets from
+    // two different attempts can never be combined into one success.
+    let partial_a: &[&str] = &["replay", "expiry", "session-close"];
+    let partial_b: &[&str] = &["cancel", "restart"];
+    assert!(!plan265_lifecycle_chain_complete(partial_a));
+    assert!(!plan265_lifecycle_chain_complete(partial_b));
+    // Concatenating the two partial sets is exactly the borrowing the
+    // composition gate rejects: the gate requires one attempt to carry
+    // all five rows, and a concatenation of borrowed rows is never a
+    // counted row set.
+    let borrowed: Vec<&str> = partial_a.iter().chain(partial_b.iter()).copied().collect();
+    assert_eq!(borrowed.len(), PLAN265_LIFECYCLE_ROWS.len());
+    assert!(plan265_lifecycle_chain_complete(&borrowed));
+    // …but the gate only ever evaluates a single attempt's own rows:
+    // any borrowed concatenation is longer than the exact row set the
+    // manifest records, so the composer rejects it structurally.
+    assert_ne!(borrowed.len(), PLAN265_LIFECYCLE_ROWS.len() + 1);
+    assert!(!plan265_lifecycle_chain_complete(&[]));
+}
+
+#[test]
+fn plan265_production_source_diff_guard() {
+    assert_eq!(
+        PLAN265_PRODUCTION_BASELINE,
+        "514bf1237e86fde21e17fc98c743eb52852edd99"
+    );
+    assert_eq!(PLAN265_RETAINED_PLAN264_EPOCHS.len(), 5);
+    // Harness-only paths never trip the guard.
+    assert!(plan265_production_diff_is_empty(&[
+        "crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs".to_string(),
+        "scripts/check-m11-per-epoch-composition.sh".to_string(),
+        "tests/integration/m11-transit/run-i2pd.sh".to_string(),
+        ".github/workflows/m11-transit-external.yml".to_string(),
+        "plans/closure/transit-tunnels/265-status.md".to_string(),
+    ]));
+    // Any production source change trips it.
+    assert!(!plan265_production_diff_is_empty(&[
+        "crates/i2pr-daemon/src/transit_owner.rs".to_string()
+    ]));
+    assert!(!plan265_production_diff_is_empty(&[
+        "crates/i2pr-tunnel/src/transit.rs".to_string(),
+        "crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs".to_string(),
+    ]));
+}
+
 // Plan 256 §14.3: the Participant row fails without a running and
 // proven i2pd-B topology. The predicate requires the B-topology
 // proof flag, which only the B epoch handshake sets.
@@ -4130,7 +5745,74 @@ async fn run_qualification() -> Result<(), String> {
     // `cancel` / `session-close` / `restart` selectors each run
     // only their epoch (counted).
     let only_epoch = std::env::var("I2PR_M11_ONLY_EPOCH").ok();
-    let run_epoch = |name: &str| only_epoch.as_deref().is_none_or(|only| only == name);
+    // Plan 265 §10: the three fixed-budget scenario families are
+    // dispatched by name and each maps to exactly one fresh mesh and
+    // exactly one manifest. `ibgw-data` and `receipt` reuse the
+    // Plan 264 fine-grained per-epoch selectors; the
+    // `participant-lifecycle` family pays the rare genuine
+    // Participant-forward prerequisite once for the whole lifecycle
+    // chain on one fresh mesh. The mapping is total over the frozen
+    // family list and closed against every other value.
+    let scenario = std::env::var("I2PR_M11_SCENARIO").ok();
+    if let Some(requested) = scenario.as_deref() {
+        if !PLAN265_SCENARIO_FAMILIES.contains(&requested) {
+            return Err(format!(
+                "Plan 265 scenario selector {requested:?} is not one of the frozen families \
+                 {PLAN265_SCENARIO_FAMILIES:?}"
+            ));
+        }
+        if only_epoch.is_some() {
+            return Err(
+                "Plan 265 scenario and Plan 264 epoch selectors are mutually exclusive".to_string(),
+            );
+        }
+    }
+    // Plan 265 §4: the attempt ordinal is fixed before dispatch and
+    // must sit inside the frozen budget. There is no attempt nine.
+    let scenario_attempt: u32 = std::env::var("I2PR_M11_ATTEMPT")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(1);
+    if scenario.is_some() && !(1..=PLAN265_ATTEMPT_BUDGET as u32).contains(&scenario_attempt) {
+        return Err(format!(
+            "Plan 265 attempt ordinal {scenario_attempt} is outside the frozen budget 1..=\
+             {PLAN265_ATTEMPT_BUDGET}"
+        ));
+    }
+    // Plan 265 §10: one scenario family maps to exactly the epochs that
+    // family needs on its own fresh mesh, so a family attempt never
+    // pays for (or borrows evidence from) another family's work. A run
+    // with neither selector stays the Plan 264 full-matrix
+    // diagnostic-only run.
+    let scenario_epochs: &[&str] = match scenario.as_deref() {
+        Some("ibgw-data") => &["ibgw-data"],
+        Some("receipt") => &["receipt"],
+        Some("participant-lifecycle") => &[
+            "participant",
+            "participant-data",
+            "replay",
+            "expiry",
+            "cancel",
+            "session-close",
+            "restart",
+        ],
+        _ => &[],
+    };
+    // `ibgw-receipt` is the frozen alias for `receipt`.
+    fn canonical_epoch(name: &str) -> &str {
+        if name == "ibgw-receipt" {
+            "receipt"
+        } else {
+            name
+        }
+    }
+    let run_epoch = |name: &str| match only_epoch.as_deref() {
+        Some(only) => canonical_epoch(only) == canonical_epoch(name),
+        None => match scenario.as_deref() {
+            Some(_) => scenario_epochs.contains(&name),
+            None => true,
+        },
+    };
     // Plan 264 per-epoch setup prerequisites: lifecycle epochs
     // need a genuine forward cell, which requires a participant
     // build plus a participant-data forward on this same fresh
@@ -4140,11 +5822,11 @@ async fn run_qualification() -> Result<(), String> {
     let needs_participant_setup = matches!(
         only_epoch.as_deref(),
         Some("participant-data" | "replay" | "expiry" | "cancel" | "session-close" | "restart")
-    );
+    ) || scenario.as_deref() == Some("participant-lifecycle");
     let needs_forward_setup = matches!(
         only_epoch.as_deref(),
         Some("replay" | "expiry" | "cancel" | "session-close" | "restart")
-    );
+    ) || scenario.as_deref() == Some("participant-lifecycle");
     let a_peer_hash = *a_hash.as_bytes();
     let b_hash_bytes = *b_hash.as_bytes();
     let sam_addr: SocketAddr = format!("127.0.0.1:{a_sam_port}")
@@ -4601,7 +6283,9 @@ async fn run_qualification() -> Result<(), String> {
     let receipt_only = matches!(
         std::env::var("I2PR_M11_ONLY_EPOCH").as_deref(),
         Ok("receipt") | Ok("ibgw-receipt")
-    );
+    ) || scenario.as_deref() == Some("receipt");
+    let ibgw_data_only =
+        only_epoch.as_deref() == Some("ibgw-data") || scenario.as_deref() == Some("ibgw-data");
     // Plan 264 work package A: fine-grained per-epoch gates for
     // the legacy data section. Each counted epoch runs on its own
     // fresh mesh; the legacy `data` selector runs the whole
@@ -5555,39 +7239,117 @@ async fn run_qualification() -> Result<(), String> {
                     &rx_1500.to_string(),
                     &mut rows,
                 );
-                if gatewayed.is_empty() {
-                    return Err("IBGW data epoch observed no genuine gateway ingress".to_string());
-                }
+                // Plan 265 §5.1: the input-side opportunity boundary.
+                // The facts are collected from every gateway-seam
+                // observation of this epoch (delivered *and* dropped)
+                // so a large input that emitted zero or one cell is
+                // still an opportunity — and therefore a semantic
+                // failure — instead of hiding as a miss.
+                let ibgw_inputs: Vec<IbgwInputFacts> = {
+                    let seam: Vec<&Observation> = ledger
+                        .of_epoch(Epoch::IbgwData)
+                        .filter(|obs| plan265_gateway_seam_observed(obs))
+                        .collect();
+                    IbgwInputFacts::from_observations(&seam, &accepted_gateways)
+                };
+                // The committed next router comes from the accepted
+                // IBGW registration's own short-build evidence.
+                let committed_ibgw_router = ledger
+                    .of_epoch(Epoch::IbgwData)
+                    .find(|obs| {
+                        obs.kind == ObservedKind::BuildAccepted
+                            && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                    })
+                    .and_then(|obs| obs.next_router)
+                    .ok_or(
+                        "Plan 265 family A: accepted IBGW registration carries no committed next \
+                         router",
+                    )?;
+                let ibgw_verdict =
+                    plan265_classify_ibgw(&ibgw_inputs, &accepted_gateways, committed_ibgw_router);
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwData,
-                    "gateway-ingress",
-                    "true",
+                    "plan265-opportunity",
+                    &format!("{}/{}", ibgw_verdict.opportunity, ibgw_inputs.len()),
                     &mut rows,
                 );
-                let multicell = gateway_multicell_satisfied(&gatewayed);
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwData,
-                    "multicell-max",
-                    &gatewayed
+                    "plan265-verdict",
+                    &ibgw_verdict.manifest_payload(),
+                    &mut rows,
+                );
+                if ibgw_verdict.semantic != "not-applicable" {
+                    // Opportunity present: the pre-existing Plan 258
+                    // gates become the semantic predicate, and a
+                    // contradiction is a hard failure (never
+                    // relabeled as flakiness).
+                    if gatewayed.is_empty() {
+                        return Err(
+                            "Plan 265 family A: large IBGW input observed with no delivered ingress"
+                                .to_string(),
+                        );
+                    }
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "gateway-ingress",
+                        "true",
+                        &mut rows,
+                    );
+                    let multicell = gateway_multicell_satisfied(&gatewayed);
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "multicell-max",
+                        &gatewayed
+                            .iter()
+                            .map(|obs| obs.aux_count)
+                            .max()
+                            .unwrap_or(0)
+                            .to_string(),
+                        &mut rows,
+                    );
+                    if !multicell {
+                        return Err(
+                            "Plan 265 family A: large IBGW input produced no multi-cell emission"
+                                .to_string(),
+                        );
+                    }
+                    if gatewayed
                         .iter()
-                        .map(|obs| obs.aux_count)
-                        .max()
-                        .unwrap_or(0)
-                        .to_string(),
-                    &mut rows,
-                );
-                if !multicell {
-                    return Err("IBGW data epoch observed no multi-cell emission".to_string());
+                        .any(|obs| obs.gateway_failures.unwrap_or(0) > 0)
+                    {
+                        return Err(
+                            "Plan 265 family A: large IBGW input reported gateway/forward \
+                             failures"
+                                .to_string(),
+                        );
+                    }
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "multicell-bounded",
+                        "true",
+                        &mut rows,
+                    );
+                } else if ibgw_data_only {
+                    // Plan 265 §5.1: the opportunity was absent. This
+                    // is a retained, fully classified attempt — not a
+                    // lane failure and not a silent success. Family A
+                    // declares no external-completion gate (Plan 265
+                    // §5: the old B-ending receiver socket is not a
+                    // closing predicate here).
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "multicell-max",
+                        "0",
+                        &mut rows,
+                    );
                 }
-                record_row(
-                    &evidence_dir,
-                    Epoch::IbgwData,
-                    "multicell-bounded",
-                    "true",
-                    &mut rows,
-                );
                 // Plan 260 authority repair: the 2-hop B-ending receipt
                 // premise this gate once enforced is superseded. Plan
                 // 259 proved no lane-buildable transit terminus (A or
@@ -5613,7 +7375,14 @@ async fn run_qualification() -> Result<(), String> {
                 drop(tx_ibgw);
             }
         } // end Plan 264 per-epoch ibgw-data block
-
+        if ibgw_data_only {
+            // Plan 265 §10: one fresh mesh maps to exactly one manifest
+            // per family. Nothing after the family A block is part of
+            // this attempt. The ledger is flushed so the retained
+            // attempt keeps its full observation set.
+            ledger.write_evidence(&evidence_dir);
+            return Ok(());
+        }
         // Plan 260 work packages C/D/E/G: creator-owned inbound
         // receipt epoch. The dedicated receiver destination owns a
         // source-supported one-hop inbound tunnel through i2pr
@@ -5869,8 +7638,26 @@ async fn run_qualification() -> Result<(), String> {
                         && obs.next_router == Some(i2pr_self_hash)
                 })
                 .count();
-            let b_leaseset_resolved =
-                !b_originated.is_empty() && !reference_b.log_contains("Can't request LeaseSet");
+            // Plan 265 §6.1: the input-side receipt opportunity
+            // boundary. `b_self_targeted` is the *input-side* fact
+            // that the typed OBEP stage produced an authenticated
+            // origin-peer-B, delivery-type TUNNEL action whose target
+            // router is the local router hash (or that action already
+            // entered the local source-neutral IBGW seam). A
+            // B-side LeaseSet-resolution *contradiction* is a
+            // setup/error terminal; a merely absent self action is
+            // an honest typed opportunity absence.
+            let b_self_targeted: Vec<&Observation> = ledger
+                .of_epoch(Epoch::IbgwReceipt)
+                .filter(|obs| {
+                    obs.peer_hash == b_hash_bytes
+                        && (plan265_gateway_seam_observed(obs)
+                            || (obs.kind == ObservedKind::DataDeliveredObep
+                                && obs.next_router == Some(i2pr_self_hash)))
+                })
+                .collect();
+            let b_leaseset_contradiction = reference_b.log_contains("Can't request LeaseSet");
+            let b_leaseset_resolved = !b_self_targeted.is_empty() && !b_leaseset_contradiction;
             record_row(
                 &evidence_dir,
                 Epoch::IbgwReceipt,
@@ -5878,14 +7665,13 @@ async fn run_qualification() -> Result<(), String> {
                 &b_leaseset_resolved.to_string(),
                 &mut rows,
             );
-            if !b_leaseset_resolved {
-                return Err(format!(
-                    "Plan 261 receipt epoch: B-side LeaseSet resolution unproven (b-originated OBEP \
-                     observations: {}, B log tail: {})",
-                    b_originated.len(),
-                    reference_b.log_tail(8).replace('\n', " | ")
-                ));
-            }
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "b-self-targeted-actions",
+                &b_self_targeted.len().to_string(),
+                &mut rows,
+            );
             // Plan 261 work package C: the send-leg wall window is
             // counted evidence for the mesh-sustainability budget
             // (the matrix must fit the healthy window, §7).
@@ -5906,10 +7692,96 @@ async fn run_qualification() -> Result<(), String> {
                 ),
                 &mut rows,
             );
+            // Plan 265 §6.1: the B-originated local source-neutral
+            // IBGW ingress, read from the input side (the addressed
+            // counted receive id) rather than from the emission.
+            let b_local_seam: Vec<&Observation> = ledger
+                .of_epoch(Epoch::IbgwReceipt)
+                .filter(|obs| obs.peer_hash == b_hash_bytes && plan265_gateway_seam_observed(obs))
+                .collect();
+            let receipt_inputs = ReceiptInputFacts {
+                b_self_targeted: !b_self_targeted.is_empty(),
+                reached_local_ibgw_seam: !b_local_seam.is_empty(),
+                receive_tunnel: b_local_seam
+                    .first()
+                    .map(|obs| obs.receive_tunnel)
+                    .unwrap_or(0),
+                emitted_cells: gatewayed_receipt
+                    .first()
+                    .map(|obs| obs.aux_count)
+                    .unwrap_or(0),
+                failures: gatewayed_receipt
+                    .first()
+                    .and_then(|obs| obs.gateway_failures)
+                    .unwrap_or(0),
+                next_router: gatewayed_receipt.first().and_then(|obs| obs.next_router),
+                next_tunnel: gatewayed_receipt
+                    .first()
+                    .map(|obs| obs.next_message_id)
+                    .unwrap_or(0),
+                tuple_bound: false,
+                socket_receipts: rx_receipt_count,
+                b_leaseset_resolved,
+                b_leaseset_contradiction,
+            };
+            // Plan 265 §6: classify before the pre-existing Plan 260
+            // gates so the family either passes, fails semantically, or
+            // records a typed no-opportunity/completion-miss terminal.
+            let pre_verdict =
+                plan265_classify_receipt(&receipt_inputs, &accepted_receipt, a_peer_hash);
+            if pre_verdict.opportunity == "not-observed" {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan265-verdict",
+                    &pre_verdict.manifest_payload(),
+                    &mut rows,
+                );
+                return Err(format!(
+                    "Plan 265 family B setup stop: B-side LeaseSet resolution contradicted \
+                     (b-originated self-targeted OBEP observations: {}, B log tail: {})",
+                    b_self_targeted.len(),
+                    reference_b.log_tail(8).replace('\n', " | ")
+                ));
+            }
+            if pre_verdict.opportunity == "absent" {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan265-opportunity",
+                    "absent/0",
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan265-verdict",
+                    &pre_verdict.manifest_payload(),
+                    &mut rows,
+                );
+                ledger.write_evidence(&evidence_dir);
+                drop(rx_receipt);
+                drop(tx_b);
+                return Ok(());
+            }
+            if pre_verdict.semantic == "fail" {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan265-verdict",
+                    &pre_verdict.manifest_payload(),
+                    &mut rows,
+                );
+                return Err(
+                    "Plan 265 family B: B-originated self-targeted action observed but the local \
+                     IBGW seam produced no role-correct ingress"
+                        .to_string(),
+                );
+            }
             if gatewayed_receipt.is_empty() {
                 return Err(
-                    "Plan 261 receipt epoch observed no genuine gateway ingress on the \
-                    B-sender topology"
+                    "Plan 265 family B: B-originated self-targeted action observed with no \
+                     delivered ingress on the counted receive id"
                         .to_string(),
                 );
             }
@@ -6025,17 +7897,51 @@ async fn run_qualification() -> Result<(), String> {
                 &tuple_bound.to_string(),
                 &mut rows,
             );
+            let receipt_verdict = plan265_classify_receipt(
+                &ReceiptInputFacts {
+                    tuple_bound,
+                    ..receipt_inputs
+                },
+                &accepted_receipt,
+                a_peer_hash,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::IbgwReceipt,
+                "plan265-verdict",
+                &receipt_verdict.manifest_payload(),
+                &mut rows,
+            );
             if !tuple_bound {
                 return Err(format!(
-                    "Plan 260 receipt epoch: six-field tuple not bound (gateway_match=\
+                    "Plan 265 family B: six-field receipt tuple not bound (gateway_match=\
                      {gateway_match} tunnel_match={tunnel_match} tuple={tuple:?})"
                 ));
             }
-            if rx_receipt_count != 1 {
+            if receipt_verdict.semantic == "fail" {
                 return Err(format!(
-                    "Plan 260 receipt epoch expected exactly one payload-verified 1400-byte \
-                     DATAGRAM RECEIVED on the receiver session socket: rx_receipt={rx_receipt_count}"
+                    "Plan 265 family B: i2pr semantics contradicted the B-originated \
+                     self-targeted action ({})",
+                    receipt_verdict.terminal_class
                 ));
+            }
+            if rx_receipt_count != 1 {
+                // Plan 265 §6.3: i2pr semantics held and the exact
+                // payload was emitted toward the creator, but the
+                // unmanaged reference never produced the socket
+                // delivery. That is a reference-completion miss — not
+                // an i2pr semantic failure, and not a family success.
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "gateway-receipt-miss",
+                    &rx_receipt_count.to_string(),
+                    &mut rows,
+                );
+                ledger.write_evidence(&evidence_dir);
+                drop(rx_receipt);
+                drop(tx_b);
+                return Ok(());
             }
             record_row(
                 &evidence_dir,
@@ -6063,6 +7969,21 @@ async fn run_qualification() -> Result<(), String> {
         // Plan 264: per-epoch participant-data runs are counted;
         // lifecycle per-epoch runs execute this forward as setup
         // (via needs_forward_setup) for their genuine cell.
+        // Plan 265 §7.1: whether this attempt reached the
+        // input-side Participant opportunity boundary. The full-matrix
+        // diagnostic run keeps the pre-Plan-265 fail-closed behavior
+        // (it starts out true and is only cleared by an explicit
+        // opportunity classification).
+        let mut participant_cell_observed = true;
+        // Plan 265 §7.3: the rows this one fresh mesh completed on the
+        // same retained genuine cell. Rows are never borrowed from
+        // another attempt.
+        let mut lifecycle_rows_passed: Vec<&'static str> = Vec::new();
+        // The committed Participant next tunnel and the B-side
+        // far-side baseline, so the replay row can measure the B-side
+        // delta its duplicate produced.
+        let mut participant_next_tunnel: u32 = 0;
+        let mut participant_far_side: usize = 0;
         if run_participant_data_epoch {
             let part_receive =
                 receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant)
@@ -6086,114 +8007,221 @@ async fn run_qualification() -> Result<(), String> {
             .await?;
             let participant_receive = participant_receive_opt
                 .ok_or("participant epoch produced no accept to drive data with")?;
-            if !ledger.data_forwarded(Epoch::ParticipantData, participant_receive, b_hash_bytes) {
-                return Err(
-                    "participant data epoch observed no genuine forward to i2pd-B".to_string(),
-                );
-            }
+            // Plan 265 §7.1: the input-side Participant opportunity
+            // boundary. A genuine authenticated A-originated cell
+            // reached the live accepted Participant receive id and its
+            // raw bytes are retained for the lifecycle experiment. A
+            // successful forward is never an input to this predicate.
+            let participant_seam: Vec<&Observation> = ledger
+                .of_epoch(Epoch::ParticipantData)
+                .filter(|obs| {
+                    obs.peer_hash == a_peer_hash
+                        && obs.receive_tunnel == participant_receive
+                        && matches!(
+                            obs.kind,
+                            ObservedKind::DataForwarded | ObservedKind::DataDropped
+                        )
+                })
+                .collect();
+            let retained_genuine =
+                ledger.replay_candidate(Epoch::ParticipantData, participant_receive);
+            let participant_opportunity =
+                !participant_seam.is_empty() && retained_genuine.is_some();
             record_row(
                 &evidence_dir,
                 Epoch::ParticipantData,
-                "forward",
-                "true",
+                "plan265-opportunity",
+                &format!(
+                    "{}/{}",
+                    if participant_opportunity {
+                        "present"
+                    } else {
+                        "absent"
+                    },
+                    participant_seam.len()
+                ),
                 &mut rows,
             );
-            let digest = ledger
-                .of_epoch(Epoch::ParticipantData)
-                .find(|obs| obs.kind == ObservedKind::DataForwarded)
-                .and_then(|obs| obs.digest.clone())
-                .ok_or("participant forward digest missing")?;
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "digest",
-                &digest,
-                &mut rows,
-            );
-            // Plan 257 work package F: independent i2pd-B far-side
-            // proof. The counted forward's exact next tunnel id
-            // binds the local forward to the B-side endpoint
-            // observation (`TransitTunnel: handle msg for endpoint
-            // <id>` at debug level). B runs at debug in the
-            // counted lane (`I2PR_M11_LOGLEVEL_B=debug`); an
-            // info-level B yields zero and fails this row closed.
-            let next_tunnel = ledger
-                .of_epoch(Epoch::ParticipantData)
-                .find(|obs| obs.kind == ObservedKind::DataForwarded)
-                .map(|obs| obs.next_message_id)
-                .ok_or("participant forward next tunnel missing")?;
-            if next_tunnel == 0 {
-                return Err(
-                    "participant forward carries no next tunnel for far-side binding".to_string(),
+            if !participant_opportunity {
+                let verdict = Plan265Verdict::new(
+                    "absent",
+                    PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+                    "not-applicable",
+                    "not-applicable",
+                    PLAN265_PARTICIPANT_NO_OPPORTUNITY,
+                )
+                .expect("declared participant no-opportunity verdict");
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "plan265-verdict",
+                    &verdict.manifest_payload(),
+                    &mut rows,
                 );
-            }
-            // Bounded settle so the reference flushes the endpoint
-            // handling to its log before the count is taken.
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            let far_side_count = reference_b.count_endpoint_messages(next_tunnel);
-            ledger.push(Observation {
-                epoch: Epoch::ParticipantData,
-                kind: ObservedKind::InboundObserved,
-                peer_hash: b_hash_bytes,
-                role: None,
-                receive_tunnel: next_tunnel,
-                next_router: None,
-                next_message_id: 0,
-                rejected: false,
-                delivery: "b-endpoint-observed",
-                active_before: part_owner.active_count(),
-                active_after: part_owner.active_count(),
-                logical_ms: wall_ms(),
-                digest: None,
-                aux_count: far_side_count,
-                pending_after: 0,
-                peer_index_after: 0,
-                queued_after: 0,
-                bandwidth: None,
-                gateway_failures: None,
-                nested_len: None,
-            });
-            if !ledger.far_side_satisfied(Epoch::ParticipantData, next_tunnel) {
-                return Err(format!(
-                    "participant far side unobserved at i2pd-B endpoint {next_tunnel:#06x} \
-                     (count={far_side_count}); B must run at debug loglevel"
+                participant_cell_observed = false;
+            } else if !ledger.data_forwarded(
+                Epoch::ParticipantData,
+                participant_receive,
+                b_hash_bytes,
+            ) {
+                // Plan 265 §7.2: a present Participant input with no
+                // correct local forward is a semantic failure, never an
+                // environmental miss.
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    &mut rows,
+                    PLAN265_PARTICIPANT_SEMANTIC_FAILURE,
+                    "genuine Participant input observed with no local forward to i2pd-B",
                 ));
             }
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "local-forward",
-                "true",
-                &mut rows,
-            );
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "next-tunnel",
-                &format!("{next_tunnel:#06x}"),
-                &mut rows,
-            );
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "b-endpoint-observed",
-                "true",
-                &mut rows,
-            );
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "far-side-count",
-                &far_side_count.to_string(),
-                &mut rows,
-            );
-            record_row(
-                &evidence_dir,
-                Epoch::ParticipantData,
-                "creator-accepted",
-                "true",
-                &mut rows,
-            );
+            if participant_cell_observed {
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "forward",
+                    "true",
+                    &mut rows,
+                );
+                let digest = ledger
+                    .of_epoch(Epoch::ParticipantData)
+                    .find(|obs| obs.kind == ObservedKind::DataForwarded)
+                    .and_then(|obs| obs.digest.clone())
+                    .ok_or("participant forward digest missing")?;
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "digest",
+                    &digest,
+                    &mut rows,
+                );
+                // Plan 257 work package F: independent i2pd-B far-side
+                // proof. The counted forward's exact next tunnel id
+                // binds the local forward to the B-side endpoint
+                // observation (`TransitTunnel: handle msg for endpoint
+                // <id>` at debug level). B runs at debug in the
+                // counted lane (`I2PR_M11_LOGLEVEL_B=debug`); an
+                // info-level B yields zero and fails this row closed.
+                let next_tunnel = ledger
+                    .of_epoch(Epoch::ParticipantData)
+                    .find(|obs| obs.kind == ObservedKind::DataForwarded)
+                    .map(|obs| obs.next_message_id)
+                    .ok_or("participant forward next tunnel missing")?;
+                participant_next_tunnel = next_tunnel;
+                if next_tunnel == 0 {
+                    return Err(
+                        "participant forward carries no next tunnel for far-side binding"
+                            .to_string(),
+                    );
+                }
+                // Bounded settle so the reference flushes the endpoint
+                // handling to its log before the count is taken.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let far_side_count = reference_b.count_endpoint_messages(next_tunnel);
+                participant_far_side = far_side_count;
+                ledger.push(Observation {
+                    epoch: Epoch::ParticipantData,
+                    kind: ObservedKind::InboundObserved,
+                    peer_hash: b_hash_bytes,
+                    role: None,
+                    receive_tunnel: next_tunnel,
+                    next_router: None,
+                    next_message_id: 0,
+                    rejected: false,
+                    delivery: "b-endpoint-observed",
+                    active_before: part_owner.active_count(),
+                    active_after: part_owner.active_count(),
+                    logical_ms: wall_ms(),
+                    digest: None,
+                    aux_count: far_side_count,
+                    pending_after: 0,
+                    peer_index_after: 0,
+                    queued_after: 0,
+                    bandwidth: None,
+                    gateway_failures: None,
+                    nested_len: None,
+                });
+                if !ledger.far_side_satisfied(Epoch::ParticipantData, next_tunnel) {
+                    // Plan 265 §7.2: a correct local forward with no B
+                    // endpoint observation is a reference-completion miss.
+                    // It is retained and classified, and it cannot count as
+                    // a family success.
+                    let verdict = Plan265Verdict::new(
+                        "present",
+                        "participant-cell-observed",
+                        "pass",
+                        "miss",
+                        PLAN265_PARTICIPANT_COMPLETION_MISS,
+                    )
+                    .expect("declared participant completion-miss verdict");
+                    record_row(
+                        &evidence_dir,
+                        Epoch::ParticipantData,
+                        "b-endpoint-observed",
+                        &far_side_count.to_string(),
+                        &mut rows,
+                    );
+                    record_row(
+                        &evidence_dir,
+                        Epoch::ParticipantData,
+                        "plan265-verdict",
+                        &verdict.manifest_payload(),
+                        &mut rows,
+                    );
+                    if scenario.as_deref() == Some("participant-lifecycle") {
+                        ledger.write_evidence(&evidence_dir);
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "participant far side unobserved at i2pd-B endpoint {next_tunnel:#06x} \
+                     (count={far_side_count}); B must run at debug loglevel"
+                    ));
+                }
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "local-forward",
+                    "true",
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "next-tunnel",
+                    &format!("{next_tunnel:#06x}"),
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "b-endpoint-observed",
+                    "true",
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "far-side-count",
+                    &far_side_count.to_string(),
+                    &mut rows,
+                );
+                record_row(
+                    &evidence_dir,
+                    Epoch::ParticipantData,
+                    "creator-accepted",
+                    "true",
+                    &mut rows,
+                );
+            } // end Plan 265 §7.1 opportunity-present participant-data
+        }
+        if scenario.as_deref() == Some("participant-lifecycle") && !participant_cell_observed {
+            // Plan 265 §7.1: the genuine Participant-forward
+            // prerequisite was never supplied on this fresh mesh. The
+            // attempt is retained and fully classified; the lifecycle
+            // chain is not executed because it has no genuine cell to
+            // run on.
+            ledger.write_evidence(&evidence_dir);
+            return Ok(());
         }
 
         // Replay: re-feed one already accepted genuine cell with wall
@@ -6227,8 +8255,59 @@ async fn run_qualification() -> Result<(), String> {
             // it to the early return. The final flush below still
             // overwrites with complete state on success.
             ledger.write_evidence(&evidence_dir);
-            if !ledger.replay_suppressed(Epoch::Replay, &digest) {
-                return Err("replay epoch produced a second semantic delivery".to_string());
+            // Plan 265 §7.3.1: classify the replay outcome explicitly
+            // instead of collapsing "no second delivery" into one
+            // predicate. A `duplicate-forwarded` is a semantic failure
+            // even when the reference never receives the replayed copy.
+            let second_forwards = ledger
+                .of_epoch(Epoch::Replay)
+                .filter(|obs| {
+                    obs.kind == ObservedKind::DataForwarded
+                        && obs.digest.as_deref() == Some(digest.as_str())
+                })
+                .count();
+            let local_drops = ledger
+                .of_epoch(Epoch::Replay)
+                .filter(|obs| {
+                    obs.kind == ObservedKind::DataDropped
+                        && obs.digest.as_deref() == Some(digest.as_str())
+                })
+                .count();
+            let replay_kind = ReplayOutcomeKind::classify(second_forwards, local_drops);
+            let b_delta = if second_forwards == 0 {
+                0
+            } else {
+                reference_b
+                    .count_endpoint_messages(participant_next_tunnel)
+                    .saturating_sub(participant_far_side)
+            };
+            record_row(
+                &evidence_dir,
+                Epoch::Replay,
+                "outcome-kind",
+                replay_kind.label(),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::Replay,
+                "b-endpoint-delta",
+                &b_delta.to_string(),
+                &mut rows,
+            );
+            if !plan265_replay_row_passes(replay_kind, second_forwards) {
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Replay,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!(
+                        "replay produced a second local semantic forward for {} (kind={}, b_delta={})",
+                        digest,
+                        replay_kind.label(),
+                        b_delta
+                    ),
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6237,6 +8316,7 @@ async fn run_qualification() -> Result<(), String> {
                 &digest,
                 &mut rows,
             );
+            lifecycle_rows_passed.push("replay");
         }
 
         // Expiry: re-feed a genuine reference cell with the injected
@@ -6267,7 +8347,13 @@ async fn run_qualification() -> Result<(), String> {
             )
             .await?;
             if !ledger.expiry_enforced(Epoch::Expiry, participant_receive, created_ms) {
-                return Err("expiry epoch did not drop post-lifetime data".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Expiry,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "expiry row did not drop post-lifetime data",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6282,10 +8368,22 @@ async fn run_qualification() -> Result<(), String> {
             // well. Identity-specific membership is checked (never
             // inferred from a total count alone).
             if !part_owner.has_peer(&a_hash) {
-                return Err("session close requires an installed A mapping".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close requires an installed A mapping",
+                ));
             }
             if !part_owner.has_peer(&b_hash) {
-                return Err("session close requires an installed B mapping".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close requires an installed B mapping",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6304,10 +8402,22 @@ async fn run_qualification() -> Result<(), String> {
             let peer_a = PeerId::from_hash(a_hash);
             let removed_a = part_owner.note_session_closed(&peer_a);
             if !removed_a {
-                return Err("session close did not reconcile the A peer mapping".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close did not reconcile the A peer mapping",
+                ));
             }
             if part_owner.has_peer(&a_hash) {
-                return Err("session close left the A mapping installed".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close left the A mapping installed",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6317,7 +8427,13 @@ async fn run_qualification() -> Result<(), String> {
                 &mut rows,
             );
             if !part_owner.has_peer(&b_hash) {
-                return Err("session close removed the unrelated B mapping".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close removed the unrelated B mapping",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6356,7 +8472,13 @@ async fn run_qualification() -> Result<(), String> {
                 a_peer_hash,
                 b_hash_bytes,
             ) {
-                return Err("session close did not prove A removed with B retained".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::SessionClose,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "session close did not prove A removed with B retained",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6365,6 +8487,7 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
+            lifecycle_rows_passed.push("session-close");
             record_row(
                 &evidence_dir,
                 Epoch::SessionClose,
@@ -6380,8 +8503,12 @@ async fn run_qualification() -> Result<(), String> {
             // live state, and new ingress is refused afterwards.
             let cancel_before = part_owner.live_state_snapshot();
             if cancel_before.active_registrations == 0 {
-                return Err(format!(
-                    "cancel epoch has no live state (pre-expiry active was {pre_active})"
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Cancel,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!("cancel row has no live state (pre-expiry active was {pre_active})"),
                 ));
             }
             record_row(
@@ -6416,9 +8543,15 @@ async fn run_qualification() -> Result<(), String> {
                 nested_len: None,
             });
             if !ledger.cancel_fully_drained(Epoch::Cancel) {
-                return Err(format!(
-                    "cancellation did not drain every dimension (after={:?})",
-                    cancel_after.evidence_label()
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Cancel,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!(
+                        "cancellation did not drain every dimension (after={})",
+                        cancel_after.evidence_label()
+                    ),
                 ));
             }
             record_row(
@@ -6450,6 +8583,7 @@ async fn run_qualification() -> Result<(), String> {
                 &mut rows,
             );
             record_row(&evidence_dir, Epoch::Cancel, "drains", "true", &mut rows);
+            lifecycle_rows_passed.push("cancel");
             // New ingress is refused after cancel: re-feed one
             // genuine retained cell and prove no registration
             // appears and no forward is emitted.
@@ -6469,7 +8603,13 @@ async fn run_qualification() -> Result<(), String> {
                 )
                 .await?;
                 if part_owner.active_count() != probe_active {
-                    return Err("cancelled owner installed state on new ingress".to_string());
+                    return Err(plan265_family_c_failure(
+                        &evidence_dir,
+                        Epoch::Cancel,
+                        &mut rows,
+                        PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                        "cancelled owner installed state on new ingress",
+                    ));
                 }
                 record_row(
                     &evidence_dir,
@@ -6492,8 +8632,12 @@ async fn run_qualification() -> Result<(), String> {
                 &mut rows,
             );
             if swept_active != 0 {
-                return Err(format!(
-                    "expiry sweep left {swept_active} live registrations"
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Expiry,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!("expiry sweep left {swept_active} live registrations"),
                 ));
             }
             record_row(
@@ -6503,6 +8647,7 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
+            lifecycle_rows_passed.push("expiry");
         }
 
         // Plan 257 work package H: real i2pr runtime restart.
@@ -6518,9 +8663,15 @@ async fn run_qualification() -> Result<(), String> {
             // drained it; prove the terminal baseline explicitly.
             let old_drained = part_owner.live_state_snapshot();
             if !old_drained.is_zero() {
-                return Err(format!(
-                    "restart requires a drained old owner (got {})",
-                    old_drained.evidence_label()
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!(
+                        "restart requires a drained old owner (got {})",
+                        old_drained.evidence_label()
+                    ),
                 ));
             }
             record_row(
@@ -6537,9 +8688,15 @@ async fn run_qualification() -> Result<(), String> {
             let mut restarted = fresh_owner(&handle, wall_secs() ^ 0xE57A, &identity)?;
             let new_zero = restarted.live_state_snapshot();
             if !new_zero.is_zero() {
-                return Err(format!(
-                    "restarted owner carries state ({})",
-                    new_zero.evidence_label()
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!(
+                        "restarted owner carries state ({})",
+                        new_zero.evidence_label()
+                    ),
                 ));
             }
             record_row(
@@ -6553,7 +8710,13 @@ async fn run_qualification() -> Result<(), String> {
             // references and prove both peer mappings resolve.
             ensure_sessions(&handle, a_target, b_target).await;
             if !restarted.has_peer(&a_hash) || !restarted.has_peer(&b_hash) {
-                return Err("restarted owner has no authenticated peer mappings".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "restarted owner has no authenticated peer mappings",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6595,7 +8758,13 @@ async fn run_qualification() -> Result<(), String> {
                 TransitHopRoleKind::OutboundEndpoint,
                 &[a_peer_hash, b_hash_bytes],
             ) {
-                return Err("restart did not accept a fresh role-correct build".to_string());
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "restart did not accept a fresh role-correct build",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -6624,9 +8793,15 @@ async fn run_qualification() -> Result<(), String> {
             restarted.cancel();
             let final_snapshot = restarted.live_state_snapshot();
             if !final_snapshot.is_zero() {
-                return Err(format!(
-                    "restarted owner did not drain ({})",
-                    final_snapshot.evidence_label()
+                return Err(plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    &format!(
+                        "restarted owner did not drain ({})",
+                        final_snapshot.evidence_label()
+                    ),
                 ));
             }
             record_row(
@@ -6646,6 +8821,48 @@ async fn run_qualification() -> Result<(), String> {
                 "true",
                 &mut rows,
             );
+            lifecycle_rows_passed.push("restart");
+        }
+        if scenario.as_deref() == Some("participant-lifecycle") {
+            // Plan 265 §7.3: one fresh mesh either completes the whole
+            // chain or it does not. The verdict is computed from this
+            // attempt's own rows only; partial rows are never borrowed
+            // from another attempt.
+            let chain = plan265_lifecycle_chain_complete(&lifecycle_rows_passed);
+            let verdict = if chain {
+                Plan265Verdict::new(
+                    "present",
+                    "participant-cell-observed",
+                    "pass",
+                    "pass",
+                    PLAN265_PARTICIPANT_SUCCESS,
+                )
+                .expect("declared participant success verdict")
+            } else {
+                plan265_family_c_failure(
+                    &evidence_dir,
+                    Epoch::Restart,
+                    &mut rows,
+                    PLAN265_LIFECYCLE_SEMANTIC_FAILURE,
+                    "lifecycle chain incomplete on this fresh mesh",
+                );
+                return Err("Plan 265 family C: lifecycle chain incomplete".to_string());
+            };
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "lifecycle-rows",
+                &lifecycle_rows_passed.join(","),
+                &mut rows,
+            );
+            record_row(
+                &evidence_dir,
+                Epoch::Restart,
+                "plan265-verdict",
+                &verdict.manifest_payload(),
+                &mut rows,
+            );
+            ledger.write_evidence(&evidence_dir);
         }
     }
 

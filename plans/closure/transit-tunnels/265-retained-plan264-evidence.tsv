@@ -1,0 +1,26 @@
+# Plan 265 retained Plan 264 deterministic-epoch evidence (integrity index).
+#
+# Plan 265 section 8 re-proves the five already-closed Plan 264
+# deterministic epochs mechanically (the production `crates/*/src` diff
+# from the Plan 262 baseline is empty) instead of spending another
+# external stochastic budget on them. This index is the referenced,
+# integrity-checked evidence set the Plan 265 composition gate must
+# carry:
+#
+#   epoch <TAB> pass <TAB> implementation_sha <TAB> epoch_qualification
+#   <TAB> epoch_terminal_key <TAB> evidence_json_sha256
+#
+# The digests bind the exact sanitized manifests recorded in
+# plans/closure/transit-tunnels/264-status.md. Composition re-supplies
+# those ten manifests as directories and the gate verifies each digest
+# before any Plan 265 family count is accepted.
+obep	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep/build-accepted	f782469a8cda6d3714d7bed8c7835cc02f57a155f29efda7640a10483f7d5ea6
+obep	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep/build-accepted	8fef6d77c4b8008b3d9869eebc63a2c2c7f18f4fc189b570578f1df56d1fbecc
+ibgw	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	ibgw/build-accepted	b590caa338aa1cd9cfa987f500aa1a8236a989a208654388b0378bd4af96b719
+ibgw	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	ibgw/build-accepted	3e1a6fd15a52246a2901a5ff9dfbb44260a1fec99cd109fd28a3d95a4c94ed4b
+participant	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	participant/build-accepted	4c5f6a76a511f865b416c959d5d55d0770024915b6ef33dc932acae0689c6a89
+participant	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	participant/build-accepted	18b6c2507c6f97cf1cfa0dc767c717af6565e39fdc8958db3ad8abc90fb469c5
+reject	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	reject/build-rejected	40cc49bda809edc055a3233c7596c45c4c8c074252cde1fd2812a8ed5c8cf350
+reject	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	reject/build-rejected	1550c868ac54d4a3a6919ea7b69b8beee7acb4ee0361d2e881f0a52214986807
+obep-data	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep-data/fragmented-once	c48aa733340bd65131f74ff89a1d20a2a67102712af7e6ce522624ae741ab93a
+obep-data	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep-data/fragmented-once	fbb605b50cfc23e1716ba874d4605ffd1a2403abd03d5fb85b9807fddc5e7d3c

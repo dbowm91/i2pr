@@ -113,6 +113,11 @@ GUARDED=(
   m11-i2pd-outbound-endpoint-tunnel-forward-source-lock
   m11-i2pd-b-leaseset-resolution-source-lock
   m11-i2pd-b-sam-missing-env-fails
+  # Plan 265 work packages — fixed-budget opportunity qualification rows
+  m11-i2pd-plan265-production-source-lock
+  m11-i2pd-plan265-frozen-attempt-budget
+  m11-i2pd-plan265-closed-terminal-vocabulary
+  m11-i2pd-plan265-opportunity-is-input-side
   # Plan 262 work package A — self-loopback + receive-id source locks
   m11-i2pd-self-loopback-source-lock
   m11-i2pd-tunnel-gateway-by-receive-id-source-lock
@@ -306,6 +311,19 @@ EPOCH_KEYS=(
   "restart/fresh-build-accepted"
   "restart/fresh-registration-delta"
   "restart/final-baseline"
+  # Plan 265 fixed-budget opportunity-qualified rows
+  "ibgw-data/plan265-opportunity"
+  "ibgw-data/plan265-verdict"
+  "ibgw-receipt/plan265-opportunity"
+  "ibgw-receipt/plan265-verdict"
+  "ibgw-receipt/b-self-targeted-actions"
+  "ibgw-receipt/gateway-receipt-miss"
+  "participant-data/plan265-opportunity"
+  "participant-data/plan265-verdict"
+  "replay/outcome-kind"
+  "replay/b-endpoint-delta"
+  "restart/lifecycle-rows"
+  "restart/plan265-verdict"
 )
 
 failures=0
@@ -600,17 +618,17 @@ if [[ -n "${SELF_REPLY_LINE}" ]]; then
 fi
 # 9/10. complete-qualification claim with fewer than two
 #     independent same-SHA attempts, or evidence merged across
-#     attempts: the workflow must run a two-attempt matrix on one
-#     SHA with per-attempt artifacts, and the manifest must carry
-#     plan 257 + attempt ids.
-if ! grep -qE 'attempt.*\[1.*2\]|\[1, 2\]' "${WORKFLOW}"; then
-  fail "workflow must run a two-attempt matrix (attempt: [1, 2])"
+#     attempts: the workflow must dispatch the frozen eight-attempt
+#     matrix on one SHA with per-attempt artifacts, and the manifest
+#     must carry plan 265 + attempt ids.
+if ! grep -qF 'attempt: [1, 2, 3, 4, 5, 6, 7, 8]' "${WORKFLOW}"; then
+  fail "workflow must dispatch the frozen eight-attempt Plan 265 budget"
 fi
 if ! grep -qF 'fail-fast: false' "${WORKFLOW}"; then
   fail "workflow matrix must set fail-fast: false"
 fi
-if ! grep -qF '"plan": 264' "${HARNESS}"; then
-  fail "runner manifest must name plan 264 (Plan 263 single-mesh authority superseded)"
+if ! grep -qF '"plan": 265' "${HARNESS}"; then
+  fail "runner manifest must name plan 265 (Plan 264 per-epoch authority superseded)"
 fi
 if grep -qF '"plan": 257' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 257 (receipt authority moved to Plan 260)"
@@ -625,6 +643,9 @@ if grep -qF '"plan": 261' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 261 (B3 self-delivery boundary corrected by Plan 262)"
 fi
 if grep -qF '"plan": 263' "${HARNESS}"; then
+  fail "runner manifest must not name stale plan 263 (scoping authority is Plan 264)"
+fi
+if grep -qF '"plan": 264' "${HARNESS}"; then
   fail "runner manifest must not name stale plan 263 (scoping authority is Plan 264)"
 fi
 if grep -qF '"plan": 262' "${HARNESS}"; then
@@ -977,6 +998,54 @@ for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOU
 done
 # Zero production diff under Plan 264 as well (scoping-only
 # corrective): enforced at closure review via `git diff --stat`.
+
+# ---- Plan 265 work packages: fixed-budget opportunity qualification ----
+# The three input-side opportunity predicates, the closed terminal
+# vocabulary and the family classifiers live in the driver (also locked
+# by check-m11-transit-boundaries.sh rule 38). This section binds them
+# at the evidence level together with the manifest-v5 shape and the
+# frozen budget.
+for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_OPPORTUNITY_VALUES' 'PLAN265_SEMANTIC_VALUES' 'PLAN265_EXTERNAL_VALUES' 'PLAN265_LIFECYCLE_ROWS' 'PLAN265_RETAINED_PLAN264_EPOCHS' 'plan265_classify_ibgw' 'plan265_classify_receipt' 'plan265_classify_participant' 'plan265_replay_row_passes' 'plan265_lifecycle_chain_complete'; do
+  if ! grep -qF "${symbol}" "${DRIVER}"; then
+    fail "driver missing Plan 265 symbol ${symbol}"
+  fi
+done
+for token in 'i2pr-m11-transit-qualification-v5' '"plan": 265' '"attempt_budget": ATTEMPT_BUDGET' '"qualification_sha": commit' '"production_baseline": PRODUCTION_BASELINE' '"opportunity": opportunity' '"opportunity_reason": opportunity_reason' '"semantic": semantic' '"external_completion": external_completion' '"terminal_class": terminal_class' '"qualification_tree_clean"' '"production_source_diff": prod_diff' 'I2PR_M11_SCENARIO'; do
+  if ! grep -qF "${token}" "${HARNESS}"; then
+    fail "runner manifest missing Plan 265 token ${token}"
+  fi
+done
+if ! grep -qF '"plan265-verdict"' "${DRIVER}"; then
+  fail "driver must record the Plan 265 family verdict row (plan265-verdict)"
+fi
+# No tuning under Plan 265 either: the frozen Plan 262 lane numerics
+# must be intact (third lock of the same list).
+for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOUT: Duration = Duration::from_secs(15)' 'SETUP_HEARTBEAT_SECS: u64 = 30' 'MAX_SAM_DATAGRAM_RX_BYTES: usize = 8192' 'MAX_LEDGER_OBSERVATIONS: usize = 4096'; do
+  if ! grep -qF "${binding}" "${DRIVER}"; then
+    fail "driver changed a frozen Plan 262 lane constant: ${binding}"
+  fi
+done
+# The Plan 265 fixed-budget composer and its negative fixtures must be
+# present, and the composer must stay wired into both runner gate slices.
+for token in 'compose-265' 'self-test' 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected'; do
+  if ! grep -qF "${token}" "${REPO_ROOT}/scripts/check-m11-per-epoch-composition.sh"; then
+    fail "Plan 265 composition gate missing ${token}"
+  fi
+done
+if ! grep -qF 'bash "${REPO_ROOT}/scripts/check-m11-per-epoch-composition.sh"' "${HARNESS}"; then
+  fail "Plan 265 composition checker must stay wired into the static guard slice"
+fi
+if [[ "$(grep -cF 'check-m11-per-epoch-composition' "${HARNESS}")" -lt 2 ]]; then
+  fail "Plan 265 composition checker must stay wired into both runner gate slices"
+fi
+# Production source equivalence to Plan 262 is proved mechanically on
+# every run, not asserted at closure review.
+if ! grep -qF "PLAN265_PRODUCTION_BASELINE" "${HARNESS}"; then
+  fail "runner must carry the Plan 262 production baseline for the Plan 265 diff guard"
+fi
+if ! grep -qF "m11-i2pd-plan265-production-source-lock" "${HARNESS}"; then
+  fail "runner must re-prove the empty Plan 262 production diff on every run"
+fi
 
 # ---- record_guarded must gate on the exit code ---------------------------
 if ! grep -q -E 'if \[\[ "\$\{rc\}" -eq 0 \]\]' "${HARNESS}"; then

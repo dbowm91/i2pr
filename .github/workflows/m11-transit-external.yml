@@ -11,29 +11,31 @@ on:
         description: 'Plan 264 per-epoch pass id (1 or 2; two same-SHA passes per epoch close the row)'
         required: false
         default: '1'
+      scenario:
+        description: 'Plan 265 frozen scenario family (empty = Plan 264 per-epoch/full-matrix diagnostic-only; otherwise ibgw-data | receipt | participant-lifecycle)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   m11-transit-external:
-    # Plan 264 work package A: per-epoch fresh-mesh counted
-    # mechanism. Dispatch once per (epoch, pass) with fresh
-    # datadirs/ports/evidence; the manifest records plan:264 +
-    # epoch + pass for the composition gate (two same-SHA passes
-    # per epoch, no cross-epoch merge). An empty epoch input runs
-    # the full matrix as diagnostic-only (never counted). The
-    # attempt matrix below keeps per-dispatch isolation: both
-    # attempts check out the same github.sha and never share
-    # evidence. Plan 257 two-attempt full-matrix closure is
-    # superseded: full-matrix manifests are diagnostic-only.
-    name: M11 exact-pinned i2pd controlled transit (Ubuntu, attempt ${{ matrix.attempt }})
+    # Plan 265 fixed-budget mechanism: dispatch once per scenario
+    # family. The attempt matrix below is the frozen budget of eight
+    # fresh-mesh attempts (no attempt nine); each attempt checks out
+    # the same github.sha, gets its own datadirs/ports/evidence
+    # root, and maps to exactly one manifest. Ordinals are fixed
+    # before dispatch, so completion order never changes them. An
+    # empty scenario input stays the Plan 264 per-epoch /
+    # full-matrix diagnostic-only lane (never counted).
+    name: M11 exact-pinned i2pd controlled transit (Ubuntu, ${{ inputs.scenario || 'diagnostic' }} attempt ${{ matrix.attempt }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
@@ -85,23 +87,26 @@ jobs:
         # counted epoch needs two same-SHA passes to close.
         run: bash tests/integration/m11-transit/run-i2pd.sh
         env:
-          I2PR_M11_ONLY_EPOCH: ${{ inputs.epoch }}
+          I2PR_M11_ONLY_EPOCH: ${{ inputs.scenario && '' || inputs.epoch }}
           I2PR_M11_EPOCH_PASS: ${{ inputs.epoch_pass }}
-          I2PR_M11_EXECUTION_ID: github-${{ github.run_id }}-attempt-${{ matrix.attempt }}
+          I2PR_M11_SCENARIO: ${{ inputs.scenario }}
+          I2PR_M11_EXECUTION_ID: github-${{ github.run_id }}-${{ inputs.scenario || 'diagnostic' }}-attempt-${{ matrix.attempt }}
           I2PR_M11_WORKFLOW_RUN_ID: ${{ github.run_id }}
           I2PR_M11_ATTEMPT: ${{ matrix.attempt }}
-          I2PR_M11_DATADIR_ID: github-${{ github.run_id }}-attempt-${{ matrix.attempt }}
-          I2PR_M11_EVIDENCE_DIR: target/interop/m11-transit-evidence-attempt-${{ matrix.attempt }}
-          I2PR_M11_PORT: ${{ matrix.attempt == 1 && '44181' || '44281' }}
-          I2PR_I2PD_PORT: ${{ matrix.attempt == 1 && '43983' || '43993' }}
-          I2PR_I2PD_B_PORT: ${{ matrix.attempt == 1 && '43984' || '43994' }}
-          I2PR_I2PD_SAM_PORT: ${{ matrix.attempt == 1 && '44983' || '44993' }}
-          I2PR_I2PD_B_SAM_PORT: ${{ matrix.attempt == 1 && '44984' || '44994' }}
+          I2PR_M11_DATADIR_ID: github-${{ github.run_id }}-${{ inputs.scenario || 'diagnostic' }}-attempt-${{ matrix.attempt }}
+          I2PR_M11_EVIDENCE_DIR: target/interop/m11-transit-evidence-${{ inputs.scenario || 'diagnostic' }}-attempt-${{ matrix.attempt }}
+          # Disjoint loopback ports per ordinal so parallel dispatch
+          # never shares a listener (Plan 265 section 10).
+          I2PR_M11_PORT: ${{ format('{0}', 44180 + matrix.attempt) }}
+          I2PR_I2PD_PORT: ${{ format('{0}', 43980 + matrix.attempt) }}
+          I2PR_I2PD_B_PORT: ${{ format('{0}', 44080 + matrix.attempt) }}
+          I2PR_I2PD_SAM_PORT: ${{ format('{0}', 44980 + matrix.attempt) }}
+          I2PR_I2PD_B_SAM_PORT: ${{ format('{0}', 45080 + matrix.attempt) }}
 
       - name: Upload sanitized evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: m11-transit-evidence-attempt-${{ matrix.attempt }}-${{ github.run_id }}
-          path: target/interop/m11-transit-evidence-attempt-${{ matrix.attempt }}
+          name: m11-transit-evidence-${{ inputs.scenario || 'diagnostic' }}-attempt-${{ matrix.attempt }}-${{ github.run_id }}
+          path: target/interop/m11-transit-evidence-${{ inputs.scenario || 'diagnostic' }}-attempt-${{ matrix.attempt }}
           if-no-files-found: warn

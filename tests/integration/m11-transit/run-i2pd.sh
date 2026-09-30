@@ -13,6 +13,18 @@
 # full matrix as diagnostic-only (manifest epoch "full-matrix",
 # never counted).
 #
+# Plan 265 fixed-budget opportunity-qualified emission corrective: set
+# I2PR_M11_SCENARIO to one of the three frozen scenario families
+# (ibgw-data | receipt | participant-lifecycle) and I2PR_M11_ATTEMPT to
+# its frozen ordinal 1..8. The driver then runs exactly that family on
+# this fresh mesh, decides the input-side *opportunity* predicate
+# before any emitted cell is inspected, and writes one manifest v5 row
+# per attempt carrying plan:265 + scenario + attempt + attempt_budget +
+# qualification_sha + production_baseline + opportunity +
+# opportunity_reason + semantic + external_completion +
+# terminal_class. Every dispatched attempt is retained; there is no
+# attempt nine and no success-based early stop.
+#
 # The external lane is owned by the single Rust qualification driver
 # `crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs`, which generates
 # one ephemeral RouterIdentityBundle, installs the public RouterInfo into
@@ -50,9 +62,16 @@ I2PD_SAM_PORT="${I2PR_I2PD_SAM_PORT:-44983}"
 # input; the driver fails closed when I2PR_I2PD_B_SAM_PORT is absent).
 I2PD_B_SAM_PORT="${I2PR_I2PD_B_SAM_PORT:-44984}"
 DRIVER_TIMEOUT="1500s"
+# Plan 265 section 8: the Plan 262 production source tree this
+# qualification is bound to. Plan 265 is evidence/harness only, so the
+# production diff from that baseline must be empty at the
+# qualification SHA; the check below proves it mechanically on every
+# run instead of asserting it at closure review.
+PLAN265_PRODUCTION_BASELINE="514bf1237e86fde21e17fc98c743eb52852edd99"
+PLAN265_ATTEMPT_BUDGET="8"
 
 mkdir -p "${EVIDENCE_DIR}"
-SCRATCH="$(mktemp -d -t i2pr-m11-plan264.XXXXXX)"
+SCRATCH="$(mktemp -d -t i2pr-m11-plan265.XXXXXX)"
 RESULTS_FILE="${SCRATCH}/results.tsv"
 : > "${RESULTS_FILE}"
 # Fresh per-run reference datadirs. The driver installs the public
@@ -794,6 +813,92 @@ exact_row "m11-i2pd-b-sam-missing-env-fails" \
   "plan261_b_sam_port_missing_fails_before_network_startup" \
   "absent/invalid I2PD_B_SAM_PORT fails closed before any socket, process, or file mutation"
 
+# Plan 265 section 8: production-source equivalence to Plan 262. The
+# retained Plan 264 five-epoch evidence stays valid only while the
+# production tree is byte-identical, so every run re-proves the diff
+# instead of trusting a closure-time assertion.
+PLAN265_PROD_DIFF="$(git -C "${REPO_ROOT}" diff --name-only \
+  "${PLAN265_PRODUCTION_BASELINE}..HEAD" -- 'crates/*/src' 2>/dev/null || true)"
+if [[ -z "${PLAN265_PROD_DIFF}" ]]; then
+  record_guarded "m11-i2pd-plan265-production-source-lock" \
+    "git diff --name-only ${PLAN265_PRODUCTION_BASELINE}..HEAD -- 'crates/*/src' is empty (Plan 262 production authority retained)" \
+    "0"
+else
+  record_guarded "m11-i2pd-plan265-production-source-lock" \
+    "production crates/*/src changed since Plan 262: ${PLAN265_PROD_DIFF}" \
+    "1"
+fi
+# Plan 265 sections 1/4: the attempt budget is frozen at eight and can
+# never be widened after the first manifest.
+if grep -qF 'const PLAN265_ATTEMPT_BUDGET: usize = 8;' \
+     "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs" &&
+   [[ "${PLAN265_ATTEMPT_BUDGET}" == "8" ]]; then
+  record_guarded "m11-i2pd-plan265-frozen-attempt-budget" \
+    "frozen per-family attempt budget 8 (no attempt nine, no success-based early stop)" \
+    "0"
+else
+  record_guarded "m11-i2pd-plan265-frozen-attempt-budget" \
+    "frozen per-family attempt budget 8 (no attempt nine, no success-based early stop)" \
+    "1"
+fi
+# Plan 265 section 3.3/4: the terminal vocabulary is closed, so an
+# unclassified outcome is unrepresentable rather than merely flagged.
+if grep -qF 'const PLAN265_TERMINAL_VOCABULARY: &[&str]' \
+     "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs" &&
+   grep -qF 'fn plan265_is_declared(values: &[&str], value: &str) -> bool' \
+     "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs"; then
+  record_guarded "m11-i2pd-plan265-closed-terminal-vocabulary" \
+    "closed terminal vocabulary; every verdict is validated by the frozen constructor" \
+    "0"
+else
+  record_guarded "m11-i2pd-plan265-closed-terminal-vocabulary" \
+    "closed terminal vocabulary; every verdict is validated by the frozen constructor" \
+    "1"
+fi
+# Plan 265 section 3.3: the input-side opportunity predicates must not
+# read the output side. This is the static half of the "opportunity is
+# never inferred from the downstream success result" rule.
+if python3 - "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs" <<'PYOPPORTUNITY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+FORBIDDEN = {
+    "plan265_ibgw_opportunity": ("emitted_cells", "failures", "next_router", "next_tunnel"),
+    "plan265_receipt_opportunity": (
+        "emitted_cells", "failures", "next_router", "next_tunnel",
+        "tuple_bound", "socket_receipts",
+    ),
+    "plan265_participant_opportunity": (
+        "local_forward", "b_endpoint_observations", "lifecycle_rows", "replay",
+    ),
+}
+bad = []
+for name, tokens in FORBIDDEN.items():
+    match = re.search(r"fn " + name + r"\(&self.*?
+    \}", source, re.S)
+    if match is None:
+        bad.append(f"{name}: not found")
+        continue
+    body = match.group(0)
+    for token in tokens:
+        if token in body:
+            bad.append(f"{name}: reads output-side field {token}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+    raise SystemExit(1)
+PYOPPORTUNITY
+then
+  record_guarded "m11-i2pd-plan265-opportunity-is-input-side" \
+    "input-side opportunity predicates read no output-side field (emitted cells, failures, receipt, far side, lifecycle rows)" \
+    "0"
+else
+  record_guarded "m11-i2pd-plan265-opportunity-is-input-side" \
+    "input-side opportunity predicates read no output-side field (emitted cells, failures, receipt, far side, lifecycle rows)" \
+    "1"
+fi
+
 # Static guard rows --------------------------------------------------------
 GATES_LOG="${EVIDENCE_DIR}/workspace-gates.log"
 : > "${GATES_LOG}"
@@ -885,6 +990,8 @@ if I2PD_BIN="${I2PD_BIN}" \
     I2PD_B_SAM_PORT="${I2PD_B_SAM_PORT}" \
     I2PR_SSU2_BIND="127.0.0.1:${I2PR_PORT}" \
    I2PR_M11_LOGLEVEL_B="${I2PR_M11_LOGLEVEL_B:-debug}" \
+   I2PR_M11_SCENARIO="${I2PR_M11_SCENARIO:-}" \
+   I2PR_M11_ATTEMPT="${I2PR_M11_ATTEMPT:-1}" \
    EVIDENCE_DIR="${DRIVER_EVIDENCE}" \
    timeout --foreground "${DRIVER_TIMEOUT}" \
    cargo test --locked -p i2pr-daemon --test m11_transit_i2pd_external \
@@ -1205,23 +1312,116 @@ EPOCH_TERMINAL_KEY = {
 }
 all_passed = all(row["status"] == "passed" for row in rows)
 import os
+import subprocess as sp
+
 attempt = os.environ.get("I2PR_M11_ATTEMPT", "1")
 only_epoch = os.environ.get("I2PR_M11_ONLY_EPOCH", "")
 epoch_pass = os.environ.get("I2PR_M11_EPOCH_PASS", attempt)
-# Counted per-epoch manifests name plan 264 + the manifest epoch +
-# the per-epoch pass id. A full-matrix run without a selector is
-# diagnostic-only (epoch "full-matrix", never counted).
+scenario = os.environ.get("I2PR_M11_SCENARIO", "")
+# Counted per-epoch manifests name the manifest epoch + pass id. A
+# full-matrix run without a selector is diagnostic-only (epoch
+# "full-matrix", never counted).
 manifest_epoch = only_epoch if only_epoch else "full-matrix"
+if scenario == "receipt":
+    manifest_epoch = "receipt"
 terminal_key = EPOCH_TERMINAL_KEY.get(manifest_epoch, "")
 driver_rc = int(os.environ.get("I2PR_M11_DRIVER_RC", "1"))
 epoch_qualified = bool(terminal_key) and driver_rc == 0 and terminal_key in driver_keys
 datadir_id = os.environ.get(
     "I2PR_M11_DATADIR_ID", Path(evidence_dir).name or "local",
 )
+
+# Plan 265 section 4: the frozen fixed-budget contract. Every counted
+# attempt carries the family, its ordinal inside the frozen budget of
+# eight, the one qualification SHA, the Plan 262 production baseline,
+# and the input-side opportunity / semantic / external-completion /
+# terminal classification the driver decided.
+ATTEMPT_BUDGET = 8
+PRODUCTION_BASELINE = "514bf1237e86fde21e17fc98c743eb52852edd99"
+PLAN265_FAMILIES = {"ibgw-data", "receipt", "participant-lifecycle"}
+PLAN265_SETUP_STOP = {
+    "ibgw-data": "ibgw-setup-stop",
+    "receipt": "receipt-setup-stop",
+    "participant-lifecycle": "participant-setup-stop",
+}
+PLAN265_VERDICT_KEYS = (
+    "ibgw-data/plan265-verdict",
+    "ibgw-receipt/plan265-verdict",
+    "participant-data/plan265-verdict",
+    "restart/plan265-verdict",
+    "expiry/plan265-verdict",
+    "cancel/plan265-verdict",
+    "session-close/plan265-verdict",
+    "replay/plan265-verdict",
+)
+verdict_payload = ""
+for key in PLAN265_VERDICT_KEYS:
+    if key in driver_values:
+        verdict_payload = driver_values[key]
+if not verdict_payload:
+    for key, value in driver_values.items():
+        if key.endswith("/plan265-verdict"):
+            verdict_payload = value
+fields = {}
+for chunk in verdict_payload.split(";"):
+    if "=" in chunk:
+        name, _, value = chunk.partition("=")
+        fields[name.strip()] = value.strip()
+if verdict_payload:
+    opportunity = fields.get("opportunity", "unclassified")
+    opportunity_reason = fields.get("reason", "unclassified")
+    semantic = fields.get("semantic", "unclassified")
+    external_completion = fields.get("external", "unclassified")
+    terminal_class = fields.get("terminal", "unclassified")
+elif scenario in PLAN265_SETUP_STOP and driver_rc != 0:
+    # The driver stopped before the family's input-side boundary could
+    # be evaluated. Declared, retained, and never a semantic verdict.
+    opportunity = "not-observed"
+    opportunity_reason = "driver-stopped-before-opportunity-boundary"
+    semantic = "not-applicable"
+    external_completion = "not-applicable"
+    terminal_class = PLAN265_SETUP_STOP[scenario]
+else:
+    # A driver that exits zero without recording a verdict left the
+    # attempt unclassifiable; the composition gate rejects it.
+    opportunity = "not-observed"
+    opportunity_reason = "no-verdict-row-recorded"
+    semantic = "not-applicable"
+    external_completion = "not-applicable"
+    terminal_class = "unclassified"
+# One qualification SHA binds every attempt: an uncommitted or dirty
+# tree can never satisfy the composition gate.
+dirty = sp.run(
+    ["git", "-C", repo_root, "status", "--porcelain"],
+    capture_output=True,
+    text=True,
+    check=False,
+).stdout.strip()
+prod_diff = sp.run(
+    [
+        "git", "-C", repo_root, "diff", "--name-only",
+        f"{PRODUCTION_BASELINE}..HEAD", "--", "crates/*/src",
+    ],
+    capture_output=True,
+    text=True,
+    check=False,
+).stdout.split()
 evidence = {
-    "schema": "i2pr-m11-transit-qualification-v4",
-    "plan": 264,
+    "schema": "i2pr-m11-transit-qualification-v5",
+    "plan": 265,
+    "scenario": scenario,
     "attempt": attempt,
+    "attempt_budget": ATTEMPT_BUDGET,
+    "qualification_sha": commit,
+    "qualification_tree_clean": not bool(dirty),
+    "production_baseline": PRODUCTION_BASELINE,
+    "production_source_diff": prod_diff,
+    "opportunity": opportunity,
+    "opportunity_reason": opportunity_reason,
+    "semantic": semantic,
+    "external_completion": external_completion,
+    "terminal_class": terminal_class,
+    "driver_rc": driver_rc,
     "epoch": manifest_epoch,
     "epoch_pass": epoch_pass,
     "epoch_terminal_key": terminal_key,
@@ -1263,6 +1463,8 @@ evidence = {
         "direct loopback SSU2 session evidence only; no public I2P participation",
         "exact-pinned i2pd 2.61.0 reference; Java second-family lane stays retained/deferred",
         "closure requires two same-SHA fresh-mesh passes per mandatory epoch (epoch + epoch_pass recorded per manifest); one pass never closes an epoch; cross-epoch merge never closes; a full-matrix run without an epoch selector is diagnostic-only and never counted",
+        "Plan 265 fixed-budget contract: three scenario families (ibgw-data, receipt, participant-lifecycle) x exactly eight fresh-mesh attempts on one qualification SHA; every dispatched attempt is retained in the denominator; no success-based early stop; no attempt nine; the input-side opportunity predicate is decided before any emitted cell is inspected and is never inferred from the downstream success result",
+        "the retained Plan 264 five deterministic epochs (obep, ibgw, participant, reject, obep-data) are re-proven mechanically by the empty production diff from the Plan 262 baseline, not by re-spending external budget",
         "creator-local tunnel id and pool ownership bind behaviorally (typed i2pr evidence + receiver-socket receipt through the one-hop topology); stock i2pd exposes no independent numeric read of InboundTunnel::GetTunnelID",
         "Plan 264 scoping-only corrective: per-epoch fresh-mesh isolation + composition gate with zero production diff; mesh-liveness + relay-NetDB + B-floodfill prerequisites still fail closed before counted sends; no timeout/quota/ceiling/retry/message-size change from Plan 263",
     ],
@@ -1271,9 +1473,15 @@ out = Path(evidence_dir)
 out.mkdir(parents=True, exist_ok=True)
 (out / "evidence.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
 with (out / "evidence.md").open("w", encoding="utf-8") as stream:
-    stream.write("# Plan 264 M11 single-mesh sustainability scoping\n\n")
-    stream.write(f"- i2pr commit: `{commit}`\n")
-    stream.write(f"- attempt: `{attempt}` (fresh datadirs per run; no cross-run merge)\n")
+    stream.write("# Plan 265 M11 fixed-budget opportunity-qualified emission qualification\n\n")
+    stream.write(f"- i2pr commit: `{commit}` (qualification SHA; tree clean: {not bool(dirty)})\n")
+    stream.write(f"- scenario: `{scenario or 'none (diagnostic-only run)'}`\n")
+    stream.write(f"- attempt: `{attempt}` of `{ATTEMPT_BUDGET}` (fresh datadirs/ports/evidence per attempt; no cross-run merge)\n")
+    stream.write(f"- production baseline: `{PRODUCTION_BASELINE}` (diff: {prod_diff or 'empty'})\n")
+    stream.write(f"- opportunity: `{opportunity}` ({opportunity_reason})\n")
+    stream.write(f"- semantic: `{semantic}`\n")
+    stream.write(f"- external_completion: `{external_completion}`\n")
+    stream.write(f"- terminal_class: `{terminal_class}`\n")
     stream.write(f"- epoch: `{manifest_epoch}` (per-epoch counted manifest; `full-matrix` is diagnostic-only)\n")
     stream.write(f"- epoch_pass: `{epoch_pass}` (two same-SHA passes per epoch close the row)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
@@ -1286,7 +1494,7 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
 PY
 
 if [[ "${REQUIRED_FAILED}" -ne 0 ]]; then
-  echo "Plan 264 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
+  echo "Plan 265 M11 transit qualification lane failed; sanitized evidence: ${EVIDENCE_DIR}" >&2
   exit 1
 fi
-echo "Plan 264 M11 transit qualification lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+echo "Plan 265 M11 transit qualification lane finished; sanitized evidence: ${EVIDENCE_DIR}"
