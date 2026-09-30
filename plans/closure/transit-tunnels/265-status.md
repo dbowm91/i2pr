@@ -69,8 +69,12 @@ Plan 265 implementation, in the order landed (all on `main`):
 - `4682920eb0b28b0b590aaabddb8666253c26f081` — **qualification SHA**: manifest
   v5 carries `lifecycle_rows` / `lifecycle_rows_declared` / `lane_row_scope`,
   and the composer CLI honours a bare `--` attempt separator.
-- this commit — this record + Plan 266 registration + registry / roadmap /
-  support / conformance / dossier reconciliation.
+- `9e274a34a37d42b13a854d8c11d850116c9dfe6e` — this record + Plan 266
+  registration + registry / roadmap / support / conformance / dossier /
+  README reconciliation. Ordinary four-job CI passed on this exact head
+  (run `36775035331`); that evidence is recorded in §CI and amended by the
+  follow-up commit that carries it, so the CI-amended head is one commit
+  ahead of the head that CI actually ran against.
 
 Pre-implementation HEAD: `045265171fec172517a10763e541a99670191ac7`. The five
 superseded SHAs above are provenance, not qualification evidence; the
@@ -157,7 +161,8 @@ git diff --name-only 514bf1237e86fde21e17fc98c743eb52852edd99..HEAD -- 'crates/*
     occurred anywhere.
 11. **No attempt beyond ordinal 8** — PASS.
 12. **Complete local verification passes** — PASS (§Verification below).
-13. **Exact-head ordinary CI passes all four jobs** — see §CI below.
+13. **Exact-head ordinary CI passes all four jobs** — PASS (§CI below:
+    run `36775035331` on `9e274a3`).
 14. **Registry / roadmap / support / conformance / dossier / README agree on
     the final M11 disposition** — PASS (this commit).
 15. **No product default / capability / version / public-network change** —
@@ -360,9 +365,42 @@ record says so.
 
 ## CI
 
-See §CI evidence below (recorded in the follow-up commit, per the
-Plan 258–264 precedent). Required: Quality (ubuntu-latest), Quality
-(macos-latest), MSRV (Ubuntu), Dependency policy, on the exact closure head.
+Ordinary push CI was run on the **exact closure head**
+`9e274a34a37d42b13a854d8c11d850116c9dfe6e` (the commit that registers
+this closure and Plan 266). All four required jobs pass:
+
+| Run | Head | Required jobs | Result |
+| --- | --- | --- | --- |
+| `36775035331` | `9e274a3` | Quality (ubuntu-latest), Quality (macos-latest), MSRV (Ubuntu), Dependency policy | **success** on all four |
+
+`https://github.com/dbowm91/i2pr/actions/runs/36775035331`
+
+Concretely: the Quality jobs cover `cargo fmt --all --check`,
+`cargo check --locked --workspace [--all-targets]`, the full test suite
+run serially with one libtest worker (macOS builds every test executable
+once, then runs each with `--test-threads=1`), `cargo test --doc`,
+`clippy -D warnings`, and `cargo doc` with `RUSTDOCFLAGS=-D warnings`;
+the Linux-gated steps additionally run every boundary/evidence checker
+(including `check-m11-transit-boundaries.sh`, which locks the Plan 265
+harness/runner/checker/workflow sources) and the constrained-host lane
+contract tests. The MSRV job covers `cargo check` on toolchain 1.88, and
+the Dependency policy job covers `cargo deny check advisories bans
+sources`.
+
+The two Plan 265 checkers that require retained evidence roots —
+`check-m11-transit-qualification-evidence.sh` and
+`check-m11-per-epoch-composition.sh` — are **not** in ordinary CI.
+`check-m11-transit-qualification-evidence.sh` runs in the
+`m11-transit-external.yml` workflow; the composition checker is
+dispatcher-driven (it composes a supplied evidence root) and is instead
+exercised in ordinary CI by the fixture and self-test rows locked inside
+`check-m11-transit-boundaries.sh`. Both were additionally run locally
+against the complete retained set (§Verification).
+
+No external/interoperability lane was run for this closure: Plan 265's
+own 24-attempt evidence is the previously executed and retained set
+(§Executions), and no reference router or public network is required to
+re-establish it. Re-running the external lane is a Plan 266 concern.
 
 ## Security / resource / concurrency / migration review
 
