@@ -359,7 +359,7 @@ for arg in sys.argv[2:]:
     if arg == "--retained":
         mode = "retained"
         continue
-    if arg == "--attempt":
+    if arg in ("--attempt", "--"):
         mode = "attempt"
         continue
     (retained_roots if mode == "retained" else attempt_roots).append(arg)
@@ -598,6 +598,13 @@ for root in attempt_roots:
             failures.append(
                 f"{root}: participant-lifecycle success must carry all five lifecycle rows on "
                 f"this one attempt, found {rows}"
+            )
+            continue
+        declared = doc.get("lifecycle_rows_declared", "")
+        if declared and sorted(declared.split(",")) != sorted(LIFECYCLE_ROWS):
+            failures.append(
+                f"{root}: the driver's own lifecycle row set disagrees with the manifest: "
+                f"{declared!r}"
             )
             continue
     if scenario == "participant-lifecycle" and terminal == "participant-lifecycle-row-semantic-failure":

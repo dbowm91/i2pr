@@ -365,7 +365,7 @@ done
 #     attempt + attempt budget + qualification SHA + production
 #     baseline + opportunity + semantic + external completion +
 #     terminal class, plus the retained per-epoch ids).
-for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 265' 'i2pr-m11-transit-qualification-v5' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_SCENARIO' 'I2PR_M11_DRIVER_RC' 'EPOCH_TERMINAL_KEY' 'exact_lib_row'; do
+for token in 'm11-i2pd-obep-remote-reply-source-lock' 'm11-i2pd-obep-local-ibgw-reply-source-lock' '"plan": 265' 'i2pr-m11-transit-qualification-v5' 'I2PR_M11_ATTEMPT' 'I2PR_M11_ONLY_EPOCH' 'I2PR_M11_EPOCH_PASS' 'I2PR_M11_SCENARIO' 'I2PR_M11_DRIVER_RC' 'EPOCH_TERMINAL_KEY' 'exact_lib_row' '"lifecycle_rows": lifecycle_rows' '"lifecycle_rows_declared": lifecycle_rows_declared' '"lane_row_scope"'; do
     if ! rg -qF "$token" "$external_runner"; then
         fail "external runner missing Plan 265 token $token"
     fi

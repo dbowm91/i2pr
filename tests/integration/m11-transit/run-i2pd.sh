@@ -1385,6 +1385,25 @@ prod_diff = sp.run(
     text=True,
     check=False,
 ).stdout.split()
+# Plan 265 section 7.3: the five lifecycle rows this one fresh mesh
+# completed on the same retained genuine cell. Carried per attempt so
+# the composition gate can refuse to synthesize a success by combining
+# partial rows from different attempts.
+LIFECYCLE_ROW_KEYS = (
+    "replay/no-second-delivery",
+    "expiry/resource-baseline",
+    "session-close/peer-baseline",
+    "cancel/drains",
+    "restart/final-baseline",
+)
+LIFECYCLE_ROW_NAMES = ("replay", "expiry", "session-close", "cancel", "restart")
+lifecycle_rows = [
+    name
+    for (name, key) in zip(LIFECYCLE_ROW_NAMES, LIFECYCLE_ROW_KEYS)
+    if key in driver_keys
+]
+lifecycle_rows_declared = driver_values.get("restart/lifecycle-rows", "")
+
 evidence = {
     "schema": "i2pr-m11-transit-qualification-v5",
     "plan": 265,
@@ -1400,7 +1419,17 @@ evidence = {
     "semantic": semantic,
     "external_completion": external_completion,
     "terminal_class": terminal_class,
+    "lifecycle_rows": lifecycle_rows,
+    "lifecycle_rows_declared": lifecycle_rows_declared,
     "driver_rc": driver_rc,
+    # A Plan 265 scenario run deliberately executes only its own
+    # family's epochs, so the inherited full-matrix row set below is
+    # family-scoped and its `results` statuses are row-level
+    # diagnostics. The Plan 265 authority is the classification fields
+    # above; this label says so in the artifact itself.
+    "lane_row_scope": (
+        "plan265-scenario-family" if scenario else "plan264-full-matrix"
+    ),
     "epoch": manifest_epoch,
     "epoch_pass": epoch_pass,
     "epoch_terminal_key": terminal_key,
@@ -1461,6 +1490,10 @@ with (out / "evidence.md").open("w", encoding="utf-8") as stream:
     stream.write(f"- semantic: `{semantic}`\n")
     stream.write(f"- external_completion: `{external_completion}`\n")
     stream.write(f"- terminal_class: `{terminal_class}`\n")
+    stream.write(f"- lifecycle rows: `{','.join(lifecycle_rows) or '-'}`\n")
+    stream.write(
+        f"- row scope: `{'plan265-scenario-family' if scenario else 'plan264-full-matrix'}`\n"
+    )
     stream.write(f"- epoch: `{manifest_epoch}` (per-epoch counted manifest; `full-matrix` is diagnostic-only)\n")
     stream.write(f"- epoch_pass: `{epoch_pass}` (two same-SHA passes per epoch close the row)\n")
     stream.write(f"- i2pd: `{i2pd_version}` @ `{i2pd_pin}` (unmodified, A + B)\n")
