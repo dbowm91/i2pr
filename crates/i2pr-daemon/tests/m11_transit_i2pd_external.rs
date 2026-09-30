@@ -6442,8 +6442,13 @@ async fn run_qualification() -> Result<(), String> {
         || run_cancel_epoch
         || run_session_close_epoch
         || run_restart_epoch;
-    let participant_receive_opt =
-        receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant);
+    let participant_receive_opt = receive_of_committed_next(
+        &ledger,
+        Epoch::Participant,
+        TransitHopRoleKind::Participant,
+        b_hash_bytes,
+    )
+    .or_else(|| receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant));
     if run_data
         || receipt_only
         || run_obep_data
@@ -8196,9 +8201,7 @@ async fn run_qualification() -> Result<(), String> {
         let mut participant_next_tunnel: u32 = 0;
         let mut participant_far_side: usize = 0;
         if run_participant_data_epoch {
-            let part_receive =
-                receive_of(&ledger, Epoch::Participant, TransitHopRoleKind::Participant)
-                    .unwrap_or(u32::MAX);
+            let part_receive = participant_receive_opt.unwrap_or(u32::MAX);
             // Fresh sessions before the passive drain: it only
             // observes, so an idle-dead link would starve it
             // silently for the whole timeout.
@@ -8970,7 +8973,7 @@ async fn run_qualification() -> Result<(), String> {
             // admission/registry/peer index via fresh_owner).
             let mut restarted = fresh_owner(&handle, wall_secs() ^ 0xE57A, &identity)?;
             let new_zero = restarted.live_state_snapshot();
-            if !new_zero.is_zero() {
+            if !plan265_restart_carries_no_old_state(&new_zero) {
                 return Err(plan265_family_c_failure(
                     &evidence_dir,
                     Epoch::Restart,
@@ -10196,6 +10199,52 @@ fn receive_of(ledger: &TypedLedger, epoch: Epoch, role: TransitHopRoleKind) -> O
         .of_epoch(epoch)
         .find(|obs| obs.kind == ObservedKind::BuildAccepted && obs.role == Some(role))
         .map(|obs| obs.receive_tunnel)
+}
+
+/// Plan 265 §7.2: the accepted registration whose *committed* next
+/// router is the reference B endpoint.
+///
+/// Plan 264 took the first accepted Participant registration, but the
+/// reference builds several Participant tunnels through i2pr inside one
+/// window: its own A-bound tunnels and the B-bound tunnel this family
+/// exists to qualify. Observed on one attempt: nine accepts, of which
+/// four committed next router B. Binding the family to the first
+/// accept therefore pointed the forward requirement at an A-bound
+/// registration and could never observe the B-bound forward the plan
+/// requires.
+fn receive_of_committed_next(
+    ledger: &TypedLedger,
+    epoch: Epoch,
+    role: TransitHopRoleKind,
+    next_router: [u8; 32],
+) -> Option<u32> {
+    ledger
+        .of_epoch(epoch)
+        .find(|obs| {
+            obs.kind == ObservedKind::BuildAccepted
+                && obs.role == Some(role)
+                && obs.next_router == Some(next_router)
+        })
+        .map(|obs| obs.receive_tunnel)
+}
+
+/// Plan 265 §7.3.5: a restarted owner proves it carried no old
+/// secret-owning state.
+///
+/// The peer index is excluded by construction: `fresh_owner` installs
+/// the two authenticated peer mappings as part of its contract, so an
+/// all-zero snapshot is unreachable for any freshly constructed owner.
+/// The contract itself is re-proved by the immediately following
+/// `has_peer` gate, recorded as the `sessions-reestablished` row, and
+/// the drained old owner is still checked against the full all-zero
+/// baseline.
+fn plan265_restart_carries_no_old_state(
+    snapshot: &i2pr_daemon::transit_compose::TransitLiveStateSnapshot,
+) -> bool {
+    snapshot.active_registrations == 0
+        && snapshot.pending_global == 0
+        && snapshot.pending_peer_entries == 0
+        && snapshot.transit_owned_queued_work == 0
 }
 
 /// Records Plan 257 work package D exact registration-cardinality
