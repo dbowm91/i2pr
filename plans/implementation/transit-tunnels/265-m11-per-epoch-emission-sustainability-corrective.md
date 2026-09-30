@@ -1,270 +1,490 @@
-# Plan 265 — M11 per-epoch emission sustainability corrective
+# Plan 265 — M11 fixed-budget opportunity-qualified emission sustainability corrective
 
 Status at registration:
 **registered-m11-per-epoch-emission-sustainability-corrective-ready**
 
-Scope refinement baseline:
+Original registration baseline:
 `6ab9dc2dd80526ce38e62014635ec3e3ad5521f5`
 
-Planning reconciliation through the Plan 264 closure commit is
-planning/specification-only after the implementation SHA above;
-it does not change the production source baseline inherited from
-Plan 262 (Plans 263/264 are zero-production-diff). The
-implementation agent MUST start from the latest `main`, record
-the exact pre-implementation HEAD in the handoff, and bind every
-counted external attempt to the eventual implementation SHA. The
-historical registration SHA is planning provenance, not a
-qualification SHA.
+Research refinement baseline:
+`1234a5ed6f839762467c1058ac67285837d0c988`
 
-Original registration baseline and Plan 264 closure authority
-remain recorded in
-`plans/closure/transit-tunnels/264-status.md`.
+This refinement is planning/specification-only. Plans 263/264 and this planning refinement do
+not change the production `crates/*/src` baseline inherited from the Plan 262 implementation
+at `514bf1237e86fde21e17fc98c743eb52852edd99`. The implementation agent MUST start from
+latest `main`, record the exact pre-implementation HEAD, and bind all Plan 265 counted
+attempts to one eventual qualification SHA. The historical SHAs above are provenance, not the
+new qualification SHA.
 
 Corrects:
 
 - `plans/implementation/transit-tunnels/264-m11-single-mesh-sustainability-scoping.md`
-  (§10 criterion 5: 5/13 epochs close 2/2 per-epoch, but the
-  4 emission-dependent epochs stop on window signatures —
-  `ibgw-data` 1/2 single-cell-only, `receipt` 0/2 starvation,
-  `participant-data` 1/2 no-forward, `replay` 0/2
-  forward-setup stops — and 4 lifecycle epochs are
-  structurally blocked behind the forward cell);
-- `plans/closure/transit-tunnels/264-status.md` (per-epoch
-  emission-window boundary + replay singleton LOW finding).
+  (§10 criterion 5): the per-epoch lane closes the deterministic epochs but reference-driven
+  emission opportunities remain intermittent;
+- `plans/closure/transit-tunnels/264-status.md`: `ibgw-data` 1/2,
+  `receipt` 0/2, `participant-data` 1/2, `replay` 0/2 setup stops, with lifecycle rows
+  blocked behind the same genuine Participant forward prerequisite;
+- the original Plan 265 registration text, which intentionally left the emission counting
+  shape open. This refinement freezes that shape before any Plan 265 external execution.
 
-Retains:
+Retains in full:
 
-- Plan 262 WP A/B/C/D/E production corrective in full
-  (dedicated `TransitGatewayData`, exact receive-id ownership,
-  source-neutral `route_ibgw_gateway` seam, OBEP TUNNEL-to-self
-  local branch with `LocalIbgwDelivered`/`LocalIbgwDropped`, no
-  synthetic peer/index mutation; Participant/OBEP peer locks
-  unchanged);
-- Plan 263 WP A harness in full (mesh-liveness + relay-NetDB
-  + B-floodfill prerequisites, canonical
-  `SAM_READ_TIMEOUT_MSG` tail, 4 `plan263_*` rows);
-- Plan 264 WP A lane in full (per-epoch selector for all 13
-  epochs, setup prerequisites, lifecycle chain, manifest
-  v4 with `epoch_qualification`, composition script + 5
-  `plan264_*` rows, workflow epoch/pass inputs, checker
-  rules 29/30/37 + evidence-gate Plan 264 section);
-- The 5 closed per-epoch epochs as the determinism baseline
-  (`obep`, `ibgw`, `participant`, `reject`, `obep-data`
-  2/2 on `6ab9dc2d`); do not re-prove ownership, do not
-  touch production routing code;
-- Exact-pinned i2pd 2.61.0 @
-  `635b013a612ff47278ef02acf8580a28e10e26c5`, unmodified,
-  loopback-only, fresh datadirs per run, no public fallback.
-
-Reference authority remains exact-pinned, unmodified i2pd 2.61.0.
-Normative protocol authority is unchanged from Plan 262
-(IBGW receive-id routing without creator affinity; tunnel ids as
-per-hop routing identifiers).
+- Plan 262 production semantics: dedicated `TransitGatewayData`, exact IBGW receive-id
+  ownership, source-neutral `route_ibgw_gateway`, self-targeted OBEP TUNNEL loopback,
+  `LocalIbgwDelivered` / `LocalIbgwDropped`, no synthetic peer/index mutation, and
+  unchanged Participant/OBEP previous-peer locks;
+- Plan 263 harness prerequisites: mesh-liveness, relay-NetDB, B-floodfill, canonical SAM
+  timeout tail, and fail-closed environment gates;
+- Plan 264 per-epoch execution plumbing and the five already-proven deterministic epochs:
+  `obep`, `ibgw`, `participant`, `reject`, `obep-data`, each 2/2 on
+  `6ab9dc2d`;
+- exact-pinned, unmodified i2pd 2.61.0 at
+  `635b013a612ff47278ef02acf8580a28e10e26c5`;
+- loopback-only controlled qualification, fresh datadirs/ports/evidence roots, no public
+  reseed/network fallback, no reference patching.
 
 ## 1. Objective
 
-Close the 4 blocked emission epochs (`ibgw-data`,
-`receipt`, `participant-data`, `replay`) plus the 4
-forward-blocked lifecycle epochs (`expiry`, `cancel`,
-`session-close`, `restart`) to two same-SHA fresh-mesh
-passes each, WITHOUT touching production routing code and
-WITHOUT tuning until green.
+Close the remaining M11 experimental qualification without changing working production routing
+code and without converting external-router nondeterminism into "retry until green".
 
-The Plan 264 evidence shows emission windows (B-side
-fragmentation, socket delivery, forward routing) are
-per-window on the unmanaged reference (~50/50 per fresh
-mesh), not per-mesh. The corrective must therefore change
-the qualification SHAPE for emission rows (not the
-production code, not the lane constants): e.g. qualify
-emission-dependent rows over a bounded fresh-mesh budget
-with first-two-counted retention, and/or re-scope which
-reference-emission observable closes each row, and/or
-harden the replay predicate with outcome-kind evidence so
-local containment counts distinctly from wire delivery.
-Whatever shape is chosen, it must be stated upfront in
-this plan's WP A, locked by checker invariants, and
-executed without retry-until-green (every counted run is
-one fresh execution; its result is retained; the budget
-and the counting rule are fixed before execution).
+Plan 264 established two different facts:
 
-This is a **narrow emission-qualification corrective plus
-final pass**. It does not change wire format, add a task/
-channel/queue, raise quotas, inflate timeouts, alter
-RouterInfo/router.version, enable public transit, or revise
-the Plan 262 ownership semantics. Production `crates/*/src`
-diff must stay empty (test/lane/checker/workflow +
-planning/spec only), like Plans 261/263/264
-zero-production-diff precedent.
+1. deterministic/build/local-data epochs are stable when isolated per fresh mesh;
+2. the remaining failures occur when the unmanaged reference must emit a particular live input
+   during a narrow window.
 
-## 2. Why this scope is required
+Plan 265 therefore separates **opportunity generation** from **i2pr semantic correctness**.
+Every fresh-mesh attempt is retained. The external reference either supplies the predeclared
+input opportunity or it does not. Once that opportunity reaches the defined i2pr boundary, any
+semantic contradiction is a hard failure; it may not be relabeled as flakiness.
 
-Plan 264 proved the per-epoch gate restores determinism
-for builds and locally-driven data (5 epochs 2/2) but the
-unmanaged reference emits in windows:
+The final M11 closure shape is three fixed-budget scenario families:
 
-- `ibgw-data` fragments max-2 on some meshes, single-cell-
-  only on others (15/max2 vs 4/max1 on one SHA);
-- `receipt` starves (0/0/0) or partially delivers (8
-  ingress, 0 socket) with B3 holding;
-- `participant-data` forwards + far-sides on some meshes,
-  observes no genuine forward on others;
-- `replay` (and structurally `expiry`/`cancel`/
-  `session-close`/`restart`) cannot reach its experiment
-  without a forward cell.
+- `ibgw-data`
+- `receipt`
+- `participant-lifecycle`
 
-No further pre-send proof can make the unmanaged reference
-emit on demand, and longer runs only burn wall time into
-the same windows. The remaining work is purely the
-counting shape for emission rows plus the replay
-predicate hardening. Do not pre-register Plan 266; the M11
-dependency graph remains linear at Plan 265.
+Each family executes **exactly eight fresh-mesh attempts** on the same Plan 265 qualification
+SHA for a successful closure. There is no early stop on success and no extra attempt after the
+budget is exhausted. Early termination is permitted only for a semantic contradiction,
+security/resource invariant failure, or unclassifiable evidence; those outcomes retain/block
+the plan.
 
-If execution exposes a defect outside this emission
-boundary (e.g., a new crypto/fragment/pool routing defect
-with healthy-mesh stop provenance, or a second wire
-duplicate with B-side receipt), stop and register the
-narrow successor.
+The five Plan 264 deterministic epochs remain retained evidence because the production source
+tree is unchanged. Plan 265 MUST prove that equivalence mechanically.
+
+This is an evidence/harness corrective only. Production `crates/*/src` diff MUST remain empty.
+
+## 2. Research basis and why this shape is defensible
+
+The qualification design follows four established testing principles:
+
+- flaky/nondeterministic tests should remain visible rather than be erased by reruns; repeated
+  pass/fail behavior on unchanged code is itself evidence that must be tracked;
+- claims that a flaky test is "fixed" require empirical execution, not a developer label;
+- distributed-system testing is strongest when workload/opportunity generation is separated
+  from invariant checking;
+- the sample budget, stopping rule, classification rule, and primary success predicate must be
+  frozen before observing the new execution data.
+
+Reference material:
+
+- Google Testing Blog, "Flaky Tests at Google and How We Mitigate Them":
+  `https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html`
+- Microsoft Research, "A Study on the Lifecycle of Flaky Tests":
+  `https://www.microsoft.com/en-us/research/publication/a-study-on-the-lifecycle-of-flaky-tests/`
+- Antithesis deterministic simulation testing:
+  `https://antithesis.com/docs/resources/deterministic_simulation_testing/`
+- Pre-SPEC pre-specified analysis framework:
+  `https://pmc.ncbi.nlm.nih.gov/articles/PMC7487509/`
+
+The eight-attempt budget is an engineering bound, not a statistical reliability claim. Plan 264
+observed roughly window-like behavior around one opportunity in two for several emission paths;
+under an illustrative independent 50% opportunity rate, eight attempts yield a 96.5% chance of
+seeing at least two opportunities. Real attempts are not assumed independent and Plan 265 MUST
+NOT report that number as a confidence level. It only motivates a finite budget large enough to
+avoid another two-run false boundary while preventing open-ended sampling.
 
 ## 3. Frozen invariants
 
-### 3.1 Reference/network
+### 3.1 Product
+
+- No production `crates/*/src` changes.
+- Ordinary i2pr transit remains disabled.
+- No RouterInfo capability or `router.version` change.
+- No public transit config option.
+- No wire-format change.
+- No task/channel/queue addition.
+- No quota, timeout, message-size, retry-round, or admission-ceiling inflation.
+- No M12 implementation.
+
+### 3.2 Reference/network
 
 - i2pd 2.61.0 @ `635b013a612ff47278ef02acf8580a28e10e26c5`.
 - Reference source clean/unmodified.
-- Loopback-only qualification meshes.
+- Loopback-only mesh.
 - Public reseed/network disabled.
-- Fresh datadirs/ports/evidence root for every counted run.
-- No reference patching, LD_PRELOAD, fake peer state, or public
-  fallback.
+- Fresh datadirs, ports, and evidence root for every attempt.
+- Existing within-attempt bounded setup/send rounds remain frozen from Plan 264.
 
-### 3.2 Product authority
+### 3.3 Evidence
 
-- Ordinary i2pr transit remains disabled.
-- No RouterInfo transit capability.
-- No router.version change.
-- No public transit config option.
-- No M12 implementation.
-- No production `crates/*/src` diff (corrective-only).
+- Every dispatched attempt is retained in the denominator.
+- No attempt may be deleted, renamed diagnostic after seeing its result, or replaced.
+- No "first two successes count" rule.
+- No success-based early stopping. A successful closure executes attempts 1 through 8 for all
+  three families.
+- A hard semantic failure MAY stop immediately because it already falsifies closure; the closure
+  record must retain the failing attempt and no success claim may be made.
+- Raw reference logs are diagnostic only. Counted evidence remains sanitized routing facts,
+  counts, hashes, statuses, and payload digests.
+- Opportunity classification MUST be decided from an input-side/pre-semantic predicate, never
+  from the downstream success result.
 
-### 3.3 Harness ownership
+## 4. Manifest v5 and attempt classification
 
-- Existing finite timeouts remain (no inflation to fit).
-- No quota enlargement (no new tasks/channels/queues, no raised
-  ceilings).
-- The counting rule and budget are fixed BEFORE execution;
-  no "retry until two passes". Each counted run is one fresh
-  execution and its result is retained.
-- Receipt-first ordering is required per epoch group.
-- Diagnostic runs never satisfy final rows.
+Extend the Plan 264 manifest to schema v5. Every Plan 265 attempt MUST carry at minimum:
 
-### 3.4 Evidence
+    plan: 265
+    scenario: ibgw-data | receipt | participant-lifecycle
+    attempt: 1..8
+    attempt_budget: 8
+    qualification_sha: <exact same SHA for all 24 attempts>
+    production_baseline: 514bf1237e86fde21e17fc98c743eb52852edd99
+    opportunity: present | absent
+    opportunity_reason: <finite typed token>
+    semantic: pass | fail | not-applicable
+    external_completion: pass | miss | not-applicable
+    terminal_class: <finite typed token>
 
-- Raw reference logs remain diagnostic input only.
-- Counted evidence contains public hashes/ids/counts/status only.
-- Per-epoch manifests carry `plan: 265` + epoch + pass ids;
-  the composition gate from Plan 264 stays (extended only
-  as WP A states).
-- B-side endpoint receipts remain the only proof that a
-  duplicate reached the wire.
+The runner/composition checker MUST reject:
 
-## 4. Work package A — emission counting shape + replay hardening
+- missing or duplicate ordinals;
+- ordinals outside 1..8;
+- fewer/more than eight attempts for a successful family;
+- mixed qualification SHAs;
+- any `semantic: fail`;
+- any unrecognized/unclassified terminal;
+- opportunity absent with semantic pass/fail;
+- opportunity present with semantic `not-applicable`;
+- changing `attempt_budget` after the first manifest;
+- manifests from Plan 264/263 being silently promoted into Plan 265 family counts.
 
-Bounded and fail-closed; state the shape BEFORE executing:
+All eight attempts remain visible in the closure summary as
+`attempt -> opportunity -> semantic -> external_completion -> terminal`.
 
-1. Counting shape: define exactly how emission-dependent
-   rows close over fresh meshes (budget, retention rule,
-   which observable binds each row). Lock it in the
-   composition checker. The rule must not be re-tunable
-   mid-execution.
-2. Replay hardening: record the replay outcome kind
-   (forward vs drop vs unrecorded containment) as
-   diagnostic-only evidence (Plan 258 pattern: emitted,
-   never read by the pass predicate except through the
-   stated suppression predicate), so local containment
-   without a row counts distinctly from a wire duplicate
-   (which additionally requires the B-side endpoint
-   receipt). Resolve the Plan 264 singleton class with
-   stop provenance on the new SHA.
-3. Retained proofs: mesh-liveness + relay-NetDB +
-   B-floodfill prerequisites stay mandatory inside every
-   per-epoch run; SAM discipline unchanged.
-4. No tuning: timeouts, quotas, ceilings, retry budgets,
-   and message sizes stay exactly as in Plan 264. Any
-   change that would make an epoch pass by enlarging
-   resources is forbidden; stop instead.
+## 5. Scenario family A — IBGW large-input / multicell
 
-## 5. Work package B — per-epoch emission qualification
+Purpose: distinguish "the reference never delivered a large input to this live IBGW" from
+"i2pr received a large input and fragmented it incorrectly".
 
-Qualify the 8 open epochs per the WP A shape on one
-implementation SHA (manifest `plan: 265`), each pass on a
-fresh mesh:
+### 5.1 Opportunity predicate
 
-- IBGW multicell bounded emission twice;
-- receipt with tuple-bound socket delivery twice
-  (`terminal-garlic-self:0/ingress:≥1/socket:1`);
-- Participant far-side forwarding proof twice;
-- replay suppression twice (with outcome-kind evidence);
-- code-30, replay-expiry-cancel-session-close-restart
-  lifecycle rows twice (riding the forward cell);
-- fragment-id hardening; source locks; B-sender rows.
+Add test/harness-only input-side observation immediately before the live IBGW gateway processor
+is evaluated. Opportunity is PRESENT only when all are true:
 
-No cross-epoch or cross-pass evidence merge beyond the WP A
-counting rule.
+1. TunnelGateway addresses a live accepted `IbgwData` receive id;
+2. the registration is unexpired and role-correct;
+3. the nested standard I2NP byte length is greater than the canonical one-cell payload capacity
+   used by the existing Plan 258 fragmentation path;
+4. the input occurs inside the named Plan 265 attempt/send window.
 
-## 6. Compatibility / migration / security
+This observation MUST be captured before evaluating emitted cells. Do not infer opportunity from
+`GatewayDelivered`, cell count, or receiver receipt.
 
-No user migration. No change to config schema, CLI, SAM/I2CP
-public API, RouterInfo capabilities, router.version,
-public-network behavior, or default transit-disabled
-construction. Security interpretation unchanged from Plan 264
-(transport authentication at the owner; IBGW receive-id
-authorization; Participant/OBEP locks; self-loop only after
-decoded target == own hash; no synthetic peer; duplicates
-contained locally with B-side proof required for any wire-
-duplicate claim). No new dependency.
+Opportunity-absent terminal:
 
-## 7. Stop conditions
+    ibgw-large-input-not-observed
 
-Stop and register a new narrow corrective if:
+### 5.2 Semantic predicate
 
-- exact-pinned source contradicts any retained source-lock
-  premise;
-- a healthy-mesh run exposes a new routing defect (crypto,
-  fragment, pool, forward, dispatch) outside the harness seam
-  with stop provenance (including a second wire duplicate
-  WITH a third B-side endpoint receipt);
-- a single epoch cannot close under the WP A counting
-  shape within its fixed budget (that epoch owns a narrower
-  successor; do not widen this plan);
-- public network, false capability advertisement, reference
-  patching, quota/timeout enlargement, or a new dependency would
-  be needed.
+For every opportunity-present input:
 
-Do not weaken or retire any semantic row. Do not touch
-production routing code to go green.
+- exact receive id accepted;
+- `GatewayDelivered`;
+- at least two emitted TunnelData cells;
+- all cell sizes/counts remain within existing bounds;
+- next-router/next-tunnel tuple equals committed registration state;
+- zero gateway/forward failures.
 
-## 8. Required focused tests
+A large input followed by zero/one cells is a **semantic failure**, not an environmental miss.
 
-At minimum (all retained green plus):
+Family closure:
 
-1. three exact-pinned source locks;
-2. five runtime-neutral IBGW regressions;
-3. four service regressions;
-4. seven live-owner self-loop/negative rows;
-5. four Plan 263 harness rows;
-6. five Plan 264 composition rows;
-7. B SAM gate + B-sender rows;
-8. receipt flip + IBGW multicell + far-side re-proof on the
-   new SHA;
-9. replay outcome-kind rows (forward/drop/unrecorded
-   distinguished; wire duplicate requires B-side receipt);
-10. WP A counting-shape gate tests (budget fixed before
-    execution; over-budget runs rejected; cross-epoch merge
-    rejected outside the stated rule);
-11. missing env fails before network startup;
-12. ordinary product transit remains disabled.
+- exactly 8 attempts retained;
+- at least 2 opportunity-present semantic passes;
+- zero semantic failures;
+- all opportunity-absent attempts carry only the exact typed no-opportunity terminal.
 
-## 9. Exact verification floor
+The old B-ending receiver socket is not a closing predicate for this family; creator-owned
+receipt remains Scenario B.
+
+## 6. Scenario family B — B-sender creator-owned receipt
+
+Purpose: retain the genuine end-to-end mixed-router receipt requirement while separating an
+absent B-originated self-targeted action from failure of the corrected local IBGW seam.
+
+### 6.1 Opportunity predicate
+
+Opportunity is PRESENT only when the typed OBEP stage has already produced, before local-loop
+processing:
+
+- authenticated origin peer B;
+- delivery-type TUNNEL action;
+- `target_router == local_router_hash`;
+- action tunnel id equals a live counted creator-A IBGW receive id;
+- B-side LeaseSet resolution proof remains true.
+
+This is the boundary between upstream/reference opportunity generation and the Plan 262
+self-loop/IBGW behavior.
+
+Opportunity-absent terminals are finite and mutually exclusive:
+
+    receipt-no-b-originated-self-action
+    receipt-no-live-counted-ibgw-target
+
+A LeaseSet-resolution contradiction remains a setup/error terminal, not a harmless opportunity
+absence.
+
+### 6.2 i2pr semantic predicate
+
+For every opportunity-present attempt:
+
+- zero `terminal-garlic-self`;
+- local source-neutral IBGW ingress on the exact counted receive id;
+- multicell emission for the 1400-byte stimulus;
+- zero gateway/forward failures;
+- next router is creator A;
+- next tunnel is the creator-local inbound id;
+- six-field receipt tuple validates;
+- no synthetic `PeerId` or peer-index mutation.
+
+Any failure above is a hard semantic failure.
+
+### 6.3 External completion predicate
+
+`external_completion: pass` requires the creator receiver SAM socket to deliver the exact
+1400-byte 0xA5 payload/digest exactly once.
+
+If the i2pr semantic predicate passes but the reference creator never produces socket delivery,
+record:
+
+    receipt-reference-completion-miss
+
+That is not relabeled as an i2pr semantic failure, but it also does not satisfy the external
+interop requirement.
+
+Family closure:
+
+- exactly 8 attempts retained;
+- at least 2 attempts with opportunity present + semantic pass + external completion pass;
+- zero semantic failures;
+- all other attempts fully classified.
+
+## 7. Scenario family C — Participant forward + lifecycle chain
+
+Purpose: stop paying the same rare genuine Participant-forward prerequisite separately for
+`participant-data`, `replay`, `expiry`, `session-close`, `cancel`, and `restart`.
+Plan 264 already executes these rows as one chain; Plan 265 counts that chain honestly as one
+scenario without borrowing evidence across separate meshes.
+
+### 7.1 Opportunity predicate
+
+Add a test/harness-only input-side marker before Participant processing. Opportunity is PRESENT
+only when:
+
+- authenticated previous peer is the locked creator A peer;
+- TunnelData addresses the live accepted Participant receive id;
+- registration is live/unexpired;
+- the raw genuine cell is retained for the lifecycle experiment.
+
+Opportunity-absent terminal:
+
+    participant-input-not-observed
+
+Do not infer opportunity from a successful forward.
+
+### 7.2 Forward/external predicate
+
+For every opportunity-present attempt:
+
+- i2pr emits exactly the role-correct next-hop forward;
+- next router is B and next tunnel is the committed Participant next tunnel;
+- B endpoint observes that exact next tunnel;
+- digest/identity binding is preserved.
+
+A present Participant input with no correct local forward is a semantic failure. A correct local
+forward with no B endpoint observation is:
+
+    participant-reference-completion-miss
+
+and cannot count as a family success.
+
+### 7.3 Lifecycle chain on the same genuine cell
+
+After the forward + B far-side proof succeeds, execute the existing chain on that same retained
+genuine cell:
+
+1. **replay** — replay produces no second local semantic forward; explicitly classify
+   `duplicate-dropped`, `contained-no-output`, or `duplicate-forwarded`. Any
+   `duplicate-forwarded` is a semantic failure even if B does not receive it. B endpoint delta
+   must remain zero for the replayed copy.
+2. **expiry** — logical time beyond creation + lifetime drops the cell before transform and
+   expiry/sweep state returns to the expected baseline.
+3. **session-close** — A mapping removed, unrelated B mapping retained.
+4. **cancel** — every bounded owned dimension drains synchronously and new ingress is refused.
+5. **restart** — real owner/runtime restart contains zero old secret/live state, sessions are
+   re-established under the existing lane contract, and a fresh accepted build is possible.
+
+Every row gets its own terminal evidence key in the same attempt manifest. This is not
+cross-attempt evidence merging: one fresh mesh either completes the whole chain or it does not.
+
+Family closure:
+
+- exactly 8 attempts retained;
+- at least 2 attempts with opportunity present + correct forward + B far-side proof + all five
+  lifecycle rows passing;
+- zero semantic/lifecycle failures;
+- all other attempts fully classified.
+
+This Plan 265 family composition supersedes only Plan 264's "one manifest-named lifecycle epoch
+counts per mesh" rule for the six still-open rows. It does not rewrite Plan 264 history.
+
+## 8. Retained deterministic epochs and production equivalence
+
+Do not spend another external stochastic budget re-proving the five Plan 264 deterministic
+epochs. Retain their 2/2 manifests:
+
+- obep
+- ibgw
+- participant
+- reject
+- obep-data
+
+Plan 265 MUST instead prove:
+
+    git diff --name-only 514bf1237e86fde21e17fc98c743eb52852edd99..HEAD -- 'crates/*/src'
+
+is empty at the qualification SHA, and that Plan 265 modifications are limited to test/harness,
+checker/workflow, planning, and specification files.
+
+The closure record must explicitly distinguish:
+
+- production implementation authority: Plan 262 source tree;
+- deterministic external evidence: Plan 264;
+- fixed-budget opportunity-qualified emission/lifecycle evidence: Plan 265.
+
+No broad claim that all milestone rows were executed on one repository SHA is permitted.
+
+## 9. Composition gate
+
+Extend `scripts/check-m11-per-epoch-composition.sh` into the Plan 265 closure composer.
+
+A successful compose requires:
+
+1. retained Plan 264 five-epoch 2/2 evidence is referenced and integrity-checked;
+2. exactly 8 Plan 265 manifests for each of the three scenario families;
+3. all 24 Plan 265 manifests use one qualification SHA;
+4. attempt ordinals are exactly 1..8 for each family;
+5. no semantic failure or unclassified terminal exists;
+6. `ibgw-data`: >=2 opportunity-present semantic passes;
+7. `receipt`: >=2 opportunity-present semantic + external-completion passes;
+8. `participant-lifecycle`: >=2 opportunity-present forward/far-side/full-chain passes;
+9. every opportunity-absent run uses only a declared input-side no-opportunity terminal;
+10. no Plan 265 success can be synthesized by combining partial rows from different attempts.
+
+Add negative fixture/tests for:
+
+- 2 successes + 6 retained misses -> accepted only when all misses are valid no-opportunity /
+  reference-completion terminals and all semantic opportunities pass;
+- 7 successes + 1 semantic failure -> rejected;
+- 2 successes then missing attempts 3..8 -> rejected;
+- mixed SHAs -> rejected;
+- changed budget -> rejected;
+- duplicate ordinal -> rejected;
+- opportunity inferred from output -> static checker rejection;
+- partial lifecycle rows borrowed across attempts -> rejected;
+- replay local second-forward with zero B receipt -> rejected.
+
+## 10. Workflow and execution order
+
+Workflow dispatch MUST accept:
+
+    scenario
+    attempt
+
+and map exactly one fresh mesh to one manifest.
+
+Execution order is fixed before data collection:
+
+1. land Plan 265 harness/checker/schema changes;
+2. run all local tests/static gates;
+3. freeze qualification SHA;
+4. execute `ibgw-data` attempts 1..8;
+5. execute `receipt` attempts 1..8;
+6. execute `participant-lifecycle` attempts 1..8;
+7. do not add attempt 9;
+8. run the composer once against the complete retained set.
+
+Parallel hosted dispatch is permitted only if each attempt has disjoint datadirs/ports/evidence
+roots and ordinal assignment is fixed before dispatch. Completion order never changes ordinal.
+
+## 11. Security / resource / compatibility
+
+No user migration.
+
+No change to:
+
+- config schema;
+- CLI;
+- SAM/I2CP public API;
+- RouterInfo capabilities;
+- router.version;
+- public-network behavior;
+- default transit-disabled construction.
+
+Security interpretation remains:
+
+- network transport authentication at the transport owner;
+- IBGW authorization by live receive id + role + expiry/resource state, not build creator;
+- Participant/OBEP hop provenance peer-locked;
+- local self-loop only after decoded target equals own router hash;
+- replay fails on a second local semantic forward even if the reference drops it;
+- no synthetic peer identity.
+
+No new dependency.
+
+## 12. Required focused tests
+
+At minimum:
+
+1. retained Plan 262 IBGW ownership/self-loop regressions;
+2. retained Plan 263 liveness/prerequisite regressions;
+3. retained Plan 264 per-epoch/manifest regressions;
+4. Plan 265 input-side IBGW opportunity classification;
+5. large-input present + multicell pass;
+6. large-input present + one-cell output hard-fail;
+7. IBGW opportunity absent typed classification;
+8. receipt self-action opportunity classification;
+9. receipt semantic pass + socket pass;
+10. receipt semantic pass + reference-completion miss classification;
+11. receipt opportunity present + local ingress failure hard-fail;
+12. Participant input-side opportunity classification;
+13. Participant input present + no local forward hard-fail;
+14. local forward + B completion miss classification;
+15. full Participant/lifecycle chain pass;
+16. replay `duplicate-dropped` pass;
+17. replay `contained-no-output` pass only with zero second local forward and zero B delta;
+18. replay `duplicate-forwarded` hard-fail regardless of B receipt;
+19. manifest v5 exactly-8 ordinal coverage;
+20. budget/mixed-SHA/duplicate/missing/unclassified negative composition rows;
+21. lifecycle cross-attempt borrowing rejected;
+22. production source diff guard;
+23. missing environment fails before network startup;
+24. ordinary product transit remains disabled.
+
+## 13. Exact verification floor
 
 Run:
 
@@ -287,69 +507,94 @@ Run:
     bash scripts/check-exploratory-tunnel-evidence.sh
     git diff --check
 
-Run every new Plan 265 focused test exactly by name
-(retained Plan 263/264 rows plus counting-shape rows).
+Run every new Plan 265 focused test exactly by name.
 
-After the WP A shape lands, qualify every open epoch per
-that shape on the same implementation SHA. Closure also
-requires exact-head ordinary CI green on Quality
-(ubuntu/macos), MSRV, Dependency policy.
+After local verification, freeze the qualification SHA and execute the fixed 24-attempt external
+budget. Successful closure then requires exact-head ordinary CI green on:
 
-## 10. Acceptance criteria
+- Quality (ubuntu-latest)
+- Quality (macos-latest)
+- MSRV (Ubuntu)
+- Dependency policy
 
-Plan 265 closes only when all are directly evidenced (plus all
-retained Plan 264 criteria still green):
+## 14. Stop conditions
 
-1. Plan 264 retained evidence remains traceable.
-2. Emission rows re-proven on the implementation SHA per
-   the WP A shape (multicell + receipt + far-side).
-3. Three source locks hold.
-4. No production `crates/*/src` diff (corrective-only).
-5. Every mandatory epoch passes per the WP A counting
-   shape on the same SHA, each pass on a fresh mesh,
-   unmerged beyond the stated rule (per-epoch manifests
-   `plan: 265`).
-6. Replay singleton class resolved with outcome-kind
-   evidence (no open wire-duplicate question).
-7. Full workspace verification passes.
-8. Exact-head ordinary CI passes all four jobs.
-9. Registry/roadmap/support/conformance/dossier agree on Plan
-   265 as the sole dependency-ready M11 closure authority (or
-   mark the ADR 0026 one-family M11 experimental qualification
-   passed, if the matrix closes).
-10. No product default/capability/version/public-network change.
-11. No critical/high finding remains open.
+Stop and register a new narrow corrective only if:
 
-Only then may the unblock audit mark the ADR 0026 one-family M11
-experimental qualification passed and consider M12 planning
-ready.
+- a Plan 265 opportunity-present attempt produces any i2pr semantic contradiction;
+- replay produces a second local semantic forward;
+- a security/resource invariant regresses;
+- the input-side opportunity boundary cannot be instrumented without production code changes;
+- any family ends attempt 8 with fewer than two required successes;
+- an attempt cannot be classified by the frozen terminal vocabulary;
+- reference patching, public fallback, timeout/quota/message-size enlargement, or a new
+  dependency would be required.
 
-## 11. Closure evidence required
+If fewer than two successes occur within eight attempts but all i2pr semantic opportunities pass,
+the successor owns **qualification opportunity generation only**. Do not reopen Plan 262
+production routing without a semantic contradiction.
 
-Write `plans/closure/transit-tunnels/265-status.md` with
-implementation/closure SHAs, reference pin/version, retained
-source-lock proofs, WP A shape with no-production-diff
-proof, every per-epoch same-SHA manifest per the counting
-rule, replay resolution, full verification, exact-head CI,
-security/resource/concurrency/migration reviews, findings by
-severity, unblock audit. If a new boundary appears, close
-retained/blocked and register only the narrow successor exposed
-by the evidence.
+Do not create Plan 266 pre-emptively.
 
-## 12. Handoff order
+## 15. Acceptance criteria
 
-1. state the WP A counting shape + replay hardening (no
-   tuning, budget fixed upfront);
-2. re-prove multicell + receipt + far-side once
-   (baselines still hold on the new SHA);
-3. qualify every open epoch per the shape (fresh mesh per
-   pass);
-4. resolve the replay singleton class with outcome-kind
-   evidence;
-5. run the complete local verification floor;
-6. obtain exact-head ordinary CI green;
-7. close only if all §10 criteria are directly evidenced.
+Plan 265 closes only when all are directly evidenced:
 
-Do not create Plan 266 pre-emptively. The next plan is
-registered only if Plan 265 execution exposes a new bounded
-defect or qualification boundary.
+1. Plan 262 production source remains unchanged from `514bf123...`.
+2. Plan 264 five deterministic epochs remain integrity-checked and traceable.
+3. Manifest v5 + fixed budget + terminal vocabulary are committed before external execution.
+4. Exactly 24 Plan 265 attempts exist: 8 per family, fresh mesh each, one qualification SHA.
+5. Every attempt is retained and classified.
+6. No i2pr semantic failure occurs in any opportunity-present attempt.
+7. IBGW-data has >=2 large-input opportunity semantic passes.
+8. Receipt has >=2 full tuple-bound exact-once SAM completions.
+9. Participant-lifecycle has >=2 forward + B far-side + full lifecycle-chain passes.
+10. Replay has no second local semantic forward and no B-side duplicate receipt.
+11. No attempt beyond ordinal 8 exists for any family.
+12. Complete local verification passes.
+13. Exact-head ordinary CI passes all four jobs.
+14. Registry/roadmap/support/conformance/dossier/README agree on the final M11 disposition.
+15. No product default/capability/version/public-network change.
+16. No critical/high finding remains open.
+
+Only then may the closure/unblock audit mark ADR 0026 one-family M11 experimental qualification
+passed and make M12 planning dependency-ready. Public transit participation remains a separate
+future decision.
+
+## 16. Closure evidence required
+
+Write `plans/closure/transit-tunnels/265-status.md` containing:
+
+- implementation and closure SHAs;
+- production-source equivalence proof to Plan 262;
+- exact reference pin/version;
+- research-refined fixed-budget contract;
+- all 24 manifest paths in ordinal order;
+- per-family 8-row table:
+  `attempt | opportunity | semantic | external_completion | terminal`;
+- family success counts and no-opportunity/reference-completion counts;
+- replay outcome-kind evidence;
+- retained Plan 264 deterministic evidence references;
+- complete verification results;
+- exact-head CI run id + four jobs;
+- security/resource/concurrency/migration review;
+- findings by severity;
+- unblock audit.
+
+Do not report an empirical success fraction as a reliability estimate or anonymity/privacy
+claim.
+
+## 17. Handoff order
+
+1. implement manifest v5, finite terminal classes, and input-side opportunity markers;
+2. implement the fixed-budget composition gate and all negative tests;
+3. implement replay outcome-kind hardening;
+4. prove zero production source diff;
+5. run the complete local floor;
+6. freeze one qualification SHA;
+7. execute all 24 external attempts in the fixed order/budget;
+8. compose once;
+9. obtain exact-head ordinary CI;
+10. close M11 only if §15 passes exactly.
+
+No production routing changes and no post-result adjustment of the counting rule.
