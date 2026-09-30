@@ -353,10 +353,16 @@ diff) and re-proved receipt (`0/18/1` tuple-bound) + IBGW
 multicell (max 2) on `9bd2f39a`, but two same-SHA single-mesh
 attempts stop on sustainability signatures (single-cell-only
 window; receipt starvation). Plan 263 is retained-blocked;
-Plan 264 owns the single-mesh sustainability scoping.
+Plan 264 landed the per-epoch lane + composition gate
+(manifest v4, zero production diff) and proved the gate (5
+epochs 2/2 on `6ab9dc2d`), but emission epochs stop on window
+signatures (ibgw-data 1/2, receipt 0/2, participant-data 1/2,
+replay 0/2 setup stops). Plan 264 is retained-blocked;
+Plan 265 owns the per-epoch emission sustainability
+(counting shape + replay hardening).
 
 M11 remains non-advertised and receipt-capable qualification remains unclaimed;
-Plan 264 is the current authority. M12 floodfill remains deferred.
+Plan 265 is the current authority. M12 floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -381,9 +387,10 @@ they do not reopen the Plan 253/254 composition work. Plan 262 corrected the rem
 ingress semantics (dedicated gateway state, live receive-id/role/expiry binding, self-loop
 local seam with socket receipt proven). Plan 263 landed the sustainability harness
 (mesh-liveness + relay-NetDB + B-floodfill prerequisites, canonical SAM tail, zero
-production diff) with receipt + multicell re-proven. Plan 264 is the current forward
-authority for the remaining single-mesh scoping seam (per-epoch fresh-mesh qualification,
-zero production diff).
+production diff) with receipt + multicell re-proven. Plan 264 landed the per-epoch
+lane + composition gate (zero production diff) with 5 epochs closed 2/2 and emission
+windows bound. Plan 265 is the current forward authority for the remaining emission
+seam (counting shape + replay hardening, zero production diff).
 
 ### Plan 252 full-message transit composition invariant
 
@@ -421,8 +428,9 @@ boundary localized; Plan 262 is retained-blocked with IBGW ownership corrected a
 receipt proven live (diag4 `0/6/1` tuple-bound on `514bf12`), full matrix stopped on
 sustainability; Plan 263 is retained-blocked with the sustainability harness landed
 and receipt + multicell re-proven on `9bd2f39a`, single-mesh two-pass stopped on
-sustainability; Plan 264 single-mesh sustainability scoping is registered ready and
-is the next M11 execution authority.
+sustainability; Plan 264 is retained-blocked with the per-epoch gate proven (5
+epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 per-epoch emission
+sustainability is registered ready and is the next M11 execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
