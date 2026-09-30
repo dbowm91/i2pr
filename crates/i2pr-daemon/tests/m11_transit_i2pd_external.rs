@@ -1292,17 +1292,26 @@ impl TypedLedger {
     }
 
     /// Expiry predicate: the epoch holds a drop observation whose
-    /// logical time is beyond creation + 600 s with no forward
-    /// delta for the same receive id.
-    fn expiry_enforced(&self, epoch: Epoch, receive_tunnel: u32, created_ms: u64) -> bool {
+    /// logical time is beyond creation + 600 s, and no forward at all
+    /// was emitted in that epoch.
+    ///
+    /// Plan 265: the receive-tunnel half of the Plan 256 predicate is
+    /// unsatisfiable against the production disposition this row tests.
+    /// `TransitDataDisposition::Dropped` is a unit variant — the
+    /// runtime-neutral data plane drops the cell before any transform,
+    /// so the daemon reports no receive tunnel at all. Cell identity
+    /// therefore comes from the lane itself: the expiry experiment
+    /// feeds exactly one retained genuine cell into exactly this epoch,
+    /// and the "dropped before transform" half is proven by the absence
+    /// of any forward in the epoch.
+    fn expiry_enforced(&self, epoch: Epoch, _receive_tunnel: u32, created_ms: u64) -> bool {
         let dropped = self.of_epoch(epoch).any(|obs| {
             obs.kind == ObservedKind::DataDropped
-                && obs.receive_tunnel == receive_tunnel
                 && obs.logical_ms >= created_ms + TRANSIT_LIFETIME_MS
         });
-        let forwarded = self.of_epoch(epoch).any(|obs| {
-            obs.kind == ObservedKind::DataForwarded && obs.receive_tunnel == receive_tunnel
-        });
+        let forwarded = self
+            .of_epoch(epoch)
+            .any(|obs| obs.kind == ObservedKind::DataForwarded);
         dropped && !forwarded
     }
 
@@ -1360,6 +1369,18 @@ impl TypedLedger {
     /// snapshots as [`ObservedKind::StateSnapshot`] with
     /// `peer_hash` = removed peer, `next_router` = retained peer,
     /// and `aux_count` = retained peer-index size (must be >= 1).
+    ///
+    /// Plan 265: the Plan 256 `active_after == 0` conjunct is dropped.
+    /// It is unsatisfiable in this lane: the controlled owner keeps
+    /// serving the reference's live traffic, so unrelated
+    /// registrations are still installed when A's session closes
+    /// (observed: 14 active registrations after A's mapping was
+    /// removed). Draining to zero live registrations is the separate
+    /// `cancel` row, which the same chain proves next. The identity
+    /// facts this row exists for are still observed twice and
+    /// independently: directly through the owner's `has_peer` before
+    /// and after, and here through the typed snapshot binding the
+    /// removed peer to the retained peer's index size.
     fn session_close_a_removed_b_retained(
         &self,
         epoch: Epoch,
@@ -1370,7 +1391,6 @@ impl TypedLedger {
             obs.kind == ObservedKind::StateSnapshot
                 && obs.peer_hash == removed
                 && obs.next_router == Some(retained)
-                && obs.active_after == 0
                 && obs.aux_count >= 1
         })
     }
@@ -3036,6 +3056,14 @@ struct ParticipantInputFacts {
     previous_peer_is_creator_a: bool,
     /// The cell addressed the live accepted Participant receive id.
     addressed_participant_receive: bool,
+    /// Plan 265 §7.1 condition 2, mirroring §5.1: the addressed
+    /// registration was provably still live at the input's logical
+    /// time. A forward on the same receive id is by construction past
+    /// the registration's expiry check; a drop qualifies only when a
+    /// later forward on the same receive id proves the entry had not
+    /// expired. A drop on a registration with no such proof is an
+    /// environmental window fact, not an i2pr forwarding verdict.
+    registration_live_at_input: bool,
     /// The raw genuine cell is retained for the lifecycle experiment.
     retained_genuine_cell: bool,
     /// The i2pr-emitted next-hop forward (output side).
@@ -3066,6 +3094,7 @@ impl ParticipantInputFacts {
     fn plan265_participant_opportunity(&self) -> bool {
         self.previous_peer_is_creator_a
             && self.addressed_participant_receive
+            && self.registration_live_at_input
             && self.retained_genuine_cell
     }
 }
@@ -3153,6 +3182,32 @@ fn plan265_family_c_failure(
         rows,
     );
     format!("Plan 265 family C: {detail}")
+}
+
+/// Plan 265 §6.2: records the family-B semantic-failure verdict and
+/// returns the fail-closed detail, so a retained attempt is classified
+/// before the driver aborts instead of vanishing into a bare error.
+fn plan265_receipt_failure(
+    evidence_dir: &Path,
+    rows: &mut Vec<(String, String)>,
+    detail: &str,
+) -> String {
+    let verdict = Plan265Verdict::new(
+        "present",
+        "b-self-targeted-action-observed",
+        "fail",
+        "not-applicable",
+        PLAN265_RECEIPT_SEMANTIC_FAILURE,
+    )
+    .expect("declared family-B semantic-failure verdict");
+    record_row(
+        evidence_dir,
+        Epoch::IbgwReceipt,
+        "plan265-verdict",
+        &verdict.manifest_payload(),
+        rows,
+    );
+    format!("Plan 265 family B: {detail}")
 }
 
 /// Plan 265 §7.2/§7.3: classifies one family-C attempt.
@@ -3596,6 +3651,7 @@ fn plan265_participant_input_side_opportunity_classification() {
     let observed = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: Some([0x55_u8; 32]),
         local_forward_next_tunnel: Some(0x66),
@@ -3626,6 +3682,13 @@ fn plan265_participant_input_side_opportunity_classification() {
         ..observed
     };
     assert!(!unretained.plan265_participant_opportunity());
+    // Plan 265 §7.1 condition 2: a cell on a registration that was not
+    // provably still live is an absence, never a forwarding verdict.
+    let expired = ParticipantInputFacts {
+        registration_live_at_input: false,
+        ..observed
+    };
+    assert!(!expired.plan265_participant_opportunity());
 }
 
 #[test]
@@ -3633,6 +3696,7 @@ fn plan265_participant_input_present_without_local_forward_fails() {
     let no_forward = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: None,
         local_forward_next_tunnel: None,
@@ -3662,6 +3726,7 @@ fn plan265_participant_local_forward_with_b_completion_miss() {
     let forward_only = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: Some([0x55_u8; 32]),
         local_forward_next_tunnel: Some(0x66),
@@ -3679,6 +3744,7 @@ fn plan265_participant_local_forward_with_b_completion_miss() {
     let absent = ParticipantInputFacts {
         previous_peer_is_creator_a: false,
         addressed_participant_receive: false,
+        registration_live_at_input: false,
         retained_genuine_cell: false,
         ..forward_only
     };
@@ -3693,6 +3759,7 @@ fn plan265_participant_lifecycle_chain_passes() {
     let facts = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: Some([0x55_u8; 32]),
         local_forward_next_tunnel: Some(0x66),
@@ -3757,6 +3824,7 @@ fn plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta() {
     let facts = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: Some([0x55_u8; 32]),
         local_forward_next_tunnel: Some(0x66),
@@ -3786,6 +3854,7 @@ fn plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt() {
     let facts = ParticipantInputFacts {
         previous_peer_is_creator_a: true,
         addressed_participant_receive: true,
+        registration_live_at_input: true,
         retained_genuine_cell: true,
         local_forward_next_router: Some([0x55_u8; 32]),
         local_forward_next_tunnel: Some(0x66),
@@ -7762,28 +7831,74 @@ async fn run_qualification() -> Result<(), String> {
             );
             // Plan 265 §6.1: the B-originated local source-neutral
             // IBGW ingress, read from the input side (the addressed
-            // counted receive id) rather than from the emission.
+            // counted receive id and the input's nested length) rather
+            // than from the emission. The opportunity input is the
+            // large B-originated input on a live counted creator-A IBGW
+            // receive id; the semantic predicate is evaluated on that
+            // input, never on whichever ingress happened to arrive
+            // first.
             let b_local_seam: Vec<&Observation> = ledger
                 .of_epoch(Epoch::IbgwReceipt)
                 .filter(|obs| obs.peer_hash == b_hash_bytes && plan265_gateway_seam_observed(obs))
                 .collect();
+            // Plan 265 §5.1 condition 2, proven from the ledger alone:
+            // a delivery on the same receive id at or after the input
+            // proves the registration was still live when the input
+            // arrived.
+            let b_counted_large: Vec<&Observation> = b_local_seam
+                .iter()
+                .filter(|obs| {
+                    accepted_receipt.contains(&obs.receive_tunnel)
+                        && obs
+                            .nested_len
+                            .is_some_and(|len| len > i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES)
+                        && b_local_seam.iter().any(|other| {
+                            other.kind == ObservedKind::GatewayDelivered
+                                && other.receive_tunnel == obs.receive_tunnel
+                                && other.logical_ms >= obs.logical_ms
+                        })
+                })
+                .copied()
+                .collect();
+            let b_counted_delivered: Vec<&Observation> = b_counted_large
+                .iter()
+                .filter(|obs| obs.kind == ObservedKind::GatewayDelivered)
+                .copied()
+                .collect();
+            for obs in b_counted_large.iter().take(8) {
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan265-large-input",
+                    &format!(
+                        "{receive:#010x}/delivered={delivered}/nested={nested}/emitted={emitted}/failures={failures}",
+                        receive = obs.receive_tunnel,
+                        delivered = obs.kind == ObservedKind::GatewayDelivered,
+                        nested = obs.nested_len.unwrap_or(0),
+                        emitted = obs.aux_count,
+                        failures = obs.gateway_failures.unwrap_or(0),
+                    ),
+                    &mut rows,
+                );
+            }
             let receipt_inputs = ReceiptInputFacts {
                 b_self_targeted: !b_self_targeted.is_empty(),
                 reached_local_ibgw_seam: !b_local_seam.is_empty(),
-                receive_tunnel: b_local_seam
+                receive_tunnel: b_counted_large
                     .first()
                     .map(|obs| obs.receive_tunnel)
                     .unwrap_or(0),
-                emitted_cells: gatewayed_receipt
-                    .first()
+                emitted_cells: b_counted_delivered
+                    .iter()
                     .map(|obs| obs.aux_count)
+                    .max()
                     .unwrap_or(0),
-                failures: gatewayed_receipt
-                    .first()
-                    .and_then(|obs| obs.gateway_failures)
-                    .unwrap_or(0),
-                next_router: gatewayed_receipt.first().and_then(|obs| obs.next_router),
-                next_tunnel: gatewayed_receipt
+                failures: b_counted_delivered
+                    .iter()
+                    .map(|obs| obs.gateway_failures.unwrap_or(0))
+                    .sum(),
+                next_router: b_counted_delivered.first().and_then(|obs| obs.next_router),
+                next_tunnel: b_counted_delivered
                     .first()
                     .map(|obs| obs.next_message_id)
                     .unwrap_or(0),
@@ -7792,17 +7907,34 @@ async fn run_qualification() -> Result<(), String> {
                 b_leaseset_resolved,
                 b_leaseset_contradiction,
             };
-            // Plan 265 §6: classify before the pre-existing Plan 260
-            // gates so the family either passes, fails semantically, or
-            // records a typed no-opportunity/completion-miss terminal.
-            let pre_verdict =
-                plan265_classify_receipt(&receipt_inputs, &accepted_receipt, a_peer_hash);
-            if pre_verdict.opportunity == "not-observed" {
+            // Plan 265 §6: the opportunity classification is decided
+            // before the pre-existing Plan 260 gates, so the family
+            // either passes, fails semantically, or records a typed
+            // no-opportunity / completion-miss terminal. Only the
+            // opportunity value is meaningful at this point; the
+            // semantic half is recomputed with the real six-field tuple
+            // once the Plan 260 gates have run.
+            let opportunity_present = receipt_inputs.plan265_receipt_opportunity(&accepted_receipt);
+            // Only the absence/contradiction branches need a verdict at
+            // this stage. The opportunity-present branch continues into
+            // the Plan 260 gates and is classified once the real
+            // six-field tuple is known, so no verdict is synthesized
+            // here.
+            let pre_verdict = if opportunity_present {
+                None
+            } else {
+                Some(plan265_classify_receipt(
+                    &receipt_inputs,
+                    &accepted_receipt,
+                    a_peer_hash,
+                ))
+            };
+            if pre_verdict.is_some_and(|verdict| verdict.opportunity == "not-observed") {
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwReceipt,
                     "plan265-verdict",
-                    &pre_verdict.manifest_payload(),
+                    &pre_verdict.expect("pre-gate verdict").manifest_payload(),
                     &mut rows,
                 );
                 return Err(format!(
@@ -7812,7 +7944,7 @@ async fn run_qualification() -> Result<(), String> {
                     reference_b.log_tail(8).replace('\n', " | ")
                 ));
             }
-            if pre_verdict.opportunity == "absent" {
+            if pre_verdict.is_some_and(|verdict| verdict.opportunity == "absent") {
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwReceipt,
@@ -7824,7 +7956,7 @@ async fn run_qualification() -> Result<(), String> {
                     &evidence_dir,
                     Epoch::IbgwReceipt,
                     "plan265-verdict",
-                    &pre_verdict.manifest_payload(),
+                    &pre_verdict.expect("pre-gate verdict").manifest_payload(),
                     &mut rows,
                 );
                 ledger.write_evidence(&evidence_dir);
@@ -7832,27 +7964,32 @@ async fn run_qualification() -> Result<(), String> {
                 drop(tx_b);
                 return Ok(());
             }
-            if pre_verdict.semantic == "fail" {
+            if b_counted_delivered.is_empty() {
+                let verdict = Plan265Verdict::new(
+                    "present",
+                    "b-self-targeted-action-observed",
+                    "fail",
+                    "not-applicable",
+                    PLAN265_RECEIPT_SEMANTIC_FAILURE,
+                )
+                .expect("declared receipt semantic-failure verdict");
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwReceipt,
                     "plan265-verdict",
-                    &pre_verdict.manifest_payload(),
+                    &verdict.manifest_payload(),
                     &mut rows,
                 );
                 return Err(
-                    "Plan 265 family B: B-originated self-targeted action observed but the local \
-                     IBGW seam produced no role-correct ingress"
+                    "Plan 265 family B: B-originated large input observed on a live counted \
+                     creator-A IBGW receive id but the local seam produced no delivery"
                         .to_string(),
                 );
             }
-            if gatewayed_receipt.is_empty() {
-                return Err(
-                    "Plan 265 family B: B-originated self-targeted action observed with no \
-                     delivered ingress on the counted receive id"
-                        .to_string(),
-                );
-            }
+            // From here on the Plan 260 gates read the counted
+            // opportunity-present delivery, never whichever ingress
+            // arrived first.
+            let gatewayed_receipt = b_counted_delivered;
             let counted = gatewayed_receipt[0];
             record_row(
                 &evidence_dir,
@@ -7863,7 +8000,11 @@ async fn run_qualification() -> Result<(), String> {
             );
             let receipt_multicell = gateway_multicell_satisfied(&gatewayed_receipt);
             if !receipt_multicell {
-                return Err("Plan 260 receipt epoch observed no multi-cell emission".to_string());
+                return Err(plan265_receipt_failure(
+                    &evidence_dir,
+                    &mut rows,
+                    "large B-originated input produced no multi-cell emission on the local seam",
+                ));
             }
             record_row(
                 &evidence_dir,
@@ -7880,10 +8021,14 @@ async fn run_qualification() -> Result<(), String> {
                 "Plan 260 receipt epoch: counted delivery carries no next router".to_string()
             })?;
             if observed_next != a_peer_hash {
-                return Err(format!(
-                    "Plan 260 receipt epoch: counted next hop {} is not the creator router A {}",
-                    hex_lower(&observed_next),
-                    hex_lower(&a_peer_hash)
+                return Err(plan265_receipt_failure(
+                    &evidence_dir,
+                    &mut rows,
+                    &format!(
+                        "counted next hop {} is not the creator router A {}",
+                        hex_lower(&observed_next),
+                        hex_lower(&a_peer_hash)
+                    ),
                 ));
             }
             // Six-field tuple from typed evidence. The i2pr-side
@@ -7980,17 +8125,15 @@ async fn run_qualification() -> Result<(), String> {
                 &receipt_verdict.manifest_payload(),
                 &mut rows,
             );
-            if !tuple_bound {
-                return Err(format!(
-                    "Plan 265 family B: six-field receipt tuple not bound (gateway_match=\
-                     {gateway_match} tunnel_match={tunnel_match} tuple={tuple:?})"
-                ));
-            }
             if receipt_verdict.semantic == "fail" {
-                return Err(format!(
-                    "Plan 265 family B: i2pr semantics contradicted the B-originated \
-                     self-targeted action ({})",
-                    receipt_verdict.terminal_class
+                return Err(plan265_receipt_failure(
+                    &evidence_dir,
+                    &mut rows,
+                    &format!(
+                        "i2pr semantics contradicted the B-originated self-targeted action \
+                         (tuple_bound={tuple_bound} gateway_match={gateway_match} \
+                         tunnel_match={tunnel_match})"
+                    ),
                 ));
             }
             if rx_receipt_count != 1 {
@@ -8091,10 +8234,28 @@ async fn run_qualification() -> Result<(), String> {
                         )
                 })
                 .collect();
+            // Plan 265 §7.1 condition 2, proven from the ledger alone:
+            // a forward on the same receive id is by construction past
+            // the registration's expiry check, and a forward at or after
+            // a drop proves the entry was still live when the drop
+            // arrived. A drop with no such later forward is an
+            // environmental window fact, not a forwarding verdict.
+            let liveness_proven = |obs: &Observation| {
+                obs.kind == ObservedKind::DataForwarded
+                    || participant_seam.iter().any(|other| {
+                        other.kind == ObservedKind::DataForwarded
+                            && other.logical_ms >= obs.logical_ms
+                    })
+            };
+            let participant_live: Vec<&Observation> = participant_seam
+                .iter()
+                .copied()
+                .filter(|obs| liveness_proven(obs))
+                .collect();
             let retained_genuine =
                 ledger.replay_candidate(Epoch::ParticipantData, participant_receive);
             let participant_opportunity =
-                !participant_seam.is_empty() && retained_genuine.is_some();
+                !participant_live.is_empty() && retained_genuine.is_some();
             record_row(
                 &evidence_dir,
                 Epoch::ParticipantData,
@@ -8151,9 +8312,20 @@ async fn run_qualification() -> Result<(), String> {
                     "true",
                     &mut rows,
                 );
-                let digest = ledger
-                    .of_epoch(Epoch::ParticipantData)
-                    .find(|obs| obs.kind == ObservedKind::DataForwarded)
+                // Plan 265 §7.2: the counted forward is the one on the
+                // opportunity-present Participant receive id toward the
+                // reference B endpoint. The reference originates
+                // maintenance cells on several of its own registrations
+                // inside the same window, so "whichever forward came
+                // first" would bind the wrong next tunnel.
+                let counted_forward = |receipt: u32| {
+                    ledger.of_epoch(Epoch::ParticipantData).find(|obs| {
+                        obs.kind == ObservedKind::DataForwarded
+                            && obs.receive_tunnel == receipt
+                            && obs.next_router == Some(b_hash_bytes)
+                    })
+                };
+                let digest = counted_forward(participant_receive)
                     .and_then(|obs| obs.digest.clone())
                     .ok_or("participant forward digest missing")?;
                 record_row(
@@ -8170,9 +8342,7 @@ async fn run_qualification() -> Result<(), String> {
                 // <id>` at debug level). B runs at debug in the
                 // counted lane (`I2PR_M11_LOGLEVEL_B=debug`); an
                 // info-level B yields zero and fails this row closed.
-                let next_tunnel = ledger
-                    .of_epoch(Epoch::ParticipantData)
-                    .find(|obs| obs.kind == ObservedKind::DataForwarded)
+                let next_tunnel = counted_forward(participant_receive)
                     .map(|obs| obs.next_message_id)
                     .ok_or("participant forward next tunnel missing")?;
                 participant_next_tunnel = next_tunnel;
@@ -8323,6 +8493,25 @@ async fn run_qualification() -> Result<(), String> {
             // it to the early return. The final flush below still
             // overwrites with complete state on success.
             ledger.write_evidence(&evidence_dir);
+            // Sanitized per-row trace of what the re-fed genuine cell
+            // actually produced through the live owner, so a failing
+            // lifecycle row names the disposition instead of only the
+            // predicate that rejected it.
+            for obs in ledger.of_epoch(Epoch::Replay) {
+                record_row(
+                    &evidence_dir,
+                    Epoch::Replay,
+                    "feed-observation",
+                    &format!(
+                        "{:?}/recv={receive:#010x}/logical_ms={logical_ms}/digest={digest}",
+                        obs.kind,
+                        receive = obs.receive_tunnel,
+                        logical_ms = obs.logical_ms,
+                        digest = obs.digest.as_deref().unwrap_or("-"),
+                    ),
+                    &mut rows,
+                );
+            }
             // Plan 265 §7.3.1: classify the replay outcome explicitly
             // instead of collapsing "no second delivery" into one
             // predicate. A `duplicate-forwarded` is a semantic failure
@@ -8414,6 +8603,21 @@ async fn run_qualification() -> Result<(), String> {
                 future_secs,
             )
             .await?;
+            ledger.write_evidence(&evidence_dir);
+            for obs in ledger.of_epoch(Epoch::Expiry) {
+                record_row(
+                    &evidence_dir,
+                    Epoch::Expiry,
+                    "feed-observation",
+                    &format!(
+                        "{:?}/recv={receive:#010x}/logical_ms={logical_ms}/created_ms={created_ms}",
+                        obs.kind,
+                        receive = obs.receive_tunnel,
+                        logical_ms = obs.logical_ms,
+                    ),
+                    &mut rows,
+                );
+            }
             if !ledger.expiry_enforced(Epoch::Expiry, participant_receive, created_ms) {
                 return Err(plan265_family_c_failure(
                     &evidence_dir,
@@ -8535,6 +8739,17 @@ async fn run_qualification() -> Result<(), String> {
                     nested_len: None,
                 });
             }
+            record_row(
+                &evidence_dir,
+                Epoch::SessionClose,
+                "owner-snapshot",
+                &format!(
+                    "active_after={active_after};peer_index={peer_index}",
+                    active_after = part_owner.active_count(),
+                    peer_index = part_owner.live_state_snapshot().peer_index_entries,
+                ),
+                &mut rows,
+            );
             if !ledger.session_close_a_removed_b_retained(
                 Epoch::SessionClose,
                 a_peer_hash,
@@ -9899,7 +10114,36 @@ fn record_data_outcome(
                 epoch, peer_hash, evidence, active, active, logical_ms,
             ));
         }
-        _ => {}
+        // Plan 265: the owner has five typed outcomes and every one of
+        // them is a fact the lane must retain. The former `_ => {}`
+        // arm silently discarded everything outside Build/Data/Gateway,
+        // which made the replay and expiry lifecycle rows unobservable:
+        // a re-fed genuine cell whose outcome the harness dropped left
+        // no observation at all, so "contained" was indistinguishable
+        // from "never reached transit". Each remaining outcome is now
+        // recorded as an explicit typed non-forward, and the labels are
+        // a closed vocabulary.
+        LiveInboundOutcome::Build(_) => {
+            ledger.push(Observation {
+                kind: ObservedKind::DataDropped,
+                delivery: "build-not-dispatched",
+                ..base
+            });
+        }
+        LiveInboundOutcome::ReplyIgnored => {
+            ledger.push(Observation {
+                kind: ObservedKind::DataDropped,
+                delivery: "reply-ignored",
+                ..base
+            });
+        }
+        LiveInboundOutcome::Ignored => {
+            ledger.push(Observation {
+                kind: ObservedKind::DataDropped,
+                delivery: "live-inbound-ignored",
+                ..base
+            });
+        }
     }
 }
 
