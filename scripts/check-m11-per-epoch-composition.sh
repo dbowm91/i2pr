@@ -146,13 +146,15 @@ done
 if ! grep -qF 'const PLAN265_ATTEMPT_BUDGET: usize = 8;' "${DRIVER}"; then
   fail "driver must freeze the per-family attempt budget at 8"
 fi
-# ---- Plan 265 static invariant: the opportunity predicates are input-side
-# The opportunity boundary must never read the downstream success
-# result. This is a source-level property, so it is enforced here: an
-# opportunity predicate that mentions any output-side field is a
-# violation regardless of what the unit tests assert.
-if ! python3 - "${DRIVER}" <<'PYOPPORTUNITY'
-import re
+# Plan 265 section 3.3: the input-side opportunity boundary must never
+# read the downstream success result. This is a source-level property,
+# so it is enforced statically here: an opportunity predicate that
+# mentions any non-input-side field is a violation regardless of what
+# the unit tests assert. The matcher is brace-balanced and keeps every
+# statement on one physical line, so no string literal can straddle a
+# line break.
+check_input_side() {
+python3 - "${1:-$DRIVER}" <<'PYOPPORTUNITY'
 import sys
 from pathlib import Path
 
@@ -160,7 +162,9 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 FORBIDDEN = {
     "plan265_ibgw_opportunity": (
         "emitted_cells",
+        "aux_count",
         "failures",
+        "gateway_failures",
         "next_router",
         "next_tunnel",
     ),
@@ -179,24 +183,55 @@ FORBIDDEN = {
         "replay",
     ),
 }
+OPENERS = "{(["
+
+
+def body_of(name):
+    start = source.find("fn " + name + "(&self")
+    if start < 0:
+        return None
+    index = source.index("{", start)
+    depth = 0
+    for cursor in range(index, len(source)):
+        char = source[cursor]
+        if char in OPENERS:
+            depth += 1
+        elif char in "})]":
+            depth -= 1
+            if depth == 0:
+                return source[index : cursor + 1]
+    return None
+
+
 bad = []
 for name, tokens in FORBIDDEN.items():
-    match = re.search(r"fn " + name + r"\(&self.*?\n    \}", source, re.S)
-    if match is None:
+    body = body_of(name)
+    if body is None:
         bad.append(f"{name}: predicate not found")
         continue
-    body = match.group(0)
     for token in tokens:
         if token in body:
-            bad.append(f"{name}: reads output-side field {token}")
+            bad.append(f"{name}: reads non-input-side field {token}")
 if bad:
     print("; ".join(bad), file=sys.stderr)
     raise SystemExit(1)
 PYOPPORTUNITY
-then
-  fail "Plan 265 input-side opportunity predicate reads an output-side field"
+}
+
+# The static lane (no arguments) runs the guard inline; `--check-input-side`
+# exposes it to the external runner so there is exactly one implementation.
+if [[ "${1:-}" == "--check-input-side" ]]; then
+  if ! check_input_side "${2:-$DRIVER}"; then
+    echo "check-m11-per-epoch-composition: Plan 265 input-side opportunity predicate reads a non-input-side field" >&2
+    exit 1
+  fi
+  echo "check-m11-per-epoch-composition: input-side opportunity predicates are input-side only"
+  exit 0
 fi
 
+if ! check_input_side "$DRIVER"; then
+  fail "Plan 265 input-side opportunity predicate reads a non-input-side field"
+fi
 # ---- Retained Plan 264 evidence index ---------------------------------
 retained_rows=()
 if [[ -f "${RETAINED_INDEX}" ]]; then
@@ -843,6 +878,27 @@ PYLEGACY
   if compose_265 "${fixture_root}/index.tsv" --retained "${retained_few[@]}" --attempt \
       "${A[@]}" "${B[@]}" "${C[@]}" >/dev/null 2>&1; then
     echo "check-m11-per-epoch-composition: self-test fixture missing-retained-manifest-rejected expected reject=1 got 0" >&2
+    fixture_rc=1
+  fi
+
+  # The "opportunity inferred from output" rule has a static half too:
+  # a deliberately output-reading opportunity predicate must be
+  # rejected by the shared source-level guard.
+  mutated="${fixture_root}/driver-mutated.rs"
+  python3 - "${DRIVER}" "${mutated}" <<'PYMUTATE'
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+needle = "if !self.registration_live_at_input {"
+if needle not in source:
+    raise SystemExit("input-side liveness conjunct not found; guard fixture cannot be built")
+Path(sys.argv[2]).write_text(
+    source.replace(needle, "if self.aux_count == 0 {", 1), encoding="utf-8"
+)
+PYMUTATE
+  if check_input_side "${mutated}" >/dev/null 2>&1; then
+    echo "check-m11-per-epoch-composition: self-test fixture static-opportunity-inferred-from-output-rejected expected reject=1 got 0" >&2
     fixture_rc=1
   fi
 

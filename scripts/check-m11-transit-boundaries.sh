@@ -498,7 +498,7 @@ fi
 #     the composer owns the fixed-budget closure gate and its negative
 #     fixtures. Production crates/*/src must stay untouched (rule 36's
 #     frozen numerics and this plan's diff guard both hold).
-for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET: usize = 8' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_LIFECYCLE_ROWS' 'plan265_ibgw_opportunity' 'plan265_receipt_opportunity' 'plan265_participant_opportunity' 'ReplayOutcomeKind'; do
+for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET: usize = 8' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_LIFECYCLE_ROWS' 'registration_live_at_input' 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_classify_ibgw' 'plan265_receipt_opportunity' 'plan265_receipt_semantic_pass' 'plan265_classify_receipt' 'plan265_participant_opportunity' 'plan265_classify_participant' 'ReplayOutcomeKind'; do
     if ! rg -qF "$symbol" "$external_driver"; then
         fail "external driver missing Plan 265 symbol $symbol"
     fi
@@ -518,7 +518,20 @@ done
 if ! rg -qF 'compose-265' "$root/scripts/check-m11-per-epoch-composition.sh"; then
     fail "Plan 265 fixed-budget composition mode missing from check-m11-per-epoch-composition.sh"
 fi
-for fixture in 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'two-successes-then-missing-ordinals-rejected' 'duplicate-ordinal-rejected' 'mixed-qualification-sha-rejected' 'changed-attempt-budget-rejected' 'unclassified-terminal-rejected' 'opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'plan264-manifest-promotion-rejected' 'missing-retained-manifest-rejected'; do
+for token in 'check_input_side' 'check-input-side' 'PYOPPORTUNITY'; do
+    if ! rg -qF "$token" "$root/scripts/check-m11-per-epoch-composition.sh"; then
+        fail "Plan 265 shared input-side opportunity guard missing $token"
+    fi
+done
+# The external runner must consume that same shared guard, never a
+# second, drifting copy of it.
+if [[ "$(rg -cF 'check-m11-per-epoch-composition.sh" --check-input-side' "$external_runner" || true)" != "1" ]]; then
+    fail "external runner must call the shared input-side opportunity guard exactly once"
+fi
+if rg -qF 'PYOPPORTUNITY' "$external_runner"; then
+    fail "external runner must not carry its own copy of the input-side opportunity guard"
+fi
+for fixture in 'two-successes-plus-six-retained-misses-accepted' 'seven-successes-plus-one-semantic-failure-rejected' 'two-successes-then-missing-ordinals-rejected' 'duplicate-ordinal-rejected' 'mixed-qualification-sha-rejected' 'changed-attempt-budget-rejected' 'unclassified-terminal-rejected' 'opportunity-inferred-from-output-rejected' 'static-opportunity-inferred-from-output-rejected' 'partial-lifecycle-rows-borrowed-rejected' 'replay-duplicate-forwarded-rejected' 'plan264-manifest-promotion-rejected' 'missing-retained-manifest-rejected'; do
     if ! rg -qF "$fixture" "$root/scripts/check-m11-per-epoch-composition.sh"; then
         fail "Plan 265 composition fixture missing: $fixture"
     fi

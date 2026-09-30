@@ -2684,6 +2684,14 @@ struct IbgwInputFacts {
     receive_tunnel: u32,
     /// Encoded nested standard I2NP byte length the input carried.
     nested_len: Option<usize>,
+    /// Plan 265 §5.1 condition 2: the addressed registration was
+    /// provably still live at the input's logical time. The registry
+    /// entry is the same object for the whole lifetime, so a delivery
+    /// on the same receive id at or after the input proves the entry
+    /// had not expired. `false` means the expiry check may have
+    /// dropped the input, which is an environmental window fact, not an
+    /// i2pr fragmentation verdict.
+    registration_live_at_input: bool,
     /// Emitted TunnelData cells (output side).
     emitted_cells: usize,
     /// Gateway/forward failures on the seam (output side).
@@ -2701,16 +2709,27 @@ impl IbgwInputFacts {
     /// cell is still an opportunity (and therefore a semantic
     /// failure) rather than an invisible miss.
     fn from_observations(observations: &[&Observation], accepted: &[u32]) -> Vec<Self> {
+        // Plan 265 §5.1 condition 2, proven from the ledger alone: a
+        // delivery on the same receive id at or after the input proves
+        // the registration was still live when the input arrived.
         observations
             .iter()
-            .map(|obs| Self {
-                reached_gateway_seam: plan265_gateway_seam_observed(obs),
-                receive_tunnel: obs.receive_tunnel,
-                nested_len: obs.nested_len,
-                emitted_cells: obs.aux_count,
-                failures: obs.gateway_failures.unwrap_or(0),
-                next_router: obs.next_router,
-                next_tunnel: obs.next_message_id,
+            .map(|obs| {
+                let live = observations.iter().any(|other| {
+                    other.kind == ObservedKind::GatewayDelivered
+                        && other.receive_tunnel == obs.receive_tunnel
+                        && other.logical_ms >= obs.logical_ms
+                });
+                Self {
+                    reached_gateway_seam: plan265_gateway_seam_observed(obs),
+                    receive_tunnel: obs.receive_tunnel,
+                    nested_len: obs.nested_len,
+                    registration_live_at_input: live,
+                    emitted_cells: obs.aux_count,
+                    failures: obs.gateway_failures.unwrap_or(0),
+                    next_router: obs.next_router,
+                    next_tunnel: obs.next_message_id,
+                }
             })
             .filter(|facts| accepted.contains(&facts.receive_tunnel))
             .collect()
@@ -2742,10 +2761,24 @@ impl IbgwInputFacts {
         if !addressed {
             return false;
         }
+        if !self.registration_live_at_input {
+            return false;
+        }
         match self.nested_len {
             Some(len) => len > i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES,
             None => false,
         }
+    }
+}
+
+impl IbgwInputFacts {
+    /// Plan 265 §5.1 condition 3 on its own: this ingress carried a
+    /// nested standard I2NP message larger than the canonical one-cell
+    /// payload capacity, regardless of liveness. Used only for the
+    /// sanitized diagnostic trace, never by the opportunity predicate.
+    fn received_large_input(&self) -> bool {
+        self.nested_len
+            .is_some_and(|len| len > i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES)
     }
 }
 
@@ -2763,16 +2796,26 @@ fn plan265_gateway_seam_observed(obs: &Observation) -> bool {
 /// ingress. A large input followed by zero or one emitted cell is a
 /// semantic failure, never an environmental miss.
 ///
-/// `committed_router` is the authenticated next router the accepted
-/// IBGW registration committed from its short build record; the
-/// next-tunnel half of the committed tuple is proven as a nonzero
-/// registration value, because the short-build evidence carries the
-/// next *message* id rather than the role's next tunnel id.
+/// `committed` maps every accepted IBGW receive id to the
+/// authenticated next router that registration committed from its own
+/// short-build record. It is looked up per addressed id because the
+/// reference rebuilds its inbound tunnel repeatedly inside one attempt
+/// and each rebuild commits its own next hop. The next-tunnel half of
+/// the committed tuple is proven as a nonzero registration value,
+/// because the short-build evidence carries the next *message* id
+/// rather than the role's next tunnel id.
 fn plan265_ibgw_semantic_pass(
     facts: &IbgwInputFacts,
     accepted: &[u32],
-    committed_router: [u8; 32],
+    committed: &[(u32, [u8; 32])],
 ) -> bool {
+    let Some(committed_router) = committed
+        .iter()
+        .find(|(receive, _router)| *receive == facts.receive_tunnel)
+        .map(|(_receive, router)| *router)
+    else {
+        return false;
+    };
     accepted.contains(&facts.receive_tunnel)
         && facts.emitted_cells >= 2
         && facts.failures == 0
@@ -2784,7 +2827,7 @@ fn plan265_ibgw_semantic_pass(
 fn plan265_classify_ibgw(
     inputs: &[IbgwInputFacts],
     accepted: &[u32],
-    committed_router: [u8; 32],
+    committed: &[(u32, [u8; 32])],
 ) -> Plan265Verdict {
     let mut opportunity_count = 0_usize;
     let mut all_pass = true;
@@ -2793,7 +2836,7 @@ fn plan265_classify_ibgw(
             continue;
         }
         opportunity_count += 1;
-        if !plan265_ibgw_semantic_pass(facts, accepted, committed_router) {
+        if !plan265_ibgw_semantic_pass(facts, accepted, committed) {
             all_pass = false;
         }
     }
@@ -3243,6 +3286,7 @@ fn plan265_ibgw_opportunity_is_input_side_only() {
         reached_gateway_seam: true,
         receive_tunnel: 0x9201,
         nested_len: Some(i2pr_tunnel::MAX_FRAGMENT_BODY_BYTES + 1),
+        registration_live_at_input: true,
         emitted_cells: 1,
         failures: 0,
         next_router: None,
@@ -3269,22 +3313,38 @@ fn plan265_ibgw_opportunity_is_input_side_only() {
         ..one_cell
     };
     assert!(!not_reached.plan265_ibgw_opportunity(&accepted));
+    // Plan 265 §5.1 condition 2: a large input addressed to a
+    // registration that was not provably still live is an expired
+    // registration's window fact, not an i2pr fragmentation verdict.
+    let expired = IbgwInputFacts {
+        registration_live_at_input: false,
+        ..one_cell
+    };
+    assert!(!expired.plan265_ibgw_opportunity(&accepted));
+    // The same facts with the registration proven live are an
+    // opportunity, so the liveness conjunct is the only difference.
+    let live = IbgwInputFacts {
+        registration_live_at_input: true,
+        ..one_cell
+    };
+    assert!(live.plan265_ibgw_opportunity(&accepted));
 }
 
 #[test]
 fn plan265_ibgw_large_input_multicell_passes() {
     let accepted = [0x9201_u32];
-    let committed = ([0x11_u8; 32], 0x77_u32);
+    let committed = vec![(0x9201_u32, [0x11_u8; 32])];
     let inputs = [IbgwInputFacts {
         reached_gateway_seam: true,
         receive_tunnel: 0x9201,
         nested_len: Some(1_500),
+        registration_live_at_input: true,
         emitted_cells: 2,
         failures: 0,
-        next_router: Some(committed.0),
-        next_tunnel: committed.1,
+        next_router: Some(committed[0].1),
+        next_tunnel: 0x77,
     }];
-    let verdict = plan265_classify_ibgw(&inputs, &accepted, committed.0);
+    let verdict = plan265_classify_ibgw(&inputs, &accepted, &committed);
     assert_eq!(verdict.opportunity, "present");
     assert_eq!(verdict.semantic, "pass");
     assert_eq!(verdict.terminal_class, PLAN265_IBGW_SUCCESS);
@@ -3297,17 +3357,18 @@ fn plan265_ibgw_large_input_multicell_passes() {
 #[test]
 fn plan265_ibgw_large_input_single_cell_is_semantic_failure() {
     let accepted = [0x9201_u32];
-    let committed = ([0x11_u8; 32], 0x77_u32);
+    let committed = vec![(0x9201_u32, [0x11_u8; 32])];
     let inputs = [IbgwInputFacts {
         reached_gateway_seam: true,
         receive_tunnel: 0x9201,
         nested_len: Some(1_500),
+        registration_live_at_input: true,
         emitted_cells: 1,
         failures: 0,
-        next_router: Some(committed.0),
-        next_tunnel: committed.1,
+        next_router: Some(committed[0].1),
+        next_tunnel: 0x77,
     }];
-    let verdict = plan265_classify_ibgw(&inputs, &accepted, committed.0);
+    let verdict = plan265_classify_ibgw(&inputs, &accepted, &committed);
     assert_eq!(verdict.opportunity, "present");
     assert_eq!(verdict.semantic, "fail");
     assert_eq!(verdict.terminal_class, PLAN265_IBGW_SEMANTIC_FAILURE);
@@ -3318,7 +3379,7 @@ fn plan265_ibgw_large_input_single_cell_is_semantic_failure() {
         ..inputs[0]
     }];
     assert_eq!(
-        plan265_classify_ibgw(&failing, &accepted, committed.0).semantic,
+        plan265_classify_ibgw(&failing, &accepted, &committed).semantic,
         "fail"
     );
     // A next tuple that does not equal committed registration state is
@@ -3329,7 +3390,7 @@ fn plan265_ibgw_large_input_single_cell_is_semantic_failure() {
         ..inputs[0]
     }];
     assert_eq!(
-        plan265_classify_ibgw(&misrouted, &accepted, committed.0).semantic,
+        plan265_classify_ibgw(&misrouted, &accepted, &committed).semantic,
         "fail"
     );
 }
@@ -3337,9 +3398,9 @@ fn plan265_ibgw_large_input_single_cell_is_semantic_failure() {
 #[test]
 fn plan265_ibgw_opportunity_absent_is_typed() {
     let accepted = [0x9201_u32];
-    let committed = ([0x11_u8; 32], 0x77_u32);
+    let committed = vec![(0x9201_u32, [0x11_u8; 32])];
     // No large input at all: the one declared no-opportunity terminal.
-    let verdict = plan265_classify_ibgw(&[], &accepted, committed.0);
+    let verdict = plan265_classify_ibgw(&[], &accepted, &committed);
     assert_eq!(verdict.opportunity, "absent");
     assert_eq!(verdict.semantic, "not-applicable");
     assert_eq!(verdict.terminal_class, PLAN265_IBGW_NO_OPPORTUNITY);
@@ -3350,12 +3411,13 @@ fn plan265_ibgw_opportunity_absent_is_typed() {
         reached_gateway_seam: true,
         receive_tunnel: 0x9201,
         nested_len: Some(200),
+        registration_live_at_input: true,
         emitted_cells: 1,
         failures: 0,
-        next_router: Some(committed.0),
-        next_tunnel: committed.1,
+        next_router: Some(committed[0].1),
+        next_tunnel: 0x77,
     }];
-    let classified = plan265_classify_ibgw(&single_only, &accepted, committed.0);
+    let classified = plan265_classify_ibgw(&single_only, &accepted, &committed);
     assert_eq!(classified.terminal_class, PLAN265_IBGW_NO_OPPORTUNITY);
     assert_eq!(classified.semantic, "not-applicable");
 }
@@ -7252,28 +7314,59 @@ async fn run_qualification() -> Result<(), String> {
                         .collect();
                     IbgwInputFacts::from_observations(&seam, &accepted_gateways)
                 };
-                // The committed next router comes from the accepted
-                // IBGW registration's own short-build evidence.
-                let committed_ibgw_router = ledger
+                // The committed next router comes from each accepted
+                // IBGW registration's own short-build evidence, keyed by
+                // receive id: the reference rebuilds its inbound tunnel
+                // repeatedly inside one attempt and every rebuild
+                // commits its own next hop.
+                let committed_ibgw: Vec<(u32, [u8; 32])> = ledger
                     .of_epoch(Epoch::IbgwData)
-                    .find(|obs| {
+                    .filter(|obs| {
                         obs.kind == ObservedKind::BuildAccepted
                             && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                            && obs.next_router.is_some()
                     })
-                    .and_then(|obs| obs.next_router)
-                    .ok_or(
-                        "Plan 265 family A: accepted IBGW registration carries no committed next \
-                         router",
-                    )?;
+                    .map(|obs| (obs.receive_tunnel, obs.next_router.unwrap_or_default()))
+                    .collect();
                 let ibgw_verdict =
-                    plan265_classify_ibgw(&ibgw_inputs, &accepted_gateways, committed_ibgw_router);
+                    plan265_classify_ibgw(&ibgw_inputs, &accepted_gateways, &committed_ibgw);
+                let opportunity_inputs = ibgw_inputs
+                    .iter()
+                    .filter(|facts| facts.plan265_ibgw_opportunity(&accepted_gateways))
+                    .count();
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwData,
                     "plan265-opportunity",
-                    &format!("{}/{}", ibgw_verdict.opportunity, ibgw_inputs.len()),
+                    &format!("{}/{}", ibgw_verdict.opportunity, opportunity_inputs),
                     &mut rows,
                 );
+                // Sanitized per-input trace of every large input that
+                // reached the gateway seam: addressed id, whether the
+                // registration was provably live, the input length, the
+                // emitted-cell count, and the forward failures. Bounded
+                // to the first eight entries.
+                for (index, facts) in ibgw_inputs
+                    .iter()
+                    .filter(|facts| facts.received_large_input())
+                    .take(8)
+                    .enumerate()
+                {
+                    record_row(
+                        &evidence_dir,
+                        Epoch::IbgwData,
+                        "plan265-large-input",
+                        &format!(
+                            "{index}/{receive:#010x}/live={live}/nested={nested}/emitted={emitted}/failures={failures}",
+                            receive = facts.receive_tunnel,
+                            live = facts.registration_live_at_input,
+                            nested = facts.nested_len.unwrap_or(0),
+                            emitted = facts.emitted_cells,
+                            failures = facts.failures,
+                        ),
+                        &mut rows,
+                    );
+                }
                 record_row(
                     &evidence_dir,
                     Epoch::IbgwData,
@@ -7281,60 +7374,42 @@ async fn run_qualification() -> Result<(), String> {
                     &ibgw_verdict.manifest_payload(),
                     &mut rows,
                 );
+                let multicell_max = gatewayed.iter().map(|obs| obs.aux_count).max().unwrap_or(0);
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwData,
+                    "multicell-max",
+                    &multicell_max.to_string(),
+                    &mut rows,
+                );
                 if ibgw_verdict.semantic != "not-applicable" {
-                    // Opportunity present: the pre-existing Plan 258
-                    // gates become the semantic predicate, and a
-                    // contradiction is a hard failure (never
-                    // relabeled as flakiness).
-                    if gatewayed.is_empty() {
-                        return Err(
-                            "Plan 265 family A: large IBGW input observed with no delivered ingress"
-                                .to_string(),
-                        );
-                    }
+                    // Plan 265 §5.2: the per-input semantic predicate
+                    // is the authority for this family. The Plan 258
+                    // family-level multicell row is recorded as
+                    // diagnostic history, but a contradiction is
+                    // decided per opportunity-present input and is a
+                    // hard failure (never relabeled as flakiness).
                     record_row(
                         &evidence_dir,
                         Epoch::IbgwData,
                         "gateway-ingress",
-                        "true",
+                        &(!gatewayed.is_empty()).to_string(),
                         &mut rows,
                     );
-                    let multicell = gateway_multicell_satisfied(&gatewayed);
-                    record_row(
-                        &evidence_dir,
-                        Epoch::IbgwData,
-                        "multicell-max",
-                        &gatewayed
-                            .iter()
-                            .map(|obs| obs.aux_count)
-                            .max()
-                            .unwrap_or(0)
-                            .to_string(),
-                        &mut rows,
-                    );
-                    if !multicell {
-                        return Err(
-                            "Plan 265 family A: large IBGW input produced no multi-cell emission"
-                                .to_string(),
-                        );
-                    }
-                    if gatewayed
-                        .iter()
-                        .any(|obs| obs.gateway_failures.unwrap_or(0) > 0)
-                    {
-                        return Err(
-                            "Plan 265 family A: large IBGW input reported gateway/forward \
-                             failures"
-                                .to_string(),
-                        );
-                    }
                     record_row(
                         &evidence_dir,
                         Epoch::IbgwData,
                         "multicell-bounded",
-                        "true",
+                        &gateway_multicell_satisfied(&gatewayed).to_string(),
                         &mut rows,
                     );
+                    if ibgw_verdict.semantic != "pass" {
+                        return Err(format!(
+                            "Plan 265 family A: {} (large-input semantic predicate failed; \
+                             per-input trace rows carry the sanitized facts)",
+                            ibgw_verdict.terminal_class
+                        ));
+                    }
                 } else if ibgw_data_only {
                     // Plan 265 §5.1: the opportunity was absent. This
                     // is a retained, fully classified attempt — not a
@@ -7342,13 +7417,6 @@ async fn run_qualification() -> Result<(), String> {
                     // declares no external-completion gate (Plan 265
                     // §5: the old B-ending receiver socket is not a
                     // closing predicate here).
-                    record_row(
-                        &evidence_dir,
-                        Epoch::IbgwData,
-                        "multicell-max",
-                        "0",
-                        &mut rows,
-                    );
                 }
                 // Plan 260 authority repair: the 2-hop B-ending receipt
                 // premise this gate once enforced is superseded. Plan

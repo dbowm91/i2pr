@@ -857,39 +857,11 @@ else
 fi
 # Plan 265 section 3.3: the input-side opportunity predicates must not
 # read the output side. This is the static half of the "opportunity is
-# never inferred from the downstream success result" rule.
-if python3 - "${REPO_ROOT}/crates/i2pr-daemon/tests/m11_transit_i2pd_external.rs" <<'PYOPPORTUNITY'
-import re
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-FORBIDDEN = {
-    "plan265_ibgw_opportunity": ("emitted_cells", "failures", "next_router", "next_tunnel"),
-    "plan265_receipt_opportunity": (
-        "emitted_cells", "failures", "next_router", "next_tunnel",
-        "tuple_bound", "socket_receipts",
-    ),
-    "plan265_participant_opportunity": (
-        "local_forward", "b_endpoint_observations", "lifecycle_rows", "replay",
-    ),
-}
-bad = []
-for name, tokens in FORBIDDEN.items():
-    match = re.search(r"fn " + name + r"\(&self.*?
-    \}", source, re.S)
-    if match is None:
-        bad.append(f"{name}: not found")
-        continue
-    body = match.group(0)
-    for token in tokens:
-        if token in body:
-            bad.append(f"{name}: reads output-side field {token}")
-if bad:
-    print("; ".join(bad), file=sys.stderr)
-    raise SystemExit(1)
-PYOPPORTUNITY
-then
+# never inferred from the downstream success result" rule. The composer
+# owns the single implementation of the check, so the runner can never
+# drift from the composition gate.
+if bash "${REPO_ROOT}/scripts/check-m11-per-epoch-composition.sh" --check-input-side \
+     >"${EVIDENCE_DIR}/input-side-opportunity-check.log" 2>&1; then
   record_guarded "m11-i2pd-plan265-opportunity-is-input-side" \
     "input-side opportunity predicates read no output-side field (emitted cells, failures, receipt, far side, lifecycle rows)" \
     "0"
@@ -1321,9 +1293,16 @@ scenario = os.environ.get("I2PR_M11_SCENARIO", "")
 # Counted per-epoch manifests name the manifest epoch + pass id. A
 # full-matrix run without a selector is diagnostic-only (epoch
 # "full-matrix", never counted).
-manifest_epoch = only_epoch if only_epoch else "full-matrix"
-if scenario == "receipt":
-    manifest_epoch = "receipt"
+# The Plan 264 per-epoch id stays recorded for traceability. A Plan 265
+# scenario run names the epoch its family gates, so the retained
+# diagnostic columns keep a meaningful value instead of
+# "full-matrix".
+SCENARIO_EPOCH = {
+    "ibgw-data": "ibgw-data",
+    "receipt": "receipt",
+    "participant-lifecycle": "participant-data",
+}
+manifest_epoch = only_epoch if only_epoch else SCENARIO_EPOCH.get(scenario, "full-matrix")
 terminal_key = EPOCH_TERMINAL_KEY.get(manifest_epoch, "")
 driver_rc = int(os.environ.get("I2PR_M11_DRIVER_RC", "1"))
 epoch_qualified = bool(terminal_key) and driver_rc == 0 and terminal_key in driver_keys
