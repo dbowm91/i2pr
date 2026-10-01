@@ -1,7 +1,7 @@
 # Plan 276 — M12 persistence, maintenance, and floodfill resource-governance closure
 
 Status at registration:
-**registered-m12-persistence-resource-blocked-on-plan275**
+**passed-m12-versioned-floodfill-persistence-maintenance-and-resource-governance**
 
 Classification: infrastructure/security capability.
 

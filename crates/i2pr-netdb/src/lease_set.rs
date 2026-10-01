@@ -194,6 +194,20 @@ impl LeaseSetStore {
     pub fn encoded_bytes(&self) -> usize {
         self.total_bytes
     }
+    pub fn remove(&mut self, key: &DestinationHash) -> bool {
+        if let Some(record) = self.records.remove(key) {
+            self.total_bytes = self
+                .total_bytes
+                .checked_sub(record.encoded_len())
+                .expect("classic LeaseSet accounting");
+            true
+        } else {
+            false
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&DestinationHash, &ValidatedLeaseSet)> {
+        self.records.iter()
+    }
 }
 
 /// A MetaLeaseSet that passed signature, key-binding, and expiration validation.
@@ -283,6 +297,20 @@ impl MetaLeaseSetStore {
         self.total_bytes = next.expect("checked above");
         self.records.insert(key, candidate);
         MetaLeaseSetInsertOutcome::Inserted
+    }
+    pub fn remove(&mut self, key: &DestinationHash) -> bool {
+        if let Some(record) = self.records.remove(key) {
+            self.total_bytes = self
+                .total_bytes
+                .checked_sub(record.encoded_len())
+                .expect("MetaLeaseSet accounting");
+            true
+        } else {
+            false
+        }
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&DestinationHash, &ValidatedMetaLeaseSet)> {
+        self.records.iter()
     }
     pub fn get(&self, key: &DestinationHash) -> Option<&ValidatedMetaLeaseSet> {
         self.records.get(key)

@@ -35,7 +35,7 @@ filesystem code gated behind `#![forbid(unsafe_code)]`.
 
 `src/lib.rs` carries the identity and NTCP2 static-key stores plus a
 substantial `cache_seam` module that exposes a permission-hardened,
-byte-level, on-disk cache for the Plan 104 NetDB composition owner
+byte-level, on-disk cache for the Plan 104 and Plan 276 NetDB composition owner
 (`i2pr-netdb-persist`). The cache seam is deliberately byte-level:
 it does not know about RouterInfo, ZIP, SU3, or the NetDB store. The
 composition owner decodes bytes, validates them through `i2pr-netdb`,
@@ -96,7 +96,7 @@ write/remove/read/scan to this seam.
 
 - `struct ByteCache` — public:
   - `in_data_dir`, `root`, `pending_dir`, `exists`,
-    `prepare`, `validate_name`, `path_for`, `write`, `remove`,
+    `prepare`, `validate_name`, `path_for`, insert-only `write`, atomic-replacing `replace`, `remove`,
     `read`, `scan`.
 - `enum CacheError` — `Io`, `UnsafePath`, `InvalidFilename`,
   `FileTooLarge`, `ScanBudgetExceeded`, `ScanEntriesExceeded`,

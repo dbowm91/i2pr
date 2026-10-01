@@ -13,6 +13,8 @@
 //!   into a `RouterInfoStore`.
 //! - [`reseed_ingest`] ingests verified SU3/reseed bytes through the
 //!   Plan 103 validator into a `RouterInfoStore`.
+//! - [`floodfill_records`] provides a versioned/checksummed durable envelope; every restored
+//!   payload must be decoded and revalidated, and restored provenance narrows to replica.
 //!
 //! This crate is the canonical composition owner for Plan 104; Plan 105
 //! and Plan 106 consume its typed APIs without reaching into the
@@ -21,11 +23,15 @@
 #![forbid(unsafe_code)]
 
 pub mod cache_loader;
+pub mod floodfill_records;
 pub mod reseed_ingest;
 
 pub use cache_loader::{
     CacheLoader, CacheLoaderLimits, CacheLoaderReport, CacheLoaderScanBudget, LoadedCacheRecord,
     LoadedCacheState,
+};
+pub use floodfill_records::{
+    FloodfillRecordEnvelope, FloodfillRecordStore, PersistError, PersistedPurpose,
 };
 pub use i2pr_netdb::ReseedEntryReport;
 pub use reseed_ingest::{

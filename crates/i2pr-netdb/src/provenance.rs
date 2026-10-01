@@ -150,6 +150,18 @@ impl ProvenanceIndex {
     pub fn get(&self, id: &RecordId) -> Option<&RecordProvenance> {
         self.entries.get(id)
     }
+    pub fn ids_after(&self, after: Option<RecordId>, limit: usize) -> Vec<RecordId> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        match after {
+            Some(id) => self
+                .entries
+                .range((Excluded(id), Unbounded))
+                .take(limit)
+                .map(|(key, _)| *key)
+                .collect(),
+            None => self.entries.keys().take(limit).copied().collect(),
+        }
+    }
 
     /// Iterates metadata in one namespace only, omitting stale entries and all records without
     /// answer eligibility. This is metadata-only; a caller must still retrieve the matching

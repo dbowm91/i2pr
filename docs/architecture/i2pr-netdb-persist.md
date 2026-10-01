@@ -1,7 +1,7 @@
 # `i2pr-netdb-persist` — Deep Dive
 
-Composition owner for the Plan 104 persistent RouterInfo cache and the
-Plan 103 SU3 reseed ingestion. Sits **above** `i2pr-netdb`
+Composition owner for the Plan 104 persistent RouterInfo cache, the
+Plan 103 SU3 reseed ingestion, and the Plan 276 floodfill envelope. Sits **above** `i2pr-netdb`
 (validation) and `i2pr-storage` (byte-level cache seam); it never
 embeds validation, hashing, RouterInfo decoding, or filesystem
 policies, and it composes only the existing narrow APIs.
@@ -40,13 +40,25 @@ Failure policy across both pipelines:
 
 ## Module layout
 
-Flat — three files at the crate root:
+Flat module layout:
 
 | File | Responsibility | Main items |
 | --- | --- | --- |
 | `src/lib.rs` | Crate root: re-exports + module wiring | `pub mod cache_loader;`, `pub mod reseed_ingest;` |
 | `src/cache_loader.rs` | Plan 104 persistent RouterInfo cache loader | `CacheLoader`, `CacheLoaderLimits`, `CacheLoaderScanBudget`, `LoadedCacheRecord`, `LoadedCacheState`, `CacheLoaderReport`, `CacheLoaderError` |
 | `src/reseed_ingest.rs` | Plan 103 SU3 reseed ingestion | `ReseedIngestor`, `ReseedIngestLimits`, `ReseedBundleReport`, `ReseedInsertCounts`, `ReseedSummary`, `ReseedIngestError` |
+| `src/floodfill_records.rs` | Plan 276 versioned checksummed NetDB persistence envelope and revalidation composition | `FloodfillRecordEnvelope`, `FloodfillRecordStore`, `load_validated_into` |
+
+The Plan 276 envelope version is 1. It stores MainRouter namespace, record type and key,
+ingress category, purpose category, observation time, canonical payload bytes, and SHA-256
+integrity framing. It accepts only the ADR record floor (0, 1, 3, 7); type 5 remains deferred.
+The checksum detects accidental corruption; payload signatures and freshness are revalidated by
+the caller through a type-specific validator before insertion. Reload always narrows authority to
+`RouterTunnel` + `FloodReplica`, regardless of stored purpose, so restored records cannot be
+re-flooded. Reply keys/tags and source peer IDs are excluded. The existing Plan 104 raw RouterInfo
+cache remains readable through its original loader path; `ByteCache::replace` provides synced
+same-directory atomic replacement for versioned records. Partial files in `.pending` are ignored
+by the root scan and never become authoritative.
 
 `crates/i2pr-netdb-persist/src/lib.rs` also re-exports
 `i2pr_netdb::ReseedEntryReport` for downstream callers.

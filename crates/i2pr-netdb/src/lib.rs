@@ -30,6 +30,7 @@ mod provenance;
 mod publication;
 mod replication;
 mod reseed;
+mod resource;
 mod router_info;
 mod routing;
 mod server_store;
@@ -97,6 +98,10 @@ pub use reseed::{
     ReseedVerifyReport, parse_su3, trust_signer_from_certificate, verify_su3, verify_su3_archive,
     verify_su3_with_signers,
 };
+pub use resource::{
+    FloodfillResourceBudget, FloodfillResourcePolicy, FloodfillResourceSnapshot, ResourceKind,
+    ResourceLease,
+};
 pub use router_info::RouterInfoValidationPolicy as ValidationPolicy;
 pub use router_info::{
     RouterHash, RouterInfoValidationError, RouterInfoValidationPolicy, ValidatedRouterInfo,
@@ -105,7 +110,10 @@ pub use router_info::{
 pub use routing::{
     NearestSelection, RoutingKeyError, daily_routing_key, format_daily_key, xor_distance,
 };
-pub use server_store::{ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord};
+pub use server_store::{
+    MaintenanceBatch, ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord,
+    daily_rollover_due,
+};
 pub use store::{InsertOutcome, RouterInfoStore, RouterInfoStoreConfig, RouterInfoStoreStats};
 pub use store_message::{
     UnsolicitedStoreError, UnsolicitedStoreOutcome, UnsolicitedStorePolicy,

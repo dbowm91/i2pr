@@ -67,6 +67,7 @@ RouterInfo publication coordinator.
 | `server_store` | Main-router-only explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters (Plan 272) |
 | `floodfill_service` | Synchronous bounded DatabaseStore admission plus main-router DatabaseLookup selection and one-shot supplied-key ECIES reply effects (Plans 273–274) |
 | `replication` | Bounded source-excluding direct DatabaseStore action planning over current/next daily routing keys (Plan 275) |
+| `resource` | Drop-released admission leases for active requests, queued effects/bytes, crypto, replication, and maintenance work (Plan 276) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary

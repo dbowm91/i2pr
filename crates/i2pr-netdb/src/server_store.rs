@@ -517,4 +517,133 @@ impl ServerNetDb {
     pub fn total_bytes(&self) -> usize {
         self.total_bytes
     }
+
+    /// Removes one record and its provenance/byte accounting as a single synchronous operation.
+    pub fn remove_record(&mut self, id: &RecordId) -> bool {
+        let removed = match id.record_type() {
+            0 => self.router_info.remove(&RouterHash::from_hash(*id.key())),
+            1 => self.leases.remove(&DestinationHash::from_hash(*id.key())),
+            3 => self.leases2.remove(&DestinationHash::from_hash(*id.key())),
+            7 => self
+                .meta_leases
+                .remove(&DestinationHash::from_hash(*id.key())),
+            _ => false,
+        };
+        if removed {
+            let size = self.sizes.remove(id).unwrap_or(0);
+            self.total_bytes = self
+                .total_bytes
+                .checked_sub(size)
+                .expect("server NetDB accounting");
+            self.provenance.remove(id);
+        }
+        removed
+    }
+
+    /// Expires at most `limit` records after `after`; the caller retains the returned cursor and
+    /// resumes with it on the next tick. Expired payload bytes and provenance metadata are removed
+    /// synchronously. A short batch marks the current pass complete.
+    pub fn maintenance_batch(
+        &mut self,
+        after: Option<RecordId>,
+        limit: usize,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> MaintenanceBatch {
+        let ids = self.provenance.ids_after(after, limit.saturating_add(1));
+        let complete = ids.len() <= limit;
+        let examined: Vec<_> = ids.into_iter().take(limit).collect();
+        let mut expired = 0;
+        for id in &examined {
+            let age_expired = self
+                .provenance
+                .get(id)
+                .is_none_or(|p| now_ms.saturating_sub(p.observed_at_ms) > max_age_ms);
+            let time_expired = match id.record_type() {
+                0 => self
+                    .router_info
+                    .get(&RouterHash::from_hash(*id.key()))
+                    .is_none_or(|r| now_ms.saturating_sub(r.published().as_millis()) > max_age_ms),
+                1 => self
+                    .leases
+                    .get(&DestinationHash::from_hash(*id.key()))
+                    .is_none_or(|r| r.version_ms() <= now_ms),
+                3 => self
+                    .leases2
+                    .get(&DestinationHash::from_hash(*id.key()))
+                    .is_none_or(|r| {
+                        let now = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+                        r.lease_set2().expires_seconds() <= now
+                            || r.lease_set2()
+                                .leases()
+                                .iter()
+                                .all(|lease| lease.end_date().as_seconds() <= now)
+                            || r.lease_set2()
+                                .header()
+                                .offline_signature()
+                                .is_some_and(|offline| offline.expires_seconds() <= now)
+                    }),
+                7 => self
+                    .meta_leases
+                    .get(&DestinationHash::from_hash(*id.key()))
+                    .is_none_or(|r| {
+                        let now = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+                        r.expires_seconds() <= now
+                            || r.value()
+                                .entries()
+                                .iter()
+                                .all(|entry| entry.end_date().as_seconds() <= now)
+                            || r.value()
+                                .header()
+                                .offline_signature()
+                                .is_some_and(|offline| offline.expires_seconds() <= now)
+                    }),
+                _ => true,
+            };
+            if age_expired || time_expired {
+                expired += usize::from(self.remove_record(id));
+            }
+        }
+        MaintenanceBatch {
+            next: if complete {
+                None
+            } else {
+                examined.last().copied()
+            },
+            examined: examined.len(),
+            expired,
+            complete,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MaintenanceBatch {
+    pub next: Option<RecordId>,
+    pub examined: usize,
+    pub expired: usize,
+    pub complete: bool,
+}
+
+/// Caller-time trigger for daily routing-key rollover maintenance. Backwards clock movement does
+/// not trigger work; the owner retains its prior UTC day and checks again on a later tick.
+pub fn daily_rollover_due(last_ms: u64, now_ms: u64) -> bool {
+    now_ms >= last_ms && now_ms / 86_400_000 > last_ms / 86_400_000
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+
+    #[test]
+    fn maintenance_batch_is_bounded_and_marks_short_pass_complete() {
+        let mut db = ServerNetDb::default();
+        let first = db.maintenance_batch(None, 1, 100, 1000);
+        assert_eq!(first.examined, 0);
+        assert_eq!(first.expired, 0);
+        assert!(first.complete);
+        assert_eq!(db.total_bytes, 0);
+        assert!(!daily_rollover_due(86_400_001, 86_399_999));
+        assert!(daily_rollover_due(86_399_999, 86_400_000));
+    }
 }

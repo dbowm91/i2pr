@@ -579,10 +579,9 @@ pub mod cache_seam {
         /// Writes `bytes` to the cache under `name` atomically.
         ///
         /// The seam refuses zero-byte payloads. On success, the previous
-        /// file (if any) is replaced via same-directory temporary +
-        /// `hard_link` install so a concurrent reader cannot observe a
-        /// half-written record. On failure, the temporary is removed and
-        /// any prior valid file is preserved.
+        /// file is installed via same-directory temporary + `hard_link`. This is
+        /// insert-only: an existing entry is never replaced. On failure, the
+        /// temporary is removed and any prior valid file is preserved.
         pub fn write(&self, name: &str, bytes: &[u8]) -> Result<(), CacheError> {
             if bytes.is_empty() {
                 return Err(CacheError::EmptyPayload);
@@ -620,6 +619,51 @@ pub mod cache_seam {
             let _ = sync_directory(&pending_parent);
             let _ = sync_directory(&root_parent);
             install
+        }
+
+        /// Atomically replaces one cache entry using a fully synced same-directory temporary.
+        /// A failed write or rename preserves the previous committed entry.
+        pub fn replace(&self, name: &str, bytes: &[u8]) -> Result<(), CacheError> {
+            if bytes.is_empty() {
+                return Err(CacheError::EmptyPayload);
+            }
+            if bytes.len() > MAX_CACHE_FILE_BYTES {
+                return Err(CacheError::FileTooLarge {
+                    path: self.path_for(name)?,
+                    maximum: MAX_CACHE_FILE_BYTES,
+                });
+            }
+            self.prepare()?;
+            let target = self.path_for(name)?;
+            match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    return Err(CacheError::UnsafePath);
+                }
+                Ok(_) => {}
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => return Err(cache_io("inspect cache entry before replace", source)),
+            }
+            let pending = self.pending_dir();
+            let (temporary_path, mut temporary) =
+                create_temporary_file(&pending, name).map_err(map_storage)?;
+            let result = (|| -> Result<(), CacheError> {
+                temporary
+                    .write_all(bytes)
+                    .map_err(|source| cache_io("write replacement cache entry", source))?;
+                temporary
+                    .sync_all()
+                    .map_err(|source| cache_io("sync replacement cache entry", source))?;
+                drop(temporary);
+                fs::rename(&temporary_path, &target)
+                    .map_err(|source| cache_io("atomically replace cache entry", source))?;
+                sync_directory(&pending).map_err(map_storage)?;
+                sync_directory(&self.root).map_err(map_storage)?;
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&temporary_path);
+            }
+            result
         }
 
         /// Removes a single cache entry by name. Returns `Ok(true)` if

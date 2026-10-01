@@ -21,7 +21,7 @@ rg -q 'pub const UNPUBLISHED: u16 = 0x0002;' "$proto"
 rg -q 'pub const BLINDED_ON_PUBLICATION: u16 = 0x0004;' "$proto"
 rg -q 'pub const RESERVED_MASK: u16 = 0xfff8;' "$proto"
 rg -q 'MAX_DATABASE_SEARCH_REPLY_PEERS' "$service"
-rg -q 'reply_tags.len() == 1' "$service"
+rg -q 'reply_tags[.]len[(][)] == 1' "$service"
 rg -q 'FloodfillRole::Serving' "$service"
 
 if rg -n 'EciesSessionManager|ExistingSession|DestinationSession' "$service"; then
