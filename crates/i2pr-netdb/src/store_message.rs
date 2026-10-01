@@ -80,6 +80,7 @@ pub fn handle_unsolicited_databasestore(
         DatabaseStoreData::RouterInfoCompressed(payload) => payload.as_bytes().to_vec(),
         DatabaseStoreData::LeaseSet(_)
         | DatabaseStoreData::LeaseSet2(_)
+        | DatabaseStoreData::MetaLeaseSet(_)
         | DatabaseStoreData::Deferred { .. } => {
             return Err(UnsolicitedStoreError::UnsupportedPayload);
         }

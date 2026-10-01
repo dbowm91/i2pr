@@ -162,7 +162,7 @@ impl ProvenanceIndex {
     ) -> impl Iterator<Item = (&RecordId, &RecordProvenance)> {
         self.entries.iter().filter(move |(id, provenance)| {
             provenance.namespace == namespace
-                && self.evaluate(id, namespace, now_ms, max_age_ms, false) == Eligibility::Allowed
+                && self.evaluate(id, namespace, now_ms, max_age_ms) == Eligibility::Allowed
         })
     }
 
@@ -172,21 +172,35 @@ impl ProvenanceIndex {
         id: RecordId,
         provenance: RecordProvenance,
     ) -> Result<(), Eligibility> {
+        self.can_insert(&id)?;
         const ENTRY_COST: usize = 64;
         let old = usize::from(self.entries.contains_key(&id)) * ENTRY_COST;
+        let next = self
+            .accounted_bytes
+            .checked_sub(old)
+            .and_then(|v| v.checked_add(ENTRY_COST))
+            .ok_or(Eligibility::CapacityExceeded)?;
+        self.entries.insert(id, provenance);
+        self.accounted_bytes = next;
+        Ok(())
+    }
+
+    /// Checks metadata quota availability without mutation. Synchronous composite stores may
+    /// call this before changing their record bytes, then commit metadata immediately afterward.
+    pub fn can_insert(&self, id: &RecordId) -> Result<(), Eligibility> {
+        const ENTRY_COST: usize = 64;
+        let old = usize::from(self.entries.contains_key(id)) * ENTRY_COST;
         if old == 0 && self.entries.len() >= self.limits.max_records {
             return Err(Eligibility::CapacityExceeded);
         }
         let next = self
             .accounted_bytes
             .checked_sub(old)
-            .and_then(|v| v.checked_add(ENTRY_COST))
+            .and_then(|value| value.checked_add(ENTRY_COST))
             .ok_or(Eligibility::CapacityExceeded)?;
         if next > self.limits.max_accounted_bytes {
             return Err(Eligibility::CapacityExceeded);
         }
-        self.entries.insert(id, provenance);
-        self.accounted_bytes = next;
         Ok(())
     }
 
@@ -216,7 +230,7 @@ impl ProvenanceIndex {
         now_ms: u64,
         max_age_ms: u64,
     ) -> Eligibility {
-        self.evaluate(id, NetDbNamespace::MainRouter, now_ms, max_age_ms, false)
+        self.evaluate(id, NetDbNamespace::MainRouter, now_ms, max_age_ms)
     }
     pub fn may_answer_client_lookup(
         &self,
@@ -225,13 +239,7 @@ impl ProvenanceIndex {
         now_ms: u64,
         max_age_ms: u64,
     ) -> Eligibility {
-        self.evaluate(
-            id,
-            NetDbNamespace::Client(namespace),
-            now_ms,
-            max_age_ms,
-            false,
-        )
+        self.evaluate(id, NetDbNamespace::Client(namespace), now_ms, max_age_ms)
     }
     pub fn may_replicate(&self, id: &RecordId, now_ms: u64, max_age_ms: u64) -> Eligibility {
         let Some(p) = self.entries.get(id) else {
@@ -260,7 +268,7 @@ impl ProvenanceIndex {
         Eligibility::NotPublished
     }
     pub fn may_persist(&self, id: &RecordId, now_ms: u64, max_age_ms: u64) -> Eligibility {
-        self.evaluate(id, NetDbNamespace::MainRouter, now_ms, max_age_ms, true)
+        self.evaluate(id, NetDbNamespace::MainRouter, now_ms, max_age_ms)
     }
     fn evaluate(
         &self,
@@ -268,7 +276,6 @@ impl ProvenanceIndex {
         namespace: NetDbNamespace,
         now_ms: u64,
         max_age_ms: u64,
-        persistence: bool,
     ) -> Eligibility {
         let Some(p) = self.entries.get(id) else {
             return Eligibility::NotPublished;
@@ -282,15 +289,14 @@ impl ProvenanceIndex {
         if p.purpose == StorePurpose::LookupResponse {
             return Eligibility::LookupResponseOnly;
         }
-        if !persistence && p.purpose == StorePurpose::FloodReplica {
-            return Eligibility::ReplicaCannotReflood;
-        }
         if p.inbound == InboundProvenance::ClientTunnel {
             return Eligibility::ClientTunnelOnly;
         }
         if matches!(
             p.purpose,
-            StorePurpose::PublishedStore | StorePurpose::LocalPublication
+            StorePurpose::PublishedStore
+                | StorePurpose::LocalPublication
+                | StorePurpose::FloodReplica
         ) {
             return Eligibility::Allowed;
         }
@@ -354,6 +360,16 @@ mod tests {
                 ),
             )
             .unwrap();
+        index
+            .insert(
+                id(4),
+                p(
+                    NetDbNamespace::MainRouter,
+                    InboundProvenance::AuthenticatedDirectPeer,
+                    StorePurpose::LookupResponse,
+                ),
+            )
+            .unwrap();
         assert_eq!(
             index.may_answer_client_lookup(&id(1), client, 11, 100),
             Eligibility::WrongNamespace
@@ -370,6 +386,22 @@ mod tests {
         assert_eq!(
             index.may_replicate(&id(3), 11, 100),
             Eligibility::ReplicaCannotReflood
+        );
+        assert_eq!(
+            index.may_answer_router_lookup(&id(3), 11, 100),
+            Eligibility::Allowed
+        );
+        assert_eq!(
+            index.may_answer_router_lookup(&id(4), 11, 100),
+            Eligibility::LookupResponseOnly
+        );
+        assert_eq!(
+            index.may_replicate(&id(4), 11, 100),
+            Eligibility::LookupResponseOnly
+        );
+        assert_eq!(
+            index.may_persist(&id(4), 11, 100),
+            Eligibility::LookupResponseOnly
         );
     }
 
@@ -398,6 +430,16 @@ mod tests {
             Eligibility::WrongNamespace
         );
         assert!(!format!("{:?}", id(1)).contains("010000"));
+
+        let mut byte_limited = ProvenanceIndex::new(ProvenanceLimits {
+            max_records: 8,
+            max_accounted_bytes: 63,
+        });
+        assert_eq!(
+            byte_limited.insert(id(1), main),
+            Err(Eligibility::CapacityExceeded)
+        );
+        assert!(byte_limited.is_empty());
     }
 
     #[test]

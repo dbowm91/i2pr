@@ -11,9 +11,9 @@
 //!
 //! The Standard LeaseSet2 carrier is the modern ordinary destination
 //! NetDB object. The current crate implements the ordinary
-//! online-signed published LS2 subset; EncryptedLeaseSet, MetaLeaseSet,
-//! blinded, offline-signing, leased, and PQ-hybrid variants are
-//! deliberately deferred.
+//! online-signed published LS2 subset; EncryptedLeaseSet, blinded,
+//! offline-signing, and PQ-hybrid variants are deliberately deferred.
+//! MetaLeaseSet has a separate structural codec in this module.
 //!
 //! LeaseSet2 owns the wire layout and structural validation only. It does
 //! not own private signing keys, freshness policy, NetDB retention, or
@@ -23,7 +23,8 @@ use std::fmt;
 
 use super::{
     Date32, Destination, Hash, MAX_COMMON_STRUCTURE_SIZE, MAX_LEASES, Mapping, SignatureValue,
-    decode_exact, encode_to_vec, invalid, take_array, unsupported,
+    SigningKeyType, SigningPublicKey, decode_exact, encode_to_vec, invalid, take_array,
+    unsupported,
 };
 use crate::{CodecError, DecodeCursor, EncodeBuffer};
 
@@ -61,22 +62,20 @@ pub const MAX_LEASE_SET2_BYTES: usize = MAX_COMMON_STRUCTURE_SIZE;
 /// Recognized LS2 flag bits.
 ///
 /// Only the ordinary online-signed subset is accepted in this plan.
-/// Reserved bits must be zero; offline and blinded flags produce typed
+/// Reserved bits must be zero; offline and blinded-on-publication flags produce typed
 /// policy rejections. The unpublished flag (0x0002) is accepted per
 /// Plan 172 §10: `dontPublishLeaseSet=true` installs the client-signed
-/// LS2 locally without public NetDB publication. The leased flag is
-/// currently accepted (no M9 profile sets it).
+/// LS2 locally without public NetDB publication. Blinded-on-publication remains deferred with
+/// EncryptedLeaseSet support.
 pub mod flags {
     /// Offline-signature section follows the fixed header.
     pub const OFFLINE_SIGNATURE: u16 = 0x0001;
     /// Destination is unpublished; LeaseSet is sent offline only.
     pub const UNPUBLISHED: u16 = 0x0002;
-    /// Destination uses leased tunnels.
-    pub const LEASED: u16 = 0x0004;
-    /// Destination supports blinded semantics.
-    pub const BLINDED: u16 = 0x0008;
+    /// Destination publishes an encrypted, blinded LeaseSet.
+    pub const BLINDED_ON_PUBLICATION: u16 = 0x0004;
     /// Reserved bit mask for the LS2 flag word.
-    pub const RESERVED_MASK: u16 = 0xfff0;
+    pub const RESERVED_MASK: u16 = 0xfff8;
 }
 
 /// A modern 40-byte Lease2 record carried by a Standard LeaseSet2.
@@ -265,14 +264,9 @@ impl LeaseSet2Flags {
         self.0 & flags::UNPUBLISHED != 0
     }
 
-    /// Returns whether the destination uses leased tunnels.
-    pub const fn is_leased(self) -> bool {
-        self.0 & flags::LEASED != 0
-    }
-
-    /// Returns whether the destination supports blinded semantics.
-    pub const fn is_blinded(self) -> bool {
-        self.0 & flags::BLINDED != 0
+    /// Returns whether the LS2 was blinded for encrypted publication.
+    pub const fn is_blinded_on_publication(self) -> bool {
+        self.0 & flags::BLINDED_ON_PUBLICATION != 0
     }
 
     /// Returns whether the flag word contains any reserved bits.
@@ -295,6 +289,7 @@ pub struct LeaseSet2Header {
     published_seconds: u32,
     expires_offset_seconds: u16,
     flags: LeaseSet2Flags,
+    offline_signature: Option<OfflineSignature>,
 }
 
 impl LeaseSet2Header {
@@ -306,6 +301,30 @@ impl LeaseSet2Header {
         expires_offset_seconds: u16,
         flags: LeaseSet2Flags,
     ) -> Result<Self, LeaseSet2HeaderError> {
+        Self::new_with_offline_signature(
+            destination,
+            published_seconds,
+            expires_offset_seconds,
+            flags,
+            None,
+        )
+    }
+
+    pub fn new_with_offline_signature(
+        destination: Destination,
+        published_seconds: u32,
+        expires_offset_seconds: u16,
+        flags: LeaseSet2Flags,
+        offline_signature: Option<OfflineSignature>,
+    ) -> Result<Self, LeaseSet2HeaderError> {
+        if flags.has_offline_signature() != offline_signature.is_some() {
+            return Err(LeaseSet2HeaderError::OfflineSignatureFlagMismatch);
+        }
+        if offline_signature.as_ref().is_some_and(|offline| {
+            offline.signature().key_type() != destination.signing_key().key_type()
+        }) {
+            return Err(LeaseSet2HeaderError::OfflineSignatureFlagMismatch);
+        }
         let expires_total = (u64::from(published_seconds))
             .checked_add(u64::from(expires_offset_seconds))
             .ok_or(LeaseSet2HeaderError::ExpirationOverflow)?;
@@ -317,12 +336,11 @@ impl LeaseSet2Header {
             published_seconds,
             expires_offset_seconds,
             flags,
+            offline_signature,
         })
     }
 
-    /// Decodes one LS2 header from `input`. The offline-signature
-    /// section, when present, is rejected with a typed unsupported
-    /// error.
+    /// Decodes one LS2 header from `input`, including any offline-signature section.
     pub fn decode(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
         decode_exact(input, maximum, Self::decode_from)
     }
@@ -339,27 +357,20 @@ impl LeaseSet2Header {
                 "LeaseSet2 reserved flag bits",
             ));
         }
-        if flags.has_offline_signature() {
-            return Err(unsupported(
-                cursor.offset().saturating_sub(2),
-                "LeaseSet2 offline signature",
-                u64::from(raw_flags),
-            ));
-        }
-        // Plan 172 §10: unpublished LS2 is installed locally; publication
-        // to public NetDB is suppressed (no NetDB write occurs in M9).
-        if flags.is_blinded() {
-            return Err(unsupported(
-                cursor.offset().saturating_sub(2),
-                "LeaseSet2 blinded flag",
-                u64::from(raw_flags),
-            ));
-        }
-        Self::new(
+        let offline_signature = if flags.has_offline_signature() {
+            Some(OfflineSignature::decode_from(
+                cursor,
+                destination.signing_key().key_type(),
+            )?)
+        } else {
+            None
+        };
+        Self::new_with_offline_signature(
             destination,
             published_seconds,
             expires_offset_seconds,
             flags,
+            offline_signature,
         )
         .map_err(CodecError::from)
     }
@@ -389,6 +400,21 @@ impl LeaseSet2Header {
     pub const fn flags(&self) -> LeaseSet2Flags {
         self.flags
     }
+
+    pub const fn offline_signature(&self) -> Option<&OfflineSignature> {
+        self.offline_signature.as_ref()
+    }
+
+    fn encode_into(&self, encoder: &mut EncodeBuffer<'_>) -> Result<(), CodecError> {
+        self.destination.keys.encode_into(encoder)?;
+        encoder.write_u32(self.published_seconds)?;
+        encoder.write_u16(self.expires_offset_seconds)?;
+        encoder.write_u16(self.flags.as_raw())?;
+        if let Some(offline) = &self.offline_signature {
+            offline.encode_into(encoder)?;
+        }
+        Ok(())
+    }
 }
 
 /// Errors produced when constructing a LeaseSet2 header.
@@ -396,6 +422,8 @@ impl LeaseSet2Header {
 pub enum LeaseSet2HeaderError {
     /// `published + expires_offset` overflowed `u32`.
     ExpirationOverflow,
+    /// Offline signature presence and flag bit must agree, and its signature type must match the destination.
+    OfflineSignatureFlagMismatch,
 }
 
 impl fmt::Display for LeaseSet2HeaderError {
@@ -403,6 +431,9 @@ impl fmt::Display for LeaseSet2HeaderError {
         match self {
             Self::ExpirationOverflow => {
                 formatter.write_str("LeaseSet2 published + expires offset overflowed u32")
+            }
+            Self::OfflineSignatureFlagMismatch => {
+                formatter.write_str("LeaseSet2 offline-signature flag mismatch")
             }
         }
     }
@@ -416,6 +447,10 @@ impl From<LeaseSet2HeaderError> for CodecError {
             LeaseSet2HeaderError::ExpirationOverflow => CodecError::ArithmeticOverflow {
                 offset: 0,
                 context: "LeaseSet2 expiration",
+            },
+            LeaseSet2HeaderError::OfflineSignatureFlagMismatch => CodecError::InvalidFieldValue {
+                offset: 0,
+                context: "LeaseSet2 offline signature",
             },
         }
     }
@@ -485,7 +520,10 @@ impl LeaseSet2 {
                 maximum: MAX_LEASES,
             });
         }
-        let signing_type = header.destination().signing_key().key_type();
+        let signing_type = header.offline_signature().map_or_else(
+            || header.destination().signing_key().key_type(),
+            |offline| offline.transient_key().key_type(),
+        );
         if signing_type != signature.key_type() {
             return Err(LeaseSet2BuildError::SignatureTypeMismatch {
                 expected: signing_type.code(),
@@ -582,7 +620,10 @@ impl LeaseSet2 {
             leases.push(Lease2::decode_from(&mut cursor)?);
         }
         let signed_end = cursor.offset();
-        let signing_type = header.destination().signing_key().key_type();
+        let signing_type = header.offline_signature().map_or_else(
+            || header.destination().signing_key().key_type(),
+            |offline| offline.transient_key().key_type(),
+        );
         let signature_len = signing_type.signature_len().ok_or_else(|| {
             unsupported(
                 cursor.offset(),
@@ -856,6 +897,288 @@ impl From<LeaseSet2BuildError> for CodecError {
 /// stored record family. Standard LeaseSet2 uses type 3.
 pub const LEASE_SET2_DATABASE_STORE_TYPE: u8 = 0x03;
 
+/// Maximum number of entries and revocation hashes in a MetaLeaseSet.
+pub const MAX_META_LEASES: usize = 16;
+
+/// Delegated signing key data carried when the offline-signature flag is set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineSignature {
+    expires_seconds: u32,
+    transient_key: SigningPublicKey,
+    signature: SignatureValue,
+}
+
+impl OfflineSignature {
+    pub fn new(
+        expires_seconds: u32,
+        transient_key: SigningPublicKey,
+        signature: SignatureValue,
+    ) -> Result<Self, CodecError> {
+        Ok(Self {
+            expires_seconds,
+            transient_key,
+            signature,
+        })
+    }
+    pub const fn expires_seconds(&self) -> u32 {
+        self.expires_seconds
+    }
+    pub const fn transient_key(&self) -> &SigningPublicKey {
+        &self.transient_key
+    }
+    pub const fn signature(&self) -> &SignatureValue {
+        &self.signature
+    }
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(6 + self.transient_key.as_bytes().len());
+        bytes.extend_from_slice(&self.expires_seconds.to_be_bytes());
+        bytes.extend_from_slice(&self.transient_key.key_type().code().to_be_bytes());
+        bytes.extend_from_slice(self.transient_key.as_bytes());
+        bytes
+    }
+    fn decode_from(
+        cursor: &mut DecodeCursor<'_>,
+        destination_type: SigningKeyType,
+    ) -> Result<Self, CodecError> {
+        let expires_seconds = cursor.read_u32()?;
+        let transient_type = SigningKeyType::from_code(cursor.read_u16()?);
+        let key_len = transient_type.public_key_len().ok_or_else(|| {
+            unsupported(
+                cursor.offset(),
+                "offline transient key type",
+                u64::from(transient_type.code()),
+            )
+        })?;
+        let transient_key = SigningPublicKey::new(transient_type, cursor.take(key_len)?.to_vec())?;
+        let signature_len = destination_type.signature_len().ok_or_else(|| {
+            unsupported(
+                cursor.offset(),
+                "offline delegation signature type",
+                u64::from(destination_type.code()),
+            )
+        })?;
+        let signature =
+            SignatureValue::new(destination_type, cursor.take(signature_len)?.to_vec())?;
+        Ok(Self {
+            expires_seconds,
+            transient_key,
+            signature,
+        })
+    }
+    fn encode_into(&self, encoder: &mut EncodeBuffer<'_>) -> Result<(), CodecError> {
+        encoder.write_u32(self.expires_seconds)?;
+        encoder.write_u16(self.transient_key.key_type().code())?;
+        encoder.write_raw(self.transient_key.as_bytes())?;
+        encoder.write_raw(self.signature.as_bytes())
+    }
+}
+
+/// One fixed 40-byte MetaLease entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MetaLease {
+    gateway: Hash,
+    entry_type: u8,
+    cost: u8,
+    end_date: Date32,
+}
+
+impl MetaLease {
+    pub fn new(
+        gateway: Hash,
+        entry_type: u8,
+        cost: u8,
+        end_date: Date32,
+    ) -> Result<Self, CodecError> {
+        if !matches!(entry_type, 0 | 1 | 3 | 5) {
+            return Err(invalid(0, "MetaLease entry type"));
+        }
+        Ok(Self {
+            gateway,
+            entry_type,
+            cost,
+            end_date,
+        })
+    }
+    pub const fn gateway(&self) -> Hash {
+        self.gateway
+    }
+    pub const fn entry_type(&self) -> u8 {
+        self.entry_type
+    }
+    pub const fn cost(&self) -> u8 {
+        self.cost
+    }
+    pub const fn end_date(&self) -> Date32 {
+        self.end_date
+    }
+    fn decode_from(cursor: &mut DecodeCursor<'_>) -> Result<Self, CodecError> {
+        let gateway = Hash::decode_from(cursor)?;
+        let raw_flags = (u32::from(cursor.read_u8()?) << 16)
+            | (u32::from(cursor.read_u8()?) << 8)
+            | u32::from(cursor.read_u8()?);
+        if raw_flags & 0x00ff_fff0 != 0 {
+            return Err(invalid(
+                cursor.offset().saturating_sub(3),
+                "MetaLease reserved flags",
+            ));
+        }
+        let cost = cursor.read_u8()?;
+        let end_date = Date32::from_seconds(cursor.read_u32()?);
+        Self::new(gateway, (raw_flags & 0x0f) as u8, cost, end_date)
+    }
+    fn encode_into(&self, encoder: &mut EncodeBuffer<'_>) -> Result<(), CodecError> {
+        self.gateway.encode_into(encoder)?;
+        encoder.write_raw(&[0, 0, self.entry_type])?;
+        encoder.write_u8(self.cost)?;
+        encoder.write_u32(self.end_date.as_seconds())
+    }
+}
+
+/// Canonically decoded MetaLeaseSet, retaining its exact signed byte region.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetaLeaseSet {
+    header: LeaseSet2Header,
+    options: Mapping,
+    entries: Vec<MetaLease>,
+    revocations: Vec<Hash>,
+    signed_bytes: Vec<u8>,
+    signature: SignatureValue,
+}
+
+impl MetaLeaseSet {
+    pub fn new(
+        header: LeaseSet2Header,
+        options: Mapping,
+        entries: Vec<MetaLease>,
+        revocations: Vec<Hash>,
+        signature: SignatureValue,
+    ) -> Result<Self, CodecError> {
+        if entries.is_empty()
+            || entries.len() > MAX_META_LEASES
+            || revocations.len() > MAX_META_LEASES
+        {
+            return Err(invalid(0, "MetaLeaseSet entry/revocation count"));
+        }
+        let signing_type = header.offline_signature().map_or_else(
+            || header.destination().signing_key().key_type(),
+            |offline| offline.transient_key().key_type(),
+        );
+        if signature.key_type() != signing_type {
+            return Err(invalid(0, "MetaLeaseSet signature type"));
+        }
+        let signed_bytes = encode_to_vec(MAX_COMMON_STRUCTURE_SIZE, |encoder| {
+            header.encode_into(encoder)?;
+            options.encode_into(encoder)?;
+            encoder.write_u8(
+                u8::try_from(entries.len()).map_err(|_| invalid(0, "MetaLeaseSet entry count"))?,
+            )?;
+            for entry in &entries {
+                entry.encode_into(encoder)?;
+            }
+            encoder.write_u8(
+                u8::try_from(revocations.len())
+                    .map_err(|_| invalid(0, "MetaLeaseSet revocation count"))?,
+            )?;
+            for hash in &revocations {
+                hash.encode_into(encoder)?;
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            header,
+            options,
+            entries,
+            revocations,
+            signed_bytes,
+            signature,
+        })
+    }
+    pub fn decode(input: &[u8], maximum: usize) -> Result<Self, CodecError> {
+        let mut cursor = DecodeCursor::new(input, maximum)?;
+        let header = LeaseSet2Header::decode_from(&mut cursor)?;
+        let options_limit = cursor.remaining();
+        let options = Mapping::decode_from(&mut cursor, options_limit)?;
+        let count = usize::from(cursor.read_u8()?);
+        if count == 0 || count > MAX_META_LEASES {
+            return Err(invalid(
+                cursor.offset().saturating_sub(1),
+                "MetaLeaseSet entry count",
+            ));
+        }
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(MetaLease::decode_from(&mut cursor)?);
+        }
+        let revocation_count = usize::from(cursor.read_u8()?);
+        if revocation_count > MAX_META_LEASES {
+            return Err(invalid(
+                cursor.offset().saturating_sub(1),
+                "MetaLeaseSet revocation count",
+            ));
+        }
+        let mut revocations = Vec::with_capacity(revocation_count);
+        for _ in 0..revocation_count {
+            revocations.push(Hash::decode_from(&mut cursor)?);
+        }
+        let signed_end = cursor.offset();
+        let signing_type = header.offline_signature().map_or_else(
+            || header.destination().signing_key().key_type(),
+            |offline| offline.transient_key().key_type(),
+        );
+        let signature = SignatureValue::new(
+            signing_type,
+            cursor
+                .take(signing_type.signature_len().ok_or_else(|| {
+                    unsupported(
+                        cursor.offset(),
+                        "MetaLeaseSet signature type",
+                        signing_type.code() as u64,
+                    )
+                })?)?
+                .to_vec(),
+        )?;
+        cursor.finish()?;
+        Ok(Self {
+            header,
+            options,
+            entries,
+            revocations,
+            signed_bytes: input[..signed_end].to_vec(),
+            signature,
+        })
+    }
+    pub fn encode_to_vec(&self, maximum: usize) -> Result<Vec<u8>, CodecError> {
+        encode_to_vec(maximum, |encoder| {
+            encoder.write_raw(&self.signed_bytes)?;
+            encoder.write_raw(self.signature.as_bytes())
+        })
+    }
+    pub fn signature_preimage(&self) -> Vec<u8> {
+        let mut value = Vec::with_capacity(self.signed_bytes.len() + 1);
+        value.push(0x07);
+        value.extend_from_slice(&self.signed_bytes);
+        value
+    }
+    pub fn signed_bytes(&self) -> &[u8] {
+        &self.signed_bytes
+    }
+    pub const fn header(&self) -> &LeaseSet2Header {
+        &self.header
+    }
+    pub fn options(&self) -> &Mapping {
+        &self.options
+    }
+    pub fn entries(&self) -> &[MetaLease] {
+        &self.entries
+    }
+    pub fn revocations(&self) -> &[Hash] {
+        &self.revocations
+    }
+    pub fn signature(&self) -> &SignatureValue {
+        &self.signature
+    }
+}
+
 fn encode_unsigned(
     encoder: &mut EncodeBuffer<'_>,
     header: &LeaseSet2Header,
@@ -863,10 +1186,7 @@ fn encode_unsigned(
     encryption_keys: &[LeaseSet2EncryptionKey],
     leases: &[Lease2],
 ) -> Result<(), CodecError> {
-    header.destination().keys.encode_into(encoder)?;
-    encoder.write_u32(header.published_seconds())?;
-    encoder.write_u16(header.expires_offset_seconds())?;
-    encoder.write_u16(header.flags().as_raw())?;
+    header.encode_into(encoder)?;
     options.encode_into(encoder)?;
     // Plan 172 §5: single-byte key count to match Java I2P reference.
     let key_count =
@@ -905,6 +1225,16 @@ mod tests {
     };
 
     const MAX: usize = MAX_COMMON_STRUCTURE_SIZE;
+
+    #[test]
+    fn leaseset2_flags_match_current_common_structures_bits() {
+        assert!(LeaseSet2Flags::from_raw(0x0001).has_offline_signature());
+        assert!(LeaseSet2Flags::from_raw(0x0002).is_unpublished());
+        assert!(LeaseSet2Flags::from_raw(0x0004).is_blinded_on_publication());
+        assert!(!LeaseSet2Flags::from_raw(0x0008).is_blinded_on_publication());
+        assert!(LeaseSet2Flags::from_raw(0x0008).has_reserved_bits());
+        assert!(LeaseSet2Flags::from_raw(0x8000).has_reserved_bits());
+    }
 
     // -------- Phase A: Lease2 --------
 
@@ -1041,21 +1371,27 @@ mod tests {
     }
 
     #[test]
-    fn ls2_header_unsupported_offline_flag_is_explicit() {
+    fn ls2_header_decodes_offline_signature_section() {
         let destination = ed_destination();
         let dest_bytes = destination.encode_to_vec(MAX).unwrap();
         let mut payload = dest_bytes;
         payload.extend_from_slice(&1_000u32.to_be_bytes());
         payload.extend_from_slice(&600u16.to_be_bytes());
         payload.extend_from_slice(&0x0001u16.to_be_bytes()); // offline bit
-        let error = LeaseSet2Header::decode(&payload, MAX).unwrap_err();
-        assert!(matches!(
-            error,
-            CodecError::Unsupported {
-                context: "LeaseSet2 offline signature",
-                ..
-            }
-        ));
+        payload.extend_from_slice(&2_000u32.to_be_bytes());
+        payload.extend_from_slice(&7u16.to_be_bytes());
+        payload.extend_from_slice(&[0x44; 32]);
+        payload.extend_from_slice(&[0x55; 64]);
+        let header = LeaseSet2Header::decode(&payload, MAX).unwrap();
+        assert_eq!(header.offline_signature().unwrap().expires_seconds(), 2_000);
+        assert_eq!(
+            header
+                .offline_signature()
+                .unwrap()
+                .transient_key()
+                .key_type(),
+            SigningKeyType::EdDsaSha512Ed25519
+        );
     }
 
     #[test]

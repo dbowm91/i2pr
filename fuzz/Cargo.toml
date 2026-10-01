@@ -95,6 +95,18 @@ test = false
 doc = false
 
 [[bin]]
+name = "leaseset2"
+path = "fuzz_targets/leaseset2.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "metaleaseset"
+path = "fuzz_targets/metaleaseset.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "i2np_standard"
 path = "fuzz_targets/i2np_standard.rs"
 test = false

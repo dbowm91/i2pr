@@ -18,8 +18,8 @@ use std::convert::TryInto;
 use ed25519_dalek::Signer;
 use i2pr_proto::{
     Certificate, CodecError, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, LeaseSet2,
-    Mapping, PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue, SigningKeyType,
-    SigningPublicKey,
+    Mapping, MetaLeaseSet, PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue,
+    SigningKeyType, SigningPublicKey,
 };
 use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256};
@@ -462,11 +462,39 @@ pub fn verify_router_info(info: &RouterInfo) -> Result<(), CryptoError> {
 /// wire form, not from a re-decoded/re-encoded view.
 pub fn verify_lease_set2(lease_set2: &LeaseSet2) -> Result<(), CryptoError> {
     let preimage = lease_set2.signature_preimage();
-    verify_signature(
-        lease_set2.destination().signing_key(),
-        &preimage,
-        lease_set2.signature(),
-    )
+    if let Some(offline) = lease_set2.header().offline_signature() {
+        verify_signature(
+            lease_set2.destination().signing_key(),
+            &offline.signed_bytes(),
+            offline.signature(),
+        )?;
+        verify_signature(offline.transient_key(), &preimage, lease_set2.signature())
+    } else {
+        verify_signature(
+            lease_set2.destination().signing_key(),
+            &preimage,
+            lease_set2.signature(),
+        )
+    }
+}
+
+/// Verifies a MetaLeaseSet signature over `0x07 || signed_bytes` and any offline delegation.
+pub fn verify_meta_lease_set(value: &MetaLeaseSet) -> Result<(), CryptoError> {
+    let preimage = value.signature_preimage();
+    if let Some(offline) = value.header().offline_signature() {
+        verify_signature(
+            value.header().destination().signing_key(),
+            &offline.signed_bytes(),
+            offline.signature(),
+        )?;
+        verify_signature(offline.transient_key(), &preimage, value.signature())
+    } else {
+        verify_signature(
+            value.header().destination().signing_key(),
+            &preimage,
+            value.signature(),
+        )
+    }
 }
 
 /// Computes a SHA-256 digest as the protocol's fixed-size hash type.

@@ -219,7 +219,7 @@ fn database_store_type_5_remains_explicitly_deferred() {
 }
 
 #[test]
-fn database_store_type_7_remains_explicitly_deferred() {
+fn database_store_type_7_rejects_malformed_metaleaseset_instead_of_deferring() {
     let key = Hash::from_bytes([0x44; 32]);
     let payload = vec![0u8; 8];
     let store = DatabaseStoreMessage {
@@ -236,16 +236,10 @@ fn database_store_type_7_remains_explicitly_deferred() {
     let message = I2npMessage::new_standard(0x0102_0304, i2pr_proto::Date::from_millis(0), body)
         .expect("new standard");
     let raw = message.encode_standard_to_vec(MAX).expect("raw");
-    let decoded = I2npMessage::decode_standard(&raw, MAX).expect("decode standard");
-    match decoded.body() {
-        i2pr_proto::I2npBody::DatabaseStore(decoded_store) => match &decoded_store.data {
-            DatabaseStoreData::Deferred { store_type, .. } => {
-                assert_eq!(*store_type, DatabaseStoreType::MetaLeaseSet);
-            }
-            other => panic!("expected Deferred, got {other:?}"),
-        },
-        other => panic!("expected DatabaseStore, got {other:?}"),
-    }
+    assert!(matches!(
+        I2npMessage::decode_standard(&raw, MAX),
+        Err(i2pr_proto::CodecError::Truncated { .. })
+    ));
 }
 
 #[test]
@@ -261,7 +255,7 @@ fn ls2_reserved_flags_yield_typed_error() {
 }
 
 #[test]
-fn ls2_offline_flag_yields_unsupported_error() {
+fn ls2_offline_flag_requires_complete_delegation_block() {
     let destination = destination_for(&bundle(0xa18));
     let dest_bytes = destination.encode_to_vec(MAX).unwrap();
     let mut payload = dest_bytes;
@@ -269,7 +263,7 @@ fn ls2_offline_flag_yields_unsupported_error() {
     payload.extend_from_slice(&600u16.to_be_bytes());
     payload.extend_from_slice(&0x0001u16.to_be_bytes());
     let error = LeaseSet2Header::decode(&payload, MAX).unwrap_err();
-    assert!(matches!(error.kind(), ProtocolErrorKind::Unsupported));
+    assert!(matches!(error.kind(), ProtocolErrorKind::Truncated));
 }
 
 #[test]

@@ -13,7 +13,7 @@ pub enum DatabaseStoreType {
     LeaseSet2,
     /// EncryptedLeaseSet, whose semantics are deferred.
     EncryptedLeaseSet,
-    /// MetaLeaseSet, whose semantics are deferred.
+    /// MetaLeaseSet.
     MetaLeaseSet,
 }
 
@@ -53,6 +53,8 @@ pub enum DatabaseStoreData {
     LeaseSet(Box<LeaseSet>),
     /// A structurally decoded Standard LeaseSet2.
     LeaseSet2(Box<LeaseSet2>),
+    /// A structurally decoded MetaLeaseSet (DatabaseStore type 7).
+    MetaLeaseSet(Box<MetaLeaseSet>),
     /// A recognized later LeaseSet-family type retained for a later decoder.
     Deferred {
         /// The recognized type identifier.
@@ -71,6 +73,9 @@ impl fmt::Debug for DatabaseStoreData {
                 .finish(),
             Self::LeaseSet(value) => formatter.debug_tuple("LeaseSet").field(value).finish(),
             Self::LeaseSet2(value) => formatter.debug_tuple("LeaseSet2").field(value).finish(),
+            Self::MetaLeaseSet(value) => {
+                formatter.debug_tuple("MetaLeaseSet").field(value).finish()
+            }
             Self::Deferred {
                 store_type,
                 payload,

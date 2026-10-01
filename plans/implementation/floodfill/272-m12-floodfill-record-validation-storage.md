@@ -1,6 +1,6 @@
 # Plan 272 — M12 complete floodfill record validation and bounded storage surface
 
-Status: **ready-m12-record-surface-after-plan281-type5-deferral**
+Status: **passed-m12-record-validation-storage-types-1-3-7-type5-deferred**
 
 Classification: protocol/invariant capability foundation.
 
@@ -18,7 +18,7 @@ No server replies, flooding, or capability advertisement are added.
 
 RouterInfo validation/store is mature. Standard LeaseSet2 has a bounded validator/store for the
 current ordinary online-signed subset. i2pr-proto structurally recognizes classic LeaseSet and
-currently retains EncryptedLeaseSet/MetaLeaseSet payloads as deferred. ADR 0027 freezes the exact
+currently retains EncryptedLeaseSet payloads as deferred. ADR 0027 freezes the exact
 M12 support floor and signature/key rules.
 
 ## 3. Invariants
@@ -73,10 +73,9 @@ selection, replication, persistence changes, role state, daemon I/O, config, cap
 2. Implement classic LeaseSet validation.
 3. Generalize Standard LS2 to the ADR floor without weakening current strict checks.
 4. Implement MetaLeaseSet.
-5. Implement EncryptedLeaseSet outer structure.
-6. Compose all validated records into provenance-aware bounded storage.
-7. Add malformed/truncation/oversize/property/fuzz coverage.
-8. Add expiry sweep APIs driven by caller-supplied time.
+5. Compose all validated records into provenance-aware bounded storage.
+6. Add malformed/truncation/oversize/property/fuzz coverage.
+7. Add expiry sweep APIs driven by caller-supplied time.
 
 ## 7. Failure / cancellation / restart / contention
 

@@ -60,7 +60,7 @@ impl Lease {
     }
 }
 
-/// A classic LeaseSet. LeaseSet2-family structures are intentionally deferred.
+/// A classic LeaseSet. LeaseSet2-family structures use separate types.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LeaseSet {
     destination: Destination,
@@ -241,13 +241,12 @@ impl LeaseSet {
     }
 }
 
-/// LeaseSet-family variants deliberately deferred until their later crypto and
-/// NetDB plans define complete semantics.
+/// LeaseSet-family variants that remain structurally deferred.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeferredLeaseSetVariant {
     /// LeaseSet2 and its offline-signature/header semantics.
     LeaseSet2,
-    /// MetaLeaseSet records.
+    /// Reserved for future encrypted/MetaLeaseSet compatibility classification.
     MetaLeaseSet,
     /// EncryptedLeaseSet records.
     EncryptedLeaseSet,

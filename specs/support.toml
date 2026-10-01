@@ -589,7 +589,7 @@ protocol = "common-structures"
 structure = "leaseset2-encryptedleaseset-metaleaseset"
 scope = "required-later"
 status = "experimental"
-notes = "Plan 119 closed as `passed-leaseset2-protocol-foundation` for the ordinary online-signed published Standard LeaseSet2 subset (40-byte Lease2, LeaseSet2Header, LeaseSet2EncryptionKey, LeaseSet2, signature domain 0x03 || signed_bytes, canonical Mapping options, strict fresh/Lease accounting). Plan 119 keeps EncryptedLeaseSet, MetaLeaseSet, blinded, offline-signing, leased, and PQ-hybrid variants deferred. The proto crate carries the type-3 typed path (`DatabaseStoreData::LeaseSet2`); types 5/7 remain explicitly Deferred."
+notes = "Plans 119 and 272 provide strict validated server-storage representations for classic LeaseSet (type 1), ordinary online-signed Standard LeaseSet2 (type 3), and MetaLeaseSet (type 7), including the supported offline Ed25519 delegation subset. Type 5 EncryptedLeaseSet remains Deferred pending a vetted Red25519 provider (Plan 281). Blinded-on-publication and unsupported/PQ key variants are rejected or undisclosable. No floodfill serving is claimed."
 evidence = [
     "crates/i2pr-proto/src/common/lease2.rs",
     "crates/i2pr-proto/src/i2np/netdb.rs",
@@ -887,7 +887,7 @@ protocol = "i2np"
 structure = "router-info-compression-and-leaseset-family-deferred-payloads"
 scope = "required-later"
 status = "experimental"
-notes = "Plan 119 closed the type-3 LeaseSet2 typed path; EncryptedLeaseSet (type 5) and MetaLeaseSet (type 7) remain explicitly Deferred until their later encryption/policy plans."
+notes = "Plans 119 and 272 provide typed DatabaseStore payloads for classic LeaseSet (type 1), Standard LeaseSet2 (type 3), and MetaLeaseSet (type 7). EncryptedLeaseSet (type 5) remains Deferred pending a vetted Red25519 provider. This is validation/storage infrastructure only; floodfill request/reply capability is not claimed."
 evidence = [
     "crates/i2pr-proto/src/i2np/netdb.rs",
     "crates/i2pr-proto/src/i2np/message.rs",

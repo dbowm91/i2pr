@@ -85,6 +85,14 @@ pub enum LeaseSet2ValidationError {
     /// The LeaseSet2 carried a duplicate X25519 encryption key.
     #[error("leaseSet2 carries more than one X25519 encryption key")]
     DuplicateX25519,
+    /// The unencrypted record requests blinded publication while type 5 is deferred.
+    #[error(
+        "blinded-on-publication LeaseSet2 is unsupported while EncryptedLeaseSet validation is deferred"
+    )]
+    BlindedPublicationDeferred,
+    /// Offline signing delegation has expired.
+    #[error("LeaseSet2 offline signing delegation is expired")]
+    OfflineSignatureExpired,
     /// Every Lease2 in the LeaseSet2 was already expired relative to
     /// the supplied `now`.
     #[error("leaseSet2 carries no unexpired leases")]
@@ -190,6 +198,13 @@ pub struct ValidatedLeaseSet2 {
     encoded_len: usize,
 }
 
+/// Record flags that prohibit ordinary NetDB disclosure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LeaseSetDisclosureBlock {
+    Unpublished,
+    BlindedPublicationDeferred,
+}
+
 impl ValidatedLeaseSet2 {
     /// Validates a `LeaseSet2` and returns the wrapped record on
     /// success. The `expected_key` argument is optional; when supplied
@@ -235,6 +250,17 @@ impl ValidatedLeaseSet2 {
                 CryptoError::InvalidSignature => LeaseSet2ValidationError::InvalidSignature,
                 other => LeaseSet2ValidationError::Crypto(other),
             });
+        }
+
+        if lease_set2.header().flags().is_blinded_on_publication() {
+            return Err(LeaseSet2ValidationError::BlindedPublicationDeferred);
+        }
+        if lease_set2
+            .header()
+            .offline_signature()
+            .is_some_and(|offline| offline.expires_seconds() <= context.now_seconds)
+        {
+            return Err(LeaseSet2ValidationError::OfflineSignatureExpired);
         }
 
         // Crypto policy: at least one usable X25519 encryption key.
@@ -321,6 +347,19 @@ impl ValidatedLeaseSet2 {
     /// encryption-key sections the LS2 publishes.
     pub fn encryption_keys(&self) -> &[i2pr_proto::LeaseSet2EncryptionKey] {
         self.lease_set2.encryption_keys()
+    }
+    pub fn is_unpublished(&self) -> bool {
+        self.lease_set2.header().flags().is_unpublished()
+    }
+    pub fn disclosure_block(&self) -> Option<LeaseSetDisclosureBlock> {
+        let flags = self.lease_set2.header().flags();
+        if flags.is_unpublished() {
+            Some(LeaseSetDisclosureBlock::Unpublished)
+        } else if flags.is_blinded_on_publication() {
+            Some(LeaseSetDisclosureBlock::BlindedPublicationDeferred)
+        } else {
+            None
+        }
     }
 }
 
@@ -557,7 +596,7 @@ mod tests {
     use i2pr_crypto::{ROUTER_SIGNING_KEY_TYPE, RouterIdentityBundle};
     use i2pr_proto::{
         CryptoKeyType, Date32, Destination, Hash, Lease2, LeaseSet2, LeaseSet2EncryptionKey,
-        LeaseSet2Flags, LeaseSet2Header, Mapping, SignatureValue,
+        LeaseSet2Flags, LeaseSet2Header, Mapping, OfflineSignature, SignatureValue,
     };
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
@@ -627,6 +666,167 @@ mod tests {
 
     fn key_for(signer: &RouterIdentityBundle) -> DestinationHash {
         DestinationHash::from_hash(destination_for(signer).hash().expect("hash"))
+    }
+
+    #[test]
+    fn offline_ed25519_delegation_is_verified_and_expiry_is_enforced() {
+        let owner = bundle(440);
+        let transient = bundle(441);
+        let destination = destination_for(&owner);
+        let transient_key = transient.identity().signing_key().clone();
+        let delegation_stub = OfflineSignature::new(
+            5_000,
+            transient_key.clone(),
+            SignatureValue::new(ROUTER_SIGNING_KEY_TYPE, vec![0; 64]).unwrap(),
+        )
+        .unwrap();
+        let delegation = owner
+            .signing_key()
+            .sign(&delegation_stub.signed_bytes())
+            .unwrap();
+        let offline = OfflineSignature::new(5_000, transient_key, delegation).unwrap();
+        let header = LeaseSet2Header::new_with_offline_signature(
+            destination,
+            1_000,
+            3_600,
+            LeaseSet2Flags::from_raw(i2pr_proto::flags::OFFLINE_SIGNATURE),
+            Some(offline),
+        )
+        .unwrap();
+        let options = Mapping::empty();
+        let keys = vec![LeaseSet2EncryptionKey::new(CryptoKeyType::X25519, dummy_pub()).unwrap()];
+        let leases = vec![Lease2::new(
+            Hash::from_bytes([0x77; 32]),
+            7,
+            Date32::from_seconds(2_000),
+        )];
+        let stub = SignatureValue::new(ROUTER_SIGNING_KEY_TYPE, vec![0; 64]).unwrap();
+        let unsigned = LeaseSet2::new(
+            header.clone(),
+            options.clone(),
+            keys.clone(),
+            leases.clone(),
+            stub,
+        )
+        .unwrap();
+        let signed = transient
+            .signing_key()
+            .sign(&unsigned.signature_preimage())
+            .unwrap();
+        let record = LeaseSet2::new(header, options, keys, leases, signed).unwrap();
+        assert!(
+            ValidatedLeaseSet2::from_lease_set2(
+                record.clone(),
+                None,
+                LeaseSet2ValidationContext::new(1_000)
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            ValidatedLeaseSet2::from_lease_set2(
+                record,
+                None,
+                LeaseSet2ValidationContext::new(5_100)
+            )
+            .unwrap_err(),
+            LeaseSet2ValidationError::OfflineSignatureExpired
+        );
+    }
+
+    #[test]
+    fn server_store_requires_main_namespace_and_never_refloods_replica() {
+        use crate::{
+            ClientNamespaceId, InboundProvenance, NetDbNamespace, ProvenanceEligibility, RecordId,
+            RecordProvenance, ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, StorePurpose,
+            ValidatedNetDbRecord,
+        };
+        let signer = bundle(550);
+        let record = validate(&signer, 1_000);
+        let id = RecordId::new(3, *record.key().as_hash());
+        let mut store = ServerNetDb::default();
+        assert_eq!(
+            store
+                .insert(
+                    ValidatedNetDbRecord::LeaseSet2(record.clone()),
+                    RecordProvenance {
+                        namespace: NetDbNamespace::MainRouter,
+                        inbound: InboundProvenance::AuthenticatedDirectPeer,
+                        purpose: StorePurpose::PublishedStore,
+                        observed_at_ms: 1_000_000,
+                    },
+                )
+                .unwrap(),
+            ServerInsertOutcome::Inserted
+        );
+        assert!(
+            store
+                .lease_set2_for_answer(record.key(), 1_000_001, 60_000)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            store.may_replicate(&id, 1_000_001, 60_000),
+            ProvenanceEligibility::Allowed
+        );
+
+        let mut isolated = ServerNetDb::default();
+        assert_eq!(
+            isolated.insert(
+                ValidatedNetDbRecord::LeaseSet2(record.clone()),
+                RecordProvenance {
+                    namespace: NetDbNamespace::Client(ClientNamespaceId::new(4)),
+                    inbound: InboundProvenance::ClientTunnel,
+                    purpose: StorePurpose::LookupResponse,
+                    observed_at_ms: 1_000_000,
+                },
+            ),
+            Err(ProvenanceEligibility::WrongNamespace)
+        );
+        assert_eq!(isolated.record_count(), 0);
+
+        let mut capped = ServerNetDb::with_config(ServerNetDbConfig {
+            max_records: 0,
+            max_total_bytes: 1_000_000,
+        });
+        assert_eq!(
+            capped
+                .insert(
+                    ValidatedNetDbRecord::LeaseSet2(record.clone()),
+                    RecordProvenance {
+                        namespace: NetDbNamespace::MainRouter,
+                        inbound: InboundProvenance::AuthenticatedDirectPeer,
+                        purpose: StorePurpose::PublishedStore,
+                        observed_at_ms: 1_000_000,
+                    },
+                )
+                .unwrap(),
+            ServerInsertOutcome::CapacityExceeded
+        );
+        assert_eq!(capped.record_count(), 0);
+
+        let replica = validate(&signer, 1_000);
+        let mut replica_store = ServerNetDb::default();
+        replica_store
+            .insert(
+                ValidatedNetDbRecord::LeaseSet2(replica.clone()),
+                RecordProvenance {
+                    namespace: NetDbNamespace::MainRouter,
+                    inbound: InboundProvenance::AuthenticatedDirectPeer,
+                    purpose: StorePurpose::FloodReplica,
+                    observed_at_ms: 1_000_000,
+                },
+            )
+            .unwrap();
+        assert!(
+            replica_store
+                .lease_set2_for_answer(replica.key(), 1_000_001, 60_000)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            replica_store.may_replicate(&id, 1_000_001, 60_000),
+            ProvenanceEligibility::ReplicaCannotReflood
+        );
     }
 
     #[test]

@@ -519,6 +519,7 @@ pub fn handle_database_store(
         DatabaseStoreData::RouterInfoCompressed(payload) => payload.as_bytes().to_vec(),
         DatabaseStoreData::LeaseSet(_)
         | DatabaseStoreData::LeaseSet2(_)
+        | DatabaseStoreData::MetaLeaseSet(_)
         | DatabaseStoreData::Deferred { .. } => {
             return Ok(ResponseOutcome::Continue);
         }

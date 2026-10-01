@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGETS=(
   date date32 hash mapping certificate key_certificate key_and_cert router_identity
-  destination router_address router_info lease lease_set
+  destination router_address router_info lease lease_set leaseset2 metaleaseset
   i2np_standard i2np_bodies i2np_short_ssu i2np_short_transport
   ntcp2_transcript ntcp2_storage ntcp2_handshake ntcp2_blocks ntcp2_frames
 )

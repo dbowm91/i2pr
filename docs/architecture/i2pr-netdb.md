@@ -63,6 +63,8 @@ RouterInfo publication coordinator.
 | `publication` | Local RouterInfo publication coordinator |
 | `store_message` | Unsolicited `DatabaseStore` ingestion handler |
 | `provenance` | Bounded privacy-safe provenance metadata and pure namespace/disclosure eligibility policy (Plan 271) |
+| `lease_set` | Signature/freshness validated classic LeaseSet and bounded classic/MetaLeaseSet stores (Plan 272) |
+| `server_store` | Main-router-only explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters (Plan 272) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary
@@ -201,8 +203,12 @@ for the cache loader and reseed ingestor entry points).
   grants router answer or replication eligibility; zero-token flood replicas cannot be
   re-flooded. Namespace identifiers and record keys are redacted in `Debug`.
 - Existing RouterInfoStore and LeaseSet2Store remain the client lookup storage adapters; no
-  DatabaseStore server path exists yet. Future server paths must couple metadata updates with
-  record replacement and may not treat these client stores' iterators as answerable views.
+  wire DatabaseStore server path exists yet. `ServerNetDb` couples metadata updates with the
+  validated record stores and never treats the client stores' iterators as answerable views.
+- Plan 272 adds validated classic LeaseSet, Standard LeaseSet2, and MetaLeaseSet record classes
+  (types 1/3/7), with supported Ed25519 offline delegation. It accounts bytes/count globally
+  and by record class; unpublished or blinded-on-publication records are not answerable.
+  Encrypted LeaseSet type 5 remains deferred while a vetted Red25519 provider is absent.
 
 - `ValidatedRouterInfo::from_router_info` is the only constructor;
   there is no unchecked insertion path.

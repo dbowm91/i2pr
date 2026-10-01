@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270 and 271 passed; Plan 281 corrected the support floor and Plan 272 is ready; type-5 support remains deferred.
+Status: Plans 270, 271, and 272 passed; Plan 273 is ready; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -127,8 +127,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 |---|---|---|---|---|
 | 270 | closed | passed-m12-architecture-authority-source-refresh-and-adr-freeze | plans/implementation/floodfill/270-m12-architecture-authority.md | plans/closure/floodfill/270-status.md |
 | 271 | passed | passed-m12-provenance-namespace-and-disclosure-foundation | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | plans/closure/floodfill/271-status.md |
-| 272 | ready | registered-m12-record-surface-ready-after-plan281 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
-| 273 | blocked | registered-m12-store-service-blocked-on-plan272 | plans/implementation/floodfill/273-m12-databasestore-service.md | future |
+| 272 | passed | passed-m12-record-validation-storage-types-1-3-7-type5-deferred | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | plans/closure/floodfill/272-status.md |
+| 273 | ready | registered-m12-store-service-ready-after-plan272 | plans/implementation/floodfill/273-m12-databasestore-service.md | future |
 | 274 | blocked | registered-m12-lookup-service-blocked-on-plan273 | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | future |
 | 275 | blocked | registered-m12-replication-blocked-on-plan274 | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | future |
 | 276 | blocked | registered-m12-persistence-resource-blocked-on-plan275 | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | future |
@@ -204,6 +204,6 @@ M12 is complete only when:
 
 ## 12. Milestone status summary
 
-M11 is closed for experimental progression. Plans 270, 271, and 281 have passed. Plan 272 is
-ready on the corrected type-5-deferred floor. Plans 273-279 remain blocked in dependency order;
+M11 is closed for experimental progression. Plans 270, 271, 281, and 272 have passed. Plan 273 is
+ready on the type-5-deferred floor. Plans 274-279 remain blocked in dependency order;
 Plan 280 remains stopped pending a separately reviewed I2P-compatible Red25519 provider.

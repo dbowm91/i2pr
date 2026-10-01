@@ -18,6 +18,7 @@
 
 mod base64;
 mod databaselookup;
+mod lease_set;
 mod lease_set2;
 mod local;
 mod lookup_action;
@@ -29,15 +30,21 @@ mod publication;
 mod reseed;
 mod router_info;
 mod routing;
+mod server_store;
 mod store;
 mod store_message;
 
 pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
+pub use lease_set::{
+    LeaseSetInsertOutcome, LeaseSetStore, LeaseSetStoreConfig, LeaseSetValidationContext,
+    LeaseSetValidationError, MetaLeaseSetInsertOutcome, MetaLeaseSetStore, MetaLeaseSetStoreConfig,
+    ValidatedLeaseSet, ValidatedMetaLeaseSet,
+};
 pub use lease_set2::{
     DestinationHash, LeaseSet2InsertOutcome, LeaseSet2Store, LeaseSet2StoreConfig,
     LeaseSet2StoreStats, LeaseSet2ValidationContext, LeaseSet2ValidationError,
-    LeaseSet2ValidationPolicy, ValidatedLeaseSet2,
+    LeaseSet2ValidationPolicy, LeaseSetDisclosureBlock, ValidatedLeaseSet2,
 };
 pub use local::{LocalRouterInfo, LocalRouterInfoBuilder, LocalRouterInfoError};
 pub use lookup_action::{
@@ -87,6 +94,7 @@ pub use router_info::{
 pub use routing::{
     NearestSelection, RoutingKeyError, daily_routing_key, format_daily_key, xor_distance,
 };
+pub use server_store::{ServerInsertOutcome, ServerNetDb, ServerNetDbConfig, ValidatedNetDbRecord};
 pub use store::{InsertOutcome, RouterInfoStore, RouterInfoStoreConfig, RouterInfoStoreStats};
 pub use store_message::{
     UnsolicitedStoreError, UnsolicitedStoreOutcome, UnsolicitedStorePolicy,
