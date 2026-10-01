@@ -1,6 +1,11 @@
 //! Provenance-aware, main-router server-authority record store.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
+
+use flate2::Compression;
+use flate2::GzBuilder;
+use i2pr_proto::{DatabaseStoreData, DatabaseStoreMessage, DeferredPayload};
 
 use crate::lease_set2::DestinationHash;
 use crate::{
@@ -182,6 +187,11 @@ impl ServerNetDb {
         }
         let value = self.router_info.get(key);
         if value.is_some_and(|record| {
+            now_ms.saturating_sub(record.published().as_millis()) > max_age_ms
+        }) {
+            return Err(ProvenanceEligibility::Expired);
+        }
+        if value.is_some_and(|record| {
             record
                 .router_info()
                 .capabilities()
@@ -192,6 +202,136 @@ impl ServerNetDb {
             return Err(ProvenanceEligibility::NotPublished);
         }
         Ok(value)
+    }
+
+    /// Encodes one currently answer-eligible record into a token-zero DatabaseStore body.
+    pub fn database_store_for_answer(
+        &self,
+        record_type: u8,
+        key: i2pr_proto::Hash,
+        now_ms: u64,
+        max_age_ms: u64,
+        max_encoded_bytes: usize,
+    ) -> Result<Option<DatabaseStoreMessage>, ProvenanceEligibility> {
+        let data = match record_type {
+            0 => {
+                let router_key = RouterHash::from_hash(key);
+                let Some(record) = self.router_info_for_answer(&router_key, now_ms, max_age_ms)?
+                else {
+                    return Ok(None);
+                };
+                let raw = record
+                    .router_info()
+                    .encode_to_vec(max_encoded_bytes)
+                    .map_err(|_| ProvenanceEligibility::CapacityExceeded)?;
+                let mut compressor = GzBuilder::new()
+                    .mtime(0)
+                    .operating_system(0xff)
+                    .write(Vec::new(), Compression::best());
+                compressor
+                    .write_all(&raw)
+                    .map_err(|_| ProvenanceEligibility::CapacityExceeded)?;
+                let compressed = compressor
+                    .finish()
+                    .map_err(|_| ProvenanceEligibility::CapacityExceeded)?;
+                DatabaseStoreData::RouterInfoCompressed(
+                    DeferredPayload::new(compressed, max_encoded_bytes)
+                        .map_err(|_| ProvenanceEligibility::CapacityExceeded)?,
+                )
+            }
+            1 => {
+                let Some(record) =
+                    self.lease_set_for_answer(DestinationHash::from_hash(key), now_ms, max_age_ms)?
+                else {
+                    return Ok(None);
+                };
+                DatabaseStoreData::LeaseSet(Box::new(record.value().clone()))
+            }
+            3 => {
+                let Some(record) = self.lease_set2_for_answer(
+                    DestinationHash::from_hash(key),
+                    now_ms,
+                    max_age_ms,
+                )?
+                else {
+                    return Ok(None);
+                };
+                DatabaseStoreData::LeaseSet2(Box::new(record.lease_set2().clone()))
+            }
+            7 => {
+                let Some(record) = self.meta_lease_set_for_answer(
+                    DestinationHash::from_hash(key),
+                    now_ms,
+                    max_age_ms,
+                )?
+                else {
+                    return Ok(None);
+                };
+                DatabaseStoreData::MetaLeaseSet(Box::new(record.value().clone()))
+            }
+            _ => return Ok(None),
+        };
+        let size = match &data {
+            DatabaseStoreData::RouterInfoCompressed(value) => value.as_bytes().len(),
+            DatabaseStoreData::LeaseSet(value) => value
+                .encode_to_vec(max_encoded_bytes)
+                .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
+                .len(),
+            DatabaseStoreData::LeaseSet2(value) => value
+                .encode_to_vec(max_encoded_bytes)
+                .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
+                .len(),
+            DatabaseStoreData::MetaLeaseSet(value) => value
+                .encode_to_vec(max_encoded_bytes)
+                .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
+                .len(),
+            DatabaseStoreData::Deferred { .. } => return Ok(None),
+        };
+        if size > max_encoded_bytes {
+            return Err(ProvenanceEligibility::CapacityExceeded);
+        }
+        Ok(Some(DatabaseStoreMessage {
+            key,
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data,
+        }))
+    }
+
+    /// Returns validated non-hidden RouterInfo candidates isolated to the main namespace.
+    pub fn router_info_candidates(
+        &self,
+        now_ms: u64,
+        max_age_ms: u64,
+        want_floodfill: bool,
+        excluded: &BTreeSet<i2pr_proto::Hash>,
+        maximum_work: usize,
+    ) -> Vec<RouterHash> {
+        self.provenance
+            .eligible_records(NetDbNamespace::MainRouter, now_ms, max_age_ms)
+            .take(maximum_work)
+            .filter_map(|(id, _)| {
+                if id.record_type() != 0 || excluded.contains(id.key()) {
+                    return None;
+                }
+                let key = RouterHash::from_hash(*id.key());
+                let record = self
+                    .router_info_for_answer(&key, now_ms, max_age_ms)
+                    .ok()??;
+                let caps = record.router_info().capabilities().ok().flatten();
+                if caps
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().contains('H'))
+                {
+                    return None;
+                }
+                let is_floodfill = caps
+                    .as_ref()
+                    .is_some_and(|value| value.as_str().contains('f'));
+                (is_floodfill == want_floodfill).then_some(key)
+            })
+            .collect()
     }
     pub fn lease_set_for_answer(
         &self,
@@ -206,7 +346,11 @@ impl ServerNetDb {
         if decision != ProvenanceEligibility::Allowed {
             return Err(decision);
         }
-        Ok(self.leases.get(&key))
+        let value = self.leases.get(&key);
+        if value.is_some_and(|record| record.version_ms() <= now_ms) {
+            return Err(ProvenanceEligibility::Expired);
+        }
+        Ok(value)
     }
     pub fn lease_set2_for_answer(
         &self,
@@ -222,6 +366,22 @@ impl ServerNetDb {
             return Err(decision);
         }
         let value = self.leases2.get(&key);
+        let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+        if value.is_some_and(|record| {
+            record.lease_set2().expires_seconds() <= now_seconds
+                || record
+                    .lease_set2()
+                    .leases()
+                    .iter()
+                    .all(|lease| lease.end_date().as_seconds() <= now_seconds)
+                || record
+                    .lease_set2()
+                    .header()
+                    .offline_signature()
+                    .is_some_and(|offline| offline.expires_seconds() <= now_seconds)
+        }) {
+            return Err(ProvenanceEligibility::Expired);
+        }
         if value.is_some_and(|record| record.disclosure_block().is_some()) {
             return Err(ProvenanceEligibility::NotPublished);
         }
@@ -241,6 +401,22 @@ impl ServerNetDb {
             return Err(decision);
         }
         let value = self.meta_leases.get(&key);
+        let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+        if value.is_some_and(|record| {
+            record.expires_seconds() <= now_seconds
+                || record
+                    .value()
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.end_date().as_seconds() <= now_seconds)
+                || record
+                    .value()
+                    .header()
+                    .offline_signature()
+                    .is_some_and(|offline| offline.expires_seconds() <= now_seconds)
+        }) {
+            return Err(ProvenanceEligibility::Expired);
+        }
         if value.is_some_and(|record| record.disclosure_block().is_some()) {
             return Err(ProvenanceEligibility::NotPublished);
         }
@@ -268,28 +444,60 @@ impl ServerNetDb {
                         .ok()
                         .flatten()
                         .is_some_and(|caps| caps.as_str().contains('H'));
-                    if hidden || age > 60 * 60 * 1000 {
+                    if hidden || age > max_age_ms || age > 60 * 60 * 1000 {
                         ProvenanceEligibility::NotPublished
                     } else {
                         ProvenanceEligibility::Allowed
                     }
                 })
                 .unwrap_or(ProvenanceEligibility::NotPublished),
-            3 => self
-                .leases2
-                .get(&DestinationHash::from_hash(*id.key()))
-                .filter(|record| record.disclosure_block().is_none())
-                .map(|_| ProvenanceEligibility::Allowed)
-                .unwrap_or(ProvenanceEligibility::NotPublished),
+            3 => {
+                self.leases2
+                    .get(&DestinationHash::from_hash(*id.key()))
+                    .filter(|record| {
+                        record.disclosure_block().is_none()
+                            && record.lease_set2().expires_seconds()
+                                > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                            && record.lease_set2().leases().iter().any(|lease| {
+                                lease.end_date().as_seconds()
+                                    > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                            })
+                            && record.lease_set2().header().offline_signature().is_none_or(
+                                |offline| {
+                                    offline.expires_seconds()
+                                        > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                                },
+                            )
+                    })
+                    .map(|_| ProvenanceEligibility::Allowed)
+                    .unwrap_or(ProvenanceEligibility::NotPublished)
+            }
             7 => self
                 .meta_leases
                 .get(&DestinationHash::from_hash(*id.key()))
-                .filter(|record| record.disclosure_block().is_none())
+                .filter(|record| {
+                    record.disclosure_block().is_none()
+                        && record.expires_seconds()
+                            > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                        && record.value().entries().iter().any(|entry| {
+                            entry.end_date().as_seconds()
+                                > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                        })
+                        && record
+                            .value()
+                            .header()
+                            .offline_signature()
+                            .is_none_or(|offline| {
+                                offline.expires_seconds()
+                                    > u32::try_from(now_ms / 1000).unwrap_or(u32::MAX)
+                            })
+                })
                 .map(|_| ProvenanceEligibility::Allowed)
                 .unwrap_or(ProvenanceEligibility::NotPublished),
             1 => self
                 .leases
                 .get(&DestinationHash::from_hash(*id.key()))
+                .filter(|record| record.version_ms() > now_ms)
                 .map(|_| ProvenanceEligibility::Allowed)
                 .unwrap_or(ProvenanceEligibility::NotPublished),
             _ => ProvenanceEligibility::NotPublished,

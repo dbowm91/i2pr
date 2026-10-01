@@ -1,7 +1,7 @@
-# Machine-readable support inventory. Authority reconciled through Plan 268 (2026-10-01).
+# Machine-readable support inventory. Authority reconciled through M12 Plan 273 (2026-10-01).
 # M11 one-family experimental progression passed; public transit remains disabled,
-# non-advertised, and unclaimed. Plan 269 is the sole ready cleanup; M12 Plans 270-279
-# remain registered and blocked in dependency order until each predecessor closes.
+# non-advertised, and unclaimed. M12 Plans 270-274 passed; Plan 275 is ready. No daemon
+# floodfill role, interoperability qualification, or advertisement is claimed.
 schema = 1
 milestone = 7
 plan_103_implementation_floor = "plans/closure/netdb/103-status.md"
@@ -365,7 +365,7 @@ plan_268_status = "passed-m11-receipt-family-three-completions-zero-semantic-fai
 m6_experimental_mixed_router_progression = "passed-via-i2pd-plan193"
 m6_java_full_router_compatibility = "retained-deferred-at-plan247"
 m6_full_two_family_router_conformance = "not-yet-claimed"
-m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 architecture and provenance Plans 270/271 passed. Plan 280 stopped because no reviewed Rust I2P Red25519 provider is available; Plan 281 passed and deferred EncryptedLeaseSet type 5. Plan 272 is ready for types 1/3/7 plus RouterInfo. No floodfill implementation or advertisement is claimed."
+m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 Plans 270-274 passed architecture, provenance, record validation/storage, runtime-neutral DatabaseStore admission, and DatabaseLookup/DSRM with supplied-key ECIES reply service for RouterInfo and types 1/3/7. Plan 280 stopped because no reviewed Rust I2P Red25519 provider is available; Plan 281 deferred EncryptedLeaseSet type 5. Replication, persistence, daemon role lifecycle, qualification, and all floodfill advertisement remain unimplemented/unclaimed."
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
 m6_netdb_lookup_publication = "passed-via-plan186"
@@ -404,13 +404,19 @@ plan_281_plan_of_record = "plans/implementation/floodfill/281-m12-encrypted-leas
 plan_281_closure = "plans/closure/floodfill/281-status.md"
 plan_281_status = "passed-m12-record-floor-corrected-type5-deferred"
 plan_272_plan_of_record = "plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md"
-plan_272_status = "ready-m12-record-surface-after-plan281-type5-deferral"
-m12_floodfill_status = "architecture-frozen; record-validation implementation ready with type5 deferred; no serving claim"
-m12_evidence_tier = "architecture-frozen"
+plan_272_status = "passed-m12-record-validation-storage-types-1-3-7-type5-deferred"
+plan_273_plan_of_record = "plans/implementation/floodfill/273-m12-databasestore-service.md"
+plan_273_closure = "plans/closure/floodfill/273-status.md"
+plan_273_status = "passed-m12-bounded-databasestore-service"
+plan_274_plan_of_record = "plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md"
+plan_274_closure = "plans/closure/floodfill/274-status.md"
+plan_274_status = "passed-m12-lookup-serving-bounded-dsrm-and-ecies-replies"
+m12_floodfill_status = "bounded runtime-neutral DatabaseStore and lookup/ECIES reply services implemented for types 0/1/3/7; type5 deferred; no daemon composition or advertisement"
+m12_evidence_tier = "local-validated"
 m12_type11_red25519 = "type5-deferred; no acceptable reviewed Rust provider; plan280 stopped"
 m12_caps_f_advertised = false
 next_product_layer = "m12-floodfill-planning"
-next_executable_plan = "plan272 (RouterInfo plus DatabaseStore types 1, 3, and 7 validation; type5 remains unsupported; no M12 serving or advertisement)"
+next_executable_plan = "plan275 (direct replication and daily routing-key rollover; no daemon role or advertisement)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
@@ -1576,5 +1582,21 @@ evidence = [
     "tests/integration/m6-interop/run-preflight.sh",
     "plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md",
     "plans/closure/mixed-router-interop/184-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "netdb.floodfill-store-and-lookup-services"
+protocol = "i2np"
+structure = "bounded-router-authority-databasestore-and-databaselookup-dsrm-service"
+scope = "required-later"
+status = "experimental"
+notes = "Plans 273/274 add runtime-neutral store admission, main-router-only lookups, bounded DSRM, and supplied-key ECIES tunnel reply effects for RouterInfo and DatabaseStore types 1/3/7. Type 5 remains deferred. This is service infrastructure only: no replication transport, persistence, daemon role lifecycle, qualification, or caps=f advertisement is claimed."
+evidence = [
+    "crates/i2pr-netdb/src/floodfill_service.rs",
+    "crates/i2pr-netdb/src/server_store.rs",
+    "crates/i2pr-crypto/src/lib.rs",
+    "plans/closure/floodfill/273-status.md",
+    "plans/closure/floodfill/274-status.md",
 ]
 advertised = false

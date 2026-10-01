@@ -3,11 +3,14 @@
 //! The service owns classification, bounded validation/admission, throttling and typed effects.
 //! Dispatch, DeliveryStatus routing and replication transport remain with the daemon/runtime.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use i2pr_crypto::seal_netdb_ecies_reply;
 use i2pr_proto::{
-    DatabaseStoreData, DatabaseStoreMessage, Date, DeliveryStatusMessage, Hash, RouterInfo,
+    DatabaseLookupMessage, DatabaseSearchReplyMessage, DatabaseStoreData, DatabaseStoreMessage,
+    Date, DeliveryStatusMessage, Hash, I2npBody, MAX_DATABASE_LOOKUP_EXCLUDED_PEERS,
+    MAX_DATABASE_SEARCH_REPLY_PEERS, MAX_I2NP_PAYLOAD_SIZE, ReplyEncryption, RouterInfo,
 };
 
 use crate::{
@@ -66,6 +69,8 @@ pub struct FloodfillStorePolicy {
     pub max_record_bytes: usize,
     pub max_crypto_validations: u32,
     pub max_provenance_age_ms: u64,
+    pub lookup_reply_peer_count: usize,
+    pub max_reply_bytes: usize,
     /// Local RouterHash, when known, to prevent a remote store replacing local self-state.
     pub own_router_hash: Option<Hash>,
 }
@@ -83,6 +88,8 @@ impl Default for FloodfillStorePolicy {
             max_record_bytes: 64 * 1024,
             max_crypto_validations: 1024,
             max_provenance_age_ms: 24 * 60 * 60 * 1000,
+            lookup_reply_peer_count: 3,
+            max_reply_bytes: MAX_I2NP_PAYLOAD_SIZE,
             own_router_hash: None,
         }
     }
@@ -182,10 +189,49 @@ pub struct ReplicationCandidate {
     pub record: RecordId,
 }
 
+/// Typed server reply route. Tunnel bytes are body bytes for the daemon Garlic/TunnelGateway path.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FloodfillReplyIntent {
+    Direct {
+        peer: Hash,
+        body: I2npBody,
+    },
+    Tunnel {
+        gateway: Hash,
+        tunnel_id: u32,
+        payload: Vec<u8>,
+        protection: ReplyProtection,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplyProtection {
+    None,
+    SuppliedKeyEcies,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LookupFailure {
+    Disabled,
+    Throttled,
+    UnsupportedType,
+    InvalidReplyRoute,
+    UnsupportedEncryption,
+    EncodingFailure,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum FloodfillLookupEffect {
+    NoResponse(LookupFailure),
+    Reply(FloodfillReplyIntent),
+}
+
 /// The stateful but synchronous DatabaseStore ingestion service.
 pub struct FloodfillStoreService {
     policy: FloodfillStorePolicy,
     global: WindowCounter,
+    lookup_global: WindowCounter,
+    lookup_keys: BTreeMap<Hash, WindowCounter>,
     crypto: WindowCounter,
     global_bytes: WindowBytes,
     sources: BTreeMap<ThrottleSource, WindowCounter>,
@@ -205,6 +251,8 @@ impl FloodfillStoreService {
         Self {
             policy,
             global: WindowCounter::default(),
+            lookup_global: WindowCounter::default(),
+            lookup_keys: BTreeMap::new(),
             crypto: WindowCounter::default(),
             global_bytes: WindowBytes::default(),
             sources: BTreeMap::new(),
@@ -216,6 +264,190 @@ impl FloodfillStoreService {
 
     pub const fn stats(&self) -> FloodfillStoreStats {
         self.stats
+    }
+
+    /// Serves one bounded lookup from main-router server-authority records.
+    pub fn handle_lookup(
+        &mut self,
+        db: &ServerNetDb,
+        lookup: &DatabaseLookupMessage,
+        role: FloodfillRole,
+        local_router: Hash,
+        time: FloodfillTime,
+    ) -> FloodfillLookupEffect {
+        if role != FloodfillRole::Serving {
+            return FloodfillLookupEffect::NoResponse(LookupFailure::Disabled);
+        }
+        if lookup.excluded_peers.len() > MAX_DATABASE_LOOKUP_EXCLUDED_PEERS
+            || self.policy.lookup_reply_peer_count == 0
+        {
+            return FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedType);
+        }
+        if !self.lookup_global.admit(
+            time.monotonic_ms,
+            self.policy.window_ms,
+            self.policy.max_global_requests,
+        ) {
+            self.stats.throttled = self.stats.throttled.saturating_add(1);
+            return FloodfillLookupEffect::NoResponse(LookupFailure::Throttled);
+        }
+        self.lookup_keys.retain(|_, value| {
+            time.monotonic_ms.saturating_sub(value.start_ms) < self.policy.window_ms
+        });
+        if !self.lookup_keys.contains_key(&lookup.key) && self.lookup_keys.len() >= MAX_TRACKED_KEYS
+        {
+            self.stats.throttled = self.stats.throttled.saturating_add(1);
+            return FloodfillLookupEffect::NoResponse(LookupFailure::Throttled);
+        }
+        if !self.lookup_keys.entry(lookup.key).or_default().admit(
+            time.monotonic_ms,
+            self.policy.window_ms,
+            self.policy.max_key_requests,
+        ) {
+            self.stats.throttled = self.stats.throttled.saturating_add(1);
+            return FloodfillLookupEffect::NoResponse(LookupFailure::Throttled);
+        }
+        let body = match self.lookup_body(db, lookup, local_router, time) {
+            Ok(Some(body)) => body,
+            Ok(None) => return FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedType),
+            Err(error) => return FloodfillLookupEffect::NoResponse(error),
+        };
+        self.lookup_reply(lookup, body)
+    }
+
+    fn lookup_body(
+        &self,
+        db: &ServerNetDb,
+        lookup: &DatabaseLookupMessage,
+        local_router: Hash,
+        time: FloodfillTime,
+    ) -> Result<Option<I2npBody>, LookupFailure> {
+        let types: &[u8] = match lookup.lookup_type {
+            0 => &[0, 1, 3, 7],
+            1 => &[1, 3, 7],
+            2 => &[0],
+            3 => &[],
+            _ => return Ok(None),
+        };
+        for record_type in types {
+            match db.database_store_for_answer(
+                *record_type,
+                lookup.key,
+                time.wall_ms,
+                self.policy.max_provenance_age_ms,
+                self.policy.max_record_bytes,
+            ) {
+                Ok(Some(message)) => {
+                    return Ok(Some(I2npBody::DatabaseStore(Box::new(message))));
+                }
+                Ok(None)
+                | Err(crate::ProvenanceEligibility::NotPublished)
+                | Err(crate::ProvenanceEligibility::Expired)
+                | Err(crate::ProvenanceEligibility::WrongNamespace)
+                | Err(crate::ProvenanceEligibility::LookupResponseOnly)
+                | Err(crate::ProvenanceEligibility::ClientTunnelOnly)
+                | Err(crate::ProvenanceEligibility::ReplicaCannotReflood)
+                | Err(crate::ProvenanceEligibility::Allowed) => {}
+                Err(crate::ProvenanceEligibility::CapacityExceeded) => {
+                    return Err(LookupFailure::EncodingFailure);
+                }
+            }
+        }
+
+        let mut excluded: BTreeSet<Hash> = lookup.excluded_peers.iter().copied().collect();
+        excluded.insert(lookup.from);
+        excluded.insert(local_router);
+        let target = RouterHash::from_hash(lookup.key);
+        let routing_key = crate::daily_routing_key(&target, Date::from_millis(time.wall_ms))
+            .map_err(|_| LookupFailure::EncodingFailure)?;
+        let routing_target = RouterHash::from_hash(routing_key);
+        let want_floodfill = lookup.lookup_type != 3;
+        let mut candidates = db.router_info_candidates(
+            time.wall_ms,
+            self.policy.max_provenance_age_ms,
+            want_floodfill,
+            &excluded,
+            8192,
+        );
+        candidates.sort_by_key(|candidate| {
+            (
+                crate::xor_distance(candidate, &routing_target),
+                *candidate.as_hash(),
+            )
+        });
+        candidates.dedup();
+        candidates.truncate(
+            self.policy
+                .lookup_reply_peer_count
+                .min(MAX_DATABASE_SEARCH_REPLY_PEERS),
+        );
+        Ok(Some(I2npBody::DatabaseSearchReply(
+            DatabaseSearchReplyMessage {
+                key: lookup.key,
+                peer_hashes: candidates
+                    .into_iter()
+                    .map(|candidate| *candidate.as_hash())
+                    .collect(),
+                from: local_router,
+            },
+        )))
+    }
+
+    fn lookup_reply(
+        &self,
+        lookup: &DatabaseLookupMessage,
+        body: I2npBody,
+    ) -> FloodfillLookupEffect {
+        if !lookup.delivery_flag {
+            if !matches!(lookup.reply_encryption, ReplyEncryption::None) {
+                return FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedEncryption);
+            }
+            if body.encode_to_vec(self.policy.max_reply_bytes).is_err() {
+                return FloodfillLookupEffect::NoResponse(LookupFailure::EncodingFailure);
+            }
+            return FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+                peer: lookup.from,
+                body,
+            });
+        }
+        let Some(tunnel_id) = lookup.reply_tunnel_id.filter(|value| *value != 0) else {
+            return FloodfillLookupEffect::NoResponse(LookupFailure::InvalidReplyRoute);
+        };
+        let Ok(plaintext) = body.encode_to_vec(self.policy.max_reply_bytes) else {
+            return FloodfillLookupEffect::NoResponse(LookupFailure::EncodingFailure);
+        };
+        let (payload, protection) = match &lookup.reply_encryption {
+            ReplyEncryption::Ecies {
+                reply_key,
+                reply_tags,
+            } if reply_tags.len() == 1 => {
+                match seal_netdb_ecies_reply(reply_key, &reply_tags[0], &plaintext) {
+                    Ok(ciphertext)
+                        if ciphertext.len().saturating_add(8) <= self.policy.max_reply_bytes =>
+                    {
+                        let mut wire = Vec::with_capacity(ciphertext.len() + 8);
+                        wire.extend_from_slice(reply_tags[0].as_bytes());
+                        wire.extend_from_slice(&ciphertext);
+                        (wire, ReplyProtection::SuppliedKeyEcies)
+                    }
+                    Ok(_) => {
+                        return FloodfillLookupEffect::NoResponse(LookupFailure::EncodingFailure);
+                    }
+                    Err(_) => {
+                        return FloodfillLookupEffect::NoResponse(
+                            LookupFailure::UnsupportedEncryption,
+                        );
+                    }
+                }
+            }
+            _ => return FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedEncryption),
+        };
+        FloodfillLookupEffect::Reply(FloodfillReplyIntent::Tunnel {
+            gateway: lookup.from,
+            tunnel_id,
+            payload,
+            protection,
+        })
     }
 
     /// Admits one decoded DatabaseStore. Caller has already authenticated/classified the ingress;
@@ -513,21 +745,31 @@ mod tests {
     use i2pr_proto::{
         CryptoKeyType, Date32, DeferredPayload, Destination, Lease, Lease2, LeaseSet, LeaseSet2,
         LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header, MAX_COMMON_STRUCTURE_SIZE,
-        Mapping, MetaLease, MetaLeaseSet, PublicKey, SignatureValue,
+        Mapping, MetaLease, MetaLeaseSet, PublicKey, ReplySecret, SignatureValue,
     };
     use rand_chacha::ChaCha8Rng;
     use rand_core::SeedableRng;
 
     fn router_store(seed: u64, reply_token: u32) -> (DatabaseStoreMessage, Hash) {
+        router_store_with_caps(seed, reply_token, None)
+    }
+
+    fn router_store_with_caps(
+        seed: u64,
+        reply_token: u32,
+        caps: Option<&str>,
+    ) -> (DatabaseStoreMessage, Hash) {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let identity = RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let options = caps.map_or_else(Mapping::empty, |value| {
+            let mut builder = Mapping::builder();
+            builder
+                .insert("caps".to_owned(), value.to_owned())
+                .expect("caps option");
+            builder.build().expect("mapping")
+        });
         let router_info = identity
-            .sign_router_info(
-                Date::from_millis(1),
-                Vec::new(),
-                Vec::new(),
-                Mapping::empty(),
-            )
+            .sign_router_info(Date::from_millis(1), Vec::new(), Vec::new(), options)
             .expect("signed router info");
         let key = crate::router_hash(router_info.router_identity())
             .expect("hash")
@@ -929,6 +1171,350 @@ mod tests {
         assert_eq!(ack.reply_tunnel_id, Some(0x12345678));
         assert_eq!(ack.reply_gateway, Some(gateway));
         assert!(replication.is_none());
+    }
+
+    fn lookup(key: Hash, kind: u8) -> DatabaseLookupMessage {
+        DatabaseLookupMessage {
+            key,
+            from: Hash::from_bytes([0xa1; 32]),
+            delivery_flag: false,
+            reply_tunnel_id: None,
+            lookup_type: kind,
+            excluded_peers: Vec::new(),
+            reply_encryption: ReplyEncryption::None,
+        }
+    }
+
+    #[test]
+    fn lookup_hits_misses_and_exploration_follow_adr_policy() {
+        let (store, peer) = router_store(0x280, 3);
+        let key = store.key;
+        let mut service = FloodfillStoreService::default();
+        let mut db = ServerNetDb::default();
+        assert!(matches!(
+            service.handle(
+                &mut db,
+                &store,
+                FloodfillRole::Serving,
+                FloodfillIngress::DirectPeer(peer),
+                1,
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 1
+                }
+            ),
+            FloodfillStoreEffect::Stored { .. }
+        ));
+        let local = Hash::from_bytes([0x99; 32]);
+        let hit = service.handle_lookup(
+            &db,
+            &lookup(key, 2),
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 2,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+            body: I2npBody::DatabaseStore(message),
+            ..
+        }) = hit
+        else {
+            panic!("RouterInfo hit should return DatabaseStore")
+        };
+        let DatabaseStoreData::RouterInfoCompressed(compressed) = &message.data else {
+            panic!("RouterInfo DatabaseStore must be compressed")
+        };
+        assert_eq!(
+            &compressed.as_bytes()[..10],
+            &[0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 2, 0xff]
+        );
+        let miss = service.handle_lookup(
+            &db,
+            &lookup(key, 1),
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 3,
+            },
+        );
+        assert!(matches!(
+            miss,
+            FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+                body: I2npBody::DatabaseSearchReply(_),
+                ..
+            })
+        ));
+        let exploration = service.handle_lookup(
+            &db,
+            &lookup(key, 3),
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 4,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+            body: I2npBody::DatabaseSearchReply(reply),
+            ..
+        }) = exploration
+        else {
+            panic!("exploration exact hit must return a search reply")
+        };
+        assert_eq!(reply.key, key);
+        assert_eq!(reply.from, local);
+        assert!(reply.peer_hashes.contains(&key));
+    }
+
+    #[test]
+    fn requested_tunnel_reply_uses_ecies_and_rejects_plaintext_downgrade() {
+        let key = Hash::from_bytes([0x55; 32]);
+        let mut request = lookup(key, 1);
+        request.delivery_flag = true;
+        request.reply_tunnel_id = Some(0x1234);
+        let reply_key = ReplySecret::from_bytes([0x33; 32]);
+        let reply_tag = ReplySecret::from_bytes([0x44; 8]);
+        request.reply_encryption = ReplyEncryption::Ecies {
+            reply_key: reply_key.clone(),
+            reply_tags: vec![reply_tag.clone()],
+        };
+        let mut service = FloodfillStoreService::default();
+        let db = ServerNetDb::default();
+        let result = service.handle_lookup(
+            &db,
+            &request,
+            FloodfillRole::Serving,
+            Hash::from_bytes([0x66; 32]),
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 1,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Tunnel {
+            payload,
+            protection,
+            ..
+        }) = result
+        else {
+            panic!("ECIES tunnel reply expected")
+        };
+        assert_eq!(protection, ReplyProtection::SuppliedKeyEcies);
+        assert_eq!(&payload[..8], reply_tag.as_bytes());
+        let plaintext = i2pr_crypto::open_netdb_ecies_reply(&reply_key, &reply_tag, &payload[8..])
+            .expect("open reply");
+        assert_eq!(plaintext.len(), 65);
+        assert_eq!(plaintext[32], 0);
+        request.reply_encryption = ReplyEncryption::None;
+        assert_eq!(
+            service.handle_lookup(
+                &db,
+                &request,
+                FloodfillRole::Serving,
+                Hash::from_bytes([0x66; 32]),
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 2
+                },
+            ),
+            FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedEncryption)
+        );
+        request.reply_encryption = ReplyEncryption::Ecies {
+            reply_key: reply_key.clone(),
+            reply_tags: vec![reply_tag.clone(), reply_tag],
+        };
+        assert_eq!(
+            service.handle_lookup(
+                &db,
+                &request,
+                FloodfillRole::Serving,
+                Hash::from_bytes([0x66; 32]),
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 3
+                },
+            ),
+            FloodfillLookupEffect::NoResponse(LookupFailure::UnsupportedEncryption)
+        );
+    }
+
+    #[test]
+    fn dsrm_candidates_are_excluded_type_filtered_and_hard_limited() {
+        let mut store_service = FloodfillStoreService::default();
+        let mut db = ServerNetDb::default();
+        let mut all_keys = Vec::new();
+        for index in 0..21 {
+            let caps = if index == 20 { "R" } else { "f" };
+            let (message, authenticated_peer) =
+                router_store_with_caps(0x300 + index, 1, Some(caps));
+            all_keys.push(message.key);
+            assert!(matches!(
+                store_service.handle(
+                    &mut db,
+                    &message,
+                    FloodfillRole::Serving,
+                    FloodfillIngress::DirectPeer(authenticated_peer),
+                    index as u32,
+                    FloodfillTime {
+                        wall_ms: 1,
+                        monotonic_ms: index + 1
+                    },
+                ),
+                FloodfillStoreEffect::Stored { .. }
+            ));
+        }
+        let target = Hash::from_bytes([0xe0; 32]);
+        let mut request = lookup(target, 2);
+        request.excluded_peers.push(all_keys[0]);
+        request.from = all_keys[1];
+        let local = all_keys[2];
+        let mut lookup_service = FloodfillStoreService::new(FloodfillStorePolicy {
+            lookup_reply_peer_count: 64,
+            ..FloodfillStorePolicy::default()
+        });
+        let result = lookup_service.handle_lookup(
+            &db,
+            &request,
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 1,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+            body: I2npBody::DatabaseSearchReply(reply),
+            ..
+        }) = result
+        else {
+            panic!("miss should return DSRM")
+        };
+        assert_eq!(reply.peer_hashes.len(), MAX_DATABASE_SEARCH_REPLY_PEERS);
+        assert!(!reply.peer_hashes.contains(&all_keys[0]));
+        assert!(!reply.peer_hashes.contains(&all_keys[1]));
+        assert!(!reply.peer_hashes.contains(&all_keys[2]));
+        assert!(reply.peer_hashes.iter().all(|value| *value != all_keys[20]));
+
+        let mut default_service = FloodfillStoreService::default();
+        let default_reply = default_service.handle_lookup(
+            &db,
+            &request,
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 1,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+            body: I2npBody::DatabaseSearchReply(default_reply),
+            ..
+        }) = default_reply
+        else {
+            panic!("regular miss must return default DSRM")
+        };
+        assert_eq!(default_reply.peer_hashes.len(), 3);
+
+        request.lookup_type = 3;
+        request.from = Hash::from_bytes([0xab; 32]);
+        request.excluded_peers.clear();
+        let exploration = lookup_service.handle_lookup(
+            &db,
+            &request,
+            FloodfillRole::Serving,
+            Hash::from_bytes([0xcd; 32]),
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 2,
+            },
+        );
+        let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+            body: I2npBody::DatabaseSearchReply(reply),
+            ..
+        }) = exploration
+        else {
+            panic!("exploration returns DSRM")
+        };
+        assert_eq!(reply.peer_hashes, vec![all_keys[20]]);
+    }
+
+    #[test]
+    fn repeated_lookup_target_is_throttled_by_the_store_service_policy() {
+        let mut service = FloodfillStoreService::new(FloodfillStorePolicy {
+            max_key_requests: 1,
+            ..FloodfillStorePolicy::default()
+        });
+        let db = ServerNetDb::default();
+        let request = lookup(Hash::from_bytes([0x76; 32]), 2);
+        let local = Hash::from_bytes([0x77; 32]);
+        let first = service.handle_lookup(
+            &db,
+            &request,
+            FloodfillRole::Serving,
+            local,
+            FloodfillTime {
+                wall_ms: 1,
+                monotonic_ms: 1,
+            },
+        );
+        assert!(matches!(first, FloodfillLookupEffect::Reply(_)));
+        assert_eq!(
+            service.handle_lookup(
+                &db,
+                &request,
+                FloodfillRole::Serving,
+                local,
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 2
+                },
+            ),
+            FloodfillLookupEffect::NoResponse(LookupFailure::Throttled)
+        );
+    }
+
+    #[test]
+    fn hidden_routerinfo_is_neither_returned_as_a_hit_nor_a_search_candidate() {
+        let (message, peer) = router_store_with_caps(0x311, 1, Some("H"));
+        let key = message.key;
+        let mut service = FloodfillStoreService::default();
+        let mut db = ServerNetDb::default();
+        assert!(matches!(
+            service.handle(
+                &mut db,
+                &message,
+                FloodfillRole::Serving,
+                FloodfillIngress::DirectPeer(peer),
+                1,
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: 1
+                },
+            ),
+            FloodfillStoreEffect::Stored { .. }
+        ));
+        for kind in [2, 3] {
+            let result = service.handle_lookup(
+                &db,
+                &lookup(key, kind),
+                FloodfillRole::Serving,
+                Hash::from_bytes([0x91; 32]),
+                FloodfillTime {
+                    wall_ms: 1,
+                    monotonic_ms: kind as u64,
+                },
+            );
+            let FloodfillLookupEffect::Reply(FloodfillReplyIntent::Direct {
+                body: I2npBody::DatabaseSearchReply(reply),
+                ..
+            }) = result
+            else {
+                panic!("hidden record and candidate must both be suppressed")
+            };
+            assert!(!reply.peer_hashes.contains(&key));
+        }
     }
 
     #[test]

@@ -15,11 +15,13 @@
 
 use std::convert::TryInto;
 
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use ed25519_dalek::Signer;
 use i2pr_proto::{
     Certificate, CodecError, CryptoKeyType, Date, Hash, KeyAndCert, KeyCertificate, LeaseSet2,
-    Mapping, MetaLeaseSet, PublicKey, RouterAddress, RouterIdentity, RouterInfo, SignatureValue,
-    SigningKeyType, SigningPublicKey,
+    Mapping, MetaLeaseSet, PublicKey, ReplySecret, RouterAddress, RouterIdentity, RouterInfo,
+    SignatureValue, SigningKeyType, SigningPublicKey,
 };
 use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256};
@@ -86,6 +88,9 @@ pub enum CryptoError {
     /// A signature did not verify against the supplied message and key.
     #[error("signature verification failed")]
     InvalidSignature,
+    /// NetDB one-shot reply encryption or authentication failed.
+    #[error("NetDB ECIES reply operation failed")]
+    NetDbReplyAeadFailed,
     /// A structural protocol type could not be constructed.
     #[error("protocol structure rejected: {0}")]
     Protocol(#[from] i2pr_proto::CodecError),
@@ -514,6 +519,46 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && bool::from(left.ct_eq(right))
 }
 
+/// Seals one bounded-by-caller NetDB reply using supplied-key ECIES.
+///
+/// This deliberately narrow primitive uses ChaCha20-Poly1305, all-zero nonce, and the single
+/// supplied 8-byte session tag as associated data. The key and tag are borrowed from zeroizing,
+/// redacted protocol secret owners and are never installed into an Existing Session.
+pub fn seal_netdb_ecies_reply(
+    reply_key: &ReplySecret<32>,
+    reply_tag: &ReplySecret<8>,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(reply_key.as_bytes()));
+    cipher
+        .encrypt(
+            &Nonce::from([0; 12]),
+            Payload {
+                msg: plaintext,
+                aad: reply_tag.as_bytes(),
+            },
+        )
+        .map_err(|_| CryptoError::NetDbReplyAeadFailed)
+}
+
+/// Opens a NetDB supplied-key ECIES reply; exposed for bounded protocol verification/tests.
+pub fn open_netdb_ecies_reply(
+    reply_key: &ReplySecret<32>,
+    reply_tag: &ReplySecret<8>,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(reply_key.as_bytes()));
+    cipher
+        .decrypt(
+            &Nonce::from([0; 12]),
+            Payload {
+                msg: ciphertext,
+                aad: reply_tag.as_bytes(),
+            },
+        )
+        .map_err(|_| CryptoError::NetDbReplyAeadFailed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +662,36 @@ mod tests {
             RouterInfo::decode(&encoded, i2pr_proto::MAX_COMMON_STRUCTURE_SIZE).expect("decode");
         verify_router_info(&decoded).expect("reloaded router info verifies");
         assert_eq!(decoded.signed_bytes(), info.signed_bytes());
+    }
+
+    #[test]
+    fn netdb_ecies_reply_uses_supplied_tag_as_associated_data() {
+        let key = ReplySecret::from_bytes([0x44; 32]);
+        let tag = ReplySecret::from_bytes([0x55; 8]);
+        let plaintext = b"bounded reply body";
+        let ciphertext = seal_netdb_ecies_reply(&key, &tag, plaintext).unwrap();
+        let vector_hex: String = ciphertext
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            vector_hex,
+            "020153562b11f72eda24a124e90beb51768b7ea527df1984e2abf2b35913e9c29ad9"
+        );
+        assert_eq!(
+            open_netdb_ecies_reply(&key, &tag, &ciphertext).unwrap(),
+            plaintext
+        );
+        let wrong_tag = ReplySecret::from_bytes([0x56; 8]);
+        assert_eq!(
+            open_netdb_ecies_reply(&key, &wrong_tag, &ciphertext),
+            Err(CryptoError::NetDbReplyAeadFailed)
+        );
+        let wrong_key = ReplySecret::from_bytes([0x45; 32]);
+        assert_eq!(
+            open_netdb_ecies_reply(&wrong_key, &tag, &ciphertext),
+            Err(CryptoError::NetDbReplyAeadFailed)
+        );
+        assert!(!format!("{key:?}{tag:?}").contains("444444"));
     }
 }

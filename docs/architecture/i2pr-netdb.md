@@ -65,7 +65,7 @@ RouterInfo publication coordinator.
 | `provenance` | Bounded privacy-safe provenance metadata and pure namespace/disclosure eligibility policy (Plan 271) |
 | `lease_set` | Signature/freshness validated classic LeaseSet and bounded classic/MetaLeaseSet stores (Plan 272) |
 | `server_store` | Main-router-only explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters (Plan 272) |
-| `floodfill_service` | Synchronous bounded DatabaseStore validation/admission with role gate, finite source/key/global/crypto windows, constant-size ack effects, and publisher-only replication candidates (Plan 273) |
+| `floodfill_service` | Synchronous bounded DatabaseStore admission plus main-router DatabaseLookup selection and one-shot supplied-key ECIES reply effects (Plans 273–274) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary
@@ -203,9 +203,11 @@ for the cache loader and reseed ingestor entry points).
   inbound path, store purpose, and observation time. Client lookup-response metadata never
   grants router answer or replication eligibility; zero-token flood replicas cannot be
   re-flooded. Namespace identifiers and record keys are redacted in `Debug`.
-- Existing RouterInfoStore and LeaseSet2Store remain the client lookup storage adapters; no
-  wire DatabaseStore server path exists yet. `ServerNetDb` couples metadata updates with the
-  validated record stores and never treats the client stores' iterators as answerable views.
+- Existing RouterInfoStore and LeaseSet2Store remain the client lookup storage adapters.
+  `ServerNetDb` couples metadata updates with the validated record stores and never treats the
+  client stores' iterators as answerable views. `FloodfillStoreService` and its lookup method emit
+  typed runtime-neutral effects; daemon dispatch, replication transport, persistence, and role
+  lifecycle remain later plans.
 - Plan 272 adds validated classic LeaseSet, Standard LeaseSet2, and MetaLeaseSet record classes
   (types 1/3/7), with supported Ed25519 offline delegation. It accounts bytes/count globally
   and by record class; unpublished or blinded-on-publication records are not answerable.

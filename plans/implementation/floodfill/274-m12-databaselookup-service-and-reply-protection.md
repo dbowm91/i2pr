@@ -1,7 +1,6 @@
 # Plan 274 — M12 DatabaseLookup service, bounded search replies, and ECIES reply protection
 
-Status at registration:
-**registered-m12-lookup-service-blocked-on-plan273**
+Status: **passed-m12-lookup-serving-bounded-dsrm-and-ecies-replies**
 
 Classification: capability / cryptographic wrapper.
 

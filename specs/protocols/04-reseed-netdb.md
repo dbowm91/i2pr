@@ -137,7 +137,7 @@ Compare record age policy, closest-peer selection, retry fan-out, unsolicited st
 - Unsigned reseed formats and plain HTTP: legacy-reject.
 - Automated reseed-server operation: outside the MVP; only the client is required.
 - Advanced family trust/reputation policy: required only if current RouterInfo validation or peer selection depends on it.
-- Plan 272 implements validated bounded storage for classic LeaseSet, Standard LeaseSet2, and MetaLeaseSet (types 1/3/7), including the supported Ed25519 offline-signature subset. Floodfill request/reply and serving remain gated by Plans 273–279. EncryptedLeaseSet type 5 remains deferred under Plan 281 pending a vetted Red25519 provider. Unsupported signatures/keys remain fail-closed; PQ-hybrid records remain deferred.
+- Plans 272–274 implement validated bounded storage, inbound DatabaseStore admission, and a runtime-neutral DatabaseLookup reply service for RouterInfo and types 1/3/7. This is not daemon composition or an advertisement claim; direct replication, persistence, lifecycle, and qualification remain gated by Plans 275–279. EncryptedLeaseSet type 5 remains deferred under Plan 281 pending a vetted Red25519 provider. Unsupported signatures/keys remain fail-closed; PQ-hybrid records remain deferred.
 - Public-network floodfill enablement: deferred until controlled mixed-router tests and resource review pass.
 
 ## Open decisions outside the frozen M12 floodfill contract
