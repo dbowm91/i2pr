@@ -54,6 +54,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 - **M12 floodfill planning**: `plans/subsystems/floodfill-roadmap.md` with Plans 270–279 registered in dependency order. Plan 269 is the sole ready prerequisite; Plan 270 is blocked until 269 closes. Broad normal-daemon `caps=f` remains forbidden until Plan 279's second-family gate.
 
+| Cross-cutting post-M11 planning | 269 global roadmap/support authority reconciliation | closed | `plans/closure/transit-tunnels/269-status.md` (`passed-post-m11-global-roadmap-support-authority-reconciled`; current-state surfaces agree, no production/test/workflow/dependency changes) |
+
 ## Dependency-ready and active plans
 
 Current authority: Plan 248 closes policy reconciliation. Plan 193 i2pd evidence is sufficient for experimental progression under ADR 0026. Plan 247 remains the latest trustworthy Java full-router diagnostic boundary and is retained/deferred.
@@ -73,7 +75,7 @@ successor chain behind Plan 269; transit stays non-advertised and no public part
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| Cross-cutting post-M11 planning | 269 global roadmap/support authority reconciliation | ready | `plans/implementation/transit-tunnels/269-post-m11-global-roadmap-support-reconciliation.md` | Plan 268 passed; documentation-only polish. M12 Plans 270–279 are registered but blocked; Plan 269 is the sole executable prerequisite. |
+| M12 floodfill | 270 architecture authority/source refresh | ready | `plans/implementation/floodfill/270-m12-architecture-authority.md` | Plan 269 passed; freeze ADR 0027 and source-backed M12 contract before implementation. |
 | M11 transit tunnels | 258 IBGW data-plane multicell diagnostic corrective | retained (corrective chain completed) | `plans/closure/transit-tunnels/258-status.md` (`retained-m11-ibgw-multicell-corrective-with-receipt-topology-boundary-required-via-plan259`; H3 emission defect corrected with multicell row passing externally on `38c939a`; receipt stops on the [i2pr→B-endpoint] topology boundary with stop provenance; constant-msgid medium finding recorded) |
 | M11 transit tunnels | 260 creator-owned inbound receipt topology + planning authority corrective | retained (corrective chain completed) | `plans/closure/transit-tunnels/260-status.md` (`retained-m11-creator-owned-inbound-partially-proven-forward-sustainability-boundary-corrective-required-via-plan261`; 7/7 creator-owned source locks + explicit-peer lock + fragment-id hardening landed with local rows green; receiver 1-hop `[i2pr]` inbound exhibited live with `[A,A]` IBGW accepts + STATUS OK; delivery stops on B2 forward-path B-endpoint garlic death and B1 mesh-sustainability boundaries with stop provenance) |
 | M11 transit tunnels | 261 B-sender receipt requalification | retained (corrective chain completed) | `plans/closure/transit-tunnels/261-status.md` (`retained-m11-b-sender-topology-proven-self-delivery-boundary-corrective-required-via-plan262`; 4/4 B-side source locks + B SAM plumbing + `m11-tx-b` sender shape landed with local rows green and zero production diff; B outbound `[i2pr]` established, B-side LeaseSet resolved from the floodfill store, 4/4 sends naming counted `[A,A]` ids; delivery stops on the B3 self-delivery loopback boundary with stop provenance) |
@@ -91,7 +93,6 @@ successor chain behind Plan 269; transit stays non-advertised and no public part
 | Subsystem | Plan | Blocker |
 |---|---|---|
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
-| M12 floodfill | 270 architecture authority/source refresh | Blocked on Plan 269 closure; unblock audit moves only Plan 270 to ready. |
 | M12 floodfill | 271 provenance/namespace segmentation | Blocked on Plan 270. |
 | M12 floodfill | 272 record validation/storage surface | Blocked on Plan 271. |
 | M12 floodfill | 273 DatabaseStore service | Blocked on Plan 272. |

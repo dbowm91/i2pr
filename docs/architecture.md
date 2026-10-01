@@ -248,4 +248,4 @@ lints, script gates, and review:
 
 ## Forward router-role roadmap
 
-Milestone 11 transit participation is the next active router-role workstream (Plan 249 foundation). Milestone 12 floodfill follows after controlled M11 transit/resource closure. Both remain disabled/non-advertised until their own gates close.
+Plan 268 closes M11 one-family experimental progression. Public transit remains disabled, non-advertised, and unclaimed. M12 floodfill is the registered next role sequence (Plans 270–279), currently blocked behind Plan 269 support/roadmap reconciliation; floodfill remains unimplemented and unadvertised.

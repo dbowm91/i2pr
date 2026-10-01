@@ -583,19 +583,22 @@ Each milestone must be preceded by a detailed plan that includes:
 
 Milestones may be split or reordered when implementation evidence justifies it, but dependency order and security prerequisites must not be bypassed for superficial feature progress.
 
-## Current execution state (Plan 118)
+## Current execution state (reconciled through Plan 268; 2026-10-01)
 
-The functional milestone definitions above remain the original
-specification. The current execution state as of Plan 118
-(2026-08-19) is:
+The functional milestone definitions above remain the original specification. This
+present-tense snapshot follows closure authority through Plan 268; the former Plan 118
+snapshot is historical and retained in git history.
 
 ```text
-M0-M2 foundation                     = retained
-M3 transport-neutral / NTCP2 code    = retained experimental
-M4 local NetDB machinery             = retained
-M5 local exploratory tunnel + NetDB  = complete for progression
-M6 destinations / garlic / LS2       = next implementation frontier
+M0-M10 prior product layers          = closed at their recorded bounded scopes
+M11 transit experimental progression = passed via Plan 268 (one family)
+M11 public transit capability        = unclaimed, disabled, non-advertised
+M12 floodfill                         = planned; Plans 270-279 registered behind Plan 269
+current executable plan              = Plan 269 global support/roadmap reconciliation
 ```
+
+Plan 269 is the only ready plan. Its closure can unblock Plan 270 alone; the M12
+implementation chain remains serial and no floodfill capability is implemented or claimed.
 
 The Milestone 5 evidence floor is:
 

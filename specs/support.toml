@@ -1,88 +1,7 @@
-# Machine-readable workspace support inventory (current evidence
-# through the Plan 117 disposition plus the prior Plan 115 canonical
-# production I2NP bridge closure and Emissary Q0 construction +
-# native OBEP reply completion; Plan 111 status is
-# `passed-final-local-short-build-conformance` per
-# plans/implementation/exploratory-tunnels/111-short-build-final-local-conformance-correction.md and
-# plans/closure/exploratory-tunnels/111-status.md, Plan 112 status is
-# `passed-outbound-pre-delivery-closure` per
-# plans/implementation/exploratory-tunnels/112-113-post-plan111-pre-delivery-corrective-roadmap.md,
-# plans/closure/exploratory-tunnels/112-outbound-short-build-pre-delivery-closure.md, and
-# plans/closure/exploratory-tunnels/112-status.md, Plan 113 status is
-# `passed-inbound-reference-reconciliation`, Plan 114 status is
-# `passed-terminal-routing-chain-correction`, Plan 115 status is
-# `passed-emissary-q0-construction-and-obep-reply-only`, Plan 116
-# status is `passed-final-local-closure` (terminal cleanup pass),
-# Plan 117 status is `closed-for-progression-with-evidence-gap` per
-# Plan 118 Phase B (Outcome 2); the corrected in-tree Emissary test
-# reached native OBEP admission and reply AEAD opening, then
-# rejected the pinned reference's non-normative request-prefixed
-# reply plaintext. The pinned Emissary revision
-# `9b43484a21d5a1291c4881cdae62a36c527f8c0f` (emissary-core 0.4.0)
-# remains the reference pin; Plan 118 Phase B1 confirmed no usable
-# upstream correction exists, so the bounded Plan 117 native closure
-# campaign is closed for progression. Plan 117 corrective closure
-# ([plans/closure/exploratory-tunnels/117-corrective-closure.md](plans/closure/exploratory-tunnels/117-corrective-closure.md))
-# corrected four routing/framing/activation/readiness defects (C1–C4),
-# passed Phase G all-i2pr production-seam terminal trajectory,
-# achieved `passed-emissary-wire-format-compatibility` at stage
-# `h_emissary_database_lookup_parsed`, and classified Phase I
-# authenticated transport as `deferred-host-lane-unavailable` on this
-# host. Plan 109 and Plan 110 are superseded by Plan 111 for the
-# short-build local conformance surface; inbound uses the explicitly
-# named `reference-compatible-spec-text-discrepancy` policy because
-# the final-spec prose has no concrete plaintext encoding while Java
-# I2P and i2pd agree on the originator fake. Plan 114 closes four
-# post-Plan-113 routing/composition defects: explicit outbound
-# `outbound_reply_router` and inbound `originator_hash` terminal-
-# routing fields, intermediate tunnel-id chain continuity enforced
-# at both the high-level and the public lower-level builder, and
-# strict outbound/inbound E2E trajectories that deterministically
-# reach `Established`. Plan 115 adds the canonical production I2NP
-# bridge (`ShortBuildI2npBridge`) so the already count-prefixed
-# `ShortBuildAction::Deliver.message` is wrapped in a single
-# complete I2NP type-25 message without double-prefixing the STBM
-# record count byte, with a round-trip body equality assertion. Plan
-# 115 Q0 construction + native OBEP reply has passed locally against
-# pinned Emissary — see plans/closure/exploratory-tunnels/115-status.md for the closure record,
-# digests, and pinned revision. Q1/Q2/qualified-external-delivery
-# still pending. Plan 118 closed the planning authority surface and
-# made the Plan 117 terminal disposition; the next executable plan
-# is **Plan 119** (LeaseSet2 protocol foundation) under
-# plans/118-123-milestone6-router-construction-roadmap.md. Plan 120
-# (Milestone 6 destination lifecycle and dedicated tunnel pools)
-# closed as `passed-destination-lifecycle-and-pools` and lands the
-# first `i2pr-client` destination runtime: local destination
-# identity (independent Ed25519 signing + X25519 static keys,
-# non-`Clone`, non-`Debug` secrets), destination-specific tunnel
-# pools that consume real one-shot `EstablishedMaterial`, local
-# Standard LeaseSet2 construction and signing with self-validation
-# through `i2pr-netdb`, LeaseSet2 lifecycle with bounded
-# rotation/withdrawal, bounded local payload contracts, and a
-# router-local destination registry. Plan 121 closed as
-# `passed-ecies-destination-session-layer` and lands the first
-# real ECIES-X25519-AEAD-Ratchet destination Garlic/session layer
-# with the audited `elligator2 = 0.1.0` reviewed primitive
-# (Plan 131 swap; `curve25519-elligator2 = 0.1.0-alpha.2` retired
-# because its `RFC9380::to_representative` branch choice was
-# deterministic rather than caller-randomizable and its
-# `Randomized` mode rotated the derived X25519 public key),
-# the wrapped ECIES primitives in `i2pr-crypto`, the bounded
-# structural Garlic payload block codec in `i2pr-proto`, and the
-# bounded destination-context `EciesSessionManager` in
-# `i2pr-client`. Remote destination routing and the streaming
-# protocol remain Plan 122/123 scope. Router construction is not
-# blocked on the unavailable authenticated external transport
-# lane; external acceptance debt is tracked separately.
-# Structural evidence may be recorded before interoperability;
-# all entries remain non-advertised.
-# Current SAM authority: Plan 149 closed the self-composed localhost STREAM
-# product. Plan 150 retains external-client core evidence, but its final
-# acceptance label is superseded by passed Plan 151 (evidence correction);
-# Plan 152 (narrow Milestone 6 session/streaming robustness corrective)
-# is likewise closed. The dedicated surfaces below are the
-# current product entries;
-# earlier SAM rows retain historical milestone provenance.
+# Machine-readable support inventory. Authority reconciled through Plan 268 (2026-10-01).
+# M11 one-family experimental progression passed; public transit remains disabled,
+# non-advertised, and unclaimed. Plan 269 is the sole ready cleanup; M12 Plans 270-279
+# remain registered and blocked in dependency order until each predecessor closes.
 schema = 1
 milestone = 7
 plan_103_implementation_floor = "plans/closure/netdb/103-status.md"
@@ -472,8 +391,8 @@ milestone10_remote_service_interop = "passed-via-plan213-plan214-and-hosted-plan
 milestone10_final_acceptance = "closed-via-plan215; Plan204 convergence gate superseded by Plan248"
 m10_remote_transport_core = "passed-via-plan202"
 m10_remote_application_interop = "passed-via-plan203"
-next_product_layer = "m11-transit-tunnels"
-next_executable_plan = "none (M11 Plan 265-268 corrective chain terminal and fully closed; ADR 0026 one-family M11 experimental qualification passed on exact-head CI run 36811447204; M12 floodfill planning dependency-ready but unregistered - opening it is a new scope decision; M11 public capability unclaimed and transit non-advertised)"
+next_product_layer = "m12-floodfill-planning"
+next_executable_plan = "plan269 (sole ready plan; Plans 270-279 registered as blocked M12 successors; transit remains disabled, non-advertised, and unclaimed)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"
