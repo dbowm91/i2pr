@@ -383,11 +383,14 @@ unclaimed. Plan 266 executed its ladder contract on `a9803ca` with zero
 production diff and zero i2pr semantic failures across 8 retained
 attempts, closing `receipt` 1/8 against a required 2 with rung
 distribution r1x2/r4x2/r6x3/r7x1; every rung-6 attempt is an anchored
-accepted-id drop population (B addressed gate-passing accepted ids and
-every ingress dropped as unresolvable) while attempt 2's identical
-shape delivered and completed. Plan 266 is retained-blocked and Plan 267
-— a narrow accepted-id drop-disposition corrective with no new
-terminal — is the current authority. M12 floodfill remains deferred.
+accepted-id drop population. Plan 267 executed its disposition contract
+on `315fb0d` with zero production diff and zero i2pr semantic failures
+across 8 retained attempts, closing `receipt` 0/8 against a required 2
+with 427 drop rows dominated by accepted-yet-not-found (208 rows,
+delays in minutes) over refused (9 rows). Both are retained-blocked
+and Plan 268 — a narrow acceptance-path-vs-lookup-path divergence
+corrective with no new terminal — is the current authority. M12
+floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -417,8 +420,9 @@ lane + composition gate (zero production diff) with 5 epochs closed 2/2 and emis
 windows bound. Plan 265 executed the closed counting rule and is retained-blocked with
 two of three families closed on `4682920e`; Plan 266 executed the ladder
 contract and is retained-blocked with `receipt` 1/8 on `a9803ca`; Plan 267
-is the current forward authority for the remaining emission seam:
-manifest v5, input-side opportunity
+executed the disposition contract and is retained-blocked with `receipt`
+0/8 on `315fb0d`; Plan 268 is the current forward authority for the
+remaining emission seam: manifest v5, input-side opportunity
 classification, no success-based early stop, hard failure on any i2pr
 semantic contradiction, >=2 required family successes, and zero
 production source diff.
