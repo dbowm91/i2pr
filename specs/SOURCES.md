@@ -191,3 +191,19 @@ Refresh this ledger when any of the following occurs:
 - an implementation removes legacy behavior or enables a new transport/key type by default;
 - mixed-router tests reveal behavior not explained by the pinned documents;
 - `i2pr` begins a milestone whose dossier contains an **open** or **compatibility watch** item.
+# Plan 280 Red25519 provider qualification (2026-10)
+
+- Normative algorithm: [I2P Red25519 specification](https://i2p.net/en/docs/specs/red25519/),
+  exact scheme requires the `I2P_Red25519H(x)` domain, Ed25519 basepoint/order, little-endian
+  scalar/point encoding, and cofactor-aware verification.
+- Rust `reddsa` 0.6.1 (`ZcashFoundation/reddsa`) is maintained and has an acceptable declared
+  license/MSRV, but its source specializes RedDSA to RedJubjub and RedPallas, with Zcash
+  personalization and Jubjub/Pallas groups. It is not I2P Red25519.
+- `zakura-reddsa` was also inspected; it remains a Zcash RedDSA implementation, not an I2P
+  Ed25519 specialization. Other crates.io RedDSA results likewise advertise Jubjub/Pallas or
+  unrelated curves. A registry search for `red25519` returned no Rust I2P-compatible crate.
+- The Go `go-i2p/red25519` package is a separately maintained Go implementation, but integrating
+  Go into this runtime-neutral Rust crypto boundary would require a new FFI/unsafe boundary and
+  would not satisfy Plan 280's maintained Rust-provider/API and repository constraints.
+- Decision: no candidate passes the exact algorithm, language/boundary, and assurance gates.
+  No dependency or reference implementation code was added. Plan 281 defers type-5 support.

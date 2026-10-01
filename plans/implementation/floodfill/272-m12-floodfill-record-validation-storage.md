@@ -1,16 +1,15 @@
 # Plan 272 — M12 complete floodfill record validation and bounded storage surface
 
-Status at registration:
-**registered-m12-record-surface-blocked-on-plan271**
+Status: **ready-m12-record-surface-after-plan281-type5-deferral**
 
 Classification: protocol/invariant capability foundation.
 
-Hard dependencies: Plan 271 passed and Plan 280 passed with a reviewed Red25519 verifier/provider contract.
+Hard dependencies: Plan 271 passed and Plan 281 passed with the corrected type-5-deferred support floor.
 
 ## 1. Objective
 
 Implement the current NetDB record surface required for truthful floodfill serving: RouterInfo
-plus DatabaseStore types 1, 3, 5, and 7, with strict canonical decoding, signature/key binding,
+plus DatabaseStore types 1, 3, and 7, with strict canonical decoding, signature/key binding,
 freshness/replacement semantics, per-type quotas, and provenance-aware storage.
 
 No server replies, flooding, or capability advertisement are added.
@@ -48,20 +47,17 @@ C. Add canonical MetaLeaseSet codec/validator:
 - destination/key binding;
 - published/expires semantics.
 
-D. Add canonical EncryptedLeaseSet outer codec/validator:
-- sigtype/blinded public key;
-- published/expires/flags;
-- optional offline signature;
-- bounded encrypted-data length;
-- type-5 signature domain;
-- DatabaseStore key binding;
-- unpublished flag handling;
-- no decryption.
+Deferred: EncryptedLeaseSet type-5 validation is out of scope under Plan 281. Preserve the existing
+deferred protocol representation and reject it for server-authority storage, answer, persistence,
+and replication. Do not implement a partial outer validator without Red25519.
 
-E. Introduce a typed NetDbRecord/ValidatedNetDbRecord enum or equivalent so server plans can handle
+No type-5 outer validator is added in this plan. It remains deferred until a separate Red25519
+provider qualification plan passes.
+
+D. Introduce a typed NetDbRecord/ValidatedNetDbRecord enum or equivalent so server plans can handle
 record type without Deferred payload branches.
 
-F. Add per-type store policies and aggregate accounting while preserving RouterInfoStore APIs for
+E. Add per-type store policies and aggregate accounting while preserving RouterInfoStore APIs for
 existing callers where practical.
 
 ## 5. Scope / non-goals
@@ -91,7 +87,7 @@ Restart persistence remains Plan 276.
 ## 8. Compatibility and migration
 
 Existing Standard LS2 consumers must continue to accept their current valid subset. New support is
-additive but strict. Deferred type-5/type-7 payloads must not be reinterpreted without successful
+additive but strict. Deferred type-5 payloads must not be reinterpreted without successful
 canonical decode/validation.
 
 No new dependency is allowed merely to implement crypto already provided by workspace primitives.
@@ -104,7 +100,8 @@ future/expired timestamp, zero/excessive counts, length overflow/truncation/trai
 replacement newer/older/equal-identical/equal-conflict, quota atomicity, unpublished behavior,
 and persistence-eligibility classification.
 
-Property/fuzz targets must cover new type-5/type-7 decoders.
+Property/fuzz targets must cover the new type-7 decoder. Do not add a type-5 decoder or fuzz
+target while Red25519 remains unavailable.
 
 ## 10. Exact verification
 
@@ -128,7 +125,7 @@ record semantics. Do not mark floodfill serving implemented.
 
 ## 12. Acceptance criteria
 
-- Types 0/1/3/5/7 have validated non-Deferred server-authority representations.
+- Types 0/1/3/7 have validated non-Deferred server-authority representations; type 5 remains unsupported and cannot enter server-authority storage.
 - All key/signature/freshness rules from ADR 0027 are enforced.
 - Per-type/global quotas are explicit and tested.
 - Unpublished/expired material cannot become answer/flood eligible.

@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plan 271 provenance foundation passed; Plan 280 is ready; production implementation remains dependency-gated.
+Status: Plans 270 and 271 passed; Plan 281 corrected the support floor and Plan 272 is ready; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -127,7 +127,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 |---|---|---|---|---|
 | 270 | closed | passed-m12-architecture-authority-source-refresh-and-adr-freeze | plans/implementation/floodfill/270-m12-architecture-authority.md | plans/closure/floodfill/270-status.md |
 | 271 | passed | passed-m12-provenance-namespace-and-disclosure-foundation | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | plans/closure/floodfill/271-status.md |
-| 272 | blocked | registered-m12-record-surface-blocked-on-plan271-and-plan280 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
+| 272 | ready | registered-m12-record-surface-ready-after-plan281 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
 | 273 | blocked | registered-m12-store-service-blocked-on-plan272 | plans/implementation/floodfill/273-m12-databasestore-service.md | future |
 | 274 | blocked | registered-m12-lookup-service-blocked-on-plan273 | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | future |
 | 275 | blocked | registered-m12-replication-blocked-on-plan274 | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | future |
@@ -135,7 +135,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 277 | blocked | registered-m12-daemon-role-blocked-on-plan276 | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | future |
 | 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan277 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
-| 280 | blocked | registered-m12-red25519-provider-blocked-on-plan271 | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | future |
+| 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
+| 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -180,12 +181,12 @@ Primary risks are metadata disclosure through NetDB namespace confusion, reply a
 storage/crypto DoS, incorrect routing-key rollover behavior, stale capability advertisement,
 and conflating one-family progression with full advertisement.
 
-Plan 270 freezes exploration-hit behavior, exact type-5/type-7 key/validation rules,
-unsupported signature/key policy, persistence scope, and RouterInfo version/capability
-semantics. Plan 280 is a new prerequisite discovered during source/crypto review: the
-workspace lacks the Red25519 (type 11) verifier required for EncryptedLeaseSet validation.
-Plan 272 remains blocked on both Plans 271 and 280; no local cryptographic primitive or
-unverified substitute is authorized.
+Plan 270 freezes exploration-hit behavior and type-7 policy; Plan 281 defers type-5 until an
+I2P-compatible Red25519 provider is reviewed. Plan 272 implements the currently supported
+record floor, unsupported signature/key policy, persistence scope, and RouterInfo
+version/capability semantics. Plan 280 stopped because the workspace lacks a compatible
+Red25519 (type 11) verifier for EncryptedLeaseSet validation; no local primitive or unverified
+substitute is authorized.
 
 ## 11. Completion definition
 
@@ -203,6 +204,6 @@ M12 is complete only when:
 
 ## 12. Milestone status summary
 
-M11 is closed for experimental progression. Plans 270 and 271 have passed. Plan 280 is ready;
-Plan 272 remains blocked on both Plans 271 and 280. Plans 273-279 remain blocked in dependency
-order.
+M11 is closed for experimental progression. Plans 270, 271, and 281 have passed. Plan 272 is
+ready on the corrected type-5-deferred floor. Plans 273-279 remain blocked in dependency order;
+Plan 280 remains stopped pending a separately reviewed I2P-compatible Red25519 provider.

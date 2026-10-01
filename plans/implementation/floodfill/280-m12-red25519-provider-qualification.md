@@ -1,7 +1,6 @@
 # Plan 280 — M12 Red25519 verification provider qualification
 
-Status at registration:
-**registered-m12-red25519-provider-blocked-on-plan271**
+Status: **stopped-no-acceptable-maintained-i2p-red25519-provider**
 
 Classification: cryptographic infrastructure required by the Plan 272 record-validation floor.
 
