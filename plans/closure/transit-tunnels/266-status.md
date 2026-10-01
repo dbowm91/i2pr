@@ -51,8 +51,11 @@ Plan 267's scope derives from it. This record is that evidence.
   fixtures plus the static-guard mutation fixture, four new focused
   unit tests, and the boundary locks. Full local floor green before
   freezing (3153 passed, clippy/doc/deny clean, all 20 checkers).
-- this commit — this record + Plan 267 registration + registry /
-  roadmap / support / conformance / dossier reconciliation.
+- `7faf6f3f79ac5368a97975047505526b31d4541a` — this record + Plan 267
+  registration + registry / roadmap / support / conformance / dossier /
+  README reconciliation. Ordinary four-job CI passed on this exact head
+  (run `36796129958`); that evidence is recorded in §CI and amended by the
+  follow-up commit that carries it.
 
 Pre-implementation HEAD: `0b0a0aecfd3d1c198430ecd0d9520cdcd81b780c9d`. A
 diagnostic probe on the pre-qualification tree
@@ -110,7 +113,7 @@ throughout.
 5. **Empty production diff** — PASS (every manifest carries
    `production_source_diff: []` against baseline `514bf12`).
 6. **Complete local verification** — PASS (§Verification below).
-7. **Exact-head ordinary CI** — see §CI below.
+7. **Exact-head ordinary CI** — PASS (§CI below: run `36796129958` on `7faf6f3`).
 8. **Registry/roadmap/support/conformance/dossier agree** — PASS
    (this commit).
 9. **No product/capability/version/public-network change** — PASS.
