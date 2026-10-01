@@ -289,6 +289,13 @@ pub struct TransitGatewayParts {
     pub nested: Vec<u8>,
 }
 
+/// Owned DatabaseStore/DatabaseLookup body extracted from the same authenticated bounded decode.
+/// It intentionally has no Debug implementation because DatabaseStore can carry raw record bytes.
+pub enum FloodfillControlBody {
+    DatabaseStore(i2pr_proto::DatabaseStoreMessage),
+    DatabaseLookup(i2pr_proto::DatabaseLookupMessage),
+}
+
 /// Narrow borrowed transit-build view (Plan 254 architecture
 /// constraint).
 ///
@@ -411,6 +418,24 @@ pub fn dispatch_router_i2np_with_transit_bodies(
         bodies.short_build_body = None;
     }
     Ok((outcome, bodies))
+}
+
+/// Dispatches and extracts only DatabaseStore/DatabaseLookup bodies from one canonical decode.
+pub fn dispatch_router_i2np_with_floodfill_body(
+    inbound: &i2pr_runtime::Ssu2InboundI2np,
+    now_ms: u64,
+) -> Result<(RouterI2npOutcome, Option<FloodfillControlBody>), RouterI2npError> {
+    let (message, outcome) = dispatch_inner(inbound, now_ms)?;
+    let body = match message.map(I2npMessage::into_body) {
+        Some(I2npBody::DatabaseStore(message)) => {
+            Some(FloodfillControlBody::DatabaseStore(*message))
+        }
+        Some(I2npBody::DatabaseLookup(message)) => {
+            Some(FloodfillControlBody::DatabaseLookup(*message))
+        }
+        _ => None,
+    };
+    Ok((outcome, body))
 }
 
 fn dispatch_inner(

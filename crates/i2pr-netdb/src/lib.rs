@@ -18,6 +18,7 @@
 
 mod base64;
 mod databaselookup;
+mod floodfill_role;
 mod floodfill_service;
 mod lease_set;
 mod lease_set2;
@@ -39,6 +40,10 @@ mod store_message;
 
 pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
+pub use floodfill_role::{
+    FloodfillAdvertisementPermit, FloodfillEligibilitySnapshot, FloodfillRoleController,
+    FloodfillRoleEffect, FloodfillRoleState, is_qualified_ssu2_address,
+};
 pub use floodfill_service::{
     FloodfillAck, FloodfillIngress, FloodfillLookupEffect, FloodfillReplyIntent, FloodfillRole,
     FloodfillStoreEffect, FloodfillStorePolicy, FloodfillStoreService, FloodfillStoreStats,

@@ -112,6 +112,9 @@ impl From<CryptoError> for HandshakeError {
             CryptoError::AllZeroSharedSecret => Self::InvalidKeyAgreement,
             CryptoError::Protocol(_) => Self::RouterInfoMalformed,
             CryptoError::RandomnessUnavailable => Self::LocalPolicyDenied,
+            // The NetDB one-shot reply wrapper is not used by NTCP2; keep this defensive
+            // conversion exhaustive without exposing a cross-protocol detail to callers.
+            CryptoError::NetDbReplyAeadFailed => Self::LocalPolicyDenied,
         }
     }
 }

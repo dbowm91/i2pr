@@ -419,6 +419,11 @@ impl I2npMessage {
     pub fn body(&self) -> &I2npBody {
         &self.body
     }
+
+    /// Consumes the envelope and returns its typed body without cloning protocol payloads.
+    pub fn into_body(self) -> I2npBody {
+        self.body
+    }
 }
 
 fn encode_message<F>(

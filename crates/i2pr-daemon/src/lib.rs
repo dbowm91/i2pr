@@ -13,6 +13,7 @@ pub mod destination_streaming;
 pub mod destination_tunnels;
 pub mod error;
 pub mod exploratory_build;
+pub mod floodfill;
 pub mod i2cp;
 pub mod inbound_dispatch;
 pub mod netdb_seam;

@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270–276 passed; Plan 277 is ready; type-5 support remains deferred.
+Status: Plans 270–276 passed; Plan 277 stopped at the runtime integration boundary; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -132,7 +132,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 274 | passed | passed-m12-lookup-serving-bounded-dsrm-and-ecies-replies | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | plans/closure/floodfill/274-status.md |
 | 275 | passed | passed-m12-bounded-direct-replication-and-daily-routing-key-rollover | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | plans/closure/floodfill/275-status.md |
 | 276 | passed | passed-m12-versioned-floodfill-persistence-maintenance-and-resource-governance | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | plans/closure/floodfill/276-status.md |
-| 277 | ready | registered-m12-daemon-role-ready-after-plan276 | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | future |
+| 277 | stopped | stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | plans/closure/floodfill/277-status.md |
 | 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan277 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
@@ -204,6 +204,7 @@ M12 is complete only when:
 
 ## 12. Milestone status summary
 
-M11 is closed for experimental progression. Plans 270, 271, 281, and 272 have passed. Plan 273 is
-ready on the type-5-deferred floor. Plans 274-279 remain blocked in dependency order;
+M11 is closed for experimental progression. Plans 270, 271, 281, and 272 have passed. Plans 273–276
+have passed on the type-5-deferred floor. Plan 277 stopped pending runtime-owned publication and
+delivery integration. Plans 278–279 remain blocked in dependency order;
 Plan 280 remains stopped pending a separately reviewed I2P-compatible Red25519 provider.

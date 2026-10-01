@@ -16,6 +16,7 @@ use i2pr_proto::{Date, Mapping, RouterAddress, RouterInfo};
 use thiserror::Error;
 
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
+use crate::{FloodfillAdvertisementPermit, is_qualified_ssu2_address};
 
 /// Errors raised by [`LocalRouterInfoBuilder`].
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -38,6 +39,9 @@ pub enum LocalRouterInfoError {
     /// The signature could not be produced for the constructed record.
     #[error("local router info signing failed")]
     SigningFailed,
+    /// Controlled floodfill construction requires a qualified SSU2 address.
+    #[error("floodfill RouterInfo requires one qualified SSU2 address")]
+    UnqualifiedFloodfillAddress,
     /// The constructed record did not pass the standard validator.
     #[error("local router info failed validation: {0}")]
     Validation(#[from] RouterInfoValidationError),
@@ -98,6 +102,43 @@ impl<'a> LocalRouterInfoBuilder<'a> {
     /// Convenience constructor that uses an empty options mapping.
     pub fn build_default(&self, published: Date) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         self.build(published, Mapping::empty())
+    }
+
+    /// Builds a floodfill RouterInfo only from an opaque active-role permit and a qualified SSU2
+    /// address. Ordinary `build` remains unable to produce `caps=f`.
+    pub fn build_floodfill(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+        _permit: &FloodfillAdvertisementPermit,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !is_qualified_ssu2_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedFloodfillAddress);
+        }
+        Self::validate_options(&options)?;
+        let mut entries: Vec<_> = options
+            .entries()
+            .iter()
+            .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+            .filter(|(key, _)| key != "caps")
+            .collect();
+        let caps = options.get("caps").unwrap_or("");
+        let mut floodfill_caps = caps.to_owned();
+        floodfill_caps.push('f');
+        entries.push(("caps".to_owned(), floodfill_caps));
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        let info = self
+            .bundle
+            .sign_router_info(published, vec![address], Vec::new(), options)
+            .map_err(|_| LocalRouterInfoError::SigningFailed)?;
+        let validated = ValidatedRouterInfo::from_router_info(
+            info,
+            None,
+            crate::router_info::ValidationContext::new(published),
+        )?;
+        Ok(LocalRouterInfo { validated })
     }
 
     /// Returns the local RouterHash for this bundle without
@@ -258,6 +299,40 @@ mod tests {
             .build(Date::from_millis(1), options.build().unwrap())
             .unwrap_err();
         assert!(matches!(error, LocalRouterInfoError::InvalidMapping { .. }));
+    }
+
+    #[test]
+    fn controlled_floodfill_builder_requires_role_permit_and_ssu2_address() {
+        let signer = bundle(0x405);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options =
+            Mapping::from_entries(vec![("router.version".into(), "0.9.69".into())]).unwrap();
+        let address =
+            RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), Mapping::empty())
+                .unwrap();
+        let mut role = crate::FloodfillRoleController::new();
+        let eligible = crate::FloodfillEligibilitySnapshot {
+            controlled_qualification_permit: true,
+            qualified_ssu2_address: true,
+            direct_reachability: true,
+            netdb_ready: true,
+            storage_ready: true,
+            maintenance_ready: true,
+            resource_headroom: true,
+            clock_sane: true,
+            supervision_healthy: true,
+        };
+        assert_eq!(
+            role.update(eligible),
+            crate::FloodfillRoleEffect::ReadyToActivate
+        );
+        assert!(role.begin_activation());
+        let permit = role.complete_activation().unwrap();
+        let local = builder
+            .build_floodfill(Date::from_millis(101), options, address, &permit)
+            .unwrap();
+        assert_eq!(local.router_info().options().get("caps"), Some("f"));
+        assert_eq!(local.router_info().addresses().len(), 1);
     }
 
     #[test]
