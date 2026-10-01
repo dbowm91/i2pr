@@ -379,8 +379,15 @@ socket. The composition gate was run once and failed closed on exactly
 that one violation.
 
 M11 remains non-advertised and receipt-capable qualification remains
-unclaimed. Plan 266 owns receipt-family opportunity generation only and is
-the current authority. M12 floodfill remains deferred.
+unclaimed. Plan 266 executed its ladder contract on `a9803ca` with zero
+production diff and zero i2pr semantic failures across 8 retained
+attempts, closing `receipt` 1/8 against a required 2 with rung
+distribution r1x2/r4x2/r6x3/r7x1; every rung-6 attempt is an anchored
+accepted-id drop population (B addressed gate-passing accepted ids and
+every ingress dropped as unresolvable) while attempt 2's identical
+shape delivered and completed. Plan 266 is retained-blocked and Plan 267
+— a narrow accepted-id drop-disposition corrective with no new
+terminal — is the current authority. M12 floodfill remains deferred.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -408,9 +415,10 @@ local seam with socket receipt proven). Plan 263 landed the sustainability harne
 production diff) with receipt + multicell re-proven. Plan 264 landed the per-epoch
 lane + composition gate (zero production diff) with 5 epochs closed 2/2 and emission
 windows bound. Plan 265 executed the closed counting rule and is retained-blocked with
-two of three families closed on `4682920e`; Plan 266 is the current
-forward authority for the remaining emission seam: manifest v5, input-side
-opportunity
+two of three families closed on `4682920e`; Plan 266 executed the ladder
+contract and is retained-blocked with `receipt` 1/8 on `a9803ca`; Plan 267
+is the current forward authority for the remaining emission seam:
+manifest v5, input-side opportunity
 classification, no success-based early stop, hard failure on any i2pr
 semantic contradiction, >=2 required family successes, and zero
 production source diff.
@@ -455,9 +463,13 @@ sustainability; Plan 264 is retained-blocked with the per-epoch gate proven (5
 epochs 2/2 on `6ab9dc2d`) and emission windows bound; Plan 265 executed the fixed-budget opportunity-qualified contract on
 `4682920e` with zero production diff and zero i2pr semantic failures across
 24 retained attempts, closing `ibgw-data` (4/8) and `participant-lifecycle`
-(5/8) while `receipt` reached 1/8 against a required 2; it is
-retained-blocked and Plan 266 — a narrow receipt-family
-opportunity-generation corrective — is the next M11 execution authority.
+(5/8) while `receipt` reached 1/8 against a required 2; Plan 266 executed
+the ladder contract on `a9803ca` with zero production diff and zero i2pr
+semantic failures across 8 retained attempts while `receipt` reached 1/8
+with every rung-6 attempt an anchored accepted-id drop population; both
+are retained-blocked and Plan 267 — a narrow accepted-id
+drop-disposition corrective with no new terminal — is the next M11
+execution authority.
 
 ### Plan 249 state — runtime-neutral M11 foundation (infrastructure only)
 
