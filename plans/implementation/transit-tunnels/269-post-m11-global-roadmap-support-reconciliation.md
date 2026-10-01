@@ -256,7 +256,7 @@ The Plan 269 status record must contain:
 - commands run and outcomes;
 - confirmation of empty production/test/workflow/dependency diff;
 - support/conformance consistency review;
-- unblock audit stating that M12 planning remains dependency-ready and unregistered.
+- unblock audit stating that Plans 270-279 remain registered in dependency order and that closure moves only Plan 270 to ready.
 
 ## 15. Handoff
 
