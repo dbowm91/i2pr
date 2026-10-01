@@ -128,7 +128,7 @@ for binding in 'DIAL_TIMEOUT: Duration = Duration::from_secs(20)' 'SAM_IO_TIMEOU
 done
 
 # ---- Plan 265 static invariants: vocabulary + predicates ---------------
-for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_OPPORTUNITY_VALUES' 'PLAN265_SEMANTIC_VALUES' 'PLAN265_EXTERNAL_VALUES' 'PLAN265_LIFECYCLE_ROWS' 'PLAN265_RETAINED_PLAN264_EPOCHS' 'PLAN265_SETUP_STOPS' 'PLAN266_RECEIPT_CREATOR_LOST_ID' 'DropDisposition' 'remember_drop_disposition' 'plan267_disposition_label' 'plan267_accepted_at_ms' 'plan267-drop-disposition' 'plan267-addressed-id'; do
+for symbol in 'PLAN265_SCENARIO_FAMILIES' 'PLAN265_ATTEMPT_BUDGET' 'PLAN265_PRODUCTION_BASELINE' 'PLAN265_TERMINAL_VOCABULARY' 'PLAN265_OPPORTUNITY_VALUES' 'PLAN265_SEMANTIC_VALUES' 'PLAN265_EXTERNAL_VALUES' 'PLAN265_LIFECYCLE_ROWS' 'PLAN265_RETAINED_PLAN264_EPOCHS' 'PLAN265_SETUP_STOPS' 'PLAN266_RECEIPT_CREATOR_LOST_ID' 'DropDisposition' 'remember_drop_disposition' 'plan267_disposition_label' 'plan267_accepted_at_ms' 'plan267-drop-disposition' 'plan267-addressed-id' 'AcceptancePath' 'remember_acceptance_path' 'PLAN268_PATH_VALUES' 'plan268-acceptance-path'; do
   if ! grep -qF "${symbol}" "${DRIVER}"; then
     fail "driver missing Plan 265 symbol ${symbol}"
   fi
@@ -138,7 +138,7 @@ for symbol in 'plan265_ibgw_opportunity' 'plan265_ibgw_semantic_pass' 'plan265_c
     fail "driver missing Plan 265 predicate ${symbol}"
   fi
 done
-for test_row in 'plan265_ibgw_opportunity_is_input_side_only' 'plan265_ibgw_large_input_multicell_passes' 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_ibgw_opportunity_absent_is_typed' 'plan265_receipt_self_action_opportunity_classification' 'plan265_receipt_semantic_and_socket_completion_pass' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_receipt_opportunity_present_with_failed_local_ingress_fails' 'plan266_receipt_ladder_names_each_unsatisfied_rung' 'plan266_receipt_creator_lost_id_is_typed_no_opportunity' 'plan266_receipt_counted_live_action_keeps_opportunity_without_advertisement' 'plan266_receipt_unobservable_advertisement_falls_back_to_plan265' 'plan267_disposition_labels_are_closed_and_never_terminals' 'plan267_disposition_store_is_epoch_scoped' 'plan267_accepted_at_ms_reads_gated_acceptance_only' 'plan265_participant_input_side_opportunity_classification' 'plan265_participant_input_present_without_local_forward_fails' 'plan265_participant_local_forward_with_b_completion_miss' 'plan265_participant_lifecycle_chain_passes' 'plan265_replay_duplicate_dropped_passes' 'plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
+for test_row in 'plan265_ibgw_opportunity_is_input_side_only' 'plan265_ibgw_large_input_multicell_passes' 'plan265_ibgw_large_input_single_cell_is_semantic_failure' 'plan265_ibgw_opportunity_absent_is_typed' 'plan265_receipt_self_action_opportunity_classification' 'plan265_receipt_semantic_and_socket_completion_pass' 'plan265_receipt_reference_completion_miss_is_not_a_semantic_failure' 'plan265_receipt_opportunity_present_with_failed_local_ingress_fails' 'plan266_receipt_ladder_names_each_unsatisfied_rung' 'plan266_receipt_creator_lost_id_is_typed_no_opportunity' 'plan266_receipt_counted_live_action_keeps_opportunity_without_advertisement' 'plan266_receipt_unobservable_advertisement_falls_back_to_plan265' 'plan267_disposition_labels_are_closed_and_never_terminals' 'plan267_disposition_store_is_epoch_scoped' 'plan267_accepted_at_ms_reads_gated_acceptance_only' 'plan268_path_values_are_closed_and_never_terminals' 'plan268_acceptance_path_store_is_epoch_scoped' 'plan265_participant_input_side_opportunity_classification' 'plan265_participant_input_present_without_local_forward_fails' 'plan265_participant_local_forward_with_b_completion_miss' 'plan265_participant_lifecycle_chain_passes' 'plan265_replay_duplicate_dropped_passes' 'plan265_replay_contained_no_output_requires_zero_forward_and_zero_b_delta' 'plan265_replay_duplicate_forwarded_fails_regardless_of_b_receipt' 'plan265_manifest_v5_requires_exactly_eight_ordinals' 'plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified' 'plan265_lifecycle_rows_cannot_be_borrowed_across_attempts' 'plan265_production_source_diff_guard'; do
   if ! grep -qF "${test_row}" "${DRIVER}"; then
     fail "Plan 265 focused test missing: ${test_row}"
   fi
@@ -234,6 +234,11 @@ QUARANTINE_TOKENS = (
     "remember_drop_disposition",
     "plan267_disposition_label",
     "plan267_accepted_at_ms",
+    "plan268-acceptance-path",
+    "acceptance_path",
+    "AcceptancePath",
+    "remember_acceptance_path",
+    "PLAN268_PATH_VALUES",
 )
 QUARANTINE_METHODS = (
     "plan265_ibgw_opportunity",
@@ -994,6 +999,14 @@ PYINDEX
     'receipt|3|absent|not-applicable|not-applicable|local-ibgw-refused|'"${SHA}"'|8|-')
   expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
     receipt-only-disposition-as-terminal-rejected "${Rdisp[@]}"
+
+  # An install-path value composed as a terminal must be rejected
+  # on the same terms: paths are diagnostic rows, never
+  # vocabulary members.
+  mapfile -t Rpath < <(emit_family receipt 2 3 \
+    'receipt|3|absent|not-applicable|not-applicable|creator-bypass|'"${SHA}"'|8|-')
+  expect_compose_receipt_only 1 "${fixture_root}/index.tsv" \
+    receipt-only-path-as-terminal-rejected "${Rpath[@]}"
 
   mapfile -t E < <(emit_family ibgw-data 2 0 - absent 2)
   expect_compose 1 "${fixture_root}/index.tsv" \

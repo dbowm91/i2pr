@@ -1151,6 +1151,7 @@ struct TypedLedger {
     observations: Vec<Observation>,
     retained_cells: Vec<RetainedCell>,
     drop_dispositions: Vec<DropDisposition>,
+    acceptance_paths: Vec<AcceptancePath>,
 }
 
 /// Plan 267 WP A: one gateway-ingress drop disposition remembered at
@@ -4536,6 +4537,60 @@ fn plan265_composition_rejects_budget_sha_duplicate_missing_and_unclassified() {
         assert!(payload.contains(&format!("terminal={}", verdict.terminal_class)));
     }
     assert_eq!(PLAN265_TERMINAL_VOCABULARY.len(), 17);
+    // Plan 268 adds diagnostic rows only: the install-path
+    // vocabulary is closed separately and the terminal vocabulary
+    // does not grow.
+    assert_eq!(PLAN268_PATH_VALUES.len(), 3);
+}
+
+#[test]
+fn plan268_path_values_are_closed_and_never_terminals() {
+    // Each install-path outcome class maps to exactly one declared
+    // value, and no value is a terminal: install paths are
+    // diagnostic rows, never classifications.
+    assert!(plan265_is_declared(PLAN268_PATH_VALUES, "dispatched"));
+    assert!(plan265_is_declared(PLAN268_PATH_VALUES, "creator-bypass"));
+    assert!(plan265_is_declared(PLAN268_PATH_VALUES, "other"));
+    for value in PLAN268_PATH_VALUES {
+        assert!(!plan265_is_declared(PLAN265_TERMINAL_VOCABULARY, value));
+        assert!(!plan265_is_no_opportunity_terminal(value));
+        assert!(!plan265_is_semantic_failure_terminal(value));
+        assert!(!plan265_is_completion_miss_terminal(value));
+        assert!(!plan265_is_setup_stop_terminal(value));
+        assert!(!plan265_is_family_success_terminal(value));
+    }
+}
+
+#[test]
+fn plan268_acceptance_path_store_is_epoch_scoped() {
+    let mut ledger = TypedLedger::default();
+    ledger.remember_acceptance_path(AcceptancePath {
+        epoch: Epoch::IbgwReceipt,
+        receive_tunnel: 0x8100,
+        path: "dispatched",
+        logical_ms: 11,
+    });
+    ledger.remember_acceptance_path(AcceptancePath {
+        epoch: Epoch::IbgwReceipt,
+        receive_tunnel: 0,
+        path: "creator-bypass",
+        logical_ms: 13,
+    });
+    ledger.remember_acceptance_path(AcceptancePath {
+        epoch: Epoch::IbgwData,
+        receive_tunnel: 0x8200,
+        path: "dispatched",
+        logical_ms: 17,
+    });
+    let scoped: Vec<&AcceptancePath> = ledger.acceptance_paths_of(Epoch::IbgwReceipt).collect();
+    assert_eq!(scoped.len(), 2);
+    assert_eq!(scoped[0].path, "dispatched");
+    assert_eq!(scoped[0].receive_tunnel, 0x8100);
+    // The bypass path carries no installed receive id: it never
+    // installed a gateway registration, so there is nothing to
+    // join against the counted set.
+    assert_eq!(scoped[1].path, "creator-bypass");
+    assert_eq!(scoped[1].receive_tunnel, 0);
 }
 
 #[test]
@@ -8526,6 +8581,42 @@ async fn run_qualification() -> Result<(), String> {
                     &mut rows,
                 );
             }
+            // Plan 268 WP A: acceptance install-path fold.
+            // Diagnostic-only rows joining each remembered install
+            // path to the counted-set gate: a bypass-path
+            // acceptance never installed a gateway registration, so
+            // its gate result here decides whether the counted set
+            // can even see it. These rows never feed any
+            // opportunity, semantic, or composition predicate
+            // (statically quarantined).
+            for entry in ledger.acceptance_paths_of(Epoch::IbgwReceipt) {
+                let gate_passing = ledger
+                    .of_epoch(Epoch::IbgwReceipt)
+                    .filter(|obs| {
+                        obs.kind == ObservedKind::BuildAccepted
+                            && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                            && !obs.rejected
+                            && obs.peer_hash == a_peer_hash
+                            && obs.delivery == "accepted"
+                            && obs.active_after == obs.active_before + 1
+                            && obs.receive_tunnel == entry.receive_tunnel
+                            && obs.logical_ms == entry.logical_ms
+                    })
+                    .count();
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan268-acceptance-path",
+                    &format!(
+                        "path={path}/receive={receive:#010x}/t={t}/gate-passing={gate}",
+                        path = entry.path,
+                        receive = entry.receive_tunnel,
+                        t = entry.logical_ms,
+                        gate = if gate_passing > 0 { "true" } else { "false" },
+                    ),
+                    &mut rows,
+                );
+            }
             // Only the absence/contradiction branches need a verdict at
             // this stage. The opportunity-present branch continues into
             // the Plan 260 gates and is classified once the real
@@ -10746,6 +10837,32 @@ fn record_data_outcome(
             ledger.push(Observation::build(
                 epoch, peer_hash, evidence, active, active, logical_ms,
             ));
+            // Plan 268 WP A: this acceptance installed through the
+            // gateway dispatch path.
+            ledger.remember_acceptance_path(AcceptancePath {
+                epoch,
+                receive_tunnel: evidence.receive_tunnel,
+                path: "dispatched",
+                logical_ms,
+            });
+        }
+        LiveInboundOutcome::Build(i2pr_daemon::transit_owner::LiveBuildOutcome::CreatorBypass) => {
+            ledger.push(Observation {
+                kind: ObservedKind::DataDropped,
+                delivery: "build-not-dispatched",
+                ..base
+            });
+            // Plan 268 WP A: creator correlation preceded transit,
+            // so no gateway registration was installed for this
+            // build (receive id 0: the bypass carries none). The
+            // observation push above is byte-identical to the
+            // former catch-all behavior.
+            ledger.remember_acceptance_path(AcceptancePath {
+                epoch,
+                receive_tunnel: 0,
+                path: "creator-bypass",
+                logical_ms,
+            });
         }
         // Plan 265: the owner has five typed outcomes and every one of
         // them is a fact the lane must retain. The former `_ => {}`
@@ -11085,6 +11202,24 @@ impl TypedLedger {
             .filter(move |entry| entry.epoch == epoch)
     }
 
+    /// Remembers one build acceptance install path at push time
+    /// (Plan 268 WP A). Fail-closed on the same ceiling as
+    /// observations.
+    fn remember_acceptance_path(&mut self, path: AcceptancePath) {
+        assert!(
+            self.acceptance_paths.len() < MAX_LEDGER_OBSERVATIONS,
+            "acceptance-path ceiling exceeded"
+        );
+        self.acceptance_paths.push(path);
+    }
+
+    /// Iterates the remembered acceptance paths for one epoch.
+    fn acceptance_paths_of(&self, epoch: Epoch) -> impl Iterator<Item = &AcceptancePath> {
+        self.acceptance_paths
+            .iter()
+            .filter(move |entry| entry.epoch == epoch)
+    }
+
     /// Serializes every observation with all non-secret fields to
     /// `ledger-evidence.tsv` for audit. This renders each field at
     /// least once so no observation fact is write-only.
@@ -11114,6 +11249,29 @@ impl TypedLedger {
         std::fs::write(dir.join("ledger-evidence.tsv"), out).expect("write ledger evidence");
     }
 }
+
+/// Plan 268 WP A: one build acceptance install path remembered at
+/// push time. The driver already sees `LiveBuildOutcome::
+/// CreatorBypass` vs `::Dispatched` per build; the ledger build
+/// observation does not record which, so the path rides here and
+/// the receipt leg folds it into sanitized diagnostic rows.
+/// Diagnostic-only: no opportunity, semantic, or composition
+/// predicate may read these.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AcceptancePath {
+    epoch: Epoch,
+    receive_tunnel: u32,
+    /// Install-path value: "dispatched", "creator-bypass", or
+    /// "other". Closed vocabulary; never a terminal.
+    path: &'static str,
+    logical_ms: u64,
+}
+
+/// Plan 268 WP A: the closed install-path vocabulary. Each build
+/// outcome class maps to exactly one value, and no value is a
+/// terminal: install paths are diagnostic rows, never
+/// classifications.
+const PLAN268_PATH_VALUES: &[&str] = &["dispatched", "creator-bypass", "other"];
 
 /// Plan 267 WP A: the closed disposition vocabulary. Each drop
 /// variant maps to exactly one value, and no value is a terminal:
