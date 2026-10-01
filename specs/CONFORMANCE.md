@@ -117,7 +117,7 @@ interoperability; one-family evidence permits controlled experimental progressio
 two independent implementation families are required before broad floodfill capability
 advertisement; normal activation additionally requires explicit operator opt-in and live
 readiness/health. Current state is `architecture-frozen` in progress under Plan 270;
-there is no M12 implementation, floodfill serving, or `caps=f` claim. Plan 272 additionally depends on Plan 280, a reviewed Red25519 (signature type 11) provider prerequisite required to authenticate type-5 EncryptedLeaseSet records. No tier implies
+there is no M12 implementation, floodfill serving, or `caps=f` claim. Plan 272 proceeds on Plan 271 plus the Plan 281 type-5-deferred support floor (RouterInfo plus DatabaseStore types 1, 3, and 7); Plan 280 stopped with no acceptable maintained Rust provider for Red25519 (signature type 11), so type-5 EncryptedLeaseSet records remain deferred until a separately reviewed provider plan passes. No tier implies
 public-network operation, production readiness, anonymity, or privacy guarantees.
 
 ## Source-to-code traceability
