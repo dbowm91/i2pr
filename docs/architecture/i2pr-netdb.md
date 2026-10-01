@@ -62,6 +62,7 @@ RouterInfo publication coordinator.
 | `lookup_engine` | Iterative `RouterInfo` lookup state machine |
 | `publication` | Local RouterInfo publication coordinator |
 | `store_message` | Unsolicited `DatabaseStore` ingestion handler |
+| `provenance` | Bounded privacy-safe provenance metadata and pure namespace/disclosure eligibility policy (Plan 271) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary
@@ -193,6 +194,15 @@ for the cache loader and reseed ingestor entry points).
   onto the lookup state machine's `RouterHash` target.
 
 ## Key contracts
+
+- Plan 271's `ProvenanceIndex` stores bounded metadata separately from record validation.
+  Server-facing answer, replication, and persistence policy must consult explicit namespace,
+  inbound path, store purpose, and observation time. Client lookup-response metadata never
+  grants router answer or replication eligibility; zero-token flood replicas cannot be
+  re-flooded. Namespace identifiers and record keys are redacted in `Debug`.
+- Existing RouterInfoStore and LeaseSet2Store remain the client lookup storage adapters; no
+  DatabaseStore server path exists yet. Future server paths must couple metadata updates with
+  record replacement and may not treat these client stores' iterators as answerable views.
 
 - `ValidatedRouterInfo::from_router_info` is the only constructor;
   there is no unchecked insertion path.

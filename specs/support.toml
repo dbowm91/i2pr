@@ -397,15 +397,15 @@ plan_269_status = "passed-post-m11-global-roadmap-support-authority-reconciled"
 plan_270_plan_of_record = "plans/implementation/floodfill/270-m12-architecture-authority.md"
 plan_270_status = "passed-m12-architecture-and-source-authority-frozen-type5-gated-on-plan280"
 plan_271_plan_of_record = "plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md"
-plan_271_status = "ready-m12-provenance-segmentation"
+plan_271_status = "passed-m12-provenance-namespace-and-disclosure-foundation"
 plan_280_plan_of_record = "plans/implementation/floodfill/280-m12-red25519-provider-qualification.md"
-plan_280_status = "registered-m12-red25519-provider-blocked-on-plan271"
+plan_280_status = "ready-m12-red25519-provider-qualification"
 m12_floodfill_status = "architecture-frozen; provenance implementation ready; no serving claim"
 m12_evidence_tier = "architecture-frozen"
 m12_type11_red25519 = "required-for-type5; no reviewed provider currently in workspace; gated by plan280"
 m12_caps_f_advertised = false
 next_product_layer = "m12-floodfill-planning"
-next_executable_plan = "plan271 (M12 provenance/namespace segmentation; Plan280 follows as required type-11 provider gate; Plan272 requires both 271 and 280; no M12 implementation or advertisement)"
+next_executable_plan = "plan280 (M12 Red25519 provider qualification; Plan272 requires both passed Plans 271 and 280; no M12 implementation or advertisement)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"

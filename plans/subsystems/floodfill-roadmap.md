@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plan 270 architecture freeze passed; Plan 271 is ready; production implementation remains dependency-gated.
+Status: Plan 271 provenance foundation passed; Plan 280 is ready; production implementation remains dependency-gated.
 
 Long-term references:
 - GUARDRAILS.md
@@ -126,7 +126,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | Plan | State | i2pr token at registration | Implementation | Closure |
 |---|---|---|---|---|
 | 270 | closed | passed-m12-architecture-authority-source-refresh-and-adr-freeze | plans/implementation/floodfill/270-m12-architecture-authority.md | plans/closure/floodfill/270-status.md |
-| 271 | ready | registered-m12-provenance-segmentation-ready-after-plan270 | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | future |
+| 271 | passed | passed-m12-provenance-namespace-and-disclosure-foundation | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | plans/closure/floodfill/271-status.md |
 | 272 | blocked | registered-m12-record-surface-blocked-on-plan271-and-plan280 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
 | 273 | blocked | registered-m12-store-service-blocked-on-plan272 | plans/implementation/floodfill/273-m12-databasestore-service.md | future |
 | 274 | blocked | registered-m12-lookup-service-blocked-on-plan273 | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | future |
@@ -203,6 +203,6 @@ M12 is complete only when:
 
 ## 12. Milestone status summary
 
-M11 is closed for experimental progression. Plan 270 has frozen the M12 architecture and
-source authority. Plan 271 is ready; Plan 280 is blocked on Plan 271 and Plan 272 requires
-both Plans 271 and 280. Plans 273-279 remain blocked in dependency order.
+M11 is closed for experimental progression. Plans 270 and 271 have passed. Plan 280 is ready;
+Plan 272 remains blocked on both Plans 271 and 280. Plans 273-279 remain blocked in dependency
+order.

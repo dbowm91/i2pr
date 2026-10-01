@@ -1,7 +1,6 @@
 # Plan 271 — M12 NetDB provenance, namespace segmentation, and disclosure foundation
 
-Status at registration:
-**registered-m12-provenance-segmentation-blocked-on-plan270**
+Status: **passed-m12-provenance-namespace-and-disclosure-foundation**
 
 Classification: security invariant / infrastructure.
 

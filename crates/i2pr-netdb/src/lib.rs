@@ -24,6 +24,7 @@ mod lookup_action;
 mod lookup_engine;
 mod lookup_id;
 mod lookup_policy;
+mod provenance;
 mod publication;
 mod reseed;
 mod router_info;
@@ -61,6 +62,10 @@ pub use lookup_policy::{
     DEFAULT_PER_ATTEMPT_DEADLINE_MS, DEFAULT_SUGGESTED_HASH_LIMIT, DEFAULT_TOTAL_DEADLINE_MS,
     FloodfillSelection, LookupPolicy, LookupPolicyError, MAX_SUGGESTED_HASH_LIMIT,
     select_floodfill_candidates,
+};
+pub use provenance::{
+    ClientNamespaceId, Eligibility as ProvenanceEligibility, InboundProvenance, NetDbNamespace,
+    ProvenanceIndex, ProvenanceLimits, RecordId, RecordProvenance, StorePurpose,
 };
 pub use publication::{
     MAX_PUBLICATION_ATTEMPTS, PublicationAttempt, PublicationAttemptRecord,
