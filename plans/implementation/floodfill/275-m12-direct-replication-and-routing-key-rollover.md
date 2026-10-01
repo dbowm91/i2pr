@@ -1,7 +1,7 @@
 # Plan 275 — M12 direct replication and daily routing-key rollover
 
 Status at registration:
-**registered-m12-replication-blocked-on-plan274**
+**passed-m12-bounded-direct-replication-and-daily-routing-key-rollover**
 
 Classification: capability / resource policy.
 
@@ -25,8 +25,9 @@ No sockets are opened here.
 - Zero-token received replicas are never re-flooded.
 - Expired LeaseSets and RouterInfos older than one hour are never flooded.
 - Current daily routing key determines normal placement.
-- Rollover policy uses the ADR-frozen windows (expected reference behavior: RI about 45 minutes,
-  LeaseSet-family about 10 minutes before UTC midnight) and remains caller-time deterministic.
+- Rollover policy uses the pinned Java I2P 2.13.0 behavior: next-day placement starts strictly
+  inside 45 minutes for RouterInfo and 10 minutes for LeaseSet-family records; LeaseSets also
+  require a lease that survives midnight. The policy remains caller-time deterministic.
 - Selection work and candidate overfetch are bounded.
 - Peer quality/diversity filters are separate policy from XOR distance and do not mutate codecs.
 
@@ -100,7 +101,11 @@ bash scripts/check-m12-floodfill-boundaries.sh
 ## 10. Documentation
 
 Document replication and rollover as policy, distinguishing normative direct/zero-token/age rules
-from reference-derived rollover window constants.
+from reference-derived rollover windows. ADR 0027 §5 freezes dual-key consideration but does not
+give the numeric windows; the pinned source is Java I2P commit
+`9134f808337b401e8e53c73734c81fab04280c9d`,
+`FloodfillNetworkDatabaseFacade.java` (`NEXT_RKEY_RI_ADVANCE_TIME`,
+`NEXT_RKEY_LS_ADVANCE_TIME`, and `flood`).
 
 ## 11. Acceptance criteria
 

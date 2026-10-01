@@ -1,6 +1,6 @@
 # Machine-readable support inventory. Authority reconciled through M12 Plan 273 (2026-10-01).
 # M11 one-family experimental progression passed; public transit remains disabled,
-# non-advertised, and unclaimed. M12 Plans 270-274 passed; Plan 275 is ready. No daemon
+# non-advertised, and unclaimed. M12 Plans 270-275 passed; Plan 276 is ready. No daemon
 # floodfill role, interoperability qualification, or advertisement is claimed.
 schema = 1
 milestone = 7
@@ -365,7 +365,7 @@ plan_268_status = "passed-m11-receipt-family-three-completions-zero-semantic-fai
 m6_experimental_mixed_router_progression = "passed-via-i2pd-plan193"
 m6_java_full_router_compatibility = "retained-deferred-at-plan247"
 m6_full_two_family_router_conformance = "not-yet-claimed"
-m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 Plans 270-274 passed architecture, provenance, record validation/storage, runtime-neutral DatabaseStore admission, and DatabaseLookup/DSRM with supplied-key ECIES reply service for RouterInfo and types 1/3/7. Plan 280 stopped because no reviewed Rust I2P Red25519 provider is available; Plan 281 deferred EncryptedLeaseSet type 5. Replication, persistence, daemon role lifecycle, qualification, and all floodfill advertisement remain unimplemented/unclaimed."
+m11_transit_tunnels = "Plan 268 passed one-family experimental progression with exact-head CI; public transit remains disabled, non-advertised, and unclaimed. M12 Plans 270-275 passed architecture, provenance, record validation/storage, bounded DatabaseStore/DatabaseLookup services, and runtime-neutral direct replication planning for RouterInfo and types 1/3/7. Plan 280 stopped because no reviewed Rust I2P Red25519 provider is available; Plan 281 deferred EncryptedLeaseSet type 5. Persistence, daemon role lifecycle, qualification, and all floodfill advertisement remain unimplemented/unclaimed."
 m6_authenticated_i2np_preflight = "passed-via-plan184"
 m6_exploratory_one_hop_tunnels = "passed-via-plan185"
 m6_netdb_lookup_publication = "passed-via-plan186"

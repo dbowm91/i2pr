@@ -184,9 +184,20 @@ pub struct FloodfillAck {
 }
 
 /// A handle into server-owned storage, not a transport object or an independently mutable record.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct ReplicationCandidate {
     pub record: RecordId,
+    /// Authenticated direct ingress peer, retained only for fanout exclusion.
+    pub source_peer: Option<Hash>,
+}
+
+impl fmt::Debug for ReplicationCandidate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplicationCandidate")
+            .field("record", &self.record)
+            .field("source_peer", &self.source_peer.map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Typed server reply route. Tunnel bytes are body bytes for the daemon Garlic/TunnelGateway path.
@@ -567,7 +578,13 @@ impl FloodfillStoreService {
                 == crate::ProvenanceEligibility::Allowed,
         )
         .filter(|eligible| *eligible)
-        .map(|_| ReplicationCandidate { record: id });
+        .map(|_| ReplicationCandidate {
+            record: id,
+            source_peer: match ingress {
+                FloodfillIngress::DirectPeer(peer) => Some(peer),
+                FloodfillIngress::RouterTunnel | FloodfillIngress::ClientTunnel => None,
+            },
+        });
         FloodfillStoreEffect::Stored {
             record: id,
             outcome,

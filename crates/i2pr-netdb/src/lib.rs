@@ -28,6 +28,7 @@ mod lookup_id;
 mod lookup_policy;
 mod provenance;
 mod publication;
+mod replication;
 mod reseed;
 mod router_info;
 mod routing;
@@ -84,6 +85,10 @@ pub use publication::{
     MAX_PUBLICATION_ATTEMPTS, PublicationAttempt, PublicationAttemptRecord,
     PublicationAttemptState, PublicationCoordinator, PublicationCorrelation, PublicationError,
     PublicationSnapshot,
+};
+pub use replication::{
+    DirectFloodAction, FloodfillPeerView, ReplicationError, ReplicationPlan, ReplicationPlanner,
+    ReplicationPolicy, ReplicationStats, RoutingKeyClass, nearest_peers,
 };
 pub use reseed::TrustedSigner;
 pub use reseed::{

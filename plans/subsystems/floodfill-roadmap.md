@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270–274 passed; Plan 275 is ready; type-5 support remains deferred.
+Status: Plans 270–275 passed; Plan 276 is ready; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -130,8 +130,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 272 | passed | passed-m12-record-validation-storage-types-1-3-7-type5-deferred | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | plans/closure/floodfill/272-status.md |
 | 273 | passed | passed-m12-bounded-databasestore-service | plans/implementation/floodfill/273-m12-databasestore-service.md | plans/closure/floodfill/273-status.md |
 | 274 | passed | passed-m12-lookup-serving-bounded-dsrm-and-ecies-replies | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | plans/closure/floodfill/274-status.md |
-| 275 | ready | registered-m12-replication-ready-after-plan274 | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | future |
-| 276 | blocked | registered-m12-persistence-resource-blocked-on-plan275 | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | future |
+| 275 | passed | passed-m12-bounded-direct-replication-and-daily-routing-key-rollover | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | plans/closure/floodfill/275-status.md |
+| 276 | ready | registered-m12-persistence-resource-ready-after-plan275 | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | future |
 | 277 | blocked | registered-m12-daemon-role-blocked-on-plan276 | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | future |
 | 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan277 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
