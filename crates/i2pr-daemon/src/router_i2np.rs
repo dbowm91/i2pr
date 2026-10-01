@@ -1105,6 +1105,16 @@ impl Ssu2DaemonHandle {
         &self.service
     }
 
+    /// Returns publication material derived by the runtime from its live bind and reachability
+    /// owner. The daemon receives no private transport key bytes.
+    pub fn publication_material(
+        &self,
+        wall_now_ms: u64,
+    ) -> Result<i2pr_runtime::Ssu2PublicationMaterial, i2pr_runtime::Ssu2PublicationUnavailable>
+    {
+        self.service.publication_material(wall_now_ms)
+    }
+
     /// Returns the narrow outbound delivery capability.
     pub const fn delivery(&self) -> &RouterDeliveryService {
         &self.delivery

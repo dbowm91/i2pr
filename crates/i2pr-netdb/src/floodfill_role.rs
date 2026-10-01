@@ -163,7 +163,69 @@ impl std::fmt::Debug for FloodfillAdvertisementPermit {
 
 /// Validates the final RouterAddress style at the typed advertisement boundary.
 pub fn is_qualified_ssu2_address(address: &RouterAddress) -> bool {
-    address.transport_style() == "SSU2"
+    if address.transport_style() != "SSU2" {
+        return false;
+    }
+    let options = address.options();
+    let Some(host) = options
+        .get("host")
+        .and_then(|value| value.parse::<core::net::IpAddr>().ok())
+    else {
+        return false;
+    };
+    let Some(port) = options
+        .get("port")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+    else {
+        return false;
+    };
+    let Some(mtu) = options
+        .get("mtu")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|mtu| (1280..=9000).contains(mtu))
+    else {
+        return false;
+    };
+    let Some(version) = options.get("v") else {
+        return false;
+    };
+    let Some(caps) = options.get("caps") else {
+        return false;
+    };
+    let (Some(static_key), Some(intro_key)) = (
+        options
+            .get("s")
+            .and_then(|value| crate::base64::decode(value).ok()),
+        options
+            .get("i")
+            .and_then(|value| crate::base64::decode(value).ok()),
+    ) else {
+        return false;
+    };
+    if host.is_unspecified()
+        || port.to_string() != options.get("port").unwrap_or_default()
+        || mtu.to_string() != options.get("mtu").unwrap_or_default()
+        || version != "2"
+        || static_key.len() != 32
+        || static_key.iter().all(|byte| *byte == 0)
+        || intro_key.len() != 32
+        || intro_key.iter().all(|byte| *byte == 0)
+        || caps.is_empty()
+        || host.to_string() != options.get("host").unwrap_or_default()
+        || match host {
+            core::net::IpAddr::V4(_) => caps != "4",
+            core::net::IpAddr::V6(_) => caps != "6",
+        }
+    {
+        return false;
+    }
+    options.entries().iter().all(|entry| {
+        matches!(
+            entry.key(),
+            "host" | "port" | "mtu" | "v" | "caps" | "s" | "i"
+        )
+    })
 }
 
 #[cfg(test)]

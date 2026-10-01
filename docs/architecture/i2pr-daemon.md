@@ -641,7 +641,17 @@ work is scoped to:
   control is proven in
   [`crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs`](../../crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs)
   via `tests/integration/m6-interop/run-preflight.sh`. See
-  [`plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
+[`plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
+- **Floodfill delivery boundary** (active Plan 282): `floodfill.rs` retains coordinator resource
+  leases through effect completion, constructs fresh bounded I2NP envelopes, and routes Store
+  acknowledgements and direct/tunnel lookup replies using the supplied reply route. Tunnel replies
+  are exactly one Garlic body nested in one TunnelGateway. Direct replication sends a zero-token
+  DatabaseStore only to its selected peer. If no authenticated session exists, the async adapter
+  resolves only an answer-eligible main-router RouterInfo SSU2 endpoint and delegates one bounded
+  dial to the existing runtime owner. `run_floodfill_owner` supplies one bounded ingress,
+  maintenance, and effect-drain future, but the production SSU2 service graph does not yet start
+  it. Persistence recovery, health-driven RouterInfo rotation, and full local acceptance remain
+  open in Plan 282.
 - **Exploratory build coordinator + tunnel liveness scheduler**
   (Plans 185/188): the daemon-owned
   [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)

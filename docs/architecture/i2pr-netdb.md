@@ -219,6 +219,13 @@ for the cache loader and reseed ingestor entry points).
   replicas are stored without acknowledgment or re-flood eligibility. Direct nonzero-token
   publisher stores may yield constant-size DeliveryStatus and replication-candidate effects;
   runtime dispatch, DatabaseLookup serving, and daemon role composition remain separate plans.
+- Plan 282 corrects the Store acknowledgement body id to the original reply token and treats
+  `DatabaseLookup.from` solely as a supplied reply route, never as authenticated peer identity.
+  The local floodfill RouterInfo builder now accepts only the controlled direct SSU2 address
+  option subset (canonical literal endpoint, version, MTU, caps, and nonzero 32-byte static/intro
+  keys); a style-only `SSU2` address is rejected. Daemon delivery uses explicit direct or
+  TunnelGateway intent and keeps direct replication tunnel-free. The full serving owner and
+  persistence/restart composition remain under Plan 282 implementation.
 
 - `ValidatedRouterInfo::from_router_info` is the only constructor;
   there is no unchecked insertion path.

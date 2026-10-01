@@ -279,6 +279,23 @@ mod tests {
         RouterIdentityBundle::generate(&mut rng).expect("deterministic test identity")
     }
 
+    fn active_role_permit() -> crate::FloodfillAdvertisementPermit {
+        let mut role = crate::FloodfillRoleController::new();
+        role.update(crate::FloodfillEligibilitySnapshot {
+            controlled_qualification_permit: true,
+            qualified_ssu2_address: true,
+            direct_reachability: true,
+            netdb_ready: true,
+            storage_ready: true,
+            maintenance_ready: true,
+            resource_headroom: true,
+            clock_sane: true,
+            supervision_healthy: true,
+        });
+        assert!(role.begin_activation());
+        role.complete_activation().expect("active role")
+    }
+
     #[test]
     fn builder_emits_a_validated_router_info_with_zero_addresses() {
         let signer = bundle(0x400);
@@ -307,9 +324,18 @@ mod tests {
         let builder = LocalRouterInfoBuilder::new(&signer);
         let options =
             Mapping::from_entries(vec![("router.version".into(), "0.9.69".into())]).unwrap();
+        let address_options = Mapping::from_entries(vec![
+            ("caps".into(), "4".into()),
+            ("host".into(), "127.0.0.1".into()),
+            ("i".into(), crate::base64::encode(&[2; 32]).unwrap()),
+            ("mtu".into(), "1280".into()),
+            ("port".into(), "1234".into()),
+            ("s".into(), crate::base64::encode(&[1; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
         let address =
-            RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), Mapping::empty())
-                .unwrap();
+            RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), address_options).unwrap();
         let mut role = crate::FloodfillRoleController::new();
         let eligible = crate::FloodfillEligibilitySnapshot {
             controlled_qualification_permit: true,
@@ -333,6 +359,21 @@ mod tests {
             .unwrap();
         assert_eq!(local.router_info().options().get("caps"), Some("f"));
         assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    #[test]
+    fn controlled_floodfill_builder_rejects_style_only_ssu2_addresses() {
+        let signer = bundle(0x406);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = Mapping::empty();
+        let address =
+            RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), Mapping::empty())
+                .unwrap();
+        let role = active_role_permit();
+        assert!(matches!(
+            builder.build_floodfill(Date::from_millis(101), options, address, &role),
+            Err(LocalRouterInfoError::UnqualifiedFloodfillAddress)
+        ));
     }
 
     #[test]

@@ -272,6 +272,15 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - `send_i2np` admits through `delivery_capability` +
   `enqueue_on_link`, then queues into the bounded session outbound
   queue; `Ssu2InboundI2np` messages leave through a bounded channel.
+- M12 Plan 282 adds `publication_material(wall_now_ms)`, which builds a strict direct SSU2
+  RouterAddress inside the runtime from its actual bound socket, runtime-owned static/intro keys,
+  and the live unexpired reachability snapshot. Unknown, non-direct, expired, unbound, and closed
+  states fail closed. The return value carries public address data and categorical/expiry evidence
+  only.
+- `install_local_router_info` accepts future handshake RouterInfo bytes only after signature and
+  local identity checks, preserved network id, strict SSU2 endpoint/key binding to the actual
+  socket, and a size-bounded decode. Replacement is atomic; already-established sessions are not
+  rewritten.
 - A handshake resend batch always replaces the pending deadline;
   min-merging with a stale past value burns the retry budget
   (`RetriesExhausted` — caught by the `ssu2_local` suite).

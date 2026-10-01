@@ -469,7 +469,7 @@ impl FloodfillStoreService {
         message: &DatabaseStoreMessage,
         role: FloodfillRole,
         ingress: FloodfillIngress,
-        message_id: u32,
+        _message_id: u32,
         time: FloodfillTime,
     ) -> FloodfillStoreEffect {
         if role != FloodfillRole::Serving {
@@ -566,7 +566,12 @@ impl FloodfillStoreService {
             reply_token: message.reply_token,
             reply_tunnel_id: message.reply_tunnel_id,
             reply_gateway: message.reply_gateway,
-            message: DeliveryStatusMessage::new(message_id, Date::from_millis(time.wall_ms)),
+            // I2NP DeliveryStatus acknowledges the DatabaseStore reply token, not
+            // the enclosing DatabaseStore message id.
+            message: DeliveryStatusMessage::new(
+                message.reply_token,
+                Date::from_millis(time.wall_ms),
+            ),
         });
         let replication = (publisher_direct
             && matches!(
@@ -969,7 +974,10 @@ mod tests {
         assert_eq!(outcome, ServerInsertOutcome::Inserted);
         let acknowledgement = acknowledgement.expect("nonzero token requests an ack");
         assert_eq!(acknowledgement.reply_token, 7);
-        assert_eq!(acknowledgement.message.message_id, 0x1234);
+        assert_eq!(
+            acknowledgement.message.message_id,
+            acknowledgement.reply_token
+        );
         assert!(replication.is_some());
 
         let effect = service.handle(
@@ -1185,6 +1193,7 @@ mod tests {
         };
         let ack = acknowledgement.expect("nonzero token routed acknowledgment");
         assert_eq!(ack.reply_token, 11);
+        assert_eq!(ack.message.message_id, ack.reply_token);
         assert_eq!(ack.reply_tunnel_id, Some(0x12345678));
         assert_eq!(ack.reply_gateway, Some(gateway));
         assert!(replication.is_none());

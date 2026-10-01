@@ -76,7 +76,7 @@ use std::sync::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_crypto::X25519PrivateKey;
-use i2pr_proto::{Hash, RouterInfo};
+use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo};
 use i2pr_transport::{
     CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage, LinkCandidate, LinkId,
     PeerId, PendingHandshake, ReachabilityPolicy, ReachabilitySignal, ReachabilityState,
@@ -666,6 +666,35 @@ pub struct Ssu2Snapshot {
     pub cached_tokens: usize,
 }
 
+/// Factual public publication material obtained from the live SSU2 owner.
+/// Private key material never crosses this runtime boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ssu2PublicationMaterial {
+    /// Strictly validated SSU2 address for the actual bound endpoint.
+    pub address: RouterAddress,
+    /// Monotonic expiry of the reachability evidence used to build it.
+    pub evidence_expires_at: Duration,
+    /// Conservative current reachability classification.
+    pub reachability: ReachabilityState,
+    /// Bound endpoint family represented by the address.
+    pub bound_family: i2pr_transport::AddressFamily,
+}
+
+/// Why the runtime cannot currently expose SSU2 publication material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ssu2PublicationUnavailable {
+    /// The runtime has shut down.
+    Closed,
+    /// No live socket is bound.
+    NoBoundSocket,
+    /// State was poisoned during shutdown or failure.
+    StateUnavailable,
+    /// Reachability evidence is unknown, unreachable, or expired.
+    ReachabilityUnqualified,
+    /// The bound endpoint or generated protocol address was invalid.
+    InvalidPublication,
+}
+
 /// Test-only deterministic pre-send datagram fault policy.
 ///
 /// Never constructed by production composition: the daemon has no
@@ -858,7 +887,7 @@ struct Shared {
     local_peer: PeerId,
     local_static: [u8; 32],
     local_intro: IntroKey,
-    local_router_info: Vec<u8>,
+    local_router_info: Mutex<Vec<u8>>,
     local_mtu: u16,
     manager: TransportManager,
     backoff: DialAdmission,
@@ -1074,14 +1103,39 @@ impl Ssu2RuntimeService {
         {
             return Err(Ssu2RuntimeConfigError::InvalidIdentity);
         }
-        RouterInfo::decode(
+        let initial_router_info = RouterInfo::decode(
             &identity.router_info,
             constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
         )
         .map_err(|_| Ssu2RuntimeConfigError::InvalidIdentity)?;
-        let static_secret = X25519PrivateKey::from_bytes(identity.static_secret_bytes);
-        Ssu2PublicKey::new(static_secret.public_bytes())
+        i2pr_crypto::verify_router_info(&initial_router_info)
             .map_err(|_| Ssu2RuntimeConfigError::InvalidIdentity)?;
+        if initial_router_info
+            .router_identity()
+            .hash()
+            .map_err(|_| Ssu2RuntimeConfigError::InvalidIdentity)?
+            != identity.router_hash
+        {
+            return Err(Ssu2RuntimeConfigError::InvalidIdentity);
+        }
+        let static_secret = X25519PrivateKey::from_bytes(identity.static_secret_bytes);
+        let static_public = Ssu2PublicKey::new(static_secret.public_bytes())
+            .map_err(|_| Ssu2RuntimeConfigError::InvalidIdentity)?;
+        let address_bound = initial_router_info.addresses().iter().any(|address| {
+            if address.transport_style() != "SSU2" {
+                return false;
+            }
+            let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
+                return false;
+            };
+            parsed.static_public_key().as_bytes() == static_public.as_bytes()
+                && parsed
+                    .intro_key()
+                    .is_some_and(|intro| intro.as_bytes() == identity.intro_key.as_bytes())
+        });
+        if !address_bound {
+            return Err(Ssu2RuntimeConfigError::InvalidIdentity);
+        }
         let per_peer = SSU2_LINKS_PER_PEER.min(config.limits.max_active_sessions as u64);
         let per_link_msgs =
             SSU2_MANAGER_MESSAGES_PER_LINK.min(config.limits.max_outbound_datagrams as u64);
@@ -1113,7 +1167,7 @@ impl Ssu2RuntimeService {
                 local_peer: PeerId::from_hash(identity.router_hash),
                 local_static: identity.static_secret_bytes,
                 local_intro: identity.intro_key,
-                local_router_info: identity.router_info,
+                local_router_info: Mutex::new(identity.router_info),
                 local_mtu: SSU2_DEFAULT_MTU,
                 manager,
                 backoff: DialAdmission::new(DialBackoffConfig::default(), SSU2_BACKOFF_ENTRIES)
@@ -1334,6 +1388,197 @@ impl Ssu2RuntimeService {
             token_table_entries,
             cached_tokens: cached,
         }
+    }
+
+    /// Builds direct SSU2 publication material only from the actual live bound endpoint and
+    /// current non-expired reachability evidence. No private transport key leaves this owner.
+    pub fn publication_material(
+        &self,
+        wall_now_ms: u64,
+    ) -> Result<Ssu2PublicationMaterial, Ssu2PublicationUnavailable> {
+        if self.shared.shutdown.is_cancelled() {
+            return Err(Ssu2PublicationUnavailable::Closed);
+        }
+        let (bound_v4, bound_v6) = {
+            let sockets = self
+                .shared
+                .sockets
+                .lock()
+                .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+            (sockets.v4, sockets.v6)
+        };
+        if bound_v4.is_none() && bound_v6.is_none() {
+            return Err(Ssu2PublicationUnavailable::NoBoundSocket);
+        }
+        if [bound_v4, bound_v6]
+            .into_iter()
+            .flatten()
+            .any(|bound| bound.port() == 0 || bound.ip().is_unspecified())
+        {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        let now = self.service_now();
+        let (reachability, corroboration, expiry, family) = {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+            state.reachability.poll_expiry(now);
+            let snapshot = state.reachability.snapshot(now);
+            (
+                snapshot.state,
+                snapshot.corroboration,
+                snapshot.expires_at,
+                snapshot.family,
+            )
+        };
+        if reachability != ReachabilityState::Reachable || expiry <= now {
+            return Err(Ssu2PublicationUnavailable::ReachabilityUnqualified);
+        }
+        let bound = match family {
+            i2pr_transport::AddressFamily::Ipv4 => bound_v4,
+            i2pr_transport::AddressFamily::Ipv6 => bound_v6,
+            i2pr_transport::AddressFamily::Unknown => None,
+        }
+        .ok_or(Ssu2PublicationUnavailable::NoBoundSocket)?;
+        if !bound.ip().is_loopback() {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        let endpoint = Ssu2Endpoint::new(bound.ip(), bound.port())
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let capabilities = match family {
+            i2pr_transport::AddressFamily::Ipv4 => "4",
+            i2pr_transport::AddressFamily::Ipv6 => "6",
+            i2pr_transport::AddressFamily::Unknown => {
+                return Err(Ssu2PublicationUnavailable::InvalidPublication);
+            }
+        };
+        let capabilities = i2pr_transport_ssu2::Ssu2Capabilities::parse(capabilities)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let expires_secs = expiry.as_secs();
+        let snapshot = i2pr_transport_ssu2::publication::build_publication_snapshot(
+            i2pr_transport_ssu2::publication::PublicationRequest {
+                policy: i2pr_transport_ssu2::publication::PublicationPolicy::new(true, false),
+                static_public: X25519PrivateKey::from_bytes(self.shared.local_static)
+                    .public_bytes(),
+                intro_public: *self.shared.local_intro.as_bytes(),
+                endpoint: Some(endpoint),
+                reachability: i2pr_transport::ReachabilitySnapshot {
+                    state: reachability,
+                    corroboration,
+                    expires_at: expiry,
+                    family,
+                },
+                mtu: self.shared.local_mtu,
+                caps: &capabilities,
+                introducers: &[],
+                now_secs: now.as_secs(),
+                evidence_expires_secs: expires_secs,
+            },
+        )
+        .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let i2pr_transport_ssu2::publication::PublicationOutcome::Direct(snapshot) = snapshot
+        else {
+            return Err(Ssu2PublicationUnavailable::ReachabilityUnqualified);
+        };
+        let entries = snapshot.option_entries().to_vec();
+        let options = Mapping::from_entries(entries)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let address = RouterAddress::new(
+            10,
+            Date::from_millis(wall_now_ms),
+            "SSU2".to_owned(),
+            options,
+        )
+        .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        i2pr_transport_ssu2::publication::parse_snapshot(&snapshot)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        Ok(Ssu2PublicationMaterial {
+            address,
+            evidence_expires_at: expiry,
+            reachability,
+            bound_family: family,
+        })
+    }
+
+    /// Atomically installs a locally signed RouterInfo for future SessionConfirmed handshakes.
+    /// The signature, router hash, and SSU2 endpoint/key binding are checked before replacement;
+    /// existing authenticated sessions retain the RouterInfo they already exchanged.
+    pub fn install_local_router_info(
+        &self,
+        encoded: Vec<u8>,
+    ) -> Result<(), Ssu2PublicationUnavailable> {
+        if self.shared.shutdown.is_cancelled() {
+            return Err(Ssu2PublicationUnavailable::Closed);
+        }
+        let info = RouterInfo::decode(&encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        i2pr_crypto::verify_router_info(&info)
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        let hash = info
+            .router_identity()
+            .hash()
+            .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        if hash != self.shared.local_peer.hash() {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        let current_bytes = self
+            .shared
+            .local_router_info
+            .lock()
+            .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?
+            .clone();
+        let current = RouterInfo::decode(
+            &current_bytes,
+            constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+        )
+        .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        if info.options().get("netId") != current.options().get("netId")
+            || info
+                .addresses()
+                .iter()
+                .any(|address| address.transport_style() != "SSU2")
+        {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        let sockets = self
+            .shared
+            .sockets
+            .lock()
+            .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+        let expected_static = X25519PrivateKey::from_bytes(self.shared.local_static).public_bytes();
+        let address_matches = info.addresses().iter().any(|address| {
+            if address.transport_style() != "SSU2" {
+                return false;
+            }
+            let Ok(parsed) = Ssu2RouterAddress::parse(address) else {
+                return false;
+            };
+            let Some(endpoint) = parsed.endpoint() else {
+                return false;
+            };
+            let is_bound = [sockets.v4, sockets.v6]
+                .into_iter()
+                .flatten()
+                .any(|bound| bound.ip() == endpoint.ip() && bound.port() == endpoint.port());
+            is_bound
+                && parsed.static_public_key().as_bytes() == &expected_static
+                && parsed
+                    .intro_key()
+                    .is_some_and(|key| key.as_bytes() == self.shared.local_intro.as_bytes())
+        });
+        drop(sockets);
+        if !address_matches {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
+        let mut current = self
+            .shared
+            .local_router_info
+            .lock()
+            .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+        *current = encoded;
+        Ok(())
     }
 }
 
@@ -2578,8 +2823,12 @@ impl Ssu2RuntimeService {
         } else {
             Vec::new()
         };
+        let router_info = match self.shared.local_router_info.lock() {
+            Ok(bytes) => bytes.clone(),
+            Err(_) => return false,
+        };
         let confirmed_params = ConfirmedParams {
-            router_info: self.shared.local_router_info.clone(),
+            router_info,
             padding,
             mtu_payload: SSU2_CONFIRMED_MTU_PAYLOAD,
             peer_endpoint: source,
@@ -4657,6 +4906,7 @@ mod tests {
     const PATH_TEST_POLL: Duration = Duration::from_millis(25);
 
     struct PathKeys {
+        bundle: RouterIdentityBundle,
         peer: PeerId,
         hash: Hash,
         static_bytes: [u8; 32],
@@ -4751,6 +5001,7 @@ mod tests {
             .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
             .expect("encode");
         PathKeys {
+            bundle,
             peer: PeerId::from_hash(hash),
             hash,
             static_bytes,
@@ -5194,5 +5445,98 @@ mod tests {
 
         shutdown_path_fixture(a).await;
         shutdown_path_fixture(b).await;
+    }
+
+    #[tokio::test]
+    async fn publication_material_uses_bound_socket_and_requires_fresh_reachability() {
+        let keys = make_path_keys();
+        let unbound = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("valid unbound runtime");
+        assert_eq!(
+            unbound.publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::NoBoundSocket)
+        );
+        let fixture = start_path_fixture(keys).await;
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        {
+            let mut state = fixture.service.shared.state.lock().expect("state");
+            let family = i2pr_transport::AddressFamily::Ipv4;
+            let now = fixture.service.service_now();
+            state
+                .reachability
+                .record(ReachabilitySignal::ValidatedPath { family }, now);
+            state.reachability.record(
+                ReachabilitySignal::AuthenticatedPeerObservedExternalAddress { family },
+                now,
+            );
+            state.reachability.record(
+                ReachabilitySignal::PeerTestResult {
+                    family,
+                    outcome: i2pr_transport::PeerTestOutcomeKind::Confirmed,
+                },
+                now,
+            );
+        }
+        let material = fixture
+            .service
+            .publication_material(path_wall_secs() * 1000)
+            .expect("qualified publication material");
+        let parsed = Ssu2RouterAddress::parse(&material.address).expect("strict address");
+        let endpoint = parsed.endpoint().expect("direct endpoint");
+        assert_eq!(endpoint.ip(), fixture.addr().ip());
+        assert_eq!(endpoint.port(), fixture.addr().port());
+        assert_ne!(endpoint.port(), 0);
+        assert_eq!(
+            parsed.static_public_key().as_bytes(),
+            fixture.keys.static_public.as_bytes()
+        );
+        assert_eq!(
+            parsed.intro_key().expect("intro key").as_bytes(),
+            fixture.keys.intro.as_bytes()
+        );
+        assert_eq!(
+            material.reachability,
+            i2pr_transport::ReachabilityState::Reachable
+        );
+        let replacement = fixture
+            .keys
+            .bundle
+            .sign_router_info(
+                Date::from_millis(path_wall_secs() * 1000),
+                vec![material.address.clone()],
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign current bound publication");
+        let replacement = replacement
+            .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .expect("encode signed replacement");
+        fixture
+            .service
+            .install_local_router_info(replacement.clone())
+            .expect("install matching local identity and SSU2 binding");
+        assert_eq!(
+            *fixture
+                .service
+                .shared
+                .local_router_info
+                .lock()
+                .expect("local RouterInfo"),
+            replacement
+        );
+        shutdown_path_fixture(fixture).await;
     }
 }
