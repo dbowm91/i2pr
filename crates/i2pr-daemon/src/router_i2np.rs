@@ -821,6 +821,11 @@ pub fn ssu2_runtime_config_from(
             scheduler_poll_max: config.scheduler_poll_max,
         },
         prefixes: i2pr_runtime::IpPrefixPolicy::default(),
+        // The daemon SSU2 service is always an explicitly configured loopback bind
+        // (enforced by `Ssu2DaemonService::new`). Permitting explicit-bind corroboration
+        // changes nothing by itself: counting still requires the controlled-qualification
+        // recording call, which only the M12 activation composition performs.
+        explicit_bind_corroboration: true,
     };
     runtime
         .validate()

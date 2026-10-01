@@ -391,4 +391,135 @@ mod tests {
             Some(second)
         );
     }
+
+    fn signed_router_info(
+        seed: u64,
+        published_ms: u64,
+    ) -> (
+        i2pr_crypto::RouterIdentityBundle,
+        i2pr_proto::RouterInfo,
+        Hash,
+    ) {
+        use rand_chacha::ChaCha8Rng;
+        use rand_core::SeedableRng;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut rng).expect("identity");
+        let key = i2pr_netdb::router_hash(bundle.identity()).expect("hash");
+        let info = bundle
+            .sign_router_info(
+                i2pr_proto::Date::from_millis(published_ms),
+                Vec::new(),
+                Vec::new(),
+                i2pr_proto::Mapping::empty(),
+            )
+            .expect("sign");
+        (bundle, info, *key.as_hash())
+    }
+
+    fn cache_name(key: &Hash) -> String {
+        key.as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// Plan 282 row 10: restart revalidates every restored record (decode, key
+    /// binding, signature, freshness) and narrows restored provenance to a
+    /// flood replica that can answer lookups but can never reflood.
+    #[test]
+    fn router_info_restart_revalidates_and_narrows_provenance() {
+        use i2pr_netdb::{ProvenanceEligibility, RecordId};
+        let now_ms = 1_700_000_000_000_u64;
+        let (_bundle, info, key) = signed_router_info(0x282A, now_ms);
+        let validated = ValidatedRouterInfo::from_router_info(
+            info,
+            Some(i2pr_netdb::RouterHash::from_hash(key)),
+            ValidationContext::new(i2pr_proto::Date::from_millis(now_ms)),
+        )
+        .expect("valid");
+        let directory = tempfile::tempdir().expect("directory");
+        std::fs::create_dir_all(directory.path().join("netdb")).expect("netdb parent");
+        let store = FloodfillRecordStore::new(ByteCache::in_data_dir(directory.path()), 64 * 1024);
+        let name = cache_name(&key);
+        store
+            .save_router_info(&name, &validated, now_ms, PersistedPurpose::PublishedStore)
+            .expect("save");
+        let mut db = ServerNetDb::default();
+        let outcome = store
+            .load_router_info_into(
+                &name,
+                key,
+                &mut db,
+                ValidationContext::new(i2pr_proto::Date::from_millis(now_ms)),
+                now_ms,
+                3_600_000,
+            )
+            .expect("load")
+            .expect("restored");
+        assert_eq!(outcome, ServerInsertOutcome::Inserted);
+        let id = RecordId::new(0, key);
+        assert_eq!(
+            db.may_replicate(&id, now_ms, 3_600_000),
+            ProvenanceEligibility::ReplicaCannotReflood,
+            "restored provenance stays conservative"
+        );
+        assert!(
+            db.router_info_for_answer(&i2pr_netdb::RouterHash::from_hash(key), now_ms, 3_600_000)
+                .expect("answerable")
+                .is_some(),
+            "restored record answers lookups"
+        );
+        // Tampered payload bytes fail revalidation instead of entering the NetDB.
+        let tampered = FloodfillRecordEnvelope {
+            record_type: 0,
+            key,
+            observed_at_ms: now_ms,
+            ingress: PersistedIngress::DirectPeer,
+            purpose: PersistedPurpose::PublishedStore,
+            canonical_bytes: vec![0xFF; 16],
+        };
+        store
+            .save(&cache_name(&key), &tampered)
+            .expect("save tampered");
+        let mut db = ServerNetDb::default();
+        assert!(matches!(
+            store.load_router_info_into(
+                &cache_name(&key),
+                key,
+                &mut db,
+                ValidationContext::new(i2pr_proto::Date::from_millis(now_ms)),
+                now_ms,
+                3_600_000,
+            ),
+            Err(PersistError::InvalidRecord)
+        ));
+        // Stale observations expire instead of restoring.
+        let (_, info, stale_key) = signed_router_info(0x282B, now_ms);
+        let stale_validated = ValidatedRouterInfo::from_router_info(
+            info,
+            Some(i2pr_netdb::RouterHash::from_hash(stale_key)),
+            ValidationContext::new(i2pr_proto::Date::from_millis(now_ms)),
+        )
+        .expect("valid");
+        store
+            .save_router_info(
+                &cache_name(&stale_key),
+                &stale_validated,
+                now_ms.saturating_sub(7_200_000),
+                PersistedPurpose::PublishedStore,
+            )
+            .expect("save stale");
+        let mut db = ServerNetDb::default();
+        assert!(matches!(
+            store.load_router_info_into(
+                &cache_name(&stale_key),
+                stale_key,
+                &mut db,
+                ValidationContext::new(i2pr_proto::Date::from_millis(now_ms)),
+                now_ms,
+                3_600_000,
+            ),
+            Err(PersistError::Expired)
+        ));
+    }
 }

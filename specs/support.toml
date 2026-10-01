@@ -422,13 +422,16 @@ plan_277_plan_of_record = "plans/implementation/floodfill/277-m12-daemon-role-li
 plan_277_closure = "plans/closure/floodfill/277-status.md"
 plan_277_status = "stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required-corrective-via-plan282"
 plan_282_plan_of_record = "plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md"
-plan_282_status = "in-progress-m12-runtime-publication-and-reply-delivery-corrective"
-m12_floodfill_status = "Plans 270-276 passed for bounded runtime-neutral/server/persistence behavior on types 0/1/3/7; type5 deferred; Plan277 partial daemon work stopped at runtime publication/delivery boundary; Plan282 active; Plans278-279 blocked; no external qualification or broad advertisement"
+plan_282_closure = "plans/closure/floodfill/282-status.md"
+plan_282_status = "stopped-m12-activation-blocked-on-above-floor-reachability-evidence-corrective-via-plan283"
+plan_283_plan_of_record = "plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md"
+plan_283_status = "registered-m12-third-class-evidence-and-controlled-activation-ready"
+m12_floodfill_status = "Plans 270-276 passed for bounded runtime-neutral/server/persistence behavior on types 0/1/3/7; type5 deferred; Plans277-282 stopped with retained publication bridge, rotation, route/delivery, owner, and live direct-path work; Plan283 registered for third-class evidence plus activation/withdrawal; Plans278-279 blocked; no external qualification or broad advertisement"
 m12_evidence_tier = "local-validated"
 m12_type11_red25519 = "type5-deferred; no acceptable reviewed Rust provider; plan280 stopped"
 m12_caps_f_advertised = false
-next_product_layer = "m12-floodfill-runtime-integration-corrective"
-next_executable_plan = "plan282 (runtime publication/reply-delivery corrective; complete stopped Plan277 local daemon path before Plan278)"
+next_product_layer = "m12-floodfill-third-class-evidence-and-activation"
+next_executable_plan = "plan283 (third-class evidence strategy plus activation/withdrawal completion on retained Plan277/282 work before Plan278)"
 
 [[surface]]
 id = "ssu2.v2-protocol-foundation"

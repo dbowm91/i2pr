@@ -311,7 +311,11 @@ pub enum FloodfillOwnerError {
 /// Drives one coordinator as a single bounded daemon owner. The caller must start this future
 /// under the runtime's child scope after persistence revalidation and signed RouterInfo
 /// installation. There is no task per inbound message or queued effect; direct dials are
-/// serialized through one bounded worker path.
+/// serialized through one bounded worker path. Every drained effect records its typed
+/// outcome on the coordinator. On cancellation the owner drains the bounded remainder of
+/// the queue (each delivery observes the cancelled token and returns immediately) until
+/// `drain_timeout` elapses, then shuts the service down and exits. The final coordinator
+/// stats are returned alongside the exit reason so tests own the delivery accounting.
 pub async fn run_floodfill_owner(
     mut service: crate::router_i2np::Ssu2DaemonHandle,
     mut coordinator: FloodfillCoordinator,
@@ -319,11 +323,14 @@ pub async fn run_floodfill_owner(
     maintenance_period: Duration,
     max_record_age_ms: u64,
     maintenance_batch_size: usize,
-) -> Result<FloodfillOwnerExit, FloodfillOwnerError> {
+    drain_timeout: Duration,
+) -> Result<(FloodfillOwnerExit, FloodfillCoordinatorStats), FloodfillOwnerError> {
     if maintenance_period.is_zero()
         || maintenance_period > Duration::from_secs(3600)
         || maintenance_batch_size == 0
         || maintenance_batch_size > MAX_FLOODFILL_MAINTENANCE_BATCH
+        || drain_timeout.is_zero()
+        || drain_timeout > Duration::from_secs(60)
     {
         return Err(FloodfillOwnerError::InvalidMaintenancePolicy);
     }
@@ -334,12 +341,27 @@ pub async fn run_floodfill_owner(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => {
+                let deadline = tokio::time::Instant::now() + drain_timeout;
+                while let Some(effect) = coordinator.pop_effect() {
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    let outcome = deliver_floodfill_effect_with_dial(
+                        &service,
+                        coordinator.netdb(),
+                        effect,
+                        wall_clock_ms(),
+                        max_record_age_ms,
+                        &cancellation,
+                    ).await;
+                    coordinator.record_delivery(outcome);
+                }
                 service.shutdown();
-                return Ok(FloodfillOwnerExit::RequestedShutdown);
+                return Ok((FloodfillOwnerExit::RequestedShutdown, coordinator.stats()));
             }
             inbound = service.next_inbound() => {
                 let Some(inbound) = inbound else {
-                    return Ok(FloodfillOwnerExit::InboundClosed);
+                    return Ok((FloodfillOwnerExit::InboundClosed, coordinator.stats()));
                 };
                 let wall_ms = wall_clock_ms();
                 let time = FloodfillTime {
@@ -348,7 +370,7 @@ pub async fn run_floodfill_owner(
                 };
                 let _ = coordinator.handle_authenticated_i2np(&inbound, time)?;
                 while let Some(effect) = coordinator.pop_effect() {
-                    let _ = deliver_floodfill_effect_with_dial(
+                    let outcome = deliver_floodfill_effect_with_dial(
                         &service,
                         coordinator.netdb(),
                         effect,
@@ -356,6 +378,7 @@ pub async fn run_floodfill_owner(
                         max_record_age_ms,
                         &cancellation,
                     ).await;
+                    coordinator.record_delivery(outcome);
                 }
             }
             _ = maintenance.tick() => {
@@ -401,6 +424,8 @@ pub struct FloodfillCoordinatorStats {
     pub queue_full: u64,
     pub queued_effects: usize,
     pub queued_bytes: usize,
+    pub delivered_effects: u64,
+    pub failed_effects: u64,
 }
 
 /// Owns floodfill policy and bounded effects. A runtime owner drains effects over authenticated
@@ -501,6 +526,17 @@ impl FloodfillCoordinator {
             queued_effects: self.effects.len(),
             queued_bytes: self.queued_bytes,
             ..self.stats
+        }
+    }
+
+    /// Records one effect-drain outcome. Delivered outcomes count the effect as
+    /// delivered; every other typed outcome counts it as failed. Leases release
+    /// exactly once through the drained `FloodfillLeasedEffect` on every path.
+    pub fn record_delivery(&mut self, outcome: FloodfillDeliveryOutcome) {
+        if matches!(outcome, FloodfillDeliveryOutcome::Delivered(_)) {
+            self.stats.delivered_effects = self.stats.delivered_effects.saturating_add(1);
+        } else {
+            self.stats.failed_effects = self.stats.failed_effects.saturating_add(1);
         }
     }
     pub fn netdb(&self) -> &ServerNetDb {
@@ -798,6 +834,67 @@ mod tests {
         assert!(!coordinator.enqueue(FloodfillDaemonEffect::DirectFlood { action: action() }, 1));
         assert_eq!(coordinator.resources().snapshot().queued_effects, 1);
         assert!(coordinator.pop_effect().is_some());
+        assert_eq!(coordinator.resources().snapshot().queued_effects, 0);
+        assert_eq!(coordinator.resources().snapshot().queued_bytes, 0);
+    }
+
+    #[test]
+    fn delivery_outcomes_accounted_and_leases_release_on_every_drop_path() {
+        let mut coordinator = coordinator();
+        let mut live = action();
+        live.deadline_ms = 5_000;
+        assert!(coordinator.enqueue(FloodfillDaemonEffect::DirectFlood { action: live }, 128));
+        let mut leased = coordinator.pop_effect().expect("leased effect");
+        // Leases travel with the effect: the coordinator queue is empty but the
+        // budget still shows the held effect until the lease drops.
+        assert_eq!(coordinator.resources().snapshot().queued_effects, 1);
+        let (peer, _) = encode_floodfill_effect(&mut leased, 1000).expect("encode");
+        assert_eq!(peer.hash(), action().peer);
+        // Double drain fails closed: the effect was consumed by the first encode.
+        assert_eq!(
+            encode_floodfill_effect(&mut leased, 1000),
+            Err(FloodfillDeliveryOutcome::InvalidEffect)
+        );
+        coordinator.record_delivery(FloodfillDeliveryOutcome::InvalidEffect);
+        drop(leased);
+        assert_eq!(coordinator.resources().snapshot().queued_effects, 0);
+        assert_eq!(coordinator.resources().snapshot().queued_bytes, 0);
+        assert_eq!(coordinator.stats().failed_effects, 1);
+        assert_eq!(coordinator.stats().delivered_effects, 0);
+        coordinator.record_delivery(FloodfillDeliveryOutcome::Delivered(
+            crate::router_i2np::RouterDeliveryOutcome::Accepted,
+        ));
+        assert_eq!(coordinator.stats().delivered_effects, 1);
+        assert_eq!(coordinator.stats().failed_effects, 1);
+    }
+
+    #[test]
+    fn invalid_ack_route_and_unknown_dial_target_fail_closed() {
+        let mut coordinator = coordinator();
+        // Ack without a reply gateway has no route.
+        let ack = FloodfillAck {
+            reply_token: 0x99,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            message: i2pr_proto::DeliveryStatusMessage::new(0x99, Date::from_millis(1000)),
+        };
+        assert!(coordinator.enqueue(FloodfillDaemonEffect::StoreAck { ack }, 64));
+        let mut leased = coordinator.pop_effect().expect("leased ack");
+        assert_eq!(
+            encode_floodfill_effect(&mut leased, 1000),
+            Err(FloodfillDeliveryOutcome::InvalidRoute)
+        );
+        drop(leased);
+        // Unknown reply peer resolves to no dial target in an empty NetDB.
+        assert!(
+            validated_dial_target(
+                coordinator.netdb(),
+                PeerId::from_bytes([0x77; 32]),
+                1000,
+                60_000
+            )
+            .is_none()
+        );
         assert_eq!(coordinator.resources().snapshot().queued_effects, 0);
         assert_eq!(coordinator.resources().snapshot().queued_bytes, 0);
     }

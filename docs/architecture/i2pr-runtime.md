@@ -280,7 +280,15 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - `install_local_router_info` accepts future handshake RouterInfo bytes only after signature and
   local identity checks, preserved network id, strict SSU2 endpoint/key binding to the actual
   socket, and a size-bounded decode. Replacement is atomic; already-established sessions are not
-  rewritten.
+  rewritten. Plan 282 adds the Plan 103 freshness windows (24 h age, 1 h future skew, mirrored
+  locally because the dependency direction forbids importing them from `i2pr-netdb`), a
+  diagnostics-only installation generation counter exposed on the snapshot, and an
+  opt-in explicit-bind corroboration flag plus the narrow
+  `note_explicit_bind_for_controlled_qualification` recording call (loopback-only,
+  fail-closed). The bind-plus-observation pair yields exactly `CandidateReachable`;
+  `publication_material` keeps requiring above-floor `Reachable` for a direct address, so
+  static loopback-homogeneous traffic stops at the evidence boundary by design (Plan 282
+  stopped; Plan 283 owns the third-class strategy and activation).
 - A handshake resend batch always replaces the pending deadline;
   min-merging with a stale past value burns the retry budget
   (`RetriesExhausted` — caught by the `ssu2_local` suite).

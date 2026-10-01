@@ -38,6 +38,10 @@ if rg -n 'lookup\.from\s*!=\s*peer\.hash\(\)|lookup\.from\s*==\s*peer\.hash\(\)'
 fi
 rg -q 'DeliveryStatusMessage::new' "$service"
 rg -q 'message\.reply_token' "$service"
+if ! rg -q -U 'DeliveryStatusMessage::new\(\s*message\.reply_token' "$service"; then
+  echo "store acknowledgements must carry the DatabaseStore reply token" >&2
+  exit 1
+fi
 rg -q 'pub fn publication_material' "$runtime"
 rg -q 'state\.reachability\.snapshot\(now\)' "$runtime"
 rg -q 'pub fn install_local_router_info' "$runtime"
@@ -49,6 +53,27 @@ rg -q 'return Err\(FloodfillDeliveryOutcome::InvalidEffect\)' "$daemon"
 
 if rg -n 'EciesSessionManager|ExistingSession|DestinationSession' "$service"; then
   echo "NetDB replies must use the one-shot supplied-key wrapper, not destination session state" >&2
+  exit 1
+fi
+
+# Direct flood actions carry no tunnel route: failed direct replication can
+# never name a tunnel fallback in its type.
+if awk '/pub struct DirectFloodAction \{/,/^\}/' "$netdb/replication.rs" | rg -n 'tunnel|gateway'; then
+  echo "direct flood actions must not contain a tunnel route" >&2
+  exit 1
+fi
+
+# Normal daemon configuration can never construct advertisement authority.
+if rg -n 'FloodfillAdvertisementPermit|build_floodfill' "$root/crates/i2pr-daemon/src/config.rs"; then
+  echo "normal config must not construct floodfill advertisement authority" >&2
+  exit 1
+fi
+
+# Controlled floodfill construction stays inside the daemon floodfill owner:
+# only floodfill.rs may reference the permit-gated builder or the
+# explicit-bind qualification recording.
+if rg -n --glob '!floodfill.rs' 'build_floodfill|note_explicit_bind_for_controlled_qualification' "$root/crates/i2pr-daemon/src"; then
+  echo "floodfill construction authority must stay inside the daemon floodfill owner" >&2
   exit 1
 fi
 

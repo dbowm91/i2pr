@@ -224,8 +224,12 @@ for the cache loader and reseed ingestor entry points).
   The local floodfill RouterInfo builder now accepts only the controlled direct SSU2 address
   option subset (canonical literal endpoint, version, MTU, caps, and nonzero 32-byte static/intro
   keys); a style-only `SSU2` address is rejected. Daemon delivery uses explicit direct or
-  TunnelGateway intent and keeps direct replication tunnel-free. The full serving owner and
-  persistence/restart composition remain under Plan 282 implementation.
+  TunnelGateway intent and keeps direct replication tunnel-free. Replication plans only
+  token-bearing publisher stores (zero-token floods are never reflooded); restart restores
+  records through mandatory revalidation with provenance narrowed to flood replica (proven
+  in `i2pr-netdb-persist` row-10 tests). The serving-owner activation and health-withdrawal
+  composition stopped with Plan 282 at the reachability-evidence boundary and belongs to
+  Plan 283.
 
 - `ValidatedRouterInfo::from_router_info` is the only constructor;
   there is no unchecked insertion path.

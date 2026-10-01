@@ -79,9 +79,8 @@ use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo};
 use i2pr_transport::{
     CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage, LinkCandidate, LinkId,
-    PeerId, PendingHandshake, ReachabilityPolicy, ReachabilitySignal, ReachabilityState,
-    ReachabilityTracker, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
-    TransportManager,
+    PeerId, PendingHandshake, ReachabilitySignal, ReachabilityState, ReachabilityTracker,
+    ResourceClass, TerminationCategory, TransportKind, TransportLimits, TransportManager,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
@@ -117,6 +116,20 @@ pub const MAX_SSU2_INBOUND_QUEUE_CEILING: usize = 1024;
 pub const SSU2_DEFAULT_MTU: u16 = 1280;
 /// SessionConfirmed fragment budget used for local RouterInfo emission.
 pub const SSU2_CONFIRMED_MTU_PAYLOAD: usize = 1000;
+/// Maximum age of a RouterInfo accepted by `install_local_router_info`.
+///
+/// Mirrors the Plan 103 `DEFAULT_MAX_AGE` window enforced by
+/// `i2pr-netdb`; the constant is duplicated here because the
+/// dependency direction forbids `i2pr-runtime` from depending on
+/// `i2pr-netdb`.
+pub const LOCAL_ROUTER_INFO_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+/// Maximum future publication skew accepted by `install_local_router_info`.
+/// Mirrors the Plan 103 `DEFAULT_MAX_FUTURE_SKEW` window (see above).
+pub const LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS: u64 = 60 * 60;
+/// Maximum encoded length accepted by `install_local_router_info`.
+/// Mirrors the Plan 103 `DEFAULT_MAX_ENCODED_LEN` bound (see above); the
+/// establishment decode cap below is stricter and fires first.
+pub const LOCAL_ROUTER_INFO_MAX_ENCODED_LEN: usize = 16 * 1024;
 /// Grace period for a cached-token SessionRequest before the dial
 /// falls back to the tokenless Retry path within the same attempt.
 pub const SSU2_CACHED_TOKEN_GRACE: Duration = Duration::from_millis(1_500);
@@ -344,6 +357,19 @@ pub struct Ssu2RuntimeConfig {
     pub deadlines: Ssu2RuntimeDeadlines,
     /// Subnet accounting policy.
     pub prefixes: IpPrefixPolicy,
+    /// Permits explicit-bind corroboration in the reachability tracker.
+    ///
+    /// When false (default) the tracker ignores `LocalConfiguredBind`
+    /// observations, preserving the conservative posture that an
+    /// explicit bind never attests reachability by itself. When true,
+    /// an explicitly configured bind recorded through
+    /// [`Ssu2RuntimeService::note_explicit_bind_for_controlled_qualification`]
+    /// counts as one corroboration class alongside real handshake
+    /// observations. The daemon sets this because its SSU2 service is
+    /// always an explicitly configured loopback bind; recording still
+    /// requires the narrow controlled-qualification call, so normal
+    /// operation is unchanged.
+    pub explicit_bind_corroboration: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -664,6 +690,8 @@ pub struct Ssu2Snapshot {
     pub token_table_entries: usize,
     /// Current cached future-handshake tokens.
     pub cached_tokens: usize,
+    /// Local RouterInfo installation generation (diagnostics only).
+    pub local_router_info_generation: u64,
 }
 
 /// Factual public publication material obtained from the live SSU2 owner.
@@ -888,6 +916,7 @@ struct Shared {
     local_static: [u8; 32],
     local_intro: IntroKey,
     local_router_info: Mutex<Vec<u8>>,
+    local_router_info_generation: AtomicU64,
     local_mtu: u16,
     manager: TransportManager,
     backoff: DialAdmission,
@@ -1159,7 +1188,16 @@ impl Ssu2RuntimeService {
             constants::HANDSHAKE_REPLAY_RETENTION_SECONDS,
         )
         .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
-        let reachability = ReachabilityTracker::new(ReachabilityPolicy::default())
+        let reachability_policy = if config.explicit_bind_corroboration {
+            i2pr_transport::ReachabilityPolicy::new(
+                2,
+                i2pr_transport::DEFAULT_OBSERVATION_TTL,
+                true,
+            )
+        } else {
+            i2pr_transport::ReachabilityPolicy::default()
+        };
+        let reachability = ReachabilityTracker::new(reachability_policy)
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         Ok(Self {
             shared: Arc::new(Shared {
@@ -1168,6 +1206,7 @@ impl Ssu2RuntimeService {
                 local_static: identity.static_secret_bytes,
                 local_intro: identity.intro_key,
                 local_router_info: Mutex::new(identity.router_info),
+                local_router_info_generation: AtomicU64::new(0),
                 local_mtu: SSU2_DEFAULT_MTU,
                 manager,
                 backoff: DialAdmission::new(DialBackoffConfig::default(), SSU2_BACKOFF_ENTRIES)
@@ -1387,11 +1426,32 @@ impl Ssu2RuntimeService {
             active_sessions,
             token_table_entries,
             cached_tokens: cached,
+            local_router_info_generation: self
+                .shared
+                .local_router_info_generation
+                .load(Ordering::Relaxed),
         }
+    }
+
+    /// Returns the local RouterInfo installation generation (diagnostics only).
+    pub fn local_router_info_generation(&self) -> u64 {
+        self.shared
+            .local_router_info_generation
+            .load(Ordering::Relaxed)
     }
 
     /// Builds direct SSU2 publication material only from the actual live bound endpoint and
     /// current non-expired reachability evidence. No private transport key leaves this owner.
+    ///
+    /// The reachability floor is `Reachable` (above-floor corroboration with fresh evidence);
+    /// unknown/unreachable/expired evidence is refused. `CandidateReachable` (exactly the
+    /// corroboration floor) is refused: the Plan 159 publication builder only renders a
+    /// direct address for `Reachable`, and this bridge does not weaken that contract.
+    /// Static loopback-homogeneous traffic cannot reach `Reachable` (at most the
+    /// explicit-bind plus peer-observation classes); heterogeneous reference traffic or a
+    /// third evidence class is required. The loopback clamp below additionally confines
+    /// this API to the isolated qualification profile: no non-loopback endpoint can ever
+    /// become advertised material through it.
     pub fn publication_material(
         &self,
         wall_now_ms: u64,
@@ -1502,20 +1562,80 @@ impl Ssu2RuntimeService {
         })
     }
 
-    /// Atomically installs a locally signed RouterInfo for future SessionConfirmed handshakes.
-    /// The signature, router hash, and SSU2 endpoint/key binding are checked before replacement;
-    /// existing authenticated sessions retain the RouterInfo they already exchanged.
-    pub fn install_local_router_info(
+    /// Records the actual bound sockets as explicit-bind reachability evidence.
+    ///
+    /// This is the controlled-qualification half of the publication corroboration pair: the bind
+    /// addresses are explicitly configured loopback sockets owned by this runtime, and the other
+    /// half must come from real authenticated-peer observations. Every bound endpoint must be
+    /// loopback with a nonzero port or the call fails closed without recording anything. Only
+    /// the controlled M12 activation composition calls this; normal operation never does, and
+    /// the observation is ignored unless the runtime was configured with
+    /// `explicit_bind_corroboration`.
+    pub fn note_explicit_bind_for_controlled_qualification(
         &self,
-        encoded: Vec<u8>,
     ) -> Result<(), Ssu2PublicationUnavailable> {
         if self.shared.shutdown.is_cancelled() {
             return Err(Ssu2PublicationUnavailable::Closed);
+        }
+        let (bound_v4, bound_v6) = {
+            let sockets = self
+                .shared
+                .sockets
+                .lock()
+                .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+            (sockets.v4, sockets.v6)
+        };
+        if bound_v4.is_none() && bound_v6.is_none() {
+            return Err(Ssu2PublicationUnavailable::NoBoundSocket);
+        }
+        let mut families = Vec::new();
+        for bound in [bound_v4, bound_v6].into_iter().flatten() {
+            if bound.port() == 0 || !bound.ip().is_loopback() {
+                return Err(Ssu2PublicationUnavailable::InvalidPublication);
+            }
+            families.push(match bound.ip() {
+                std::net::IpAddr::V4(_) => i2pr_transport::AddressFamily::Ipv4,
+                std::net::IpAddr::V6(_) => i2pr_transport::AddressFamily::Ipv6,
+            });
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
+        let now = self.service_now();
+        for family in families {
+            state.reachability.record(
+                i2pr_transport::ReachabilitySignal::LocalConfiguredBind { family },
+                now,
+            );
+        }
+        Ok(())
+    }
+
+    /// Atomically installs a locally signed RouterInfo for future SessionConfirmed handshakes.
+    /// The encoded size, signature, publication freshness, router hash, network id, and SSU2
+    /// endpoint/key binding are checked before replacement; existing authenticated sessions
+    /// retain the RouterInfo they already exchanged. Each successful installation bumps the
+    /// diagnostics-only generation counter; no session is re-authenticated or mutated.
+    pub fn install_local_router_info(
+        &self,
+        encoded: Vec<u8>,
+        wall_now_ms: u64,
+    ) -> Result<(), Ssu2PublicationUnavailable> {
+        if self.shared.shutdown.is_cancelled() {
+            return Err(Ssu2PublicationUnavailable::Closed);
+        }
+        if encoded.len() > LOCAL_ROUTER_INFO_MAX_ENCODED_LEN {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
         }
         let info = RouterInfo::decode(&encoded, constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
         i2pr_crypto::verify_router_info(&info)
             .map_err(|_| Ssu2PublicationUnavailable::InvalidPublication)?;
+        if !local_router_info_fresh(info.published().as_millis(), wall_now_ms) {
+            return Err(Ssu2PublicationUnavailable::InvalidPublication);
+        }
         let hash = info
             .router_identity()
             .hash()
@@ -1578,7 +1698,24 @@ impl Ssu2RuntimeService {
             .lock()
             .map_err(|_| Ssu2PublicationUnavailable::StateUnavailable)?;
         *current = encoded;
+        self.shared
+            .local_router_info_generation
+            .fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+/// Returns whether a candidate local RouterInfo publication date is fresh
+/// against the Plan 103 age/skew windows mirrored in
+/// `LOCAL_ROUTER_INFO_MAX_AGE_SECS` /
+/// `LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS`. Pure and unit-testable; the
+/// caller supplies both timestamps so no clock is read inside validation.
+fn local_router_info_fresh(published_ms: u64, now_ms: u64) -> bool {
+    if published_ms <= now_ms {
+        now_ms.saturating_sub(published_ms) <= LOCAL_ROUTER_INFO_MAX_AGE_SECS.saturating_mul(1000)
+    } else {
+        published_ms.saturating_sub(now_ms)
+            <= LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS.saturating_mul(1000)
     }
 }
 
@@ -5012,8 +5149,15 @@ mod tests {
     }
 
     async fn start_path_fixture(keys: PathKeys) -> PathFixture {
+        start_path_fixture_with_config(Ssu2RuntimeConfig::default(), keys).await
+    }
+
+    async fn start_path_fixture_with_config(
+        config: Ssu2RuntimeConfig,
+        keys: PathKeys,
+    ) -> PathFixture {
         let service = Ssu2RuntimeService::new(
-            Ssu2RuntimeConfig::default(),
+            config,
             Ssu2IdentityMaterial {
                 router_hash: keys.hash,
                 static_secret_bytes: keys.static_bytes,
@@ -5526,7 +5670,7 @@ mod tests {
             .expect("encode signed replacement");
         fixture
             .service
-            .install_local_router_info(replacement.clone())
+            .install_local_router_info(replacement.clone(), path_wall_secs() * 1000)
             .expect("install matching local identity and SSU2 binding");
         assert_eq!(
             *fixture
@@ -5538,5 +5682,377 @@ mod tests {
             replacement
         );
         shutdown_path_fixture(fixture).await;
+    }
+
+    fn sign_bound_router_info(
+        bundle: &RouterIdentityBundle,
+        static_public: &Ssu2PublicKey,
+        intro: &IntroKey,
+        addr: SocketAddr,
+        published_ms: u64,
+    ) -> Vec<u8> {
+        let options = Mapping::from_entries(vec![
+            ("host".to_string(), addr.ip().to_string()),
+            ("port".to_string(), addr.port().to_string()),
+            ("v".to_string(), "2".to_string()),
+            ("s".to_string(), i2p_b64_encode(static_public.as_bytes())),
+            ("i".to_string(), i2p_b64_encode(intro.as_bytes())),
+        ])
+        .expect("options");
+        let address = RouterAddress::new(
+            10,
+            Date::from_millis(9_999_999_999_999),
+            "SSU2".to_string(),
+            options,
+        )
+        .expect("address");
+        bundle
+            .sign_router_info(
+                Date::from_millis(published_ms),
+                vec![address],
+                Vec::new(),
+                Mapping::empty(),
+            )
+            .expect("sign")
+            .encode_to_vec(constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+            .expect("encode")
+    }
+
+    fn qualify_reachability(service: &Ssu2RuntimeService) {
+        let mut state = service.shared.state.lock().expect("state");
+        let family = i2pr_transport::AddressFamily::Ipv4;
+        let now = service.service_now();
+        state
+            .reachability
+            .record(ReachabilitySignal::ValidatedPath { family }, now);
+        state.reachability.record(
+            ReachabilitySignal::AuthenticatedPeerObservedExternalAddress { family },
+            now,
+        );
+        state.reachability.record(
+            ReachabilitySignal::PeerTestResult {
+                family,
+                outcome: i2pr_transport::PeerTestOutcomeKind::Confirmed,
+            },
+            now,
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_material_rejects_expired_evidence_and_closed_runtime() {
+        let fixture = start_path_fixture(make_path_keys()).await;
+        qualify_reachability(&fixture.service);
+        assert!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000)
+                .is_ok(),
+            "qualified evidence yields material"
+        );
+        {
+            let mut state = fixture.service.shared.state.lock().expect("state");
+            let expired_at = fixture.service.service_now()
+                + i2pr_transport::DEFAULT_OBSERVATION_TTL
+                + Duration::from_secs(2);
+            assert!(
+                state.reachability.poll_expiry(expired_at),
+                "forced expiry withdraws support"
+            );
+        }
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        fixture.service.shutdown();
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::Closed)
+        );
+        assert_eq!(
+            fixture.service.install_local_router_info(
+                fixture.keys.router_info.clone(),
+                path_wall_secs() * 1000
+            ),
+            Err(Ssu2PublicationUnavailable::Closed)
+        );
+        let report = fixture.scope.shutdown().await;
+        assert!(report.joined() >= 1, "loop task joined");
+    }
+
+    #[tokio::test]
+    async fn publication_material_rejects_partial_evidence_and_forged_endpoint_state() {
+        let fixture = start_path_fixture(make_path_keys()).await;
+        {
+            let mut state = fixture.service.shared.state.lock().expect("state");
+            state.reachability.record(
+                ReachabilitySignal::ValidatedPath {
+                    family: i2pr_transport::AddressFamily::Ipv4,
+                },
+                fixture.service.service_now(),
+            );
+        }
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        qualify_reachability(&fixture.service);
+        assert!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000)
+                .is_ok(),
+            "full corroboration qualifies"
+        );
+        {
+            let mut sockets = fixture.service.shared.sockets.lock().expect("sockets");
+            sockets.v4 = Some("10.0.0.1:1234".parse().expect("forged endpoint"));
+        }
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        {
+            let mut sockets = fixture.service.shared.sockets.lock().expect("sockets");
+            sockets.v4 = Some("127.0.0.1:0".parse().expect("zero port"));
+        }
+        assert_eq!(
+            fixture
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        shutdown_path_fixture(fixture).await;
+    }
+
+    #[tokio::test]
+    async fn explicit_bind_corroboration_pairs_with_peer_observation() {
+        let observed = |service: &Ssu2RuntimeService| {
+            let mut state = service.shared.state.lock().expect("state");
+            state.reachability.record(
+                ReachabilitySignal::AuthenticatedPeerObservedExternalAddress {
+                    family: i2pr_transport::AddressFamily::Ipv4,
+                },
+                service.service_now(),
+            );
+        };
+        // Default policy ignores the explicit bind: one observed class is not enough.
+        let plain = start_path_fixture(make_path_keys()).await;
+        observed(&plain.service);
+        plain
+            .service
+            .note_explicit_bind_for_controlled_qualification()
+            .expect("record loopback bind");
+        assert_eq!(
+            plain.service.publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        shutdown_path_fixture(plain).await;
+        // Opted-in policy counts the explicit loopback bind plus the real
+        // peer observation as the two corroboration classes.
+        let config = Ssu2RuntimeConfig {
+            explicit_bind_corroboration: true,
+            ..Ssu2RuntimeConfig::default()
+        };
+        let qualified = start_path_fixture_with_config(config, make_path_keys()).await;
+        observed(&qualified.service);
+        assert_eq!(
+            qualified
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        qualified
+            .service
+            .note_explicit_bind_for_controlled_qualification()
+            .expect("record loopback bind");
+        // The pair yields exactly the corroboration floor: the Plan 159 builder still
+        // requires above-floor `Reachable` for a direct address, so loopback-homogeneous
+        // evidence stops here by design (Plan 282 stop condition 5).
+        {
+            let state = qualified.service.shared.state.lock().expect("state");
+            assert_eq!(
+                state.reachability.state(),
+                i2pr_transport::ReachabilityState::CandidateReachable
+            );
+        }
+        assert_eq!(
+            qualified
+                .service
+                .publication_material(path_wall_secs() * 1000),
+            Err(Ssu2PublicationUnavailable::ReachabilityUnqualified)
+        );
+        shutdown_path_fixture(qualified).await;
+    }
+
+    #[test]
+    fn local_router_info_freshness_policy_boundaries() {
+        let now_ms = 1_700_000_000_000_u64;
+        let age_ms = LOCAL_ROUTER_INFO_MAX_AGE_SECS.saturating_mul(1000);
+        let skew_ms = LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS.saturating_mul(1000);
+        assert!(local_router_info_fresh(now_ms, now_ms));
+        assert!(local_router_info_fresh(
+            now_ms.saturating_sub(age_ms),
+            now_ms
+        ));
+        assert!(!local_router_info_fresh(
+            now_ms.saturating_sub(age_ms.saturating_add(1000)),
+            now_ms
+        ));
+        assert!(local_router_info_fresh(
+            now_ms.saturating_add(skew_ms),
+            now_ms
+        ));
+        assert!(!local_router_info_fresh(
+            now_ms.saturating_add(skew_ms.saturating_add(1000)),
+            now_ms
+        ));
+    }
+
+    #[tokio::test]
+    async fn install_local_router_info_enforces_policy_and_bumps_generation() {
+        let fixture = start_path_fixture(make_path_keys()).await;
+        let now_ms = path_wall_secs() * 1000;
+        let age_ms = LOCAL_ROUTER_INFO_MAX_AGE_SECS.saturating_mul(1000);
+        let skew_ms = LOCAL_ROUTER_INFO_MAX_FUTURE_SKEW_SECS.saturating_mul(1000);
+        assert_eq!(fixture.service.local_router_info_generation(), 0);
+        let stale = sign_bound_router_info(
+            &fixture.keys.bundle,
+            &fixture.keys.static_public,
+            &fixture.keys.intro,
+            fixture.addr(),
+            now_ms.saturating_sub(age_ms.saturating_add(60_000)),
+        );
+        assert_eq!(
+            fixture.service.install_local_router_info(stale, now_ms),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        let future = sign_bound_router_info(
+            &fixture.keys.bundle,
+            &fixture.keys.static_public,
+            &fixture.keys.intro,
+            fixture.addr(),
+            now_ms.saturating_add(skew_ms.saturating_add(60_000)),
+        );
+        assert_eq!(
+            fixture.service.install_local_router_info(future, now_ms),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        let other = make_path_keys();
+        let wrong_identity = sign_bound_router_info(
+            &other.bundle,
+            &other.static_public,
+            &other.intro,
+            fixture.addr(),
+            now_ms,
+        );
+        assert_eq!(
+            fixture
+                .service
+                .install_local_router_info(wrong_identity, now_ms),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        assert_eq!(
+            fixture.service.install_local_router_info(
+                vec![0_u8; LOCAL_ROUTER_INFO_MAX_ENCODED_LEN + 1],
+                now_ms
+            ),
+            Err(Ssu2PublicationUnavailable::InvalidPublication)
+        );
+        assert_eq!(fixture.service.local_router_info_generation(), 0);
+        let first = sign_bound_router_info(
+            &fixture.keys.bundle,
+            &fixture.keys.static_public,
+            &fixture.keys.intro,
+            fixture.addr(),
+            now_ms,
+        );
+        fixture
+            .service
+            .install_local_router_info(first, now_ms)
+            .expect("first install");
+        assert_eq!(fixture.service.local_router_info_generation(), 1);
+        assert_eq!(fixture.service.snapshot().local_router_info_generation, 1);
+        let second = sign_bound_router_info(
+            &fixture.keys.bundle,
+            &fixture.keys.static_public,
+            &fixture.keys.intro,
+            fixture.addr(),
+            now_ms,
+        );
+        fixture
+            .service
+            .install_local_router_info(second.clone(), now_ms)
+            .expect("second install");
+        assert_eq!(fixture.service.local_router_info_generation(), 2);
+        assert_eq!(
+            *fixture
+                .service
+                .shared
+                .local_router_info
+                .lock()
+                .expect("local RouterInfo"),
+            second
+        );
+        shutdown_path_fixture(fixture).await;
+    }
+
+    #[tokio::test]
+    async fn install_local_router_info_preserves_live_session() {
+        let a = start_path_fixture(make_path_keys()).await;
+        let b = start_path_fixture(make_path_keys()).await;
+        path_dial(&a, &b.keys, b.addr()).await;
+        wait_for_snapshot(
+            &a.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "a active",
+        )
+        .await;
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "b active",
+        )
+        .await;
+        let now_ms = path_wall_secs() * 1000;
+        let fresh = sign_bound_router_info(
+            &b.keys.bundle,
+            &b.keys.static_public,
+            &b.keys.intro,
+            b.addr(),
+            now_ms,
+        );
+        b.service
+            .install_local_router_info(fresh, now_ms)
+            .expect("install preserves sessions");
+        assert_eq!(b.service.local_router_info_generation(), 1);
+        assert_eq!(a.service.snapshot().active_sessions, 1);
+        assert_eq!(b.service.snapshot().active_sessions, 1);
+        assert_eq!(a.service.snapshot().sessions_established, 1);
+        assert_eq!(b.service.snapshot().sessions_established, 1);
+        let c = start_path_fixture(make_path_keys()).await;
+        path_dial(&c, &b.keys, b.addr()).await;
+        wait_for_snapshot(
+            &c.service,
+            |snapshot| snapshot.active_sessions == 1,
+            "c active after rotation",
+        )
+        .await;
+        wait_for_snapshot(
+            &b.service,
+            |snapshot| snapshot.active_sessions == 2,
+            "b second inbound after rotation",
+        )
+        .await;
+        shutdown_path_fixture(a).await;
+        shutdown_path_fixture(b).await;
+        shutdown_path_fixture(c).await;
     }
 }
