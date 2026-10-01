@@ -18,7 +18,7 @@ evidence.
 | M9 I2CP | Loopback server product plus independent LeaseSet2 lifecycle | Closed |
 | M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed via Plans 214/215 |
 | M6 mixed-router progression | i2pd first-family Streaming | Closed for experimental progression via Plan 193; Java full-router compatibility retained/deferred at Plan 247 |
-| M11 transit tunnels | Accept/forward tunnels for other routers | Active: Plan 268 passed-conditional (receipt 3/8 on `cc9b40c`, zero i2pr semantic failures, composition passed; hosted CI run ID pending re-auth); transit remains non-advertised |
+| M11 transit tunnels | Accept/forward tunnels for other routers | Plan 268 passed: receipt family closed 3/8 on `cc9b40c` (zero i2pr semantic failures, composition passed, exact-head CI green); one-family experimental qualification complete, transit remains non-advertised |
 
 Interoperability beyond the rows above is not claimed.
 

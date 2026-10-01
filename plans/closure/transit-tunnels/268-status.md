@@ -1,20 +1,17 @@
 # Plan 268 — M11 receipt-family acceptance-path vs lookup-path divergence corrective: status
 
 Status:
-**passed-m11-receipt-family-three-completions-zero-semantic-failures-path-divergence-falsified-pending-exact-head-ci-evidence**
+**passed-m11-receipt-family-three-completions-zero-semantic-failures-path-divergence-falsified-exact-head-ci-green**
 
 The `receipt` family closed 3/8 against the required 2 with zero
 i2pr semantic failures on one qualification SHA. Every Plan 268
-§8 criterion is met with executed evidence except criterion 7
-(exact-head ordinary CI run ID), which is unretrievable until the
-local GitHub credential is re-authenticated (API returns HTTP
-401; device-flow needs a user browser action). This closure is
-therefore conditional: the family evidence is complete and the
-planning rows are reconciled, but the §8 authority transition
-(ADR 0026 one-family qualification passed; M12 planning
-dependency-ready) does **not** fire until the CI follow-up
-records the hosted run ID. No further family evidence is
-required; only the hygiene gate is outstanding.
+§8 criterion is met with executed evidence, including criterion 7
+(exact-head ordinary CI, run `36811447204` on `778818b`, all four
+required jobs green). The §8 authority transition therefore fires:
+ADR 0026's one-family M11 experimental qualification is **passed**,
+and M12 floodfill planning is **dependency-ready**. The earlier
+credential-blocked caveat is resolved in the CI-evidence follow-up
+commit recorded below; the family evidence itself never changed.
 
 ## Disposition
 
@@ -64,9 +61,12 @@ required; only the hygiene gate is outstanding.
   seam-delivered ingresses that never counted-large). No new
   scope is required to close the family: 3 ≥ 2 with zero
   semantic failures satisfies the frozen bar.
-- ADR 0026 stays unpassed and M12 stays deferred **only**
-  pending the CI follow-up (§CI). The family row itself is
-  complete.
+- ADR 0026's one-family M11 experimental qualification is
+  **passed** and M12 floodfill planning is **dependency-ready**
+  (§CI): the four required ordinary-CI jobs are green on the exact
+  closure head `778818b` (run `36811447204`). M11 transit stays
+  non-advertised with no public participation claim — that is a
+  separate decision, unchanged by this closure.
 
 ## Commits
 
@@ -77,10 +77,15 @@ required; only the hygiene gate is outstanding.
   path-as-terminal fixture, and the boundary locks. Full local
   floor green before freezing (3158 passed, clippy/doc/deny
   clean, all 20 checkers).
-- this commit — this record + registry / roadmap / support /
-  conformance / dossier reconciliation. No successor plan is
-  registered: none is derivable or required — the family is
-  closed.
+- `778818b50f5d840179026715ce296c5c76ef91c6` — closure + registry /
+  roadmap / support / conformance / dossier reconciliation
+  (written while the CI run ID was unretrievable, hence
+  passed-conditional).
+- the CI-evidence follow-up — records run `36811447204` on the exact
+  closure head `778818b` (all four required jobs success), amends
+  criterion 7 to PASS, fires the §8 authority transition (ADR 0026
+  passed; M12 dependency-ready), and closes the credential gap. No
+  family evidence, no production diff, no harness change.
 
 Pre-implementation HEAD: `2742925c04358e424a8ff7e93dfd8a86da5d2e5`.
 
@@ -132,19 +137,20 @@ throughout.
 6. **Complete local verification** — PASS (§Verification below;
    tree unchanged since the freeze: `git status` clean,
    HEAD == qualification SHA at dispatch).
-7. **Exact-head ordinary CI passes all four jobs** — PENDING
-   (§CI: head pushed; run ID unretrievable until re-auth).
+7. **Exact-head ordinary CI passes all four jobs** — PASS (§CI:
+   run `36811447204` on `778818b`, all four jobs success).
 8. **Registry/roadmap/support/conformance/dossier agree** — PASS
-   (this commit; disposition recorded as passed-conditional).
+   (closure commit + this CI follow-up; disposition recorded as
+   passed).
 9. **No product/capability/version/public-network change** — PASS.
 10. **No critical/high finding remains open** — PASS (highest is
     LOW; §Findings).
 
-Criteria 1–6 and 8–10 pass with executed evidence. Because
-criterion 7 is outstanding, the §8 authority transition does
-**not** fire in this commit: ADR 0026 stays unpassed and M12
-planning stays deferred until the CI follow-up records the
-hosted run ID. That follow-up needs no new family evidence.
+All ten criteria pass with executed evidence. The §8 authority
+transition fires in the CI-evidence follow-up (§CI): ADR 0026's
+one-family M11 experimental qualification is passed and M12
+planning is dependency-ready, with no change to the frozen bar and
+no new family evidence.
 
 ## Executions
 
@@ -224,18 +230,46 @@ never modified.
 
 ## CI
 
-Ordinary four-job CI is required on the exact closure head, with
-the run ID recorded in a follow-up commit per precedent.
-Status at handoff: the local GitHub API credential expired
-mid-session (`gh` returns HTTP 401; the git-helper PAT is
-git-scoped and returns 401 on the API; device-flow re-auth
-needs a user browser action). Re-authenticate, confirm the four
-required jobs (Quality ubuntu-latest, Quality macos-latest,
-MSRV Ubuntu, Dependency policy) on the exact closure head,
-record the run ID/URL here, and then fire the §8 authority
-transition (ADR 0026 one-family qualification passed; M12
-planning dependency-ready). No new family evidence is needed
-for that follow-up.
+Ordinary push CI was run on the **exact closure head**
+`778818b50f5d840179026715ce296c5c76ef91c6` (the commit that
+registers this closure). All four required jobs pass:
+
+| Run | Head | Required jobs | Result |
+| --- | --- | --- | --- |
+| `36811447204` | `778818b` | Quality (ubuntu-latest), Quality (macos-latest), MSRV (Ubuntu), Dependency policy | **success** on all four |
+
+`https://github.com/dbowm91/i2pr/actions/runs/36811447204`
+
+The Quality jobs cover `cargo fmt --all --check`,
+`cargo check --locked --workspace [--all-targets]`, the full test
+suite run serially with one libtest worker, `cargo test --doc`,
+`clippy -D warnings`, and `cargo doc` with
+`RUSTDOCFLAGS=-D warnings`; the Linux-gated steps additionally run
+every boundary/evidence checker (including
+`check-m11-transit-boundaries.sh`, which locks the Plan 268
+harness/runner/checker sources) and the constrained-host lane
+contract tests. The MSRV job covers `cargo check` on toolchain
+1.88; the Dependency policy job covers `cargo deny check
+advisories bans sources`.
+
+The retained-evidence checkers that need evidence roots
+(`check-m11-transit-qualification-evidence.sh`, and the dispatcher-
+driven composition checker) are not ordinary-CI jobs; the
+composition checker is instead exercised in ordinary CI by the
+fixture and self-test rows locked inside
+`check-m11-transit-boundaries.sh`. Both were run locally against
+the complete retained set (§Verification). The
+`m11-transit-external.yml` workflow records a **zero-job
+push-triggered** failure on every head in this series — including
+heads predating Plan 266 — so it is a pre-existing
+workflow-level artifact of that manually-dispatched lane, not a
+required ordinary-CI job and not a Plan 268 regression.
+
+No external/interoperability lane was run for this closure: the
+8-attempt `receipt` set is the executed and retained evidence
+(§Executions), and re-establishing it needs the exact-pinned i2pd
+build, not the public network. Plan 268's own §8 gate is the
+retained set plus this ordinary CI.
 
 ## Security / resource / concurrency / migration review
 
@@ -269,11 +303,12 @@ for that follow-up.
 
 Plan 268 closes the `receipt` family: 3/8 completions with zero
 semantic failures, composed passing on one qualification SHA
-with integrity-checked retained evidence. Status is
-passed-conditional solely on the hosted CI run ID. No successor
-plan is registered or required. M12 floodfill planning may
-become dependency-ready in the CI follow-up; until then it
-stays deferred and ADR 0026 stays unpassed.
+with integrity-checked retained evidence, and exact-head ordinary
+CI green. Status is **passed**. No successor plan is registered or
+required. ADR 0026's one-family M11 experimental qualification is
+passed and M12 floodfill planning is dependency-ready (opening M12
+is a new scope decision, not an automatic continuation of this
+plan). Transit remains disabled and non-advertised.
 
 ## Unblock audit
 
@@ -286,15 +321,13 @@ roadmap dependency graph.
   other hard dependency. No further corrective is registered
   because none is derivable or required — the family meets the
   frozen bar (3 ≥ 2, zero semantic failures, composition
-  passed).
+  passed, exact-head CI green).
 - Every other registry row naming an M11 plan as a dependency
   is either `retained` with a now-closed corrective chain
   (Plans 258→…→268) or names Plan 268 only as M12's deferral
-  condition. M12 has no registered plan: nothing becomes
-  dependency-ready in this commit. The CI follow-up — and only
-  it — fires the §8 transition (ADR 0026 passed; M12
-  dependency-ready) without any new family evidence.
-- No plan is unblocked that depends on the unmet criterion:
-  criterion 7 (exact-head CI) is the single outstanding item,
-  named with its exact remediation (re-authenticate, record
-  run ID, fire transition).
+  condition. M12 has no registered plan: the §8 transition makes
+  M12 **planning** dependency-ready, and registering an M12
+  qualification plan is a new scope decision rather than a
+  continuation of this chain.
+- No plan remains blocked on an unmet criterion: all ten Plan 268
+  §8 criteria pass with executed evidence.

@@ -119,7 +119,7 @@ throughout.
 5. **Empty production diff** — PASS (every manifest carries
    `production_source_diff: []` against baseline `514bf12`).
 6. **Complete local verification** — PASS (§Verification below).
-7. **Exact-head ordinary CI** — PENDING (§CI: head pushed, run ID unretrievable until re-auth).
+7. **Exact-head ordinary CI** — PASS (§CI below: run `36806382962` on `3fc1747`, all four jobs success).
 8. **Registry/roadmap/support/conformance/dossier agree** — PASS
    (this commit).
 9. **No product/capability/version/public-network change** — PASS.
@@ -211,17 +211,23 @@ were read, never modified.
 
 ## CI
 
-Ordinary four-job CI is required on the exact closure head, with
-the run ID recorded in a follow-up commit per precedent.
-Status at handoff: the closure commit is pushed to `main`, but
-the hosted run ID could not be retrieved — the local GitHub API
-credential expired mid-session (`gh` returns HTTP 401; device-flow
-re-auth needs a user browser action). Re-authenticate, confirm
-the four required jobs (Quality ubuntu-latest, Quality
-macos-latest, MSRV Ubuntu, Dependency policy) on the exact
-closure head, and record the run ID/URL here. This does not
-gate Plan 268's dependency-ready state (its hard dependency is
-the closure record + evidence set, both landed).
+Ordinary push CI was run on the **exact closure head**
+`3fc174783cfd916c6887c3f78a51fe67d61beffa`. All four required
+jobs pass:
+
+| Run | Head | Required jobs | Result |
+| --- | --- | --- | --- |
+| `36806382962` | `3fc1747` | Quality (ubuntu-latest), Quality (macos-latest), MSRV (Ubuntu), Dependency policy | **success** on all four |
+
+`https://github.com/dbowm91/i2pr/actions/runs/36806382962`
+
+Recorded in the follow-up commit after the GitHub credential was
+restored. The credential expiry that blocked retrieval was a
+local hygiene gap only: it changed no executed evidence, and the
+closure was already final and pushed. The manually-dispatched
+`m11-transit-external.yml` lane records a pre-existing zero-job
+push-triggered failure on every head in this series and is not a
+required ordinary-CI job.
 
 ## Security / resource / concurrency / migration review
 
