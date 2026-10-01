@@ -1,7 +1,6 @@
 # Plan 273 — M12 bounded inbound DatabaseStore service
 
-Status at registration:
-**registered-m12-store-service-blocked-on-plan272**
+Status: **passed-m12-bounded-databasestore-service**
 
 Classification: capability.
 

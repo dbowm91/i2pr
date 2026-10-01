@@ -18,6 +18,7 @@
 
 mod base64;
 mod databaselookup;
+mod floodfill_service;
 mod lease_set;
 mod lease_set2;
 mod local;
@@ -36,6 +37,10 @@ mod store_message;
 
 pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
+pub use floodfill_service::{
+    FloodfillAck, FloodfillIngress, FloodfillRole, FloodfillStoreEffect, FloodfillStorePolicy,
+    FloodfillStoreService, FloodfillStoreStats, FloodfillTime, ReplicationCandidate,
+};
 pub use lease_set::{
     LeaseSetInsertOutcome, LeaseSetStore, LeaseSetStoreConfig, LeaseSetValidationContext,
     LeaseSetValidationError, MetaLeaseSetInsertOutcome, MetaLeaseSetStore, MetaLeaseSetStoreConfig,

@@ -65,6 +65,7 @@ RouterInfo publication coordinator.
 | `provenance` | Bounded privacy-safe provenance metadata and pure namespace/disclosure eligibility policy (Plan 271) |
 | `lease_set` | Signature/freshness validated classic LeaseSet and bounded classic/MetaLeaseSet stores (Plan 272) |
 | `server_store` | Main-router-only explicit-provenance validated-record admission with aggregate count/byte caps and answer-safe getters (Plan 272) |
+| `floodfill_service` | Synchronous bounded DatabaseStore validation/admission with role gate, finite source/key/global/crypto windows, constant-size ack effects, and publisher-only replication candidates (Plan 273) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
 
 ## Dependency boundary
@@ -209,6 +210,11 @@ for the cache loader and reseed ingestor entry points).
   (types 1/3/7), with supported Ed25519 offline delegation. It accounts bytes/count globally
   and by record class; unpublished or blinded-on-publication records are not answerable.
   Encrypted LeaseSet type 5 remains deferred while a vetted Red25519 provider is absent.
+- Plan 273's `FloodfillStoreService` accepts only explicit authenticated ingress classifications,
+  validates before server-authority mutation, and returns bounded typed effects. Zero-token
+  replicas are stored without acknowledgment or re-flood eligibility. Direct nonzero-token
+  publisher stores may yield constant-size DeliveryStatus and replication-candidate effects;
+  runtime dispatch, DatabaseLookup serving, and daemon role composition remain separate plans.
 
 - `ValidatedRouterInfo::from_router_info` is the only constructor;
   there is no unchecked insertion path.

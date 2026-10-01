@@ -59,7 +59,8 @@ pub enum ServerInsertOutcome {
     Inserted,
     Replaced,
     Idempotent,
-    Rejected,
+    Conflict,
+    Stale,
     CapacityExceeded,
 }
 
@@ -120,25 +121,35 @@ impl ServerNetDb {
                 InsertOutcome::Inserted => ServerInsertOutcome::Inserted,
                 InsertOutcome::Replaced => ServerInsertOutcome::Replaced,
                 InsertOutcome::Idempotent => ServerInsertOutcome::Idempotent,
-                _ => ServerInsertOutcome::Rejected,
+                InsertOutcome::Conflict => ServerInsertOutcome::Conflict,
+                InsertOutcome::StaleReplacement => ServerInsertOutcome::Stale,
+                InsertOutcome::CapacityExceeded => ServerInsertOutcome::CapacityExceeded,
             },
             ValidatedNetDbRecord::LeaseSet(value) => match self.leases.insert(value) {
                 LeaseSetInsertOutcome::Inserted => ServerInsertOutcome::Inserted,
                 LeaseSetInsertOutcome::Replaced => ServerInsertOutcome::Replaced,
                 LeaseSetInsertOutcome::Idempotent => ServerInsertOutcome::Idempotent,
-                _ => ServerInsertOutcome::Rejected,
+                LeaseSetInsertOutcome::Conflict => ServerInsertOutcome::Conflict,
+                LeaseSetInsertOutcome::Stale => ServerInsertOutcome::Stale,
+                LeaseSetInsertOutcome::CapacityExceeded => ServerInsertOutcome::CapacityExceeded,
             },
             ValidatedNetDbRecord::LeaseSet2(value) => match self.leases2.insert(value) {
                 LeaseSet2InsertOutcome::Inserted => ServerInsertOutcome::Inserted,
                 LeaseSet2InsertOutcome::Replaced => ServerInsertOutcome::Replaced,
                 LeaseSet2InsertOutcome::Idempotent => ServerInsertOutcome::Idempotent,
-                _ => ServerInsertOutcome::Rejected,
+                LeaseSet2InsertOutcome::Conflict => ServerInsertOutcome::Conflict,
+                LeaseSet2InsertOutcome::StaleReplacement => ServerInsertOutcome::Stale,
+                LeaseSet2InsertOutcome::CapacityExceeded => ServerInsertOutcome::CapacityExceeded,
             },
             ValidatedNetDbRecord::MetaLeaseSet(value) => match self.meta_leases.insert(value) {
                 MetaLeaseSetInsertOutcome::Inserted => ServerInsertOutcome::Inserted,
                 MetaLeaseSetInsertOutcome::Replaced => ServerInsertOutcome::Replaced,
                 MetaLeaseSetInsertOutcome::Idempotent => ServerInsertOutcome::Idempotent,
-                _ => ServerInsertOutcome::Rejected,
+                MetaLeaseSetInsertOutcome::Conflict => ServerInsertOutcome::Conflict,
+                MetaLeaseSetInsertOutcome::Stale => ServerInsertOutcome::Stale,
+                MetaLeaseSetInsertOutcome::CapacityExceeded => {
+                    ServerInsertOutcome::CapacityExceeded
+                }
             },
         };
         if matches!(
@@ -169,7 +180,18 @@ impl ServerNetDb {
                 .provenance
                 .may_answer_router_lookup(&id, now_ms, max_age_ms));
         }
-        Ok(self.router_info.get(key))
+        let value = self.router_info.get(key);
+        if value.is_some_and(|record| {
+            record
+                .router_info()
+                .capabilities()
+                .ok()
+                .flatten()
+                .is_some_and(|caps| caps.as_str().contains('H'))
+        }) {
+            return Err(ProvenanceEligibility::NotPublished);
+        }
+        Ok(value)
     }
     pub fn lease_set_for_answer(
         &self,
@@ -230,7 +252,48 @@ impl ServerNetDb {
         now_ms: u64,
         max_age_ms: u64,
     ) -> ProvenanceEligibility {
-        self.provenance.may_replicate(id, now_ms, max_age_ms)
+        let eligibility = self.provenance.may_replicate(id, now_ms, max_age_ms);
+        if eligibility != ProvenanceEligibility::Allowed {
+            return eligibility;
+        }
+        match id.record_type() {
+            0 => self
+                .router_info
+                .get(&RouterHash::from_hash(*id.key()))
+                .map(|record| {
+                    let age = now_ms.saturating_sub(record.published().as_millis());
+                    let hidden = record
+                        .router_info()
+                        .capabilities()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|caps| caps.as_str().contains('H'));
+                    if hidden || age > 60 * 60 * 1000 {
+                        ProvenanceEligibility::NotPublished
+                    } else {
+                        ProvenanceEligibility::Allowed
+                    }
+                })
+                .unwrap_or(ProvenanceEligibility::NotPublished),
+            3 => self
+                .leases2
+                .get(&DestinationHash::from_hash(*id.key()))
+                .filter(|record| record.disclosure_block().is_none())
+                .map(|_| ProvenanceEligibility::Allowed)
+                .unwrap_or(ProvenanceEligibility::NotPublished),
+            7 => self
+                .meta_leases
+                .get(&DestinationHash::from_hash(*id.key()))
+                .filter(|record| record.disclosure_block().is_none())
+                .map(|_| ProvenanceEligibility::Allowed)
+                .unwrap_or(ProvenanceEligibility::NotPublished),
+            1 => self
+                .leases
+                .get(&DestinationHash::from_hash(*id.key()))
+                .map(|_| ProvenanceEligibility::Allowed)
+                .unwrap_or(ProvenanceEligibility::NotPublished),
+            _ => ProvenanceEligibility::NotPublished,
+        }
     }
     pub fn may_persist(
         &self,
