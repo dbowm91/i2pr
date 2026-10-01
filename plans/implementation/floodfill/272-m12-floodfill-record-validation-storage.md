@@ -5,7 +5,7 @@ Status at registration:
 
 Classification: protocol/invariant capability foundation.
 
-Hard dependency: Plan 271 passed.
+Hard dependencies: Plan 271 passed and Plan 280 passed with a reviewed Red25519 verifier/provider contract.
 
 ## 1. Objective
 
@@ -39,8 +39,7 @@ M12 support floor and signature/key rules.
 
 A. Add ValidatedLeaseSet + bounded classic LeaseSet store or a unified LeaseSet record store.
 
-B. Extend Standard LeaseSet2 validation to the ADR-authorized current surface, including offline
-signatures and supported encryption/signature key families needed for floodfill storage.
+B. Correct the existing LeaseSet2 flag constants to the pinned normative assignment before broadening validation: bit 0 offline signature, bit 1 unpublished, bit 2 blinded-on-publication, bits 15–3 reserved. Remove the non-normative bit-2 `LEASED` interpretation and reject reserved bit 3. Extend Standard LeaseSet2 validation to the ADR-authorized current surface, including offline signatures and supported encryption/signature key families needed for floodfill storage.
 
 C. Add canonical MetaLeaseSet codec/validator:
 - LeaseSet2 header and offline signature;

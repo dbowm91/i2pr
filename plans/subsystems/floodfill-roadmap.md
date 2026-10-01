@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: active planning; implementation blocked on Plan 269 closure.
+Status: Plan 270 architecture freeze passed; Plan 271 is ready; production implementation remains dependency-gated.
 
 Long-term references:
 - GUARDRAILS.md
@@ -13,7 +13,7 @@ Long-term references:
 
 Related ADRs:
 - docs/adr/0026-staged-interoperability-progression-and-java-debt.md
-- Plan 270 must create the M12 architecture ADR before production work begins.
+- `docs/adr/0027-floodfill-role-provenance-and-advertisement.md` is the M12 implementation authority; Plan 270 records source refresh and reconciles downstream requirements.
 
 ## 1. Purpose and ownership boundary
 
@@ -107,6 +107,7 @@ another.
 269 global roadmap/support reconciliation
  -> 270 M12 architecture authority + source/ADR freeze
  -> 271 NetDB provenance, namespace, and disclosure foundation
+ -> 280 reviewed Red25519 verifier/provider prerequisite
  -> 272 complete floodfill record validation/storage surface
  -> 273 inbound DatabaseStore service + acknowledgements/throttles
  -> 274 DatabaseLookup/DSRM service + ECIES reply protection
@@ -124,9 +125,9 @@ missing requirement. Do not grow an open-ended external harness chain.
 
 | Plan | State | i2pr token at registration | Implementation | Closure |
 |---|---|---|---|---|
-| 270 | blocked | registered-m12-architecture-authority-blocked-on-plan269 | plans/implementation/floodfill/270-m12-architecture-authority.md | future |
-| 271 | blocked | registered-m12-provenance-segmentation-blocked-on-plan270 | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | future |
-| 272 | blocked | registered-m12-record-surface-blocked-on-plan271 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
+| 270 | closed | passed-m12-architecture-authority-source-refresh-and-adr-freeze | plans/implementation/floodfill/270-m12-architecture-authority.md | plans/closure/floodfill/270-status.md |
+| 271 | ready | registered-m12-provenance-segmentation-ready-after-plan270 | plans/implementation/floodfill/271-m12-netdb-provenance-segmentation.md | future |
+| 272 | blocked | registered-m12-record-surface-blocked-on-plan271-and-plan280 | plans/implementation/floodfill/272-m12-floodfill-record-validation-storage.md | future |
 | 273 | blocked | registered-m12-store-service-blocked-on-plan272 | plans/implementation/floodfill/273-m12-databasestore-service.md | future |
 | 274 | blocked | registered-m12-lookup-service-blocked-on-plan273 | plans/implementation/floodfill/274-m12-databaselookup-service-and-reply-protection.md | future |
 | 275 | blocked | registered-m12-replication-blocked-on-plan274 | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | future |
@@ -134,6 +135,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 277 | blocked | registered-m12-daemon-role-blocked-on-plan276 | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | future |
 | 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan277 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
+| 280 | blocked | registered-m12-red25519-provider-blocked-on-plan271 | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | future |
 
 ## 8. Cross-cutting requirements
 
@@ -178,9 +180,12 @@ Primary risks are metadata disclosure through NetDB namespace confusion, reply a
 storage/crypto DoS, incorrect routing-key rollover behavior, stale capability advertisement,
 and conflating one-family progression with full advertisement.
 
-Plan 270 must freeze ambiguous behavior before implementation, especially exploration-hit
-behavior, exact type-5/type-7 key/validation rules, unsupported signature/key policy,
-persistence scope, and RouterInfo version/capability semantics.
+Plan 270 freezes exploration-hit behavior, exact type-5/type-7 key/validation rules,
+unsupported signature/key policy, persistence scope, and RouterInfo version/capability
+semantics. Plan 280 is a new prerequisite discovered during source/crypto review: the
+workspace lacks the Red25519 (type 11) verifier required for EncryptedLeaseSet validation.
+Plan 272 remains blocked on both Plans 271 and 280; no local cryptographic primitive or
+unverified substitute is authorized.
 
 ## 11. Completion definition
 
@@ -198,6 +203,6 @@ M12 is complete only when:
 
 ## 12. Milestone status summary
 
-M11 is closed for experimental progression. Plan 269 is the sole executable planning cleanup.
-M12 Plans 270-279 are registered in dependency order but blocked. The unblock audit after
-Plan 269 should move only Plan 270 to ready.
+M11 is closed for experimental progression. Plan 270 has frozen the M12 architecture and
+source authority. Plan 271 is ready; Plan 280 is blocked on Plan 271 and Plan 272 requires
+both Plans 271 and 280. Plans 273-279 remain blocked in dependency order.

@@ -108,6 +108,18 @@ conformance policy. Public transit, RouterInfo capability,
 router.version, public-network participation, and broad two-family conformance remain
 unauthorized.
 
+### M12 floodfill evidence vocabulary
+
+ADR 0027 defines five M12 evidence tiers: `architecture-frozen`, `local-validated`,
+`one-family-experimental`, `two-family-qualified`, and `normal-opt-in-activated`.
+They are separate authority transitions: architecture or local tests do not claim
+interoperability; one-family evidence permits controlled experimental progression only;
+two independent implementation families are required before broad floodfill capability
+advertisement; normal activation additionally requires explicit operator opt-in and live
+readiness/health. Current state is `architecture-frozen` in progress under Plan 270;
+there is no M12 implementation, floodfill serving, or `caps=f` claim. Plan 272 additionally depends on Plan 280, a reviewed Red25519 (signature type 11) provider prerequisite required to authenticate type-5 EncryptedLeaseSet records. No tier implies
+public-network operation, production readiness, anonymity, or privacy guarantees.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

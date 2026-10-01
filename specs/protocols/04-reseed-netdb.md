@@ -21,6 +21,22 @@ Reseeding is an exceptional bootstrap path. Ordinary network operation must obta
 
 The current reseed documentation describes HTTPS acquisition of signed `i2pseeds.su3` bundles, production network ID 2, a ZIP payload containing RouterInfo files, and an embedded signer/certificate trust model. Treat website counts and current server lists as operational guidance, not protocol constants.
 
+## M12 floodfill authority (Plan 270 / ADR 0027)
+
+Floodfill is a separate optional server role over `i2pr-netdb`; client lookup state
+machines remain client-only. The M12 record floor is RouterInfo plus DatabaseStore types
+1, 3, 5, and 7. Record validity, namespace, provenance, disclosure, replication, and
+persistence eligibility are separate decisions. Main-router and client namespaces never
+fall back to one another. Lookup-response-only and zero-token replica provenance cannot
+be promoted to publisher authority.
+
+ADR 0027 is authoritative for type-specific key derivation, signature domains, flags,
+expiry/replacement policy, lookup-type behavior, exploration hits, ECIES supplied-key
+replies, replication fanout/routing-key rollover, restart handling, role lifecycle, and
+the staged one-family/two-family advertisement gate. It resolves M12 implementation
+choices without changing the normative wire specifications. No M12 serving, replication,
+normal-daemon role, or floodfill capability is implemented by this documentation update.
+
 ## Required MVP reseed behavior
 
 - Configure multiple independent HTTPS reseed sources and a local/offline bundle path.
@@ -121,15 +137,15 @@ Compare record age policy, closest-peer selection, retry fan-out, unsolicited st
 - Unsigned reseed formats and plain HTTP: legacy-reject.
 - Automated reseed-server operation: outside the MVP; only the client is required.
 - Advanced family trust/reputation policy: required only if current RouterInfo validation or peer selection depends on it.
-- MetaLeaseSet/service records and PQ-hybrid records: parse/store policy decided with Milestone 6; do not advertise unsupported processing.
+- Floodfill handling of MetaLeaseSet and EncryptedLeaseSet is specified for M12 by ADR 0027; implementation remains gated by Plans 272–279. Unsupported signatures/keys remain fail-closed. PQ-hybrid records remain deferred unless separately specified and validated.
 - Public-network floodfill enablement: deferred until controlled mixed-router tests and resource review pass.
 
-## Open decisions
+## Open decisions outside the frozen M12 floodfill contract
 
 1. Initial packaged reseed trust store, update process and operator override model.
 2. Atomicity policy when a signed bundle contains some invalid RouterInfos.
 3. Disk format for preserved signed records, indexes, expiry and corruption detection.
 4. NetDB memory/disk quotas suitable for Raspberry Pi-class targets.
-5. Lookup convergence algorithm and exact closest-peer semantics after comparing Java I2P and i2pd.
+5. Client-side lookup convergence and peer scoring remain separate from the M12 server reply rules frozen by ADR 0027.
 6. Minimum peer/I2NP versions accepted for lookup, store, tunnel construction and floodfill exchange.
-7. Eligibility and operational safeguards required before `i2pr` may advertise floodfill capability.
+7. Floodfill capability eligibility is frozen by ADR 0027; Plan 279 is required before any normal-daemon opt-in activation.

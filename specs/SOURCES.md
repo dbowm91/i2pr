@@ -10,6 +10,32 @@ Repository: [`i2p/i2p.website`](https://github.com/i2p/i2p.website)
 
 Pinned commit: [`88596022920bdf99f27db27688faf4f204792fcd`](https://github.com/i2p/i2p.website/commit/88596022920bdf99f27db27688faf4f204792fcd)
 
+## Milestone 12 source refresh (Plan 270, 2026-10-01)
+
+Plan 270 compared the following normative English pages at official `i2p/i2p.website`
+commit `8baa1d680db263941daf2fb4462fbd75ba01c47f` against the original corpus pin
+`88596022920bdf99f27db27688faf4f204792fcd`: common structures, I2NP, encrypted
+LeaseSet, ECIES router messages, and the Network Database overview. The relevant page
+files are byte-identical between those commits; the current source metadata remains
+I2NP accurate for 0.9.69 and common structures accurate for 0.9.68. The current website
+head was translation-only for these pages. The old repository-wide pin is retained as
+valid normative evidence; the current head is recorded for reproducibility, not as a
+protocol revision.
+
+The M12 exact behavioral references are pinned and inspected at:
+
+- Java I2P 2.13.0: `9134f808337b401e8e53c73734c81fab04280c9d`, especially
+  `HandleDatabaseLookupMessageJob`, `FloodfillDatabaseLookupMessageHandler`, and
+  `HandleFloodfillDatabaseStoreMessageJob`.
+- i2pd 2.61.0: `635b013a612ff47278ef02acf8580a28e10e26c5`, especially
+  `libi2pd/NetDb.cpp`, `NetDb.hpp`, `NetDbRequests.cpp`, and `LeaseSet.cpp`.
+
+Observed implementation differences are not normative rules. In particular, the official
+I2NP page states that Java may return a RouterInfo on an exploratory exact hit while
+i2pd returns a DatabaseSearchReply. ADR 0027 selects bounded DatabaseSearchReply-only
+exploration behavior. Java/I2P+ counts as one family; i2pd is independent. No reference
+source is copied or patched.
+
 ## Milestone 9 refresh (Plan 164, 2026-09-07)
 
 Plan 164 verified the Plan 163 starting snapshot before implementing
