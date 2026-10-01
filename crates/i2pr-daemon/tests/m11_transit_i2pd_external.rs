@@ -1150,6 +1150,28 @@ fn delivery_label(outcome: &RouterDeliveryOutcome) -> &'static str {
 struct TypedLedger {
     observations: Vec<Observation>,
     retained_cells: Vec<RetainedCell>,
+    drop_dispositions: Vec<DropDisposition>,
+}
+
+/// Plan 267 WP A: one gateway-ingress drop disposition remembered at
+/// push time. The outcome enums already distinguish "registration
+/// found but refused" (`LocalIbgwDropped`, with its secret-free
+/// reason class) from "registration not found" (gateway
+/// `Dropped`); the TSV observation shape cannot, so the
+/// disposition rides here and the receipt leg folds it into
+/// sanitized diagnostic rows. Diagnostic-only: no opportunity,
+/// semantic, or composition predicate may read these.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DropDisposition {
+    epoch: Epoch,
+    receive_tunnel: u32,
+    /// True when the ingress reached a live registration that
+    /// refused it; false when no registration resolved.
+    refused: bool,
+    /// Secret-free reason class: the `LocalIbgwDropped` reason, or
+    /// "not-found" for gateway drops.
+    reason: &'static str,
+    logical_ms: u64,
 }
 
 /// One genuine reference cell retained for replay/expiry pairing.
@@ -3994,6 +4016,121 @@ fn plan266_receipt_unobservable_advertisement_falls_back_to_plan265() {
     let verdict = plan265_classify_receipt(&stale, &counted, creator, &[], &addressed);
     assert_eq!(verdict.opportunity, "absent");
     assert_eq!(verdict.terminal_class, PLAN265_RECEIPT_NO_COUNTED_TARGET);
+}
+
+#[test]
+fn plan267_disposition_labels_are_closed_and_never_terminals() {
+    // Each drop variant maps to exactly one declared disposition
+    // value, and no disposition value is a terminal: dispositions
+    // are diagnostic rows, never classifications.
+    assert_eq!(plan267_disposition_label(true), "local-ibgw-refused");
+    assert_eq!(plan267_disposition_label(false), "gateway-not-found");
+    for value in [
+        plan267_disposition_label(true),
+        plan267_disposition_label(false),
+    ] {
+        assert!(!plan265_is_declared(PLAN265_TERMINAL_VOCABULARY, value));
+        assert!(!plan265_is_no_opportunity_terminal(value));
+        assert!(!plan265_is_semantic_failure_terminal(value));
+        assert!(!plan265_is_completion_miss_terminal(value));
+        assert!(!plan265_is_setup_stop_terminal(value));
+        assert!(!plan265_is_family_success_terminal(value));
+    }
+}
+
+#[test]
+fn plan267_disposition_store_is_epoch_scoped() {
+    let mut ledger = TypedLedger::default();
+    ledger.remember_drop_disposition(DropDisposition {
+        epoch: Epoch::IbgwReceipt,
+        receive_tunnel: 0x8100,
+        refused: true,
+        reason: "non-ibgw-or-expired",
+        logical_ms: 7,
+    });
+    ledger.remember_drop_disposition(DropDisposition {
+        epoch: Epoch::IbgwData,
+        receive_tunnel: 0x8100,
+        refused: false,
+        reason: "not-found",
+        logical_ms: 9,
+    });
+    let scoped: Vec<&DropDisposition> = ledger.drop_dispositions_of(Epoch::IbgwReceipt).collect();
+    assert_eq!(scoped.len(), 1);
+    assert!(scoped[0].refused);
+    assert_eq!(scoped[0].reason, "non-ibgw-or-expired");
+    assert_eq!(scoped[0].receive_tunnel, 0x8100);
+    assert_eq!(scoped[0].logical_ms, 7);
+}
+
+#[test]
+fn plan267_accepted_at_ms_reads_gated_acceptance_only() {
+    let creator = [0x22_u8; 32];
+    let other = [0x33_u8; 32];
+    let base = Observation {
+        epoch: Epoch::IbgwReceipt,
+        kind: ObservedKind::BuildAccepted,
+        peer_hash: creator,
+        role: Some(TransitHopRoleKind::InboundGateway),
+        receive_tunnel: 0x8100,
+        next_router: None,
+        next_message_id: 0,
+        rejected: false,
+        delivery: "accepted",
+        active_before: 4,
+        active_after: 5,
+        logical_ms: 100,
+        digest: None,
+        aux_count: 0,
+        pending_after: 0,
+        peer_index_after: 0,
+        queued_after: 0,
+        bandwidth: None,
+        gateway_failures: None,
+        nested_len: None,
+    };
+    let mut ledger = TypedLedger::default();
+    // A gate-failing acceptance (active-count gate) at t=50.
+    ledger.push(Observation {
+        active_before: 4,
+        active_after: 4,
+        logical_ms: 50,
+        ..base.clone()
+    });
+    // An other-peer acceptance at t=60.
+    ledger.push(Observation {
+        peer_hash: other,
+        logical_ms: 60,
+        ..base.clone()
+    });
+    // The gate-passing acceptance at t=100.
+    ledger.push(Observation { ..base.clone() });
+    // A later acceptance at t=200.
+    ledger.push(Observation {
+        logical_ms: 200,
+        ..base.clone()
+    });
+    // Bound before any passing acceptance: none existed then.
+    assert_eq!(
+        plan267_accepted_at_ms(&ledger, Epoch::IbgwReceipt, creator, 0x8100, 90),
+        None
+    );
+    // Bound between the passing acceptances: the earliest wins.
+    assert_eq!(
+        plan267_accepted_at_ms(&ledger, Epoch::IbgwReceipt, creator, 0x8100, 150),
+        Some(100)
+    );
+    // An id nobody accepted: none at any bound.
+    assert_eq!(
+        plan267_accepted_at_ms(&ledger, Epoch::IbgwReceipt, creator, 0x8300, u64::MAX),
+        None
+    );
+    // A refused disposition on this gate-passing id would record
+    // accepted-t=100, never none.
+    assert_eq!(
+        plan267_accepted_at_ms(&ledger, Epoch::IbgwReceipt, creator, 0x8100, u64::MAX),
+        Some(100)
+    );
 }
 
 #[test]
@@ -8318,6 +8455,77 @@ async fn run_qualification() -> Result<(), String> {
                 ),
                 &mut rows,
             );
+            // Plan 267 WP A: drop-disposition + per-id timing
+            // diagnostic fold. Diagnostic-only rows: the
+            // disposition (registration found-but-refused vs
+            // not-found, with the secret-free reason class) and
+            // the per-id accepted-vs-addressed timing that the
+            // Plan 266 forensics reconstructed by hand. These
+            // rows never feed any opportunity, semantic, or
+            // composition predicate (statically quarantined).
+            let accepted_at_ms = |id: u32, bound_ms: u64| -> Option<u64> {
+                plan267_accepted_at_ms(&ledger, Epoch::IbgwReceipt, a_peer_hash, id, bound_ms)
+            };
+            for entry in ledger.drop_dispositions_of(Epoch::IbgwReceipt) {
+                let accepted_t = accepted_at_ms(entry.receive_tunnel, entry.logical_ms);
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan267-drop-disposition",
+                    &format!(
+                        "disposition={disposition}/reason={reason}/receive={receive:#010x}/accepted-t={accepted}/t={t}",
+                        disposition = plan267_disposition_label(entry.refused),
+                        reason = entry.reason,
+                        receive = entry.receive_tunnel,
+                        accepted = accepted_t
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        t = entry.logical_ms,
+                    ),
+                    &mut rows,
+                );
+            }
+            let mut addressed_ordered: Vec<u32> = Vec::new();
+            for id in addressed_receipt.iter() {
+                if !addressed_ordered.contains(id) {
+                    addressed_ordered.push(*id);
+                }
+            }
+            for id in addressed_ordered {
+                let first_addressed = b_self_targeted
+                    .iter()
+                    .filter(|obs| obs.receive_tunnel == id)
+                    .map(|obs| obs.logical_ms)
+                    .min();
+                let accepted_t = accepted_at_ms(id, u64::MAX);
+                let delivered = ledger
+                    .of_epoch(Epoch::IbgwReceipt)
+                    .filter(|obs| {
+                        obs.kind == ObservedKind::GatewayDelivered && obs.receive_tunnel == id
+                    })
+                    .count();
+                let dropped = ledger
+                    .of_epoch(Epoch::IbgwReceipt)
+                    .filter(|obs| {
+                        obs.kind == ObservedKind::GatewayDropped && obs.receive_tunnel == id
+                    })
+                    .count();
+                record_row(
+                    &evidence_dir,
+                    Epoch::IbgwReceipt,
+                    "plan267-addressed-id",
+                    &format!(
+                        "receive={id:#010x}/accepted-t={accepted}/first-addressed-t={first}/delivered={delivered}/dropped={dropped}",
+                        accepted = accepted_t
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        first = first_addressed
+                            .map(|t| t.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                    ),
+                    &mut rows,
+                );
+            }
             // Only the absence/contradiction branches need a verdict at
             // this stage. The opportunity-present branch continues into
             // the Plan 260 gates and is classified once the real
@@ -10394,12 +10602,23 @@ fn record_data_outcome(
                 });
                 return;
             }
-            if let ObepDeliveryOutcome::LocalIbgwDropped { receive_id, .. } = obep {
+            if let ObepDeliveryOutcome::LocalIbgwDropped { receive_id, reason } = obep {
                 ledger.push(Observation {
                     kind: ObservedKind::GatewayDropped,
                     receive_tunnel: receive_id.unwrap_or(0),
                     nested_len: Some(*message_len),
                     ..base
+                });
+                // Plan 267 WP A: the ingress reached a live
+                // registration that refused it; the secret-free
+                // reason class rides the disposition store (the TSV
+                // shape cannot carry it).
+                ledger.remember_drop_disposition(DropDisposition {
+                    epoch,
+                    receive_tunnel: receive_id.unwrap_or(0),
+                    refused: true,
+                    reason,
+                    logical_ms,
                 });
                 return;
             }
@@ -10504,6 +10723,15 @@ fn record_data_outcome(
                 receive_tunnel: *tunnel_id,
                 nested_len: Some(*nested_len),
                 ..base
+            });
+            // Plan 267 WP A: no registration resolved for this
+            // ingress (registration-not-found disposition).
+            ledger.remember_drop_disposition(DropDisposition {
+                epoch,
+                receive_tunnel: *tunnel_id,
+                refused: false,
+                reason: "not-found",
+                logical_ms,
             });
         }
         LiveInboundOutcome::Gateway(_) => {
@@ -10837,6 +11065,26 @@ impl TypedLedger {
             .cloned()
     }
 
+    /// Remembers one gateway-ingress drop disposition at push time
+    /// (Plan 267 WP A). Fail-closed on the same ceiling as
+    /// observations: dispositions never outnumber observations, so
+    /// this assert fires only after the observation ceiling
+    /// already did.
+    fn remember_drop_disposition(&mut self, disposition: DropDisposition) {
+        assert!(
+            self.drop_dispositions.len() < MAX_LEDGER_OBSERVATIONS,
+            "disposition ceiling exceeded"
+        );
+        self.drop_dispositions.push(disposition);
+    }
+
+    /// Iterates the remembered drop dispositions for one epoch.
+    fn drop_dispositions_of(&self, epoch: Epoch) -> impl Iterator<Item = &DropDisposition> {
+        self.drop_dispositions
+            .iter()
+            .filter(move |entry| entry.epoch == epoch)
+    }
+
     /// Serializes every observation with all non-secret fields to
     /// `ledger-evidence.tsv` for audit. This renders each field at
     /// least once so no observation fact is write-only.
@@ -10865,6 +11113,44 @@ impl TypedLedger {
         }
         std::fs::write(dir.join("ledger-evidence.tsv"), out).expect("write ledger evidence");
     }
+}
+
+/// Plan 267 WP A: the closed disposition vocabulary. Each drop
+/// variant maps to exactly one value, and no value is a terminal:
+/// dispositions are diagnostic rows, never classifications.
+fn plan267_disposition_label(refused: bool) -> &'static str {
+    if refused {
+        "local-ibgw-refused"
+    } else {
+        "gateway-not-found"
+    }
+}
+
+/// Plan 267 WP A: earliest same-epoch gate-passing IBGW acceptance
+/// for one receive id at or before a time bound (the exact gate the
+/// counted set uses, plus the bound). `None` means no acceptance
+/// existed then — never a liveness claim beyond that.
+fn plan267_accepted_at_ms(
+    ledger: &TypedLedger,
+    epoch: Epoch,
+    creator: [u8; 32],
+    id: u32,
+    bound_ms: u64,
+) -> Option<u64> {
+    ledger
+        .of_epoch(epoch)
+        .filter(|obs| {
+            obs.kind == ObservedKind::BuildAccepted
+                && obs.role == Some(TransitHopRoleKind::InboundGateway)
+                && !obs.rejected
+                && obs.peer_hash == creator
+                && obs.delivery == "accepted"
+                && obs.active_after == obs.active_before + 1
+                && obs.receive_tunnel == id
+                && obs.logical_ms <= bound_ms
+        })
+        .map(|obs| obs.logical_ms)
+        .min()
 }
 
 /// Records one epoch-qualified evidence row and tracks the label
