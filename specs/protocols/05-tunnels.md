@@ -378,19 +378,21 @@ six-field tuple bound) and one completed at the creator receiver SAM
 socket. The composition gate was run once and failed closed on exactly
 that one violation.
 
-M11 remains non-advertised and receipt-capable qualification remains
-unclaimed. Plan 266 executed its ladder contract on `a9803ca` with zero
-production diff and zero i2pr semantic failures across 8 retained
-attempts, closing `receipt` 1/8 against a required 2 with rung
-distribution r1x2/r4x2/r6x3/r7x1; every rung-6 attempt is an anchored
-accepted-id drop population. Plan 267 executed its disposition contract
-on `315fb0d` with zero production diff and zero i2pr semantic failures
-across 8 retained attempts, closing `receipt` 0/8 against a required 2
-with 427 drop rows dominated by accepted-yet-not-found (208 rows,
-delays in minutes) over refused (9 rows). Both are retained-blocked
-and Plan 268 — a narrow acceptance-path-vs-lookup-path divergence
-corrective with no new terminal — is the current authority. M12
-floodfill remains deferred.
+M11 remains non-advertised and receipt-capable qualification is
+complete except the hosted CI run ID (pending re-auth). Plan 266
+executed its ladder contract on `a9803ca` with zero production diff
+and zero i2pr semantic failures across 8 retained attempts, closing
+`receipt` 1/8 against a required 2. Plan 267 executed its
+disposition contract on `315fb0d` with zero production diff and zero
+i2pr semantic failures across 8 retained attempts, closing `receipt`
+0/8 with 427 drop rows dominated by accepted-yet-not-found. Plan 268
+executed its path contract on `cc9b40c` with zero production diff
+and zero i2pr semantic failures across 8 retained attempts, closing
+`receipt` 3/8 genuine completions with the install-path divergence
+falsified (353 paths all dispatched, zero bypass) and the
+receipt-only composition passing. Plans 266/267 are retained-blocked;
+Plan 268 is passed-conditional. M12 floodfill remains deferred
+pending the CI follow-up, which needs no new family evidence.
 
 ### M11 daemon composition authority — Plans 253-254 (corrective completed)
 
@@ -421,8 +423,9 @@ windows bound. Plan 265 executed the closed counting rule and is retained-blocke
 two of three families closed on `4682920e`; Plan 266 executed the ladder
 contract and is retained-blocked with `receipt` 1/8 on `a9803ca`; Plan 267
 executed the disposition contract and is retained-blocked with `receipt`
-0/8 on `315fb0d`; Plan 268 is the current forward authority for the
-remaining emission seam: manifest v5, input-side opportunity
+0/8 on `315fb0d`; Plan 268 executed the path contract and closed the
+family 3/8 on `cc9b40c` (passed-conditional on the hosted CI run ID):
+manifest v5, input-side opportunity
 classification, no success-based early stop, hard failure on any i2pr
 semantic contradiction, >=2 required family successes, and zero
 production source diff.
