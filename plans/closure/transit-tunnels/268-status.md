@@ -240,6 +240,11 @@ registers this closure). All four required jobs pass:
 
 `https://github.com/dbowm91/i2pr/actions/runs/36811447204`
 
+The CI-evidence follow-up that records this run is itself green on
+its own exact head (`8106eef698cf5fe203b056fb24815a1c58643809`,
+run `36863248021`, all four required jobs success), so the recorded
+transition carries no new code risk.
+
 The Quality jobs cover `cargo fmt --all --check`,
 `cargo check --locked --workspace [--all-targets]`, the full test
 suite run serially with one libtest worker, `cargo test --doc`,
