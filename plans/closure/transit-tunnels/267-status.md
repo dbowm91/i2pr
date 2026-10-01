@@ -119,7 +119,7 @@ throughout.
 5. **Empty production diff** — PASS (every manifest carries
    `production_source_diff: []` against baseline `514bf12`).
 6. **Complete local verification** — PASS (§Verification below).
-7. **Exact-head ordinary CI** — see §CI below.
+7. **Exact-head ordinary CI** — PENDING (§CI: head pushed, run ID unretrievable until re-auth).
 8. **Registry/roadmap/support/conformance/dossier agree** — PASS
    (this commit).
 9. **No product/capability/version/public-network change** — PASS.
@@ -211,10 +211,17 @@ were read, never modified.
 
 ## CI
 
-See §CI evidence below (recorded in the follow-up commit, per
-precedent). Required: Quality (ubuntu-latest), Quality
-(macos-latest), MSRV (Ubuntu), Dependency policy, on the exact
-closure head.
+Ordinary four-job CI is required on the exact closure head, with
+the run ID recorded in a follow-up commit per precedent.
+Status at handoff: the closure commit is pushed to `main`, but
+the hosted run ID could not be retrieved — the local GitHub API
+credential expired mid-session (`gh` returns HTTP 401; device-flow
+re-auth needs a user browser action). Re-authenticate, confirm
+the four required jobs (Quality ubuntu-latest, Quality
+macos-latest, MSRV Ubuntu, Dependency policy) on the exact
+closure head, and record the run ID/URL here. This does not
+gate Plan 268's dependency-ready state (its hard dependency is
+the closure record + evidence set, both landed).
 
 ## Security / resource / concurrency / migration review
 
