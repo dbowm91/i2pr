@@ -19,8 +19,8 @@ The resulting repository must have one unambiguous present-tense execution state
 ```text
 M11 one-family experimental qualification = passed via Plan 268
 M11 public transit capability              = unclaimed / disabled / non-advertised
-M12 floodfill                              = planning dependency-ready, not yet registered
-next executable product plan               = none until an M12 plan-of-record is registered
+M12 floodfill                              = Plans 270-279 registered but execution-blocked behind Plan 269
+next executable product plan               = Plan 269 cleanup; Plan 270 becomes ready only after Plan 269 closes
 ```
 
 This plan deliberately precedes M12 architecture registration so stale historical prose
@@ -64,7 +64,7 @@ Do not reinterpret or rewrite:
 5. No RouterInfo capability, router.version, daemon default, transport default, config
    field, protocol codec, test harness, reference pin, dependency, or Rust production
    source changes.
-6. M12 remains unimplemented and unregistered by this plan.
+6. M12 remains unimplemented by this plan; owner-authorized successor Plans 270-279 may be registered as blocked and must not execute before this plan closes.
 7. "M12 planning dependency-ready" must not be rewritten as "M12 implemented", "M12
    active", or "floodfill supported".
 8. The manual M11 external workflow's zero-job push failure remains documented as a
@@ -103,7 +103,7 @@ conflict with Plan 268; historical snapshots stay historically truthful.
 ## 6. Explicitly out of scope
 
 - Designing M12 floodfill architecture.
-- Registering the first M12 implementation plan.
+- Executing any M12 implementation plan. Owner-authorized Plans 270-279 may exist in the registry as blocked successors.
 - Implementing floodfill storage, lookup serving, replication, capability advertisement,
   persistence, or role health.
 - Reopening M11 qualification.
@@ -154,8 +154,7 @@ At minimum:
 - remove obsolete "next Plan 119/123/125" present-tense guidance;
 - replace `next_product_layer = "m11-transit-tunnels"` with a value consistent with the
   Plan 268 transition;
-- retain `next_executable_plan = "none ... M12 ... unregistered"` until an M12 plan is
-  actually registered;
+- reconcile next-executable/current-planning fields with the owner-authorized state: Plan 269 is the sole ready plan, while M12 Plans 270-279 are registered but blocked until this cleanup closes;
 - update the tunnel/transit support summary so it no longer says live transit execution
   is pending where Plan 268 now supplies controlled one-family experimental evidence;
 - keep public transit `advertised = false` and capability unclaimed.
@@ -227,7 +226,7 @@ Plan 269 closes only when:
 1. all repository-wide present-tense execution-state surfaces agree that Plan 268 closed
    M11 experimental progression;
 2. M11 transit remains disabled, non-advertised, and not claimed as public capability;
-3. M12 floodfill is consistently described as planning dependency-ready and unregistered;
+3. M12 floodfill is consistently described as planned with Plans 270-279 registered but blocked behind Plan 269;
 4. no stale current-state surface identifies M6, Plan 119/123/125, or M11 as the next
    product implementation frontier;
 5. `specs/support.toml`, `plans/registry.md`, README, global roadmap, conformance prose,
@@ -236,7 +235,7 @@ Plan 269 closes only when:
 7. no production/test/workflow/Cargo dependency file changes;
 8. local structural verification is green;
 9. no critical/high documentation-authority ambiguity remains;
-10. the unblock audit leaves M12 planning ready but does not register M12 automatically.
+10. the unblock audit moves only Plan 270 to ready after Plan 269 closes; Plans 271-279 remain blocked on their declared predecessors.
 
 ## 13. Stop conditions
 
@@ -261,7 +260,4 @@ The Plan 269 status record must contain:
 
 ## 15. Handoff
 
-After Plan 269 closes, the next planning action is an M12 floodfill architecture
-plan-of-record derived from current I2P specifications, existing i2pr NetDB/runtime/storage
-boundaries, and independent reference-router behavior. Plan 269 itself authorizes no M12
-implementation.
+Plans 270-279 are owner-authorized blocked successors. After Plan 269 closes, the unblock audit moves only Plan 270 (M12 architecture authority) to ready. Plan 269 itself authorizes no M12 production implementation.

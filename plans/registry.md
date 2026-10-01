@@ -35,6 +35,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 | Service tunnels | closed | `plans/subsystems/service-tunnels-roadmap.md` | Plan 215 product authority; Plan 204 superseded by Plan 248 | No product blocker. |
 | M6 mixed-router interop | closed | `plans/subsystems/mixed-router-interop-roadmap.md` | Plan 248 policy reconciliation; Plan 193 i2pd progression authority | Java full-router compatibility retained/deferred at Plan 247; full two-family conformance not claimed. |
 | M11 transit tunnels | closed | `plans/subsystems/transit-tunnels-roadmap.md` | Plan 268 passed; M11 one-family experimental qualification closed | Plan 268 executed the path contract on `cc9b40c`: 8 retained `receipt` attempts, one qualification SHA, zero i2pr semantic failures, 353 install-path rows all dispatched with zero bypass and zero catch-all builds, `receipt` 3/8 (attempts 4, 5, 8 genuine completions) composed passing with integrity-checked Plan 264 evidence. Bypass divergence falsified for the observed population. All ten §8 criteria pass with executed evidence, including exact-head ordinary CI (run `36811447204` on `778818b`, all four required jobs green). ADR 0026's one-family M11 experimental qualification is passed and M12 floodfill planning is dependency-ready; transit stays non-advertised with no public participation claim. |
+| M12 floodfill | active planning / blocked | `plans/subsystems/floodfill-roadmap.md` | Plans 270–279 registered; Plan 270 blocked on Plan 269 cleanup | No M12 production execution until Plan 269 closes; broad caps=f requires Plan 279 two-family gate. |
 
 ## Current milestone authorities
 
@@ -50,6 +51,8 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
   `plans/closure/service-tunnels/215-status.md`; Plan 214 product closure; Plan 213 generic
   external qualification (`P213-N-passed` twice on exact commit `ef59fb3`).
 - **M6 mixed-router progression**: Plan 193 is the exact-pinned i2pd progression authority (full bidirectional Streaming matrix, two complete passes). Plan 248 / ADR 0026 retain the Java full-router lane as nonblocking compatibility debt at Plan 247; no Java result is relabeled. Full two-family router conformance remains not claimed.
+
+- **M12 floodfill planning**: `plans/subsystems/floodfill-roadmap.md` with Plans 270–279 registered in dependency order. Plan 269 is the sole ready prerequisite; Plan 270 is blocked until 269 closes. Broad normal-daemon `caps=f` remains forbidden until Plan 279's second-family gate.
 
 ## Dependency-ready and active plans
 
@@ -88,6 +91,16 @@ stays non-advertised and no public participation is claimed.
 | Subsystem | Plan | Blocker |
 |---|---|---|
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
+| M12 floodfill | 270 architecture authority/source refresh | Blocked on Plan 269 closure; unblock audit moves only Plan 270 to ready. |
+| M12 floodfill | 271 provenance/namespace segmentation | Blocked on Plan 270. |
+| M12 floodfill | 272 record validation/storage surface | Blocked on Plan 271. |
+| M12 floodfill | 273 DatabaseStore service | Blocked on Plan 272. |
+| M12 floodfill | 274 DatabaseLookup/DSRM + ECIES reply protection | Blocked on Plan 273. |
+| M12 floodfill | 275 direct replication/routing-key rollover | Blocked on Plan 274. |
+| M12 floodfill | 276 persistence/maintenance/resource governance | Blocked on Plan 275. |
+| M12 floodfill | 277 daemon role lifecycle/controlled advertisement | Blocked on Plan 276. |
+| M12 floodfill | 278 exact-pinned i2pd controlled qualification | Blocked on Plan 277. One-family progression only. |
+| M12 floodfill | 279 second-family qualification/normal activation | Blocked on Plan 278. Required before broad normal-daemon `caps=f` and M12 closure. |
 
 ### Retained / conditional work
 
