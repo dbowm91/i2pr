@@ -3,6 +3,9 @@
 Status at registration:
 **registered-m12-daemon-role-blocked-on-plan276**
 
+Execution disposition: **stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required**.
+The partial implementation is retained; Plan 282 is the registered corrective/completion authority.
+
 Classification: capability integration.
 
 Hard dependency: Plan 276 passed.
@@ -161,4 +164,4 @@ commands, source-boundary audit, and unblock audit. On pass, move Plan 278 to re
 
 ## 15. Handoff
 
-Plan 278 exercises this exact controlled daemon path against unmodified exact-pinned i2pd.
+Plan 282 first completes the runtime-owned publication/delivery contract and the stopped local acceptance. A passing Plan 282 then unblocks Plan 278, which exercises that corrected controlled daemon path against unmodified exact-pinned i2pd.

@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270–276 passed; Plan 277 stopped at the runtime integration boundary; type-5 support remains deferred.
+Status: Plans 270–276 passed; Plan 277 stopped at the runtime integration boundary; Plan 282 is the ready corrective; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -107,13 +107,15 @@ another.
 269 global roadmap/support reconciliation
  -> 270 M12 architecture authority + source/ADR freeze
  -> 271 NetDB provenance, namespace, and disclosure foundation
- -> 280 reviewed Red25519 verifier/provider prerequisite
+ -> 280 reviewed Red25519 verifier/provider prerequisite (stopped)
+ -> 281 type-5 support-floor correction (passed; type 5 deferred)
  -> 272 complete floodfill record validation/storage surface
  -> 273 inbound DatabaseStore service + acknowledgements/throttles
  -> 274 DatabaseLookup/DSRM service + ECIES reply protection
  -> 275 direct flood replication + routing-key rollover policy
  -> 276 persistence, maintenance, and resource-governance closure
- -> 277 daemon composition + role lifecycle + controlled advertisement
+ -> 277 daemon composition + role lifecycle + controlled advertisement (stopped partial)
+ -> 282 runtime publication/reply-delivery contract corrective
  -> 278 exact-pinned i2pd one-family qualification
  -> 279 second-family qualification + normal opt-in activation + M12 closure
 ~~~
@@ -133,7 +135,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 275 | passed | passed-m12-bounded-direct-replication-and-daily-routing-key-rollover | plans/implementation/floodfill/275-m12-direct-replication-and-routing-key-rollover.md | plans/closure/floodfill/275-status.md |
 | 276 | passed | passed-m12-versioned-floodfill-persistence-maintenance-and-resource-governance | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | plans/closure/floodfill/276-status.md |
 | 277 | stopped | stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | plans/closure/floodfill/277-status.md |
-| 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan277 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
+| 282 | ready | registered-m12-runtime-publication-delivery-corrective-ready | plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md | future |
+| 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan282 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -205,6 +208,7 @@ M12 is complete only when:
 ## 12. Milestone status summary
 
 M11 is closed for experimental progression. Plans 270, 271, 281, and 272 have passed. Plans 273–276
-have passed on the type-5-deferred floor. Plan 277 stopped pending runtime-owned publication and
-delivery integration. Plans 278–279 remain blocked in dependency order;
+have passed on the type-5-deferred floor. Plan 277 stopped at the runtime-owned publication and
+delivery boundary; Plan 282 is the sole ready corrective and retains the useful Plan 277 partial
+implementation. Plans 278–279 remain blocked in dependency order behind Plan 282;
 Plan 280 remains stopped pending a separately reviewed I2P-compatible Red25519 provider.

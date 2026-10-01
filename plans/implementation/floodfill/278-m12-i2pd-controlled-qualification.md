@@ -1,17 +1,17 @@
 # Plan 278 — M12 exact-pinned i2pd controlled floodfill qualification
 
 Status at registration:
-**registered-m12-i2pd-qualification-blocked-on-plan277**
+**registered-m12-i2pd-qualification-blocked-on-plan282**
 
 Classification: external capability qualification.
 
-Hard dependency: Plan 277 passed.
+Hard dependency: Plan 282 passed as the corrective/completion authority for stopped Plan 277.
 
 ## 1. Objective
 
 Demonstrate the complete M12 controlled floodfill path against unmodified exact-pinned i2pd 2.61.0
-at 635b013a612ff47278ef02acf8580a28e10e26c5, using real SSU2 router sessions and the Plan 277
-controlled caps=f permit. This is the one-family experimental progression gate, not broad
+at 635b013a612ff47278ef02acf8580a28e10e26c5, using real SSU2 router sessions and the Plan 282-completed
+controlled caps=f/runtime publication path. This is the one-family experimental progression gate, not broad
 advertisement authority.
 
 ## 2. Evidence principles
@@ -88,7 +88,7 @@ attempt datadir.
 
 ## 7. Compatibility and migration
 
-No normal floodfill config activation. Plan 277 controlled permit remains the only activation path.
+No normal floodfill config activation. The Plan 277/282 controlled permit remains the only activation path.
 A pass upgrades experimental progression only.
 
 ## 8. Required local verification before external execution
