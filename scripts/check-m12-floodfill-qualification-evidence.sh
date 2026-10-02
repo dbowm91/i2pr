@@ -16,8 +16,8 @@
 #
 # Structural gates: explicit `--ignored --exact` external selection,
 # exact reference pins verified before provisioning, loopback-only
-# bind policy, frozen single-attempt budget, no `|| true` forgiveness
-# on driver invocations, no reference patching.
+# bind policy, frozen per-lane attempt budget (i2pd 1, Java 3), no
+# `|| true` forgiveness on driver invocations, no reference patching.
 #
 # Usage:
 #   bash scripts/check-m12-floodfill-qualification-evidence.sh [--self-test]
@@ -30,8 +30,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 I2PD_HARNESS="${REPO_ROOT}/tests/integration/floodfill/run-i2pd.sh"
+JAVA_HARNESS="${REPO_ROOT}/tests/integration/floodfill/run-java-floodfill.sh"
 I2PD_PIN="635b013a612ff47278ef02acf8580a28e10e26c5"
 I2PD_VERSION="2.61.0"
+JAVA_PIN="9134f808337b401e8e53c73734c81fab04280c9d"
+JAVA_VERSION="2.13.0"
 
 # Guarded Plan 278/303 matrix rows (one-family i2pd lane).
 I2PD_GUARDED=(
@@ -47,6 +50,24 @@ I2PD_GUARDED=(
   workspace-gates
 )
 
+# Guarded Plan 279 matrix rows (second-family Java lane). The shared
+# driver keys keep their names across families; the runner-side labels
+# below are the Java lane's rows.
+JAVA_GUARDED=(
+  controlled-activation-completed
+  external-reference-verified
+  external-role-active
+  external-publisher-store
+  external-store-ack
+  external-lookup-answered
+  external-replication-direct
+  external-no-tunnel-flood
+  external-dispatch-clean
+  external-leaseset-store
+  external-withdrawal
+  workspace-gates
+)
+
 failures=0
 
 fail() {
@@ -58,7 +79,8 @@ check_harness() {
   local harness="$1"
   local pin="$2"
   local family="$3"
-  shift 3
+  local budget="$4"
+  shift 4
   local label
   if [[ ! -f "${harness}" ]]; then
     fail "${family} harness missing: ${harness}"
@@ -91,13 +113,13 @@ check_harness() {
   if ! grep -q -F "${pin}" "${harness}"; then
     fail "harness lost the exact ${family} pin ${pin}"
   fi
-  # 7. The lane must stay loopback-only with a frozen attempt budget
+  # 7. The lane must stay loopback-only with its frozen attempt budget
   #    and must not forgive driver failures.
   if ! grep -q -F '127.0.0.1' "${harness}"; then
     fail "harness lost its loopback bind policy"
   fi
-  if ! grep -q -E '^MAX_ATTEMPTS=1$' "${harness}"; then
-    fail "harness lost its frozen single-attempt budget"
+  if ! grep -q -E "^MAX_ATTEMPTS=${budget}$" "${harness}"; then
+    fail "harness lost its frozen attempt budget (expected MAX_ATTEMPTS=${budget})"
   fi
   if grep -n -E 'cargo test .*floodfill.*\|\| true' "${harness}"; then
     fail "external driver invocation must not be forgiven with || true"
@@ -108,11 +130,25 @@ check_harness() {
   fi
 }
 
-check_harness "${I2PD_HARNESS}" "${I2PD_PIN}" "i2pd" "${I2PD_GUARDED[@]}"
+check_harness "${I2PD_HARNESS}" "${I2PD_PIN}" "i2pd" "1" "${I2PD_GUARDED[@]}"
+check_harness "${JAVA_HARNESS}" "${JAVA_PIN}" "java" "3" "${JAVA_GUARDED[@]}"
 
 # 9. The i2pd version advertisement must be verified, not assumed.
 if ! grep -q -F 'I2PD_VERSION' "${I2PD_HARNESS}"; then
   fail "i2pd harness lost its version verification"
+fi
+
+# 10. The Java lane must verify its exact pin, must launch stock Java
+#     through the out-of-tree test-only launcher (never a patched
+#     reference), and must keep the SAM destination's key material out
+#     of evidence.
+for token in 'JAVA_VERSION' 'ControlledRouter' 'floodfillParticipant' 'TRANSIENT'; do
+  if ! grep -q -F "${token}" "${JAVA_HARNESS}"; then
+    fail "java harness lost required token ${token}"
+  fi
+done
+if grep -n -E '^[[:space:]]*(patch|git apply)' "${JAVA_HARNESS}"; then
+  fail "java lane must not patch the reference"
 fi
 
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -178,7 +214,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
   fi
   # The hostile harness must also fail the real gate function.
   if ( failures=0
-       check_harness "${sandbox}/hostile.sh" "SELFTEST" "selftest" "probe-row"
+       check_harness "${sandbox}/hostile.sh" "SELFTEST" "selftest" "1" "probe-row"
        [[ "${failures}" -gt 0 ]] ); then
     :
   else
@@ -190,4 +226,4 @@ if [[ "${failures}" -ne 0 ]]; then
   echo "evidence check failed: ${failures} violation(s)" >&2
   exit 1
 fi
-echo "M12 floodfill qualification evidence integrity: ${#I2PD_GUARDED[@]} i2pd rows command-derived, no literal pass records"
+echo "M12 floodfill qualification evidence integrity: ${#I2PD_GUARDED[@]} i2pd + ${#JAVA_GUARDED[@]} java rows command-derived, no literal pass records"

@@ -143,7 +143,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
 | 302 | passed | passed-m12-floodfill-reply-wire-form-and-replication-answered | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | plans/closure/floodfill/302-status.md |
 | 303 | passed | passed-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | plans/closure/floodfill/303-status.md |
-| 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
+| 279 | in-progress | in-progress-m12-second-family-qualification-and-activation | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 

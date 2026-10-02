@@ -129,7 +129,7 @@ Parallel anonymity work is beside, not beneath, M12. Plan 296 passed; Plans 297�
 |---|---|---|
 | M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
 | M12 floodfill | 280 Red25519 provider qualification | Stopped: no acceptable maintained Rust provider; type 5 deferred by Plan 281. |
-| M12 floodfill | 279 second-family qualification/normal activation | Ready (unblocked by Plan 303 matrix pass; Plan 278 stays stopped). Still has to execute its own qualification — does not auto-pass. Required before broad normal-daemon `caps=f` and M12 closure. |
+| M12 floodfill | 279 second-family qualification/normal activation | Active (Plan 279 execution started; Java 2.13.0 cache built). Still has to execute its own qualification — does not auto-pass. Required before broad normal-daemon `caps=f` and M12 closure. |
 
 ### Retained / conditional work
 
