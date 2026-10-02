@@ -122,9 +122,8 @@ impl FingerprintTerminal {
             "retransmit_limit" => Some(Self::RetransmitLimit),
             "deadline" => Some(Self::Deadline),
             "transport_failure" => Some(Self::TransportFailure),
-            _ => return None,
+            _ => None,
         }
-        .into()
     }
 }
 

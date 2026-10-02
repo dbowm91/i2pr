@@ -2,7 +2,7 @@
 
 Status: stopped-three-family-hostile-destination-capture-runners-unavailable
 
-Implementation commits: none yet. This closure records completed local harness infrastructure, not a Java/i2pd/i2pr differential result.
+Implementation commit: `19c6cbc` (`plans(anonymity): close streaming harness at capture gate`). This closure records completed local harness infrastructure, not a Java/i2pd/i2pr differential result.
 
 ## Requirement disposition
 
@@ -22,6 +22,8 @@ Implementation commits: none yet. This closure records completed local harness i
 - `cargo test --locked -p i2pr-client --all-targets -- --test-threads=1`: passed, including 80 unit tests and all trajectory suites.
 - `bash -n scripts/check-streaming-fingerprint-evidence.sh`: passed.
 - `bash scripts/check-streaming-fingerprint-evidence.sh`: passed, including seeded forbidden-marker rejection.
+- `cargo test --locked -p i2pr-testkit streaming_fingerprint -- --test-threads=1`: passed, 4 focused parser/classifier/normalization tests after the lint correction.
+- `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`: passed with pinned Rust 1.95.0 after removing two unnecessary parser returns/conversions.
 - `git diff --check`: passed.
 - The Plan's three `run-streaming-fingerprint-{i2pr,i2pd,java}.sh` commands and preflight are absent; no router captures or external differential execution occurred.
 
