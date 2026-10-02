@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plan 286 dependency-ready; Plans 287–295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plan 286 passed; Plan 287 dependency-ready; Plans 288–295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -112,8 +112,8 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 286 | ready | invariant/infrastructure | plans/implementation/i2pcontrol-proposal-170/286-parallel-authority-provenance-and-contract-foundation.md | future |
-| 287 | blocked on 286 | infrastructure/capability | plans/implementation/i2pcontrol-proposal-170/287-secure-base-i2pcontrol-jsonrpc-auth-tls.md | future |
+| 286 | passed | invariant/infrastructure | plans/implementation/i2pcontrol-proposal-170/286-parallel-authority-provenance-and-contract-foundation.md | plans/closure/i2pcontrol-proposal-170/286-status.md (`passed-prop170-parallel-authority-provenance-and-contract-foundation`) |
+| 287 | ready | infrastructure/capability | plans/implementation/i2pcontrol-proposal-170/287-secure-base-i2pcontrol-jsonrpc-auth-tls.md | future |
 | 288 | blocked on 287 | capability | plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md | future |
 | 289 | blocked on 287 | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md | future |
 | 290 | blocked on 289 | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | future |
@@ -178,4 +178,9 @@ This workstream is complete only when:
 
 ## 12. Status summary
 
-Plan 286 is dependency-ready and may begin alongside M12 Plan 285. The remainder of the workstream is registered but dependency-gated. No Proposal 170 capability is claimed by registration alone.
+Plan 286 passed with the frozen provenance manifest, the runtime-neutral
+`i2pr-i2pcontrol` contract crate, and the conformance dimensions (see
+`plans/closure/i2pcontrol-proposal-170/286-status.md`). Plan 287 is
+dependency-ready and may begin alongside M12 work. The remainder of the
+workstream is registered but dependency-gated. No Proposal 170 capability
+is claimed by registration alone.
