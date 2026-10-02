@@ -1,6 +1,6 @@
 # Plan 296 — Service-boundary implementation neutrality and leak regression
 
-Status: registered-anonymity-service-boundary-implementation-neutrality
+Status: in-progress-anonymity-service-boundary-implementation-neutrality
 
 Classification: invariant + corrective capability.
 

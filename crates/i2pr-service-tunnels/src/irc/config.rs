@@ -55,13 +55,10 @@ pub const IRC_CTCP_COUNTER_CEILINGS: usize = 1024;
 /// a flow control point).
 pub const IRC_OPTIONS_MAX_ALLOWED_HOSTS: usize = 16;
 
-/// Stable replacement text used when a configured privacy profile
-/// rewrites a client-generated application/version string. Plan
-/// 178 §6.3 documents the M10 minimum as "pass ordinary reasons
-/// unchanged unless the privacy profile is configured to rewrite";
-/// this constant is the documented stable replacement when the
-/// operator opts in.
-pub const DEFAULT_QUIT_REASON: &str = "i2pr";
+/// Empty replacement retained for API compatibility. The privacy
+/// rewrite now removes the optional reason instead of inserting a
+/// stable proxy token.
+pub const DEFAULT_QUIT_REASON: &str = "";
 /// Default replacement hostname emitted for the USER rewrite.
 pub const DEFAULT_USER_HOSTNAME: &str = "i2p";
 /// Default replacement servername emitted for the USER rewrite.

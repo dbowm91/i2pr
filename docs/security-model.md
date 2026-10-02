@@ -29,6 +29,13 @@ loader, client adapters, local service boundary, and daemon composition root.
 Each future boundary must validate input before handing a narrower capability to
 the next subsystem.
 
+Service-tunnel HTTP/IRC profiles remove router-specific branding from their
+router-generated application bytes. HTTP remote `Host` uses the resolved
+Destination's canonical Base32 name, independent of a local address-book alias.
+Opaque generic, SOCKS, and CONNECT forwarding can still expose application and
+TLS fingerprints. These local boundary properties do not establish anonymity,
+privacy, or resistance to traffic analysis.
+
 ## SAM 3.1 local adapter boundary
 
 The SAM listener is experimental and loopback-only. Plan 139's `STREAM
