@@ -141,7 +141,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 278 | stopped | stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | plans/closure/floodfill/278-status.md |
 | 284 | ready | registered-m12-controlled-publication-reference-acceptance-corrective |
 | 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
-| 302 | ready | registered-m12-floodfill-reply-wire-form-and-replication-corrective | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | future |
+| 302 | passed | passed-m12-floodfill-reply-wire-form-and-replication-answered | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | plans/closure/floodfill/302-status.md |
+| 303 | ready | registered-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -247,8 +248,19 @@ I2P-compatible Red25519 provider.
 The post-284/285 bounded attempt ran and spent Plan 278's frozen budget. It closed both
 admission gates live (the reference client loads the controlled record as its only
 floodfill, publishes to i2pr, 18 lookups flow) but stopped at matrix F on two findings
-(278-status §11–§12, owned by ready Plan 302): every floodfill reply is dropped by the
-reference as expired because `encode_standard` writes the 16-byte standard header while
+(278-status §11–§12, owned by Plan 302): every floodfill reply is dropped by the
+reference as expired because the old encoder wrote the 16-byte standard header while
 the SSU2 session layer reads the 9-byte short-transport form (proven wire defect), and
 no `DirectFlood` was planned for the accepted store (open: idempotent insert vs empty
 plan). Zero matrix rows claimed.
+
+Plan 302 passed on head `389846f`: the outer floodfill encoding is now
+short-transport (inner clove stays standard), and the single fresh-budget attempt
+proves it live — the reference logs `Publishing confirmed`, zero expired drops
+for i2pr-sent messages, lookup record answers consumed (hits 0→2). The §12.2
+question is answered both locally and live: the publisher store is an idempotent
+re-publication of the seeded client key (`outcome=["idempotent"]`,
+`replication_offered=0`), so no replication is offered by design. Matrix F is
+structurally unpassable while the lane seeds the publisher key; ready Plan 303
+owns the single trigger change (seed A/B only) plus matrix A–I execution.
+Plan 279 stays blocked on the Plan 303 path.
