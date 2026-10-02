@@ -218,9 +218,12 @@ third-class evidence strategy (Option 3 peer-test driver) plus activation/withdr
 completion. Plan 278 built and executed its exact-pinned i2pd lane, passed controlled
 activation, and stopped at the reference-client RouterInfo-acceptance boundary before any
 matrix row, retaining the lane, the two-phase stable-identity activation flow, and the
-boundary diagnostics. The reference gate is localized: i2pd's numeric `router.version`
-threshold is unreachable by any standard version string, so only the `O` high-bandwidth
-cap would satisfy it and i2pr must not claim it. Plan 284 is the registered corrective
-that replaces netDb seeding with an injection path the reference admits.
+boundary diagnostics. Two reference gates are localized. `RouterInfo.cpp:508` marks a record
+unreachable unless it carries both `netId` and `router.version`, which is the proximate cause
+of the 64/64 rejection. `RouterInfo::IsEligibleFloodfill` then requires
+`router.version >= 0.9.62` with no high-bandwidth alternative and is consulted on every
+peer-side floodfill insert, so seeding and wire-learned paths both hit it. i2pr can claim
+neither that version nor `O` honestly, so Plan 284 closes at a recorded conformance boundary
+rather than an implementation fix.
 Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
 I2P-compatible Red25519 provider.

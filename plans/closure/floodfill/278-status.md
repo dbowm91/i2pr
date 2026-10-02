@@ -169,45 +169,96 @@ Retained and reusable, not rebuilt:
 
 ## 9. Root cause determined after the stop (owned by Plan 284)
 
-Condition 5 of the `LoadRouterInfo` conjunction is the discriminator, and it cannot be
-satisfied by a `router.version` value. i2pd parses `router.version` naively by stripping
-non-digits (`libi2pd/RouterInfo.cpp:457-462`):
+**Correction.** An earlier revision of this section claimed i2pd's numeric `router.version`
+threshold was unreachable, on the assumption that `MAKE_VERSION_NUMBER` bit-packs its
+components. That assumption was wrong and the claim is withdrawn. The macro is decimal:
 
 ```cpp
-m_Version = 0;
-for (auto ch: value) { if (ch >= '0' && ch <= '9') { m_Version *= 10; m_Version += (ch - '0'); } }
+// libi2pd/version.h:18
+#define MAKE_VERSION_NUMBER(a,b,c) ((a*100+b)*100+c)
 ```
 
-while the threshold is a packed component number (`libi2pd/NetDb.hpp:58`):
+so `NETDB_MIN_ALLOWED_VERSION` is 958 (0.9.58) and `NETDB_MIN_FLOODFILL_VERSION` is 962
+(0.9.62), which matches i2pd's digit-stripping `router.version` parse exactly. The version
+gate is satisfiable by an ordinary version string; there is no parsing bug.
+
+### 9.1 Why the seeded record was rejected
+
+The rejection happens at loader condition 2, not condition 5, and it is caused by two missing
+RouterInfo options. At the end of address/property parsing:
 
 ```cpp
-const int NETDB_MIN_ALLOWED_VERSION = MAKE_VERSION_NUMBER(0, 9, 58);   // 2362
+// libi2pd/RouterInfo.cpp:507-508
+if (!m_SupportedTransports || !isNetId || !m_Version)
+    SetUnreachable (true);
 ```
 
-So on the file-load path the only satisfiable branch of
-`GetVersion() >= NETDB_MIN_ALLOWED_VERSION || IsHighBandwidth()` is `IsHighBandwidth()`,
-which requires the `O` cap letter (`RouterInfo.cpp:514-536`, `RouterInfo.h:104-109`).
-Computed for the real values: `0.9.58 → 958`, `0.9.69 → 969`, `0.9.70 → 970`, `1.0.0 → 100`;
-none reach 2362. i2pd's own record passes only because its caps are `Of`.
+i2pr's published record advertises neither `netId` nor `router.version`, so `isNetId` is false
+and `m_Version` is 0; the record is marked unreachable and `LoadRouterInfo` (`NetDb.cpp:531-536`)
+deletes it. That is the proximate cause of the 64/64 rejection. Condition 5 would also have
+failed independently: caps `f` carries no `O` cap letter, so `IsHighBandwidth()` is false
+(`RouterInfo.h:281`) and `m_Version` is 0.
 
-This fully explains both observations in §4: the production record (caps `f`, no version) is
-rejected, and the version-only probe (version `0.9.58`, caps `f`) is also rejected.
+Note that `netId` is also validated, not merely required: a `netId` that does not equal
+`i2p::context.GetNetID()` (2 in the reference's own configuration) also sets unreachable
+(`RouterInfo.cpp:480-489`).
 
-**The correct response is not to advertise `O`.** The `O` cap is a high-bandwidth claim.
-i2pr is an experimental loopback router with a single-bitness pool, so claiming it would be
-a false capability advertisement, forbidden by `specs/CONFORMANCE.md` ("advertise the lowest
-truthful current feature level compatible with its implemented subset"), by ADR 0027 §9, and
-by the repository guardrails on capability advertisement. Plan 284 therefore must not change
-i2pr's advertised capabilities to pass this lane.
+### 9.2 The gate that cannot be cleared honestly
 
-The same rule governs i2pd's runtime sweep (`NetDb.cpp:711`,
-`r->GetVersion() < NETDB_MIN_ALLOWED_VERSION && !r->IsHighBandwidth()`), so netDb seeding
-cannot be the injection path at all. The viable path is the one i2pd already exempts:
-`NetDb.cpp:728-730` re-admits a record once the peer is connected. The SSU2 handshake
-carries the initiator's RouterInfo in the SessionRequest, so an authenticated session is
-sufficient for the reference to learn the controlled RouterInfo without any seeded file.
+The decisive constraint is not in the loader. It is in floodfill eligibility:
 
-That makes the corrective a topology/injection change, not a capability-claim change.
+```cpp
+// libi2pd/RouterInfo.cpp:1022-1029
+bool RouterInfo::IsEligibleFloodfill () const
+{
+    return m_Version >= NETDB_MIN_FLOODFILL_VERSION && (IsPublished (true) ||
+        (IsReachableBy (eNTCP2V4 | eSSU2V4) && IsPublished (false))) &&
+        GetIdentity ()->GetSigningKeyType () != SIGNING_KEY_TYPE_DSA_SHA1;
+}
+```
+
+`NETDB_MIN_FLOODFILL_VERSION` is 962, and **this test has no high-bandwidth alternative**.
+i2pd consults it at every `m_Floodfills.Insert` for a peer (`NetDb.cpp:296`, `338`, `473`,
+`541`) and in `SetUnreachable` (`NetDb.cpp:476-478`). The only unconditional insert is
+`NetDb.cpp:86`, which is i2pd's own RouterInfo.
+
+The wire-learned path does not help. `NetDb::AddRouterInfo` (`NetDb.cpp:311-352`) validates a
+received record with no version and no bandwidth check at all, and it verifies the signature,
+so an honestly signed record learned over the wire is inserted into `m_RouterInfos`. But
+`m_Floodfills.Insert` on that same path still requires `IsEligibleFloodfill()`.
+
+**Therefore i2pd can only use i2pr as a floodfill if i2pr advertises
+`router.version >= 0.9.62`, and no injection path, seeding or wire, avoids that.**
+
+### 9.3 Why i2pr must not simply declare 0.9.62
+
+`router.version` is a compatibility claim about the implemented feature subset, and
+`O` is a high-bandwidth claim. i2pr can make neither:
+
+- `O` is false; i2pr is an experimental router on loopback with a single-bitness pool.
+- `router.version = 0.9.62` would assert conformance to the I2P 0.9.62 feature set, which
+  `specs/CONFORMANCE.md` restricts to a reviewed, tested subset and which i2pr does not
+  implement (NTCP2 is experimental and non-advertised, SSU1 is absent, SAM/I2CP and
+  service-tunnels are disabled by default and non-advertised). `specs/support.toml` records
+  i2pr's actual level, which is below the reference minimum.
+
+So this is a conformance boundary, not a code defect. There is no change to i2pr's
+RouterInfo content, capability set, or transport that makes the reference treat i2pr as a
+floodfill without a false claim.
+
+### 9.4 The probe result, now explained
+
+The version-only probe carried `router.version = 0.9.58`, a masked static key, and
+`reservedrange = false`, yet was still rejected 64/64. It is now explained: the probe set
+`router.version` but not `netId`, so `RouterInfo.cpp:508` still marked it unreachable and
+loader condition 2 still failed. The probe varied the version gate while leaving the
+`netId` gate in place, so it could not have passed and its result says nothing about
+conditions 3, 4, or 5.
+
+This is consistent with the retained structural comparison in §6, which already showed the
+controlled record lacking `router.version`, `netId`, and the `netdb.known*` counts while the
+reference record had `netId=2` and `router.version=0.9.70`. Those entries were not an
+independent defect; they are the proximate cause.
 
 ## 10. Defects owned by the corrective (Plan 284)
 

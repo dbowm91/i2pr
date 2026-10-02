@@ -34,30 +34,66 @@ are satisfied by the controlled record, including with a masked static key,
 
 ## 3. Root cause, already localized
 
-Condition 5 cannot be satisfied through `router.version`. i2pd parses that option by
-stripping non-digits (`RouterInfo.cpp:457-462`) while the threshold is the packed component
-number 2362 (`NetDb.hpp:58`, `MAKE_VERSION_NUMBER(0, 9, 58)`). Real values parse to
-`0.9.58 → 958`, `0.9.69 → 969`, `0.9.70 → 970`, `1.0.0 → 100`; none reach 2362. The only
-satisfiable branch is `IsHighBandwidth()`, which requires the `O` cap letter
-(`RouterInfo.cpp:514-536`). The same rule governs the runtime sweep at `NetDb.cpp:711`.
+An earlier revision claimed the version gate was unsatisfiable. That was wrong and is
+withdrawn: `MAKE_VERSION_NUMBER` is decimal (`version.h:18`,
+`((a*100+b)*100+c)`), so `NETDB_MIN_ALLOWED_VERSION` is 958 and i2pd's digit-stripping
+`router.version` parse is consistent with it. The gate is satisfiable.
 
-**Therefore the corrective must not add `O` to i2pr's published capabilities.** `O` is a
-high-bandwidth claim; i2pr is an experimental loopback router with a single-bitness pool, so
-claiming it would be a false capability advertisement under `specs/CONFORMANCE.md`, ADR 0027
-§9, and the repository guardrails. This is a hard constraint on this plan, not a preference.
+Three separate gates matter. The first is the proximate cause of the Plan 278 rejection and is
+mechanical. The second is the one that cannot be cleared honestly. The third is a path that
+looks promising but is not.
+
+1. **Unreachable-by-omission, the proximate cause.** `RouterInfo.cpp:507-508` ends address and
+   property parsing with
+   `if (!m_SupportedTransports || !isNetId || !m_Version) SetUnreachable (true);`.
+   i2pr's record advertises neither `netId` nor `router.version`, so it is marked unreachable
+   and loader condition 2 (`!r->IsUnreachable ()`, `NetDb.cpp:531-536`) fails, and the file is
+   deleted. This is why all 64 seeded copies were removed. A `netId` that disagrees with the
+   reference's own netId (2) also sets unreachable (`RouterInfo.cpp:480-489`).
+2. **Floodfill eligibility, the gate that cannot be cleared.**
+   `RouterInfo::IsEligibleFloodfill` (`RouterInfo.cpp:1022-1029`) requires
+   `m_Version >= NETDB_MIN_FLOODFILL_VERSION`, which is 962, i.e. `router.version >= 0.9.62`,
+   and **offers no high-bandwidth alternative**. Every peer-side `m_Floodfills.Insert`
+   consults it (`NetDb.cpp:296`, `338`, `473`, `541`) as does `SetUnreachable`
+   (`NetDb.cpp:476-478`). The only unconditional insert, `NetDb.cpp:86`, is i2pd's own record.
+3. **The wire path does not help.** `NetDb::AddRouterInfo` (`NetDb.cpp:311-352`) is what a
+   SessionRequest- or DatabaseStore-learned record goes through. It verifies the signature and
+   applies no version or bandwidth check of its own, so an honestly signed record can enter
+   `m_RouterInfos`. But the `m_Floodfills.Insert` on that same path still requires
+   `IsEligibleFloodfill()`, so gate 2 applies unchanged.
+
+**Consequence: i2pd can only treat i2pr as a floodfill if i2pr advertises
+`router.version >= 0.9.62`. No injection path avoids this.**
+
+i2pr must not simply declare it. `O` is a high-bandwidth claim and is false for an
+experimental loopback router with a single-bitness pool. `router.version = 0.9.62` asserts
+conformance to the I2P 0.9.62 feature set, which `specs/CONFORMANCE.md` restricts to a
+reviewed, tested subset and which i2pr does not implement (NTCP2 experimental and
+non-advertised, no SSU1, SAM/I2CP and service-tunnels disabled and non-advertised).
+`specs/support.toml` records i2pr's real level, below the reference minimum.
+
+This is a conformance boundary, not a code defect.
 
 ## 4. Required work
 
-- Replace netDb file seeding of the controlled RouterInfo with an injection path the reference
-  admits without a capability claim. `NetDb.cpp:728-730` re-admits a record once its peer is
-  connected, and the SSU2 SessionRequest carries the initiator's RouterInfo, so an
-  authenticated session is the expected route. Verify this against a fresh reference client.
-- If the handshake route does not admit the record, record that exact boundary and stop. Do not
-  fall back to a capability claim, a relaxed reference, or a wider network.
-- Prove the reference actually treats the controlled router as a floodfill before depending on
-  it, rather than inferring it from a single log line.
-- Land at least one local regression test that pins whatever invariant makes the reference
-  accept the controlled record, plus one negative test that fails when it regresses.
+- Record the boundary above as the outcome and close this corrective without changing
+  i2pr's RouterInfo content, capability set, transport, or advertisement gates. There is no
+  honest code-level fix, and inventing one would be a false claim.
+- Do not add `O`. Do not add `router.version = 0.9.62` (or any version at or above it)
+  without first passing the `specs/CONFORMANCE.md` capability-advertisement checklist and
+  ADR 0027 §9, which i2pr's current support level does not satisfy.
+- Publish the boundary so the next plan does not re-derive it. The shortest falsifiable form:
+  "stock i2pd 2.61.0 requires a peer to advertise `router.version >= 0.9.62` before it will
+  use that peer as a floodfill, and offers no bandwidth-based alternative for eligibility."
+- The Plan 278 §9.4 residue is closed: the probe varied `router.version` while leaving
+  `netId` absent, so it still failed gate 1. No further diagnostic run is required to decide
+  this plan. If the next plan runs a probe to separate gates 1 and 2, it must set both `netId`
+  and `router.version >= 0.9.62` together, and the expected outcome is a loaded record that
+  i2pd still refuses to use as a floodfill.
+- Hand the version-claim decision to a new plan that routes through the conformance gate. The
+  options for that plan are a reviewed version claim, a different qualification topology that
+  does not require i2pd to treat i2pr as a floodfill, or accepting that one-family stock-i2pd
+  floodfill qualification is not reachable. That plan, not this one, makes the call.
 
 ## 5. Evidence principles
 
@@ -91,11 +127,11 @@ Exact-head ordinary CI must be green.
 
 ## 8. Stop conditions
 
-Stop on any reproducible i2pr defect outside the controlled-publication surface and register a
-further narrow corrective. Stop if the reference admits the record through no honest path;
-record the exact boundary instead. Never add the `O` capability or any other unreviewed
-capability to make the reference accept the record. Do not patch the reference, raise the
-budget, or broaden network access.
+The honest-path question is already answered, so this corrective closes at the recorded
+boundary. Stop immediately if any step would require the `O` capability, a `router.version` at
+or above 0.9.62, a patched reference, a raised budget, or broadened network access. Stop on
+any reproducible i2pr defect outside the controlled-publication surface and register a further
+narrow corrective.
 
 ## 9. Documentation
 
