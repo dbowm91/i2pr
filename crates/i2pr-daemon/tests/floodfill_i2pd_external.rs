@@ -501,6 +501,12 @@ struct Observed {
     maintenance_examined: u64,
     role_state: String,
     queue_full: u64,
+    // Plan 302 §12.2 observability: insert-outcome class per accepted store
+    // plus whether the service offered a replication candidate. Counts and
+    // category labels only; no payloads, no keys.
+    store_insert_outcomes: Vec<String>,
+    replication_offered: u64,
+    replication_absent: u64,
 }
 
 type Shared = std::sync::Arc<std::sync::Mutex<Observed>>;
@@ -542,9 +548,18 @@ async fn run_owner(
                         Ok(i2pr_daemon::floodfill::FloodfillDispatchOutcome::Store(
                             effect,
                         )) => match effect {
-                            i2pr_netdb::FloodfillStoreEffect::Stored { acknowledgement, .. } => {
-                                let _ = acknowledgement;
+                            i2pr_netdb::FloodfillStoreEffect::Stored {
+                                outcome,
+                                replication,
+                                ..
+                            } => {
                                 guard.store_accepted += 1;
+                                guard.store_insert_outcomes.push(insert_outcome_label(*outcome));
+                                if replication.is_some() {
+                                    guard.replication_offered += 1;
+                                } else {
+                                    guard.replication_absent += 1;
+                                }
                             }
                             other => guard
                                 .store_rejected
@@ -619,6 +634,19 @@ async fn run_owner(
                 guard.role_state = format!("{:?}", coordinator.role_state());
             }
         }
+    }
+}
+
+/// Categorical insert-outcome label for Plan 302 §12.2 observability.
+/// Variants only; no payloads, no keys.
+fn insert_outcome_label(outcome: i2pr_netdb::ServerInsertOutcome) -> String {
+    match outcome {
+        i2pr_netdb::ServerInsertOutcome::Inserted => "inserted".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Replaced => "replaced".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Idempotent => "idempotent".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Conflict => "conflict".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Stale => "stale".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::CapacityExceeded => "capacity".to_owned(),
     }
 }
 
@@ -760,6 +788,15 @@ async fn floodfill_qualify_against_i2pd() {
         acked.store_ack_failed.is_empty(),
         "acknowledgement delivery failures: {:?}",
         acked.store_ack_failed
+    );
+    // Plan 302 §12.2: recorded right after matrix A so the outcome class and
+    // the offered/absent split survive even if matrix F later stops the lane.
+    record(
+        "publisher-store-insert-outcome",
+        &format!(
+            "outcome={:?} replication_offered={} replication_absent={}",
+            acked.store_insert_outcomes, acked.replication_offered, acked.replication_absent
+        ),
     );
 
     // ---- matrix C/E: lookup hit, miss, exploration -----------------------

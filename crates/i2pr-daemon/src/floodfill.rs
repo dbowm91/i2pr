@@ -187,7 +187,7 @@ fn encode_floodfill_effect(
         }
         FloodfillDaemonEffect::LookupReply { intent, .. } => match intent {
             i2pr_netdb::FloodfillReplyIntent::Direct { peer, body } => {
-                let Some(message) = encode_standard(body, now_ms) else {
+                let Some(message) = encode_transport(body, now_ms) else {
                     return Err(FloodfillDeliveryOutcome::EncodingFailure);
                 };
                 (i2pr_transport::PeerId::from_hash(peer), message)
@@ -205,7 +205,7 @@ fn encode_floodfill_effect(
                     return Err(FloodfillDeliveryOutcome::EncodingFailure);
                 };
                 let garlic = I2npBody::Garlic(OpaqueMessageBody { payload });
-                let Some(garlic) = encode_standard(garlic, now_ms) else {
+                let Some(garlic) = encode_inner_standard(garlic, now_ms) else {
                     return Err(FloodfillDeliveryOutcome::EncodingFailure);
                 };
                 let Ok(inner) = I2npMessage::decode_standard(&garlic, MAX_FLOODFILL_EFFECT_BYTES)
@@ -216,7 +216,7 @@ fn encode_floodfill_effect(
                     tunnel_id,
                     message: Box::new(inner),
                 }));
-                let Some(message) = encode_standard(body, now_ms) else {
+                let Some(message) = encode_transport(body, now_ms) else {
                     return Err(FloodfillDeliveryOutcome::EncodingFailure);
                 };
                 (i2pr_transport::PeerId::from_hash(gateway), message)
@@ -247,7 +247,7 @@ fn encode_floodfill_effect(
                 return Err(FloodfillDeliveryOutcome::InvalidEffect);
             }
             let Some(message) =
-                encode_standard(I2npBody::DatabaseStore(Box::new(action.message)), now_ms)
+                encode_transport(I2npBody::DatabaseStore(Box::new(action.message)), now_ms)
             else {
                 return Err(FloodfillDeliveryOutcome::EncodingFailure);
             };
@@ -259,11 +259,11 @@ fn encode_floodfill_effect(
 
 fn wrap_reply_body(body: I2npBody, reply_tunnel_id: Option<u32>, now_ms: u64) -> Option<Vec<u8>> {
     match reply_tunnel_id {
-        None | Some(0) => encode_standard(body, now_ms),
+        None | Some(0) => encode_transport(body, now_ms),
         Some(tunnel_id) => {
-            let nested = encode_standard(body, now_ms)?;
+            let nested = encode_inner_standard(body, now_ms)?;
             let message = I2npMessage::decode_standard(&nested, MAX_FLOODFILL_EFFECT_BYTES).ok()?;
-            encode_standard(
+            encode_transport(
                 I2npBody::TunnelGateway(Box::new(TunnelGatewayMessage {
                     tunnel_id,
                     message: Box::new(message),
@@ -274,7 +274,31 @@ fn wrap_reply_body(body: I2npBody, reply_tunnel_id: Option<u32>, now_ms: u64) ->
     }
 }
 
-fn encode_standard(body: I2npBody, now_ms: u64) -> Option<Vec<u8>> {
+/// Encodes one outbound floodfill effect in the 9-byte NTCP2/SSU2 short-transport form.
+///
+/// Plan 302: the SSU2 session layer (`queue_i2np_message`) reads every outbound byte
+/// string as `[type(1)][message id(4)][expiration seconds(4)][body]`. The previous
+/// standard-header encoding placed a u64 millisecond expiration at bytes 5-12, so the
+/// exact-pinned reference read the high 4 bytes of millisecond time as seconds
+/// (year 1970) and dropped every floodfill reply as expired. The seconds conversion
+/// fails closed on overflow, mirroring `outbound_lookup::encode_transport_tunnel_data`.
+fn encode_transport(body: I2npBody, now_ms: u64) -> Option<Vec<u8>> {
+    let id = NEXT_FLOODFILL_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
+    let expiration_ms = now_ms.checked_add(30_000)?;
+    let expiration_seconds = u32::try_from(expiration_ms / 1000).ok()?;
+    I2npMessage::new_short_transport(id, expiration_seconds, body)
+        .ok()?
+        .encode_short_transport_to_vec(MAX_FLOODFILL_EFFECT_BYTES)
+        .ok()
+}
+
+/// Encodes the tunnel-wrapped inner clove in standard form.
+///
+/// The inner message travels embedded inside the TunnelGateway body, where the
+/// reference parses a full standard-header message (the same shape the
+/// tunnel-construction paths already emit and assert). Only the outer envelope
+/// that crosses the SSU2 session boundary uses [`encode_transport`].
+fn encode_inner_standard(body: I2npBody, now_ms: u64) -> Option<Vec<u8>> {
     let id = NEXT_FLOODFILL_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
     let expiration = now_ms.checked_add(30_000)?;
     I2npMessage::new_standard(id, Date::from_millis(expiration), body)
@@ -1443,7 +1467,11 @@ mod tests {
         let mut leased = coordinator.pop_effect().expect("leased ack");
         let (peer, bytes) = encode_floodfill_effect(&mut leased, 1000).expect("encode ack");
         assert_eq!(peer.hash(), gateway);
-        let outer = I2npMessage::decode_standard(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
+        // Plan 302 pin: the outer envelope must be the 9-byte short-transport form the
+        // SSU2 session layer reads, never the 16-byte standard header whose millisecond
+        // expiration the reference misreads as seconds and drops as expired.
+        assert_short_transport_form(&bytes, 1000);
+        let outer = I2npMessage::decode_short_transport(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
             .expect("outer gateway");
         let I2npBody::TunnelGateway(outer_gateway) = outer.into_body() else {
             panic!("ack route must use TunnelGateway")
@@ -1472,7 +1500,8 @@ mod tests {
         let mut leased = coordinator.pop_effect().expect("leased tunnel reply");
         let (peer, bytes) = encode_floodfill_effect(&mut leased, 1000).expect("encode reply");
         assert_eq!(peer.hash(), gateway);
-        let outer = I2npMessage::decode_standard(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
+        assert_short_transport_form(&bytes, 1000);
+        let outer = I2npMessage::decode_short_transport(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
             .expect("outer gateway");
         let I2npBody::TunnelGateway(outer_gateway) = outer.into_body() else {
             panic!("lookup route must use TunnelGateway")
@@ -1498,7 +1527,8 @@ mod tests {
         let mut leased = coordinator.pop_effect().expect("leased direct ack");
         let (peer, bytes) = encode_floodfill_effect(&mut leased, 1000).expect("encode ack");
         assert_eq!(peer.hash(), gateway);
-        let message = I2npMessage::decode_standard(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
+        assert_short_transport_form(&bytes, 1000);
+        let message = I2npMessage::decode_short_transport(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
             .expect("direct acknowledgement");
         let I2npBody::DeliveryStatus(status) = message.into_body() else {
             panic!("direct ack must not be tunnel wrapped")
@@ -1513,13 +1543,97 @@ mod tests {
         let mut leased = coordinator.pop_effect().expect("leased replication");
         let (peer, bytes) = encode_floodfill_effect(&mut leased, 1000).expect("encode flood");
         assert_eq!(peer.hash(), flood_peer);
-        let message = I2npMessage::decode_standard(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
+        assert_short_transport_form(&bytes, 1000);
+        let message = I2npMessage::decode_short_transport(&bytes, MAX_FLOODFILL_EFFECT_BYTES)
             .expect("direct replication");
         let I2npBody::DatabaseStore(store) = message.into_body() else {
             panic!("replication must be a direct DatabaseStore")
         };
         assert_eq!(store.reply_token, 0);
-        assert_eq!(store.reply_gateway, None);
         assert_eq!(store.reply_tunnel_id, None);
+        assert_eq!(store.reply_gateway, None);
+    }
+
+    /// Plan 302 pin: asserts `bytes` carry the 9-byte short-transport header with a
+    /// sane seconds expiration derived from `now_ms`, and reject the 16-byte
+    /// standard parse. The pre-fix encoder fails this pin: its millisecond
+    /// expiration makes the session-layer seconds read land in 1970.
+    fn assert_short_transport_form(bytes: &[u8], now_ms: u64) {
+        assert!(
+            I2npMessage::decode_standard(bytes, MAX_FLOODFILL_EFFECT_BYTES).is_err(),
+            "floodfill reply must not parse as a standard-header message"
+        );
+        let message = I2npMessage::decode_short_transport(bytes, MAX_FLOODFILL_EFFECT_BYTES)
+            .expect("short-transport reply");
+        let i2pr_proto::I2npHeader::ShortTransport {
+            expiration_seconds, ..
+        } = message.header()
+        else {
+            panic!("short-transport header expected");
+        };
+        let now_seconds = u32::try_from(now_ms / 1000).expect("test clock fits u32 seconds");
+        assert!(
+            expiration_seconds >= now_seconds
+                && expiration_seconds <= now_seconds.saturating_add(60),
+            "expiration {expiration_seconds:?} must sit within a bounded horizon of now {now_seconds}"
+        );
+        // The session layer reads exactly these offsets (`session.rs`
+        // `queue_i2np_message`): raw[5..9] as big-endian seconds.
+        assert_eq!(
+            u32::from_be_bytes(bytes[5..9].try_into().expect("header present")),
+            expiration_seconds,
+            "session-layer seconds must match the decoded header"
+        );
+    }
+
+    #[test]
+    fn transport_encoding_fails_closed_on_expiration_overflow() {
+        let body = I2npBody::DeliveryStatus(i2pr_proto::DeliveryStatusMessage::new(
+            1,
+            Date::from_millis(1),
+        ));
+        // Millisecond clock past the u32 seconds range: the division still
+        // overflows u32, so no envelope may be produced.
+        let beyond_u32_seconds = (u64::from(u32::MAX) + 1) * 1000;
+        assert!(encode_transport(body, beyond_u32_seconds).is_none());
+        assert!(
+            encode_transport(
+                I2npBody::DeliveryStatus(i2pr_proto::DeliveryStatusMessage::new(
+                    1,
+                    Date::from_millis(1),
+                )),
+                u64::MAX
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn reference_short_header_layout_matches_session_parse_offsets() {
+        // Plan 302 cross-check, built without our encoder: the exact-pinned
+        // reference (`I2NPProtocol.h` short-header offsets, consumed by
+        // `SSU2Session::HandleI2NPMsg`) lays out `[type(1)][message id(4 BE)]
+        // [expiration seconds(4 BE)][body]`. The session layer parses exactly
+        // raw[5..9] as big-endian seconds; this locks that contract.
+        let message_id: u32 = 0x4045_4060;
+        let expiration_seconds: u32 = 1_760_000_000;
+        let body = [0x11, 0x22, 0x33];
+        let mut wire = Vec::with_capacity(9 + body.len());
+        wire.push(i2pr_proto::MessageType::DeliveryStatus.code());
+        wire.extend_from_slice(&message_id.to_be_bytes());
+        wire.extend_from_slice(&expiration_seconds.to_be_bytes());
+        wire.extend_from_slice(&body);
+        assert_eq!(wire.len(), 12);
+        assert_eq!(
+            u32::from_be_bytes(wire[5..9].try_into().expect("layout")),
+            expiration_seconds
+        );
+        assert_eq!(
+            u32::from_be_bytes(wire[1..5].try_into().expect("layout")),
+            message_id
+        );
+        // The same offsets must NOT read as a sane standard header: bytes
+        // 5..13 mix seconds with body, so the standard parse rejects.
+        assert!(I2npMessage::decode_standard(&wire, MAX_FLOODFILL_EFFECT_BYTES).is_err());
     }
 }

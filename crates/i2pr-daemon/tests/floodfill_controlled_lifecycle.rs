@@ -42,8 +42,8 @@ use i2pr_netdb::{
     CONTROLLED_NET_ID, CONTROLLED_ROUTER_VERSION, FloodfillEligibilitySnapshot,
     FloodfillResourcePolicy, FloodfillRoleState, FloodfillStoreEffect, FloodfillStorePolicy,
     FloodfillTime, InboundProvenance, NetDbNamespace, RecordProvenance, ReplicationPolicy,
-    RouterHash, ServerNetDbConfig, StorePurpose, ValidatedNetDbRecord, ValidatedRouterInfo,
-    ValidationContext, controlled_router_options,
+    RouterHash, ServerInsertOutcome, ServerNetDbConfig, StorePurpose, ValidatedNetDbRecord,
+    ValidatedRouterInfo, ValidationContext, controlled_router_options,
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash,
@@ -290,9 +290,14 @@ fn send_i2np(
     body: I2npBody,
     cancel: &CancellationToken,
 ) {
-    let bytes = I2npMessage::new_standard(message_id, Date::from_millis(wall_ms() + 30_000), body)
+    // Requests cross the session in the same 9-byte short-transport form every
+    // production peer uses; the dispatcher accepts both forms on receipt, but
+    // the session layer only ever delivers the short form.
+    let expiration_seconds =
+        u32::try_from((wall_ms() + 30_000) / 1000).expect("test expiration fits u32 seconds");
+    let bytes = I2npMessage::new_short_transport(message_id, expiration_seconds, body)
         .expect("envelope")
-        .encode_standard_to_vec(MAX_EFFECT_BYTES)
+        .encode_short_transport_to_vec(MAX_EFFECT_BYTES)
         .expect("encode");
     let request = RouterDeliveryRequest::new(PeerId::from_hash(to_hash), bytes, DELIVERY_TIMEOUT)
         .expect("request");
@@ -451,7 +456,7 @@ async fn lookup_direct_route_reaches_supplied_from_not_immediate_peer() {
     // The reply arrives at a2 (the request-supplied gateway), never at a1.
     let reply = next_inbound(&mut a2.handle, "direct reply at a2").await;
     let message =
-        I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode reply");
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode reply");
     match message.into_body() {
         I2npBody::DatabaseSearchReply(search) => {
             assert_eq!(search.key, Hash::from_bytes([0xA1; 32]))
@@ -515,7 +520,8 @@ async fn store_direct_ack_carries_reply_token_to_gateway() {
         FloodfillDeliveryOutcome::Delivered(RouterDeliveryOutcome::Accepted)
     ));
     let reply = next_inbound(&mut a2.handle, "direct ack at a2").await;
-    let message = I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode ack");
+    let message =
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode ack");
     match message.into_body() {
         I2npBody::DeliveryStatus(status) => assert_eq!(status.message_id, 0xBEEF11),
         other => panic!("expected DeliveryStatus, got {other:?}"),
@@ -577,7 +583,8 @@ async fn store_tunnel_ack_nests_in_gateway_tunnel() {
     ));
     // The outer message reaches the requested gateway naming the exact tunnel id.
     let reply = next_inbound(&mut a2.handle, "tunnel ack at a2").await;
-    let outer = I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode outer");
+    let outer =
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode outer");
     match outer.into_body() {
         I2npBody::TunnelGateway(gateway) => {
             assert_eq!(gateway.tunnel_id, 0x4455);
@@ -650,7 +657,8 @@ async fn tunnel_lookup_reply_opens_to_expected_body() {
     // Exactly one Existing Session payload inside one Garlic inside one TunnelGateway,
     // and the requester fixture opens it to the expected lookup body.
     let reply = next_inbound(&mut a2.handle, "tunnel reply at a2").await;
-    let outer = I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode outer");
+    let outer =
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode outer");
     let gateway = match outer.into_body() {
         I2npBody::TunnelGateway(gateway) => gateway,
         other => panic!("expected TunnelGateway, got {other:?}"),
@@ -762,7 +770,7 @@ async fn replication_reaches_established_target_directly() {
     // The zero-token store arrives over the established session, never a tunnel.
     let reply = next_inbound(&mut a2.handle, "direct flood at a2").await;
     let message =
-        I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode flood");
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode flood");
     match message.into_body() {
         I2npBody::DatabaseStore(store) => {
             assert_eq!(store.key, stored.hash);
@@ -818,7 +826,7 @@ async fn replication_dials_validated_target_under_bounds() {
     drain_to_direct_flood(&mut coordinator, &b.handle, c.keys.hash, &cancel, 8).await;
     let reply = next_inbound(&mut c.handle, "dialed flood at c").await;
     let message =
-        I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode flood");
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode flood");
     match message.into_body() {
         I2npBody::DatabaseStore(store) => {
             assert_eq!(store.key, stored.hash);
@@ -1057,8 +1065,8 @@ fn plain_router_info(
 
 /// Decodes a lookup-reply DatabaseStore body to its RouterInfo.
 fn decode_reply_router_info(bytes: &[u8]) -> RouterInfo {
-    let message =
-        I2npMessage::decode_standard(bytes, MAX_EFFECT_BYTES).expect("decode reply envelope");
+    let message = I2npMessage::decode_short_transport(bytes, MAX_EFFECT_BYTES)
+        .expect("decode reply envelope");
     match message.into_body() {
         I2npBody::DatabaseStore(store) => match &store.data {
             DatabaseStoreData::RouterInfoCompressed(payload) => {
@@ -1430,7 +1438,8 @@ async fn health_loss_withdraws_f_stops_admission_and_drains_to_disabled() {
 
     // The drained ack really reached Bob over the live session.
     let reply = next_inbound(&mut bob.handle, "drained ack at bob").await;
-    let message = I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode ack");
+    let message =
+        I2npMessage::decode_short_transport(&reply.bytes, MAX_EFFECT_BYTES).expect("decode ack");
     match message.into_body() {
         I2npBody::DeliveryStatus(status) => assert_eq!(status.message_id, 0xBEEF22),
         other => panic!("expected DeliveryStatus, got {other:?}"),
@@ -1749,4 +1758,146 @@ async fn activation_publish_failure_rolls_back_to_previous_router_info() {
         "install plus rollback reinstall each bump the generation"
     );
     alice.shutdown().await;
+}
+
+/// Builds a token-bearing direct-publisher DatabaseStore for an already-signed
+/// RouterInfo without re-signing, so the stored bytes stay byte-identical to a
+/// seeded replica. Mirrors `compressed_store` except the record is supplied.
+fn store_for(
+    info: &RouterInfo,
+    key: Hash,
+    reply_token: u32,
+    gateway: Hash,
+) -> DatabaseStoreMessage {
+    let compressed = gzip_router_info(info);
+    let compressed_len = compressed.len();
+    DatabaseStoreMessage {
+        key,
+        reply_token,
+        reply_tunnel_id: None,
+        reply_gateway: Some(gateway),
+        data: DatabaseStoreData::RouterInfoCompressed(
+            DeferredPayload::new(compressed, compressed_len).expect("payload"),
+        ),
+    }
+}
+
+fn router_hash_of(info: &RouterInfo) -> Hash {
+    *i2pr_netdb::router_hash(info.router_identity())
+        .expect("router hash")
+        .as_hash()
+}
+
+/// Plan 302 work package 5, case 1: a fresh publisher key inserts over a direct
+/// peer, is acknowledged, and offers a replication candidate that the planner
+/// turns into at least one zero-token direct flood to a seeded peer.
+#[test]
+fn fresh_publisher_store_inserts_and_plans_direct_replication() {
+    let dummy: std::net::SocketAddr = "127.0.0.1:1".parse().expect("dummy addr");
+    let mut coordinator = active_coordinator(Hash::from_bytes([0xC0; 32]));
+    for _ in 0..2 {
+        let peer = make_keys();
+        seed_replica(&mut coordinator, &floodfill_router_info(&peer, dummy));
+    }
+    let stored = make_keys();
+    let info = floodfill_router_info(&stored, dummy);
+    let key = router_hash_of(&info);
+    let gateway = Hash::from_bytes([0x6A; 32]);
+    let publisher = Hash::from_bytes([0x70; 32]);
+    let store = store_for(&info, key, 0xF12D, gateway);
+    match coordinator.handle_store(
+        PeerId::from_hash(publisher),
+        LinkId::new(7).expect("link"),
+        0xF12D,
+        &store,
+        floodfill_time(),
+    ) {
+        FloodfillStoreEffect::Stored {
+            outcome,
+            acknowledgement,
+            replication,
+            ..
+        } => {
+            assert_eq!(outcome, ServerInsertOutcome::Inserted);
+            assert!(acknowledgement.is_some(), "publisher store is acked");
+            assert!(replication.is_some(), "fresh insert offers replication");
+        }
+        other => panic!("expected Stored, got {other:?}"),
+    }
+    let mut acks = 0;
+    let mut floods = 0;
+    while let Some(leased) = coordinator.pop_effect() {
+        match &leased.effect {
+            Some(FloodfillDaemonEffect::StoreAck { .. }) => acks += 1,
+            Some(FloodfillDaemonEffect::DirectFlood { action }) => {
+                assert_eq!(action.message.reply_token, 0, "zero-token replication");
+                assert_eq!(action.message.reply_gateway, None, "direct route only");
+                assert_eq!(action.message.reply_tunnel_id, None, "no tunnel route");
+                assert_eq!(action.message.key, key, "replicated record matches");
+                floods += 1;
+            }
+            other => panic!("unexpected effect {other:?}"),
+        }
+    }
+    assert_eq!(acks, 1, "exactly one ack queued");
+    assert!(floods >= 1, "planner turns the candidate into floods");
+}
+
+/// Plan 302 work package 5, case 2: the Plan 278 lane shape. The publisher key
+/// is already seeded as a flood replica (the lane seeds the reference client),
+/// then the byte-identical publisher store arrives over a direct peer with a
+/// nonzero reply token. The insert is idempotent, the ack is still owed, and no
+/// replication may be planned — which is exactly the lane's
+/// `store_accepted=1, ack_delivered=1, direct_store_replicas=0` triple.
+#[test]
+fn seeded_replica_idempotent_store_acks_without_replication() {
+    let dummy: std::net::SocketAddr = "127.0.0.1:1".parse().expect("dummy addr");
+    let mut coordinator = active_coordinator(Hash::from_bytes([0xC0; 32]));
+    for _ in 0..2 {
+        let peer = make_keys();
+        seed_replica(&mut coordinator, &floodfill_router_info(&peer, dummy));
+    }
+    let stored = make_keys();
+    let info = floodfill_router_info(&stored, dummy);
+    seed_replica(&mut coordinator, &info);
+    let key = router_hash_of(&info);
+    let gateway = Hash::from_bytes([0x6A; 32]);
+    let publisher = Hash::from_bytes([0x70; 32]);
+    let store = store_for(&info, key, 0x1D10, gateway);
+    match coordinator.handle_store(
+        PeerId::from_hash(publisher),
+        LinkId::new(7).expect("link"),
+        0x1D10,
+        &store,
+        floodfill_time(),
+    ) {
+        FloodfillStoreEffect::Stored {
+            outcome,
+            acknowledgement,
+            replication,
+            ..
+        } => {
+            assert_eq!(outcome, ServerInsertOutcome::Idempotent);
+            assert!(
+                acknowledgement.is_some(),
+                "idempotent re-publication is still acked"
+            );
+            assert!(
+                replication.is_none(),
+                "idempotent insert offers no replication"
+            );
+        }
+        other => panic!("expected Stored, got {other:?}"),
+    }
+    let mut acks = 0;
+    let mut floods = 0;
+    while let Some(leased) = coordinator.pop_effect() {
+        match &leased.effect {
+            Some(FloodfillDaemonEffect::StoreAck { .. }) => acks += 1,
+            Some(FloodfillDaemonEffect::DirectFlood { .. }) => floods += 1,
+            other => panic!("unexpected effect {other:?}"),
+        }
+    }
+    assert_eq!(acks, 1, "exactly one ack queued");
+    assert_eq!(floods, 0, "no replication planned for idempotent insert");
 }
