@@ -47,6 +47,40 @@ if grep -REn 'tokio::|std::net|std::fs|TcpStream|TcpListener|UdpSocket|UnixStrea
   exit 1
 fi
 
+# Plan 286: i2pr-i2pcontrol is a runtime-neutral control-contract crate.
+# No Tokio, sockets, filesystem ownership, async runtime, router-state
+# imports, or unbounded channels. Only the daemon adapts the contract.
+if grep -REn 'tokio::|std::net|std::fs|TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener|OpenOptions|File::|tokio::net|tokio::spawn|tokio::time|tokio::sync' \
+  "$root/crates/i2pr-i2pcontrol/src" >/dev/null; then
+  echo "i2pr-i2pcontrol must remain runtime-neutral: no Tokio, sockets, listeners, tasks, timers, or filesystem I/O" >&2
+  exit 1
+fi
+
+if grep -REn 'async[[:space:]]+fn|async_trait' \
+  "$root/crates/i2pr-i2pcontrol/src" >/dev/null; then
+  echo "i2pr-i2pcontrol contracts must remain synchronous" >&2
+  exit 1
+fi
+
+if grep -En 'i2pr-daemon|i2pr-runtime|i2pr-testkit|i2pr-netdb|i2pr-client|i2pr-service-tunnels|i2pr-tunnel|i2pr-transport' \
+  "$root/crates/i2pr-i2pcontrol/Cargo.toml" >/dev/null; then
+  echo "i2pr-i2pcontrol must not depend on daemon/runtime/service implementation owners" >&2
+  exit 1
+fi
+
+if grep -REn "unbounded_channel|unbounded::<|UnboundedSender|UnboundedReceiver" \
+  "$root/crates/i2pr-i2pcontrol/src" >/dev/null; then
+  echo "unbounded asynchronous channels are forbidden in i2pr-i2pcontrol source" >&2
+  exit 1
+fi
+
+# No UI/frontend dependency may enter the control-contract crate.
+if grep -REn 'egui|iced|tauri|dioxus|yew|leptos|slint' \
+  "$root/crates/i2pr-i2pcontrol/src" "$root/crates/i2pr-i2pcontrol/Cargo.toml" >/dev/null; then
+  echo "no UI/frontend dependency may enter i2pr-i2pcontrol" >&2
+  exit 1
+fi
+
 if grep -REn 'async[[:space:]]+fn|async_trait|i2pr-(netdb|tunnel|client)' \
   "$root/crates/i2pr-transport" "$root/crates/i2pr-transport-ntcp2" "$root/crates/i2pr-transport-ssu2" >/dev/null; then
   echo "transport contracts must remain synchronous and independent of routing clients" >&2
