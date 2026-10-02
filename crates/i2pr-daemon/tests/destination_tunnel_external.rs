@@ -470,6 +470,7 @@ async fn destination_message_plane_against_i2pd() {
     let mut pump_msgid_match = 0u64;
     let mut pump_tunnel_data = 0u64;
     let mut pump_router_control = 0u64;
+    let mut pump_peer_test = 0u64;
     let mut pump_unsupported: std::collections::BTreeMap<u8, u64> =
         std::collections::BTreeMap::new();
     let snapshot_before = handle.snapshot();
@@ -519,6 +520,12 @@ async fn destination_message_plane_against_i2pd() {
             i2pr_daemon::router_i2np::RouterI2npOutcome::RouterControl { .. } => {
                 pump_router_control += 1;
             }
+            i2pr_daemon::router_i2np::RouterI2npOutcome::PeerTest { .. } => {
+                // Classified peer-testing arrival. Count only: the probe
+                // identifier and timestamp are peer metadata and are never
+                // recorded.
+                pump_peer_test += 1;
+            }
             i2pr_daemon::router_i2np::RouterI2npOutcome::Unsupported { type_byte, .. } => {
                 // Wire-type metadata only: reveals which I2NP types
                 // the reference emits that this router does not yet
@@ -561,7 +568,7 @@ async fn destination_message_plane_against_i2pd() {
         &evidence_dir,
         "install-pump-summary",
         &format!(
-            "build_reserved={pump_build_reserved} other={pump_other} tunnel_data={pump_tunnel_data} router_control={pump_router_control} unsupported={pump_unsupported:?} installed_ob={pump_installed_ob} installed_ib={pump_installed_ib} non_install={pump_invalid} dispatch_error={pump_dispatch_error} kind_reply={pump_kind_reply} kind_other_build={pump_kind_other_build} msgid_match={pump_msgid_match}"
+            "build_reserved={pump_build_reserved} other={pump_other} tunnel_data={pump_tunnel_data} router_control={pump_router_control} peer_test={pump_peer_test} unsupported={pump_unsupported:?} installed_ob={pump_installed_ob} installed_ib={pump_installed_ib} non_install={pump_invalid} dispatch_error={pump_dispatch_error} kind_reply={pump_kind_reply} kind_other_build={pump_kind_other_build} msgid_match={pump_msgid_match}"
         ),
     );
     let snapshot_after = handle.snapshot();

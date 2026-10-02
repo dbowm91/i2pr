@@ -30,6 +30,28 @@ pub struct TunnelGatewayMessage {
     pub message: Box<I2npMessage>,
 }
 
+/// Peer-testing message body.
+///
+/// The body is exactly [`TUNNEL_TEST_BODY_SIZE`] bytes: a message
+/// identifier the responder echoes unchanged, and a timestamp the
+/// originator uses to derive round-trip time. The timestamp is an opaque
+/// probe value, not a local clock reading, so this codec never interprets
+/// it and never derives a duration from it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TunnelTestMessage {
+    /// Message identifier echoed unchanged by the responder.
+    pub msg_id: u32,
+    /// Opaque timestamp supplied by the originator.
+    pub timestamp: u64,
+}
+
+impl TunnelTestMessage {
+    /// Returns the exact encoded body size.
+    pub const fn body_size() -> usize {
+        TUNNEL_TEST_BODY_SIZE
+    }
+}
+
 /// Fixed-size or variable-size tunnel-build records retained for later crypto.
 #[derive(Clone, Eq, PartialEq)]
 pub struct DeferredBuildRecords {

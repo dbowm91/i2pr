@@ -33,6 +33,8 @@ pub enum I2npBody {
     ShortTunnelBuild(DeferredBuildRecords),
     /// Short tunnel-build reply records; record cryptography is deferred.
     OutboundTunnelBuildReply(DeferredBuildRecords),
+    /// Peer-testing body.
+    TunnelTest(TunnelTestMessage),
 }
 
 impl I2npBody {
@@ -53,6 +55,7 @@ impl I2npBody {
             Self::VariableTunnelBuildReply(_) => MessageType::VariableTunnelBuildReply,
             Self::ShortTunnelBuild(_) => MessageType::ShortTunnelBuild,
             Self::OutboundTunnelBuildReply(_) => MessageType::OutboundTunnelBuildReply,
+            Self::TunnelTest(_) => MessageType::TunnelTest,
         }
     }
 
@@ -118,6 +121,10 @@ impl I2npBody {
             }
             Self::ShortTunnelBuild(value) | Self::OutboundTunnelBuildReply(value) => {
                 encode_variable_records(encoder, value, SHORT_BUILD_RECORD_SIZE)
+            }
+            Self::TunnelTest(value) => {
+                encoder.write_u32(value.msg_id)?;
+                encoder.write_u64(value.timestamp)
             }
         }
     }
@@ -566,6 +573,10 @@ fn decode_body(
         MessageType::OutboundTunnelBuildReply => Ok(I2npBody::OutboundTunnelBuildReply(
             decode_variable_records(cursor, SHORT_BUILD_RECORD_SIZE)?,
         )),
+        MessageType::TunnelTest => Ok(I2npBody::TunnelTest(TunnelTestMessage {
+            msg_id: cursor.read_u32()?,
+            timestamp: cursor.read_u64()?,
+        })),
         MessageType::Unknown(code) => Err(CodecError::Unsupported {
             offset: 0,
             context: "I2NP message type",
@@ -1067,6 +1078,98 @@ mod tests {
             0x0102_0304,
             Date::from_millis(0x0506_0708_090a_0b0c),
         ))
+    }
+
+    /// The peer-testing identifier is 231 and is not part of the
+    /// build-family numbering, so it is pinned explicitly against the
+    /// reference enumeration rather than left to a range assertion.
+    fn tunnel_test() -> TunnelTestMessage {
+        TunnelTestMessage {
+            msg_id: 5,
+            timestamp: 7,
+        }
+    }
+
+    #[test]
+    fn tunnel_test_identifier_is_pinned_to_231() {
+        assert_eq!(MessageType::from_code(231), MessageType::TunnelTest);
+        assert_eq!(MessageType::TunnelTest.code(), 231);
+        assert_eq!(
+            I2npBody::TunnelTest(tunnel_test()).message_type(),
+            MessageType::TunnelTest
+        );
+    }
+
+    /// A peer-testing message is exactly a message identifier and an
+    /// eight-byte timestamp, with no padding and no trailing slack, so an
+    /// echoed probe cannot be silently reinterpreted by a peer.
+    #[test]
+    fn tunnel_test_standard_golden_round_trip() {
+        assert_eq!(TunnelTestMessage::body_size(), 12);
+        let message = I2npMessage::new_standard(
+            0x0000_0001,
+            Date::from_millis(0x0000_0002),
+            I2npBody::TunnelTest(tunnel_test()),
+        )
+        .unwrap();
+        let encoded = message.encode_standard_to_vec(MAX).unwrap();
+        // Standard header: type, message id, expiration, size, checksum,
+        // then the exact 12-byte body. The checksum byte is the first byte
+        // of SHA-256 over the body, pinned here so a wire change to the
+        // peer-testing body cannot pass silently.
+        let expected = [
+            0xe7, // TunnelTest, 231
+            0x00, 0x00, 0x00, 0x01, // message id
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // expiration milliseconds
+            0x00, 0x0c, // body length, 12
+            0x41, // SHA-256(body)[0]
+            0x00, 0x00, 0x00, 0x05, // echoed message identifier
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, // timestamp
+        ];
+        assert_eq!(encoded, expected);
+        assert_eq!(
+            I2npMessage::decode_standard(&encoded, MAX).unwrap(),
+            message
+        );
+    }
+
+    /// The body is decoded with exact consumption: a short or long body is
+    /// rejected rather than padded or truncated, so a malformed probe
+    /// cannot produce an answer.
+    #[test]
+    fn tunnel_test_rejects_wrong_body_length() {
+        let mut short =
+            I2npMessage::new_standard(1, Date::from_millis(2), I2npBody::TunnelTest(tunnel_test()))
+                .unwrap()
+                .encode_standard_to_vec(MAX)
+                .unwrap();
+        short.truncate(short.len() - 1);
+        assert!(I2npMessage::decode_standard(&short, MAX).is_err());
+
+        let mut long =
+            I2npMessage::new_standard(1, Date::from_millis(2), I2npBody::TunnelTest(tunnel_test()))
+                .unwrap()
+                .encode_standard_to_vec(MAX)
+                .unwrap();
+        long.insert(long.len() - 1, 0xff);
+        assert!(I2npMessage::decode_standard(&long, MAX).is_err());
+    }
+
+    /// The short-transport header carries the same body, so a peer testing
+    /// over SSU2 decodes through the same exact-consumption path.
+    #[test]
+    fn tunnel_test_short_transport_round_trip() {
+        let body = I2npBody::TunnelTest(tunnel_test());
+        let encoded = body.encode_to_vec(MAX).unwrap();
+        assert_eq!(encoded.len(), TUNNEL_TEST_BODY_SIZE);
+        let mut framed = I2npMessage::new_short_transport(9, 2, body)
+            .unwrap()
+            .encode_short_transport_to_vec(MAX)
+            .unwrap();
+        let decoded = I2npMessage::decode_short_transport(&framed, MAX).unwrap();
+        assert_eq!(decoded.body(), &I2npBody::TunnelTest(tunnel_test()));
+        framed.truncate(framed.len() - 1);
+        assert!(I2npMessage::decode_short_transport(&framed, MAX).is_err());
     }
 
     #[test]

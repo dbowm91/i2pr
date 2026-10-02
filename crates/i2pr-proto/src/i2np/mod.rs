@@ -60,6 +60,9 @@ pub const SHORT_BUILD_NONCE_LEN: usize = 16;
 pub const SHORT_BUILD_TAG_LEN: usize = 16;
 /// The fixed tunnel-data payload size.
 pub const TUNNEL_DATA_PAYLOAD_SIZE: usize = 1024;
+/// The exact peer-testing body size in bytes: a four-byte message
+/// identifier followed by an eight-byte timestamp.
+pub const TUNNEL_TEST_BODY_SIZE: usize = 12;
 
 mod deferred;
 mod delivery;

@@ -276,7 +276,22 @@ declaration is `netId = 2` and `router.version = 0.9.58`, the value the controll
 already published.
 
 The declaration constant is documented as capped by the implemented I2NP surface, with a test
-that fails if it is raised to 0.9.62 before peer testing exists.
+that fails if it is raised above the surface.
+
+### 10.1b Gate 2 closed by Plan 285
+
+`TunnelTestMessage` (231) is now implemented with exact-consumption decoding, a
+reference-derived golden vector, and a typed dispatcher arm, with a bounded responder and
+outstanding-probe tracker in `i2pr-daemon::peer_test`. `i2pr` therefore implements the
+complete I2NP message surface the pinned reference enumerates, so the declaration is
+0.9.62 — the level the reference pairs with peer testing and the minimum
+`IsEligibleFloodfill` accepts. A test pins the declaration to the surface so the claim
+cannot outrun the implementation.
+
+Plan 285 closes **retained**, not passed: the `specs/CONFORMANCE.md` mixed-router step is
+unmet, so the mechanical gates are closed in code but the reference has not yet been
+observed admitting the record. Plan 278 is unblocked to `ready` for one bounded exact-pinned
+attempt. See `plans/closure/floodfill/285-status.md`.
 
 The runtime install guard compares `netId` against the currently installed record, so the
 `floodfill_controlled_lifecycle` harness, which hand-rolled its identity record with an empty

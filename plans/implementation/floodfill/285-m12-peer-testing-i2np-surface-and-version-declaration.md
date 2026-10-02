@@ -1,6 +1,6 @@
 # Plan 285 — M12 close the I2NP peer-testing gap and reconsider the version declaration
 
-Status: **registered-m12-peer-testing-gap-is-the-remaining-floodfill-eligibility-blocker**
+Status: **retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence**
 
 Classification: capability correction. This is the only work that stands between the controlled
 profile and reference-side floodfill eligibility. It owns a version-declaration decision, so it is
@@ -20,8 +20,9 @@ reference will only use a peer as a floodfill if that peer declares an I2NP vers
 `RouterInfo::IsEligibleFloodfill` (`libi2pd/RouterInfo.cpp:1022-1029`) requires
 `m_Version >= NETDB_MIN_FLOODFILL_VERSION` (962, i.e. 0.9.62) with no high-bandwidth
 alternative, and every peer-side `m_Floodfills.Insert` consults it. `i2pr`'s controlled
-declaration is currently 0.9.58, so the controlled record loads and is then refused floodfill
-eligibility.
+declaration is now 0.9.62, so the controlled record clears both gates. That value is substantiated
+by the implemented I2NP surface, and the mixed-router evidence that would validate it end to end is
+named as the remaining gap in the checklist below.
 
 ## The gap is now concrete, not a judgement call
 
@@ -51,12 +52,54 @@ enumeration (`libi2pd/I2NPProtocol.h:111-125`):
 | 26 | ShortTunnelBuildReply | yes |
 | 231 | TunnelTest | **no** |
 
-`i2pr` implements every I2NP type through short tunnel-build. The single missing type is
+`i2pr` implemented every I2NP type through short tunnel-build. The single missing type was
 `TunnelTestMessage` (231), which is precisely the 0.9.62-era peer-testing addition the reference
 pairs with that level: `NETDB_MIN_PEER_TEST_VERSION` is 0.9.62, and the reference clears a
 router's SSU2 peer-testing address caps below that level (`RouterInfo.cpp:468-473`).
 
-So the remaining blocker is one message type, not a version-string debate.
+So the blocker was one message type, not a version-string debate, and it is now implemented.
+
+## Delivered
+
+- `MessageType::TunnelTest` at wire code 231, pinned by test; the identifier is not adjacent to the
+  build family, so it is spelled out rather than range-grouped.
+- `TunnelTestMessage { msg_id, timestamp }`, an exactly 12-byte body decoded with exact consumption
+  and covered by a reference-derived golden vector whose checksum byte is independently verified as
+  `SHA-256(body)[0]`.
+- `I2npBody::TunnelTest` with a typed `RouterI2npOutcome::PeerTest` dispatcher arm carrying the
+  authenticated peer, the exact link, and the probed fields.
+- `i2pr-daemon::peer_test`: `PeerTestEcho` (the bounded, honest answer owed to an inbound probe,
+  built from the authenticated delivery and echoed with the probed fields unchanged) and
+  `PeerTestTracker` (capacity-bounded, age-bounded outstanding-probe table that refuses rather than
+  evicts, reports a late answer as `TimedOut` rather than healthy, and exposes `expire` so
+  retention is observable).
+- The transit owner ignores a peer test rather than routing it into the tunnel tables.
+- `CONTROLLED_ROUTER_VERSION` raised to 0.9.62 with the consistency test that fails if the
+  declaration outruns the implemented surface.
+
+## `specs/CONFORMANCE.md` checklist result
+
+The plan required the capability-advertisement checklist to be satisfied before raising the
+declaration. Its five steps, answered honestly:
+
+1. **Feature implications.** Done. `router.version` is an I2NP feature/API version, and 0.9.62's
+   paired I2NP type is `TunnelTest` (231). The type table above is the identification.
+2. **Verify implied mandatory behavior.** Done. A peer that sends a test receives an answer derived
+   from the authenticated delivery; an originator's probe is either matched or reported as timed
+   out, never silently dropped. Pinned by nine daemon tests and four codec tests.
+3. **Mixed-router tests for the changed claim.** **Not satisfied locally, and named as the
+   remaining gap.** This is the circularity the plan anticipated: the mixed-router validation needs
+   a reference that admits the record, and admission needed this declaration. The gap is now one
+   bounded external attempt in the Plan 278 lane, not an open-ended conformance argument.
+4. **Downgrade/unsupported peers.** Done for the decode boundary: an unknown type keeps its bounded
+   unsupported disposition and a malformed body fails closed, so a peer below this level or sending
+   a truncated probe is handled without a false claim.
+5. **Update the dossier and support matrix.** Done: the I2NP dossier already defines the semantics,
+   and `specs/support.toml` records the declaration and this plan.
+
+Because step 3 is unmet, this plan closes **retained**, not passed. The local floor is green and the
+declaration is substantiated by the implemented surface, but no external row may be claimed from
+this plan.
 
 ## Required work
 

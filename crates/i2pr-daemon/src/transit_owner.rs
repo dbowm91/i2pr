@@ -707,6 +707,10 @@ where
                 Ok(LiveInboundOutcome::Ignored)
             }
             RouterI2npOutcome::RouterControl { .. } => Ok(LiveInboundOutcome::Ignored),
+            // A peer test is answered by the peer-test responder, not by the
+            // transit owner. It carries no build or data-plane work, so it is
+            // ignored here rather than routed into the tunnel tables.
+            RouterI2npOutcome::PeerTest { .. } => Ok(LiveInboundOutcome::Ignored),
         }
     }
 

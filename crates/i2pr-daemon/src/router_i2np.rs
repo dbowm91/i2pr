@@ -140,6 +140,26 @@ pub enum RouterI2npOutcome {
         /// Encoded length of the dispatched message.
         encoded_len: usize,
     },
+    /// Peer-testing message. The answer owed to the peer is derived from
+    /// this authenticated delivery, never from a caller-supplied identity.
+    PeerTest {
+        /// Which header variant carried it.
+        header: RouterI2npHeaderKind,
+        /// Transport message identifier.
+        message_id: u32,
+        /// Validated expiration in milliseconds since the Unix epoch.
+        expiration_ms: u64,
+        /// Identifier the responder echoes unchanged.
+        peer_test_msg_id: u32,
+        /// Opaque timestamp the responder echoes unchanged.
+        peer_test_timestamp: u64,
+        /// Authenticated peer reference.
+        peer: PeerId,
+        /// Exact link the message arrived on.
+        link_id: LinkId,
+        /// Encoded length of the dispatched message.
+        encoded_len: usize,
+    },
     /// TunnelData cell for the existing data-plane registry seam.
     TunnelData {
         /// Which header variant carried it.
@@ -193,6 +213,7 @@ impl RouterI2npOutcome {
     pub const fn peer(self) -> PeerId {
         match self {
             Self::TunnelBuildReserved { peer, .. }
+            | Self::PeerTest { peer, .. }
             | Self::TunnelData { peer, .. }
             | Self::RouterControl { peer, .. }
             | Self::Unsupported { peer, .. } => peer,
@@ -203,6 +224,7 @@ impl RouterI2npOutcome {
     pub const fn link_id(self) -> LinkId {
         match self {
             Self::TunnelBuildReserved { link_id, .. }
+            | Self::PeerTest { link_id, .. }
             | Self::TunnelData { link_id, .. }
             | Self::RouterControl { link_id, .. }
             | Self::Unsupported { link_id, .. } => link_id,
@@ -213,6 +235,7 @@ impl RouterI2npOutcome {
     pub const fn encoded_len(self) -> usize {
         match self {
             Self::TunnelBuildReserved { encoded_len, .. }
+            | Self::PeerTest { encoded_len, .. }
             | Self::TunnelData { encoded_len, .. }
             | Self::RouterControl { encoded_len, .. }
             | Self::Unsupported { encoded_len, .. } => encoded_len,
@@ -609,6 +632,16 @@ fn classify_message(
             header,
             message_id,
             expiration_ms,
+            peer,
+            link_id,
+            encoded_len,
+        }),
+        I2npBody::TunnelTest(test) => Ok(RouterI2npOutcome::PeerTest {
+            header,
+            message_id,
+            expiration_ms,
+            peer_test_msg_id: test.msg_id,
+            peer_test_timestamp: test.timestamp,
             peer,
             link_id,
             encoded_len,

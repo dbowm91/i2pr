@@ -33,6 +33,9 @@ pub enum MessageType {
     ShortTunnelBuild,
     /// Short ECIES tunnel-build reply message.
     OutboundTunnelBuildReply,
+    /// Peer-testing message. The identifier is 231, not adjacent to the
+    /// build family, so it is spelled out rather than grouped.
+    TunnelTest,
     /// An identifier not assigned by the pinned specification.
     Unknown(u8),
 }
@@ -55,6 +58,7 @@ impl MessageType {
             24 => Self::VariableTunnelBuildReply,
             25 => Self::ShortTunnelBuild,
             26 => Self::OutboundTunnelBuildReply,
+            231 => Self::TunnelTest,
             other => Self::Unknown(other),
         }
     }
@@ -76,6 +80,7 @@ impl MessageType {
             Self::VariableTunnelBuildReply => 24,
             Self::ShortTunnelBuild => 25,
             Self::OutboundTunnelBuildReply => 26,
+            Self::TunnelTest => 231,
             Self::Unknown(code) => code,
         }
     }

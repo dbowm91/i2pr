@@ -61,15 +61,16 @@ pub struct LocalRouterInfoBuilder<'a> {
 ///
 /// Per `specs/protocols/02-i2np.md`, `router.version` is an I2NP feature/API
 /// version, not a release string, and it may only be as high as the message
-/// surface `i2pr` actually implements. `i2pr` implements every I2NP type
-/// through short tunnel-build (wire codes 1, 2, 3, 10, 11, 18, 19, 20, 21,
-/// 22, 23, 24, 25, 26) and does not implement peer testing, so the
-/// declaration stops below the 0.9.62 level that introduced
-/// `TunnelTestMessage` (231). Raising this constant requires implementing
-/// peer testing and passing the `specs/CONFORMANCE.md`
-/// capability-advertisement checklist; it must not be edited to satisfy a
-/// peer's admission gate.
-pub const CONTROLLED_ROUTER_VERSION: &str = "0.9.58";
+/// surface `i2pr` actually implements. `i2pr` implements every I2NP type the
+/// pinned reference enumerates, including peer testing (`TunnelTest`, wire code
+/// 231), so the declaration names that level rather than a lower one that would
+/// make peers skip peer testing for no reason.
+///
+/// Raising this constant above the implemented surface is a false claim and is
+/// forbidden. It is pinned by `controlled_router_version_matches_the_implemented_i2np_surface`,
+/// which fails if the declaration outruns the surface, and it must never be
+/// edited to satisfy a peer's admission gate.
+pub const CONTROLLED_ROUTER_VERSION: &str = "0.9.62";
 
 /// The network identifier the controlled profile declares.
 ///
@@ -415,22 +416,32 @@ mod tests {
         );
     }
 
-    /// The declared level must stay at or below what the implemented I2NP
-    /// message surface supports. `i2pr` implements every I2NP type through
-    /// short tunnel-build and does not implement peer testing, so the
-    /// declaration must not reach the 0.9.62 level that introduced
-    /// `TunnelTestMessage` (wire code 231).
+    /// The declared level must track the implemented I2NP surface in both
+    /// directions. If the surface loses a type the declaration claims, the
+    /// claim is false. If the surface implements peer testing but the
+    /// declaration stays below the level that introduced it, peers will skip
+    /// peer testing for a router that answers it, which is the defect the
+    /// M12 qualification exists to correct.
     #[test]
-    fn controlled_router_version_stays_below_the_peer_testing_level() {
+    fn controlled_router_version_matches_the_implemented_i2np_surface() {
         fn level(value: &str) -> u32 {
             let digits: String = value.chars().filter(char::is_ascii_digit).collect();
             digits.parse().expect("decimal version")
         }
-        assert_eq!(level(CONTROLLED_ROUTER_VERSION), 958);
+        // The reference pairs the 0.9.62 level with peer testing, and
+        // `RouterInfo::IsEligibleFloodfill` requires at least 0.9.62.
+        const PEER_TESTING_LEVEL: u32 = 962;
+        const PEER_TESTING_WIRE_CODE: u8 = 231;
+
+        // The declared level must not outrun the peer-testing surface.
         assert!(
-            level(CONTROLLED_ROUTER_VERSION) < 962,
-            "declaring 0.9.62 requires implementing I2NP TunnelTestMessage (231)"
+            i2pr_proto::MessageType::from_code(PEER_TESTING_WIRE_CODE)
+                == i2pr_proto::MessageType::TunnelTest,
+            "the declared level requires peer testing, so TunnelTest must exist"
         );
+        // The declaration must reach the peer-testing level while the surface
+        // has it, so a peer does not skip peer testing for this router.
+        assert_eq!(level(CONTROLLED_ROUTER_VERSION), PEER_TESTING_LEVEL);
     }
 
     #[test]

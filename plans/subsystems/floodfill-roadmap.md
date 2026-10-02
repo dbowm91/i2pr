@@ -140,7 +140,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 283 | passed | passed-m12-third-class-evidence-and-controlled-activation | plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md | plans/closure/floodfill/283-status.md |
 | 278 | stopped | stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | plans/closure/floodfill/278-status.md |
 | 284 | ready | registered-m12-controlled-publication-reference-acceptance-corrective |
-| 285 | ready | registered-m12-peer-testing-gap-is-the-remaining-floodfill-eligibility-blocker | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
+| 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -230,8 +230,15 @@ rather than an implementation fix.
 Plan 284 delivered the mechanical half of the reference gate: the controlled floodfill,
 withdrawal, and controlled SSU2 identity paths now share one `netId`/`router.version`
 declaration, so the reference no longer marks the controlled record unreachable at parse
-time. The remaining half is floodfill eligibility, now scoped by Plan 285 to the single
-missing I2NP type `TunnelTestMessage` (231) and the `specs/CONFORMANCE.md` version-declaration
-checklist. `i2pr` implements every other I2NP type through short tunnel-build.
+time.
+
+Plan 285 delivered the eligibility half. `TunnelTestMessage` (231) is implemented with a
+reference-derived golden vector, exact-consumption decoding, a typed dispatcher arm, and a
+bounded responder/tracker pair in `i2pr-daemon::peer_test`. `i2pr` now implements the
+complete I2NP message surface the pinned reference enumerates, so the declaration is 0.9.62,
+pinned to that surface by a test that fails if the claim outruns the implementation. It
+closes **retained**: the `specs/CONFORMANCE.md` mixed-router step is unmet and needs one
+bounded exact-pinned external attempt, so Plan 278 is unblocked to `ready` but no external
+row is claimed.
 Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
 I2P-compatible Red25519 provider.

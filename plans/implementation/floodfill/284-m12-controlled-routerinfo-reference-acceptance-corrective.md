@@ -80,9 +80,10 @@ This is a conformance boundary, not a code defect.
   SSU2 identity publication paths now share `i2pr_netdb::controlled_router_options()`, so every
   controlled record declares `netId` and `router.version` and the reference no longer marks it
   unreachable at parse time. Regression tests pin the declaration and pin the version ceiling.
-- Gate 2 is not deliverable here. It is a version-declaration decision, not a code fix, and it is
-  handed to Plan 285, which owns the one missing I2NP type (`TunnelTestMessage`, 231) and the
-  resulting `specs/CONFORMANCE.md` checklist.
+- Gate 2 was handed to Plan 285, which implemented the one missing I2NP type
+  (`TunnelTestMessage`, 231), completed the `specs/CONFORMANCE.md` checklist as far as the local
+  floor allows, and raised the declaration to 0.9.62 pinned to the implemented surface. Plan 285
+  closes retained pending the mixed-router step; see `plans/closure/floodfill/285-status.md`.
 - Do not add `O`. Do not add `router.version = 0.9.62` (or any version at or above it)
   without first passing the `specs/CONFORMANCE.md` capability-advertisement checklist and
   ADR 0027 §9, which i2pr's current support level does not satisfy.

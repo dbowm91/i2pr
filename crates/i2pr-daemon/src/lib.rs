@@ -19,6 +19,7 @@ pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
 pub mod outbound_lookup;
+pub mod peer_test;
 pub mod router_i2np;
 pub mod sam;
 pub mod service_delivery;
