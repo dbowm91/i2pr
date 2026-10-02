@@ -262,6 +262,37 @@ independent defect; they are the proximate cause.
 
 ## 10. Defects owned by the corrective (Plan 284)
 
+### 10.1 Gate 1 fixed: the controlled record now declares `netId` and `router.version`
+
+The proximate rejection is corrected in code, not only diagnosed. `activate_controlled` built the
+floodfill record with an empty options mapping (`crates/i2pr-daemon/src/floodfill.rs`, previously
+`Mapping::empty()`), so the record carried neither `netId` nor `router.version` and the reference
+marked it unreachable at `libi2pd/RouterInfo.cpp:508`. The controlled SSU2 identity path already
+published both options, so the two controlled publication paths had drifted.
+
+`i2pr_netdb::controlled_router_options()` is now the single source of truth, used by the
+controlled floodfill build, the withdrawal build, and the controlled SSU2 identity build. The
+declaration is `netId = 2` and `router.version = 0.9.58`, the value the controlled SSU2 path
+already published.
+
+The declaration constant is documented as capped by the implemented I2NP surface, with a test
+that fails if it is raised to 0.9.62 before peer testing exists.
+
+The runtime install guard compares `netId` against the currently installed record, so the
+`floodfill_controlled_lifecycle` harness, which hand-rolled its identity record with an empty
+options mapping, could not install a later record that declared one. The harness now mirrors the
+daemon's controlled identity publication. The guard itself is unchanged and was not weakened.
+
+### 10.2 Gate 2 is the only remaining blocker, and it is now scoped
+
+`RouterInfo::IsEligibleFloodfill` requires `router.version >= 0.9.62` with no high-bandwidth
+alternative, so the 0.9.58 declaration clears loading but not floodfill eligibility. Per
+`specs/protocols/02-i2np.md`, `router.version` is an I2NP feature/API version, which makes the
+question a finite set of message types. `i2pr` implements every I2NP type through short
+tunnel-build and lacks exactly one: `TunnelTestMessage` (231), the 0.9.62-era peer-testing type.
+Plan 285 owns that gap and the resulting version-declaration decision.
+
+
 Recorded for the corrective to confirm against a fresh reference client. These are no longer
 open hypotheses: §9 localizes the gate, and the two "candidate content gaps" from the first
 pass are explained by it rather than being independent defects.

@@ -59,7 +59,10 @@ pub use lease_set2::{
     LeaseSet2StoreStats, LeaseSet2ValidationContext, LeaseSet2ValidationError,
     LeaseSet2ValidationPolicy, LeaseSetDisclosureBlock, ValidatedLeaseSet2,
 };
-pub use local::{LocalRouterInfo, LocalRouterInfoBuilder, LocalRouterInfoError};
+pub use local::{
+    CONTROLLED_NET_ID, CONTROLLED_ROUTER_VERSION, LocalRouterInfo, LocalRouterInfoBuilder,
+    LocalRouterInfoError, controlled_router_options,
+};
 pub use lookup_action::{
     DecompressionError, LOOKUP_EXCLUDED_PEER_BUDGET, LookupAction, LookupFinalState, LookupOutcome,
     MAX_COMPRESSED_ROUTER_INFO_BYTES, MAX_DECOMPRESSED_ROUTER_INFO_BYTES, ReplyPathSink,

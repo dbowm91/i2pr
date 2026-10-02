@@ -39,10 +39,11 @@ use i2pr_daemon::router_i2np::{
     daemon_dial_target,
 };
 use i2pr_netdb::{
-    FloodfillEligibilitySnapshot, FloodfillResourcePolicy, FloodfillRoleState,
-    FloodfillStoreEffect, FloodfillStorePolicy, FloodfillTime, InboundProvenance, NetDbNamespace,
-    RecordProvenance, ReplicationPolicy, RouterHash, ServerNetDbConfig, StorePurpose,
-    ValidatedNetDbRecord, ValidatedRouterInfo, ValidationContext,
+    CONTROLLED_NET_ID, CONTROLLED_ROUTER_VERSION, FloodfillEligibilitySnapshot,
+    FloodfillResourcePolicy, FloodfillRoleState, FloodfillStoreEffect, FloodfillStorePolicy,
+    FloodfillTime, InboundProvenance, NetDbNamespace, RecordProvenance, ReplicationPolicy,
+    RouterHash, ServerNetDbConfig, StorePurpose, ValidatedNetDbRecord, ValidatedRouterInfo,
+    ValidationContext, controlled_router_options,
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash,
@@ -134,12 +135,19 @@ fn make_keys() -> FloodKeys {
         options,
     )
     .expect("address");
+    // The identity record mirrors the daemon's controlled identity
+    // publication (`router_i2np::generate_controlled_identity`): it carries
+    // the same controlled declaration. The install guard compares netId
+    // against the currently installed record, so a hand-rolled identity
+    // record without the declaration cannot install a later record that
+    // has one, and the pinned reference would mark such a record
+    // unreachable regardless.
     let info = bundle
         .sign_router_info(
             Date::from_millis(wall_ms()),
             vec![address],
             Vec::new(),
-            Mapping::empty(),
+            controlled_router_options().expect("controlled options"),
         )
         .expect("sign");
     let router_info = info
@@ -1034,12 +1042,15 @@ fn plain_router_info(
         options,
     )
     .expect("address");
+    // Republishes of the local record must keep the same controlled netId
+    // the install guard compares against, so this helper uses the shared
+    // controlled declaration rather than an empty mapping.
     keys.bundle
         .sign_router_info(
             Date::from_millis(published_ms),
             vec![address],
             Vec::new(),
-            Mapping::empty(),
+            controlled_router_options().expect("controlled options"),
         )
         .expect("sign")
 }
@@ -1076,6 +1087,50 @@ fn address_of(info: &RouterInfo) -> RouterAddress {
 
 fn caps_of(info: &RouterInfo) -> String {
     info.options().get("caps").unwrap_or("").to_owned()
+}
+
+/// The activated controlled floodfill record must carry the controlled
+/// declaration (`netId` and `router.version`). The pinned reference marks a
+/// record lacking either one unreachable at parse time
+/// (`libi2pd/RouterInfo.cpp:508`); that boundary is where the Plan 278 lane
+/// stopped, so the declaration is pinned here at the activation boundary.
+#[tokio::test]
+async fn activated_controlled_record_declares_net_id_and_router_version() {
+    let alice = start_service(make_keys()).await;
+    let mut coordinator = fresh_coordinator(alice.keys.hash);
+    let cancel = CancellationToken::new();
+    let activation = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: eligible_base(),
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancel,
+    })
+    .await
+    .expect("controlled activation");
+    let info = RouterInfo::decode(
+        &activation.router_info,
+        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+    )
+    .expect("decode activated floodfill RouterInfo");
+    assert_eq!(
+        info.options().get("netId"),
+        Some(CONTROLLED_NET_ID),
+        "controlled record must declare netId or the reference marks it unreachable"
+    );
+    assert_eq!(
+        info.options().get("router.version"),
+        Some(CONTROLLED_ROUTER_VERSION),
+        "controlled record must declare router.version or the reference marks it unreachable"
+    );
+    assert_eq!(caps_of(&info), "f", "capability stays the reviewed f");
+    alice.shutdown().await;
 }
 
 #[tokio::test]

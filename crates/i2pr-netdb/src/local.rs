@@ -57,6 +57,48 @@ pub struct LocalRouterInfoBuilder<'a> {
     bundle: &'a RouterIdentityBundle,
 }
 
+/// The I2NP feature/API version the controlled profile declares.
+///
+/// Per `specs/protocols/02-i2np.md`, `router.version` is an I2NP feature/API
+/// version, not a release string, and it may only be as high as the message
+/// surface `i2pr` actually implements. `i2pr` implements every I2NP type
+/// through short tunnel-build (wire codes 1, 2, 3, 10, 11, 18, 19, 20, 21,
+/// 22, 23, 24, 25, 26) and does not implement peer testing, so the
+/// declaration stops below the 0.9.62 level that introduced
+/// `TunnelTestMessage` (231). Raising this constant requires implementing
+/// peer testing and passing the `specs/CONFORMANCE.md`
+/// capability-advertisement checklist; it must not be edited to satisfy a
+/// peer's admission gate.
+pub const CONTROLLED_ROUTER_VERSION: &str = "0.9.58";
+
+/// The network identifier the controlled profile declares.
+///
+/// `i2pr` implements the mainnet (2) address and network behaviour, so the
+/// controlled record declares netId 2. A controlled record that omits `netId`
+/// is marked unreachable by the reference at parse time
+/// (`libi2pd/RouterInfo.cpp:508`), and a `netId` that disagrees with the
+/// peer's configured network is also treated as unreachable.
+pub const CONTROLLED_NET_ID: &str = "2";
+
+/// Builds the RouterInfo option declaration shared by every controlled
+/// publication path.
+///
+/// The controlled SSU2 identity path and the controlled floodfill
+/// publication path must not drift: both records are ingested by the same
+/// reference, which rejects a record lacking `netId` or `router.version`.
+pub fn controlled_router_options() -> Result<Mapping, LocalRouterInfoError> {
+    Mapping::from_entries(vec![
+        (
+            "router.version".to_owned(),
+            CONTROLLED_ROUTER_VERSION.to_owned(),
+        ),
+        ("netId".to_owned(), CONTROLLED_NET_ID.to_owned()),
+    ])
+    .map_err(|_| LocalRouterInfoError::InvalidMapping {
+        context: "controlled options",
+    })
+}
+
 impl<'a> fmt::Debug for LocalRouterInfoBuilder<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -356,6 +398,39 @@ mod tests {
             .build(Date::from_millis(1), options.build().unwrap())
             .unwrap_err();
         assert!(matches!(error, LocalRouterInfoError::InvalidMapping { .. }));
+    }
+
+    /// The controlled declaration is a single source of truth: every
+    /// controlled publication path must emit `netId` and `router.version`.
+    /// The pinned reference marks a record lacking either one unreachable at
+    /// parse time (`libi2pd/RouterInfo.cpp:508`), which is the boundary
+    /// Plan 278 stopped at.
+    #[test]
+    fn controlled_router_options_declare_net_id_and_router_version() {
+        let options = controlled_router_options().expect("controlled options");
+        assert_eq!(options.get("netId"), Some(CONTROLLED_NET_ID));
+        assert_eq!(
+            options.get("router.version"),
+            Some(CONTROLLED_ROUTER_VERSION)
+        );
+    }
+
+    /// The declared level must stay at or below what the implemented I2NP
+    /// message surface supports. `i2pr` implements every I2NP type through
+    /// short tunnel-build and does not implement peer testing, so the
+    /// declaration must not reach the 0.9.62 level that introduced
+    /// `TunnelTestMessage` (wire code 231).
+    #[test]
+    fn controlled_router_version_stays_below_the_peer_testing_level() {
+        fn level(value: &str) -> u32 {
+            let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+            digits.parse().expect("decimal version")
+        }
+        assert_eq!(level(CONTROLLED_ROUTER_VERSION), 958);
+        assert!(
+            level(CONTROLLED_ROUTER_VERSION) < 962,
+            "declaring 0.9.62 requires implementing I2NP TunnelTestMessage (231)"
+        );
     }
 
     #[test]

@@ -76,9 +76,13 @@ This is a conformance boundary, not a code defect.
 
 ## 4. Required work
 
-- Record the boundary above as the outcome and close this corrective without changing
-  i2pr's RouterInfo content, capability set, transport, or advertisement gates. There is no
-  honest code-level fix, and inventing one would be a false claim.
+- Gate 1 is delivered in this corrective: the controlled floodfill, withdrawal, and controlled
+  SSU2 identity publication paths now share `i2pr_netdb::controlled_router_options()`, so every
+  controlled record declares `netId` and `router.version` and the reference no longer marks it
+  unreachable at parse time. Regression tests pin the declaration and pin the version ceiling.
+- Gate 2 is not deliverable here. It is a version-declaration decision, not a code fix, and it is
+  handed to Plan 285, which owns the one missing I2NP type (`TunnelTestMessage`, 231) and the
+  resulting `specs/CONFORMANCE.md` checklist.
 - Do not add `O`. Do not add `router.version = 0.9.62` (or any version at or above it)
   without first passing the `specs/CONFORMANCE.md` capability-advertisement checklist and
   ADR 0027 §9, which i2pr's current support level does not satisfy.

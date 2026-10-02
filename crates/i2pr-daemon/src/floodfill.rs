@@ -9,11 +9,11 @@ use i2pr_netdb::{
     FloodfillLookupEffect, FloodfillPeerView, FloodfillResourceBudget, FloodfillResourcePolicy,
     FloodfillRoleController, FloodfillRoleEffect, FloodfillRoleState, FloodfillStoreEffect,
     FloodfillStorePolicy, FloodfillStoreService, FloodfillTime, ReplicationPlanner,
-    ReplicationPolicy, ServerNetDb, ServerNetDbConfig,
+    ReplicationPolicy, ServerNetDb, ServerNetDbConfig, controlled_router_options,
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody,
-    I2npMessage, Mapping, OpaqueMessageBody, RouterInfo, TunnelGatewayMessage,
+    I2npMessage, OpaqueMessageBody, RouterInfo, TunnelGatewayMessage,
 };
 use i2pr_transport::{LinkId, PeerId};
 
@@ -601,7 +601,10 @@ pub async fn activate_controlled(
     let built = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
         .build_floodfill(
             Date::from_millis(params.wall_now_ms),
-            Mapping::empty(),
+            controlled_router_options().map_err(|error| {
+                params.coordinator.fail_activation();
+                ControlledActivationError::BuildFailed(error)
+            })?,
             material.address.clone(),
             &permit,
         )
@@ -635,21 +638,22 @@ pub async fn activate_controlled(
         // (Plan 283 invariant 6). Best-effort: shutdown racing it owns
         // the sockets anyway. Nothing is published to the coordinator
         // NetDB; the failed activation publishes nothing.
-        if let Ok(withdrawn) = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
-            .build_floodfill_withdrawal(
-                Date::from_millis(params.wall_now_ms),
-                Mapping::empty(),
-                material.address.clone(),
-                &permit,
-            )
-            .and_then(|built| {
-                built
-                    .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
-                    .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping {
-                        context: "encode",
-                    })
-            })
-        {
+        if let Ok(withdrawn) = controlled_router_options().and_then(|options| {
+            i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
+                .build_floodfill_withdrawal(
+                    Date::from_millis(params.wall_now_ms),
+                    options,
+                    material.address.clone(),
+                    &permit,
+                )
+                .and_then(|built| {
+                    built
+                        .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+                        .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                            context: "encode",
+                        })
+                })
+        }) {
             let _ = service.install_local_router_info(withdrawn, params.wall_now_ms);
         }
         params.coordinator.fail_activation();
@@ -762,7 +766,7 @@ pub async fn withdraw_controlled(
     let built = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
         .build_floodfill_withdrawal(
             Date::from_millis(params.wall_now_ms),
-            Mapping::empty(),
+            controlled_router_options().map_err(|_| ControlledActivationError::WithdrawalFailed)?,
             params.address.clone(),
             params.permit,
         )

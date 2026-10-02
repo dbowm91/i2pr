@@ -52,6 +52,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use i2pr_crypto::{OsRng, RouterIdentityBundle, X25519PrivateKey};
+use i2pr_netdb::controlled_router_options;
 use i2pr_proto::{
     Date, Hash, I2npBody, I2npHeader, I2npMessage, Mapping, MessageType, RouterAddress,
     SHORT_BUILD_RECORD_SIZE,
@@ -971,11 +972,7 @@ pub fn generate_controlled_identity(
         options,
     )
     .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
-    let ri_options = Mapping::from_entries(vec![
-        ("router.version".to_string(), "0.9.58".to_string()),
-        ("netId".to_string(), "2".to_string()),
-    ])
-    .map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
+    let ri_options = controlled_router_options().map_err(|_| Ssu2ServiceError::InvalidIdentity)?;
     let info = bundle
         .sign_router_info(
             Date::from_millis(wall_secs().saturating_mul(1000)),
