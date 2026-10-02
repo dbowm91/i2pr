@@ -122,7 +122,7 @@ Plans 304 and 305 are independent and may execute concurrently. Stopped Plans 29
 | 299 | stopped (`stopped-no-plan-298-differential-evidence`) | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | plans/closure/anonymity/299-status.md |
 | 300 | stopped (`stopped-target-isolation-and-reference-diversity-owner-gap`) | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
 | 301 | stopped (`stopped-predecessor-qualification-evidence-incomplete`) | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
-| 304 | ready (`registered-anonymity-ubuntu-reference-topology-foundation`) | infrastructure/evidence corrective | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | future |
+| 304 | active (`in-progress-anonymity-ubuntu-reference-topology-foundation`) | infrastructure/evidence corrective | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | future |
 | 305 | ready (`registered-anonymity-target-scope-and-path-diversity-ownership`) | invariant/production architecture corrective | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | future |
 
 ## 8. Cross-cutting requirements
