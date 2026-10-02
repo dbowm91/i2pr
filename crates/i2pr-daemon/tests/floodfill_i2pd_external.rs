@@ -67,6 +67,12 @@ use rand_core::{OsRng, TryRngCore};
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_RECORD_AGE_MS: u64 = 3_600_000;
+/// Plan 279 §3 publisher rendezvous: the stock Java publisher needs a
+/// live floodfill for its own exploration before its client session (and
+/// LeaseSet) exists, so the Java lane creates the lane destination only
+/// after P signals live. Coarse bound for the whole handshake; the
+/// runner fails first on its own tighter polls.
+const PUBLISHER_SYNC_TIMEOUT: Duration = Duration::from_secs(600);
 const MAINTENANCE_PERIOD: Duration = Duration::from_secs(30);
 const MAINTENANCE_BATCH: usize = 256;
 
@@ -805,6 +811,35 @@ async fn qualify_matrix() {
     ));
     let _ = tokio::time::timeout(POLL_INTERVAL, probe_rx).await;
 
+    // ---- Plan 279 §3 publisher rendezvous --------------------------------
+    // The stock Java publisher needs a live floodfill for its own
+    // exploration before its client session (and LeaseSet) exists, so the
+    // Java lane creates the lane destination only after P signals live.
+    // The runner watches for `p-live`, establishes the lane destination
+    // against live P, then writes `publisher-ready`; matrix A starts
+    // after that. Opt-in via `FLOODFILL_PUBLISHER_SYNC=1` so the proven
+    // i2pd lane (which needs no rendezvous) is byte-identical. Missing
+    // marker at the deadline panics: no marker, no matrix.
+    if std::env::var("FLOODFILL_PUBLISHER_SYNC").as_deref() == Ok("1") {
+        let sync_dir = state_dir().join("publisher-sync");
+        std::fs::create_dir_all(&sync_dir).expect("publisher sync dir");
+        std::fs::write(sync_dir.join("p-live"), b"p-live\n").expect("p-live marker");
+        record("publisher-rendezvous-live", "p-live-signalled");
+        let ready = sync_dir.join("publisher-ready");
+        let deadline = tokio::time::Instant::now() + PUBLISHER_SYNC_TIMEOUT;
+        loop {
+            if ready.exists() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reference publisher never became ready"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        record("publisher-rendezvous-ready", "publisher-ready-observed");
+    }
+
     // ---- matrix A: publisher store + acknowledgement --------------------
     let stored = wait_for("publisher store from reference client", |seen| {
         seen.store_accepted >= 1
@@ -1036,6 +1071,21 @@ async fn floodfill_withdraw_against_java() {
     record("withdrawal-nonf-republished", "caps-without-f");
 
     live.shutdown().await;
+}
+
+/// Plan 279 lane tooling: prints the i2p-base64 ident hash of the
+/// RouterInfo file at `$FLOODFILL_IDENT_OF` as `IDENT_B64=<hash>` so the
+/// runner can seed reference netDb file layouts. Test-only, `#[ignore]`-
+/// gated and fail-closed like every other entry here; it satisfies no
+/// matrix row and writes no evidence.
+#[test]
+#[ignore = "test-only ident printer for the floodfill lanes"]
+fn floodfill_ident_of() {
+    let path = env_value("FLOODFILL_IDENT_OF");
+    let raw = std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let (hash, _) =
+        verify_reference_router_info(&raw).unwrap_or_else(|error| panic!("{path}: {error:?}"));
+    println!("IDENT_B64={}", i2p_b64_encode(hash.as_bytes()));
 }
 
 // ------------------------------------------------------- diagnostic probe

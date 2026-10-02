@@ -9,7 +9,23 @@
 #       the only floodfill in its netDb is i2pr, so its own NetDB selection
 #       is deterministic; hosts one TRANSIENT SAM destination so a
 #       LeaseSet-family publication exercises matrix B)
+#   JD1 stock Java floodfillParticipant=false (transit relay; gives JC's
+#   JD2 stock Java floodfillParticipant=false  client tunnels stock peers to
+#       build through — neither carries f caps, so neither can ever become
+#       a NetDB target and JC's floodfill view stays {i2pr})
 #   P   i2pr controlled floodfill             (the subject of the qualification)
+#
+# Stock client-tunnel building needs working exploration via a live
+# floodfill plus relay peers with mutual netDb knowledge (multi-hop build
+# records must forward through hops that know the next hop's addresses).
+# Attempts/probes established, in order: i2cp=0 starves the SAM bridge
+# (attempt 1);SESSION CREATE blocks on I2PSession.connect leases with no
+# known peers; one relay is insufficient (stock lengths need forwarding);
+# two mutually-seeded relays still fail with no live floodfill in view;
+# adding a live floodfill to the view completes creation in ~1 s. Hence
+# JC is seeded {P, JD1, JD2}, the relays are full-meshed {JD1, JD2, JC},
+# and the lane destination is created only after P signals live
+# (publisher rendezvous in phase 2). J1/J2 stay unseeded pure floodfills.
 #
 # The Java routers run unmodified through the out-of-tree test-only
 # ControlledRouter launcher (stock Router + injected loopback properties,
@@ -43,6 +59,21 @@ JAVA_J1_PORT="${I2PR_JAVA_FLOODFILL_A_PORT:-44841}"
 JAVA_J2_PORT="${I2PR_JAVA_FLOODFILL_B_PORT:-44842}"
 JAVA_JC_PORT="${I2PR_JAVA_FLOODFILL_C_PORT:-44843}"
 JAVA_JC_SAM_PORT="${I2PR_JAVA_FLOODFILL_C_SAM_PORT:-44943}"
+# Attempt-2 lane deltas (attempt 1 finding + out-of-lane probes, which
+# consume no attempt budget): the stock SAM bridge answers HELLO locally
+# but serves SESSION CREATE through the router's I2CP server, so the
+# SAM-hosting router needs a real loopback I2CP port (attempt 1 passed
+# i2cp=0 and every SESSION CREATE hung). SESSION CREATE further blocks
+# in I2PSession.connect until client-tunnel leases exist, which needs
+# working exploration via a live floodfill plus mutually-seeded relay
+# peers. J1/J2 stay `0 0` pure floodfill peers (the M6 tunnel-participant
+# precedent); only JC binds SAM+I2CP.
+reserve_port() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+JAVA_JC_I2CP_PORT="${I2PR_JAVA_FLOODFILL_C_I2CP_PORT:-$(reserve_port)}"
+JAVA_JD1_PORT="${I2PR_JAVA_FLOODFILL_D1_PORT:-44844}"
+JAVA_JD2_PORT="${I2PR_JAVA_FLOODFILL_D2_PORT:-44845}"
 I2PR_PORT="${I2PR_FLOODFILL_PORT:-44831}"
 DRIVER_TIMEOUT="${I2PR_M12_FLOODFILL_TIMEOUT:-900s}"
 # Frozen before execution: three bounded attempts for a first-of-kind
@@ -119,8 +150,8 @@ fi
 LAUNCHER_CP="${LAUNCHER_BUILD}:${JAVA_CP}"
 echo "==> Java launcher compiled"
 
-start_java() { # name datadir ssu2_port sam_port role logname
-  local name="$1" datadir="$2" port="$3" sam="$4" role="$5" logname="$6"
+start_java() { # name datadir ssu2_port sam_port i2cp_port role logname
+  local name="$1" datadir="$2" port="$3" sam="$4" i2cp="$5" role="$6" logname="$7"
   mkdir -p "${datadir}/logs"
   setsid java -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
     -Djava.library.path="${JAVA_CACHE}:${JAVA_CACHE}/lib" \
@@ -128,7 +159,7 @@ start_java() { # name datadir ssu2_port sam_port role logname
     -DloggerFilenameOverride="logs/log-router-0.txt" \
     -Drouterconsole.enable=false \
     -cp "${LAUNCHER_CP}" -Dlauncher.scratch="${SCRATCH}" \
-    ControlledRouter "${datadir}" 127.0.0.1 "${port}" "${sam}" 0 0 "${role}" \
+    ControlledRouter "${datadir}" 127.0.0.1 "${port}" "${sam}" "${i2cp}" 0 "${role}" \
     >"${EVIDENCE_DIR}/${logname}-stdout.log" 2>&1 < /dev/null &
   PIDS+=("$!")
   printf '%s' "$!" > "${SCRATCH}/${name}.pid"
@@ -165,6 +196,34 @@ seed_java_netdb() { # datadir src_file ident_b64
   cp "${src}" "${datadir}/netDb/${bucket}/routerInfo-${ident}.dat"
 }
 
+# Stops a router started by start_java (bounded TERM, then KILL).
+# Router keys/RouterInfo persist in the datadir, so a relaunch reuses
+# the same identity — used to seed mutual relay knowledge before the
+# final start without trusting runtime netDb file pickup.
+stop_java() { # name
+  local pid
+  pid="$(<"${SCRATCH}/$1.pid")"
+  kill -TERM "${pid}" 2>/dev/null || return 0
+  for _ in $(seq 1 40); do
+    kill -0 "${pid}" 2>/dev/null || return 0
+    sleep 0.5
+  done
+  kill -KILL "${pid}" 2>/dev/null || true
+}
+
+# Prints the i2p-base64 ident hash of a RouterInfo file through the
+# driver's test-only ident printer (fails closed on empty output).
+ident_of_file() { # router.info path
+  local bin ident
+  bin="$(ls -t "${REPO_ROOT}"/target/debug/deps/floodfill_i2pd_external-* | grep -v '\.' | head -1)"
+  ident="$(FLOODFILL_IDENT_OF="$1" "${bin}" floodfill_ident_of --ignored --exact --nocapture --test-threads=1 2>/dev/null | grep -a "IDENT_B64=" | cut -d= -f2)"
+  if [[ -z "${ident}" ]]; then
+    echo "cannot derive ident of $1" >&2
+    exit 2
+  fi
+  printf '%s' "${ident}"
+}
+
 # ---- phase 0: prepare the stable controlled identity + caps=f RouterInfo --
 mkdir -p "${STATE_DIR}"
 echo "==> phase 0: controlled identity + controlled activation"
@@ -192,54 +251,148 @@ fi
 echo "    published $(wc -c < "${PUBLISHED}") bytes"
 
 # ---- phase 1: seed the Java mesh and start the reference routers ---------
-# JC knows only i2pr as a floodfill, so its own NetDB selection is
-# deterministic. J1/J2 start unseeded like the i2pd lane's F1/F2.
+# JC knows exactly one floodfill (i2pr, offline until phase 2), so its
+# NetDB selection stays deterministic, plus the two transit relays it
+# needs for stock client-tunnel building. The relays are full-meshed
+# (each knows the other relay and JC) so multi-hop build records can
+# forward; none carries f caps, so none can become a NetDB target.
+# J1/J2 start unseeded like the i2pd lane's F1/F2. Relay RouterInfos only
+# exist after first start, so the relays start once for key generation,
+# stop, get seeded, and restart into the mesh (idents persist).
 CONTROLLED_IDENT="$(<"${STATE_DIR}/ident.b64")"
 if [[ -z "${CONTROLLED_IDENT}" ]]; then
   echo "prepare phase did not record the controlled router ident" >&2
   exit 2
 fi
-seed_java_netdb "${SCRATCH}/jcdata" "${PUBLISHED}" "${CONTROLLED_IDENT}"
-echo "==> seeded controlled RouterInfo into the Java client's netDb layout"
-start_java j1 "${SCRATCH}/j1data" "${JAVA_J1_PORT}" 0 publication j1
-start_java j2 "${SCRATCH}/j2data" "${JAVA_J2_PORT}" 0 publication j2
-start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" transit jc
+start_java j1 "${SCRATCH}/j1data" "${JAVA_J1_PORT}" 0 0 publication j1
+start_java j2 "${SCRATCH}/j2data" "${JAVA_J2_PORT}" 0 0 publication j2
+start_java jd1 "${SCRATCH}/jd1data" "${JAVA_JD1_PORT}" 0 0 transit jd1
+start_java jd2 "${SCRATCH}/jd2data" "${JAVA_JD2_PORT}" 0 0 transit jd2
 wait_java_ready j1 "${SCRATCH}/j1data" "${JAVA_J1_PORT}" 480
 wait_java_ready j2 "${SCRATCH}/j2data" "${JAVA_J2_PORT}" 480
+wait_java_ready jd1 "${SCRATCH}/jd1data" "${JAVA_JD1_PORT}" 480
+wait_java_ready jd2 "${SCRATCH}/jd2data" "${JAVA_JD2_PORT}" 480
+echo "==> Java floodfills + relays up; stopping relays for seeding"
+stop_java jd1
+stop_java jd2
+JD1_IDENT="$(ident_of_file "${SCRATCH}/jd1data/router/router.info")"
+JD2_IDENT="$(ident_of_file "${SCRATCH}/jd2data/router/router.info")"
+seed_java_netdb "${SCRATCH}/jcdata" "${PUBLISHED}" "${CONTROLLED_IDENT}"
+seed_java_netdb "${SCRATCH}/jcdata" "${SCRATCH}/jd1data/router/router.info" "${JD1_IDENT}"
+seed_java_netdb "${SCRATCH}/jcdata" "${SCRATCH}/jd2data/router/router.info" "${JD2_IDENT}"
+echo "==> seeded JC netDb with {i2pr, JD1, JD2}"
+start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" "${JAVA_JC_I2CP_PORT}" transit jc
 wait_java_ready jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" 480
-echo "==> Java routers up on 127.0.0.1:${JAVA_J1_PORT},127.0.0.1:${JAVA_J2_PORT},127.0.0.1:${JAVA_JC_PORT}"
-# Java startup jobs (exploration scheduling, first publication) need a
-# settle window after the listeners bind; the matrix waits absorb the rest.
+JC_IDENT="$(ident_of_file "${SCRATCH}/jcdata/router/router.info")"
+seed_java_netdb "${SCRATCH}/jd1data" "${SCRATCH}/jd2data/router/router.info" "${JD2_IDENT}"
+seed_java_netdb "${SCRATCH}/jd1data" "${SCRATCH}/jcdata/router/router.info" "${JC_IDENT}"
+seed_java_netdb "${SCRATCH}/jd2data" "${SCRATCH}/jd1data/router/router.info" "${JD1_IDENT}"
+seed_java_netdb "${SCRATCH}/jd2data" "${SCRATCH}/jcdata/router/router.info" "${JC_IDENT}"
+echo "==> seeded relay mesh {JD1, JD2, JC}; restarting relays"
+start_java jd1 "${SCRATCH}/jd1data" "${JAVA_JD1_PORT}" 0 0 transit jd1b
+start_java jd2 "${SCRATCH}/jd2data" "${JAVA_JD2_PORT}" 0 0 transit jd2b
+wait_java_ready jd1 "${SCRATCH}/jd1data" "${JAVA_JD1_PORT}" 480
+wait_java_ready jd2 "${SCRATCH}/jd2data" "${JAVA_JD2_PORT}" 480
+echo "==> Java mesh up: J1,J2 floodfills; JC client (SAM 127.0.0.1:${JAVA_JC_SAM_PORT}); JD1,JD2 relays"
+# Java startup jobs (client-app delay, exploration scheduling, tunnel
+# building) need a settle window after the listeners bind; the
+# rendezvous + matrix waits absorb the rest.
 sleep 60
 
-# ---- phase 1b: lane-local TRANSIENT SAM destination on JC ---------------
-# Gives the Java client a LeaseSet-family record to publish toward its
-# only known floodfill (i2pr, matrix B). The DESTINATION reply carries
-# key material and is never logged; only its RESULT is recorded.
+# ---- phase 2: publisher rendezvous + qualification matrix ------------------
+# The stock Java publisher needs live P for its own exploration before
+# its client session (and LeaseSet) exists, so the driver signals P-live
+# and blocks for the runner's publisher-ready marker (Plan 279 §3).
+# The lane-local TRANSIENT SAM destination gives JC a LeaseSet-family
+# record to publish toward its only known floodfill (i2pr, matrix B).
+# The DESTINATION reply carries key material and is never logged; only
+# its RESULT is recorded.
+echo "==> phase 2: qualification matrix (publisher rendezvous)"
+qualify_rc=0
+mkdir -p "${STATE_DIR}/publisher-sync"
+I2PR_FLOODFILL_STATE_DIR="${STATE_DIR}" \
+I2PR_FLOODFILL_BIND_PORT="${I2PR_PORT}" \
+EVIDENCE_DIR="${EVIDENCE_DIR}" \
+FLOODFILL_PUBLISHER_SYNC=1 \
+FLOODFILL_REF_A_ROUTER_INFO="${SCRATCH}/j1data/router/router.info" \
+FLOODFILL_REF_A_ENDPOINT="127.0.0.1:${JAVA_J1_PORT}" \
+FLOODFILL_REF_B_ROUTER_INFO="${SCRATCH}/j2data/router/router.info" \
+FLOODFILL_REF_B_ENDPOINT="127.0.0.1:${JAVA_J2_PORT}" \
+FLOODFILL_REF_C_ROUTER_INFO="${SCRATCH}/jcdata/router/router.info" \
+FLOODFILL_REF_C_ENDPOINT="127.0.0.1:${JAVA_JC_PORT}" \
+timeout --foreground "${DRIVER_TIMEOUT}" cargo test --locked -p i2pr-daemon \
+  --test floodfill_i2pd_external floodfill_qualify_against_java \
+  -- --ignored --exact --nocapture --test-threads=1 \
+  > "${EVIDENCE_DIR}/qualify-driver.log" 2>&1 &
+DRIVER_PID=$!
+PIDS+=("${DRIVER_PID}")
+# Wait for P-live (or a dead driver — fail-closed below) without
+# joining the driver; the EXIT trap owns teardown.
+for _ in $(seq 1 240); do
+  if [[ -f "${STATE_DIR}/publisher-sync/p-live" ]]; then
+    break
+  fi
+  if ! kill -0 "${DRIVER_PID}" 2>/dev/null; then
+    break
+  fi
+  sleep 2
+done
+if [[ ! -f "${STATE_DIR}/publisher-sync/p-live" ]]; then
+  echo "driver never signalled P-live; see ${EVIDENCE_DIR}/qualify-driver.log" >&2
+  wait "${DRIVER_PID}" 2>/dev/null || qualify_rc=$?
+  echo "Plan 279 Java lane stopped before the publisher rendezvous" >&2
+  exit 1
+fi
+echo "==> P live; establishing the lane SAM destination on JC"
 python3 - "${JAVA_JC_SAM_PORT}" <<'PY' >"${EVIDENCE_DIR}/sam-destination.result" 2>&1 &
 import socket, sys, time
 port = int(sys.argv[1])
-deadline = time.time() + 120
-session = None
-while time.time() < deadline:
+# Bounded warmup window: HELLO is bridge-local, but SESSION CREATE runs
+# through the router's I2CP server and blocks on client-tunnel leases
+# while the mesh finishes forming. Each attempt uses a fresh connection
+# and a unique session ID so a timed-out create can never trap the next
+# attempt behind a DUPLICATED_ID rejection.
+deadline = time.time() + 300
+established = False
+last = "no-attempt"
+attempt = 0
+while time.time() < deadline and not established:
+    attempt += 1
     try:
         session = socket.create_connection(("127.0.0.1", port), timeout=5)
-        break
-    except OSError:
-        time.sleep(1)
-if session is None:
-    print("RESULT=FAIL sam-unreachable")
+    except OSError as exc:
+        last = f"connect-failed: {exc}"
+        time.sleep(5)
+        continue
+    try:
+        session.settimeout(20)
+        stream = session.makefile("rwb")
+        def command(line):
+            stream.write(line.encode() + b"\n")
+            stream.flush()
+            return stream.readline().decode(errors="replace").strip()
+        reply = command("HELLO VERSION")
+        assert "RESULT=OK" in reply, reply
+        reply = command(
+            f"SESSION CREATE STYLE=DATAGRAM ID=lane-dest-{attempt} "
+            "DESTINATION=TRANSIENT SIGNATURE_TYPE=7"
+        )
+        if "RESULT=OK" in reply:
+            established = True
+        else:
+            last = f"create-rejected: {reply}"
+    except (OSError, AssertionError) as exc:
+        last = f"attempt-failed: {exc}"
+    finally:
+        try:
+            session.close()
+        except OSError:
+            pass
+    if not established:
+        time.sleep(5)
+if not established:
+    print(f"RESULT=FAIL {last}")
     sys.exit(3)
-session.settimeout(30)
-stream = session.makefile("rwb")
-def command(line):
-    stream.write(line.encode() + b"\n")
-    stream.flush()
-    return stream.readline().decode(errors="replace").strip()
-reply = command("HELLO VERSION")
-assert "RESULT=OK" in reply, reply
-reply = command("SESSION CREATE STYLE=DATAGRAM ID=lane-dest DESTINATION=TRANSIENT SIGNATURE_TYPE=7")
-assert "RESULT=OK" in reply, "SESSION CREATE rejected"
 print("RESULT=OK destination-established")
 sys.stdout.flush()
 time.sleep(1500)
@@ -249,7 +402,7 @@ PIDS+=("${SAM_PID}")
 # The holder sleeps for the lane duration; poll for establishment
 # without joining it (the EXIT trap owns its teardown).
 sam_ok=0
-for i in $(seq 1 150); do
+for i in $(seq 1 250); do
   if grep -Fq "RESULT=OK" "${EVIDENCE_DIR}/sam-destination.result" 2>/dev/null; then
     sam_ok=1
     break
@@ -260,29 +413,15 @@ for i in $(seq 1 150); do
   sleep 2
 done
 if [[ "${sam_ok}" -eq 1 ]]; then
-  echo "==> Java SAM destination established on JC"
+  echo "==> Java SAM destination established on JC; releasing the matrix"
+  printf 'publisher-ready\n' > "${STATE_DIR}/publisher-sync/publisher-ready"
 else
   echo "Java SAM destination failed; see ${EVIDENCE_DIR}/sam-destination.result" >&2
   cat "${EVIDENCE_DIR}/sam-destination.result" >&2 || true
+  wait "${DRIVER_PID}" 2>/dev/null || true
   exit 1
 fi
-
-# ---- phase 2: run the qualification matrix --------------------------------
-echo "==> phase 2: qualification matrix"
-qualify_rc=0
-I2PR_FLOODFILL_STATE_DIR="${STATE_DIR}" \
-I2PR_FLOODFILL_BIND_PORT="${I2PR_PORT}" \
-EVIDENCE_DIR="${EVIDENCE_DIR}" \
-FLOODFILL_REF_A_ROUTER_INFO="${SCRATCH}/j1data/router/router.info" \
-FLOODFILL_REF_A_ENDPOINT="127.0.0.1:${JAVA_J1_PORT}" \
-FLOODFILL_REF_B_ROUTER_INFO="${SCRATCH}/j2data/router/router.info" \
-FLOODFILL_REF_B_ENDPOINT="127.0.0.1:${JAVA_J2_PORT}" \
-FLOODFILL_REF_C_ROUTER_INFO="${SCRATCH}/jcdata/router/router.info" \
-FLOODFILL_REF_C_ENDPOINT="127.0.0.1:${JAVA_JC_PORT}" \
-timeout --foreground "${DRIVER_TIMEOUT}" cargo test --locked -p i2pr-daemon \
-  --test floodfill_i2pd_external floodfill_qualify_against_java \
-  -- --ignored --exact --nocapture --test-threads=1 \
-  > "${EVIDENCE_DIR}/qualify-driver.log" 2>&1 || qualify_rc=$?
+wait "${DRIVER_PID}" 2>/dev/null || qualify_rc=$?
 if [[ "${qualify_rc}" -ne 0 ]]; then
   sed -n '1,80p' "${EVIDENCE_DIR}/qualify-driver.log" >&2 || true
 fi
@@ -424,7 +563,7 @@ evidence = {
         "revision": java_pin,
         "version": java_version,
         "role": "independent second-family floodfill reference, unmodified",
-        "profile": "two floodfillParticipant=true reference peers, one transit client, SSU2 only, reseed disabled",
+        "profile": "two floodfillParticipant=true reference peers, one transit client with a TRANSIENT SAM destination, two transit relays for the client's stock tunnel building, SSU2 only, reseed disabled",
     },
     "driver_evidence_keys": driver_keys,
     "results": rows,
