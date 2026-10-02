@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 dependency-ready; Plans 297–301 registered behind the dependency graph. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
+Status: Plan 296 closed; Plans 297 and 298 stopped at external capture-topology gates; Plan 299 stopped without Plan 298 differential evidence; Plan 300 stopped at target-isolation/path-diversity owner gaps; Plan 301 stopped pending predecessor qualification. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -102,12 +102,12 @@ Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 296 | ready | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | future |
-| 297 | blocked on 296 | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | future |
-| 298 | blocked on 296 | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | future |
-| 299 | blocked on 298 | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | future |
-| 300 | blocked on 296 | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | future |
-| 301 | blocked on 297 + 299 + 300 | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | future |
+| 296 | closed (`passed-anonymity-service-boundary-implementation-neutrality-and-leak-regression`) | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | plans/closure/anonymity/296-status.md |
+| 297 | stopped (`stopped-http-differential-capture-needs-controlled-three-router-topology`) | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | plans/closure/anonymity/297-status.md |
+| 298 | stopped (`stopped-three-family-hostile-destination-capture-runners-unavailable`) | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | plans/closure/anonymity/298-status.md |
+| 299 | stopped (`stopped-no-plan-298-differential-evidence`) | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | plans/closure/anonymity/299-status.md |
+| 300 | stopped (`stopped-target-isolation-and-reference-diversity-owner-gap`) | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
+| 301 | stopped (`stopped-predecessor-qualification-evidence-incomplete`) | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
 
 ## 8. Cross-cutting requirements
 
@@ -146,4 +146,4 @@ No broad production-anonymity, browser-anonymity, or global-traffic-analysis cla
 
 ## 12. Milestone status summary
 
-Plan 296 is dependency-ready on the current M10/client/router architecture and may begin independently of M12. Plans 297–301 are registered but dependency-gated. Registration changes no product behavior and authorizes no anonymity claim.
+Plan 296 is closed. Plan 297 is stopped until controlled Java/i2pd HTTP proxy captures exist. Plan 298 has bounded local schema/scenario fixtures but is stopped because hostile-Destination three-family runners/captures are absent; Plan 299 therefore remains stopped without differential evidence. Plan 300 implemented repeated-router rejection and a source-derived three-hop service profile, then stopped because multi-target HTTP/SOCKS identity isolation and candidate-diversity/degraded-path ownership are unresolved. Plan 301 is stopped until Plans 297, 299, and 300 pass. This workstream does not gate M12 and authorizes no broad anonymity claim.

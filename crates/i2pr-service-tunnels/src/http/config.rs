@@ -36,7 +36,7 @@ pub const HTTP_OPTIONS_MAX_PORTS: usize = 16;
 
 /// Default User-Agent substitution value used by the conservative
 /// privacy profile.
-pub const DEFAULT_USER_AGENT_VALUE: &str = "i2pr/0.1";
+pub const DEFAULT_USER_AGENT_VALUE: &str = "MYOB/6.66 (AN/ON)";
 
 /// User-Agent header policy applied by the rewrite pass.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]

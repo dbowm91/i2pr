@@ -282,7 +282,7 @@ fn rewrite_user(
 fn rewrite_reason(
     parsed: &ParsedLine,
     reason_rewrite: ReasonRewritePolicy,
-    substitutions: &PrivacySubstitutions,
+    _substitutions: &PrivacySubstitutions,
     command: &str,
 ) -> FilterOutcome {
     let Some(reason) = parsed.trailing() else {
@@ -299,9 +299,8 @@ fn rewrite_reason(
             line.push(b' ');
         }
         line.extend_from_slice(command.as_bytes());
-        line.push(b' ');
-        line.push(b':');
-        line.extend_from_slice(substitutions.quit_reason.as_bytes());
+        // Drop an optional reason instead of inserting a stable
+        // router-specific replacement that could fingerprint us.
         line.extend_from_slice(b"\r\n");
         FilterOutcome::Rewrite { line }
     } else {
@@ -480,7 +479,7 @@ mod tests {
         match outcome {
             FilterOutcome::Rewrite { line } => {
                 let text = std::str::from_utf8(&line).expect("utf8");
-                assert!(text.starts_with("QUIT :i2pr\r\n"));
+                assert_eq!(text, "QUIT\r\n");
             }
             other => panic!("unexpected: {other:?}"),
         }

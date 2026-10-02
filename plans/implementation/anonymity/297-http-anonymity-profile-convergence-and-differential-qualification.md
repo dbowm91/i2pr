@@ -1,6 +1,6 @@
 # Plan 297 — HTTP anonymity-profile convergence and differential qualification
 
-Status: registered-anonymity-http-profile-convergence-blocked-on-296
+Status: stopped-http-differential-capture-needs-controlled-three-router-topology
 
 Classification: capability + evidence.
 

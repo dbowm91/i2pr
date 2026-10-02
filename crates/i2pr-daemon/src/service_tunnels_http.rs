@@ -211,6 +211,18 @@ fn resolve_target_for_service(
     }
 }
 
+fn target_for_remote_destination(
+    target: &RequestTarget,
+    remote: &RemoteDestination,
+) -> RequestTarget {
+    let mut resolved = target.clone();
+    resolved.host = format!(
+        "{}.b32.i2p",
+        i2pr_service_tunnels::encode_b32_label(&remote.destination_hash)
+    );
+    resolved
+}
+
 /// Opens a Streaming connection to the supplied remote destination
 /// and waits until `Established` (or returns a typed error).
 async fn open_streaming(
@@ -470,7 +482,7 @@ async fn handle_connect(
             return HttpConnectionOutcome::BadGateway;
         }
     };
-    let response: &[u8] = b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: i2pr\r\n\r\n";
+    let response: &[u8] = b"HTTP/1.1 200 Connection Established\r\n\r\n";
     if let Err(error) = stream.write_all(response).await {
         debug!(error = %error, "connect response write failed");
         terminate_streaming(
@@ -592,7 +604,8 @@ async fn handle_proxy_request(
     forwarded
         .extend_from_slice(i2pr_service_tunnels::http::target::origin_form(&target).as_bytes());
     forwarded.extend_from_slice(b" HTTP/1.1\r\n");
-    let rewritten = rewrite_headers(&head.headers, &target, &options.privacy);
+    let resolved_target = target_for_remote_destination(&target, &client.remote);
+    let rewritten = rewrite_headers(&head.headers, &resolved_target, &options.privacy);
     for header in rewritten {
         forwarded.extend_from_slice(header.name_str().as_bytes());
         forwarded.extend_from_slice(b": ");
@@ -736,6 +749,57 @@ pub async fn run_http_client_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_transcript_constants_have_no_router_branding() {
+        let connect_ok = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+        assert!(
+            !connect_ok
+                .windows(b"i2pr".len())
+                .any(|window| window.eq_ignore_ascii_case(b"i2pr"))
+        );
+    }
+
+    #[test]
+    fn remote_host_uses_resolved_hash_instead_of_local_alias() {
+        let target = RequestTarget {
+            kind: TargetKind::Absolute,
+            host: "my-private-address-book-name.i2p".to_owned(),
+            port: Some(8080),
+            path: "/".to_owned(),
+            query: String::new(),
+            scheme: Some("http"),
+        };
+        let remote = RemoteDestination {
+            destination_hash: [0x5a; 32],
+            signing_public_key: i2pr_proto::SigningPublicKey::new(
+                i2pr_proto::SigningKeyType::EdDsaSha512Ed25519,
+                vec![0; 32],
+            )
+            .unwrap(),
+            static_public_key: [0; 32],
+        };
+        let resolved = target_for_remote_destination(&target, &remote);
+        assert_eq!(
+            resolved.host,
+            format!(
+                "{}.b32.i2p",
+                i2pr_service_tunnels::encode_b32_label(&[0x5a; 32])
+            )
+        );
+        assert_eq!(resolved.port, Some(8080));
+        assert!(!resolved.host.contains("my-private-address-book-name"));
+        let rewritten = rewrite_headers(
+            &[],
+            &resolved,
+            &i2pr_service_tunnels::PrivacyPolicy::default(),
+        );
+        let host = rewritten
+            .iter()
+            .find(|entry| entry.name_str() == "host")
+            .unwrap();
+        assert_eq!(host.value, format!("{}:8080", resolved.host));
+    }
 
     #[test]
     fn read_http_head_rejects_buffer_overflow() {

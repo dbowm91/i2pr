@@ -1,0 +1,52 @@
+schema = 1
+deadline_ms = 600000
+time_bucket_ms = 10
+maximum_events_per_scenario = 4096
+timing_repetitions = 5
+timing_tolerance_ms = 250
+
+[[scenario]]
+name = "clean_handshake"
+stimulus = "connect_and_establish"
+
+[[scenario]]
+name = "small_payload"
+stimulus = "one_64_byte_payload_then_ack"
+
+[[scenario]]
+name = "send_window_saturation"
+stimulus = "send_64_max_payload_packets_without_ack"
+
+[[scenario]]
+name = "delayed_first_ack"
+stimulus = "delay_first_ack_1000_ms"
+repetitions = 5
+
+[[scenario]]
+name = "ack_withheld"
+stimulus = "withhold_ack_through_two_retransmission_opportunities"
+repetitions = 5
+
+[[scenario]]
+name = "single_loss"
+stimulus = "drop_first_data_packet_then_allow_retry"
+
+[[scenario]]
+name = "deterministic_reorder"
+stimulus = "hold_packet_1_until_packet_2_arrives_then_release_in_reverse"
+
+[[scenario]]
+name = "constrained_window"
+stimulus = "advertise_receive_window_2_then_ack_each_packet"
+
+[[scenario]]
+name = "choke_unchoke"
+stimulus = "advertise_choke_then_unchoke_after_ack"
+
+[[scenario]]
+name = "orderly_close"
+stimulus = "exchange_fin_ack_and_wait_for_terminal_state"
+
+[[scenario]]
+name = "abrupt_close"
+stimulus = "reset_after_established"

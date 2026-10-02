@@ -125,6 +125,27 @@ impl DestinationConfig {
         .expect("balanced destination configuration is within every ceiling")
     }
 
+    /// Service-Destination tunnel profile derived from the exact
+    /// Java I2P 2.13.0 and i2pd 2.61.0 client-tunnel defaults: three
+    /// hops in each direction and zero length variance. Quantity and
+    /// resource limits remain i2pr's bounded experimental settings.
+    pub fn service_compatibility_profile() -> Self {
+        Self::try_new(
+            2,
+            2,
+            1,
+            3,
+            TunnelLifetime::DEFAULT_EXPLORATORY_SECONDS,
+            2,
+            8,
+            64,
+            128 * 1024,
+            DEFAULT_LEASE_PUBLICATION_MARGIN_SECONDS,
+            DEFAULT_LEASE_ROTATION_MARGIN_SECONDS,
+        )
+        .expect("service compatibility destination configuration is within every ceiling")
+    }
+
     /// Builds a configuration after applying every documented ceiling.
     #[allow(clippy::too_many_arguments)]
     pub const fn try_new(
@@ -562,6 +583,15 @@ mod tests {
         assert_eq!(config.minimum_usable_inbound(), 1);
         assert_eq!(config.length_hops(), 2);
         assert_eq!(config.build_concurrency(), 2);
+        assert!(config.pool_config().is_ok());
+    }
+
+    #[test]
+    fn service_compatibility_profile_uses_reference_client_hop_length() {
+        let config = DestinationConfig::service_compatibility_profile();
+        assert_eq!(config.length_hops(), 3);
+        assert_eq!(config.inbound_target(), 2);
+        assert_eq!(config.outbound_target(), 2);
         assert!(config.pool_config().is_ok());
     }
 

@@ -16,6 +16,7 @@ mod network;
 mod ntcp2;
 mod peers;
 mod rng;
+mod streaming_fingerprint;
 mod transport;
 
 pub use clock::{
@@ -41,6 +42,12 @@ pub use peers::{
 pub use rng::{
     DeterministicRng, MAX_DOMAIN_LABEL_BYTES, ReproducibilitySeed, SeedDerivationError,
     SeedParseError,
+};
+pub use streaming_fingerprint::{
+    FINGERPRINT_DEADLINE_MS, FINGERPRINT_TIME_BUCKET_MS, FingerprintClassification,
+    FingerprintDirection, FingerprintEvent, FingerprintScenario, FingerprintTerminal,
+    FingerprintTraceError, MAX_FINGERPRINT_EVENTS, StreamingFingerprintTrace, classify_dimension,
+    normalize_sequence,
 };
 pub use transport::{
     assert_payload_bounds, assert_snapshot_redaction, resource_usage, synthetic_i2np_payload,

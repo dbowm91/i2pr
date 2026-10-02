@@ -1,6 +1,6 @@
 # Plan 299 — Streaming observable-profile convergence
 
-Status: registered-anonymity-streaming-profile-convergence-blocked-on-298
+Status: stopped-no-plan-298-differential-evidence
 
 Classification: corrective capability.
 
