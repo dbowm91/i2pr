@@ -36,4 +36,33 @@ Pinned reference source inspection at Java `9134f808337b401e8e53c73734c81fab0428
 
 ## Unblock audit
 
-Plan 301 cannot pass: Plan 297 lacks executed HTTP family captures, Plan 299 lacks Plan 298 differential evidence, and Plan 300 lacks target isolation plus a reference-backed path-diversity/degraded-outcome contract. Plans 297–300 are not otherwise unblocked by this partial corrective. No M12/mainline dependency changes. A follow-on plan needs to define target-scoped Destination lifecycle ownership and path candidate metadata/selection before this qualification can resume.
+### 2026-10-02 continuation audit
+
+The worktree was rebased onto `origin/main` at `c0b8d05`. The existing
+`i2pr-tunnel` suite passed (392 unit tests plus 5 reference-vector tests),
+`cargo test --locked -p i2pr-service-tunnels --all-targets -- --test-threads=1`
+passed (222 tests), and
+`cargo test --locked -p i2pr-daemon --test service_tunnels_foundation -- --test-threads=1`
+passed (7 tests). Also,
+`scripts/check-service-anonymity-boundaries.sh`,
+`scripts/check-destination-tunnel-evidence.sh`, and
+`scripts/check-netdb-tunnel-evidence.sh`. These confirm the existing repeated
+RouterHash rejection, boundary guards, and NetDB evidence; they do not establish
+target-scoped identities or path diversity.
+
+Source review reconfirmed the stop conditions: service composition owns one
+Destination runtime per service, including arbitrary-target HTTP/SOCKS profiles,
+while `ShortBuildPath` receives already-selected hops without reference-backed
+family/network metadata. Adding target caches or diversity policy at these
+boundaries would introduce an owner/policy not defined by this plan. No such
+behavior was added.
+
+Disposition remains `stopped-target-isolation-and-reference-diversity-owner-gap`.
+Plan 300 remains independently eligible at its dependency graph but cannot
+advance past its explicit architecture-owner stop condition. Plan 301 remains
+blocked on Plans 297, 299, and 300; no other registered plan became ready through
+Plan 300. A new plan/ADR must define the target-scoped lifecycle and
+reference-backed candidate policy before qualification resumes. No anonymity
+qualification is claimed.
+
+Prior closure finding (retained): Plan 301 cannot pass: Plan 297 lacks executed HTTP family captures, Plan 299 lacks Plan 298 differential evidence, and Plan 300 lacks target isolation plus a reference-backed path-diversity/degraded-outcome contract. Plans 297–300 are not otherwise unblocked by this partial corrective. No M12/mainline dependency changes. A follow-on plan needs to define target-scoped Destination lifecycle ownership and path candidate metadata/selection before this qualification can resume.
