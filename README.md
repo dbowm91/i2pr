@@ -72,4 +72,6 @@ Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the 
 
 ## License
 
-No license selected yet. Do not copy code from I2P+, i2pd, Emissary, or other routers until license compatibility is reviewed. Specifications and observed behavior may be used for clean-room implementation.
+No repository-wide license has been selected yet. Do not copy code from external router implementations unless provenance and compatibility have been reviewed and explicitly authorized.
+
+A narrow project-owned exception is recorded in ADR 0028 for the Proposal 170 / I2PControl work in `eggstack/emissary`: that fork-specific work was authored for this project, is not present in the current `eepnet/emissary` upstream tree, and may be reused for i2pr's Proposal 170 implementation with provenance and applicable notice preservation. This exception does not cover unrelated Emissary/upstream code, I2P+, i2pd, Java I2P, or other routers. Specifications and observed behavior remain valid clean-room sources.

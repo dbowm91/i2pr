@@ -16,6 +16,8 @@ Research behavior that intentionally diverges from normal network behavior must 
 
 Protocol work must be based on current specifications, proposal documents, interoperable behavior, test vectors, and clean-room analysis.
 
+Project-owner provenance exception: ADR 0028 authorizes reuse of the Proposal 170 / I2PControl work that exists only in the `eggstack/emissary` fork and was produced for this project. Reuse must be limited to the recorded Prop 170 paths/commits, preserve applicable notices and provenance, and be reconciled to i2pr's architecture rather than imported wholesale. Unrelated Emissary/upstream code and all other router implementations remain subject to the normal provenance/compatibility and clean-room rules.
+
 Every protocol implementation must document:
 
 - The specification and proposal versions targeted.
