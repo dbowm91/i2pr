@@ -33,4 +33,21 @@ No production Streaming fingerprint, family equivalence, or anonymity claim is e
 
 ## Unblock audit
 
-Plan 299 remains blocked because its hard dependency requires executed three-family differential evidence. Plan 300 remains independently ready because its Destination, tunnel, NetDB, and service-tunnel authorities are closed and it does not consume Plan 298. Plan 301 remains blocked on successful Plans 297, 299, and 300. Continue with Plan 300 under the user's instruction to pursue other eligible work.
+## 2026-10-02 continuation audit
+
+The worktree was rebased onto `origin/main` at `c0b8d05` before this audit. No
+Plan 298 implementation files changed in this continuation. The retained
+infrastructure was rechecked on that base:
+
+- `cargo test --locked -p i2pr-testkit --all-targets -- --test-threads=1` — passed (29 tests).
+- `cargo test --locked -p i2pr-client --all-targets -- --test-threads=1` — passed.
+- `bash scripts/check-streaming-fingerprint-evidence.sh` — passed.
+- The required `tests/integration/anonymity/run-streaming-fingerprint-{preflight,i2pr,i2pd,java}.sh` files remain absent, and no exact-pinned reference binaries are cached in this worktree. No reference capture or three-family runner result is claimed.
+
+Disposition remains `stopped-three-family-hostile-destination-capture-runners-unavailable`.
+Plan 299 remains blocked on executed three-family differential evidence; Plan
+300 remains independently eligible under its own plan; Plan 301 remains blocked
+on Plans 297, 299, and 300. No additional registered plan became ready through
+Plan 298. This is an audit of the existing stop, not a passed continuation.
+
+Prior closure finding (retained): Plan 299 remains blocked because its hard dependency requires executed three-family differential evidence. Plan 300 remains independently ready because its Destination, tunnel, NetDB, and service-tunnel authorities are closed and it does not consume Plan 298. Plan 301 remains blocked on successful Plans 297, 299, and 300. Continue with Plan 300 under the user's instruction to pursue other eligible work.
