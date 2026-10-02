@@ -209,7 +209,10 @@ fn write_secret(path: &PathBuf, contents: String) {
 
 fn hex_decode(text: &str) -> Vec<u8> {
     let bytes = text.as_bytes();
-    assert!(bytes.len() % 2 == 0, "hex input must be even length");
+    assert!(
+        bytes.len().is_multiple_of(2),
+        "hex input must be even length"
+    );
     (0..bytes.len() / 2)
         .map(|index| u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).expect("hex digit"))
         .collect()
@@ -806,11 +809,10 @@ async fn floodfill_qualify_against_i2pd() {
 
     // ---- teardown: bounded cancel ---------------------------------------
     cancel.cancel(CancellationReason::OperatorRequest);
-    let exit = tokio::time::timeout(STEP_TIMEOUT, owner)
+    tokio::time::timeout(STEP_TIMEOUT, owner)
         .await
         .expect("owner drains within bound")
         .expect("owner task joins");
-    let _ = exit;
     let drained = share(&observed).clone();
     record("owner-cancel-drained", "graceful");
     record(
