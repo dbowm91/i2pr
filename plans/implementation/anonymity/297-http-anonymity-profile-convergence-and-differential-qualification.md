@@ -1,6 +1,6 @@
 # Plan 297 — HTTP anonymity-profile convergence and differential qualification
 
-Status: registered-anonymity-http-profile-convergence-blocked-on-296
+Status: registered-anonymity-http-profile-convergence-ready-after-296
 
 Classification: capability + evidence.
 

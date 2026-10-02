@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 active; Plans 297–301 registered behind the dependency graph. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
+Status: Plan 296 closed; Plans 297, 298, and 300 ready, with Plans 299 and 301 dependency-gated. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -102,11 +102,11 @@ Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 296 | active | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | future |
-| 297 | blocked on 296 | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | future |
-| 298 | blocked on 296 | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | future |
+| 296 | closed (`passed-anonymity-service-boundary-implementation-neutrality-and-leak-regression`) | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | plans/closure/anonymity/296-status.md |
+| 297 | ready | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | future |
+| 298 | ready | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | future |
 | 299 | blocked on 298 | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | future |
-| 300 | blocked on 296 | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | future |
+| 300 | ready | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | future |
 | 301 | blocked on 297 + 299 + 300 | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | future |
 
 ## 8. Cross-cutting requirements

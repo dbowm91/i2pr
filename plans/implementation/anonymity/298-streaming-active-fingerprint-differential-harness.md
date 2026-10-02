@@ -1,6 +1,6 @@
 # Plan 298 — Streaming active-fingerprint differential harness
 
-Status: registered-anonymity-streaming-fingerprint-harness-blocked-on-296
+Status: registered-anonymity-streaming-fingerprint-harness-ready-after-296
 
 Classification: infrastructure + evidence only. No production Streaming tuning is authorized.
 
