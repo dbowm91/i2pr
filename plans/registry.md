@@ -58,7 +58,7 @@ Canonical direction remains in `GUARDRAILS.md`, `specs/CONFORMANCE.md`,
 
 - **Proposal 170 / I2PControl (parallel)**: `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`; Plan 286 is dependency-ready. Plans 287–295 are registered behind the workstream dependency graph and do not change M12/mainline readiness. The control plane is pinned to Proposal 170 revision 2026-05-20 and base I2PControl API version 1 semantics.
 
-- **Anonymity / implementation neutrality (parallel)**: `plans/subsystems/anonymity-roadmap.md`; Plan 296 is closed. Plans 297, 298, and 300 are ready; Plan 299 remains blocked on 298, and Plan 301 remains blocked on 297/299/300. This workstream does not change M12/mainline readiness.
+- **Anonymity / implementation neutrality (parallel)**: `plans/subsystems/anonymity-roadmap.md`; Plan 296 is closed, Plans 297 and 298 stopped at external capture-topology gates, Plan 299 stopped without Plan 298 differential evidence, and Plan 300 remains ready. Plan 301 remains blocked on 297/299/300. This workstream does not change M12/mainline readiness.
 
 | Cross-cutting post-M11 planning | 269 global roadmap/support authority reconciliation | closed | `plans/closure/transit-tunnels/269-status.md` (`passed-post-m11-global-roadmap-support-authority-reconciled`; current-state surfaces agree, no production/test/workflow/dependency changes) |
 
@@ -80,7 +80,7 @@ experimental qualification is passed and M12 floodfill Plans 270–279 are regis
 
 Parallel Proposal 170 work is intentionally registered beside, not beneath, M12. Plan 286 is the only dependency-ready Prop 170 handoff at registration; after Plan 287 closes, Plans 288, 289, and 294 may proceed independently.
 
-Parallel anonymity work is also registered beside, not beneath, M12. Plan 296 closed. Plan 297 is stopped at the controlled reference HTTP capture topology gate; Plans 298 and 300 remain ready. Plan 299 consumes Plan 298 evidence, and Plan 301 stays blocked until 297, 299, and 300 have passed.
+Parallel anonymity work is also registered beside, not beneath, M12. Plan 296 closed. Plans 297 and 298 are stopped at their controlled capture-topology gates; Plan 299 is stopped without Plan 298 differential evidence; Plan 300 remains ready and is independent. Plan 301 stays blocked until 297, 299, and 300 have passed.
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
@@ -101,7 +101,7 @@ Parallel anonymity work is also registered beside, not beneath, M12. Plan 296 cl
 | Proposal 170 / I2PControl | 294 canonical AddressBook subsystem and API | blocked on 287 | `plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md` | Add one runtime-neutral address-book owner used by ordinary name resolution and Proposal 170; atomic books/config/subscriptions and bounded downloader composition. |
 | Proposal 170 / I2PControl | 295 full source completion and differential conformance | blocked on 288 + 293 + 294 | `plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md` | Close remaining RouterInfo sources, exact wire matrix, restart/security evidence, and differential qualification against pinned fork/Java/i2pd references; no frontend work. |
 | Anonymity / implementation neutrality | 297 HTTP anonymity-profile convergence | stopped | `plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md` | Exact-pinned source review and builds were possible; black-box capture remains unexecuted because no controlled multi-router fixture topology exposes the Java/i2pd HTTP proxy clients. No profile claim or convergence change made. |
-| Anonymity / implementation neutrality | 298 Streaming active-fingerprint differential harness | ready | `plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md` | Evidence-only hostile-Destination scenario matrix across i2pr/i2pd/Java; no production tuning. |
+| Anonymity / implementation neutrality | 298 Streaming active-fingerprint differential harness | active | `plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md` | Evidence-only hostile-Destination scenario matrix across i2pr/i2pd/Java; no production tuning. |
 | Anonymity / implementation neutrality | 299 Streaming observable-profile convergence | blocked on 298 | `plans/implementation/anonymity/299-streaming-observable-profile-convergence.md` | Tune only measured remotely observable divergences to one coherent reference profile; preserve Streaming correctness/interop. |
 | Anonymity / implementation neutrality | 300 Destination isolation and tunnel-path anonymity qualification | ready | `plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md` | Audit target fanout/identity reuse, enforce qualified path diversity and explicit degraded semantics, retain tunneled NetDB/client namespace separation. |
 | Anonymity / implementation neutrality | 301 integrated anonymity evidence and scoped claim gate | blocked on 297 + 299 + 300 | `plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md` | Machine-readable qualification matrix + evidence integrity/overclaim checker; update security docs only to exact proven scope. |

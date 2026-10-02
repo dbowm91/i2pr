@@ -1,0 +1,14 @@
+schema = 1
+
+[i2pr]
+source = "current-worktree-head"
+
+[i2pd]
+version = "2.61.0"
+repository = "https://github.com/PurpleI2P/i2pd.git"
+commit = "635b013a612ff47278ef02acf8580a28e10e26c5"
+
+[java_i2p]
+version = "2.13.0"
+repository = "https://github.com/i2p/i2p.i2p.git"
+commit = "9134f808337b401e8e53c73734c81fab04280c9d"
