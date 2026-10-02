@@ -644,3 +644,166 @@ fn plan288_source_matrix_mirrors_frozen_inventories() {
         assert_eq!(row.availability, SourceAvailability::Available);
     }
 }
+
+#[test]
+fn plan289_tunnel_request_envelope_rules() {
+    use i2pr_i2pcontrol::{TunnelAction, TunnelRequestError, TunnelType, decode_tunnel_request};
+
+    fn params(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        value.as_object().expect("object").clone()
+    }
+
+    // get without name selects the whole inventory.
+    let request = decode_tunnel_request(&params(serde_json::json!({
+        "Token": "t", "action": "get",
+    })))
+    .expect("inventory get decodes");
+    assert_eq!(request.action, TunnelAction::Get);
+    assert_eq!(request.name, None);
+
+    // get with name selects one tunnel; type/options/new_name forbidden.
+    let request = decode_tunnel_request(&params(serde_json::json!({
+        "Token": "t", "action": "get", "name": "alpha",
+    })))
+    .expect("named get decodes");
+    assert_eq!(request.name.as_deref(), Some("alpha"));
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "get", "name": "alpha", "type": "client",
+        })))
+        .is_err()
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "get", "options": {},
+        })))
+        .is_err()
+    );
+
+    // create requires name + type; options validated against the universe.
+    let request = decode_tunnel_request(&params(serde_json::json!({
+        "action": "create", "name": "alpha", "type": "httpclient",
+        "options": {"listen_port": 8180, "start_on_load": true},
+    })))
+    .expect("create decodes");
+    assert_eq!(request.action, TunnelAction::Create);
+    assert_eq!(request.tunnel_type, Some(TunnelType::HttpClient));
+    assert_eq!(
+        request.options.get("listen_port").map(String::as_str),
+        Some("8180")
+    );
+    assert_eq!(
+        request.options.get("start_on_load").map(String::as_str),
+        Some("true")
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "alpha",
+        })))
+        .is_err(),
+        "create without type fails"
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "type": "client",
+        })))
+        .is_err(),
+        "create without name fails"
+    );
+
+    // Unknown option keys fail at the envelope; values are typed.
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client",
+            "options": {"no_such_option": "x"},
+        }))),
+        Err(TunnelRequestError::BadOption(
+            i2pr_i2pcontrol::ContractError::UnknownLiteral
+        ))
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client",
+            "options": {"listen_port": null},
+        })))
+        .is_err(),
+        "null option value fails"
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client",
+            "options": {"listen_port": [1]},
+        })))
+        .is_err(),
+        "array option value fails"
+    );
+
+    // edit: type immutable, rename via new_name, something must change.
+    let request = decode_tunnel_request(&params(serde_json::json!({
+        "action": "edit", "name": "a", "new_name": "b",
+    })))
+    .expect("rename edit decodes");
+    assert_eq!(request.new_name.as_deref(), Some("b"));
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({"action": "edit", "name": "a"}))),
+        Err(TunnelRequestError::NothingToChange)
+    );
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "edit", "name": "a", "type": "server",
+            "options": {"target": "127.0.0.1:9"},
+        })))
+        .is_err(),
+        "edit cannot change type"
+    );
+
+    // action spelling is exact and case-sensitive.
+    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "Get"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "launch"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"name": "a"}))).is_err());
+
+    // Lifecycle actions require exactly a name.
+    for action in ["delete", "start", "stop", "restart"] {
+        let request = decode_tunnel_request(&params(serde_json::json!({
+            "action": action, "name": "a",
+        })))
+        .expect("lifecycle decodes");
+        assert_eq!(request.name.as_deref(), Some("a"));
+        assert!(decode_tunnel_request(&params(serde_json::json!({"action": action}))).is_err());
+        assert!(
+            decode_tunnel_request(&params(serde_json::json!({
+                "action": action, "name": "a", "options": {},
+            })))
+            .is_err(),
+            "{action} forbids options"
+        );
+    }
+
+    // Closed envelope: unknown top-level keys fail.
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "get", "verbose": true,
+        })))
+        .is_err(),
+        "unknown keys fail"
+    );
+
+    // Names are validated; over-ceiling option maps fail.
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "delete", "name": "a/b",
+        })))
+        .is_err(),
+        "path separators fail"
+    );
+    let mut oversized = serde_json::Map::new();
+    for n in 0..65 {
+        oversized.insert(format!("k{n}"), serde_json::json!("v"));
+    }
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client", "options": oversized,
+        }))),
+        Err(TunnelRequestError::TooManyOptions)
+    );
+}

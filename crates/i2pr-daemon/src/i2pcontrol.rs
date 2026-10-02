@@ -22,10 +22,12 @@
 //!   sequentially under one held in-flight permit; responses preserve
 //!   input order; `Authenticate` mints inside a batch are invisible to
 //!   sibling elements.
-//! - Dispatch floor: `Authenticate` executes; every other known method
-//!   authenticates and then answers a typed not-yet-available capability
-//!   error; unknown methods answer method-not-found. No router state is
-//!   fabricated to exercise dispatch.
+//! - Dispatch: `Authenticate` executes; `RouterInfo` and
+//!   `ClientServicesInfo` answer the select form over inspection
+//!   handles; `TunnelManager` executes the seven lifecycle actions over
+//!   installed control state; `AddressBook` keeps the typed
+//!   not-yet-available floor; unknown methods answer method-not-found.
+//!   No router state is fabricated to exercise dispatch.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -54,6 +56,7 @@ use crate::i2pcontrol_inspection::{
     InspectionHandles, ServiceEndpoint, client_service_result, router_info_result,
     select_client_services, select_router_info,
 };
+use crate::i2pcontrol_tunnels::TunnelControlState;
 use i2pr_runtime::{CancellationToken, ChildScope};
 
 /// Token lifetime in milliseconds (one day, monotonic).
@@ -346,6 +349,9 @@ pub struct I2pControlServiceState {
     /// Plan 288 narrow inspection handles (static config truth plus
     /// publish-gated live snapshots from owning services).
     inspection: Arc<InspectionHandles>,
+    /// Plan 289 TunnelManager control state (None for standalone
+    /// construction; production composition always installs it).
+    control: Mutex<Option<Arc<TunnelControlState>>>,
 }
 
 impl I2pControlServiceState {
@@ -420,6 +426,7 @@ impl I2pControlServiceState {
             auth_failures: AtomicU64::new(0),
             next_connection_id: AtomicU64::new(1),
             inspection,
+            control: Mutex::new(None),
         })
     }
 
@@ -469,6 +476,15 @@ impl I2pControlServiceState {
         &self.inspection
     }
 
+    /// Installs the Plan 289 TunnelManager control state. Production
+    /// composition calls this once before serving; standalone
+    /// construction leaves control unavailable by design.
+    pub fn set_control_manager(&self, control: Arc<TunnelControlState>) {
+        if let Ok(mut slot) = self.control.lock() {
+            *slot = Some(control);
+        }
+    }
+
     /// Runs the supervised listener until cancellation or fatal bind failure.
     pub async fn run(
         self: Arc<Self>,
@@ -476,6 +492,21 @@ impl I2pControlServiceState {
         children: ChildScope,
         cancellation: CancellationToken,
     ) -> Result<(), I2pControlServiceError> {
+        // Plan 289 control startup runs before the listener binds so
+        // restored tunnels are serving when the control plane answers.
+        // Per-definition failures isolate; they never fail the service.
+        // (The lock scope ends before the await: no guard crosses it.)
+        let control = self
+            .control
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or(None);
+        if let Some(control) = control {
+            let failures = control.startup(&children, &cancellation).await;
+            for (name, reason) in failures {
+                warn!(tunnel = %name, reason = %reason, "control tunnel failed at startup");
+            }
+        }
         let (listener, _bound_address) = self.bind(bind_address).await?;
         self.serve(listener, children, cancellation).await
     }
@@ -560,7 +591,7 @@ impl I2pControlServiceState {
     /// Pure w.r.t. I/O: operates only on the bounded token/throttle
     /// tables under `&self` locks, so concurrent calls serialize
     /// atomically. Callers must enforce the body ceiling before calling.
-    pub(crate) fn dispatch_body(
+    pub(crate) async fn dispatch_body(
         &self,
         body: &[u8],
         header_token: Option<&str>,
@@ -611,14 +642,16 @@ impl I2pControlServiceState {
             let mut post_delay = Duration::ZERO;
             let processed = elements.len();
             for element in elements {
-                let (response, delay) = self.process_element(
-                    element,
-                    header_token,
-                    peer_ip,
-                    now_ms,
-                    &mut deferred_mints,
-                    true,
-                );
+                let (response, delay) = self
+                    .process_element(
+                        element,
+                        header_token,
+                        peer_ip,
+                        now_ms,
+                        &mut deferred_mints,
+                        true,
+                    )
+                    .await;
                 if delay > post_delay {
                     post_delay = delay;
                 }
@@ -641,14 +674,16 @@ impl I2pControlServiceState {
                 DispatchOutcome::json(serde_json::Value::Array(responses), post_delay)
             }
         } else {
-            let (response, delay) = self.process_element(
-                &parsed,
-                header_token,
-                peer_ip,
-                now_ms,
-                &mut Vec::new(),
-                false,
-            );
+            let (response, delay) = self
+                .process_element(
+                    &parsed,
+                    header_token,
+                    peer_ip,
+                    now_ms,
+                    &mut Vec::new(),
+                    false,
+                )
+                .await;
             self.requests_processed.fetch_add(1, Ordering::Relaxed);
             match response {
                 Some(response) => DispatchOutcome::json(response, delay),
@@ -658,7 +693,7 @@ impl I2pControlServiceState {
     }
 
     /// Processes one batch element or single body.
-    fn process_element(
+    async fn process_element(
         &self,
         element: &serde_json::Value,
         header_token: Option<&str>,
@@ -681,14 +716,16 @@ impl I2pControlServiceState {
             }
         };
         let is_notification = request.is_notification();
-        let (response, delay) = self.process_request(
-            &request,
-            header_token,
-            peer_ip,
-            now_ms,
-            deferred_mints,
-            in_batch,
-        );
+        let (response, delay) = self
+            .process_request(
+                &request,
+                header_token,
+                peer_ip,
+                now_ms,
+                deferred_mints,
+                in_batch,
+            )
+            .await;
         if is_notification {
             (None, delay)
         } else {
@@ -697,7 +734,7 @@ impl I2pControlServiceState {
     }
 
     /// Authenticates and dispatches one decoded request.
-    fn process_request(
+    async fn process_request(
         &self,
         request: &JsonRpcRequest,
         header_token: Option<&str>,
@@ -741,39 +778,89 @@ impl I2pControlServiceState {
                     Ok(()) => self.process_client_services(id, &request.params),
                 }
             }
-            known => match self.check_token(&request.params, header_token, now_ms) {
-                Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
-                Ok(()) => {
-                    // Dispatch floor for the remaining methods: only the
-                    // token travels this far. Their plans own the select
-                    // form and the typed dispatch.
-                    if request.params.keys().any(|key| key != "Token") {
-                        return (
+            i2pr_i2pcontrol::Method::TunnelManager => {
+                match self.check_token(&request.params, header_token, now_ms) {
+                    Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
+                    Ok(()) => self.process_tunnel_manager(id, &request.params).await,
+                }
+            }
+            i2pr_i2pcontrol::Method::AddressBook => {
+                match self.check_token(&request.params, header_token, now_ms) {
+                    Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
+                    Ok(()) => {
+                        // AddressBook keeps the typed floor: only the token
+                        // travels this far. Plan 294 owns its select form.
+                        if request.params.keys().any(|key| key != "Token") {
+                            return (
+                                error_envelope(
+                                    id,
+                                    JsonRpcErrorCode::InvalidParams.code(),
+                                    JsonRpcErrorCode::InvalidParams.message(),
+                                ),
+                                Duration::ZERO,
+                            );
+                        }
+                        (
                             error_envelope(
                                 id,
-                                JsonRpcErrorCode::InvalidParams.code(),
-                                JsonRpcErrorCode::InvalidParams.message(),
+                                JsonRpcErrorCode::InternalError.code(),
+                                "AddressBook not yet available (Plan 294)",
                             ),
                             Duration::ZERO,
-                        );
+                        )
                     }
-                    let message = match known {
-                        i2pr_i2pcontrol::Method::AddressBook => {
-                            "AddressBook not yet available (Plan 294)"
-                        }
-                        i2pr_i2pcontrol::Method::TunnelManager => {
-                            "TunnelManager not yet available (Plan 289)"
-                        }
-                        _ => {
-                            unreachable!("routerinfo and clientservices handled above")
-                        }
-                    };
-                    (
-                        error_envelope(id, JsonRpcErrorCode::InternalError.code(), message),
-                        Duration::ZERO,
-                    )
                 }
-            },
+            }
+        }
+    }
+
+    /// Dispatches an authenticated `TunnelManager` request over the Plan
+    /// 289 envelope. Envelope rejections are invalid params; control
+    /// errors carry their own wire code. Without installed control
+    /// state (standalone construction) every request fails explicitly
+    /// with the Plan 289 marker.
+    async fn process_tunnel_manager(
+        &self,
+        id: Option<&JsonRpcRequestId>,
+        params: &serde_json::Map<String, serde_json::Value>,
+    ) -> (serde_json::Value, Duration) {
+        let request = match i2pr_i2pcontrol::decode_tunnel_request(params) {
+            Ok(request) => request,
+            Err(error) => {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InvalidParams.code(),
+                        &format!("{error}"),
+                    ),
+                    Duration::ZERO,
+                );
+            }
+        };
+        let control = match self
+            .control
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or(None)
+        {
+            Some(control) => control,
+            None => {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InternalError.code(),
+                        "TunnelManager control state unavailable (Plan 289)",
+                    ),
+                    Duration::ZERO,
+                );
+            }
+        };
+        match control.dispatch(&request).await {
+            Ok(value) => (success_envelope(id, value), Duration::ZERO),
+            Err(error) => (
+                error_envelope(id, error.wire_code(), &format!("{error}")),
+                Duration::ZERO,
+            ),
         }
     }
 
@@ -1351,7 +1438,9 @@ async fn handle_connection(
         Err(_) => return,
     };
     let now_ms = state.now_ms();
-    let outcome = state.dispatch_body(&body, header_token.as_deref(), peer_ip, now_ms);
+    let outcome = state
+        .dispatch_body(&body, header_token.as_deref(), peer_ip, now_ms)
+        .await;
     if !outcome.post_delay.is_zero() {
         tokio::select! {
             biased;
@@ -1399,12 +1488,31 @@ mod tests {
         now_ms: u64,
     ) -> DispatchOutcome {
         let bytes = serde_json::to_vec(body).expect("body serializes");
-        state.dispatch_body(
+        dispatch_raw(
+            state,
             &bytes,
             header_token,
             IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
             now_ms,
         )
+    }
+
+    /// Dispatches raw bytes at a manual instant.
+    fn dispatch_raw(
+        state: &I2pControlServiceState,
+        bytes: &[u8],
+        header_token: Option<&str>,
+        peer_ip: IpAddr,
+        now_ms: u64,
+    ) -> DispatchOutcome {
+        // The dispatch chain is async (Plan 289 reconcile awaits); unit
+        // tests drive it through a throwaway current-thread runtime so
+        // every existing sync test stays sync.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+            .block_on(state.dispatch_body(bytes, header_token, peer_ip, now_ms))
     }
 
     /// Extracts the JSON response (panics for content-free outcomes).
@@ -1549,7 +1657,8 @@ mod tests {
                 "{method} empty selection must succeed empty"
             );
         }
-        for (method, marker) in [("AddressBook", "Plan 294"), ("TunnelManager", "Plan 289")] {
+        let (method, marker) = ("AddressBook", "Plan 294");
+        {
             let outcome = dispatch(
                 &state,
                 &serde_json::json!({"jsonrpc": "2.0", "method": method, "params": {"Token": token}, "id": 1}),
@@ -1566,6 +1675,34 @@ mod tests {
                 "missing {marker} marker"
             );
         }
+        // Plan 289: TunnelManager without an action is an envelope
+        // rejection; a valid envelope without installed control state
+        // fails explicitly with the Plan 289 marker.
+        let outcome = dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "TunnelManager", "params": {"Token": token}, "id": 1}),
+            None,
+            0,
+        );
+        assert_eq!(
+            json_of(&outcome)["error"]["code"],
+            serde_json::json!(-32_602)
+        );
+        let outcome = dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "TunnelManager", "params": {"Token": token, "action": "get"}, "id": 1}),
+            None,
+            0,
+        );
+        let response = json_of(&outcome);
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("Plan 289"),
+            "missing Plan 289 marker"
+        );
         // Unknown methods answer method-not-found without fabricating state.
         let outcome = dispatch(
             &state,
@@ -1640,24 +1777,15 @@ mod tests {
     #[test]
     fn json_envelope_errors_are_exact() {
         let state = test_state(TEST_PASSWORD);
+        let loopback = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
         // Malformed JSON is a parse error.
-        let outcome = state.dispatch_body(
-            b"{not json",
-            None,
-            IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-            0,
-        );
+        let outcome = dispatch_raw(&state, b"{not json", None, loopback, 0);
         assert_eq!(
             json_of(&outcome)["error"]["code"],
             serde_json::json!(-32_700)
         );
         // Valid JSON that is not an object or array is an invalid request.
-        let outcome = state.dispatch_body(
-            b"42",
-            None,
-            IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-            0,
-        );
+        let outcome = dispatch_raw(&state, b"42", None, loopback, 0);
         assert_eq!(
             json_of(&outcome)["error"]["code"],
             serde_json::json!(-32_600)
@@ -1851,7 +1979,13 @@ mod tests {
                     "id": 1,
                 });
                 let bytes = serde_json::to_vec(&body).expect("body");
-                state.dispatch_body(&bytes, None, ip, 0)
+                // Each worker drives the async chain on its own
+                // current-thread runtime (no shared runtime needed).
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("test runtime")
+                    .block_on(state.dispatch_body(&bytes, None, ip, 0))
             }));
         }
         for handle in handles {

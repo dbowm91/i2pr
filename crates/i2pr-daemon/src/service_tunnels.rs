@@ -175,6 +175,17 @@ pub struct ServiceRuntime {
     is_irc_server: bool,
 }
 
+impl ServiceRuntime {
+    /// Clones the per-service supervisor cancellation token.
+    ///
+    /// Plan 289: profile supervisor loops observe this token so drained
+    /// runtimes stop accepting promptly instead of holding their
+    /// listeners until scope shutdown.
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+}
+
 impl std::fmt::Debug for ServiceRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -915,13 +926,33 @@ impl ServiceTunnelManager {
             let manager_for_task = Arc::clone(self);
             let runtime_for_task = Arc::clone(&runtime);
             let spec_id = runtime.spec_id.clone();
+            // Plan 289: resolve the spec from the committed generation
+            // first, then the construction-time config. `reconcile`
+            // publishes new generations without rewriting the
+            // construction config, so a config-only lookup goes stale
+            // for any runtime added after construction.
             let spec = self
-                .config
-                .specs
-                .tunnels
-                .iter()
-                .find(|s| s.id.as_str() == spec_id)
-                .cloned()
+                .committed_generation
+                .lock()
+                .ok()
+                .and_then(|guard| {
+                    guard.as_ref().and_then(|generation| {
+                        generation
+                            .committed_specs
+                            .tunnels
+                            .iter()
+                            .find(|s| s.id.as_str() == spec_id)
+                            .cloned()
+                    })
+                })
+                .or_else(|| {
+                    self.config
+                        .specs
+                        .tunnels
+                        .iter()
+                        .find(|s| s.id.as_str() == spec_id)
+                        .cloned()
+                })
                 .ok_or_else(|| {
                     ServiceTunnelError::InvalidConfig(format!("{spec_id} spec missing for runtime"))
                 })?;
@@ -3004,7 +3035,15 @@ async fn run_client_loop(
                 error = %error,
                 "client tunnel destination resolve failed; service will not accept connections"
             );
-            let _ = cancellation.cancelled().await;
+            // Plan 289: park on both tokens. A drained runtime must
+            // unpark here too, or the parked task would hold its
+            // listener past removal.
+            let drain_cancel = runtime.cancellation_token();
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {}
+                _ = drain_cancel.cancelled() => {}
+            }
             return Ok(());
         }
     };
@@ -3012,6 +3051,12 @@ async fn run_client_loop(
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly. The
+            // manager cancels `runtime.cancellation` when a runtime
+            // leaves the committed generation; without this branch the
+            // supervisor task (which owns a runtime clone) would hold
+            // its listener indefinitely.
+            _ = runtime.cancellation.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -3097,6 +3142,9 @@ async fn run_server_loop(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: see the client accept loop above; drained
+            // server runtimes stop polling promptly.
+            _ = runtime.cancellation.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();

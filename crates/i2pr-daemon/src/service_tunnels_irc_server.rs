@@ -459,10 +459,14 @@ pub async fn run_irc_server_loop(
     // stays 0 so a missing value can never resurrect the old
     // port-1 mismatch.
     let port = manager.server_streaming_port_for(runtime).unwrap_or(0_u16);
+    let drain_cancel = runtime.cancellation_token();
     loop {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop polling promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();

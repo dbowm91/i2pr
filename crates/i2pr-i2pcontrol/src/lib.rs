@@ -47,6 +47,7 @@ pub mod router_info;
 pub mod source_matrix;
 pub mod tunnel;
 pub mod tunnel_options;
+pub mod tunnel_request;
 
 pub use address_book::{
     ADDRESS_BOOK_FIELDS, AddressBookField, BOOK_TYPES, BookType, SET_CONFIG_KEYS,
@@ -79,3 +80,4 @@ pub use tunnel::{TUNNEL_ACTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus, Tunne
 pub use tunnel_options::{
     OptionSensitivity, OptionValueType, SECRET_OPTIONS, TUNNEL_OPTIONS, TunnelOption,
 };
+pub use tunnel_request::{TunnelManagerRequest, TunnelRequestError, decode_tunnel_request};

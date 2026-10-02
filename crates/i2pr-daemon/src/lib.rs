@@ -17,6 +17,7 @@ pub mod floodfill;
 pub mod i2cp;
 pub mod i2pcontrol;
 pub mod i2pcontrol_inspection;
+pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
@@ -395,6 +396,20 @@ fn register_i2pcontrol_service(
     let i2pcontrol_config = config.i2pcontrol.clone();
     let address = i2pcontrol_config.bind_socket();
     let i2pcontrol_name = ServiceName::new("i2pcontrol").expect("valid service name");
+    // Plan 289: the control-owned service manager is built here (store
+    // beneath the router data dir, fresh control-only manager) and
+    // installed on the service state before serving. Construction
+    // touches only the filesystem; definitions load and reconcile at
+    // service startup. A construction failure fails the service
+    // fail-closed without touching the network.
+    let control = match i2pcontrol_tunnels::TunnelControlState::for_config(config) {
+        Ok(control) => Arc::new(control),
+        Err(error) => {
+            return Err(DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register I2PControl service: {error}"
+            )));
+        }
+    };
     let inspection = Arc::clone(inspection);
     builder
         .register(ServiceSpec::new(
@@ -403,6 +418,7 @@ fn register_i2pcontrol_service(
             move |ctx| {
                 let i2pcontrol_config = i2pcontrol_config.clone();
                 let inspection = Arc::clone(&inspection);
+                let control = Arc::clone(&control);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -424,6 +440,7 @@ fn register_i2pcontrol_service(
                             );
                         }
                     };
+                    state.set_control_manager(Arc::clone(&control));
                     let token = cancellation.clone();
                     let join_result =
                         i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {

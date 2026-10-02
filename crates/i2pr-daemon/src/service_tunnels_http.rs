@@ -662,10 +662,14 @@ pub async fn run_http_client_loop(
         "http client tunnel bound loopback listener"
     );
     let options = spec.http_options.clone().unwrap_or_default();
+    let drain_cancel = runtime.cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {

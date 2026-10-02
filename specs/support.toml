@@ -1653,3 +1653,21 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/288-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.tunnelmanager-control-state"
+protocol = "i2pcontrol"
+structure = "proposal-170-tunnelmanager-seven-action-control-ownership"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 289 closed the TunnelManager control plane over the one existing M10 manager for the six families with real runtime backends (client/server/httpclient/socks/ircclient/ircserver): closed seven-action envelope (rename via new_name on edit), startup-vs-control provenance with collision fail-closed, versioned generation store (stage/publish/pointer/recovery/retention, 1 MiB ceiling), validate-mirror-stage-reconcile-publish-verify transaction with immediate-release drain and 5 s reconcile-back, 7-option real-effect subset (every other option fails unsupported, secrets rejected before storage), per-name supervisor snapshots with StartOnLoad-vs-running truthfulness, startup restore and disabled-mode isolation. Remaining six types and the wider option matrix belong to Plans 290-293."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_request.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md",
+    "plans/closure/i2pcontrol-proposal-170/289-status.md",
+]
+advertised = false
