@@ -66,6 +66,7 @@ fn base_spec(id: &str, kind: ServiceTunnelKind) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

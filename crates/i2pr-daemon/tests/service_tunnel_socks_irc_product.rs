@@ -69,6 +69,7 @@ fn socks_irc_spec(destination: DestinationRef) -> ServiceTunnelSpec {
         socks5_options: Some(Socks5ClientOptions::defaults()),
         irc_options: Some(IrcClientOptions::default()),
         connect_options: None,
+        streamr_options: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn server_spec(id: &str, target: SocketAddr) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

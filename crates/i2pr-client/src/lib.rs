@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod datagram;
 pub mod dispatch;
 pub mod identity;
 pub mod lease_selection;
@@ -50,6 +51,11 @@ pub use config::{
     MAX_LEASE_PUBLICATION_MARGIN_SECONDS, MAX_LEASE_ROTATION_MARGIN_SECONDS,
     MAX_LOCAL_DESTINATIONS, MAX_PENDING_DESTINATION_BYTES, MAX_PENDING_DESTINATION_MESSAGES,
     RegistryConfig,
+};
+pub use datagram::{
+    DATAGRAM1_PROTOCOL, DatagramCounters, DatagramError, DatagramManager, DatagramReceiveEvent,
+    DatagramSendRequest, MAX_DATAGRAM_APPLICATION_PAYLOAD, MAX_DATAGRAM_FROM_BYTES,
+    MAX_DATAGRAM_OUTBOUND_QUEUE, MAX_DATAGRAM_RECEIVE_QUEUE, RAW_DATAGRAM_PROTOCOL,
 };
 pub use dispatch::{
     DestinationDispatcher, InboundDispatchError, InboundDispatchOutcome, MAX_INBOUND_DESTINATIONS,

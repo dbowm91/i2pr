@@ -226,11 +226,14 @@ pub struct RouterInboundDispatchReport {
     /// `StreamingDestinationAdapter::receive` into the canonical
     /// service `StreamingManager`.
     pub streaming_packets_accepted: usize,
-    /// Number of payloads rejected by the adapter (non-streaming
-    /// protocol counts as rejected for the streaming path; Garlic
-    /// auth failures return `garlic_authenticated = false` with
-    /// zero dequeued).
+    /// Number of payloads rejected by the adapter (unknown
+    /// non-datagram protocols count as rejected; Garlic auth
+    /// failures return `garlic_authenticated = false` with zero
+    /// dequeued).
     pub streaming_rejected: usize,
+    /// Number of repliable/raw datagram payloads authenticated
+    /// and queued on the bridge datagram manager (Plan 291).
+    pub datagrams_accepted: usize,
 }
 
 /// Per-destination SAM STREAM bridge.
@@ -248,6 +251,10 @@ pub struct SamDestinationBridge {
     receiver_session: EciesSessionManager,
     receiver_routing: DestinationRouting,
     receiver_streaming: StreamingManager,
+    /// Plan 291: connectionless repliable/raw datagram manager. A
+    /// single manager serves both directions because datagrams
+    /// carry no connection state (no initiator/mirror split).
+    datagrams: i2pr_client::datagram::DatagramManager,
     receiver_lease_set2_store: LeaseSet2Store,
     receiver_now_seconds: u32,
     diagnostics: BridgeDiagnostics,
@@ -335,6 +342,7 @@ impl SamDestinationBridge {
             receiver_session: EciesSessionManager::new(EciesSessionConfig::balanced()),
             receiver_routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
             receiver_streaming: StreamingManager::new(StreamingConfig::balanced()),
+            datagrams: i2pr_client::datagram::DatagramManager::new(),
             receiver_lease_set2_store: LeaseSet2Store::default(),
             receiver_now_seconds: now_seconds,
             diagnostics: BridgeDiagnostics::new(),
@@ -402,6 +410,20 @@ impl SamDestinationBridge {
     /// path uses [`Self::streaming_mut`].
     pub fn receiver_streaming(&self) -> &StreamingManager {
         &self.receiver_streaming
+    }
+
+    /// Returns the bridge's connectionless datagram manager. The
+    /// manager authenticates inbound repliable datagrams and queues
+    /// raw media events for the owning service runtime (Plan 291).
+    pub fn datagrams(&self) -> &i2pr_client::datagram::DatagramManager {
+        &self.datagrams
+    }
+
+    /// Mutable accessor for the datagram manager. Used by the
+    /// delivery seams (`bridge_to_peer` swap-and-restore,
+    /// router-backed sink) and the owning service runtime drain.
+    pub fn datagrams_mut(&mut self) -> &mut i2pr_client::datagram::DatagramManager {
+        &mut self.datagrams
     }
 
     /// Polls retransmission and delayed-ACK state for both manager
@@ -964,6 +986,7 @@ impl SamDestinationBridge {
                     payloads_dequeued: 0,
                     streaming_packets_accepted: 0,
                     streaming_rejected: 0,
+                    datagrams_accepted: 0,
                 });
             }
         };
@@ -974,6 +997,7 @@ impl SamDestinationBridge {
                 payloads_dequeued: 0,
                 streaming_packets_accepted: 0,
                 streaming_rejected: 0,
+                datagrams_accepted: 0,
             });
         };
         // Drain every queued payload for the local destination (not
@@ -982,6 +1006,7 @@ impl SamDestinationBridge {
         let mut dequeued = 0_usize;
         let mut accepted = 0_usize;
         let mut rejected = 0_usize;
+        let mut datagrams_accepted = 0_usize;
         while let Some(payload) = self.dispatcher.pop_payload(local_id) {
             dequeued = dequeued.saturating_add(1);
             // Plan 213: server profiles feed the receiver mirror so
@@ -1020,12 +1045,39 @@ impl SamDestinationBridge {
                 ) => {
                     rejected = rejected.saturating_add(1);
                 }
+                Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::DatagramReceived {
+                    protocol,
+                    source_port,
+                    destination_port,
+                    payload,
+                }) => {
+                    // Plan 291: repliable datagrams authenticate
+                    // here; raw datagrams bound-check here. Either
+                    // rejection counts against the datagram path,
+                    // never the streaming path.
+                    if self
+                        .datagrams
+                        .process_inbound(
+                            protocol,
+                            source_port,
+                            destination_port,
+                            &payload,
+                            remote_hash,
+                            now_ms,
+                        )
+                        .is_ok()
+                    {
+                        datagrams_accepted = datagrams_accepted.saturating_add(1);
+                    } else {
+                        rejected = rejected.saturating_add(1);
+                    }
+                }
                 Err(_) => {
                     rejected = rejected.saturating_add(1);
                 }
             }
         }
-        if accepted > 0 {
+        if accepted > 0 || datagrams_accepted > 0 {
             self.diagnostics.record_inbound_dispatch();
         } else {
             self.diagnostics.record_inbound_observation();
@@ -1035,6 +1087,7 @@ impl SamDestinationBridge {
             payloads_dequeued: dequeued,
             streaming_packets_accepted: accepted,
             streaming_rejected: rejected,
+            datagrams_accepted,
         })
     }
 }
@@ -1353,6 +1406,13 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
             StreamingManager::new(StreamingConfig::balanced()),
         )
     };
+    let mut receiver_datagrams = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.datagrams,
+            i2pr_client::datagram::DatagramManager::new(),
+        )
+    };
     let mut peer_canonical_streaming = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(
@@ -1417,6 +1477,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         session: &mut receiver_session,
         routing: &mut receiver_routing,
         streaming: &mut receiver_streaming,
+        datagrams: &mut receiver_datagrams,
         canonical_streaming: Some(&mut peer_canonical_streaming),
         lease_set2_store: &mut receiver_lease_set2_store,
         now_seconds: receiver_now_seconds,
@@ -1456,6 +1517,7 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         peer_guard.receiver_session = receiver_session;
         peer_guard.routing = receiver_routing;
         peer_guard.receiver_streaming = receiver_streaming;
+        peer_guard.datagrams = receiver_datagrams;
         peer_guard.streaming = peer_canonical_streaming;
         peer_guard.receiver_lease_set2_store = receiver_lease_set2_store;
     }
@@ -1474,6 +1536,12 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
             } else {
                 Err(BridgeDeliveryError::NotStreaming)
             }
+        }
+        LocalDeliveryOutcome::DatagramDelivered => {
+            let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+            peer_guard.record_inbound_observation();
+            drop(peer_guard);
+            Ok(())
         }
         LocalDeliveryOutcome::DispatchRejected(_) => Ok(()),
     }

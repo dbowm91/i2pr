@@ -161,6 +161,7 @@ fn client_spec(
         socks5_options,
         irc_options,
         connect_options: None,
+        streamr_options: None,
     }
 }
 
@@ -182,6 +183,7 @@ fn server_spec(id: &str, kind: ServiceTunnelKind, target: SocketAddr) -> Service
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

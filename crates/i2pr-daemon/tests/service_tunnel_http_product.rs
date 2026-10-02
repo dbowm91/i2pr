@@ -105,6 +105,7 @@ fn http_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

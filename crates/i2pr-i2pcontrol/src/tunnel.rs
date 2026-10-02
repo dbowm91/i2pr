@@ -176,6 +176,27 @@ impl TunnelType {
         )
     }
 
+    /// Whether i2pr has a real backend at Plan 291 scope: the ten
+    /// Plan 290 backends plus the two Streamr families. All twelve
+    /// Proposal types map after Plan 291 closes.
+    pub const fn has_plan291_backend(self) -> bool {
+        matches!(
+            self,
+            Self::Client
+                | Self::Server
+                | Self::HttpClient
+                | Self::Socks
+                | Self::IrcClient
+                | Self::IrcServer
+                | Self::ConnectClient
+                | Self::SocksIrc
+                | Self::HttpServer
+                | Self::HttpBidirServer
+                | Self::StreamrClient
+                | Self::StreamrServer
+        )
+    }
+
     /// Parses an exact type spelling (case-sensitive).
     pub fn parse(name: &str) -> Result<Self, ContractError> {
         match name {

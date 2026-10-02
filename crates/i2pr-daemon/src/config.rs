@@ -544,6 +544,12 @@ struct RawServiceTunnelEntry {
     max_connections: Option<usize>,
     #[serde(default)]
     max_buffered_bytes_per_direction: Option<usize>,
+    /// Plan 291: loopback UDP media endpoint for `streamr-server`
+    /// (media source) and `streamr-client` (media target)
+    /// (`ip:port`, explicit; no silent default for where media
+    /// enters or exits).
+    #[serde(default)]
+    local_udp: Option<String>,
 }
 
 /// One raw `[[service_tunnels.alias]]` static alias mapping.
@@ -1846,6 +1852,34 @@ fn normalize_service_tunnels(
         } else {
             None
         };
+        // Plan 291: the Streamr halves carry validated UDP
+        // endpoints plus freeze-default cadence/ceiling policy.
+        // Endpoints are explicit per half (no silent default for
+        // where media enters or exits); loopback shape is enforced
+        // by `StreamrOptions::validate`.
+        let streamr_options = if matches!(
+            kind,
+            ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+        ) {
+            let local_udp = entry
+                .local_udp
+                .as_deref()
+                .map(|text| {
+                    text.parse::<std::net::SocketAddr>()
+                        .map_err(|_| ConfigError::Semantic {
+                            field: "service_tunnels.tunnel.udp",
+                            reason: "local UDP endpoint must be a loopback ip:port",
+                        })
+                })
+                .transpose()?;
+            let options = i2pr_service_tunnels::StreamrOptions {
+                local_udp,
+                ..i2pr_service_tunnels::StreamrOptions::default()
+            };
+            Some(options)
+        } else {
+            None
+        };
         let spec = ServiceTunnelSpec {
             id,
             kind,
@@ -1862,6 +1896,7 @@ fn normalize_service_tunnels(
             socks5_options,
             irc_options,
             connect_options,
+            streamr_options,
         };
         spec.validate().map_err(|err| match err {
             i2pr_service_tunnels::ServiceTunnelError::DuplicateId { .. }
@@ -1910,11 +1945,11 @@ fn normalize_service_tunnels(
     })?;
 
     // Plan 175 §13/§6 + Plan 176 §13 + Plan 177 §13 + Plan 178 §13
-    // + Plan 179 §14 + Plan 290: `generic-client`,
+    // + Plan 179 §14 + Plan 290 + Plan 291: `generic-client`,
     // `generic-server`, `http-client`, `socks5-client`,
     // `irc-client`, `irc-server`, `connect-client`, `socks-irc`,
-    // `http-server`, and `http-bidir-server` tunnels may activate
-    // after their plans land.
+    // `http-server`, `http-bidir-server`, `streamr-client`, and
+    // `streamr-server` tunnels may activate after their plans land.
     // The `ServiceTunnelKind` enum is closed; the match is
     // exhaustive, so every known kind is accepted and the loop
     // exists as a documented invariant.
@@ -1929,7 +1964,9 @@ fn normalize_service_tunnels(
             | i2pr_service_tunnels::ServiceTunnelKind::ConnectClient
             | i2pr_service_tunnels::ServiceTunnelKind::SocksIrc
             | i2pr_service_tunnels::ServiceTunnelKind::HttpServer
-            | i2pr_service_tunnels::ServiceTunnelKind::HttpBidirServer => {}
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpBidirServer
+            | i2pr_service_tunnels::ServiceTunnelKind::StreamrClient
+            | i2pr_service_tunnels::ServiceTunnelKind::StreamrServer => {}
         }
     }
 

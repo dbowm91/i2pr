@@ -213,6 +213,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -233,6 +234,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }
     }
 

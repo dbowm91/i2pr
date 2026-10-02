@@ -1697,3 +1697,28 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/290-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.repliable-datagram-and-streamr"
+protocol = "i2pcontrol"
+structure = "proposal-170-twelve-family-datagram-backends"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 291 closed the bounded authenticated repliable-datagram substrate and both Streamr families as real backends under the one existing M10 ServiceTunnelManager: runtime-neutral Datagram1 (protocol 17, Ed25519 sender authentication) and raw (protocol 18) framing with 1200-byte ceilings and bounded queues; adapter/local-seam/bridge dispatch for 17/18 beside Streaming; streamrclient (bounded subscribe cadence with terminal unsubscribe, producer-bound media forwarding to loopback UDP) and streamrserver (persistent destination, loopback UDP media source, 10-entry 60 s authenticated subscriber table, raw fanout). All twelve Proposal types have backends. Raw datagrams carry no sender proof by design; the client forwards only transport-authenticated producer media."
+evidence = [
+    "specs/protocols/12-repliable-datagrams-streamr.md",
+    "crates/i2pr-client/src/datagram.rs",
+    "crates/i2pr-client/src/streaming_adapter.rs",
+    "crates/i2pr-client/src/streaming/local_delivery.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/streamr.rs",
+    "crates/i2pr-daemon/src/service_tunnels_streamr.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_streamr_product.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md",
+    "plans/closure/i2pcontrol-proposal-170/291-status.md",
+]
+advertised = false

@@ -56,6 +56,7 @@ pub mod generation;
 pub mod http;
 pub mod irc;
 pub mod socks5;
+pub mod streamr;
 
 pub use config::{
     DestinationPolicy, LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE,
@@ -92,4 +93,9 @@ pub use socks5::{
     Socks4aRequestParser, Socks5ClientOptions, Socks5Error, Socks5ErrorKind, Socks5Limits,
     Socks5ReplyCode, build_reply as build_socks5_reply,
     build_reply_from_code as build_socks5_reply_from_code, build_socks4a_reply,
+};
+pub use streamr::{
+    DEFAULT_MAX_SUBSCRIBERS, DEFAULT_PAYLOAD_LIMIT_BYTES, DEFAULT_STREAMR_I2P_PORT,
+    DEFAULT_SUBSCRIBE_INTERVAL_MS, DEFAULT_SUBSCRIPTION_EXPIRY_MS, MAX_PAYLOAD_LIMIT_BYTES,
+    MAX_SUBSCRIBER_CEILING, StreamrOptions,
 };

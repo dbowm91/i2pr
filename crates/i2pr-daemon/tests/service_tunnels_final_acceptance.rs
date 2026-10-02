@@ -93,6 +93,7 @@ fn client_spec(id: &str, listener_port: u16) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 
@@ -115,6 +116,7 @@ fn server_spec(id: &str, target_port: u16) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

@@ -84,6 +84,18 @@ pub const SUPPORTED_289_OPTIONS: [&str; 7] = [
     "start_on_load",
     "max_streams",
 ];
+/// Plan 291 Streamr option keys with real effects. `remote_udp_host`
+/// stays unsupported until Plan 292 assigns it meaning (never
+/// accepted inertly).
+pub const SUPPORTED_291_OPTIONS: [&str; 7] = [
+    "local_udp_host",
+    "local_udp_port",
+    "target_i2p_port",
+    "streamr_subscribe_interval",
+    "streamr_expiry",
+    "streamr_max_subscribers",
+    "streamr_payload_limit",
+];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -654,8 +666,11 @@ fn temp_counter() -> u64 {
 }
 
 /// Maps a Proposal type onto the existing M10 runtime family.
-/// Types without a Plan 290 backend (the two Streamr families
-/// until Plan 291) fail before any allocation.
+/// Plan 290 added the four composed families over the existing
+/// manager and shared primitives; Plan 291 adds the two Streamr
+/// families over the repliable-datagram substrate. All twelve
+/// Proposal types map; unknown spellings never reach this point
+/// (the contract parser rejects them).
 pub fn map_tunnel_type(tunnel_type: TunnelType) -> Result<ServiceTunnelKind, ControlError> {
     match tunnel_type {
         TunnelType::Client => Ok(ServiceTunnelKind::GenericClient),
@@ -670,7 +685,14 @@ pub fn map_tunnel_type(tunnel_type: TunnelType) -> Result<ServiceTunnelKind, Con
         TunnelType::SocksIrc => Ok(ServiceTunnelKind::SocksIrc),
         TunnelType::HttpServer => Ok(ServiceTunnelKind::HttpServer),
         TunnelType::HttpBidirServer => Ok(ServiceTunnelKind::HttpBidirServer),
-        other => Err(ControlError::UnsupportedType(other.name().to_owned())),
+        // Plan 291: Streamr families over the repliable-datagram
+        // substrate. The match is exhaustive over the frozen
+        // twelve-type inventory, so a thirteenth type fails at
+        // compile time (fail-closed); runtime rejection of
+        // unmapped types stays in `normalize_definition` and the
+        // supervisor gates through `has_plan291_backend`.
+        TunnelType::StreamrClient => Ok(ServiceTunnelKind::StreamrClient),
+        TunnelType::StreamrServer => Ok(ServiceTunnelKind::StreamrServer),
     }
 }
 
@@ -704,6 +726,16 @@ pub fn build_control_spec(
     let mut listen_host: Option<std::net::IpAddr> = None;
     let mut listen_port: u16 = 0;
     let mut max_connections = DEFAULT_CONTROL_MAX_CONNECTIONS;
+    // Plan 291 Streamr inputs (validated per kind below; ranges
+    // enforced by `StreamrOptions::validate` through the final
+    // spec validation).
+    let mut local_udp_host: Option<std::net::IpAddr> = None;
+    let mut local_udp_port: Option<u16> = None;
+    let mut target_i2p_port: u16 = 0;
+    let mut subscribe_interval_ms: Option<u64> = None;
+    let mut subscription_expiry_ms: Option<u64> = None;
+    let mut max_subscribers: Option<usize> = None;
+    let mut payload_limit_bytes: Option<usize> = None;
     for (key, value) in &definition.options {
         match key.as_str() {
             "target_destination" => {
@@ -715,6 +747,7 @@ pub fn build_control_spec(
                         | ServiceTunnelKind::IrcClient
                         | ServiceTunnelKind::ConnectClient
                         | ServiceTunnelKind::SocksIrc
+                        | ServiceTunnelKind::StreamrClient
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -789,6 +822,8 @@ pub fn build_control_spec(
                     ServiceTunnelKind::GenericServer
                         | ServiceTunnelKind::IrcServer
                         | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::StreamrClient
+                        | ServiceTunnelKind::StreamrServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -814,6 +849,8 @@ pub fn build_control_spec(
                     ServiceTunnelKind::GenericServer
                         | ServiceTunnelKind::IrcServer
                         | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::StreamrClient
+                        | ServiceTunnelKind::StreamrServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -847,6 +884,139 @@ pub fn build_control_spec(
                         reason: "max_streams must be within 1..=128",
                     });
                 }
+            }
+            // Plan 291: Streamr UDP endpoints and cadence policy.
+            // The loopback shape is enforced here; numeric ranges
+            // are enforced by `StreamrOptions::validate` through
+            // the final spec validation.
+            "local_udp_host" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "local_udp_host applies to Streamr kinds only",
+                    });
+                }
+                let address: std::net::IpAddr =
+                    value.parse().map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "local_udp_host must be an IP literal",
+                    })?;
+                if !address.is_loopback() {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "local_udp_host must be loopback",
+                    });
+                }
+                local_udp_host = Some(address);
+            }
+            "local_udp_port" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "local_udp_port applies to Streamr kinds only",
+                    });
+                }
+                local_udp_port =
+                    Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|_| ControlError::InvalidOption {
+                                option: key.clone(),
+                                reason: "local_udp_port must be 0..=65535",
+                            })?,
+                    );
+            }
+            "target_i2p_port" => {
+                if !matches!(kind, ServiceTunnelKind::StreamrClient) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "target_i2p_port applies to streamr-client only",
+                    });
+                }
+                target_i2p_port =
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "target_i2p_port must be 0..=65535",
+                        })?;
+            }
+            "streamr_subscribe_interval" => {
+                if !matches!(kind, ServiceTunnelKind::StreamrClient) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "streamr_subscribe_interval applies to streamr-client only",
+                    });
+                }
+                subscribe_interval_ms =
+                    Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| ControlError::InvalidOption {
+                                option: key.clone(),
+                                reason: "streamr_subscribe_interval must be an integer",
+                            })?,
+                    );
+            }
+            "streamr_expiry" => {
+                if !matches!(kind, ServiceTunnelKind::StreamrServer) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "streamr_expiry applies to streamr-server only",
+                    });
+                }
+                subscription_expiry_ms =
+                    Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| ControlError::InvalidOption {
+                                option: key.clone(),
+                                reason: "streamr_expiry must be an integer",
+                            })?,
+                    );
+            }
+            "streamr_max_subscribers" => {
+                if !matches!(kind, ServiceTunnelKind::StreamrServer) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "streamr_max_subscribers applies to streamr-server only",
+                    });
+                }
+                max_subscribers =
+                    Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| ControlError::InvalidOption {
+                                option: key.clone(),
+                                reason: "streamr_max_subscribers must be an integer",
+                            })?,
+                    );
+            }
+            "streamr_payload_limit" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "streamr_payload_limit applies to Streamr kinds only",
+                    });
+                }
+                payload_limit_bytes =
+                    Some(
+                        value
+                            .parse::<usize>()
+                            .map_err(|_| ControlError::InvalidOption {
+                                option: key.clone(),
+                                reason: "streamr_payload_limit must be an integer",
+                            })?,
+                    );
             }
             other => {
                 // Secret-classified keys are rejected here even though
@@ -894,7 +1064,9 @@ pub fn build_control_spec(
         ),
         ServiceTunnelKind::GenericServer
         | ServiceTunnelKind::IrcServer
-        | ServiceTunnelKind::HttpServer => None,
+        | ServiceTunnelKind::HttpServer
+        | ServiceTunnelKind::StreamrClient
+        | ServiceTunnelKind::StreamrServer => None,
     };
     if listener.is_some() && destination.is_none() {
         // The bidirectional profile is the exception: its client
@@ -907,9 +1079,10 @@ pub fn build_control_spec(
             ));
         }
     }
-    let (http_options, socks5_options, irc_options, connect_options) = match kind {
+    let (http_options, socks5_options, irc_options, connect_options, streamr_options) = match kind {
         ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer => (
             Some(i2pr_service_tunnels::HttpClientOptions::defaults()),
+            None,
             None,
             None,
             None,
@@ -919,11 +1092,13 @@ pub fn build_control_spec(
             Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
             None,
             None,
+            None,
         ),
         ServiceTunnelKind::SocksIrc => (
             None,
             Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
             Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
+            None,
             None,
         ),
         ServiceTunnelKind::IrcClient => (
@@ -931,14 +1106,43 @@ pub fn build_control_spec(
             None,
             Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
             None,
+            None,
         ),
         ServiceTunnelKind::ConnectClient => (
             None,
             None,
             None,
             Some(i2pr_service_tunnels::ConnectClientOptions::defaults()),
+            None,
         ),
-        _ => (None, None, None, None),
+        // Plan 291: Streamr endpoints are explicit (no silent
+        // default for where media enters or exits); cadence
+        // policy defaults to the freeze and honors supplied
+        // overrides through spec validation.
+        ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer => {
+            let local_udp = match (local_udp_host, local_udp_port) {
+                (Some(host), Some(port)) => Some(std::net::SocketAddr::new(host, port)),
+                _ => {
+                    return Err(ControlError::InvalidRequest(
+                        "streamr kinds require local_udp_host and local_udp_port",
+                    ));
+                }
+            };
+            let options = i2pr_service_tunnels::StreamrOptions {
+                local_udp,
+                target_i2p_port,
+                subscribe_interval_ms: subscribe_interval_ms
+                    .unwrap_or(i2pr_service_tunnels::DEFAULT_SUBSCRIBE_INTERVAL_MS),
+                subscription_expiry_ms: subscription_expiry_ms
+                    .unwrap_or(i2pr_service_tunnels::DEFAULT_SUBSCRIPTION_EXPIRY_MS),
+                max_subscribers: max_subscribers
+                    .unwrap_or(i2pr_service_tunnels::DEFAULT_MAX_SUBSCRIBERS),
+                payload_limit_bytes: payload_limit_bytes
+                    .unwrap_or(i2pr_service_tunnels::DEFAULT_PAYLOAD_LIMIT_BYTES),
+            };
+            (None, None, None, None, Some(options))
+        }
+        _ => (None, None, None, None, None),
     };
     let spec = ServiceTunnelSpec {
         id,
@@ -956,6 +1160,7 @@ pub fn build_control_spec(
         socks5_options,
         irc_options,
         connect_options,
+        streamr_options,
     };
     spec.validate()
         .map_err(|error| ControlError::InvalidRequest(static_spec_reason(error)))?;
@@ -990,11 +1195,13 @@ pub fn normalize_definition(
     start_on_load: bool,
 ) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
-    if !tunnel_type.has_plan290_backend() {
+    if !tunnel_type.has_plan291_backend() {
         return Err(ControlError::UnsupportedType(tunnel_type.name().to_owned()));
     }
     for key in options.keys() {
-        if !SUPPORTED_289_OPTIONS.contains(&key.as_str()) {
+        if !SUPPORTED_289_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_291_OPTIONS.contains(&key.as_str())
+        {
             return Err(ControlError::UnsupportedOption(key.clone()));
         }
     }
@@ -1159,7 +1366,7 @@ impl TunnelControlState {
         let start: Vec<String> = lock(&self.definitions)
             .values()
             .filter(|definition| {
-                definition.start_on_load && definition.tunnel_type.has_plan290_backend()
+                definition.start_on_load && definition.tunnel_type.has_plan291_backend()
             })
             .map(|definition| definition.name.clone())
             .collect();
@@ -1521,7 +1728,7 @@ impl TunnelControlState {
         definition: &ControlDefinition,
     ) -> i2pr_i2pcontrol::TunnelStatus {
         use i2pr_i2pcontrol::TunnelStatus;
-        if !definition.tunnel_type.has_plan290_backend() {
+        if !definition.tunnel_type.has_plan291_backend() {
             return TunnelStatus::Unsupported;
         }
         let transitioning = lock(&self.transitioning).contains(name);
@@ -2014,7 +2221,7 @@ impl TunnelControlState {
         let definition = self
             .definition(name)
             .ok_or_else(|| unknown_or_startup(name, &self.startup))?;
-        if !definition.tunnel_type.has_plan290_backend() {
+        if !definition.tunnel_type.has_plan291_backend() {
             return Err(ControlError::UnsupportedType(
                 definition.tunnel_type.name().to_owned(),
             ));
@@ -2399,22 +2606,85 @@ mod tests {
                 TunnelType::HttpBidirServer,
                 ServiceTunnelKind::HttpBidirServer,
             ),
+            // Plan 291: Streamr families over the
+            // repliable-datagram substrate.
+            (TunnelType::StreamrClient, ServiceTunnelKind::StreamrClient),
+            (TunnelType::StreamrServer, ServiceTunnelKind::StreamrServer),
         ] {
             assert_eq!(map_tunnel_type(tunnel_type).expect("backend"), kind);
         }
-        // Only the two Streamr families fail before any allocation:
-        // the mapping is a pure function over the type, so no
-        // listener, destination, task, or file can exist for them
-        // until Plan 291.
-        for tunnel_type in [TunnelType::StreamrClient, TunnelType::StreamrServer] {
-            assert!(
-                matches!(
-                    map_tunnel_type(tunnel_type),
-                    Err(ControlError::UnsupportedType(_))
-                ),
-                "{tunnel_type:?} must be unsupported"
-            );
-        }
+    }
+
+    #[test]
+    fn plan291_streamr_control_spec_builds() {
+        use i2pr_service_tunnels::ServiceTunnelKind;
+        // Server: explicit loopback UDP source plus bounded
+        // overrides; no TCP listener or target.
+        let mut options = BTreeMap::new();
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5001".to_owned());
+        options.insert("streamr_expiry".to_owned(), "90000".to_owned());
+        options.insert("streamr_max_subscribers".to_owned(), "5".to_owned());
+        let definition = ControlDefinition {
+            name: "pub".to_owned(),
+            tunnel_type: TunnelType::StreamrServer,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("server spec builds");
+        assert_eq!(spec.kind, ServiceTunnelKind::StreamrServer);
+        let udp = spec
+            .streamr_options
+            .expect("options")
+            .local_udp
+            .expect("udp");
+        assert_eq!(udp.port(), 5001);
+        assert!(spec.listener.is_none());
+        assert!(spec.target.is_none());
+        // Client: producer destination plus loopback UDP target.
+        let mut options = BTreeMap::new();
+        options.insert(
+            "target_destination".to_owned(),
+            format!("{}.b32.i2p", "a".repeat(52)),
+        );
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5000".to_owned());
+        options.insert("target_i2p_port".to_owned(), "7".to_owned());
+        let definition = ControlDefinition {
+            name: "sub".to_owned(),
+            tunnel_type: TunnelType::StreamrClient,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("client spec builds");
+        assert_eq!(spec.kind, ServiceTunnelKind::StreamrClient);
+        assert!(spec.destination.is_some());
+        assert_eq!(spec.streamr_options.expect("options").target_i2p_port, 7);
+        // Missing UDP endpoint fails before allocation.
+        let definition = ControlDefinition {
+            name: "bad".to_owned(),
+            tunnel_type: TunnelType::StreamrServer,
+            options: BTreeMap::new(),
+            start_on_load: false,
+        };
+        assert!(build_control_spec(&definition).is_err());
+        // Cross-kind keys fail: server-only key on the client,
+        // TCP target keys on either Streamr half.
+        let mut options = BTreeMap::new();
+        options.insert(
+            "target_destination".to_owned(),
+            format!("{}.b32.i2p", "a".repeat(52)),
+        );
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5000".to_owned());
+        options.insert("streamr_expiry".to_owned(), "90000".to_owned());
+        let definition = ControlDefinition {
+            name: "xclient".to_owned(),
+            tunnel_type: TunnelType::StreamrClient,
+            options,
+            start_on_load: false,
+        };
+        assert!(build_control_spec(&definition).is_err());
     }
 
     #[test]
@@ -2580,14 +2850,19 @@ mod tests {
             control.get(Some("alpha")),
             Err(ControlError::UnknownTunnel("alpha".to_owned()))
         );
-        // Unsupported type: resource-free (no manager generation either).
+        // Plan 291: streamrclient validates its required fields
+        // before any side effect (missing destination and UDP
+        // endpoint: no store file, no runtime, empty mirror).
         let error = block_on(control.create(&create_request(
             "stream",
             TunnelType::StreamrClient,
             BTreeMap::new(),
         )))
-        .expect_err("unsupported fails");
-        assert!(matches!(error, ControlError::UnsupportedType(_)));
+        .expect_err("invalid fails");
+        assert!(matches!(
+            error,
+            ControlError::InvalidRequest(_) | ControlError::InvalidOption { .. }
+        ));
         assert_eq!(control.store.current_id(), 0);
     }
 

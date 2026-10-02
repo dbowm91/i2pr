@@ -76,6 +76,7 @@ async fn attempt_remote_connect(peer_pub_b64: &str) -> (bool, usize, usize, u64)
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         },
         ServiceTunnelSpec {
             id: ServiceTunnelId::parse("alpha-local-server").expect("id"),
@@ -93,6 +94,7 @@ async fn attempt_remote_connect(peer_pub_b64: &str) -> (bool, usize, usize, u64)
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         },
     ];
     let manager = Arc::new(

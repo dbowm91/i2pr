@@ -345,7 +345,8 @@ crates/i2pr-client/
 │   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2
 │   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError
 │   ├── streaming/        Plan 125/128/129 Streaming core (`mod`, `manager`, `connection`, `config`, `send_window`, `recv_window`, `retransmit`, `congestion`, `local_delivery`, `events`, `errors`, `clock`, `transport`, `testing`): StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope, poll_retransmits, drain_delivered
-│   ├── streaming_adapter.rs Plan 129 combined outbound/inbound StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery; recovered I2NP Data -> gzip -> protocol-6 dispatch)
+│   ├── streaming_adapter.rs Plan 129 combined outbound/inbound StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery; recovered I2NP Data -> gzip -> protocol-6 dispatch); Plan 291 adds the `DatagramReceived` outcome carrying decoded 17/18 payloads to the destination datagram manager
+│   ├── datagram.rs       Plan 291 runtime-neutral repliable-datagram substrate: DatagramManager, Datagram1 framing + Ed25519 sender authentication, raw payloads, bounded send/receive queues, typed errors
 │   └── testing.rs        deterministic inbound/outbound EstablishedMaterial fixtures
 └── tests/
     ├── plan120_trajectory.rs   Plan 120 §12 deterministic local trajectory

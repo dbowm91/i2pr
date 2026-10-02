@@ -175,6 +175,14 @@ pub enum ServiceTunnelKind {
     /// half plus a no-outproxy HTTP client half under one lifecycle
     /// generation and one persistent server identity (Plan 290).
     HttpBidirServer,
+    /// Streamr media subscriber: repliable-datagram subscribes to
+    /// a configured producer, raw-datagram media to a loopback UDP
+    /// target (Plan 291).
+    StreamrClient,
+    /// Streamr media publisher: persistent destination, loopback
+    /// UDP media source, bounded authenticated subscriber table,
+    /// raw-datagram fanout (Plan 291).
+    StreamrServer,
 }
 
 impl ServiceTunnelKind {
@@ -191,9 +199,11 @@ impl ServiceTunnelKind {
             "socks-irc" => Ok(Self::SocksIrc),
             "http-server" => Ok(Self::HttpServer),
             "http-bidir-server" => Ok(Self::HttpBidirServer),
+            "streamr-client" => Ok(Self::StreamrClient),
+            "streamr-server" => Ok(Self::StreamrServer),
             _ => Err(ServiceTunnelError::InvalidKind {
                 value: truncated(value),
-                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, irc-server, connect-client, socks-irc, http-server, or http-bidir-server",
+                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, irc-server, connect-client, socks-irc, http-server, http-bidir-server, streamr-client, or streamr-server",
             }),
         }
     }
@@ -211,6 +221,8 @@ impl ServiceTunnelKind {
             Self::SocksIrc => "socks-irc",
             Self::HttpServer => "http-server",
             Self::HttpBidirServer => "http-bidir-server",
+            Self::StreamrClient => "streamr-client",
+            Self::StreamrServer => "streamr-server",
         }
     }
 
@@ -222,10 +234,16 @@ impl ServiceTunnelKind {
     /// loopback listener (its server half is visible through the
     /// dedicated destination identity, not through this bit); the
     /// daemon builds both a listener and a server target for it.
+    ///
+    /// Plan 291: `StreamrServer` is server-side (it publishes one
+    /// persistent destination and terminates inbound subscribes at
+    /// a loopback UDP source); the daemon carves it out of the TCP
+    /// target path because it carries UDP endpoints, not a TCP
+    /// target.
     pub fn is_server(self) -> bool {
         matches!(
             self,
-            Self::GenericServer | Self::IrcServer | Self::HttpServer
+            Self::GenericServer | Self::IrcServer | Self::HttpServer | Self::StreamrServer
         )
     }
 
@@ -540,6 +558,9 @@ pub struct ServiceTunnelSpec {
     /// Strict CONNECT profile options. Mandatory for
     /// `ConnectClient` kinds; ignored otherwise.
     pub connect_options: Option<crate::connect::ConnectClientOptions>,
+    /// Streamr profile options. Mandatory for `StreamrClient` and
+    /// `StreamrServer` kinds; ignored otherwise.
+    pub streamr_options: Option<crate::streamr::StreamrOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -654,6 +675,69 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
+            // Plan 291: the Streamr subscriber carries no TCP
+            // listener and no TCP target. It resolves the
+            // configured producer destination, subscribes over
+            // repliable datagrams, and forwards raw media to the
+            // loopback UDP target. The UDP endpoints live in
+            // `streamr_options`, never in `listener`/`target`.
+            ServiceTunnelKind::StreamrClient => {
+                if self.listener.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client must not carry a TCP listener",
+                    });
+                }
+                if self.target.is_some() || !self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client must not carry a TCP server target",
+                    });
+                }
+                if self.destination.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires the producer destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires a dedicated destination",
+                    });
+                }
+            }
+            // Plan 291: the Streamr publisher carries no TCP
+            // listener, no TCP target, and no remote destination.
+            // It publishes one persistent destination, receives
+            // media on the loopback UDP source, and fans raw media
+            // out to authenticated subscribers.
+            ServiceTunnelKind::StreamrServer => {
+                if self.listener.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a TCP listener",
+                    });
+                }
+                if self.target.is_some() || !self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a TCP server target",
+                    });
+                }
+                if self.destination.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a remote destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server requires a dedicated destination",
+                    });
+                }
+            }
         }
         // Plan 176 + Plan 290: http-client and the http-bidir-server
         // client half must carry HTTP profile options; non-HTTP
@@ -736,6 +820,49 @@ impl ServiceTunnelSpec {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "connect_options must not be set for non-CONNECT kinds",
+                    });
+                }
+            }
+        }
+        // Plan 291: streamr halves must carry Streamr profile
+        // options with the half-appropriate UDP endpoint present;
+        // other kinds must not.
+        match self.kind {
+            ServiceTunnelKind::StreamrClient => {
+                let options = self.streamr_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "streamr-client requires streamr_options",
+                    }
+                })?;
+                options.validate()?;
+                if options.local_udp.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires the loopback UDP media target",
+                    });
+                }
+            }
+            ServiceTunnelKind::StreamrServer => {
+                let options = self.streamr_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "streamr-server requires streamr_options",
+                    }
+                })?;
+                options.validate()?;
+                if options.local_udp.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server requires the loopback UDP media source",
+                    });
+                }
+            }
+            _ => {
+                if self.streamr_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr_options must not be set for non-Streamr kinds",
                     });
                 }
             }
@@ -835,6 +962,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -949,6 +1077,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -1050,6 +1179,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         };
         spec.validate().expect("http-server validates");
         // A listener or a remote destination contradicts the server profile.
@@ -1079,6 +1209,7 @@ mod tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         };
         spec.validate().expect("http-bidir-server validates");
         // Missing either half fails.
@@ -1096,5 +1227,111 @@ mod tests {
         let mut bad = spec.clone();
         bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn streamr_kinds_parse_with_kebab_spellings() {
+        assert_eq!(
+            ServiceTunnelKind::parse("streamr-client").expect("parse"),
+            ServiceTunnelKind::StreamrClient
+        );
+        assert_eq!(
+            ServiceTunnelKind::parse("streamr-server").expect("parse"),
+            ServiceTunnelKind::StreamrServer
+        );
+        assert_eq!(ServiceTunnelKind::StreamrClient.as_str(), "streamr-client");
+        assert_eq!(ServiceTunnelKind::StreamrServer.as_str(), "streamr-server");
+        assert!(ServiceTunnelKind::StreamrServer.is_server());
+        assert!(!ServiceTunnelKind::StreamrClient.is_server());
+    }
+
+    fn streamr_client_spec() -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("streamr-sub").expect("id"),
+            kind: ServiceTunnelKind::StreamrClient,
+            enabled: false,
+            listener: None,
+            target: None,
+            targets: Vec::new(),
+            destination: Some(DestinationRef::parse(&canonical_b32()).expect("destination")),
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: Some(crate::streamr::StreamrOptions {
+                local_udp: Some("127.0.0.1:5000".parse().expect("udp")),
+                ..crate::streamr::StreamrOptions::default()
+            }),
+        }
+    }
+
+    fn streamr_server_spec() -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("streamr-pub").expect("id"),
+            kind: ServiceTunnelKind::StreamrServer,
+            enabled: false,
+            listener: None,
+            target: None,
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: Some(crate::streamr::StreamrOptions {
+                local_udp: Some("127.0.0.1:5001".parse().expect("udp")),
+                ..crate::streamr::StreamrOptions::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn streamr_client_requires_producer_and_media_target() {
+        streamr_client_spec().validate().expect("validates");
+        // No options at all fails.
+        let mut bad = streamr_client_spec();
+        bad.streamr_options = None;
+        assert!(bad.validate().is_err());
+        // No media endpoint at all fails.
+        let mut bad = streamr_client_spec();
+        bad.streamr_options.as_mut().expect("options").local_udp = None;
+        assert!(bad.validate().is_err());
+        // TCP listener/target contradict the datagram profile.
+        let mut bad = streamr_client_spec();
+        bad.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener"));
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_client_spec();
+        bad.destination = None;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn streamr_server_requires_media_source() {
+        streamr_server_spec().validate().expect("validates");
+        let mut bad = streamr_server_spec();
+        bad.streamr_options = None;
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_server_spec();
+        bad.streamr_options.as_mut().expect("options").local_udp = None;
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_server_spec();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn non_streamr_kinds_must_not_carry_streamr_options() {
+        let mut spec = streamr_client_spec();
+        spec.kind = ServiceTunnelKind::GenericClient;
+        spec.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener"));
+        assert!(spec.validate().is_err());
     }
 }

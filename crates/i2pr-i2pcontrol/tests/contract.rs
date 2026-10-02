@@ -118,6 +118,17 @@ fn tunnel_actions_and_types_parse_exactly() {
         })
         .count();
     assert_eq!(backend290_count, 10);
+    // Plan 291 adds the two Streamr families; all twelve Proposal
+    // types have backends and Plan 292 becomes ready.
+    let backend291_count = TUNNEL_TYPES
+        .iter()
+        .filter(|name| {
+            TunnelType::parse(name)
+                .expect("known")
+                .has_plan291_backend()
+        })
+        .count();
+    assert_eq!(backend291_count, 12);
     assert_eq!(
         TunnelAction::parse("CREATE"),
         Err(ContractError::CaseMismatch)

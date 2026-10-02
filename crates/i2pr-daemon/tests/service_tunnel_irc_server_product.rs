@@ -108,6 +108,7 @@ fn irc_server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

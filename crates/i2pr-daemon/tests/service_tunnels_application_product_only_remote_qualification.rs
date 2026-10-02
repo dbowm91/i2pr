@@ -467,6 +467,7 @@ fn build_http_spec(port: u16, destination: DestinationRef) -> ServiceTunnelSpec 
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 
@@ -493,6 +494,7 @@ fn build_irc_spec(port: u16, destination: DestinationRef) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: Some(IrcClientOptions::defaults()),
         connect_options: None,
+        streamr_options: None,
     }
 }
 

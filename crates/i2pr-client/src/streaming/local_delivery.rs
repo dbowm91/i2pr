@@ -89,6 +89,9 @@ pub enum LocalDeliveryError {
     Reconstruct(ReconstructError),
     /// The streaming adapter rejected the inbound packet.
     Adapter(StreamingAdapterError),
+    /// The datagram manager rejected the inbound datagram
+    /// (malformed, unverifiable, oversize, or queue-full).
+    Datagram(crate::datagram::DatagramError),
     /// The supplied inbound tunnel has no first hop (IBGW)
     /// configured. The local seam needs the IBGW's receive tunnel
     /// id to gate the post-OBEP action; without a first hop the
@@ -108,6 +111,7 @@ impl std::fmt::Display for LocalDeliveryError {
             Self::NoPayload => formatter.write_str("no queued application payload"),
             Self::Reconstruct(error) => write!(formatter, "reconstruct: {error}"),
             Self::Adapter(error) => write!(formatter, "streaming adapter: {error}"),
+            Self::Datagram(error) => write!(formatter, "datagram manager: {error}"),
             Self::InvalidInboundTunnel => formatter.write_str("inbound tunnel has no IBGW hop"),
             Self::Session(error) => write!(formatter, "ECIES session pairing: {error}"),
         }
@@ -187,6 +191,11 @@ pub enum LocalDeliveryOutcome {
         /// Inbound adapter observation (Plan 129 §3).
         observation: InboundStreamingOutcome,
     },
+    /// A repliable (17) or raw (18) datagram was authenticated
+    /// (where applicable) and queued on the receiver's
+    /// [`crate::datagram::DatagramManager`] (Plan 291). Streaming
+    /// never sees it.
+    DatagramDelivered,
     /// The dispatcher rejected the carrier envelope.
     DispatchRejected(InboundDispatchOutcome),
 }
@@ -227,6 +236,11 @@ pub struct LocalDeliveryReceiver<'a> {
     /// manager that handles inbound SYN observations and data
     /// traffic for established receiver-side streams.
     pub streaming: &'a mut StreamingManager,
+    /// The receiver's connectionless datagram manager. Repliable
+    /// (17) and raw (18) client payloads authenticate and queue
+    /// here; no initiator/mirror split exists because datagrams
+    /// carry no connection state (Plan 291).
+    pub datagrams: &'a mut crate::datagram::DatagramManager,
     /// Optional receiver-side canonical outbound StreamingManager
     /// that owns the outbound SYN trackers (Plan 129 §3, Plan 144
     /// §3: the SYN response must reach the *same* StreamingManager
@@ -462,6 +476,29 @@ pub fn deliver<R: CryptoRng + RngCore>(
         sender.now_ms,
     )?;
     let _ = outcome;
+    // Plan 291: repliable/raw datagrams authenticate and queue on
+    // the connectionless manager; everything else keeps the
+    // streaming observation path.
+    if let InboundStreamingOutcome::DatagramReceived {
+        protocol,
+        source_port,
+        destination_port,
+        payload,
+    } = observation
+    {
+        receiver
+            .datagrams
+            .process_inbound(
+                protocol,
+                source_port,
+                destination_port,
+                &payload,
+                local_destination_hash_bytes,
+                sender.now_ms,
+            )
+            .map_err(LocalDeliveryError::Datagram)?;
+        return Ok(LocalDeliveryOutcome::DatagramDelivered);
+    }
     Ok(LocalDeliveryOutcome::Delivered { observation })
 }
 

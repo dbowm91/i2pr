@@ -435,28 +435,44 @@ async fn tunnel_server_identity_stable_over_wire() {
 }
 
 #[tokio::test]
-async fn tunnel_unsupported_and_secret_rejected_over_wire() {
+async fn tunnel_streamr_supported_and_secret_rejected_over_wire() {
     let directory = tempfile::tempdir().expect("tempdir");
     let config =
         Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
     let (_state, address, _scope, _parent) = start_service(&config).await;
     let token = authenticate(address).await;
-    // Types without a Plan 290 backend (the two Streamr families
-    // until Plan 291) fail before resource allocation.
+    // Plan 291: both Streamr families have real backends. The
+    // client create carries its producer destination plus the
+    // loopback UDP target and starts running.
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "stream", "type": "streamrclient"}),
+        serde_json::json!({"action": "create", "name": "stream", "type": "streamrclient",
+        "options": {
+            "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
+            "local_udp_host": "127.0.0.1",
+            "local_udp_port": distinct_port(),
+        }}),
         2,
     )
     .await;
-    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
     assert!(
-        response["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("Plan 290")
+        response.get("error").is_none(),
+        "streamrclient create succeeds: {response}"
     );
+    assert_eq!(response["result"]["running"], serde_json::json!(true));
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "stream"}),
+        3,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["type"],
+        serde_json::json!("streamrclient")
+    );
+    assert_eq!(response["result"]["running"], serde_json::json!(true));
     // Secret options never reach storage: rejected with no secret echo.
     let response = tunnel(
         address,
@@ -469,7 +485,7 @@ async fn tunnel_unsupported_and_secret_rejected_over_wire() {
                 "proxy_password": "hunter2",
             },
         }),
-        3,
+        4,
     )
     .await;
     assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
@@ -479,10 +495,21 @@ async fn tunnel_unsupported_and_secret_rejected_over_wire() {
             .expect("message")
             .contains("hunter2")
     );
-    // No generation file carries the secret.
+    // No generation file carries the secret (the accepted
+    // streamrclient creation above legitimately wrote files).
     let tunnels = directory.path().join("i2pcontrol").join("tunnels");
-    let mut entries = std::fs::read_dir(&tunnels).expect("tunnels dir");
-    assert!(entries.next().is_none(), "no store writes on rejection");
+    let entries = std::fs::read_dir(&tunnels).expect("tunnels dir");
+    for entry in entries {
+        let entry = entry.expect("entry");
+        if entry.file_type().expect("type").is_file() {
+            let bytes = std::fs::read(entry.path()).expect("read");
+            assert!(
+                !bytes.windows(7).any(|window| window == b"hunter2"),
+                "secret material on disk: {}",
+                entry.file_name().to_string_lossy()
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -804,6 +831,97 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
             "action": "create", "name": "cc-bad", "type": "connectclient",
             "options": {"listen_port": distinct_port()},
         }),
+        id,
+    )
+    .await;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+}
+
+/// Plan 291: both Streamr families complete the TunnelManager
+/// lifecycle with exact Proposal spellings, and their required
+/// UDP/destination fields fail before allocation.
+#[tokio::test]
+async fn tunnel_plan291_streamr_lifecycle_over_wire() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let b32 = format!("{}.b32.i2p", "a".repeat(52));
+    let mut id: u32 = 2;
+    let server_port = distinct_port();
+    let client_port = distinct_port();
+
+    for (name, kind) in [("pub291", "streamrserver"), ("sub291", "streamrclient")] {
+        let options = if kind == "streamrserver" {
+            serde_json::json!({"local_udp_host": "127.0.0.1", "local_udp_port": server_port})
+        } else {
+            serde_json::json!({
+                "target_destination": b32,
+                "local_udp_host": "127.0.0.1",
+                "local_udp_port": client_port,
+            })
+        };
+        let response = tunnel(
+            address,
+            &token,
+            serde_json::json!({"action": "create", "name": name, "type": kind, "options": options}),
+            id,
+        )
+        .await;
+        id += 1;
+        assert!(
+            response.get("error").is_none(),
+            "{kind} create succeeds: {response}"
+        );
+        assert_eq!(response["result"]["running"], serde_json::json!(true));
+        let response = tunnel(
+            address,
+            &token,
+            serde_json::json!({"action": "get", "name": name}),
+            id,
+        )
+        .await;
+        id += 1;
+        assert_eq!(response["result"]["type"], serde_json::json!(kind));
+        assert_eq!(response["result"]["status"], serde_json::json!("running"));
+        for action in ["stop", "start", "delete"] {
+            let response = tunnel(
+                address,
+                &token,
+                serde_json::json!({"action": action, "name": name}),
+                id,
+            )
+            .await;
+            id += 1;
+            assert!(
+                response.get("error").is_none(),
+                "{kind} {action} succeeds: {response}"
+            );
+        }
+    }
+
+    // Missing UDP endpoint fails before allocation.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "pub-bad", "type": "streamrserver"}),
+        id,
+    )
+    .await;
+    id += 1;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+    // Server-only cadence key on the client fails.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "sub-bad", "type": "streamrclient",
+        "options": {
+            "target_destination": b32,
+            "local_udp_host": "127.0.0.1",
+            "local_udp_port": distinct_port(),
+            "streamr_expiry": 90000,
+        }}),
         id,
     )
     .await;

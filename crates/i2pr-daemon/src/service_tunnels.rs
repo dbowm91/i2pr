@@ -185,6 +185,14 @@ pub struct ServiceRuntime {
     /// both a client listener and a server target under one
     /// generation and one persistent identity (Plan 290).
     is_http_bidir: bool,
+    /// Whether this is a Streamr media subscriber tunnel
+    /// (Plan 291). No TCP listener or target; UDP endpoints live
+    /// in the spec options.
+    is_streamr_client: bool,
+    /// Whether this is a Streamr media publisher tunnel
+    /// (Plan 291). No TCP listener or target; UDP endpoints live
+    /// in the spec options.
+    is_streamr_server: bool,
 }
 
 impl ServiceRuntime {
@@ -1423,6 +1431,9 @@ impl ServiceTunnelManager {
             sender.with(|bridge| {
                 let mut all = bridge.streaming_mut().drain_outbound();
                 all.extend(bridge.receiver_streaming_mut().drain_outbound());
+                // Plan 291: connectionless datagram requests ride
+                // the same sweep; the manager self-queues on send.
+                all.extend(bridge.datagrams_mut().drain_outbound());
                 all
             });
         if requests.is_empty() {
@@ -2037,6 +2048,7 @@ impl ServiceTunnelManager {
                         | ServiceTunnelKind::IrcServer
                         | ServiceTunnelKind::HttpServer
                         | ServiceTunnelKind::HttpBidirServer
+                        | ServiceTunnelKind::StreamrServer
                 )
             })
     }
@@ -2396,9 +2408,14 @@ impl ServiceTunnelManager {
             ServiceTunnelKind::GenericServer
                 | ServiceTunnelKind::IrcServer
                 | ServiceTunnelKind::HttpServer
+                | ServiceTunnelKind::StreamrServer
         );
         // Plan 290: the bidirectional profile carries both halves.
         let is_http_bidir = matches!(spec.kind, ServiceTunnelKind::HttpBidirServer);
+        // Plan 291: Streamr halves carry UDP endpoints, never TCP
+        // listeners or targets.
+        let is_streamr_client = matches!(spec.kind, ServiceTunnelKind::StreamrClient);
+        let is_streamr_server = matches!(spec.kind, ServiceTunnelKind::StreamrServer);
         let bridge_data = self.create_bridge_for_spec(spec).await?;
         let bridge = SamDestinationBridge::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -2426,7 +2443,7 @@ impl ServiceTunnelManager {
         // feeds (server SYNs dispatch into `receiver_streaming`
         // so the polled server loop below observes them through
         // the same tested accept path as local traffic).
-        let server_streaming_port = if is_server || is_http_bidir {
+        let server_streaming_port = if (is_server || is_http_bidir) && !is_streamr_server {
             Some(0_u16)
         } else {
             None
@@ -2446,7 +2463,7 @@ impl ServiceTunnelManager {
                 )));
             }
         }
-        let client_listener = if !is_server || is_http_bidir {
+        let client_listener = if (!is_server || is_http_bidir) && !is_streamr_client {
             let listener_spec = spec.listener.ok_or_else(|| {
                 ServiceTunnelError::InvalidConfig(format!("{id_owned} missing loopback listener"))
             })?;
@@ -2458,7 +2475,7 @@ impl ServiceTunnelManager {
         } else {
             None
         };
-        let server_target = if is_server || is_http_bidir {
+        let server_target = if (is_server || is_http_bidir) && !is_streamr_server {
             let target = spec
                 .target
                 .as_ref()
@@ -2511,6 +2528,8 @@ impl ServiceTunnelManager {
             is_socks_irc,
             is_http_server,
             is_http_bidir,
+            is_streamr_client,
+            is_streamr_server,
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -2576,13 +2595,17 @@ impl ServiceTunnelManager {
         // Plan 290: the HTTP server and bidirectional profiles join
         // the persistent-identity branch: their server halves
         // publish one stable destination across restarts and
-        // no-op/target-only transitions.
+        // no-op/target-only transitions. Plan 291: the Streamr
+        // publisher joins them (subscribers address it across
+        // restarts); the Streamr subscriber stays ephemeral like
+        // Java's keyless consumer.
         let identity = if matches!(
             spec.kind,
             ServiceTunnelKind::GenericServer
                 | ServiceTunnelKind::IrcServer
                 | ServiceTunnelKind::HttpServer
                 | ServiceTunnelKind::HttpBidirServer
+                | ServiceTunnelKind::StreamrServer
         ) {
             let store =
                 ServiceDestinationStore::for_service(&self.config.data_dir, spec.id.as_str())
@@ -3027,7 +3050,23 @@ async fn run_service_loop(
 ) {
     let id = runtime.spec_id.clone();
     debug!(service = %id, "service tunnel supervisor entered");
-    let result = if runtime.is_irc_server {
+    let result = if runtime.is_streamr_server {
+        crate::service_tunnels_streamr::run_streamr_server_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_streamr_client {
+        crate::service_tunnels_streamr::run_streamr_client_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_irc_server {
         run_irc_server_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_http_bidir {
         crate::service_tunnels_http_bidir::run_http_bidir_loop(
@@ -4086,6 +4125,7 @@ mod plan202_routing_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(
@@ -4158,6 +4198,7 @@ mod plan202_routing_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(target_result.is_err(), "destination decode still fails");
@@ -4188,6 +4229,7 @@ mod plan202_routing_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4430,6 +4472,7 @@ mod plan206_remote_composition_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4615,6 +4658,7 @@ mod plan208_remote_route_integration_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4681,6 +4725,7 @@ mod plan208_remote_route_integration_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4790,6 +4835,7 @@ mod plan208_remote_route_integration_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4869,6 +4915,7 @@ mod plan208_remote_route_integration_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5046,6 +5093,7 @@ mod plan210_real_service_destination_material_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5411,6 +5459,7 @@ mod plan212_router_backed_service_destination_tests {
             socks5_options: None,
             irc_options: None,
             connect_options: None,
+            streamr_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5763,6 +5812,7 @@ mod plan212_router_backed_service_destination_tests {
                 socks5_options: None,
                 irc_options: None,
                 connect_options: None,
+                streamr_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-svc-2").expect("id"),
@@ -5782,6 +5832,7 @@ mod plan212_router_backed_service_destination_tests {
                 socks5_options: None,
                 irc_options: None,
                 connect_options: None,
+                streamr_options: None,
             },
         ];
         let manager = Arc::new(
@@ -5839,6 +5890,7 @@ mod plan212_router_backed_service_destination_tests {
                 socks5_options: None,
                 irc_options: None,
                 connect_options: None,
+                streamr_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-ib-2").expect("id"),
@@ -5858,6 +5910,7 @@ mod plan212_router_backed_service_destination_tests {
                 socks5_options: None,
                 irc_options: None,
                 connect_options: None,
+                streamr_options: None,
             },
         ];
         let manager = Arc::new(
@@ -6101,6 +6154,7 @@ mod plan212_router_backed_service_destination_tests {
             payloads_dequeued: 1,
             streaming_packets_accepted: 1,
             streaming_rejected: 0,
+            datagrams_accepted: 0,
         };
         assert!(report.streaming_packets_accepted == 1);
         assert!(report.garlic_authenticated);
@@ -6119,6 +6173,7 @@ mod plan212_router_backed_service_destination_tests {
             payloads_dequeued: 3,
             streaming_packets_accepted: 2,
             streaming_rejected: 1,
+            datagrams_accepted: 0,
         };
         assert_eq!(report.payloads_dequeued, 3);
         assert_eq!(

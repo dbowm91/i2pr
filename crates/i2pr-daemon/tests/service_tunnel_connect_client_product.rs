@@ -66,6 +66,7 @@ fn connect_spec(destination: DestinationRef) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: Some(ConnectClientOptions::defaults()),
+        streamr_options: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn server_spec(id: &str, target: SocketAddr) -> ServiceTunnelSpec {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     }
 }
 

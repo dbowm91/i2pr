@@ -837,6 +837,7 @@ async fn m10_genuine_remote_http_and_irc_application_interop() {
         socks5_options: None,
         irc_options: None,
         connect_options: None,
+        streamr_options: None,
     };
     let irc_spec = ServiceTunnelSpec {
         id: ServiceTunnelId::parse("plan207-irc-client").expect("id"),
@@ -856,6 +857,7 @@ async fn m10_genuine_remote_http_and_irc_application_interop() {
         socks5_options: None,
         irc_options: Some(IrcClientOptions::default()),
         connect_options: None,
+        streamr_options: None,
     };
     let specs: Arc<ServiceTunnelSet> = Arc::new(ServiceTunnelSet {
         tunnels: vec![http_spec.clone(), irc_spec.clone()],
