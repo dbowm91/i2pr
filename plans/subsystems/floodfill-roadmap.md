@@ -139,7 +139,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 282 | stopped | stopped-m12-activation-blocked-on-above-floor-reachability-evidence-corrective-via-plan283 | plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md | plans/closure/floodfill/282-status.md |
 | 283 | passed | passed-m12-third-class-evidence-and-controlled-activation | plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md | plans/closure/floodfill/283-status.md |
 | 278 | stopped | stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | plans/closure/floodfill/278-status.md |
-| 284 | ready | registered-m12-controlled-routerinfo-reference-acceptance-corrective | plans/implementation/floodfill/284-m12-controlled-routerinfo-reference-acceptance-corrective.md | future |
+| 284 | ready | registered-m12-controlled-publication-reference-acceptance-corrective | plans/implementation/floodfill/284-m12-controlled-routerinfo-reference-acceptance-corrective.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -218,6 +218,9 @@ third-class evidence strategy (Option 3 peer-test driver) plus activation/withdr
 completion. Plan 278 built and executed its exact-pinned i2pd lane, passed controlled
 activation, and stopped at the reference-client RouterInfo-acceptance boundary before any
 matrix row, retaining the lane, the two-phase stable-identity activation flow, and the
-boundary diagnostics. Plan 284 is the registered corrective that bisects the reference gate.
+boundary diagnostics. The reference gate is localized: i2pd's numeric `router.version`
+threshold is unreachable by any standard version string, so only the `O` high-bandwidth
+cap would satisfy it and i2pr must not claim it. Plan 284 is the registered corrective
+that replaces netDb seeding with an injection path the reference admits.
 Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
 I2P-compatible Red25519 provider.

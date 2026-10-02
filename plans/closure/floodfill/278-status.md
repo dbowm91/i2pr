@@ -167,17 +167,50 @@ Retained and reusable, not rebuilt:
   type-5-deferred, and 277/282 keep their retained work.
 - No historical closure record was rewritten.
 
-## 9. Defects owned by the corrective (Plan 284)
+## 9. Root cause determined after the stop (owned by Plan 284)
 
-Two candidate content gaps are recorded as hypotheses for the corrective to confirm or clear,
-not as conclusions:
+Condition 5 of the `LoadRouterInfo` conjunction is the discriminator, and it cannot be
+satisfied by a `router.version` value. i2pd parses `router.version` naively by stripping
+non-digits (`libi2pd/RouterInfo.cpp:457-462`):
 
-1. the controlled RouterInfo advertises no `router.version` and no high-bandwidth cap, so it
-   cannot satisfy `NETDB_MIN_ALLOWED_VERSION`; and
-2. the controlled RouterInfo advertises no `netId` and no `netdb.knownRouters`/
-   `netdb.knownLeaseSets`, unlike every reference record.
+```cpp
+m_Version = 0;
+for (auto ch: value) { if (ch >= '0' && ch <= '9') { m_Version *= 10; m_Version += (ch - '0'); } }
+```
 
-Because the version-only probe was still rejected, neither is asserted as the cause. The
-corrective must bisect the `LoadRouterInfo` conjunction per condition and fix the proven
-cause. It must not claim a `router.version` value that `specs/CONFORMANCE.md` and ADR 0027 §9
-have not separately reviewed.
+while the threshold is a packed component number (`libi2pd/NetDb.hpp:58`):
+
+```cpp
+const int NETDB_MIN_ALLOWED_VERSION = MAKE_VERSION_NUMBER(0, 9, 58);   // 2362
+```
+
+So on the file-load path the only satisfiable branch of
+`GetVersion() >= NETDB_MIN_ALLOWED_VERSION || IsHighBandwidth()` is `IsHighBandwidth()`,
+which requires the `O` cap letter (`RouterInfo.cpp:514-536`, `RouterInfo.h:104-109`).
+Computed for the real values: `0.9.58 → 958`, `0.9.69 → 969`, `0.9.70 → 970`, `1.0.0 → 100`;
+none reach 2362. i2pd's own record passes only because its caps are `Of`.
+
+This fully explains both observations in §4: the production record (caps `f`, no version) is
+rejected, and the version-only probe (version `0.9.58`, caps `f`) is also rejected.
+
+**The correct response is not to advertise `O`.** The `O` cap is a high-bandwidth claim.
+i2pr is an experimental loopback router with a single-bitness pool, so claiming it would be
+a false capability advertisement, forbidden by `specs/CONFORMANCE.md` ("advertise the lowest
+truthful current feature level compatible with its implemented subset"), by ADR 0027 §9, and
+by the repository guardrails on capability advertisement. Plan 284 therefore must not change
+i2pr's advertised capabilities to pass this lane.
+
+The same rule governs i2pd's runtime sweep (`NetDb.cpp:711`,
+`r->GetVersion() < NETDB_MIN_ALLOWED_VERSION && !r->IsHighBandwidth()`), so netDb seeding
+cannot be the injection path at all. The viable path is the one i2pd already exempts:
+`NetDb.cpp:728-730` re-admits a record once the peer is connected. The SSU2 handshake
+carries the initiator's RouterInfo in the SessionRequest, so an authenticated session is
+sufficient for the reference to learn the controlled RouterInfo without any seeded file.
+
+That makes the corrective a topology/injection change, not a capability-claim change.
+
+## 10. Defects owned by the corrective (Plan 284)
+
+Recorded for the corrective to confirm against a fresh reference client. These are no longer
+open hypotheses: §9 localizes the gate, and the two "candidate content gaps" from the first
+pass are explained by it rather than being independent defects.
