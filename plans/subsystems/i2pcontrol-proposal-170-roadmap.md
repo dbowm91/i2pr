@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–289 passed; Plans 290, 291, and 294 ready; Plans 292–293 and 295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plans 286–289 passed; Plan 290 active; Plans 291 and 294 ready; Plans 292–293 and 295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -116,7 +116,7 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 287 | passed | infrastructure/capability | plans/implementation/i2pcontrol-proposal-170/287-secure-base-i2pcontrol-jsonrpc-auth-tls.md | plans/closure/i2pcontrol-proposal-170/287-status.md (`passed-prop170-secure-base-i2pcontrol-jsonrpc-auth-tls`) |
 | 288 | passed | capability | plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md | plans/closure/i2pcontrol-proposal-170/288-status.md (`passed-prop170-routerinfo-and-clientservices-inspection-plane`) |
 | 289 | passed | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md | plans/closure/i2pcontrol-proposal-170/289-status.md (`passed-prop170-tunnelmanager-control-state-and-existing-service-adapter`) |
-| 290 | ready | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | future |
+| 290 | active | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | future |
 | 291 | ready | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md | future |
 | 292 | blocked on 290 + 291 | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | future |
 | 293 | blocked on 292 | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | future |
