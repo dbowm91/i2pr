@@ -142,7 +142,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 284 | ready | registered-m12-controlled-publication-reference-acceptance-corrective |
 | 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
 | 302 | passed | passed-m12-floodfill-reply-wire-form-and-replication-answered | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | plans/closure/floodfill/302-status.md |
-| 303 | ready | registered-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | future |
+| 303 | passed | passed-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | plans/closure/floodfill/303-status.md |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -264,3 +264,11 @@ re-publication of the seeded client key (`outcome=["idempotent"]`,
 structurally unpassable while the lane seeds the publisher key; ready Plan 303
 owns the single trigger change (seed A/B only) plus matrix A–I execution.
 Plan 279 stays blocked on the Plan 303 path.
+
+Plan 303 passed on head `c069e6c`: with the single lane change (seed A/B
+only, driver-only diff), the one fresh-budget attempt passes all 10 matrix
+rows — the publisher store inserts with replication offered, 4 zero-token
+direct replica stores land, the reference confirms the publish with zero
+expired drops, and all 7 lookups are answered. The one-family (i2pd 2.61.0)
+controlled matrix is closed. Plan 279 is unblocked to ready (its own
+qualification still has to run); Plan 278 stays stopped as history.
