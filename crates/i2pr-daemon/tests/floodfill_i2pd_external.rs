@@ -720,6 +720,12 @@ async fn floodfill_qualify_against_i2pd() {
     );
 
     // Matrix A/C/F references: two stock floodfill peers plus one stock client.
+    // Plan 303 §3: only the two floodfill peers are seeded as replication
+    // targets and lookup fixtures. The reference client (C) is deliberately
+    // NOT seeded so its first publication inserts (rather than re-states) and
+    // offers a replication candidate for matrix F. C's record exists in the
+    // NetDB from matrix A onward via its own publisher store, and the matrix
+    // C/E waits below already run after A completes.
     let floodfill_a = load_reference(
         &env_value("I2PD_FLOODFILL_A_ROUTER_INFO"),
         &env_value("I2PD_FLOODFILL_A_ENDPOINT"),
@@ -740,8 +746,7 @@ async fn floodfill_qualify_against_i2pd() {
     let mut coordinator = new_coordinator(local);
     seed_replica(&mut coordinator, &floodfill_a);
     seed_replica(&mut coordinator, &floodfill_b);
-    seed_replica(&mut coordinator, &client);
-    record("replication-targets-seeded", "count=3");
+    record("replication-targets-seeded", "count=2");
 
     let _activation = activate(&live, &mut coordinator, &persisted).await;
     record("controlled-activation-completed", "peer-test-confirmed");
