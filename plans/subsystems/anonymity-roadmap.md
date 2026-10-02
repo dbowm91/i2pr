@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 closed; Plans 297, 298, and 300 ready, with Plans 299 and 301 dependency-gated. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
+Status: Plan 296 closed; Plan 297 stopped at the external capture-topology gate; Plans 298 and 300 remain ready; Plans 299 and 301 remain dependency-gated. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -103,7 +103,7 @@ Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
 | 296 | closed (`passed-anonymity-service-boundary-implementation-neutrality-and-leak-regression`) | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | plans/closure/anonymity/296-status.md |
-| 297 | ready | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | future |
+| 297 | stopped (`stopped-http-differential-capture-needs-controlled-three-router-topology`) | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | plans/closure/anonymity/297-status.md |
 | 298 | ready | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | future |
 | 299 | blocked on 298 | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | future |
 | 300 | ready | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | future |
@@ -146,4 +146,4 @@ No broad production-anonymity, browser-anonymity, or global-traffic-analysis cla
 
 ## 12. Milestone status summary
 
-Plan 296 is dependency-ready on the current M10/client/router architecture and may begin independently of M12. Plans 297–301 are registered but dependency-gated. Registration changes no product behavior and authorizes no anonymity claim.
+Plan 296 is closed. Plan 297 is stopped until a controlled Java/i2pd HTTP proxy capture topology is available; Plans 298 and 300 remain ready and independent. Plan 299 needs Plan 298 executed evidence, and Plan 301 needs passed evidence from Plans 297, 299, and 300. This workstream does not gate M12 and authorizes no broad anonymity claim.
