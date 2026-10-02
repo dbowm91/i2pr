@@ -27,6 +27,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::fmt;
 
 use i2pr_proto::{Date, Hash};
@@ -220,6 +221,12 @@ impl ShortBuildPath {
         if self.hops.len() > i2pr_proto::MAX_BUILD_RECORDS {
             return Err(ShortBuildConstructionError::InvalidPath {
                 reason: "hop count exceeds I2P maximum",
+            });
+        }
+        let mut routers = HashSet::with_capacity(self.hops.len());
+        if self.hops.iter().any(|hop| !routers.insert(hop.router_hash)) {
+            return Err(ShortBuildConstructionError::InvalidPath {
+                reason: "a router may appear only once in a tunnel path",
             });
         }
         if self.request_time.as_millis() == 0 {
@@ -1403,6 +1410,19 @@ mod tests {
             next_message_id: 0x1234_5678,
             options: BuildOptions::empty(),
         }
+    }
+
+    #[test]
+    fn repeated_router_is_rejected_before_build_state_is_created() {
+        let mut path = build_path(720);
+        path.hops[1].router_hash = path.hops[0].router_hash;
+
+        assert!(matches!(
+            path.validate(),
+            Err(ShortBuildConstructionError::InvalidPath {
+                reason: "a router may appear only once in a tunnel path"
+            })
+        ));
     }
 
     fn privkey_for(value: u8) -> [u8; EPHEMERAL_KEY_LEN] {

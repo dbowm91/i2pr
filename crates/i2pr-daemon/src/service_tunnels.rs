@@ -297,7 +297,7 @@ impl ServiceTunnelManager {
                     ))
                 })?,
             )),
-            destination_config: DestinationConfig::balanced(),
+            destination_config: DestinationConfig::service_compatibility_profile(),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
             committed_generation: Mutex::new(None),
             draining_generations: Mutex::new(Vec::new()),

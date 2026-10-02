@@ -1,6 +1,6 @@
 # Plan 301 — Integrated anonymity evidence and scoped claim gate
 
-Status: registered-anonymity-integrated-evidence-gate-blocked
+Status: stopped-predecessor-qualification-evidence-incomplete
 
 Classification: evidence + closure + polish. No new protocol capability is expected.
 

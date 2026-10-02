@@ -1,6 +1,6 @@
 # Plan 300 — Destination isolation and tunnel-path anonymity qualification
 
-Status: registered-anonymity-destination-path-qualification-ready-after-296
+Status: stopped-target-isolation-and-reference-diversity-owner-gap
 
 Classification: invariant + capability + evidence.
 
