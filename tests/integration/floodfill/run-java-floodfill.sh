@@ -259,6 +259,14 @@ echo "    published $(wc -c < "${PUBLISHED}") bytes"
 # J1/J2 start unseeded like the i2pd lane's F1/F2. Relay RouterInfos only
 # exist after first start, so the relays start once for key generation,
 # stop, get seeded, and restart into the mesh (idents persist).
+# Attempt-3 delta (attempt 2 finding): the driver TSV proved JC sent
+# NOTHING to P while P was live — JC had written P off as unreachable
+# because P was offline at JC's start, so its exploration never engaged
+# and no client tunnels formed (v5 with a live-from-start Java
+# floodfill created in 1.4 s). Hence JC boots once for key generation,
+# stops, and FINAL-starts only after P signals live, so its first
+# exploration contact succeeds. The driver already blocks at the
+# p-live/publisher-ready rendezvous, so no driver change is needed.
 CONTROLLED_IDENT="$(<"${STATE_DIR}/ident.b64")"
 if [[ -z "${CONTROLLED_IDENT}" ]]; then
   echo "prepare phase did not record the controlled router ident" >&2
@@ -281,8 +289,13 @@ seed_java_netdb "${SCRATCH}/jcdata" "${PUBLISHED}" "${CONTROLLED_IDENT}"
 seed_java_netdb "${SCRATCH}/jcdata" "${SCRATCH}/jd1data/router/router.info" "${JD1_IDENT}"
 seed_java_netdb "${SCRATCH}/jcdata" "${SCRATCH}/jd2data/router/router.info" "${JD2_IDENT}"
 echo "==> seeded JC netDb with {i2pr, JD1, JD2}"
-start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" "${JAVA_JC_I2CP_PORT}" transit jc
+# JC boots once for key generation, then stops: its RouterInfo file
+# must exist before the driver starts, but its FINAL start waits for
+# P-live (phase 2) so exploration engages on first contact.
+start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" "${JAVA_JC_I2CP_PORT}" transit jcboot
 wait_java_ready jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" 480
+echo "==> JC keys generated; stopping JC until P is live"
+stop_java jc
 JC_IDENT="$(ident_of_file "${SCRATCH}/jcdata/router/router.info")"
 seed_java_netdb "${SCRATCH}/jd1data" "${SCRATCH}/jd2data/router/router.info" "${JD2_IDENT}"
 seed_java_netdb "${SCRATCH}/jd1data" "${SCRATCH}/jcdata/router/router.info" "${JC_IDENT}"
@@ -343,7 +356,12 @@ if [[ ! -f "${STATE_DIR}/publisher-sync/p-live" ]]; then
   echo "Plan 279 Java lane stopped before the publisher rendezvous" >&2
   exit 1
 fi
-echo "==> P live; establishing the lane SAM destination on JC"
+# P is live: FINAL-start JC so its first exploration contact succeeds
+# (its keys/RouterInfo/seeded netDb persist across the restart).
+echo "==> P live; final-starting JC into the live mesh"
+start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" "${JAVA_JC_I2CP_PORT}" transit jc
+wait_java_ready jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" 480
+echo "==> establishing the lane SAM destination on JC"
 python3 - "${JAVA_JC_SAM_PORT}" <<'PY' >"${EVIDENCE_DIR}/sam-destination.result" 2>&1 &
 import socket, sys, time
 port = int(sys.argv[1])
