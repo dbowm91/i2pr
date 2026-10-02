@@ -42,6 +42,7 @@ use i2pr_netdb::{
     FloodfillEligibilitySnapshot, FloodfillResourcePolicy, FloodfillStorePolicy, InboundProvenance,
     NetDbNamespace, RecordProvenance, ReplicationPolicy, RouterHash, ServerNetDbConfig,
     StorePurpose, ValidatedNetDbRecord, ValidatedRouterInfo, ValidationContext,
+    controlled_router_options,
 };
 use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo};
 use i2pr_runtime::{
@@ -258,13 +259,20 @@ fn initial_router_info(persisted: &Persisted, addr: std::net::SocketAddr) -> Vec
         options,
     )
     .expect("router address");
+    // The identity record mirrors the daemon's controlled identity
+    // publication (`router_i2np::generate_controlled_identity`): it carries
+    // the same controlled declaration. The install guard compares netId
+    // against the currently installed record, so a hand-rolled identity
+    // record without the declaration cannot install the later caps=f record
+    // that has one, and the pinned reference would mark such a record
+    // unreachable regardless.
     persisted
         .bundle
         .sign_router_info(
             Date::from_millis(wall_ms()),
             vec![address],
             Vec::new(),
-            Mapping::empty(),
+            controlled_router_options().expect("controlled options"),
         )
         .expect("sign initial RouterInfo")
         .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)

@@ -2,7 +2,8 @@
 
 - Plan: `plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md`
 - Closure token: `stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row`
-- Corrective required via: Plan 284
+- Corrective required via: Plan 284 (closed the admission gates); second stop owned by
+  Plan 302 (floodfill-reply wire form + replication planning)
 - Stop classification: external lane boundary, not an i2pr protocol defect and not a
   reference-unavailability finding. Plan 278 §12 forbids widening budgets, patching the
   reference, or broadening network access to escape it; it requires the exact boundary
@@ -311,3 +312,96 @@ Plan 285 owns that gap and the resulting version-declaration decision.
 Recorded for the corrective to confirm against a fresh reference client. These are no longer
 open hypotheses: §9 localizes the gate, and the two "candidate content gaps" from the first
 pass are explained by it rather than being independent defects.
+
+## 11. Second bounded attempt after Plans 284/285 (attempt budget spent)
+
+One bounded exact-pinned attempt was executed on the Plan 285 closing head, after both
+mechanical gates were closed in code. The frozen budget (`MAX_ATTEMPTS=1`) is now spent;
+no further attempt may run under this plan.
+
+Head: `a16ae15` plus the uncommitted driver fix below (the driver's initial identity
+record now mirrors the daemon's controlled identity publication via
+`controlled_router_options()`; without it phase 1 fails at the install guard with
+`InstallFailed` because the guard compares `netId` against the installed record —
+the same drift §10.1 records for the lifecycle harness, which had been fixed there
+but never in this driver).
+
+Outcome: lane FAILED at matrix F; zero matrix rows claimed passed.
+
+```
+phase 1: controlled activation passes; published 680-byte caps=f RouterInfo
+reference client: NetDb: 1 routers loaded (1 floodfils)
+i2pr observed: store_accepted=1, store_ack_delivered=1, lookup_answered=18,
+  lookup_dsrm=18, direct_store_replicas=0, dispatch_errors=[]
+```
+
+What this proves (new, from the live reference, not from code reading):
+
+1. **Both admission gates are closed in the live reference.** The client loads the
+   controlled record, counts it as its only floodfill, publishes its own RouterInfo
+   to i2pr (`Publishing our RouterInfo to -nt7. reply token=1611617155`), and sends
+   18 DatabaseLookups that i2pr answers. The 64/64 rejection is gone.
+2. **Every i2pr Floodfill reply is dropped by the reference as expired.** `c.log`
+   records exactly 19 `SSU2: Message <id> expired` drops: 1 × 28-byte message
+   (the DeliveryStatus ack, msgID 4045406208, arriving right after the publish)
+   plus 18 × 145-byte messages (the DSRM answers, msgIDs 4045406209–4045406226).
+   The counts match i2pr's 1 ack + 18 DSRM sends exactly.
+3. **The client therefore never confirms the publish.** No `Publishing confirmed`
+   line in 114 s; i2pr stays in `m_PublishExcluded` so every resend finds no
+   floodfill (`Can't find floodfill to publish our RouterInfo`, reference
+   `RouterContext.cpp:1544`, excluded-set mechanism at `1502`/`1540`).
+4. **No DirectFlood is ever planned.** `direct_store_replicas=0` with no delivery
+   failures and no dispatch errors: the coordinator enqueued no replication effect
+   for the accepted store (matrix F never starts, independent of the drop defect).
+
+## 12. Defects owned by the corrective (Plan 302)
+
+### 12.1 Proven: floodfill replies use the wrong I2NP wire form (expiration defect)
+
+`encode_standard` (`crates/i2pr-daemon/src/floodfill.rs:277-284`) encodes every
+floodfill reply (StoreAck, LookupReply, DirectFlood) with the 16-byte standard
+header (`write_u64` millisecond expiration at bytes 5–12, body from byte 16).
+The SSU2 session layer (`queue_i2np_message`,
+`crates/i2pr-transport-ssu2/src/session.rs:835-839`) interprets all outbound
+bytes as the 9-byte short-transport form: `expiration_secs = raw[5..9]`, body
+from byte 9.
+
+So the reference reads the high 4 bytes of millisecond time as seconds
+(~417 = 1970-01-01, 56 years past) and drops the message in
+`SSU2Session::HandleI2NPMsg` (`SSU2Session.cpp:2766`, via `IsExpired` at
+`I2NPProtocol.cpp:70-74`, which also rejects far-future values under the same
+log line). The body offset is wrong by 7 bytes regardless.
+
+This is the only daemon send path with the defect: M6/M8 paths all use
+`new_short_transport` + `encode_short_transport_to_vec` with
+`u32::try_from(expiration_ms / 1000)` (`router_i2np.rs:1261`,
+`outbound_lookup.rs:206-209`, `exploratory_build.rs:679`). That is why Plans
+161/186 passed while no floodfill reply was ever consumed by the reference.
+The i2pr↔i2pr lifecycle tests are blind to it: both ends use the symmetric
+standard codec (`decode_standard` at
+`floodfill_controlled_lifecycle.rs:765`).
+
+Fix direction (for Plan 302, not here): encode the outer floodfill reply in
+short-transport form with checked ms→s conversion, mirroring
+`outbound_lookup.rs:206`. The tunnel-wrapped inner garlic clove stays
+standard-encoded (it is consumed by `decode_standard` in the same function).
+
+### 12.2 Open: replication is never planned for the accepted publisher store
+
+Independent of §12.1 (which concerns arrival, not planning): the accepted
+matrix-A store produced no `DirectFlood` effect. Bounded hypotheses:
+
+- the insert outcome was not `Inserted`/`Replaced` (e.g. `Idempotent` against
+  the seeded C replica), so `floodfill_service.rs:576-592` offered no
+  replication candidate; or
+- the replication plan came back empty (no candidates from
+  `router_info_candidates`, or `database_store_for_answer` failed).
+
+The driver records neither the insert outcome nor plan statistics, so the two
+cannot be distinguished post-hoc. Plan 302 owns sanitized observability for
+both plus a local seeded-replica idempotency test, then re-observes under
+fixed wire form (which also changes downstream dynamics: once the ack
+confirms, the client's publish loop stops excluding i2pr).
+
+No budget remains under this plan. Plan 302 authorizes its own single bounded
+attempt under a fresh frozen budget; it must not widen this plan's spent budget.
