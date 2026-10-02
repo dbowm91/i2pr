@@ -139,6 +139,8 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             tunnels: i2pr_service_tunnels::ServiceTunnelSet::new(),
             aliases: i2pr_service_tunnels::StaticAliasTable::new(),
         },
+        floodfill: i2pr_daemon::config::FloodfillConfig { enabled: false },
+        source_path: None,
     }
 }
 

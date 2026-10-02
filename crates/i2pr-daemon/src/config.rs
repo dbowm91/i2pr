@@ -51,6 +51,8 @@ struct RawConfig {
     i2cp: RawI2cpConfig,
     #[serde(default)]
     service_tunnels: RawServiceTunnelsConfig,
+    #[serde(default)]
+    floodfill: RawFloodfillConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -470,6 +472,28 @@ struct RawServiceTunnelAlias {
     target: String,
 }
 
+/// Raw Plan 279 normal floodfill opt-in.
+///
+/// The surface is a single intent boolean. It never carries advertisement
+/// authority: `enabled = true` only asks the daemon to evaluate normal-path
+/// eligibility, and `caps=f` is published only when every eligibility signal
+/// holds. Default is false; the subsystem stays off unless the operator
+/// explicitly opts in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFloodfillConfig {
+    #[serde(default = "default_floodfill_enabled")]
+    enabled: bool,
+}
+
+impl Default for RawFloodfillConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_floodfill_enabled(),
+        }
+    }
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -765,6 +789,13 @@ const fn default_service_tunnels_enabled() -> bool {
     false
 }
 
+/// Plan 279 normal floodfill opt-in default: off. The operator must
+/// explicitly set `enabled = true`, and even then the daemon only
+/// evaluates eligibility — it never forces the Active role.
+const fn default_floodfill_enabled() -> bool {
+    false
+}
+
 const fn default_service_tunnels_max_active_connections() -> usize {
     128
 }
@@ -1055,6 +1086,12 @@ pub struct Ssu2Config {
 /// Immutable normalized configuration snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
+    /// Filesystem path this snapshot was loaded from, when known.
+    /// [`Config::parse`] leaves it `None` (pure text in, no I/O);
+    /// [`Config::load`] records the path so long-lived services can
+    /// re-read operator intent without re-resolving it. The path is
+    /// provenance only: it never affects equality of intent.
+    pub source_path: Option<std::path::PathBuf>,
     /// Schema version accepted by the parser.
     pub schema_version: u64,
     /// Router-specific settings.
@@ -1080,6 +1117,24 @@ pub struct Config {
     /// Service-tunnel settings (Plan 174; disabled, loopback-only,
     /// no listener yet).
     pub service_tunnels: ServiceTunnelsConfig,
+    /// Normal floodfill opt-in (Plan 279; default off, intent only).
+    pub floodfill: FloodfillConfig,
+}
+
+/// Normalized Plan 279 normal floodfill opt-in.
+///
+/// This is intent, not authority: `enabled = true` asks the daemon to
+/// evaluate normal-path eligibility on every bounded tick. The
+/// [`FloodfillEligibilitySnapshot`] AND-gate still decides, `caps=f`
+/// is built only through the permit-gated builder after the role
+/// reaches Active, and any eligibility loss withdraws the
+/// advertisement. The struct carries no key material, no permit, and
+/// no reference to the advertisement builders (see
+/// `scripts/check-m12-floodfill-boundaries.sh`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FloodfillConfig {
+    /// Whether the operator requests floodfill eligibility evaluation.
+    pub enabled: bool,
 }
 
 /// Normalized Plan 174 service-tunnel configuration.
@@ -1111,7 +1166,9 @@ impl Config {
                 source,
             }
         })?;
-        Self::parse(&contents).map_err(super::error::DaemonError::from)
+        let mut config = Self::parse(&contents).map_err(super::error::DaemonError::from)?;
+        config.source_path = Some(path.to_path_buf());
+        Ok(config)
     }
 
     /// Minimal text-only config used by tests that exercise
@@ -1205,8 +1262,10 @@ impl Config {
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
+        let floodfill = normalize_floodfill(&raw.floodfill, &ssu2, &netdb)?;
 
         Ok(Self {
+            source_path: None,
             schema_version: raw.schema_version,
             router: RouterConfig { data_dir, profile },
             logging: LoggingConfig {
@@ -1229,6 +1288,7 @@ impl Config {
             ssu2,
             i2cp,
             service_tunnels,
+            floodfill,
         })
     }
 }
@@ -1996,6 +2056,34 @@ fn normalize_netdb(raw: &RawNetDbConfig) -> Result<NetDbConfig, ConfigError> {
     })
 }
 
+fn normalize_floodfill(
+    raw: &RawFloodfillConfig,
+    ssu2: &Ssu2Config,
+    netdb: &NetDbConfig,
+) -> Result<FloodfillConfig, ConfigError> {
+    // Intent without the serving substrate is a configuration error,
+    // not a silent no-op: the operator must enable the SSU2 socket the
+    // floodfill role serves on and the NetDB it serves. Eligibility
+    // itself is still evaluated at runtime and may keep the role
+    // Disabled (for example on a loopback-only bind, which can never
+    // present a publicly reachable address).
+    if raw.enabled && !ssu2.enabled {
+        return Err(ConfigError::Semantic {
+            field: "floodfill.enabled",
+            reason: "floodfill cannot be enabled while ssu2.enabled is false",
+        });
+    }
+    if raw.enabled && !netdb.enabled {
+        return Err(ConfigError::Semantic {
+            field: "floodfill.enabled",
+            reason: "floodfill cannot be enabled while netdb.enabled is false",
+        });
+    }
+    Ok(FloodfillConfig {
+        enabled: raw.enabled,
+    })
+}
+
 fn normalize_reseed(
     raw: &RawReseedConfig,
     netdb: &NetDbConfig,
@@ -2672,6 +2760,61 @@ data_dir = "./state"
                 "broad exposure `{extra}` must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn floodfill_defaults_to_disabled_opt_in() {
+        // Plan 279 §4A: normal floodfill is default-off. A minimal
+        // config carries no intent, so the role can never activate.
+        let config = Config::parse(MINIMAL).expect("valid defaults");
+        assert!(!config.floodfill.enabled);
+    }
+
+    #[test]
+    fn floodfill_enabled_true_is_intent_not_authority() {
+        // Plan 279 §4B: explicit opt-in parses on the strict
+        // loopback profile. It requests eligibility evaluation; the
+        // runtime still decides (a loopback bind can never present a
+        // publicly reachable address, so the role stays Disabled).
+        let text = format!(
+            "{}\n[ssu2]\nenabled = true\n[floodfill]\nenabled = true\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("explicit opt-in parses");
+        assert!(config.floodfill.enabled);
+    }
+
+    #[test]
+    fn floodfill_enabled_true_requires_serving_substrate() {
+        // Intent without the SSU2 socket or the NetDB it would serve
+        // is a configuration error, not a silent no-op.
+        let no_ssu2 = format!("{}\n[floodfill]\nenabled = true\n", MINIMAL);
+        assert!(matches!(
+            Config::parse(&no_ssu2),
+            Err(ConfigError::Semantic {
+                field: "floodfill.enabled",
+                ..
+            })
+        ));
+        let no_netdb = format!(
+            "{}\n[ssu2]\nenabled = true\n[netdb]\nenabled = false\n[floodfill]\nenabled = true\n",
+            MINIMAL
+        );
+        assert!(matches!(
+            Config::parse(&no_netdb),
+            Err(ConfigError::Semantic {
+                field: "floodfill.enabled",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn floodfill_rejects_unknown_fields() {
+        // Plan 279 §4E: a typo'd reload/start config fails before any
+        // listener or state mutates (parse is pure and total).
+        let text = format!("{}\n[floodfill]\nenabled = true\nauto = true\n", MINIMAL);
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
     }
 
     #[test]
