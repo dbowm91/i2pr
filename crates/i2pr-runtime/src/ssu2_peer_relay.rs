@@ -781,6 +781,15 @@ impl Ssu2PeerRelayService {
             .cancel(nonce)
     }
 
+    /// Returns the current state of one tracked test, if present.
+    ///
+    /// Read-only diagnostics for the controlled driver (Plan 283):
+    /// lets the orchestrator advance causally on table transitions
+    /// without touching table state.
+    pub fn peer_test_state(&self, nonce: u32) -> Option<i2pr_transport_ssu2::PeerTestState> {
+        self.peer_tests.lock().ok()?.test_state(nonce)
+    }
+
     /// Marks one test inconclusive (third-peer refusal/timeout) without
     /// falsely confirming or denying reachability. Mirrors the outcome
     /// into reachability as the neutral kind.

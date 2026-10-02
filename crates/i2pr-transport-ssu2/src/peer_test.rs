@@ -923,6 +923,15 @@ impl PeerTestTable {
         self.entries.values().map(|entry| entry.deadline_ms).min()
     }
 
+    /// Returns the current state of one test, if tracked.
+    ///
+    /// Read-only diagnostics for the controlled driver (Plan 283):
+    /// lets the orchestrator advance causally on table transitions
+    /// without touching table state.
+    pub fn test_state(&self, nonce: u32) -> Option<PeerTestState> {
+        self.entries.get(&nonce).map(|entry| entry.state)
+    }
+
     fn expire_locked(&mut self, now_ms: u64) {
         let expired: Vec<u32> = self
             .entries

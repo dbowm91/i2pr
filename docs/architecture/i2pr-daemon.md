@@ -642,7 +642,7 @@ work is scoped to:
   [`crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs`](../../crates/i2pr-daemon/tests/ssu2_daemon_preflight.rs)
   via `tests/integration/m6-interop/run-preflight.sh`. See
 [`plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md).
-- **Floodfill delivery boundary** (Plans 277–282 stopped, Plan 283 registered): `floodfill.rs` retains coordinator resource
+- **Floodfill delivery boundary** (Plans 277/282 stopped, Plan 283 in progress): `floodfill.rs` retains coordinator resource
   leases through effect completion, constructs fresh bounded I2NP envelopes, and routes Store
   acknowledgements and direct/tunnel lookup replies using the supplied reply route. Tunnel replies
   are exactly one Garlic body nested in one TunnelGateway. Direct replication sends a zero-token
@@ -651,11 +651,17 @@ work is scoped to:
   dial to the existing runtime owner. `run_floodfill_owner` supplies one bounded ingress,
   maintenance, and effect-drain future with per-effect outcome accounting, a bounded
   cancel-drain, and a stats return; the production SSU2 service graph does not start
-  it. Local acceptance lives in
+  it. Plan 283 adds the controlled activation/withdrawal composition (`activate_controlled` /
+  `withdraw_controlled`, the only composition site the M12 guard permits) behind the wire-real
+  controlled peer-test evidence driver (Option 3): explicit-bind recording → publication
+  material → eligibility → activation → `caps=f` install → publish, with failure rollback to
+  the previous non-`f` bytes and health-loss withdrawal (Draining → same-address non-`f`
+  reinstall → bounded drain → Disabled). Local acceptance lives in
   [`crates/i2pr-daemon/tests/floodfill_controlled_lifecycle.rs`](../../crates/i2pr-daemon/tests/floodfill_controlled_lifecycle.rs)
-  (8 live loopback rows: direct/tunnel acks, ECIES tunnel open, established/dial/failed
-  replication, cancel-drain). Activation and health-withdrawal composition remain
-  open in Plan 283, blocked on above-floor reachability evidence.
+  (13 live loopback rows: direct/tunnel acks, ECIES tunnel open, established/dial/failed
+  replication, cancel-drain, plus controlled eligibility/serve, health withdrawal, RI
+  rotation across handshakes, dial-permit cancel baseline, and the ordinary-config
+  refusal).
 - **Exploratory build coordinator + tunnel liveness scheduler**
   (Plans 185/188): the daemon-owned
   [`ExploratoryBuildCoordinator`](../../crates/i2pr-daemon/src/exploratory_build.rs)

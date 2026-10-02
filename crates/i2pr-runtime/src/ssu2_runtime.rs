@@ -76,19 +76,22 @@ use std::sync::{
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_crypto::X25519PrivateKey;
-use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo};
+use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo, SigningPublicKey};
 use i2pr_transport::{
     CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage, LinkCandidate, LinkId,
-    PeerId, PendingHandshake, ReachabilitySignal, ReachabilityState, ReachabilityTracker,
-    ResourceClass, TerminationCategory, TransportKind, TransportLimits, TransportManager,
+    PeerId, PeerTestOutcomeKind, PendingHandshake, ReachabilitySignal, ReachabilityState,
+    ReachabilityTracker, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
+    TransportManager,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
     DropCategory, HandshakeAction, HandshakeReplayCache, Initiator, InitiatorConfig,
     InitiatorSecrets, IntroKey, PATH_CHALLENGE_LENGTH, PathError, PathEvent, PathValidator,
-    Responder, ResponderConfig, ResponderParams, RetryAnswer, SessionAction, SessionConfig,
-    SessionEvent, Ssu2Endpoint, Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore,
-    constants, parse_session_request, parse_token_request, retry_response_budget,
+    PeerTestBlock, PeerTestOutcome, PeerTestRole, PeerTestState, Responder, ResponderConfig,
+    ResponderParams, RetryAnswer, SessionAction, SessionConfig, SessionEvent, Ssu2Endpoint,
+    Ssu2PublicKey, Ssu2RouterAddress, TerminateReason, TokenStore, build_out_of_session_peer_test,
+    constants, parse_out_of_session_peer_test, parse_session_request, parse_token_request,
+    peer_test_conn_ids, retry_response_budget,
 };
 use rand_core::{OsRng, TryRngCore};
 use tokio::net::UdpSocket;
@@ -97,6 +100,7 @@ use zeroize::Zeroize;
 
 use crate::ntcp2_runtime::{DialAdmission, DialBackoffConfig, DialKey};
 use crate::ntcp2_runtime::{DialBackoffDecision, IpPrefixPolicy};
+use crate::ssu2_peer_relay::{Ssu2PeerRelayConfig, Ssu2PeerRelayService};
 use crate::{CancellationToken, ChildScope, ChildTaskFailure};
 use i2pr_core::CancellationReason;
 
@@ -370,6 +374,18 @@ pub struct Ssu2RuntimeConfig {
     /// requires the narrow controlled-qualification call, so normal
     /// operation is unchanged.
     pub explicit_bind_corroboration: bool,
+    /// Permits the controlled peer-test evidence path (Plan 283).
+    ///
+    /// When false (default) the service ignores every inbound
+    /// peer-test datagram, refuses every controlled peer-test call,
+    /// and owns no live controlled test: session behavior is exactly
+    /// the pre-283 shape. When true, the narrow
+    /// `*_controlled_peer_test` / `queue_controlled_address` APIs and
+    /// the single-flight controlled exchange may run. The daemon sets
+    /// this only alongside `explicit_bind_corroboration` on the
+    /// controlled M12 qualification path; normal operation is
+    /// unchanged.
+    pub controlled_peer_test: bool,
 }
 
 impl Ssu2RuntimeConfig {
@@ -434,6 +450,101 @@ impl fmt::Display for Ssu2RuntimeConfigError {
 }
 
 impl std::error::Error for Ssu2RuntimeConfigError {}
+
+/// Failure of a controlled peer-test evidence call (Plan 283).
+///
+/// Every variant fails closed without recording reachability evidence:
+/// refused calls never touch the tracker, and a failed exchange leaves
+/// whatever evidence already recorded (bind observations, completed
+/// outcomes) untouched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlledPeerTestError {
+    /// The service was not configured with `controlled_peer_test`.
+    NotPermitted,
+    /// The service is shut down or its state is unavailable.
+    Unavailable,
+    /// Another controlled test is already live (single-flight).
+    AlreadyRunning,
+    /// No controlled test is live for this call.
+    NoControlledTest,
+    /// The nonce does not match the live controlled test.
+    NonceMismatch,
+    /// A role/hash/endpoint binding check failed.
+    BindingMismatch,
+    /// The block message number does not fit this egress path
+    /// (Msgs 1–4 in-session only, Msgs 5–7 out-of-session only).
+    WrongTransport,
+    /// No single live session exists for the peer.
+    NoSession,
+    /// The reported endpoint is not the live observed peer address.
+    NotObserved,
+    /// A target, endpoint, or key failed validation.
+    InvalidTarget,
+    /// Staging, quota, or randomness was unavailable.
+    ResourceDenied,
+    /// The driver configuration (timeouts) failed validation.
+    InvalidDriverConfig,
+    /// A driver signing, key-generation, or block-build step failed.
+    ExchangeCrypto,
+    /// A helper handshake failed or was denied.
+    ExchangeHandshake,
+    /// A driver step deadline elapsed.
+    ExchangeTimeout,
+    /// The driver was cancelled.
+    ExchangeCancelled,
+    /// The exchange completed without a `Confirmed` outcome.
+    ExchangeNotConfirmed,
+    /// The driver observed a protocol deviation (unexpected forward,
+    /// state, or outcome shape).
+    ExchangeProtocol,
+}
+
+impl fmt::Display for ControlledPeerTestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::NotPermitted => "controlled peer test is not permitted on this service",
+            Self::Unavailable => "controlled peer test service state is unavailable",
+            Self::AlreadyRunning => "a controlled peer test is already running",
+            Self::NoControlledTest => "no controlled peer test is running",
+            Self::NonceMismatch => "nonce does not match the controlled peer test",
+            Self::BindingMismatch => "role, hash, or endpoint does not bind the controlled test",
+            Self::WrongTransport => "peer-test block uses the wrong egress path",
+            Self::NoSession => "no live session exists for the controlled peer",
+            Self::NotObserved => "reported endpoint is not the observed peer address",
+            Self::InvalidTarget => "controlled peer test target is invalid",
+            Self::ResourceDenied => "controlled peer test resource was denied",
+            Self::InvalidDriverConfig => "controlled peer test driver configuration is invalid",
+            Self::ExchangeCrypto => "controlled peer test crypto step failed",
+            Self::ExchangeHandshake => "controlled peer test handshake failed",
+            Self::ExchangeTimeout => "controlled peer test step timed out",
+            Self::ExchangeCancelled => "controlled peer test was cancelled",
+            Self::ExchangeNotConfirmed => "controlled peer test did not confirm",
+            Self::ExchangeProtocol => "controlled peer test observed a protocol deviation",
+        })
+    }
+}
+
+impl std::error::Error for ControlledPeerTestError {}
+
+/// Single-flight controlled peer-test context (Plan 283).
+///
+/// Lives only while the controlled driver runs one exchange: the
+/// role/hash/endpoint bindings fixed at start plus the terminal table
+/// outcome once the exchange completes. At most one context exists per
+/// service; the driver closes it explicitly on every exit path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ControlledPeerTestContext {
+    nonce: u32,
+    role: PeerTestRole,
+    alice_hash: [u8; 32],
+    bob_hash: [u8; 32],
+    charlie_hash: [u8; 32],
+    alice_endpoint: Ssu2Endpoint,
+    outcome: Option<PeerTestOutcome>,
+    /// Latest transport-only forward (Msg 1 or 2) with its real
+    /// sender endpoint, drained by the driver to advance causally.
+    last_forward: Option<(PeerTestBlock, Ssu2Endpoint)>,
+}
 
 /// Local SSU2 identity material for one runtime service instance.
 ///
@@ -828,6 +939,10 @@ struct ActiveSession {
     peer_addr: SocketAddr,
     subnet: SubnetKey,
     session: i2pr_transport_ssu2::Ssu2Session,
+    /// Peer RouterInfo bytes observed in the SessionConfirmed
+    /// handshake that established this session. RouterInfos are public
+    /// data; later installs never mutate established sessions.
+    peer_router_info: Vec<u8>,
     /// Authenticated path-validation state (Plan 159): the validated
     /// endpoint starts as the promotion address and only migrates on
     /// matching PathResponse proof.
@@ -875,6 +990,10 @@ struct ServiceState {
     /// one conservative state for publication snapshots. Never sees
     /// packet or session objects.
     reachability: ReachabilityTracker,
+    /// Single-flight controlled peer-test exchange (Plan 283): `None`
+    /// unless the controlled driver started one through
+    /// `start_controlled_peer_test`.
+    controlled_test: Option<ControlledPeerTestContext>,
 }
 
 impl ServiceState {
@@ -921,6 +1040,7 @@ struct Shared {
     manager: TransportManager,
     backoff: DialAdmission,
     state: Mutex<ServiceState>,
+    peer_relay: Ssu2PeerRelayService,
     notify: Notify,
     shutdown: CancellationToken,
     started_at: tokio::time::Instant,
@@ -966,6 +1086,10 @@ struct ServiceCounters {
     path_rejections: AtomicU64,
     path_expirations: AtomicU64,
     path_denied: AtomicU64,
+    controlled_started: AtomicU64,
+    controlled_confirmed: AtomicU64,
+    controlled_received: AtomicU64,
+    controlled_drops: AtomicU64,
 }
 
 fn monotonic_ms(started: &tokio::time::Instant) -> u64 {
@@ -1199,6 +1323,8 @@ impl Ssu2RuntimeService {
         };
         let reachability = ReachabilityTracker::new(reachability_policy)
             .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
+        let peer_relay = Ssu2PeerRelayService::new(Ssu2PeerRelayConfig::default())
+            .map_err(|_| Ssu2RuntimeConfigError::InconsistentLimits)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 config,
@@ -1231,7 +1357,9 @@ impl Ssu2RuntimeService {
                     fault_transmits: 0,
                     fault_held: None,
                     reachability,
+                    controlled_test: None,
                 }),
+                peer_relay,
                 notify: Notify::new(),
                 shutdown: CancellationToken::new(),
                 started_at: tokio::time::Instant::now(),
@@ -1253,6 +1381,49 @@ impl Ssu2RuntimeService {
     /// Returns the transport manager for teardown assertions in tests.
     pub fn manager(&self) -> &TransportManager {
         &self.shared.manager
+    }
+
+    /// Returns the peer RouterInfo bytes observed in the
+    /// SessionConfirmed handshake that established one link, if the
+    /// link is still live.
+    ///
+    /// Read-only public-data observability: RouterInfos are public
+    /// protocol data the handshake already retained. Established
+    /// sessions keep the bytes they were established with; later
+    /// `install_local_router_info` calls never mutate them, so a
+    /// session established before an install still reports the older
+    /// bytes while sessions established after report the newer ones.
+    /// The bytes are empty on the initiator side by SSU2 design: the
+    /// responder's RouterInfo is never sent on the wire (the dialer
+    /// brings it out-of-band), while the responder always observes
+    /// the initiator's RouterInfo in SessionRequest/Confirmed.
+    pub fn session_peer_router_info(&self, link_id: LinkId) -> Option<Vec<u8>> {
+        self.shared
+            .state
+            .lock()
+            .ok()?
+            .active
+            .get(&link_id)
+            .map(|record| record.peer_router_info.clone())
+    }
+
+    /// Returns the live link identifiers for one peer, if any.
+    ///
+    /// Read-only diagnostics so tests resolve per-link observations
+    /// (such as [`Self::session_peer_router_info`]) without guessing
+    /// at link identifiers.
+    pub fn session_peer_links(&self, peer: PeerId) -> Vec<LinkId> {
+        self.shared
+            .state
+            .lock()
+            .map(|state| {
+                state
+                    .peer_links
+                    .get(&peer)
+                    .map(|links| links.iter().copied().collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
     }
 
     /// Binds the configured sockets and starts one supervised loop
@@ -1611,6 +1782,604 @@ impl Ssu2RuntimeService {
             );
         }
         Ok(())
+    }
+
+    /// Starts one single-flight controlled peer-test exchange (Plan 283).
+    ///
+    /// Binds this service's role, the three router hashes, and the
+    /// endpoint under test, then starts the role in the service-owned
+    /// peer-test table. The bindings are enforced, not advisory:
+    /// - the service plays exactly the role whose hash is its own;
+    /// - Alice role additionally requires `alice_endpoint` to be one
+    ///   of this service's bound sockets (the test can only attest the
+    ///   real endpoint);
+    /// - `alice_endpoint` must be loopback with a nonzero port.
+    ///
+    /// Refused unless the service was configured with
+    /// `controlled_peer_test` and no test is live. The caller registers
+    /// the helper signing keys separately; this function stores no
+    /// secrets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_controlled_peer_test(
+        &self,
+        nonce: u32,
+        role: PeerTestRole,
+        alice_hash: [u8; 32],
+        bob_hash: [u8; 32],
+        charlie_hash: [u8; 32],
+        alice_endpoint: Ssu2Endpoint,
+    ) -> Result<(), ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        if self.shared.shutdown.is_cancelled() {
+            return Err(ControlledPeerTestError::Unavailable);
+        }
+        if !alice_endpoint.socket_addr().ip().is_loopback()
+            || alice_endpoint.socket_addr().port() == 0
+        {
+            return Err(ControlledPeerTestError::BindingMismatch);
+        }
+        let local_hash = *self.shared.local_peer.hash().as_bytes();
+        let role_binds = match role {
+            PeerTestRole::Alice => alice_hash == local_hash,
+            PeerTestRole::Bob => bob_hash == local_hash,
+            PeerTestRole::Charlie => charlie_hash == local_hash,
+        };
+        if !role_binds {
+            return Err(ControlledPeerTestError::BindingMismatch);
+        }
+        if matches!(role, PeerTestRole::Alice) {
+            let bound = self
+                .shared
+                .sockets
+                .lock()
+                .map_err(|_| ControlledPeerTestError::Unavailable)?;
+            let endpoint = alice_endpoint.socket_addr();
+            if Some(endpoint) != bound.v4 && Some(endpoint) != bound.v6 {
+                return Err(ControlledPeerTestError::BindingMismatch);
+            }
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        if state.controlled_test.is_some() {
+            return Err(ControlledPeerTestError::AlreadyRunning);
+        }
+        let now_ms = monotonic_ms(&self.shared.started_at);
+        self.shared
+            .peer_relay
+            .start_peer_test(
+                nonce,
+                role,
+                alice_hash,
+                bob_hash,
+                charlie_hash,
+                alice_endpoint,
+                now_ms,
+            )
+            .map_err(|_| ControlledPeerTestError::ResourceDenied)?;
+        state.controlled_test = Some(ControlledPeerTestContext {
+            nonce,
+            role,
+            alice_hash,
+            bob_hash,
+            charlie_hash,
+            alice_endpoint,
+            outcome: None,
+            last_forward: None,
+        });
+        self.shared
+            .counters
+            .controlled_started
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Registers one peer signing key for the live controlled test.
+    ///
+    /// Public keys only; refused unless the service was configured
+    /// with `controlled_peer_test`. Unknown signers fail closed at
+    /// ingest without allocating outcome state.
+    pub fn register_controlled_peer_signer(
+        &self,
+        peer_hash: [u8; 32],
+        key: &SigningPublicKey,
+    ) -> Result<(), ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        self.shared
+            .peer_relay
+            .register_signer(peer_hash, key.clone())
+            .map_err(|_| ControlledPeerTestError::ResourceDenied)?;
+        Ok(())
+    }
+
+    /// Queues one in-session controlled peer-test block toward a peer
+    /// (Msgs 1–4 only; Msgs 5–7 travel out-of-session).
+    ///
+    /// Requires the live test, exactly one session for the peer, and a
+    /// non-terminal session. The queued block rides the normal
+    /// session transmit path with a scheduler wakeup, so delivery is a
+    /// real authenticated session event at the peer.
+    pub fn queue_controlled_peer_test(
+        &self,
+        peer: PeerId,
+        block: PeerTestBlock,
+    ) -> Result<(), ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        if self.shared.shutdown.is_cancelled() {
+            return Err(ControlledPeerTestError::Unavailable);
+        }
+        if !(1..=4).contains(&block.message()) {
+            return Err(ControlledPeerTestError::WrongTransport);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        if state.controlled_test.is_none() {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        }
+        let link = match state.peer_links.get(&peer) {
+            Some(links) if links.len() == 1 => links.iter().next().copied(),
+            Some(_) => return Err(ControlledPeerTestError::ResourceDenied),
+            None => return Err(ControlledPeerTestError::NoSession),
+        };
+        let Some(link) = link else {
+            return Err(ControlledPeerTestError::NoSession);
+        };
+        let Some(record) = state.active.get_mut(&link) else {
+            return Err(ControlledPeerTestError::NoSession);
+        };
+        record
+            .session
+            .queue_peer_test(block)
+            .map_err(|_| ControlledPeerTestError::NoSession)?;
+        self.shared.notify.notify_one();
+        Ok(())
+    }
+
+    /// Queues one in-session Address report toward a peer (Plan 283).
+    ///
+    /// The reported endpoint is not caller-chosen: it is read from the
+    /// live session's observed peer address, so the report always names
+    /// the genuine observation. Returns the reported endpoint so the
+    /// driver can correlate it. Requires the live test and exactly one
+    /// session for the peer.
+    pub fn queue_controlled_address(
+        &self,
+        peer: PeerId,
+    ) -> Result<Ssu2Endpoint, ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        if self.shared.shutdown.is_cancelled() {
+            return Err(ControlledPeerTestError::Unavailable);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        if state.controlled_test.is_none() {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        }
+        let link = match state.peer_links.get(&peer) {
+            Some(links) if links.len() == 1 => links.iter().next().copied(),
+            Some(_) => return Err(ControlledPeerTestError::ResourceDenied),
+            None => return Err(ControlledPeerTestError::NoSession),
+        };
+        let Some(link) = link else {
+            return Err(ControlledPeerTestError::NoSession);
+        };
+        let Some(record) = state.active.get_mut(&link) else {
+            return Err(ControlledPeerTestError::NoSession);
+        };
+        let endpoint = Ssu2Endpoint::from_socket_addr(record.peer_addr)
+            .map_err(|_| ControlledPeerTestError::InvalidTarget)?;
+        record
+            .session
+            .queue_address(AddressBlock::new(endpoint))
+            .map_err(|_| ControlledPeerTestError::NoSession)?;
+        self.shared.notify.notify_one();
+        Ok(endpoint)
+    }
+
+    /// Sends one out-of-session controlled peer-test block (Msgs 5–7
+    /// only) sealed under the receiver's intro key.
+    ///
+    /// Alice role sends Msg 6 toward Charlie; Charlie role sends Msgs
+    /// 5/7 toward Alice; Bob role has no out-of-session direction and
+    /// is refused. The datagram stages through the normal bounded
+    /// outbound queue with a scheduler wakeup.
+    pub fn send_controlled_peer_test(
+        &self,
+        target: SocketAddr,
+        receiver_intro: &IntroKey,
+        block: PeerTestBlock,
+    ) -> Result<(), ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        if self.shared.shutdown.is_cancelled() {
+            return Err(ControlledPeerTestError::Unavailable);
+        }
+        if !(5..=7).contains(&block.message()) {
+            return Err(ControlledPeerTestError::WrongTransport);
+        }
+        if target.port() == 0 || !target.ip().is_loopback() {
+            return Err(ControlledPeerTestError::InvalidTarget);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        let context = state
+            .controlled_test
+            .as_ref()
+            .ok_or(ControlledPeerTestError::NoControlledTest)?;
+        let alice_to_charlie = match context.role {
+            PeerTestRole::Alice => true,
+            PeerTestRole::Charlie => false,
+            PeerTestRole::Bob => return Err(ControlledPeerTestError::WrongTransport),
+        };
+        let (dest, src) = peer_test_conn_ids(context.nonce, alice_to_charlie);
+        let packet_number =
+            random_u32_nonzero().map_err(|_| ControlledPeerTestError::ResourceDenied)?;
+        let datagram =
+            build_out_of_session_peer_test(receiver_intro, src, dest, packet_number, block)
+                .map_err(|_| ControlledPeerTestError::InvalidTarget)?;
+        if !stage_one_locked(
+            &mut state,
+            &self.shared.config.limits,
+            &self.shared.counters,
+            datagram,
+            target,
+        ) {
+            return Err(ControlledPeerTestError::ResourceDenied);
+        }
+        self.shared.notify.notify_one();
+        Ok(())
+    }
+
+    /// Takes the stashed transport-only forward (Msg 1 or 2) for the
+    /// live test, with the real sender endpoint attached.
+    ///
+    /// Msgs 1–2 carry no table state: they are wire-faithful
+    /// commitments whose receipt causally triggers the driver's next
+    /// step. Returns `Ok(None)` while nothing has arrived yet.
+    pub fn take_controlled_forward(
+        &self,
+        nonce: u32,
+    ) -> Result<Option<(PeerTestBlock, Ssu2Endpoint)>, ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        let Some(context) = state.controlled_test.as_mut() else {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        };
+        if context.nonce != nonce {
+            return Err(ControlledPeerTestError::NonceMismatch);
+        }
+        Ok(context.last_forward.take())
+    }
+
+    /// Returns the terminal table outcome for the live test, if any.
+    ///
+    /// A `Confirmed` outcome here is mirrored onto the service
+    /// reachability tracker at ingest time; every other outcome leaves
+    /// the tracker untouched and the driver aborts the exchange.
+    pub fn controlled_test_outcome(
+        &self,
+        nonce: u32,
+    ) -> Result<Option<PeerTestOutcome>, ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        let state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        let Some(context) = state.controlled_test.as_ref() else {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        };
+        if context.nonce != nonce {
+            return Err(ControlledPeerTestError::NonceMismatch);
+        }
+        Ok(context.outcome)
+    }
+
+    /// Returns the live table state for the controlled test, if tracked.
+    ///
+    /// Read-only diagnostics so the driver advances causally on table
+    /// transitions (for example, waiting for Alice to reach
+    /// `AliceAwaitingMsg5` before emitting Msg 5). Returns `Ok(None)`
+    /// when the table no longer tracks the nonce.
+    pub fn controlled_test_state(
+        &self,
+        nonce: u32,
+    ) -> Result<Option<PeerTestState>, ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        let state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        let Some(context) = state.controlled_test.as_ref() else {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        };
+        if context.nonce != nonce {
+            return Err(ControlledPeerTestError::NonceMismatch);
+        }
+        Ok(self.shared.peer_relay.peer_test_state(nonce))
+    }
+
+    /// Closes the live controlled test and releases its table entry.
+    ///
+    /// Best-effort and idempotent across driver exit paths: the table
+    /// entry is cancelled when still present, and the context is
+    /// cleared either way so no stale test survives the exchange.
+    pub fn finish_controlled_peer_test(&self, nonce: u32) -> Result<(), ControlledPeerTestError> {
+        if !self.shared.config.controlled_peer_test {
+            return Err(ControlledPeerTestError::NotPermitted);
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| ControlledPeerTestError::Unavailable)?;
+        let Some(context) = state.controlled_test.as_ref() else {
+            return Err(ControlledPeerTestError::NoControlledTest);
+        };
+        if context.nonce != nonce {
+            return Err(ControlledPeerTestError::NonceMismatch);
+        }
+        let _ = self.shared.peer_relay.cancel_peer_test(nonce);
+        state.controlled_test = None;
+        Ok(())
+    }
+
+    /// Routes one in-session controlled peer-test block into the
+    /// service-owned table (or stashes a transport-only forward).
+    ///
+    /// The sender is always the session peer by construction: Msg 4
+    /// arrives on the Alice–Bob session from Bob, Msg 3 on the
+    /// Bob–Charlie session from Charlie. Msgs 1–2 carry no table
+    /// state and are stashed with the real sender endpoint so the
+    /// driver advances causally on wire receipt. Blocks arriving with
+    /// no live test, or while the service is not controlled, are
+    /// counted and dropped without touching any table.
+    fn ingest_controlled_session_block(
+        &self,
+        state: &mut ServiceState,
+        link_id: &LinkId,
+        source: SocketAddr,
+        block: &PeerTestBlock,
+        now_secs: u64,
+        now_ms: u64,
+    ) {
+        if !self.shared.config.controlled_peer_test {
+            self.shared
+                .counters
+                .controlled_drops
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let (sender_hash, bob_hash, alice_hash) = match state.controlled_test.as_ref() {
+            Some(context) => (
+                state
+                    .active
+                    .get(link_id)
+                    .map(|record| *record.peer.hash().as_bytes()),
+                context.bob_hash,
+                context.alice_hash,
+            ),
+            None => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        let sender_endpoint = match Ssu2Endpoint::from_socket_addr(source) {
+            Ok(endpoint) => endpoint,
+            Err(_) => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        if matches!(block.message(), 1 | 2) {
+            if let Some(context) = state.controlled_test.as_mut() {
+                context.last_forward = Some((block.clone(), sender_endpoint));
+                self.shared
+                    .counters
+                    .controlled_received
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        let Some(sender_hash) = sender_hash else {
+            self.shared
+                .counters
+                .controlled_drops
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        // Signature preimage convention (mirrors the transport tests):
+        // Alice-signed blocks (Msg 6) omit ahash like Msgs 1–2;
+        // Charlie-signed blocks (Msgs 3–5, 7) include it like Msgs
+        // 3–4. The driver signs to the same convention.
+        let alice_hash_for_block = if block.message() == 6 {
+            None
+        } else {
+            Some(&alice_hash)
+        };
+        match self.shared.peer_relay.on_peer_test(
+            block,
+            &sender_hash,
+            sender_endpoint,
+            &bob_hash,
+            alice_hash_for_block,
+            now_secs,
+            now_ms,
+        ) {
+            Ok(outcome) => {
+                self.shared
+                    .counters
+                    .controlled_received
+                    .fetch_add(1, Ordering::Relaxed);
+                self.map_controlled_outcome_locked(state, outcome);
+            }
+            Err(_) => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Routes one out-of-session controlled peer-test block into the
+    /// service-owned table.
+    ///
+    /// Only Alice (Msgs 5/7 from Charlie) and Charlie (Msg 6 from
+    /// Alice) receive out-of-session in the controlled flow; Bob role
+    /// datagrams are dropped. Sender attribution follows the role, but
+    /// authentication still rests on the registered signing keys: a
+    /// wrong sender fails the table's sender gate, a wrong key fails
+    /// the signature gate.
+    fn ingest_controlled_out_of_session(
+        &self,
+        state: &mut ServiceState,
+        source: SocketAddr,
+        block: &PeerTestBlock,
+        now_secs: u64,
+        now_ms: u64,
+    ) {
+        let Some(context) = state.controlled_test.as_ref() else {
+            self.shared
+                .counters
+                .controlled_drops
+                .fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let (sender_hash, bob_hash, alice_hash) = match context.role {
+            PeerTestRole::Alice => (context.charlie_hash, context.bob_hash, context.alice_hash),
+            PeerTestRole::Charlie => (context.alice_hash, context.bob_hash, context.alice_hash),
+            PeerTestRole::Bob => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        let sender_endpoint = match Ssu2Endpoint::from_socket_addr(source) {
+            Ok(endpoint) => endpoint,
+            Err(_) => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        // Msg 6 is Charlie's genuine observation carrier: stash it with
+        // the real sender endpoint (Alice's observed source) so the
+        // driver builds the verdict Msg 7 from observed fact, then
+        // route it to the table normally for the helper transition.
+        if block.message() == 6
+            && let Some(context) = state.controlled_test.as_mut()
+        {
+            context.last_forward = Some((block.clone(), sender_endpoint));
+            self.shared
+                .counters
+                .controlled_received
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let alice_hash_for_block = if block.message() == 6 {
+            None
+        } else {
+            Some(&alice_hash)
+        };
+        match self.shared.peer_relay.on_peer_test(
+            block,
+            &sender_hash,
+            sender_endpoint,
+            &bob_hash,
+            alice_hash_for_block,
+            now_secs,
+            now_ms,
+        ) {
+            Ok(outcome) => {
+                self.shared
+                    .counters
+                    .controlled_received
+                    .fetch_add(1, Ordering::Relaxed);
+                self.map_controlled_outcome_locked(state, outcome);
+            }
+            Err(_) => {
+                self.shared
+                    .counters
+                    .controlled_drops
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Mirrors one controlled table outcome onto the service tracker.
+    ///
+    /// Only `DirectReachabilityConfirmed` records evidence
+    /// (`PeerTestResult{Confirmed}`): every other terminal outcome
+    /// leaves the tracker untouched so a failed exchange can never
+    /// poison later evidence, and the driver aborts fail-closed. The
+    /// outcome is stored on the live context either way so the driver
+    /// observes exactly what the table decided.
+    fn map_controlled_outcome_locked(
+        &self,
+        state: &mut ServiceState,
+        outcome: Option<PeerTestOutcome>,
+    ) {
+        let Some(outcome) = outcome else {
+            return;
+        };
+        if let PeerTestOutcome::DirectReachabilityConfirmed { family, .. } = outcome {
+            let now = self.service_now();
+            state.reachability.record(
+                ReachabilitySignal::PeerTestResult {
+                    family,
+                    outcome: PeerTestOutcomeKind::Confirmed,
+                },
+                now,
+            );
+            self.shared
+                .counters
+                .controlled_confirmed
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if let Some(context) = state.controlled_test.as_mut() {
+            context.outcome = Some(outcome);
+        }
     }
 
     /// Atomically installs a locally signed RouterInfo for future SessionConfirmed handshakes.
@@ -2428,6 +3197,7 @@ impl Ssu2RuntimeService {
                 wall_secs(),
             );
         }
+        let peer_router_info = auth.peer().router_info.clone();
         let session =
             match self.construct_session(state, auth, target.responder_intro(), target.address()) {
                 Some(session) => session,
@@ -2539,6 +3309,7 @@ impl Ssu2RuntimeService {
                 peer_addr: target.address(),
                 subnet: subnet_key(self.shared.config.prefixes, target.address().ip()),
                 session,
+                peer_router_info,
                 path,
                 confirmed_resend,
                 data_rx_observed: false,
@@ -2586,6 +3357,7 @@ impl Ssu2RuntimeService {
                 return;
             }
         };
+        let peer_router_info = auth.peer().router_info.clone();
         let mut session = match self.construct_session(state, auth, remote_intro, source) {
             Some(session) => session,
             None => {
@@ -2707,6 +3479,7 @@ impl Ssu2RuntimeService {
                 peer_addr: source,
                 subnet: subnet_key(self.shared.config.prefixes, source.ip()),
                 session,
+                peer_router_info,
                 path,
                 confirmed_resend: None,
                 data_rx_observed: false,
@@ -4058,6 +4831,11 @@ impl Ssu2RuntimeService {
                         now,
                     );
                 }
+                SessionEvent::PeerTest(block) => {
+                    self.ingest_controlled_session_block(
+                        state, &link_id, source, &block, now_secs, now_ms,
+                    );
+                }
                 _ => {}
             }
         }
@@ -4251,6 +5029,26 @@ impl Ssu2RuntimeService {
                 local_addr,
             );
             return inbound;
+        }
+        // Controlled peer-test out-of-session ingress (Plan 283): only
+        // when permitted. Parse-only with the local intro key; wrong
+        // keys and garbage fall through to the cheap-drop below, and a
+        // parsed block is routed without ever emitting a response.
+        if self.shared.config.controlled_peer_test {
+            if !self.shared.peer_relay.check_admission(source.ip(), now_ms) {
+                self.shared
+                    .counters
+                    .cheap_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                return inbound;
+            }
+            let mut peer_probe = bytes.to_vec();
+            if let Ok((_, block)) =
+                parse_out_of_session_peer_test(&mut peer_probe, &self.shared.local_intro)
+            {
+                self.ingest_controlled_out_of_session(&mut state, source, &block, now_secs, now_ms);
+                return inbound;
+            }
         }
         self.shared
             .counters
@@ -5914,6 +6712,152 @@ mod tests {
             now_ms.saturating_add(skew_ms.saturating_add(1000)),
             now_ms
         ));
+    }
+
+    fn controlled_test_service(permitted: bool) -> (Ssu2RuntimeService, PathKeys) {
+        let keys = make_path_keys();
+        let service = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig {
+                controlled_peer_test: permitted,
+                ..Ssu2RuntimeConfig::default()
+            },
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("service");
+        (service, keys)
+    }
+
+    fn controlled_test_block(message: u8) -> PeerTestBlock {
+        let endpoint = Ssu2Endpoint::from_socket_addr("127.0.0.1:43001".parse().expect("loopback"))
+            .expect("endpoint");
+        PeerTestBlock::new(
+            message,
+            0,
+            None,
+            2,
+            7,
+            1_700_000_000,
+            endpoint,
+            vec![0xCD; 64],
+        )
+        .expect("block")
+    }
+
+    #[test]
+    fn controlled_peer_test_apis_refused_without_permit() {
+        let (service, keys) = controlled_test_service(false);
+        let endpoint = Ssu2Endpoint::from_socket_addr("127.0.0.1:43001".parse().expect("loopback"))
+            .expect("endpoint");
+        let peer = PeerId::from_hash(keys.hash);
+        assert_eq!(
+            service.start_controlled_peer_test(
+                7,
+                PeerTestRole::Alice,
+                *keys.hash.as_bytes(),
+                [0x02; 32],
+                [0x03; 32],
+                endpoint,
+            ),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        let signer = keys
+            .bundle
+            .signing_key()
+            .public_key()
+            .expect("signing public");
+        assert_eq!(
+            service.register_controlled_peer_signer([0x01; 32], &signer),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.queue_controlled_peer_test(peer, controlled_test_block(1)),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.queue_controlled_address(peer),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.send_controlled_peer_test(
+                "127.0.0.1:43002".parse().expect("loopback"),
+                &keys.intro,
+                controlled_test_block(5),
+            ),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.take_controlled_forward(7),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.controlled_test_outcome(7),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.controlled_test_state(7),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(
+            service.finish_controlled_peer_test(7),
+            Err(ControlledPeerTestError::NotPermitted)
+        );
+        assert_eq!(service.snapshot().reachability, ReachabilityState::Unknown);
+    }
+
+    #[test]
+    fn controlled_peer_test_start_enforces_bindings() {
+        let (service, keys) = controlled_test_service(true);
+        let own_hash = *keys.hash.as_bytes();
+        let endpoint = Ssu2Endpoint::from_socket_addr("127.0.0.1:43001".parse().expect("loopback"))
+            .expect("endpoint");
+        // The service plays exactly the role whose hash is its own.
+        assert_eq!(
+            service.start_controlled_peer_test(
+                7,
+                PeerTestRole::Bob,
+                own_hash,
+                [0x02; 32],
+                [0x03; 32],
+                endpoint,
+            ),
+            Err(ControlledPeerTestError::BindingMismatch)
+        );
+        // Non-loopback endpoints never bind a test.
+        let public = Ssu2Endpoint::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+            43001,
+        )
+        .expect("endpoint");
+        assert_eq!(
+            service.start_controlled_peer_test(
+                7,
+                PeerTestRole::Alice,
+                own_hash,
+                [0x02; 32],
+                [0x03; 32],
+                public,
+            ),
+            Err(ControlledPeerTestError::BindingMismatch)
+        );
+        // Alice role requires the endpoint to be a bound socket; this
+        // service bound nothing.
+        assert_eq!(
+            service.start_controlled_peer_test(
+                7,
+                PeerTestRole::Alice,
+                own_hash,
+                [0x02; 32],
+                [0x03; 32],
+                endpoint,
+            ),
+            Err(ControlledPeerTestError::BindingMismatch)
+        );
+        assert_eq!(service.snapshot().reachability, ReachabilityState::Unknown);
     }
 
     #[tokio::test]

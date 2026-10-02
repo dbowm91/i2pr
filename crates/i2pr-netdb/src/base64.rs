@@ -1,22 +1,25 @@
 //! I2P Base64 alphabet codec.
 //!
-//! I2P uses a variant of Base64 that differs from RFC 4648 in two
-//! places: bytes `0x2D` (`-`) and `0x3F` (`?`) replace the RFC
-//! `+` and `/` characters respectively, and padding uses `~` instead
-//! of `=`. Filenames that embed the I2P Base64 router hash must use
-//! exactly this alphabet; reusing the RFC 4648 alphabet produces a
-//! different hash.
+//! I2P uses a variant of Base64 that differs from RFC 4648 in one
+//! place: bytes `0x2D` (`-`) and `0x7E` (`~`) replace the RFC `+` and
+//! `/` characters respectively; padding still uses `=`. This is the
+//! Plan 142 canonical form, frozen against three external sources
+//! (i2pd `Base.h`/`Base.cpp`, Java I2P `PrivateKeyFile`, i2plib
+//! `I2P_B64_CHARS = "-~"`); see `plans/closure/sam/142-status.md`.
+//! Filenames that embed the I2P Base64 router hash must use exactly
+//! this alphabet; reusing the RFC 4648 alphabet produces a different
+//! hash.
 //!
 //! The codec in this module is strict and bounded:
 //!
-//! - rejects inputs that contain characters outside the I2P alphabet;
+//! - rejects inputs that contain characters outside the I2P alphabet
+//!   (including `+`, `/`, and `?`);
 //! - rejects inputs that do not satisfy the I2P length convention
-//!   (4 * ceil(n / 3) characters, padded with `~` to a multiple of
+//!   (4 * ceil(n / 3) characters, padded with `=` to a multiple of
 //!   four);
 //! - rejects inputs whose decoded length overflows the supplied
 //!   ceiling;
-//! - rejects inputs with leading or trailing padding bytes outside
-//!   the I2P strict subset.
+//! - rejects inputs with padding bytes outside the strict subset.
 
 use thiserror::Error;
 
@@ -44,7 +47,7 @@ pub enum I2pBase64Error {
         /// Offending byte value.
         byte: u8,
     },
-    /// The padding (`~`) appears in a position that is not allowed by
+    /// The padding (`=`) appears in a position that is not allowed by
     /// the I2P strict variant.
     #[error("i2p base64 padding at index {index} is not in the final quantised position")]
     InvalidPadding {
@@ -61,17 +64,17 @@ pub enum I2pBase64Error {
     },
 }
 
-/// Encodes `bytes` into the I2P Base64 alphabet with the I2P-specific
-/// `~` padding.
+/// Encodes `bytes` into the I2P Base64 alphabet with `=` padding
+/// (Plan 142 canonical form).
 ///
 /// `MAX_DECODED_LEN` applies to the input length. The output length is
 /// always `4 * ceil(bytes.len() / 3)`.
 ///
-/// Padding rules follow RFC 4648 with `~` replacing `=`:
+/// Padding rules follow RFC 4648 on the I2P `-~` alphabet:
 ///
 /// - 3-byte chunks → 4 chars, no padding;
-/// - 2-byte tail   → 3 chars + 1 `~`;
-/// - 1-byte tail   → 2 chars + 2 `~`.
+/// - 2-byte tail   → 3 chars + 1 `=`;
+/// - 1-byte tail   → 2 chars + 2 `=`.
 #[allow(dead_code)]
 pub fn encode(bytes: &[u8]) -> Result<String, I2pBase64Error> {
     if bytes.len() > MAX_DECODED_LEN {
@@ -110,7 +113,7 @@ pub fn encode(bytes: &[u8]) -> Result<String, I2pBase64Error> {
         out.push(c0 as char);
         out.push(c1 as char);
         out.push(c2 as char);
-        out.push('~');
+        out.push('=');
     } else if tail == 1 {
         let b0 = bytes[total - 1];
         let n = u32::from(b0) << 16;
@@ -118,8 +121,8 @@ pub fn encode(bytes: &[u8]) -> Result<String, I2pBase64Error> {
         let c1 = alphabet_byte((n >> 12) & 0x3F);
         out.push(c0 as char);
         out.push(c1 as char);
-        out.push('~');
-        out.push('~');
+        out.push('=');
+        out.push('=');
     }
     Ok(out)
 }
@@ -138,7 +141,7 @@ pub fn decode(input: &str) -> Result<Vec<u8>, I2pBase64Error> {
         let mut accum: u32 = 0;
         let mut pad_count = 0;
         for (index, byte) in chunk.iter().enumerate() {
-            if *byte == b'~' {
+            if *byte == b'=' {
                 // Padding is only legal in the final chunk and only at
                 // positions 2 or 3 (encoding a 1- or 2-byte tail).
                 if index != 2 && index != 3 {
@@ -197,7 +200,7 @@ fn alphabet_value(byte: u8) -> Option<u32> {
     }
 }
 
-const ENCODE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-?";
+const ENCODE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-~";
 
 fn decode_alphabet() -> [u8; 256] {
     let mut table = [0xFF_u8; 256];
@@ -235,32 +238,56 @@ mod tests {
     #[test]
     fn i2p_alphabet_differs_from_rfc4648_in_plus_and_slash() {
         // Bytes that would encode to '+' and '/' in RFC 4648 must encode
-        // to '-' and '?' under I2P Base64.
+        // to '-' and '~' under I2P Base64 (Plan 142 canonical form).
         let input = [0xFB, 0xEF, 0xFF];
         let encoded = encode(&input).expect("encode");
         assert!(encoded.bytes().all(|byte| byte != b'+' && byte != b'/'));
+        assert_eq!(encoded, "--~~", "slots 62/63 are '-'/'~'");
     }
 
     #[test]
-    fn padding_uses_tilde_not_equals() {
+    fn padding_uses_equals_not_tilde() {
         let encoded_short = encode(b"f").expect("encode");
         assert!(
-            encoded_short.ends_with("~~"),
-            "1-byte tail must pad with two '~', got {encoded_short}"
+            encoded_short.ends_with("=="),
+            "1-byte tail must pad with two '=', got {encoded_short}"
         );
         let encoded_two = encode(b"fo").expect("encode");
         assert!(
-            encoded_two.ends_with('~'),
-            "2-byte tail must pad with one '~', got {encoded_two}"
+            encoded_two.ends_with('=') && !encoded_two.ends_with("=="),
+            "2-byte tail must pad with one '=', got {encoded_two}"
         );
     }
 
     #[test]
-    fn rfc4648_padding_is_rejected() {
-        // The RFC 4648 padding character `=` is not part of the I2P
-        // alphabet and must be rejected as an invalid character.
-        let error = decode("Zm9v====").unwrap_err();
-        assert!(matches!(error, I2pBase64Error::InvalidCharacter { .. }));
+    fn tilde_is_value_63_not_padding() {
+        // Plan 142 frozen vectors: `~` is the value-63 digit, `=` pads.
+        assert_eq!(decode("----").expect("decode"), vec![0xFB, 0xEF, 0xBE]);
+        assert_eq!(decode("~~8=").expect("decode"), vec![0xFF, 0xFF]);
+        assert_eq!(decode("~~~8").expect("decode"), vec![0xFF, 0xFF, 0xFC]);
+        // A `~` where padding belongs is a value digit, so the chunk
+        // decodes three bytes instead of erroring on padding shape.
+        assert_eq!(decode("AB~=").expect("decode").len(), 2);
+    }
+
+    #[test]
+    fn rfc4648_plus_slash_and_question_mark_are_rejected() {
+        // `+` and `/` are outside the I2P alphabet; `?` is not the
+        // slot-63 digit (that is `~`).
+        for rejected in ["+AAA", "/AAA", "?AAA"] {
+            assert!(
+                matches!(
+                    decode(rejected).unwrap_err(),
+                    I2pBase64Error::InvalidCharacter { .. }
+                ),
+                "{rejected} must be rejected as an invalid character"
+            );
+        }
+        // Over-padding fails on position, not alphabet.
+        assert!(matches!(
+            decode("Zm9v====").unwrap_err(),
+            I2pBase64Error::InvalidPadding { .. }
+        ));
     }
 
     #[test]

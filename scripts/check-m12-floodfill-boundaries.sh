@@ -77,4 +77,31 @@ if rg -n --glob '!floodfill.rs' 'build_floodfill|note_explicit_bind_for_controll
   exit 1
 fi
 
+# Plan 283: controlled activation/withdrawal composition lives only in
+# the daemon floodfill owner (callers in tests only drive it).
+if rg -n --glob '!floodfill.rs' 'fn activate_controlled|fn withdraw_controlled' "$root/crates/i2pr-daemon/src"; then
+  echo "controlled activation/withdrawal composition must live only in daemon floodfill.rs" >&2
+  exit 1
+fi
+rg -q 'pub async fn activate_controlled' "$daemon"
+rg -q 'pub async fn withdraw_controlled' "$daemon"
+
+# Plan 283: the withdrawal RouterInfo builder is permit-gated.
+if ! rg -q -U 'pub fn build_floodfill_withdrawal\([^)]*FloodfillAdvertisementPermit' "$netdb/local.rs"; then
+  echo "withdrawal RouterInfo builder must require the advertisement permit" >&2
+  exit 1
+fi
+
+# Plan 283: corroboration recording stays inside the runtime service
+# owner (ssu2_runtime.rs) plus the pre-existing Plan 160 relay service
+# table; the controlled peer-test driver records nothing itself.
+if rg -n 'PeerTestResult \{|\.record\(' "$root/crates/i2pr-runtime/src/ssu2_controlled_peer_test.rs"; then
+  echo "controlled peer-test driver must not record corroboration itself" >&2
+  exit 1
+fi
+if rg -rn --glob '!ssu2_runtime.rs' --glob '!ssu2_peer_relay.rs' 'reachability\.record\(' "$root/crates" --glob '!*/tests/*' | rg -v 'crates/i2pr-runtime/src/(ssu2_runtime|ssu2_peer_relay)\.rs'; then
+  echo "corroboration recording must stay inside the runtime service owner" >&2
+  exit 1
+fi
+
 echo "M12 floodfill boundaries passed"

@@ -12,11 +12,14 @@
 //! - owner cancellation drains the bounded queue, accounts every outcome, and
 //!   releases all coordinator leases (row 12).
 //!
-//! Activation, health withdrawal, and RouterInfo generation rows (2, 11, 13) are
-//! blocked on above-floor reachability evidence unavailable to static
-//! loopback-homogeneous traffic (see the Plan 282 stop record); the default-off
-//! profile (row 14) is covered by coordinator unit tests. No external harness,
-//! no reference router, and no public advertisement are involved.
+//! Activation, health withdrawal, and RouterInfo generation rows (2, 11, 13)
+//! run against the controlled peer-test evidence driver (Plan 283): the
+//! wire-real peer-test exchange corroborates the third reachability class,
+//! so controlled activation can install and serve `caps=f`, withdraw it on
+//! health loss, and rotate the installed RouterInfo across handshakes.
+//! The default-off profile (row 14) is covered by coordinator unit tests.
+//! No external harness, no reference router, and no public advertisement
+//! are involved.
 
 #![forbid(unsafe_code)]
 
@@ -26,19 +29,20 @@ use std::time::Duration;
 use i2pr_crypto::{RouterIdentityBundle, X25519PrivateKey, open_netdb_ecies_reply};
 use i2pr_daemon::config::Config;
 use i2pr_daemon::floodfill::{
+    ControlledActivationError, ControlledActivationParams, ControlledWithdrawalParams,
     FloodfillCoordinator, FloodfillCoordinatorPolicy, FloodfillDaemonEffect,
-    FloodfillDeliveryOutcome, FloodfillOwnerExit, deliver_floodfill_effect_with_dial,
-    run_floodfill_owner,
+    FloodfillDeliveryOutcome, FloodfillOwnerExit, activate_controlled,
+    deliver_floodfill_effect_with_dial, run_floodfill_owner, withdraw_controlled,
 };
 use i2pr_daemon::router_i2np::{
     RouterDeliveryOutcome, RouterDeliveryRequest, Ssu2DaemonHandle, Ssu2DaemonService,
     daemon_dial_target,
 };
 use i2pr_netdb::{
-    FloodfillEligibilitySnapshot, FloodfillResourcePolicy, FloodfillStoreEffect,
-    FloodfillStorePolicy, FloodfillTime, InboundProvenance, NetDbNamespace, RecordProvenance,
-    ReplicationPolicy, ServerNetDbConfig, StorePurpose, ValidatedNetDbRecord, ValidatedRouterInfo,
-    ValidationContext,
+    FloodfillEligibilitySnapshot, FloodfillResourcePolicy, FloodfillRoleState,
+    FloodfillStoreEffect, FloodfillStorePolicy, FloodfillTime, InboundProvenance, NetDbNamespace,
+    RecordProvenance, ReplicationPolicy, RouterHash, ServerNetDbConfig, StorePurpose,
+    ValidatedNetDbRecord, ValidatedRouterInfo, ValidationContext,
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreData, DatabaseStoreMessage, Date, DeferredPayload, Hash,
@@ -46,7 +50,7 @@ use i2pr_proto::{
 };
 use i2pr_runtime::{
     CancellationReason, CancellationToken, ChildFailurePolicy, ChildScope, IntroKey,
-    Ssu2IdentityMaterial, Ssu2InboundI2np,
+    Ssu2DialOutcome, Ssu2IdentityMaterial, Ssu2InboundI2np,
 };
 use i2pr_transport::{LinkId, PeerId};
 use rand_core::{OsRng, TryRngCore};
@@ -219,7 +223,8 @@ async fn dial(from: &LiveService, to: &LiveService) {
 async fn wait_active(handle: &Ssu2DaemonHandle, expected: usize, what: &str) {
     let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
     loop {
-        if handle.snapshot().active_sessions == expected {
+        let snap = handle.snapshot();
+        if snap.active_sessions == expected {
             return;
         }
         assert!(
@@ -957,4 +962,666 @@ async fn owner_cancel_drains_bounded_effects_and_releases_budget() {
     );
     b.token.cancel(CancellationReason::OperatorRequest);
     b.scope.shutdown().await;
+}
+
+const EXCHANGE_STEP: Duration = Duration::from_secs(20);
+const EXCHANGE_POLL: Duration = Duration::from_millis(25);
+const WITHDRAW_DRAIN: Duration = Duration::from_secs(20);
+
+fn eligible_base() -> FloodfillEligibilitySnapshot {
+    FloodfillEligibilitySnapshot {
+        controlled_qualification_permit: false,
+        qualified_ssu2_address: false,
+        direct_reachability: false,
+        netdb_ready: true,
+        storage_ready: true,
+        maintenance_ready: true,
+        resource_headroom: true,
+        clock_sane: true,
+        supervision_healthy: true,
+    }
+}
+
+fn fresh_coordinator(local: Hash) -> FloodfillCoordinator {
+    FloodfillCoordinator::new(
+        local,
+        FloodfillCoordinatorPolicy::default(),
+        FloodfillStorePolicy::default(),
+        ServerNetDbConfig::default(),
+        FloodfillResourcePolicy::default(),
+        ReplicationPolicy::default(),
+    )
+    .expect("bounded coordinator")
+}
+
+async fn dial_link(from: &LiveService, to: &LiveService) -> LinkId {
+    let target = daemon_dial_target(
+        to.keys.hash,
+        to.addr(),
+        to.keys.static_public,
+        to.keys.intro,
+    )
+    .expect("dial target");
+    from.handle
+        .dial(target, DELIVERY_TIMEOUT, &CancellationToken::new())
+        .await
+        .expect("dial")
+        .link
+        .link_id()
+}
+
+/// Signs a plain (non-floodfill) RouterInfo for `keys` bound to `addr`.
+fn plain_router_info(
+    keys: &FloodKeys,
+    addr: std::net::SocketAddr,
+    published_ms: u64,
+) -> RouterInfo {
+    let options = Mapping::from_entries(vec![
+        ("host".to_string(), addr.ip().to_string()),
+        ("port".to_string(), addr.port().to_string()),
+        ("v".to_string(), "2".to_string()),
+        (
+            "s".to_string(),
+            i2p_b64_encode(keys.static_public.as_bytes()),
+        ),
+        ("i".to_string(), i2p_b64_encode(keys.intro.as_bytes())),
+    ])
+    .expect("options");
+    let address = RouterAddress::new(
+        10,
+        Date::from_millis(9_999_999_999_999),
+        "SSU2".to_string(),
+        options,
+    )
+    .expect("address");
+    keys.bundle
+        .sign_router_info(
+            Date::from_millis(published_ms),
+            vec![address],
+            Vec::new(),
+            Mapping::empty(),
+        )
+        .expect("sign")
+}
+
+/// Decodes a lookup-reply DatabaseStore body to its RouterInfo.
+fn decode_reply_router_info(bytes: &[u8]) -> RouterInfo {
+    let message =
+        I2npMessage::decode_standard(bytes, MAX_EFFECT_BYTES).expect("decode reply envelope");
+    match message.into_body() {
+        I2npBody::DatabaseStore(store) => match &store.data {
+            DatabaseStoreData::RouterInfoCompressed(payload) => {
+                let mut decoder = flate2::read::GzDecoder::new(payload.as_bytes());
+                let mut decompressed = Vec::new();
+                std::io::Read::read_to_end(&mut decoder, &mut decompressed).expect("gunzip reply");
+                RouterInfo::decode(
+                    &decompressed,
+                    i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+                )
+                .expect("decode reply RouterInfo")
+            }
+            other => panic!("expected compressed RouterInfo, got {other:?}"),
+        },
+        other => panic!("expected DatabaseStore, got {other:?}"),
+    }
+}
+
+fn address_of(info: &RouterInfo) -> RouterAddress {
+    info.addresses()
+        .iter()
+        .find(|address| address.transport_style() == "SSU2")
+        .expect("SSU2 address")
+        .clone()
+}
+
+fn caps_of(info: &RouterInfo) -> String {
+    info.options().get("caps").unwrap_or("").to_owned()
+}
+
+#[tokio::test]
+async fn controlled_eligibility_installs_floodfill_router_info_and_serves_it() {
+    let alice = start_service(make_keys()).await;
+    let mut bob = start_service(make_keys()).await;
+    let mut coordinator = fresh_coordinator(alice.keys.hash);
+    assert_eq!(
+        coordinator.role_state(),
+        FloodfillRoleState::Disabled,
+        "activation starts Disabled"
+    );
+    let cancel = CancellationToken::new();
+    let activation = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: eligible_base(),
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancel,
+    })
+    .await
+    .expect("controlled activation");
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Active);
+    assert_eq!(
+        alice
+            .handle
+            .service()
+            .snapshot()
+            .local_router_info_generation,
+        1,
+        "floodfill RouterInfo installed exactly once"
+    );
+
+    // Row 2 serve proof: Bob looks up Alice's hash; the reply is
+    // delivered over the live session; Bob decodes Alice's f-RI.
+    dial(&alice, &bob).await;
+    wait_active(&bob.handle, 1, "bob").await;
+    let lookup = DatabaseLookupMessage {
+        key: alice.keys.hash,
+        from: bob.keys.hash,
+        delivery_flag: false,
+        reply_tunnel_id: None,
+        lookup_type: 0,
+        excluded_peers: Vec::new(),
+        reply_encryption: ReplyEncryption::None,
+    };
+    coordinator
+        .handle_lookup(
+            PeerId::from_hash(bob.keys.hash),
+            LinkId::new(1).expect("link"),
+            &lookup,
+            floodfill_time(),
+        )
+        .expect("lookup queued");
+    let leased = coordinator.pop_effect().expect("lookup reply effect");
+    let delivery = deliver_floodfill_effect_with_dial(
+        &alice.handle,
+        coordinator.netdb(),
+        leased,
+        wall_ms(),
+        MAX_RECORD_AGE_MS,
+        &cancel,
+    )
+    .await;
+    assert!(
+        matches!(
+            delivery,
+            FloodfillDeliveryOutcome::Delivered(RouterDeliveryOutcome::Accepted)
+        ),
+        "lookup reply delivered, not dropped"
+    );
+    let reply = next_inbound(&mut bob.handle, "floodfill reply at bob").await;
+    let served = decode_reply_router_info(&reply.bytes);
+    assert!(
+        caps_of(&served).contains('f'),
+        "served RouterInfo carries caps=f"
+    );
+    let installed = RouterInfo::decode(
+        &activation.router_info,
+        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+    )
+    .expect("installed bytes decode");
+    let served_address = address_of(&served);
+    let expected = address_of(&installed);
+    assert_eq!(
+        served_address.options().get("host"),
+        expected.options().get("host")
+    );
+    assert_eq!(
+        served_address.options().get("port"),
+        expected.options().get("port")
+    );
+    assert_eq!(
+        served.options().get("caps"),
+        installed.options().get("caps"),
+        "served record carries the installed caps"
+    );
+    assert_eq!(
+        served.router_identity().hash().expect("hash"),
+        alice.keys.hash
+    );
+
+    // Activation output feeds the owner input: the retained owner
+    // loop starts behind activation and exits clean on cancel.
+    let LiveService {
+        handle,
+        scope,
+        token,
+        keys: _,
+    } = alice;
+    let shutdown = CancellationToken::new();
+    shutdown.cancel(CancellationReason::OperatorRequest);
+    let (exit, stats) = run_floodfill_owner(
+        handle,
+        coordinator,
+        shutdown,
+        Duration::from_millis(50),
+        MAX_RECORD_AGE_MS,
+        64,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("owner exits on cancel");
+    assert_eq!(exit, FloodfillOwnerExit::RequestedShutdown);
+    assert_eq!(stats.queued_effects, 0);
+    token.cancel(CancellationReason::OperatorRequest);
+    scope.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn ordinary_configuration_cannot_activate_or_advertise() {
+    let alice = start_service(make_keys()).await;
+    let mut coordinator = fresh_coordinator(alice.keys.hash);
+
+    // A pre-cancelled composition fails before any evidence.
+    let cancelled = CancellationToken::new();
+    cancelled.cancel(CancellationReason::OperatorRequest);
+    let outcome = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: eligible_base(),
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancelled,
+    })
+    .await;
+    assert!(matches!(outcome, Err(ControlledActivationError::Cancelled)));
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+
+    // Full evidence without eligibility still cannot activate: the
+    // exchange runs, the material exists, but no permit is minted and
+    // nothing installs.
+    let mut ineligible = eligible_base();
+    ineligible.storage_ready = false;
+    let cancel = CancellationToken::new();
+    let outcome = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: ineligible,
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancel,
+    })
+    .await;
+    assert!(matches!(
+        outcome,
+        Err(ControlledActivationError::EligibilityFailed)
+    ));
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+    assert!(coordinator.advertisement_permit().is_none());
+    assert_eq!(
+        alice
+            .handle
+            .service()
+            .snapshot()
+            .local_router_info_generation,
+        0,
+        "no RouterInfo installs without activation"
+    );
+    alice.shutdown().await;
+}
+
+#[tokio::test]
+async fn health_loss_withdraws_f_stops_admission_and_drains_to_disabled() {
+    let mut alice = start_service(make_keys()).await;
+    let mut bob = start_service(make_keys()).await;
+    let mut coordinator = fresh_coordinator(alice.keys.hash);
+    let cancel = CancellationToken::new();
+    let activation = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: eligible_base(),
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancel,
+    })
+    .await
+    .expect("controlled activation");
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Active);
+    dial(&alice, &bob).await;
+    wait_active(&bob.handle, 1, "bob").await;
+
+    // While Active, Bob's publisher store queues an ack effect.
+    let stored = make_keys();
+    let store = compressed_store(
+        &stored.bundle,
+        stored.hash,
+        0xBEEF22,
+        Some(bob.keys.hash),
+        Some(0),
+    );
+    let bob_snap = bob.handle.snapshot();
+    assert_eq!(
+        bob_snap.active_sessions, 1,
+        "bob session live at send: established={} pending_in={}",
+        bob_snap.sessions_established, bob_snap.pending_inbound,
+    );
+    send_i2np(
+        &bob,
+        alice.keys.hash,
+        0xA1_0011,
+        I2npBody::DatabaseStore(Box::new(store)),
+        &cancel,
+    );
+    let inbound = next_inbound(&mut alice.handle, "store at alice").await;
+    let outcome = coordinator
+        .handle_authenticated_i2np(&inbound, floodfill_time())
+        .expect("dispatch");
+    assert!(matches!(
+        outcome,
+        i2pr_daemon::floodfill::FloodfillDispatchOutcome::Store(
+            FloodfillStoreEffect::Stored { .. }
+        )
+    ));
+    assert!(
+        coordinator.stats().queued_effects >= 1,
+        "ack effect queued before withdrawal"
+    );
+
+    // Health loss: supervision fails. The full withdrawal sequence
+    // runs: Draining, same-address non-f install + publish, bounded
+    // drain of the queued ack, then Disabled.
+    let mut loss = eligible_base();
+    loss.supervision_healthy = false;
+    withdraw_controlled(ControlledWithdrawalParams {
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        address: activation.material.address.clone(),
+        permit: &activation.permit,
+        snapshot: loss,
+        wall_now_ms: wall_ms(),
+        drain_timeout: WITHDRAW_DRAIN,
+        max_record_age_ms: MAX_RECORD_AGE_MS,
+        cancellation: &cancel,
+    })
+    .await
+    .expect("controlled withdrawal");
+    assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+    assert_eq!(
+        alice
+            .handle
+            .service()
+            .snapshot()
+            .local_router_info_generation,
+        2,
+        "withdrawal re-installs exactly once"
+    );
+    let stats = coordinator.stats();
+    assert_eq!(stats.queued_effects, 0, "bounded drain emptied the queue");
+    assert!(
+        stats.delivered_effects >= 1,
+        "queued ack delivered during the drain, not dropped"
+    );
+
+    // The drained ack really reached Bob over the live session.
+    let reply = next_inbound(&mut bob.handle, "drained ack at bob").await;
+    let message = I2npMessage::decode_standard(&reply.bytes, MAX_EFFECT_BYTES).expect("decode ack");
+    match message.into_body() {
+        I2npBody::DeliveryStatus(status) => assert_eq!(status.message_id, 0xBEEF22),
+        other => panic!("expected DeliveryStatus, got {other:?}"),
+    }
+
+    // Admission stopped: stores and lookups are refused while Disabled.
+    let store = compressed_store(
+        &stored.bundle,
+        stored.hash,
+        0xBEEF23,
+        Some(bob.keys.hash),
+        Some(0),
+    );
+    assert!(matches!(
+        coordinator.handle_store(
+            PeerId::from_hash(bob.keys.hash),
+            LinkId::new(2).expect("link"),
+            0xBEEF23,
+            &store,
+            floodfill_time(),
+        ),
+        FloodfillStoreEffect::Disabled
+    ));
+    let lookup = DatabaseLookupMessage {
+        key: alice.keys.hash,
+        from: bob.keys.hash,
+        delivery_flag: false,
+        reply_tunnel_id: None,
+        lookup_type: 0,
+        excluded_peers: Vec::new(),
+        reply_encryption: ReplyEncryption::None,
+    };
+    assert!(
+        coordinator
+            .handle_lookup(
+                PeerId::from_hash(bob.keys.hash),
+                LinkId::new(3).expect("link"),
+                &lookup,
+                floodfill_time(),
+            )
+            .is_err(),
+        "lookups refused while Disabled"
+    );
+
+    // The withdrawn record is stored without f at the same address.
+    let served = coordinator
+        .netdb()
+        .router_info_for_answer(
+            &RouterHash::from_hash(alice.keys.hash),
+            wall_ms(),
+            MAX_RECORD_AGE_MS,
+        )
+        .expect("netdb query")
+        .expect("withdrawn record stored");
+    let served_info = served.router_info();
+    assert!(
+        !caps_of(served_info).contains('f'),
+        "withdrawal removed caps=f"
+    );
+    assert_eq!(
+        address_of(served_info).options().get("port"),
+        address_of(
+            &RouterInfo::decode(
+                &activation.router_info,
+                i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+            )
+            .expect("installed bytes decode")
+        )
+        .options()
+        .get("port"),
+        "withdrawal keeps the qualified address"
+    );
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
+
+#[tokio::test]
+async fn future_handshakes_emit_latest_router_info_and_old_sessions_keep_theirs() {
+    let mut alice = start_service(make_keys()).await;
+    let mut bob_v1 = start_service(make_keys()).await;
+    let bob_v2 = start_service(make_keys()).await;
+    let cancel = CancellationToken::new();
+    let published_v1 = wall_ms();
+    let info_v1 = plain_router_info(&alice.keys, alice.addr(), published_v1);
+    let bytes_v1 = info_v1
+        .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .expect("encode v1");
+    alice
+        .handle
+        .service()
+        .install_local_router_info(bytes_v1.clone(), published_v1)
+        .expect("install v1");
+    let skip_install = std::env::var("I2PR_SKIP_INSTALL").is_ok();
+    assert!(!skip_install, "install path under test");
+
+    // First handshake emits v1: the responder observes exactly v1
+    // bytes (the initiator side carries no on-wire RI by SSU2 design,
+    // so the observation lives on the dialed service).
+    let alice_peer = PeerId::from_hash(alice.keys.hash);
+    dial_link(&alice, &bob_v1).await;
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let snap = bob_v1.handle.snapshot();
+            if snap.active_sessions == 1 && snap.sessions_established >= 1 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "bob_v1 never promoted: active={} established={} pending_in={} pending_out={}",
+                snap.active_sessions,
+                snap.sessions_established,
+                snap.pending_inbound,
+                snap.pending_outbound,
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let links_v1 = bob_v1.handle.service().session_peer_links(alice_peer);
+    assert_eq!(links_v1.len(), 1, "exactly one responder session");
+    assert_eq!(
+        bob_v1
+            .handle
+            .service()
+            .session_peer_router_info(links_v1[0]),
+        Some(bytes_v1.clone()),
+        "first handshake emits the installed v1 bytes"
+    );
+
+    // Rotation: v2 installs without touching the live session.
+    let info_v2 = plain_router_info(&alice.keys, alice.addr(), published_v1 + 60_000);
+    let bytes_v2 = info_v2
+        .encode_to_vec(i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES)
+        .expect("encode v2");
+    assert_ne!(bytes_v1, bytes_v2, "v1 and v2 differ on the wire");
+    alice
+        .handle
+        .service()
+        .install_local_router_info(bytes_v2.clone(), published_v1 + 60_000)
+        .expect("install v2");
+    assert_eq!(
+        alice
+            .handle
+            .service()
+            .snapshot()
+            .local_router_info_generation,
+        2
+    );
+    send_i2np(
+        &alice,
+        bob_v1.keys.hash,
+        0xA1_0021,
+        I2npBody::DatabaseStore(Box::new(compressed_store(
+            &bob_v1.keys.bundle,
+            bob_v1.keys.hash,
+            0xC0FFEE,
+            Some(bob_v1.keys.hash),
+            Some(0),
+        ))),
+        &cancel,
+    );
+    let at_bob = next_inbound(&mut bob_v1.handle, "traffic on pre-rotation session").await;
+    assert_eq!(at_bob.peer.hash(), alice.keys.hash);
+    send_i2np(
+        &bob_v1,
+        alice.keys.hash,
+        0xA1_0022,
+        I2npBody::DatabaseStore(Box::new(compressed_store(
+            &alice.keys.bundle,
+            alice.keys.hash,
+            0xC0FFE1,
+            Some(alice.keys.hash),
+            Some(0),
+        ))),
+        &cancel,
+    );
+    let at_alice = next_inbound(&mut alice.handle, "reverse traffic on session").await;
+    assert_eq!(at_alice.peer.hash(), bob_v1.keys.hash);
+
+    // Second handshake (independent responder) emits v2 while the
+    // first session still reports v1: byte-level proof on both
+    // halves of row 13.
+    dial_link(&alice, &bob_v2).await;
+    wait_active(&bob_v2.handle, 1, "bob_v2").await;
+    let links_v2 = bob_v2.handle.service().session_peer_links(alice_peer);
+    assert_eq!(links_v2.len(), 1, "exactly one responder session");
+    assert_eq!(
+        bob_v2
+            .handle
+            .service()
+            .session_peer_router_info(links_v2[0]),
+        Some(bytes_v2.clone()),
+        "second handshake emits the installed v2 bytes"
+    );
+    assert_eq!(
+        bob_v1
+            .handle
+            .service()
+            .session_peer_router_info(links_v1[0]),
+        Some(bytes_v1),
+        "pre-existing session keeps the bytes it was established with"
+    );
+    alice.shutdown().await;
+    bob_v1.shutdown().await;
+    bob_v2.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelled_dial_returns_admission_to_baseline() {
+    let alice = start_service(make_keys()).await;
+    let bob = start_service(make_keys()).await;
+    let dead = make_keys();
+    let dead_target = daemon_dial_target(
+        dead.hash,
+        std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 9),
+        dead.static_public,
+        dead.intro,
+    )
+    .expect("dead dial target");
+
+    // Cancel mid-dial: the attempt reports Cancelled, never Timeout.
+    let token = CancellationToken::new();
+    let outcome = {
+        let dial_future = alice
+            .handle
+            .dial(dead_target, Duration::from_secs(10), &token);
+        tokio::pin!(dial_future);
+        tokio::select! {
+            result = &mut dial_future => result,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {
+                token.cancel(CancellationReason::OperatorRequest);
+                dial_future.await
+            }
+        }
+    };
+    assert!(matches!(outcome, Err(Ssu2DialOutcome::Cancelled)));
+    assert_eq!(
+        alice.handle.snapshot().pending_outbound,
+        0,
+        "cancelled dial releases its pending admission"
+    );
+
+    // Baseline: a live dial succeeds immediately afterwards, so no
+    // stuck single-flight or backoff poisons later attempts.
+    dial(&alice, &bob).await;
+    wait_active(&alice.handle, 1, "alice").await;
+    alice.shutdown().await;
+    bob.shutdown().await;
 }

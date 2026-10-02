@@ -129,6 +129,46 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         entries.push(("caps".to_owned(), floodfill_caps));
         let options = Mapping::from_entries(entries)
             .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        self.sign_addressed(published, options, address)
+    }
+
+    /// Builds the withdrawal RouterInfo for the same qualified SSU2 address without `caps=f`.
+    ///
+    /// Health-withdrawal counterpart to [`Self::build_floodfill`]: the address stays
+    /// qualified and bound so peers keep a reachable route, but the floodfill flag is gone.
+    /// Like `build_floodfill` this requires the opaque activation permit (threaded through
+    /// the activation record), so withdrawing is only possible after activating; ordinary
+    /// `build` still cannot carry any address at all.
+    pub fn build_floodfill_withdrawal(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+        _permit: &FloodfillAdvertisementPermit,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        if !is_qualified_ssu2_address(&address) {
+            return Err(LocalRouterInfoError::UnqualifiedFloodfillAddress);
+        }
+        // `validate_options` refuses any `caps` value containing `f`,
+        // so the withdrawal record cannot re-advertise floodfill.
+        Self::validate_options(&options)?;
+        let options = Mapping::from_entries(
+            options
+                .entries()
+                .iter()
+                .map(|entry| (entry.key().to_owned(), entry.value().to_owned()))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
+        self.sign_addressed(published, options, address)
+    }
+
+    fn sign_addressed(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         let info = self
             .bundle
             .sign_router_info(published, vec![address], Vec::new(), options)

@@ -97,9 +97,9 @@ use i2pr_transport::{EncodedI2npMessage, MAX_I2NP_MESSAGE_BYTES};
 use thiserror::Error;
 
 use crate::block::{
-    AckBlock, Block, BlockError, DecodedBlock, FirstFragmentBlock, FollowOnFragmentBlock,
-    PathChallengeBlock, PathResponseBlock, PeerTestBlock, RelayIntroBlock, RelayRequestBlock,
-    RelayResponseBlock, encode_blocks, parse_blocks,
+    AckBlock, AddressBlock, Block, BlockError, DecodedBlock, FirstFragmentBlock,
+    FollowOnFragmentBlock, PathChallengeBlock, PathResponseBlock, PeerTestBlock, RelayIntroBlock,
+    RelayRequestBlock, RelayResponseBlock, encode_blocks, parse_blocks,
 };
 use crate::constants;
 use crate::crypto::{DataCipher, IntroKey, Ssu2CryptoError, Ssu2SplitKeys};
@@ -484,6 +484,13 @@ enum QueuedControl {
     RelayIntro(RelayIntroBlock),
     /// One in-session PeerTest block (Plan 160; single-shot, bounded).
     PeerTest(PeerTestBlock),
+    /// One in-session Address report (Plan 283; single-shot, bounded).
+    /// Carries the sender's genuine observation of the peer's endpoint;
+    /// receivers record it as an authenticated peer observation. The
+    /// session layer never emits this unprompted: only the controlled
+    /// peer-test driver queues it, with the endpoint taken from the
+    /// live session peer address.
+    Address(AddressBlock),
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1018,24 @@ impl Ssu2Session {
         Ok(())
     }
 
+    /// Queues one single-shot in-session Address report (Plan 283).
+    ///
+    /// Same bounds as every other queued control: refused on a
+    /// terminated session and past the control-queue ceiling. The
+    /// caller supplies the genuinely observed peer endpoint; this
+    /// function performs no observation itself.
+    pub fn queue_address(&mut self, block: AddressBlock) -> Result<(), SessionError> {
+        if self.is_terminated() {
+            return Err(SessionError::Terminated);
+        }
+        if self.queued_controls.len() >= constants::DATA_MAX_SENT_PACKETS {
+            return Err(SessionError::LocalPolicyDenied);
+        }
+        self.queued_controls
+            .push_back(QueuedControl::Address(block));
+        Ok(())
+    }
+
     // -- Transmit path -------------------------------------------------
 
     /// Builds at most one outbound datagram from pending ACK, control,
@@ -1099,6 +1124,7 @@ impl Ssu2Session {
                 QueuedControl::RelayResponse(block) => QueuedControl::RelayResponse(block.clone()),
                 QueuedControl::RelayIntro(block) => QueuedControl::RelayIntro(block.clone()),
                 QueuedControl::PeerTest(block) => QueuedControl::PeerTest(block.clone()),
+                QueuedControl::Address(block) => QueuedControl::Address(*block),
             };
             let block = match control {
                 QueuedControl::PathChallenge(data) => {
@@ -1124,6 +1150,7 @@ impl Ssu2Session {
                 QueuedControl::RelayResponse(block) => Some(Block::RelayResponse(block)),
                 QueuedControl::RelayIntro(block) => Some(Block::RelayIntro(block)),
                 QueuedControl::PeerTest(block) => Some(Block::PeerTest(block)),
+                QueuedControl::Address(block) => Some(Block::Address(block)),
             };
             if let Some(block) = block {
                 let len = block.encoded_len();
@@ -2647,6 +2674,29 @@ mod tests {
             token: 0x0102_0304_0506_0708,
         }));
         // Single-shot: the next transmit carries no second announcement.
+        let next = alice.poll_transmit(2_000_002);
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn queued_address_report_round_trips_as_observation() {
+        use core::net::{IpAddr, Ipv4Addr};
+
+        let (mut alice, mut bob) = test_session_pair();
+        let endpoint =
+            crate::address::Ssu2Endpoint::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 43001)
+                .expect("endpoint");
+        alice
+            .queue_address(AddressBlock::new(endpoint))
+            .expect("queue");
+        let datagram = alice.poll_transmit(2_000_000).expect("datagram");
+        let outcome = bob.receive_datagram(2_000_001, 1_700_000_000, &datagram);
+        assert!(outcome.dropped.is_none());
+        assert!(
+            outcome.events.contains(&SessionEvent::AddressObserved),
+            "address report decodes to the observation event"
+        );
+        // Single-shot: the next transmit carries no second report.
         let next = alice.poll_transmit(2_000_002);
         assert!(next.is_none());
     }

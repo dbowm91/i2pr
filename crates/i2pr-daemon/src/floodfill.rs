@@ -13,7 +13,7 @@ use i2pr_netdb::{
 };
 use i2pr_proto::{
     DatabaseLookupMessage, DatabaseStoreMessage, Date, DeferredPayload, Hash, I2npBody,
-    I2npMessage, OpaqueMessageBody, TunnelGatewayMessage,
+    I2npMessage, Mapping, OpaqueMessageBody, RouterInfo, TunnelGatewayMessage,
 };
 use i2pr_transport::{LinkId, PeerId};
 
@@ -396,6 +396,397 @@ fn wall_clock_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Maximum RouterInfo bytes the controlled composition installs or
+/// publishes. Mirrors the runtime install bound; the establishment
+/// decode cap is stricter and fires first.
+const MAX_CONTROLLED_ROUTER_INFO_BYTES: usize = 16 * 1024;
+/// Upper bound for one controlled activation/withdrawal drain.
+const MAX_CONTROLLED_DRAIN: Duration = Duration::from_secs(60);
+
+/// Failure of the controlled activation or withdrawal composition.
+///
+/// Every variant fails closed: the runtime keeps the previously
+/// installed non-`f` RouterInfo (installs replace atomically only on
+/// success) and the role never reports Active. Variants after
+/// `begin_activation` additionally fail the role controller so a
+/// partial activation cannot linger in Activating.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ControlledActivationError {
+    /// The caller cancelled before any evidence was recorded.
+    Cancelled,
+    /// A timeout, deadline, or record-age bound failed validation.
+    InvalidConfig,
+    /// Explicit-bind recording failed.
+    BindFailed(i2pr_runtime::Ssu2PublicationUnavailable),
+    /// The peer-test evidence exchange failed or did not confirm.
+    EvidenceFailed(i2pr_runtime::ControlledPeerTestError),
+    /// No above-floor publication material was available.
+    PublicationFailed(i2pr_runtime::Ssu2PublicationUnavailable),
+    /// The eligibility snapshot did not open activation.
+    EligibilityFailed,
+    /// Role begin/complete or the advertisement permit failed.
+    ActivationFailed,
+    /// The floodfill RouterInfo build failed.
+    BuildFailed(i2pr_netdb::LocalRouterInfoError),
+    /// The RouterInfo install failed; the role was failed closed.
+    InstallFailed,
+    /// The local publish failed; the role was failed closed.
+    PublishFailed,
+    /// The withdrawal sequence failed; the role stays Draining and
+    /// the caller retries with a fresh loss snapshot.
+    WithdrawalFailed,
+}
+
+impl std::fmt::Display for ControlledActivationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Cancelled => "controlled activation cancelled",
+            Self::InvalidConfig => "controlled activation bound is invalid",
+            Self::BindFailed(_) => "controlled explicit-bind recording failed",
+            Self::EvidenceFailed(_) => "controlled peer-test exchange failed",
+            Self::PublicationFailed(_) => "controlled publication material unavailable",
+            Self::EligibilityFailed => "controlled eligibility did not open activation",
+            Self::ActivationFailed => "controlled role activation failed",
+            Self::BuildFailed(_) => "controlled RouterInfo build failed",
+            Self::InstallFailed => "controlled RouterInfo install failed",
+            Self::PublishFailed => "controlled local publish failed",
+            Self::WithdrawalFailed => "controlled withdrawal failed",
+        })
+    }
+}
+
+impl std::error::Error for ControlledActivationError {}
+
+/// Inputs for [`activate_controlled`].
+///
+/// The coordinator is borrowed mutably: no owner loop may run
+/// concurrently with activation. Production wiring would hold the
+/// coordinator behind shared ownership; the current composition has
+/// no production caller and tests drive it exclusively.
+pub struct ControlledActivationParams<'a> {
+    /// Owner scope for the ephemeral peer-test helper tasks.
+    pub scope: &'a i2pr_runtime::ChildScope,
+    /// The live daemon SSU2 service (Alice).
+    pub handle: &'a crate::router_i2np::Ssu2DaemonHandle,
+    /// The coordinator to activate.
+    pub coordinator: &'a mut FloodfillCoordinator,
+    /// The daemon identity (signs the floodfill RouterInfo and the
+    /// Alice peer-test blocks; key bytes never leave the bundle).
+    pub bundle: &'a i2pr_crypto::RouterIdentityBundle,
+    /// Alice's transport static public key (helper dial targets).
+    pub alice_static_public: i2pr_runtime::Ssu2PublicKey,
+    /// Alice's intro key (seals helper-to-Alice test blocks).
+    pub alice_intro: i2pr_runtime::IntroKey,
+    /// Non-evidence eligibility fields (storage, maintenance,
+    /// headroom, clock, supervision, NetDB readiness). The three
+    /// evidence fields are forced by the composition only after the
+    /// evidence exists.
+    pub base_eligibility: FloodfillEligibilitySnapshot,
+    /// Wall-clock milliseconds for material, build, and install.
+    pub wall_now_ms: u64,
+    /// Per-step deadline for the evidence exchange.
+    pub step_timeout: Duration,
+    /// Poll interval while awaiting exchange transitions.
+    pub poll_interval: Duration,
+    /// Cooperative cancellation.
+    pub cancellation: &'a i2pr_runtime::CancellationToken,
+}
+
+/// A completed controlled activation.
+pub struct ControlledActivation {
+    /// The opaque advertisement permit minted by the role
+    /// controller. Thread it into withdrawal; it cannot be forged.
+    pub permit: i2pr_netdb::FloodfillAdvertisementPermit,
+    /// The installed floodfill RouterInfo bytes (`caps=f`).
+    pub router_info: Vec<u8>,
+    /// The above-floor publication material that opened activation.
+    pub material: i2pr_runtime::Ssu2PublicationMaterial,
+}
+
+/// Runs the controlled activation sequence (Plan 283 §5).
+///
+/// Explicit-bind recording, then the peer-test evidence exchange,
+/// then above-floor publication material, then eligibility, then
+/// role begin/complete, then the permit-gated floodfill RouterInfo
+/// build, then the atomic install, then the local publish. Any
+/// failure after `begin_activation` fails the role closed and returns
+/// the typed error; the runtime keeps its previous RouterInfo.
+pub async fn activate_controlled(
+    params: ControlledActivationParams<'_>,
+) -> Result<ControlledActivation, ControlledActivationError> {
+    if params.cancellation.is_cancelled() {
+        return Err(ControlledActivationError::Cancelled);
+    }
+    if params.step_timeout.is_zero()
+        || params.poll_interval.is_zero()
+        || params.poll_interval > params.step_timeout
+    {
+        return Err(ControlledActivationError::InvalidConfig);
+    }
+    let service = params.handle.service();
+    service
+        .note_explicit_bind_for_controlled_qualification()
+        .map_err(ControlledActivationError::BindFailed)?;
+    let alice_hash = params.bundle.identity().hash().map_err(|_| {
+        ControlledActivationError::EvidenceFailed(
+            i2pr_runtime::ControlledPeerTestError::ExchangeCrypto,
+        )
+    })?;
+    let alice_signing_public = params.bundle.signing_key().public_key().map_err(|_| {
+        ControlledActivationError::EvidenceFailed(
+            i2pr_runtime::ControlledPeerTestError::ExchangeCrypto,
+        )
+    })?;
+    let bundle = params.bundle;
+    let alice_sign = |preimage: &[u8]| -> Result<Vec<u8>, i2pr_runtime::ControlledPeerTestError> {
+        bundle
+            .signing_key()
+            .sign(preimage)
+            .map(|signature| signature.as_bytes().to_vec())
+            .map_err(|_| i2pr_runtime::ControlledPeerTestError::ExchangeCrypto)
+    };
+    let bound = params
+        .handle
+        .local_v4()
+        .or(params.handle.local_v6())
+        .ok_or(ControlledActivationError::PublicationFailed(
+            i2pr_runtime::Ssu2PublicationUnavailable::NoBoundSocket,
+        ))?;
+    let outcome = i2pr_runtime::run_controlled_peer_test(i2pr_runtime::ControlledPeerTestParams {
+        scope: params.scope,
+        alice: service,
+        alice_hash: *alice_hash.as_bytes(),
+        alice_addr: bound,
+        alice_static_public: params.alice_static_public,
+        alice_intro: params.alice_intro,
+        alice_signing_public,
+        alice_sign: &alice_sign,
+        cancellation: params.cancellation,
+        step_timeout: params.step_timeout,
+        poll_interval: params.poll_interval,
+    })
+    .await
+    .map_err(ControlledActivationError::EvidenceFailed)?;
+    if !matches!(
+        outcome,
+        i2pr_runtime::ControlledPeerTestOutcome::Confirmed { .. }
+    ) {
+        return Err(ControlledActivationError::EvidenceFailed(
+            i2pr_runtime::ControlledPeerTestError::ExchangeNotConfirmed,
+        ));
+    }
+    let material = service
+        .publication_material(params.wall_now_ms)
+        .map_err(ControlledActivationError::PublicationFailed)?;
+    let snapshot = FloodfillEligibilitySnapshot {
+        controlled_qualification_permit: true,
+        qualified_ssu2_address: true,
+        direct_reachability: true,
+        ..params.base_eligibility
+    };
+    let effect = params.coordinator.update_eligibility(snapshot);
+    if effect != FloodfillRoleEffect::ReadyToActivate
+        || params.coordinator.role_state() != FloodfillRoleState::Eligible
+    {
+        return Err(ControlledActivationError::EligibilityFailed);
+    }
+    if !params.coordinator.begin_activation() || !params.coordinator.complete_activation() {
+        params.coordinator.fail_activation();
+        return Err(ControlledActivationError::ActivationFailed);
+    }
+    let permit = params.coordinator.advertisement_permit().ok_or_else(|| {
+        params.coordinator.fail_activation();
+        ControlledActivationError::ActivationFailed
+    })?;
+    let built = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
+        .build_floodfill(
+            Date::from_millis(params.wall_now_ms),
+            Mapping::empty(),
+            material.address.clone(),
+            &permit,
+        )
+        .map_err(|error| {
+            params.coordinator.fail_activation();
+            ControlledActivationError::BuildFailed(error)
+        })?;
+    let encoded = built
+        .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+        .map_err(|_| {
+            params.coordinator.fail_activation();
+            ControlledActivationError::BuildFailed(
+                i2pr_netdb::LocalRouterInfoError::InvalidMapping { context: "encode" },
+            )
+        })?;
+    if service
+        .install_local_router_info(encoded.clone(), params.wall_now_ms)
+        .is_err()
+    {
+        params.coordinator.fail_activation();
+        return Err(ControlledActivationError::InstallFailed);
+    }
+    let time = FloodfillTime {
+        wall_ms: params.wall_now_ms,
+        monotonic_ms: params.wall_now_ms,
+    };
+    if publish_local_router_info(params.coordinator, &encoded, &permit, time).is_err() {
+        params.coordinator.fail_activation();
+        return Err(ControlledActivationError::PublishFailed);
+    }
+    Ok(ControlledActivation {
+        permit,
+        router_info: encoded,
+        material,
+    })
+}
+
+/// Stores our own RouterInfo in the coordinator NetDB as a local
+/// publication so floodfill lookups serve it.
+///
+/// Requires the opaque activation permit plus an Active or Draining
+/// role: no other path can publish, and the permit cannot be forged.
+/// Peer origination of the record belongs to Plan 278 (real
+/// floodfill peers); here the planner honestly yields no reflood
+/// actions for a locally-published record.
+fn publish_local_router_info(
+    coordinator: &mut FloodfillCoordinator,
+    encoded: &[u8],
+    _permit: &i2pr_netdb::FloodfillAdvertisementPermit,
+    time: FloodfillTime,
+) -> Result<i2pr_netdb::RouterHash, ControlledActivationError> {
+    if !matches!(
+        coordinator.role_state(),
+        FloodfillRoleState::Active | FloodfillRoleState::Draining
+    ) {
+        return Err(ControlledActivationError::PublishFailed);
+    }
+    let info = RouterInfo::decode(encoded, MAX_CONTROLLED_ROUTER_INFO_BYTES)
+        .map_err(|_| ControlledActivationError::PublishFailed)?;
+    let key = i2pr_netdb::router_hash(info.router_identity())
+        .map_err(|_| ControlledActivationError::PublishFailed)?;
+    if key != i2pr_netdb::RouterHash::from_hash(coordinator.local_router()) {
+        return Err(ControlledActivationError::PublishFailed);
+    }
+    let validated = i2pr_netdb::ValidatedRouterInfo::from_router_info(
+        info,
+        Some(key),
+        i2pr_netdb::ValidationContext::new(Date::from_millis(time.wall_ms)),
+    )
+    .map_err(|_| ControlledActivationError::PublishFailed)?;
+    coordinator
+        .netdb_mut()
+        .insert(
+            i2pr_netdb::ValidatedNetDbRecord::RouterInfo(validated),
+            i2pr_netdb::RecordProvenance {
+                namespace: i2pr_netdb::NetDbNamespace::MainRouter,
+                inbound: i2pr_netdb::InboundProvenance::Local,
+                purpose: i2pr_netdb::StorePurpose::LocalPublication,
+                observed_at_ms: time.wall_ms,
+            },
+        )
+        .map_err(|_| ControlledActivationError::PublishFailed)?;
+    Ok(key)
+}
+
+/// Inputs for [`withdraw_controlled`].
+pub struct ControlledWithdrawalParams<'a> {
+    /// The live daemon SSU2 service.
+    pub handle: &'a crate::router_i2np::Ssu2DaemonHandle,
+    /// The Active coordinator to withdraw.
+    pub coordinator: &'a mut FloodfillCoordinator,
+    /// The daemon identity (re-signs the withdrawal RouterInfo).
+    pub bundle: &'a i2pr_crypto::RouterIdentityBundle,
+    /// The permit threaded through the activation record.
+    pub permit: &'a i2pr_netdb::FloodfillAdvertisementPermit,
+    /// The qualified SSU2 address to keep (without `caps=f`).
+    pub address: i2pr_proto::RouterAddress,
+    /// The health-loss snapshot (at least one field false).
+    pub snapshot: FloodfillEligibilitySnapshot,
+    /// Wall-clock milliseconds for build and install.
+    pub wall_now_ms: u64,
+    /// Bound for draining queued effects before `complete_drain`.
+    pub drain_timeout: Duration,
+    /// Maximum record age for drain deliveries.
+    pub max_record_age_ms: u64,
+    /// Cooperative cancellation.
+    pub cancellation: &'a i2pr_runtime::CancellationToken,
+}
+
+/// Runs the controlled health-withdrawal sequence (Plan 283 §5).
+///
+/// Failing eligibility stops admission (Draining), then the same
+/// qualified address is re-installed and re-published without
+/// `caps=f`, then queued effects drain bounded to the deadline, then
+/// the role reaches Disabled. Leftover effects or a refused drain
+/// fail closed with the role left Draining for a retry.
+pub async fn withdraw_controlled(
+    params: ControlledWithdrawalParams<'_>,
+) -> Result<(), ControlledActivationError> {
+    if params.cancellation.is_cancelled() {
+        return Err(ControlledActivationError::Cancelled);
+    }
+    if params.drain_timeout.is_zero() || params.drain_timeout > MAX_CONTROLLED_DRAIN {
+        return Err(ControlledActivationError::InvalidConfig);
+    }
+    if params.snapshot.eligible() {
+        return Err(ControlledActivationError::InvalidConfig);
+    }
+    let effect = params.coordinator.update_eligibility(params.snapshot);
+    if effect != FloodfillRoleEffect::WithdrawAdvertisementAndStopAdmission
+        || params.coordinator.role_state() != FloodfillRoleState::Draining
+    {
+        return Err(ControlledActivationError::WithdrawalFailed);
+    }
+    let built = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
+        .build_floodfill_withdrawal(
+            Date::from_millis(params.wall_now_ms),
+            Mapping::empty(),
+            params.address.clone(),
+            params.permit,
+        )
+        .map_err(|_| ControlledActivationError::WithdrawalFailed)?;
+    let encoded = built
+        .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+        .map_err(|_| ControlledActivationError::WithdrawalFailed)?;
+    if params
+        .handle
+        .service()
+        .install_local_router_info(encoded.clone(), params.wall_now_ms)
+        .is_err()
+    {
+        return Err(ControlledActivationError::WithdrawalFailed);
+    }
+    let time = FloodfillTime {
+        wall_ms: params.wall_now_ms,
+        monotonic_ms: params.wall_now_ms,
+    };
+    if publish_local_router_info(params.coordinator, &encoded, params.permit, time).is_err() {
+        return Err(ControlledActivationError::WithdrawalFailed);
+    }
+    let deadline = tokio::time::Instant::now() + params.drain_timeout;
+    while let Some(effect) = params.coordinator.pop_effect() {
+        if tokio::time::Instant::now() >= deadline || params.cancellation.is_cancelled() {
+            return Err(ControlledActivationError::WithdrawalFailed);
+        }
+        let outcome = deliver_floodfill_effect_with_dial(
+            params.handle,
+            params.coordinator.netdb(),
+            effect,
+            params.wall_now_ms,
+            params.max_record_age_ms,
+            params.cancellation,
+        )
+        .await;
+        params.coordinator.record_delivery(outcome);
+    }
+    if params.coordinator.stats().queued_effects > 0 {
+        return Err(ControlledActivationError::WithdrawalFailed);
+    }
+    if !params.coordinator.complete_drain() {
+        return Err(ControlledActivationError::WithdrawalFailed);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FloodfillCoordinatorPolicy {
     pub max_queued_effects: usize,
@@ -518,8 +909,23 @@ impl FloodfillCoordinator {
     pub fn role_state(&self) -> FloodfillRoleState {
         self.role.state()
     }
+    /// Completes a bounded drain: Draining reaches Disabled.
+    pub fn complete_drain(&mut self) -> bool {
+        self.role.complete_drain()
+    }
     pub fn advertisement_permit(&self) -> Option<i2pr_netdb::FloodfillAdvertisementPermit> {
         self.role.advertisement_permit()
+    }
+    /// Fails a started activation closed: the role leaves Active and
+    /// never advertises again until a fresh eligible activation. The
+    /// previously installed RouterInfo is untouched (installs replace
+    /// atomically only on success).
+    pub fn fail_activation(&mut self) -> FloodfillRoleEffect {
+        self.role.fail()
+    }
+    /// Returns the local router hash this coordinator serves.
+    pub const fn local_router(&self) -> Hash {
+        self.local_router
     }
     pub fn stats(&self) -> FloodfillCoordinatorStats {
         FloodfillCoordinatorStats {
@@ -770,6 +1176,47 @@ mod tests {
         });
         assert!(coordinator.begin_activation());
         assert!(coordinator.complete_activation());
+    }
+
+    fn eligible_snapshot() -> FloodfillEligibilitySnapshot {
+        FloodfillEligibilitySnapshot {
+            controlled_qualification_permit: true,
+            qualified_ssu2_address: true,
+            direct_reachability: true,
+            netdb_ready: true,
+            storage_ready: true,
+            maintenance_ready: true,
+            resource_headroom: true,
+            clock_sane: true,
+            supervision_healthy: true,
+        }
+    }
+
+    #[test]
+    fn ordinary_configuration_without_permit_or_evidence_stays_disabled() {
+        let mut coordinator = coordinator();
+        // An ordinary snapshot without the controlled permit never
+        // opens activation, even with every other field true.
+        let mut ordinary = eligible_snapshot();
+        ordinary.controlled_qualification_permit = false;
+        assert_eq!(
+            coordinator.update_eligibility(ordinary),
+            FloodfillRoleEffect::None
+        );
+        assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+        assert!(!coordinator.begin_activation());
+        assert!(!coordinator.complete_activation());
+        assert!(coordinator.advertisement_permit().is_none());
+        // A failing health field on an otherwise eligible snapshot
+        // also stays out: evidence alone never activates.
+        let mut failing = eligible_snapshot();
+        failing.supervision_healthy = false;
+        assert_eq!(
+            coordinator.update_eligibility(failing),
+            FloodfillRoleEffect::None
+        );
+        assert_eq!(coordinator.role_state(), FloodfillRoleState::Disabled);
+        assert!(coordinator.advertisement_permit().is_none());
     }
 
     fn coordinator() -> FloodfillCoordinator {

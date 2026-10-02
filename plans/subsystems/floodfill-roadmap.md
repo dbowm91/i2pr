@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270–276 passed; Plans 277–282 stopped with retained bridge/route/delivery work; Plan 283 registered for third-class evidence and activation; type-5 support remains deferred.
+Status: Plans 270–276 passed; Plans 277–282 stopped with retained bridge/route/delivery work; Plan 283 in progress (Option 3 peer-test evidence driver); type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -116,7 +116,7 @@ another.
  -> 276 persistence, maintenance, and resource-governance closure
  -> 277 daemon composition + role lifecycle + controlled advertisement (stopped partial)
  -> 282 runtime publication/reply-delivery contract corrective (stopped; mechanics retained)
- -> 283 third-class evidence and controlled activation corrective (registered)
+ -> 283 third-class evidence and controlled activation corrective (in progress, Option 3)
  -> 278 exact-pinned i2pd one-family qualification
  -> 279 second-family qualification + normal opt-in activation + M12 closure
 ~~~
@@ -137,7 +137,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 276 | passed | passed-m12-versioned-floodfill-persistence-maintenance-and-resource-governance | plans/implementation/floodfill/276-m12-persistence-maintenance-resource-governance.md | plans/closure/floodfill/276-status.md |
 | 277 | stopped | stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | plans/closure/floodfill/277-status.md |
 | 282 | stopped | stopped-m12-activation-blocked-on-above-floor-reachability-evidence-corrective-via-plan283 | plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md | plans/closure/floodfill/282-status.md |
-| 283 | registered | registered-m12-third-class-evidence-and-controlled-activation-ready | plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md | future |
+| 283 | in-progress | in-progress-m12-third-class-evidence-and-controlled-activation | plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md | future |
 | 278 | blocked | registered-m12-i2pd-qualification-blocked-on-plan283 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |

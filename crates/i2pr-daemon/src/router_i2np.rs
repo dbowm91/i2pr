@@ -826,6 +826,11 @@ pub fn ssu2_runtime_config_from(
         // changes nothing by itself: counting still requires the controlled-qualification
         // recording call, which only the M12 activation composition performs.
         explicit_bind_corroboration: true,
+        // Same posture for the controlled peer-test evidence path (Plan 283): the
+        // service parses and routes peer-test datagrams but never responds on its
+        // own, records nothing without a live started test, and starts tests only
+        // through the narrow controlled APIs the M12 activation composition calls.
+        controlled_peer_test: true,
     };
     runtime
         .validate()
