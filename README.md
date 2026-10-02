@@ -20,7 +20,7 @@ evidence.
 | M6 mixed-router progression | i2pd first-family Streaming | Closed for experimental progression via Plan 193; Java full-router compatibility retained/deferred at Plan 247 |
 | M11 transit tunnels | Accept/forward tunnels for other routers | Plan 268 passed: receipt family closed 3/8 on `cc9b40c` (zero i2pr semantic failures, composition passed, exact-head CI green); one-family experimental qualification complete, transit remains non-advertised |
 
-Interoperability beyond the rows above is not claimed. M12 floodfill Plans 270–276 have passed on the type-5-deferred floor; Plans 277–282 stopped with retained publication, rotation, route/delivery, and lifecycle work. Plan 283 is in progress for third-class evidence (Option 3 peer-test driver) plus activation/withdrawal completion. Plans 278–279 remain blocked, and no broad floodfill advertisement is active.
+Interoperability beyond the rows above is not claimed. M12 floodfill Plans 270–276 have passed on the type-5-deferred floor; Plans 277–282 stopped with retained publication, rotation, route/delivery, and lifecycle work. Plan 283 passed third-class evidence (Option 3 peer-test driver) plus activation/withdrawal completion. Plan 278 is ready, Plan 279 remains blocked, and no broad floodfill advertisement is active.
 
 Plan 248 / ADR 0026 separate experimental progression from full two-family router conformance. Exact-pinned i2pd Plan 193 is the M6 external progression authority. The Java full-router lane remains unpassed and retained as nonblocking compatibility debt at Plan 247; no Java result is relabeled. Full two-family router conformance is not claimed.
 

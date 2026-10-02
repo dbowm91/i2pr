@@ -1,9 +1,9 @@
-# Machine-readable support inventory. Authority reconciled through the active Plan 283 corrective (2026-10-02).
+# Machine-readable support inventory. Authority reconciled through the passed Plan 283 corrective (2026-10-02).
 # M11 one-family experimental progression passed; public transit remains disabled,
 # non-advertised, and unclaimed. M12 Plans 270-276 passed on the type-5-deferred floor;
-# Plans 277/282 stopped with retained work and Plan 283 is in progress (Option 3 peer-test
-# evidence driver). No daemon floodfill interoperability qualification or broad
-# advertisement is claimed.
+# Plans 277/282 stopped with retained work and Plan 283 passed (Option 3 peer-test
+# evidence driver + controlled activation); Plan 278 ready. No daemon floodfill
+# interoperability qualification or broad advertisement is claimed.
 schema = 1
 milestone = 7
 plan_103_implementation_floor = "plans/closure/netdb/103-status.md"
@@ -426,7 +426,7 @@ plan_282_plan_of_record = "plans/implementation/floodfill/282-m12-runtime-public
 plan_282_closure = "plans/closure/floodfill/282-status.md"
 plan_282_status = "stopped-m12-activation-blocked-on-above-floor-reachability-evidence-corrective-via-plan283"
 plan_283_plan_of_record = "plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md"
-plan_283_status = "in-progress-m12-third-class-evidence-and-controlled-activation"
+plan_283_status = "passed-m12-third-class-evidence-and-controlled-activation"
 m12_floodfill_status = "Plans 270-276 passed for bounded runtime-neutral/server/persistence behavior on types 0/1/3/7; type5 deferred; Plans277-282 stopped with retained publication bridge, rotation, route/delivery, owner, and live direct-path work; Plan283 registered for third-class evidence plus activation/withdrawal; Plans278-279 blocked; no external qualification or broad advertisement"
 m12_evidence_tier = "local-validated"
 m12_type11_red25519 = "type5-deferred; no acceptable reviewed Rust provider; plan280 stopped"
