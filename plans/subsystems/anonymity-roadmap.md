@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 closed; Plans 297 and 298 stopped at external capture-topology gates; Plan 299 stopped without Plan 298 differential evidence; Plan 300 stopped at target-isolation/path-diversity owner gaps; Plan 301 stopped pending predecessor qualification. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
+Status: Plan 296 closed; Plans 297–301 retain stopped closure records; corrective foundations Plan 304 (Ubuntu controlled reference topology) and Plan 305 (target-scope/path-diversity ownership) are dependency-ready in parallel. This workstream remains parallel to M12/router-mainline development and does not gate router feature progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -38,6 +38,10 @@ Plan 299 is capability/corrective: use Plan 298 evidence to converge i2pr's obse
 Plan 300 is invariant/capability/evidence: harden Destination isolation plus tunnel/path diversity and qualify locally testable router-to-Destination unlinkability properties.
 
 Plan 301 is evidence/closure/polish: integrate all dimensions into a machine-checked anonymity qualification matrix and update documentation only to the exact proven scope.
+
+Plan 304 is infrastructure/evidence corrective: build the Ubuntu-only exact-pinned three-family capture topology that the stopped Plans 297/298 lacked. It changes no production anonymity profile.
+
+Plan 305 is invariant/production-architecture corrective: add bounded target-scoped client Destination ownership for multi-target HTTP/SOCKS and a reference-derived peer-candidate diversity owner before path construction, resolving the architecture gap recorded by Plan 300.
 
 ## 3. Non-goals
 
@@ -86,17 +90,27 @@ Evidence flows back into a machine-readable qualification matrix. No individual 
 ## 6. Dependency graph
 
 ~~~text
-296 service-boundary invariant + direct leak correction
-  -> 297 HTTP profile convergence
-  -> 298 Streaming differential fingerprint harness
-       -> 299 Streaming profile convergence
-  -> 300 Destination/path isolation + diversity qualification
+296 service-boundary invariant + direct leak correction [passed]
 
-297 + 299 + 300
-  -> 301 integrated anonymity evidence and scoped claim gate
+297 HTTP qualification [stopped: capture topology]
+298 Streaming differential harness [stopped: capture runners]
+299 Streaming convergence [stopped: no 298 observations]
+300 Destination/path qualification [stopped: missing owners]
+301 integrated gate [stopped: predecessors incomplete]
+
+304 Ubuntu controlled reference topology [ready]
+  -> fresh HTTP corrective successor to 297
+  -> fresh Streaming capture corrective successor to 298
+       -> fresh Streaming convergence successor to 299
+
+305 target-scoped Destination + peer-diversity ownership [ready]
+  -> fresh Destination/path qualification successor to 300
+
+passing HTTP + Streaming-convergence + Destination/path successors
+  -> fresh integrated successor to 301
 ~~~
 
-Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
+Plans 304 and 305 are independent and may execute concurrently. Stopped Plans 297–301 remain immutable historical authority; corrective successors are registered only after their enabling foundation closes with a stable contract/evidence root.
 
 ## 7. Milestones
 
@@ -108,6 +122,8 @@ Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
 | 299 | stopped (`stopped-no-plan-298-differential-evidence`) | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | plans/closure/anonymity/299-status.md |
 | 300 | stopped (`stopped-target-isolation-and-reference-diversity-owner-gap`) | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
 | 301 | stopped (`stopped-predecessor-qualification-evidence-incomplete`) | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
+| 304 | ready (`registered-anonymity-ubuntu-reference-topology-foundation`) | infrastructure/evidence corrective | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | future |
+| 305 | ready (`registered-anonymity-target-scope-and-path-diversity-ownership`) | invariant/production architecture corrective | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | future |
 
 ## 8. Cross-cutting requirements
 
@@ -124,7 +140,7 @@ Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
 
 ## 9. Verification strategy
 
-Plan 296 establishes transcript-negative/static checks. Plan 297 adds pinned HTTP differential captures. Plan 298 adds hostile-Destination Streaming stimuli and sanitized traces. Plan 300 adds deterministic identity/path-diversity fixtures plus composed client lookup/publication assertions. Plan 301 composes retained evidence and checks documentation claims.
+Plan 296 establishes transcript-negative/static checks. Plan 304 supplies the missing Ubuntu-only exact-pinned topology, family runners, HTTP capture fixture, hostile-Destination adapter, and smoke evidence required before fresh Plan-297/298 correctives are credible. Plan 305 supplies the missing target-scope lifecycle and candidate-diversity owners required before a fresh Plan-300 qualification corrective is credible. The later corrective successors execute full HTTP/Streaming/Destination-path matrices; an integrated successor to Plan 301 composes only passing evidence.
 
 External lanes are environment-gated, exact-pin/source-locked, fail-closed, and emit only sanitized committed evidence. Missing reference routers are unexecuted, never a pass. Routine workspace verification remains mandatory.
 
@@ -146,4 +162,4 @@ No broad production-anonymity, browser-anonymity, or global-traffic-analysis cla
 
 ## 12. Milestone status summary
 
-Plan 296 is closed. Plan 297 is stopped until controlled Java/i2pd HTTP proxy captures exist. Plan 298 has bounded local schema/scenario fixtures but is stopped because hostile-Destination three-family runners/captures are absent; Plan 299 therefore remains stopped without differential evidence. Plan 300 implemented repeated-router rejection and a source-derived three-hop service profile, then stopped because multi-target HTTP/SOCKS identity isolation and candidate-diversity/degraded-path ownership are unresolved. Plan 301 is stopped until Plans 297, 299, and 300 pass. This workstream does not gate M12 and authorizes no broad anonymity claim.
+Plan 296 is closed. Plans 297 and 298 retain their stopped topology/capture records, Plan 299 remains stopped without differential observations, Plan 300 retains its stopped architecture-gap record, and Plan 301 remains stopped pending predecessor qualification. Plan 304 is now dependency-ready to build the shared Ubuntu-only exact-pinned HTTP/Streaming reference topology and smoke captures. Plan 305 is dependency-ready in parallel to add bounded per-target HTTP/SOCKS Destination ownership plus the reference-derived peer-candidate diversity owner that Plan 300 lacked. Passing 304/305 closes no predecessor retroactively; each closure authorizes fresh corrective qualification successors. This workstream does not gate M12 and authorizes no broad anonymity claim.
