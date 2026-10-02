@@ -80,6 +80,7 @@ bash scripts/check-netdb-tunnel-evidence.sh
 bash scripts/check-destination-tunnel-evidence.sh
 bash scripts/check-streaming-tunnel-evidence.sh
 bash scripts/check-m6-mixed-router-acceptance-evidence.sh
+bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'
 cargo deny check advisories bans sources
 ```
