@@ -123,7 +123,7 @@ Plans 304 and 305 were independent. Plan 304 stopped before producing a controll
 | 300 | stopped (`stopped-target-isolation-and-reference-diversity-owner-gap`) | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
 | 301 | stopped (`stopped-predecessor-qualification-evidence-incomplete`) | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
 | 304 | stopped (`stopped-hostile-reference-packet-boundary-unavailable`) | infrastructure/evidence corrective | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | plans/closure/anonymity/304-status.md |
-| 305 | ready (`registered-anonymity-target-scope-and-path-diversity-ownership`) | invariant/production architecture corrective | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | future |
+| 305 | active (`in-progress-anonymity-target-scope-and-path-diversity-ownership`) | invariant/production architecture corrective | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | future |
 
 ## 8. Cross-cutting requirements
 
