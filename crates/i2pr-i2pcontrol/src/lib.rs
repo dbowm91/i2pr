@@ -44,6 +44,7 @@ pub mod jsonrpc;
 pub mod limits;
 pub mod methods;
 pub mod router_info;
+pub mod source_matrix;
 pub mod tunnel;
 pub mod tunnel_options;
 
@@ -69,6 +70,11 @@ pub use limits::{
 };
 pub use methods::{METHODS, Method};
 pub use router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
+pub use source_matrix::{
+    CLIENT_SERVICES_SOURCE_MATRIX, ROUTER_INFO_SOURCE_MATRIX, SOURCE_MATRIX_NEUTRAL_COUNT,
+    SourceAvailability, SourceRow, matrix_mirrors_inventories, selector_index, service_index,
+    service_row, source_row,
+};
 pub use tunnel::{TUNNEL_ACTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus, TunnelType};
 pub use tunnel_options::{
     OptionSensitivity, OptionValueType, SECRET_OPTIONS, TUNNEL_OPTIONS, TunnelOption,

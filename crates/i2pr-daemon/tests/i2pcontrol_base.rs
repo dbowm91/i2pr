@@ -216,7 +216,8 @@ async fn loopback_tls_authenticate_and_typed_dispatch() {
     let token = authenticate(address).await;
     assert_eq!(token.len(), 64);
 
-    // 3-4. A protected known method reaches typed dispatch.
+    // 3-4. A protected known method answers the select form: an empty
+    // RouterInfo selection returns an empty result object.
     let (_, response) = post_json(
         address,
         &serde_json::json!({
@@ -228,13 +229,7 @@ async fn loopback_tls_authenticate_and_typed_dispatch() {
         &[],
     )
     .await;
-    assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
-    assert!(
-        response["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("Plan 288")
-    );
+    assert_eq!(response["result"], serde_json::json!({}));
 
     // 5. Exact authentication failure behavior over the wire.
     let (_, response) = post_json(

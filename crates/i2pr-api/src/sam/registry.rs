@@ -297,6 +297,24 @@ impl SamSessionRegistry {
         self.by_session.lock().map(|m| m.len()).unwrap_or(0)
     }
 
+    /// Returns a bounded deterministic snapshot of live session
+    /// identifiers for administrative inspection (Plan 288).
+    ///
+    /// Identifiers are non-secret operator-chosen labels carrying no
+    /// destination key material. The snapshot is sorted, capped at 64
+    /// entries, and contains no destinations, sockets, or peer addresses.
+    pub fn session_ids(&self) -> Vec<String> {
+        const MAX_INSPECTION_SESSION_IDS: usize = 64;
+        let mut ids: Vec<String> = self
+            .by_session
+            .lock()
+            .map(|sessions| sessions.keys().map(|id| id.as_str().to_owned()).collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids.truncate(MAX_INSPECTION_SESSION_IDS);
+        ids
+    }
+
     /// Reserves a slot in the registry for `session_id`, ensuring
     /// that:
     ///
@@ -635,5 +653,58 @@ mod tests {
             released,
             SamLimits::defaults().max_stream_sockets_per_session - 1
         );
+    }
+}
+
+#[cfg(test)]
+mod plan288_tests {
+    use super::super::limits::SamLimits;
+    use super::*;
+
+    fn destination(seed: u8, salt: u8) -> DestinationId {
+        let mut bytes = [0_u8; 32];
+        bytes[0] = seed;
+        bytes[1] = salt;
+        DestinationId::from_hash(i2pr_proto::Hash::from_bytes(bytes))
+    }
+
+    #[test]
+    fn session_ids_snapshot_is_sorted_and_bounded() {
+        let registry = SamSessionRegistry::new(SamLimits::defaults());
+        assert!(registry.session_ids().is_empty());
+        for (name, seed) in [("gamma", 3_u8), ("alpha", 1_u8), ("beta", 2_u8)] {
+            let session = SamSessionId::new(name).expect("session id");
+            let reservation = registry
+                .reserve_session(session, destination(seed, 0))
+                .expect("reserve");
+            registry
+                .commit_reservation(&reservation, "PUB".to_owned())
+                .expect("commit");
+        }
+        // Sorted deterministic order, no destination material.
+        assert_eq!(registry.session_ids(), vec!["alpha", "beta", "gamma"]);
+        assert_eq!(registry.session_count(), 3);
+    }
+
+    #[test]
+    fn session_ids_snapshot_caps_at_sixty_four() {
+        let mut limits = SamLimits::defaults();
+        limits.max_sessions = 80;
+        let registry = SamSessionRegistry::new(SamLimits::validate(limits).expect("limits valid"));
+        for n in 0..80_u8 {
+            let name = format!("session-{n:03}");
+            let session = SamSessionId::new(&name).expect("session id");
+            let reservation = registry
+                .reserve_session(session, destination(n, 1))
+                .expect("reserve");
+            registry
+                .commit_reservation(&reservation, "PUB".to_owned())
+                .expect("commit");
+        }
+        let ids = registry.session_ids();
+        assert_eq!(ids.len(), 64);
+        assert_eq!(ids[0], "session-000");
+        assert_eq!(ids[63], "session-063");
+        assert_eq!(registry.session_count(), 80);
     }
 }

@@ -1618,3 +1618,38 @@ evidence = [
     "plans/closure/floodfill/274-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.routerinfo-inspection-plane"
+protocol = "i2pcontrol"
+structure = "proposal-170-routerinfo-select-form-and-source-matrix"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 288 closed the partial read-only Proposal 170 RouterInfo inspection plane: null-valued select form with canonical validation (unknown/case-drift/non-null/base i2p.* keys rejected as invalid params), whole-request explicit failure for unavailable/unpublished selectors (no partial responses, no fabricated zero/false/empty), 5 live static selectors (version/api/uptime/status/network-id), identity-gated router.hash, publish-gated NetDB/transport/tunnel/clock/rates dynamics, and 9 unavailable rows (6 AddressBook for Plan 294; logs/news/banned-peers for Plan 295). Counts serialize as one-element lists per the frozen List shape. Residual publication wiring belongs to Plan 295."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/source_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_inspection.rs",
+    "plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md",
+    "plans/closure/i2pcontrol-proposal-170/288-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.clientservicesinfo-inspection-plane"
+protocol = "i2pcontrol"
+structure = "proposal-170-clientservicesinfo-truthful-service-state"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 288 closed truthful ClientServicesInfo: all six services answer (disabled is authoritative config truth, never a failure); I2PTunnel splits the startup inventory client/server with live-manager overlay (names/kinds/enablement/running/binds; address-book addresses deferred to Plan 294); HTTPProxy/SOCKS report first-enabled binds; SAM reports bounded live session ids/counts without destinations or socket peer addresses (stricter than i2pd); BOB is a deliberate disabled constant; I2CP reports live session/connection/destination counts."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/source_matrix.rs",
+    "crates/i2pr-api/src/sam/registry.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_inspection.rs",
+    "plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md",
+    "plans/closure/i2pcontrol-proposal-170/288-status.md",
+]
+advertised = false

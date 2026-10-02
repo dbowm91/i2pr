@@ -38,7 +38,7 @@ use i2pr_i2pcontrol::{
     AuthErrorCode, ContractInventory, JsonRpcErrorCode, JsonRpcRequest, MAX_BATCH_ELEMENTS,
     MAX_LIVE_TOKENS, MAX_PRESENTED_TOKEN_LEN, RequestId as JsonRpcRequestId, TOKEN_BYTES,
     TOKEN_HEADER, TOKEN_LIFETIME_SECS, conformance, error_envelope, jsonrpc, limits,
-    success_envelope,
+    matrix_mirrors_inventories, success_envelope,
 };
 use rand_core::TryRngCore;
 use subtle::ConstantTimeEq;
@@ -50,6 +50,10 @@ use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
 use crate::config::{I2pControlConfig, I2pControlPassword};
+use crate::i2pcontrol_inspection::{
+    InspectionHandles, ServiceEndpoint, client_service_result, router_info_result,
+    select_client_services, select_router_info,
+};
 use i2pr_runtime::{CancellationToken, ChildScope};
 
 /// Token lifetime in milliseconds (one day, monotonic).
@@ -339,6 +343,9 @@ pub struct I2pControlServiceState {
     auth_failures: AtomicU64,
     /// Connection-id allocator (observability only).
     next_connection_id: AtomicU64,
+    /// Plan 288 narrow inspection handles (static config truth plus
+    /// publish-gated live snapshots from owning services).
+    inspection: Arc<InspectionHandles>,
 }
 
 impl I2pControlServiceState {
@@ -349,7 +356,36 @@ impl I2pControlServiceState {
     /// handle, and builds TLS material before any listener bind. No
     /// managed-certificate side effect escapes construction: the managed
     /// certificate is an in-memory value owned by this state.
+    ///
+    /// Standalone construction assumes the controlled network id (`2`)
+    /// with no service inventory and unpublished live owners; production
+    /// composition always uses [`Self::new_with_inspection`] with
+    /// [`InspectionHandles::from_config`].
     pub fn new(config: I2pControlConfig) -> Result<Self, I2pControlServiceError> {
+        let inspection = Arc::new(InspectionHandles::new(
+            2,
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            Vec::new(),
+        ));
+        Self::new_with_inspection(config, inspection)
+    }
+
+    /// Constructs the service with explicit inspection handles.
+    ///
+    /// Production composition builds the handles from the validated
+    /// daemon configuration so RouterInfo/ClientServicesInfo report
+    /// static truth and owner-published snapshots.
+    pub fn new_with_inspection(
+        config: I2pControlConfig,
+        inspection: Arc<InspectionHandles>,
+    ) -> Result<Self, I2pControlServiceError> {
         if !config.enabled {
             return Err(I2pControlServiceError::InvalidConfig(
                 "I2PControl service is disabled".to_owned(),
@@ -358,6 +394,11 @@ impl I2pControlServiceState {
         if !conformance::assert_frozen_counts(&ContractInventory::current()) {
             return Err(I2pControlServiceError::InvalidConfig(
                 "contract inventory drifted from the frozen Plan 286 counts".to_owned(),
+            ));
+        }
+        if !matrix_mirrors_inventories() {
+            return Err(I2pControlServiceError::InvalidConfig(
+                "source matrix drifted from the frozen Plan 286 inventories".to_owned(),
             ));
         }
         let tls = build_tls_config(&config)?;
@@ -378,6 +419,7 @@ impl I2pControlServiceState {
             requests_processed: AtomicU64::new(0),
             auth_failures: AtomicU64::new(0),
             next_connection_id: AtomicU64::new(1),
+            inspection,
         })
     }
 
@@ -420,6 +462,11 @@ impl I2pControlServiceState {
     /// Available in-flight permits (shutdown-baseline tests).
     pub fn inflight_available(&self) -> usize {
         self.inflight_permits.available_permits()
+    }
+
+    /// Inspection handles backing RouterInfo/ClientServicesInfo.
+    pub fn inspection(&self) -> &Arc<InspectionHandles> {
+        &self.inspection
     }
 
     /// Runs the supervised listener until cancellation or fatal bind failure.
@@ -682,10 +729,24 @@ impl I2pControlServiceState {
                 deferred_mints,
                 in_batch,
             ),
+            i2pr_i2pcontrol::Method::RouterInfo => {
+                match self.check_token(&request.params, header_token, now_ms) {
+                    Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
+                    Ok(()) => self.process_router_info(id, &request.params, now_ms),
+                }
+            }
+            i2pr_i2pcontrol::Method::ClientServicesInfo => {
+                match self.check_token(&request.params, header_token, now_ms) {
+                    Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
+                    Ok(()) => self.process_client_services(id, &request.params),
+                }
+            }
             known => match self.check_token(&request.params, header_token, now_ms) {
                 Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
                 Ok(()) => {
-                    // Dispatch floor: only the token travels this far.
+                    // Dispatch floor for the remaining methods: only the
+                    // token travels this far. Their plans own the select
+                    // form and the typed dispatch.
                     if request.params.keys().any(|key| key != "Token") {
                         return (
                             error_envelope(
@@ -697,20 +758,14 @@ impl I2pControlServiceState {
                         );
                     }
                     let message = match known {
-                        i2pr_i2pcontrol::Method::RouterInfo => {
-                            "RouterInfo not yet available (Plan 288)"
-                        }
                         i2pr_i2pcontrol::Method::AddressBook => {
                             "AddressBook not yet available (Plan 294)"
                         }
                         i2pr_i2pcontrol::Method::TunnelManager => {
                             "TunnelManager not yet available (Plan 289)"
                         }
-                        i2pr_i2pcontrol::Method::ClientServicesInfo => {
-                            "ClientServicesInfo not yet available (Plan 288)"
-                        }
-                        i2pr_i2pcontrol::Method::Authenticate => {
-                            unreachable!("authenticate handled above")
+                        _ => {
+                            unreachable!("routerinfo and clientservices handled above")
                         }
                     };
                     (
@@ -720,6 +775,91 @@ impl I2pControlServiceState {
                 }
             },
         }
+    }
+
+    /// Dispatches an authenticated `RouterInfo` request over the Plan 288
+    /// select form.
+    ///
+    /// Selector keys carry null values; unknown keys (including every
+    /// `i2p.*` base-compatibility key, which is structurally disjoint
+    /// from the Proposal vocabulary) fail with invalid params. An empty
+    /// selection answers with an empty result object. Any unavailable or
+    /// unpublished selection fails the whole request explicitly with the
+    /// owning-plan marker; no partial response is emitted and no state is
+    /// mutated.
+    fn process_router_info(
+        &self,
+        id: Option<&JsonRpcRequestId>,
+        params: &serde_json::Map<String, serde_json::Value>,
+        now_ms: u64,
+    ) -> (serde_json::Value, Duration) {
+        let selection = match select_router_info(params) {
+            Ok(selection) => selection,
+            Err(_) => {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InvalidParams.code(),
+                        JsonRpcErrorCode::InvalidParams.message(),
+                    ),
+                    Duration::ZERO,
+                );
+            }
+        };
+        // Control-plane uptime in whole seconds (truncating, saturating).
+        let uptime_secs = now_ms / 1000;
+        let mut result = serde_json::Map::with_capacity(selection.len());
+        for selector in selection {
+            match router_info_result(selector, &self.inspection, uptime_secs) {
+                Ok(value) => {
+                    result.insert(selector.name().to_owned(), value);
+                }
+                Err(gap) => {
+                    return (
+                        error_envelope(id, JsonRpcErrorCode::InternalError.code(), &gap.message()),
+                        Duration::ZERO,
+                    );
+                }
+            }
+        }
+        (
+            success_envelope(id, serde_json::Value::Object(result)),
+            Duration::ZERO,
+        )
+    }
+
+    /// Dispatches an authenticated `ClientServicesInfo` request over the
+    /// same select form. Every service row answers (disabled is truthful
+    /// state), so this path is infallible after select validation.
+    fn process_client_services(
+        &self,
+        id: Option<&JsonRpcRequestId>,
+        params: &serde_json::Map<String, serde_json::Value>,
+    ) -> (serde_json::Value, Duration) {
+        let selection = match select_client_services(params) {
+            Ok(selection) => selection,
+            Err(_) => {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InvalidParams.code(),
+                        JsonRpcErrorCode::InvalidParams.message(),
+                    ),
+                    Duration::ZERO,
+                );
+            }
+        };
+        let mut result = serde_json::Map::with_capacity(selection.len());
+        for service in selection {
+            result.insert(
+                service.name().to_owned(),
+                client_service_result(service, &self.inspection),
+            );
+        }
+        (
+            success_envelope(id, serde_json::Value::Object(result)),
+            Duration::ZERO,
+        )
     }
 
     /// Executes API version 1 `Authenticate` with the standard error
@@ -1393,12 +1533,23 @@ mod tests {
     fn protected_known_method_reaches_typed_dispatch() {
         let state = test_state(TEST_PASSWORD);
         let token = authenticate(&state, 0);
-        for (method, marker) in [
-            ("RouterInfo", "Plan 288"),
-            ("AddressBook", "Plan 294"),
-            ("TunnelManager", "Plan 289"),
-            ("ClientServicesInfo", "Plan 288"),
-        ] {
+        // Plan 288: RouterInfo and ClientServicesInfo answer the select
+        // form; an empty selection returns an empty result object.
+        for method in ["RouterInfo", "ClientServicesInfo"] {
+            let outcome = dispatch(
+                &state,
+                &serde_json::json!({"jsonrpc": "2.0", "method": method, "params": {"Token": token}, "id": 1}),
+                None,
+                0,
+            );
+            let response = json_of(&outcome);
+            assert_eq!(
+                response["result"],
+                serde_json::json!({}),
+                "{method} empty selection must succeed empty"
+            );
+        }
+        for (method, marker) in [("AddressBook", "Plan 294"), ("TunnelManager", "Plan 289")] {
             let outcome = dispatch(
                 &state,
                 &serde_json::json!({"jsonrpc": "2.0", "method": method, "params": {"Token": token}, "id": 1}),
@@ -1606,7 +1757,9 @@ mod tests {
         let elements = response.as_array().expect("batch array");
         assert_eq!(elements.len(), 4);
         assert_eq!(elements[0]["id"], serde_json::json!("a"));
-        assert_eq!(elements[0]["error"]["code"], serde_json::json!(-32_603));
+        // Plan 288: an empty RouterInfo selection succeeds with an empty
+        // result object instead of the old dispatch-floor error.
+        assert_eq!(elements[0]["result"], serde_json::json!({}));
         assert_eq!(elements[1]["id"], serde_json::json!("b"));
         assert_eq!(elements[1]["error"]["code"], serde_json::json!(-32_601));
         assert_eq!(elements[2]["error"]["code"], serde_json::json!(-32_600));
@@ -1644,27 +1797,22 @@ mod tests {
             None,
             0,
         );
-        assert_eq!(
-            json_of(&outcome)["error"]["code"],
-            serde_json::json!(-32_603)
-        );
+        // Plan 288: the minted token authenticates an empty selection.
+        assert_eq!(json_of(&outcome)["result"], serde_json::json!({}));
     }
 
     #[test]
     fn compatibility_header_token_is_accepted_and_must_agree() {
         let state = test_state(TEST_PASSWORD);
         let token = authenticate(&state, 0);
-        // Header-only token authenticates.
+        // Header-only token authenticates an empty selection.
         let outcome = dispatch(
             &state,
             &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {}, "id": 1}),
             Some(&token),
             0,
         );
-        assert_eq!(
-            json_of(&outcome)["error"]["code"],
-            serde_json::json!(-32_603)
-        );
+        assert_eq!(json_of(&outcome)["result"], serde_json::json!({}));
         // Agreeing duplicates authenticate.
         let outcome = dispatch(
             &state,
@@ -1672,10 +1820,7 @@ mod tests {
             Some(&token),
             0,
         );
-        assert_eq!(
-            json_of(&outcome)["error"]["code"],
-            serde_json::json!(-32_603)
-        );
+        assert_eq!(json_of(&outcome)["result"], serde_json::json!({}));
         // Disagreeing duplicates are invalid params.
         let outcome = dispatch(
             &state,

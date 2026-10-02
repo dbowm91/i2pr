@@ -507,3 +507,140 @@ fn max_and_max_plus_one_bounds() {
     assert_eq!(MAX_BATCH_ELEMENTS, 32);
     assert_eq!(MAX_INFLIGHT_REQUESTS, 64);
 }
+
+#[test]
+fn plan288_source_matrix_mirrors_frozen_inventories() {
+    use i2pr_i2pcontrol::{
+        CLIENT_SERVICES_SOURCE_MATRIX, ROUTER_INFO_SOURCE_MATRIX, SourceAvailability,
+        matrix_mirrors_inventories, selector_index, service_index, service_row, source_row,
+    };
+    assert!(matrix_mirrors_inventories());
+    assert_eq!(ROUTER_INFO_SOURCE_MATRIX.len(), 30);
+    assert_eq!(CLIENT_SERVICES_SOURCE_MATRIX.len(), 6);
+    // Every selector resolves through its canonical index.
+    for selector in [
+        RouterInfoSelector::RouterVersion,
+        RouterInfoSelector::RouterApiVersion,
+        RouterInfoSelector::RouterUptime,
+        RouterInfoSelector::RouterStatus,
+        RouterInfoSelector::RouterNetworkId,
+        RouterInfoSelector::RouterHash,
+        RouterInfoSelector::NetDbKnownPeers,
+        RouterInfoSelector::NetDbActivePeers,
+        RouterInfoSelector::NetDbFloodfillMode,
+        RouterInfoSelector::Ntcp2ActivePeers,
+        RouterInfoSelector::Ssu2ActiveSessions,
+        RouterInfoSelector::Reachability,
+        RouterInfoSelector::TransportErrors,
+        RouterInfoSelector::ExploratoryCount,
+        RouterInfoSelector::ClientCount,
+        RouterInfoSelector::ParticipatingCount,
+        RouterInfoSelector::BuildQueue,
+        RouterInfoSelector::SuccessRate,
+        RouterInfoSelector::Bandwidth,
+        RouterInfoSelector::AddressBookPrivate,
+        RouterInfoSelector::AddressBookLocal,
+        RouterInfoSelector::AddressBookRouter,
+        RouterInfoSelector::AddressBookPublished,
+        RouterInfoSelector::AddressBookSubscriptions,
+        RouterInfoSelector::AddressBookConfig,
+        RouterInfoSelector::LogsRecent,
+        RouterInfoSelector::NewsFeed,
+        RouterInfoSelector::ClockSkew,
+        RouterInfoSelector::BannedPeers,
+        RouterInfoSelector::Rates,
+    ] {
+        let row = source_row(selector);
+        assert_eq!(row.key, selector.name());
+        assert_eq!(row.return_type, selector.return_type());
+        assert_eq!(
+            ROUTER_INFO_SOURCE_MATRIX[selector_index(selector)].key,
+            selector.name()
+        );
+    }
+    for service in [
+        ClientService::I2pTunnel,
+        ClientService::HttpProxy,
+        ClientService::Socks,
+        ClientService::Sam,
+        ClientService::Bob,
+        ClientService::I2cp,
+    ] {
+        let row = service_row(service);
+        assert_eq!(row.key, service.name());
+        assert_eq!(
+            CLIENT_SERVICES_SOURCE_MATRIX[service_index(service)].key,
+            service.name()
+        );
+    }
+    // Availability census: 5 live + 16 publish-gated (1 in-plan, 15
+    // residual-295) + 9 unavailable (6 for Plan 294, 3 for Plan 295),
+    // zero permitted-neutral (strictness is the Plan 288 default).
+    let mut available = 0;
+    let mut gated = 0;
+    let mut gated_288 = 0;
+    let mut gated_295 = 0;
+    let mut unavailable = 0;
+    let mut neutral = 0;
+    let mut unavailable_294 = 0;
+    let mut unavailable_295 = 0;
+    for row in ROUTER_INFO_SOURCE_MATRIX {
+        match row.availability {
+            SourceAvailability::Available => available += 1,
+            SourceAvailability::PublishedGated { owner_plan, .. } => {
+                gated += 1;
+                match owner_plan {
+                    // Only router.hash gates inside Plan 288 (identity
+                    // publication wiring in this plan's scope).
+                    "288" => {
+                        assert_eq!(row.key, "router.hash");
+                        gated_288 += 1;
+                    }
+                    "295" => gated_295 += 1,
+                    other => panic!("row {} gates on an unexpected plan {other}", row.key),
+                }
+            }
+            SourceAvailability::PermittedNeutral { .. } => neutral += 1,
+            SourceAvailability::Unavailable { owner_plan, .. } => {
+                unavailable += 1;
+                match owner_plan {
+                    "294" => unavailable_294 += 1,
+                    "295" => unavailable_295 += 1,
+                    other => panic!("row {} names unexpected owner plan {other}", row.key),
+                }
+            }
+        }
+        assert!(!row.owner.is_empty());
+        assert!(!row.snapshot.is_empty());
+        assert!(!row.test_id.is_empty());
+        assert!(row.max_bytes > 0);
+    }
+    // router.hash gates on Plan 288 itself (identity publication wiring).
+    assert!(
+        matches!(
+            source_row(RouterInfoSelector::RouterHash).availability,
+            SourceAvailability::PublishedGated {
+                owner_plan: "288",
+                ..
+            }
+        ),
+        "router.hash must be Plan 288 publish-gated"
+    );
+    assert_eq!(available, 5);
+    assert_eq!(gated_288, 1);
+    assert_eq!(gated_295, 15);
+    assert_eq!(gated, gated_288 + gated_295);
+    assert_eq!(unavailable, 9);
+    assert_eq!(unavailable_294, 6);
+    assert_eq!(unavailable_295, 3);
+    assert_eq!(neutral, 0);
+    assert_eq!(
+        i2pr_i2pcontrol::SOURCE_MATRIX_NEUTRAL_COUNT,
+        neutral,
+        "neutral census must stay machine-checked"
+    );
+    // All six service rows are answerable (disabled is truthful state).
+    for row in CLIENT_SERVICES_SOURCE_MATRIX {
+        assert_eq!(row.availability, SourceAvailability::Available);
+    }
+}

@@ -158,7 +158,7 @@ crates/i2pr-api/
         ├── session_create.rs       SessionCreateRequest, parse_session_create
         ├── limits.rs               SamLimits + loopback_test_profile (Plan 137)
         ├── session.rs              SamSessionId, SamSessionCounters (Plan 137)
-        ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137)
+        ├── registry.rs             SamSessionRegistry, reserve/commit/rollback (Plan 137), bounded `session_ids` inspection snapshot (Plan 288)
         ├── line_reader.rs          LineReader, LineEvent (Plan 137)
         ├── server_state.rs         ServerConnectionState, dispatch, stream/naming appliers,
         │                           Require* dispatch outcomes (Plans 138–139),
