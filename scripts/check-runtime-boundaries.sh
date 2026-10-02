@@ -81,6 +81,15 @@ if grep -REn 'egui|iced|tauri|dioxus|yew|leptos|slint' \
   exit 1
 fi
 
+# Plan 287: the test-only TLS accept-any verifier (`dangerous()`) is
+# confined to integration tests. Production daemon source must never
+# bypass certificate verification.
+if grep -REn '\.dangerous\(\)|DangerousClientConfig|with_custom_certificate_verifier' \
+  "$root/crates/i2pr-daemon/src" >/dev/null; then
+  echo "dangerous TLS verifiers are forbidden in production daemon source" >&2
+  exit 1
+fi
+
 if grep -REn 'async[[:space:]]+fn|async_trait|i2pr-(netdb|tunnel|client)' \
   "$root/crates/i2pr-transport" "$root/crates/i2pr-transport-ntcp2" "$root/crates/i2pr-transport-ssu2" >/dev/null; then
   echo "transport contracts must remain synchronous and independent of routing clients" >&2

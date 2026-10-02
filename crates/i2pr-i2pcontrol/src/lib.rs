@@ -52,12 +52,14 @@ pub use address_book::{
 };
 pub use auth::{
     AUTHENTICATE_METHOD, AuthErrorCode, MAX_LIVE_TOKENS, MAX_PRESENTED_TOKEN_LEN, TOKEN_BYTES,
-    TOKEN_LIFETIME_SECS,
+    TOKEN_HEADER, TOKEN_LIFETIME_SECS,
 };
 pub use client_services::{CLIENT_SERVICES, ClientService};
 pub use conformance::ContractInventory;
 pub use errors::ContractError;
-pub use jsonrpc::{JSONRPC_VERSION, JsonRpcErrorCode, JsonRpcRequest, RequestId};
+pub use jsonrpc::{
+    JSONRPC_VERSION, JsonRpcErrorCode, JsonRpcRequest, RequestId, error_envelope, success_envelope,
+};
 pub use limits::{
     MAX_BATCH_ELEMENTS, MAX_DESTINATION_LEN, MAX_HOSTNAME_LEN, MAX_HTTP_BODY_BYTES,
     MAX_ID_STRING_LEN, MAX_INFLIGHT_REQUESTS, MAX_LIST_ITEMS, MAX_MAP_ENTRIES, MAX_MAP_KEY_LEN,

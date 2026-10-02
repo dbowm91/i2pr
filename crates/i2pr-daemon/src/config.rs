@@ -50,6 +50,8 @@ struct RawConfig {
     #[serde(default)]
     i2cp: RawI2cpConfig,
     #[serde(default)]
+    i2pcontrol: RawI2pControlConfig,
+    #[serde(default)]
     service_tunnels: RawServiceTunnelsConfig,
 }
 
@@ -278,6 +280,88 @@ impl Default for RawI2cpConfig {
             protocol_byte_timeout_ms: default_i2cp_protocol_byte_timeout_ms(),
             command_timeout_ms: default_i2cp_command_timeout_ms(),
             shutdown_timeout_ms: default_i2cp_shutdown_timeout_ms(),
+        }
+    }
+}
+
+/// Operator password for the Plan 287 I2PControl listener.
+///
+/// The inner value never appears in `Debug` output, logs, or snapshots:
+/// formatting emits a fixed redaction marker. Comparison uses the bounded
+/// constant-time helper in `crate::i2pcontrol`.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq)]
+#[serde(transparent)]
+pub struct I2pControlPassword(String);
+
+impl I2pControlPassword {
+    /// Borrows the password bytes for bounded constant-time comparison.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Password length in bytes.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no password is configured.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for I2pControlPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("I2pControlPassword([redacted])")
+    }
+}
+
+/// Raw Plan 287 I2PControl service configuration.
+///
+/// The listener is disabled by default and loopback-only by default.
+/// `password` has no insecure factory default: enabling the service with an
+/// empty or missing password fails semantic validation before bind.
+/// Explicit TLS material (`certificate` + `private_key`) is optional for
+/// loopback binds (managed ephemeral self-signed TLS is used instead) and
+/// mandatory for any non-loopback bind. There is no plaintext fallback.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawI2pControlConfig {
+    #[serde(default = "default_i2pcontrol_enabled")]
+    enabled: bool,
+    #[serde(default = "default_i2pcontrol_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_i2pcontrol_port")]
+    port: u16,
+    #[serde(default)]
+    password: I2pControlPassword,
+    #[serde(default)]
+    certificate: String,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default = "default_i2pcontrol_max_connections")]
+    max_connections: u32,
+    #[serde(default = "default_i2pcontrol_max_body_bytes")]
+    max_body_bytes: usize,
+    #[serde(default = "default_i2pcontrol_request_deadline_ms")]
+    request_deadline_ms: u64,
+    #[serde(default = "default_i2pcontrol_shutdown_timeout_ms")]
+    shutdown_timeout_ms: u64,
+}
+
+impl Default for RawI2pControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_i2pcontrol_enabled(),
+            bind_address: default_i2pcontrol_bind_address(),
+            port: default_i2pcontrol_port(),
+            password: I2pControlPassword::default(),
+            certificate: String::new(),
+            private_key: String::new(),
+            max_connections: default_i2pcontrol_max_connections(),
+            max_body_bytes: default_i2pcontrol_max_body_bytes(),
+            request_deadline_ms: default_i2pcontrol_request_deadline_ms(),
+            shutdown_timeout_ms: default_i2pcontrol_shutdown_timeout_ms(),
         }
     }
 }
@@ -680,6 +764,45 @@ const MAX_I2CP_COMMAND_TIMEOUT_MS: u64 = 3_600_000;
 const MIN_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 1_000;
 const MAX_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
 
+// --- Plan 287 I2PControl defaults: disabled, loopback-only, no password. ---
+
+fn default_i2pcontrol_enabled() -> bool {
+    false
+}
+
+fn default_i2pcontrol_bind_address() -> String {
+    String::from("127.0.0.1")
+}
+
+const fn default_i2pcontrol_port() -> u16 {
+    7650
+}
+
+const fn default_i2pcontrol_max_connections() -> u32 {
+    64
+}
+
+const fn default_i2pcontrol_max_body_bytes() -> usize {
+    1_048_576
+}
+
+const fn default_i2pcontrol_request_deadline_ms() -> u64 {
+    5_000
+}
+
+const fn default_i2pcontrol_shutdown_timeout_ms() -> u64 {
+    2_000
+}
+
+/// Hard compile-time maxima bounding every `[i2pcontrol]` resource knob.
+const MAX_I2PCONTROL_CONNECTIONS: u32 = 256;
+const MAX_I2PCONTROL_BODY_BYTES: usize = 1_048_576;
+const MIN_I2PCONTROL_REQUEST_DEADLINE_MS: u64 = 1_000;
+const MAX_I2PCONTROL_REQUEST_DEADLINE_MS: u64 = 60_000;
+const MIN_I2PCONTROL_SHUTDOWN_TIMEOUT_MS: u64 = 500;
+const MAX_I2PCONTROL_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
+const MAX_I2PCONTROL_PASSWORD_BYTES: usize = 1_024;
+
 // --- Plan 158 SSU2 defaults: disabled, loopback-only, non-advertised. ---
 
 fn default_ssu2_enabled() -> bool {
@@ -851,6 +974,57 @@ impl I2cpConfig {
             command_timeout: Duration::MAX,
             shutdown_timeout: Duration::from_secs(5),
         }
+    }
+}
+
+/// Normalized Plan 287 I2PControl HTTPS/JSON-RPC listener configuration.
+///
+/// Disabled by default. The loopback default bind is `127.0.0.1:7650`
+/// with `::1` supported explicitly. Enabling with an empty or missing
+/// password fails validation before bind. Managed ephemeral self-signed
+/// TLS covers loopback identities only; any non-loopback bind requires a
+/// complete explicit certificate/private-key pair and fails validation
+/// before listener bind or managed-certificate side effects. There is no
+/// plaintext fallback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct I2pControlConfig {
+    /// Whether the I2PControl listener is enabled.
+    pub enabled: bool,
+    /// Bind IP. Non-loopback requires explicit TLS material.
+    pub bind_address: IpAddr,
+    /// Bind port. `0` selects an ephemeral port (integration tests).
+    pub port: u16,
+    /// Operator password for `Authenticate` (redacted in `Debug`; zeroized in use).
+    pub password: I2pControlPassword,
+    /// Optional explicit certificate PEM path (requires `private_key`).
+    pub certificate: Option<PathBuf>,
+    /// Optional explicit private-key PEM path (requires `certificate`).
+    pub private_key: Option<PathBuf>,
+    /// Maximum concurrent accepted TLS connections.
+    pub max_connections: u32,
+    /// Maximum HTTP request body in bytes (≤ 1 MiB hard cap).
+    pub max_body_bytes: usize,
+    /// Per-request deadline.
+    pub request_deadline: Duration,
+    /// Graceful shutdown deadline.
+    pub shutdown_timeout: Duration,
+}
+
+impl I2pControlConfig {
+    /// Returns the configured bind address.
+    pub const fn bind_socket(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
+
+    /// Whether the bind address is a loopback identity eligible for
+    /// managed self-signed TLS.
+    pub fn is_loopback_bind(&self) -> bool {
+        self.bind_address.is_loopback()
+    }
+
+    /// Whether explicit operator-owned TLS material is configured.
+    pub fn has_explicit_tls(&self) -> bool {
+        self.certificate.is_some() && self.private_key.is_some()
     }
 }
 
@@ -1077,6 +1251,8 @@ pub struct Config {
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
     pub i2cp: I2cpConfig,
+    /// I2PControl listener settings (Plan 287; disabled, loopback-only TLS).
+    pub i2pcontrol: I2pControlConfig,
     /// Service-tunnel settings (Plan 174; disabled, loopback-only,
     /// no listener yet).
     pub service_tunnels: ServiceTunnelsConfig,
@@ -1204,6 +1380,7 @@ impl Config {
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
+        let i2pcontrol = normalize_i2pcontrol(&raw.i2pcontrol, &raw.limits)?;
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
 
         Ok(Self {
@@ -1228,9 +1405,121 @@ impl Config {
             sam,
             ssu2,
             i2cp,
+            i2pcontrol,
             service_tunnels,
         })
     }
+}
+
+/// Normalizes the Plan 287 `[i2pcontrol]` block.
+///
+/// Fail-closed order: bind shape, TLS-material pairing, non-loopback TLS
+/// requirement, password presence when enabled, then resource ceilings.
+/// Every rejection happens before any listener bind or managed-certificate
+/// side effect.
+fn normalize_i2pcontrol(
+    raw: &RawI2pControlConfig,
+    global: &RawLimitsConfig,
+) -> Result<I2pControlConfig, ConfigError> {
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "i2pcontrol.bind_address",
+            reason: "must be a valid IP address",
+        })?;
+    let certificate = if raw.certificate.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(raw.certificate.trim()))
+    };
+    let private_key = if raw.private_key.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(raw.private_key.trim()))
+    };
+    // Half-configured TLS always fails, enabled or not: there is no
+    // fallback from bad explicit material to managed TLS.
+    if certificate.is_some() != private_key.is_some() {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.certificate",
+            reason: "certificate and private_key must both be set or both be empty",
+        });
+    }
+    // Non-loopback (including wildcard) binds require a complete explicit
+    // certificate/private-key pair before anything else happens.
+    if !bind_address.is_loopback() && certificate.is_none() {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.bind_address",
+            reason: "non-loopback bind requires explicit certificate and private_key",
+        });
+    }
+    if raw.enabled {
+        if raw.password.is_empty() {
+            return Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                reason: "must be non-empty when the I2PControl listener is enabled",
+            });
+        }
+        if raw.password.len() > MAX_I2PCONTROL_PASSWORD_BYTES {
+            return Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                reason: "must not exceed 1024 bytes",
+            });
+        }
+    }
+    if raw.max_connections == 0 || raw.max_connections > MAX_I2PCONTROL_CONNECTIONS {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.max_connections",
+            reason: "must be within 1..=256",
+        });
+    }
+    if raw.max_body_bytes == 0 || raw.max_body_bytes > MAX_I2PCONTROL_BODY_BYTES {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.max_body_bytes",
+            reason: "must be within 1..=1048576",
+        });
+    }
+    if raw.request_deadline_ms < MIN_I2PCONTROL_REQUEST_DEADLINE_MS
+        || raw.request_deadline_ms > MAX_I2PCONTROL_REQUEST_DEADLINE_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.request_deadline_ms",
+            reason: "must be within 1000..=60000",
+        });
+    }
+    if raw.shutdown_timeout_ms < MIN_I2PCONTROL_SHUTDOWN_TIMEOUT_MS
+        || raw.shutdown_timeout_ms > MAX_I2PCONTROL_SHUTDOWN_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.shutdown_timeout_ms",
+            reason: "must be within 500..=30000",
+        });
+    }
+    // The I2PControl connection/body budget must fit the router-wide
+    // ceilings so an optional disabled-by-default listener can never
+    // overcommit global resources.
+    let aggregate_budget = u64::from(raw.max_connections).saturating_mul(raw.max_body_bytes as u64);
+    if u64::from(raw.max_connections) > global.max_tasks
+        || aggregate_budget > global.max_buffered_bytes
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.aggregate",
+            reason: "I2PControl connection and body ceilings exceed router-wide budgets",
+        });
+    }
+    Ok(I2pControlConfig {
+        enabled: raw.enabled,
+        bind_address,
+        port: raw.port,
+        password: raw.password.clone(),
+        certificate,
+        private_key,
+        max_connections: raw.max_connections,
+        max_body_bytes: raw.max_body_bytes,
+        request_deadline: Duration::from_millis(raw.request_deadline_ms),
+        shutdown_timeout: Duration::from_millis(raw.shutdown_timeout_ms),
+    })
 }
 
 fn normalize_i2cp(
@@ -2207,6 +2496,103 @@ data_dir = "./state"
             Config::parse(&too_few_bytes),
             Err(ConfigError::Semantic {
                 field: "sam.aggregate",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 287 `[i2pcontrol]` defaults: disabled, loopback, no password.
+    const I2PCONTROL_BASE: &str = "schema_version = 1\n[router]\ndata_dir = \"state\"\n";
+
+    #[test]
+    fn i2pcontrol_defaults_are_disabled_loopback_and_passwordless() {
+        let config = Config::parse(I2PCONTROL_BASE).expect("defaults parse");
+        assert!(!config.i2pcontrol.enabled);
+        assert_eq!(config.i2pcontrol.bind_socket().port(), 7650);
+        assert!(config.i2pcontrol.is_loopback_bind());
+        assert!(!config.i2pcontrol.has_explicit_tls());
+        assert!(config.i2pcontrol.password.is_empty());
+        // The redacted password never leaks through Debug.
+        assert!(format!("{:?}", config.i2pcontrol).contains("[redacted]"));
+    }
+
+    #[test]
+    fn i2pcontrol_enabled_requires_a_password() {
+        let text = format!("{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                ..
+            })
+        ));
+        let text =
+            format!("{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\n");
+        let config = Config::parse(&text).expect("password enables");
+        assert_eq!(config.i2pcontrol.password.as_str(), "operator");
+    }
+
+    #[test]
+    fn i2pcontrol_non_loopback_requires_explicit_tls() {
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\nbind_address = \"0.0.0.0\"\npassword = \"operator\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.bind_address",
+                ..
+            })
+        ));
+        let half = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\ncertificate = \"/tmp/c.pem\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&half),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.certificate",
+                ..
+            })
+        ));
+        // Complete explicit material parses (loading happens at service
+        // construction, before bind).
+        let full = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\nbind_address = \"0.0.0.0\"\npassword = \"operator\"\ncertificate = \"/tmp/c.pem\"\nprivate_key = \"/tmp/k.pem\"\n"
+        );
+        let config = Config::parse(&full).expect("explicit TLS parses");
+        assert!(config.i2pcontrol.has_explicit_tls());
+        assert!(!config.i2pcontrol.is_loopback_bind());
+    }
+
+    #[test]
+    fn i2pcontrol_resource_knobs_respect_hard_maxima() {
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nmax_connections = 257\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.max_connections",
+                ..
+            })
+        ));
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nmax_body_bytes = 1048577\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.max_body_bytes",
+                ..
+            })
+        ));
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nrequest_deadline_ms = 61\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.request_deadline_ms",
                 ..
             })
         ));

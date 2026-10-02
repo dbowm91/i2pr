@@ -15,6 +15,7 @@ pub mod error;
 pub mod exploratory_build;
 pub mod floodfill;
 pub mod i2cp;
+pub mod i2pcontrol;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
@@ -35,6 +36,7 @@ pub mod tunnel_liveness;
 
 pub use error::DaemonError;
 pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};
+pub use i2pcontrol::{I2pControlServiceError, I2pControlServiceSnapshot, I2pControlServiceState};
 pub use netdb_seam::{
     CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
 };
@@ -200,6 +202,10 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
         register_i2cp_service(&mut builder, config)?;
     }
 
+    if config.i2pcontrol.enabled {
+        register_i2pcontrol_service(&mut builder, config)?;
+    }
+
     if config.ssu2.enabled {
         register_ssu2_service(&mut builder, config)?;
     }
@@ -336,6 +342,72 @@ fn register_i2cp_service(
     Ok(())
 }
 
+/// Registers the supervised I2PControl HTTPS service in the supplied
+/// builder. The factory captures the [`I2pControlServiceState`] so the
+/// per-connection tokio tasks own Arc clones that share the same token
+/// and throttle tables. Plan 287 keeps I2PControl experimental,
+/// loopback-by-default, and disabled by default with no plaintext
+/// fallback.
+fn register_i2pcontrol_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+) -> Result<(), DaemonError> {
+    let i2pcontrol_config = config.i2pcontrol.clone();
+    let address = i2pcontrol_config.bind_socket();
+    let i2pcontrol_name = ServiceName::new("i2pcontrol").expect("valid service name");
+    builder
+        .register(ServiceSpec::new(
+            i2pcontrol_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let i2pcontrol_config = i2pcontrol_config.clone();
+                let cancellation = ctx.cancellation().clone();
+                let children = ctx.children();
+                Box::pin(async move {
+                    let state = match I2pControlServiceState::new(i2pcontrol_config) {
+                        Ok(state) => Arc::new(state),
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "I2PControl service construction failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let token = cancellation.clone();
+                    let join_result =
+                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
+                            state.run(address, children, token).await
+                        })
+                        .await;
+                    if join_result.is_err() {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "I2PControl listener failed to start within the bounded timeout",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register I2PControl service: {e}"
+            ))
+        })?;
+    Ok(())
+}
 /// Registers the supervised loopback SSU2 router service in the
 /// supplied builder. Plan 184 owns the first daemon activation of
 /// the existing SSU2 runtime under the strict controlled profile
