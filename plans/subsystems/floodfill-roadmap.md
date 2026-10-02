@@ -1,6 +1,6 @@
 # M12 Floodfill Roadmap
 
-Status: Plans 270–276 passed; Plans 277–282 stopped with retained bridge/route/delivery work; Plan 283 passed (Option 3 peer-test evidence driver + controlled activation); Plan 278 ready; type-5 support remains deferred.
+Status: Plans 270–276 passed; Plans 277–282 and 278 stopped with retained bridge/route/delivery/qualification work; Plan 283 passed (Option 3 peer-test evidence driver + controlled activation); Plan 284 registered as the RouterInfo reference-acceptance corrective; type-5 support remains deferred.
 
 Long-term references:
 - GUARDRAILS.md
@@ -138,7 +138,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 277 | stopped | stopped-m12-daemon-runtime-publication-and-reply-adapter-contract-required | plans/implementation/floodfill/277-m12-daemon-role-lifecycle-and-controlled-advertisement.md | plans/closure/floodfill/277-status.md |
 | 282 | stopped | stopped-m12-activation-blocked-on-above-floor-reachability-evidence-corrective-via-plan283 | plans/implementation/floodfill/282-m12-runtime-publication-and-reply-delivery-contract-corrective.md | plans/closure/floodfill/282-status.md |
 | 283 | passed | passed-m12-third-class-evidence-and-controlled-activation | plans/implementation/floodfill/283-m12-third-class-evidence-and-controlled-activation.md | plans/closure/floodfill/283-status.md |
-| 278 | ready | registered-m12-i2pd-qualification-ready-after-plan283 | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | future |
+| 278 | stopped | stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | plans/closure/floodfill/278-status.md |
+| 284 | ready | registered-m12-controlled-routerinfo-reference-acceptance-corrective | plans/implementation/floodfill/284-m12-controlled-routerinfo-reference-acceptance-corrective.md | future |
 | 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
@@ -214,5 +215,9 @@ have passed on the type-5-deferred floor. Plan 277 stopped at the runtime-owned 
 delivery boundary; Plan 282 corrected the route/delivery/lifecycle mechanics and stopped at
 the above-floor reachability evidence boundary with that work retained. Plan 283 passed the
 third-class evidence strategy (Option 3 peer-test driver) plus activation/withdrawal
-completion. Plan 278 is ready; Plan 279 remains blocked on 278;
-Plan 280 remains stopped pending a separately reviewed I2P-compatible Red25519 provider.
+completion. Plan 278 built and executed its exact-pinned i2pd lane, passed controlled
+activation, and stopped at the reference-client RouterInfo-acceptance boundary before any
+matrix row, retaining the lane, the two-phase stable-identity activation flow, and the
+boundary diagnostics. Plan 284 is the registered corrective that bisects the reference gate.
+Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
+I2P-compatible Red25519 provider.
