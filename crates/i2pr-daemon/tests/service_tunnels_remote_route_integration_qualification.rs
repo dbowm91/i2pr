@@ -378,6 +378,7 @@ async fn m10_remote_route_integration_through_deliver_outbound() {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }];
     let manager = Arc::new(
         ServiceTunnelManager::new(ServiceTunnelManagerConfig {

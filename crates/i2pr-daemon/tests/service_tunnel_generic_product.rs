@@ -100,6 +100,7 @@ fn server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }
 }
 
@@ -123,6 +124,7 @@ fn client_spec(target_b32: &str) -> ServiceTunnelSpec {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }
 }
 

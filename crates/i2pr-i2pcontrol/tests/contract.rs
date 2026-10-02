@@ -107,6 +107,17 @@ fn tunnel_actions_and_types_parse_exactly() {
         })
         .count();
     assert_eq!(backend_count, 6);
+    // Plan 290 adds the four composed families; only the two
+    // Streamr families stay without a backend until Plan 291.
+    let backend290_count = TUNNEL_TYPES
+        .iter()
+        .filter(|name| {
+            TunnelType::parse(name)
+                .expect("known")
+                .has_plan290_backend()
+        })
+        .count();
+    assert_eq!(backend290_count, 10);
     assert_eq!(
         TunnelAction::parse("CREATE"),
         Err(ContractError::CaseMismatch)

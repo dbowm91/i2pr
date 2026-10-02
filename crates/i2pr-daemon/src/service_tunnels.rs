@@ -160,9 +160,9 @@ pub struct ServiceRuntime {
     /// Listener for client tunnels (loopback TCP).
     pub(crate) client_listener: Option<TcpListener>,
     /// Local TCP target address for server tunnels.
-    server_target: Option<SocketAddr>,
+    pub(crate) server_target: Option<SocketAddr>,
     /// I2P destination port for server tunnel Streaming listener.
-    server_streaming_port: Option<u16>,
+    pub(crate) server_streaming_port: Option<u16>,
     /// Whether this is a server-side tunnel.
     is_server: bool,
     /// Whether this is an HTTP client tunnel.
@@ -173,6 +173,18 @@ pub struct ServiceRuntime {
     is_irc: bool,
     /// Whether this is an IRC server tunnel.
     is_irc_server: bool,
+    /// Whether this is a strict CONNECT-only client tunnel
+    /// (Plan 290).
+    is_connect_client: bool,
+    /// Whether this is a SOCKS+IRC filter composition tunnel
+    /// (Plan 290).
+    is_socks_irc: bool,
+    /// Whether this is a filtered HTTP server tunnel (Plan 290).
+    is_http_server: bool,
+    /// Whether this is a bidirectional HTTP server tunnel carrying
+    /// both a client listener and a server target under one
+    /// generation and one persistent identity (Plan 290).
+    is_http_bidir: bool,
 }
 
 impl ServiceRuntime {
@@ -2007,10 +2019,11 @@ impl ServiceTunnelManager {
     }
 
     /// Plan 212 §7 — returns true when the named service spec is a
-    /// server profile (`GenericServer` / `IrcServer`) that requires
-    /// ordinary LS2 publication for independent routers to initiate
-    /// toward it. Client-only profiles never call the publication
-    /// path merely to receive replies.
+    /// server profile (`GenericServer` / `IrcServer` / `HttpServer` /
+    /// `HttpBidirServer`) that requires ordinary LS2 publication for
+    /// independent routers to initiate toward it. Client-only
+    /// profiles never call the publication path merely to receive
+    /// replies.
     pub fn spec_is_server(&self, spec_id: &str) -> bool {
         self.config
             .specs
@@ -2020,7 +2033,10 @@ impl ServiceTunnelManager {
             .is_some_and(|spec| {
                 matches!(
                     spec.kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
                 )
             })
     }
@@ -2377,8 +2393,12 @@ impl ServiceTunnelManager {
         let id_owned = spec.id.as_str().to_owned();
         let is_server = matches!(
             spec.kind,
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+            ServiceTunnelKind::GenericServer
+                | ServiceTunnelKind::IrcServer
+                | ServiceTunnelKind::HttpServer
         );
+        // Plan 290: the bidirectional profile carries both halves.
+        let is_http_bidir = matches!(spec.kind, ServiceTunnelKind::HttpBidirServer);
         let bridge_data = self.create_bridge_for_spec(spec).await?;
         let bridge = SamDestinationBridge::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -2406,7 +2426,11 @@ impl ServiceTunnelManager {
         // feeds (server SYNs dispatch into `receiver_streaming`
         // so the polled server loop below observes them through
         // the same tested accept path as local traffic).
-        let server_streaming_port = if is_server { Some(0_u16) } else { None };
+        let server_streaming_port = if is_server || is_http_bidir {
+            Some(0_u16)
+        } else {
+            None
+        };
         if let Some(port) = server_streaming_port {
             let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
             let effective: ListenerOutcome = match outcome_result {
@@ -2422,7 +2446,7 @@ impl ServiceTunnelManager {
                 )));
             }
         }
-        let client_listener = if !is_server {
+        let client_listener = if !is_server || is_http_bidir {
             let listener_spec = spec.listener.ok_or_else(|| {
                 ServiceTunnelError::InvalidConfig(format!("{id_owned} missing loopback listener"))
             })?;
@@ -2434,7 +2458,7 @@ impl ServiceTunnelManager {
         } else {
             None
         };
-        let server_target = if is_server {
+        let server_target = if is_server || is_http_bidir {
             let target = spec
                 .target
                 .as_ref()
@@ -2463,6 +2487,9 @@ impl ServiceTunnelManager {
         let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
         let is_irc = matches!(spec.kind, ServiceTunnelKind::IrcClient);
         let is_irc_server = matches!(spec.kind, ServiceTunnelKind::IrcServer);
+        let is_connect_client = matches!(spec.kind, ServiceTunnelKind::ConnectClient);
+        let is_socks_irc = matches!(spec.kind, ServiceTunnelKind::SocksIrc);
+        let is_http_server = matches!(spec.kind, ServiceTunnelKind::HttpServer);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -2480,6 +2507,10 @@ impl ServiceTunnelManager {
             is_socks5,
             is_irc,
             is_irc_server,
+            is_connect_client,
+            is_socks_irc,
+            is_http_server,
+            is_http_bidir,
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -2542,9 +2573,16 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
+        // Plan 290: the HTTP server and bidirectional profiles join
+        // the persistent-identity branch: their server halves
+        // publish one stable destination across restarts and
+        // no-op/target-only transitions.
         let identity = if matches!(
             spec.kind,
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+            ServiceTunnelKind::GenericServer
+                | ServiceTunnelKind::IrcServer
+                | ServiceTunnelKind::HttpServer
+                | ServiceTunnelKind::HttpBidirServer
         ) {
             let store =
                 ServiceDestinationStore::for_service(&self.config.data_dir, spec.id.as_str())
@@ -2991,10 +3029,42 @@ async fn run_service_loop(
     debug!(service = %id, "service tunnel supervisor entered");
     let result = if runtime.is_irc_server {
         run_irc_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_http_bidir {
+        crate::service_tunnels_http_bidir::run_http_bidir_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_http_server {
+        crate::service_tunnels_http_server::run_http_server_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_server {
         run_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_connect_client {
+        crate::service_tunnels_http::run_connect_client_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_http {
         run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_socks_irc {
+        crate::service_tunnels_socks_irc::run_socks_irc_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_socks5 {
         run_socks5_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_irc {
@@ -3148,11 +3218,7 @@ async fn run_server_loop(
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();
-        manager.with_destination_bridge(runtime.destination_id, |bridge| {
-            while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
-                accepted_ids.push(connection_id);
-            }
-        });
+        accepted_ids.extend(poll_streaming_accept(manager, runtime, port));
         for connection_id in accepted_ids {
             handle_server_syn(manager, runtime, target_socket, connection_id, cancellation).await;
         }
@@ -3160,13 +3226,35 @@ async fn run_server_loop(
     Ok(())
 }
 
-async fn handle_server_syn(
+/// Plan 290: polls one Streaming accept queue for newly arrived
+/// inbound SYNs. Shared by the generic server loop and the
+/// filtered HTTP server loop so both observe the same tested
+/// accept path.
+pub(crate) fn poll_streaming_accept(
     manager: &Arc<ServiceTunnelManager>,
     runtime: &Arc<ServiceRuntime>,
-    target: SocketAddr,
+    port: u16,
+) -> Vec<ConnectionId> {
+    let mut accepted_ids = Vec::new();
+    manager.with_destination_bridge(runtime.destination_id, |bridge| {
+        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
+            accepted_ids.push(connection_id);
+        }
+    });
+    accepted_ids
+}
+
+/// Plan 290: answers one inbound SYN with the connection's real
+/// authenticated peer metadata, acquires the aggregate permit, and
+/// returns the peer plus the permit for the per-connection task.
+/// Shared by the generic server path and the HTTP server path so
+/// SYN acceptance, driver wakeups, and ceiling accounting stay
+/// identical across server profiles.
+pub(crate) async fn accept_server_syn(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
     connection_id: ConnectionId,
-    cancellation: &CancellationToken,
-) {
+) -> Option<(RemoteDestination, OwnedSemaphorePermit)> {
     let now_ms = service_streaming_now_ms();
     // Plan 182: answer the SYN with the connection's real
     // authenticated peer metadata and real port tuple (SAM parity
@@ -3216,7 +3304,7 @@ async fn handle_server_syn(
     });
     let Some(peer) = accept_outcome.flatten() else {
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
-        return;
+        return None;
     };
     // Wake the delivery driver so the queued SYN response is routed
     // back to the originator without waiting for the fallback tick.
@@ -3229,12 +3317,25 @@ async fn handle_server_syn(
             "server tunnel aggregate ceiling reached; rejecting inbound SYN"
         );
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
-        return;
+        return None;
     };
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
+    Some((peer, aggregate_permit))
+}
+
+async fn handle_server_syn(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    target: SocketAddr,
+    connection_id: ConnectionId,
+    cancellation: &CancellationToken,
+) {
+    let Some((peer, permit_for_task)) = accept_server_syn(manager, runtime, connection_id).await
+    else {
+        return;
+    };
     // Plan 182: hold the aggregate slot for the connection
     // lifetime (see the client-loop note above).
-    let permit_for_task = aggregate_permit;
     let manager_for_task = Arc::clone(manager);
     let runtime_for_task = Arc::clone(runtime);
     let cancellation_for_task = cancellation.clone();
@@ -3984,6 +4085,7 @@ mod plan202_routing_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(
@@ -4055,6 +4157,7 @@ mod plan202_routing_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(target_result.is_err(), "destination decode still fails");
@@ -4084,6 +4187,7 @@ mod plan202_routing_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4325,6 +4429,7 @@ mod plan206_remote_composition_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4509,6 +4614,7 @@ mod plan208_remote_route_integration_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4574,6 +4680,7 @@ mod plan208_remote_route_integration_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4682,6 +4789,7 @@ mod plan208_remote_route_integration_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4760,6 +4868,7 @@ mod plan208_remote_route_integration_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4936,6 +5045,7 @@ mod plan210_real_service_destination_material_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5300,6 +5410,7 @@ mod plan212_router_backed_service_destination_tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5651,6 +5762,7 @@ mod plan212_router_backed_service_destination_tests {
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-svc-2").expect("id"),
@@ -5669,6 +5781,7 @@ mod plan212_router_backed_service_destination_tests {
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
             },
         ];
         let manager = Arc::new(
@@ -5725,6 +5838,7 @@ mod plan212_router_backed_service_destination_tests {
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-ib-2").expect("id"),
@@ -5743,6 +5857,7 @@ mod plan212_router_backed_service_destination_tests {
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
             },
         ];
         let manager = Arc::new(

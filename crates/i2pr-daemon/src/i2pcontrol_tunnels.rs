@@ -144,7 +144,7 @@ pub enum ControlError {
     NameCollision(String),
     /// Attempted mutation of a startup-owned definition.
     StartupMutationRejected(String),
-    /// Proposal type without a Plan 289 runtime backend.
+    /// Proposal type without a Plan 290 runtime backend.
     UnsupportedType(String),
     /// Option outside the Plan 289 supported subset.
     UnsupportedOption(String),
@@ -197,7 +197,7 @@ impl core::fmt::Display for ControlError {
             Self::UnsupportedType(kind) => {
                 write!(
                     formatter,
-                    "tunnel type {kind} has no Plan 289 backend (Plan 289)"
+                    "tunnel type {kind} has no Plan 290 backend (Plan 290)"
                 )
             }
             Self::UnsupportedOption(option) => {
@@ -654,7 +654,8 @@ fn temp_counter() -> u64 {
 }
 
 /// Maps a Proposal type onto the existing M10 runtime family.
-/// Types without a Plan 289 backend fail before any allocation.
+/// Types without a Plan 290 backend (the two Streamr families
+/// until Plan 291) fail before any allocation.
 pub fn map_tunnel_type(tunnel_type: TunnelType) -> Result<ServiceTunnelKind, ControlError> {
     match tunnel_type {
         TunnelType::Client => Ok(ServiceTunnelKind::GenericClient),
@@ -663,6 +664,12 @@ pub fn map_tunnel_type(tunnel_type: TunnelType) -> Result<ServiceTunnelKind, Con
         TunnelType::Socks => Ok(ServiceTunnelKind::Socks5Client),
         TunnelType::IrcClient => Ok(ServiceTunnelKind::IrcClient),
         TunnelType::IrcServer => Ok(ServiceTunnelKind::IrcServer),
+        // Plan 290: composed families over the existing M10
+        // manager and shared primitives.
+        TunnelType::ConnectClient => Ok(ServiceTunnelKind::ConnectClient),
+        TunnelType::SocksIrc => Ok(ServiceTunnelKind::SocksIrc),
+        TunnelType::HttpServer => Ok(ServiceTunnelKind::HttpServer),
+        TunnelType::HttpBidirServer => Ok(ServiceTunnelKind::HttpBidirServer),
         other => Err(ControlError::UnsupportedType(other.name().to_owned())),
     }
 }
@@ -706,6 +713,8 @@ pub fn build_control_spec(
                         | ServiceTunnelKind::HttpClient
                         | ServiceTunnelKind::Socks5Client
                         | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -722,7 +731,10 @@ pub fn build_control_spec(
             "target_host" => {
                 if !matches!(
                     kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -751,7 +763,10 @@ pub fn build_control_spec(
             "target_port" => {
                 if !matches!(
                     kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -771,7 +786,9 @@ pub fn build_control_spec(
             "listen_host" => {
                 if matches!(
                     kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -794,7 +811,9 @@ pub fn build_control_spec(
             "listen_port" => {
                 if matches!(
                     kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
@@ -841,25 +860,29 @@ pub fn build_control_spec(
     // Server targets require both halves explicitly: no silent default
     // for where tunneled traffic exits.
     let target = match kind {
-        ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer => {
-            Some(match (target_host, target_port) {
-                (Some(host), Some(port)) => {
-                    ServerTarget::LoopbackTcp(std::net::SocketAddr::new(host, port))
-                }
-                _ => {
-                    return Err(ControlError::InvalidRequest(
-                        "server kinds require target_host and target_port",
-                    ));
-                }
-            })
-        }
+        ServiceTunnelKind::GenericServer
+        | ServiceTunnelKind::IrcServer
+        | ServiceTunnelKind::HttpServer
+        | ServiceTunnelKind::HttpBidirServer => Some(match (target_host, target_port) {
+            (Some(host), Some(port)) => {
+                ServerTarget::LoopbackTcp(std::net::SocketAddr::new(host, port))
+            }
+            _ => {
+                return Err(ControlError::InvalidRequest(
+                    "server kinds require target_host and target_port",
+                ));
+            }
+        }),
         _ => None,
     };
     let listener = match kind {
         ServiceTunnelKind::GenericClient
         | ServiceTunnelKind::HttpClient
         | ServiceTunnelKind::Socks5Client
-        | ServiceTunnelKind::IrcClient => Some(
+        | ServiceTunnelKind::IrcClient
+        | ServiceTunnelKind::ConnectClient
+        | ServiceTunnelKind::SocksIrc
+        | ServiceTunnelKind::HttpBidirServer => Some(
             LocalListenerSpec::parse(
                 listen_host.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
                 listen_port,
@@ -869,16 +892,25 @@ pub fn build_control_spec(
                 reason: "listener must be loopback",
             })?,
         ),
-        ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer => None,
+        ServiceTunnelKind::GenericServer
+        | ServiceTunnelKind::IrcServer
+        | ServiceTunnelKind::HttpServer => None,
     };
     if listener.is_some() && destination.is_none() {
-        return Err(ControlError::InvalidRequest(
-            "client kinds require the target_destination option",
-        ));
+        // The bidirectional profile is the exception: its client
+        // half resolves per-request destinations like http-client
+        // and only the server half publishes, so no remote
+        // destination reference is carried.
+        if !matches!(kind, ServiceTunnelKind::HttpBidirServer) {
+            return Err(ControlError::InvalidRequest(
+                "client kinds require the target_destination option",
+            ));
+        }
     }
-    let (http_options, socks5_options, irc_options) = match kind {
-        ServiceTunnelKind::HttpClient => (
+    let (http_options, socks5_options, irc_options, connect_options) = match kind {
+        ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer => (
             Some(i2pr_service_tunnels::HttpClientOptions::defaults()),
+            None,
             None,
             None,
         ),
@@ -886,13 +918,27 @@ pub fn build_control_spec(
             None,
             Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
             None,
+            None,
+        ),
+        ServiceTunnelKind::SocksIrc => (
+            None,
+            Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
+            Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
+            None,
         ),
         ServiceTunnelKind::IrcClient => (
             None,
             None,
             Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
+            None,
         ),
-        _ => (None, None, None),
+        ServiceTunnelKind::ConnectClient => (
+            None,
+            None,
+            None,
+            Some(i2pr_service_tunnels::ConnectClientOptions::defaults()),
+        ),
+        _ => (None, None, None, None),
     };
     let spec = ServiceTunnelSpec {
         id,
@@ -909,6 +955,7 @@ pub fn build_control_spec(
         http_options,
         socks5_options,
         irc_options,
+        connect_options,
     };
     spec.validate()
         .map_err(|error| ControlError::InvalidRequest(static_spec_reason(error)))?;
@@ -943,7 +990,7 @@ pub fn normalize_definition(
     start_on_load: bool,
 ) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
-    if !tunnel_type.has_plan289_backend() {
+    if !tunnel_type.has_plan290_backend() {
         return Err(ControlError::UnsupportedType(tunnel_type.name().to_owned()));
     }
     for key in options.keys() {
@@ -1112,7 +1159,7 @@ impl TunnelControlState {
         let start: Vec<String> = lock(&self.definitions)
             .values()
             .filter(|definition| {
-                definition.start_on_load && definition.tunnel_type.has_plan289_backend()
+                definition.start_on_load && definition.tunnel_type.has_plan290_backend()
             })
             .map(|definition| definition.name.clone())
             .collect();
@@ -1474,7 +1521,7 @@ impl TunnelControlState {
         definition: &ControlDefinition,
     ) -> i2pr_i2pcontrol::TunnelStatus {
         use i2pr_i2pcontrol::TunnelStatus;
-        if !definition.tunnel_type.has_plan289_backend() {
+        if !definition.tunnel_type.has_plan290_backend() {
             return TunnelStatus::Unsupported;
         }
         let transitioning = lock(&self.transitioning).contains(name);
@@ -1967,7 +2014,7 @@ impl TunnelControlState {
         let definition = self
             .definition(name)
             .ok_or_else(|| unknown_or_startup(name, &self.startup))?;
-        if !definition.tunnel_type.has_plan289_backend() {
+        if !definition.tunnel_type.has_plan290_backend() {
             return Err(ControlError::UnsupportedType(
                 definition.tunnel_type.name().to_owned(),
             ));
@@ -2334,7 +2381,7 @@ mod tests {
     }
 
     #[test]
-    fn plan289_family_mapping_six_backends() {
+    fn plan290_family_mapping_ten_backends() {
         use i2pr_service_tunnels::ServiceTunnelKind;
         for (tunnel_type, kind) in [
             (TunnelType::Client, ServiceTunnelKind::GenericClient),
@@ -2343,20 +2390,23 @@ mod tests {
             (TunnelType::Socks, ServiceTunnelKind::Socks5Client),
             (TunnelType::IrcClient, ServiceTunnelKind::IrcClient),
             (TunnelType::IrcServer, ServiceTunnelKind::IrcServer),
+            // Plan 290: composed families over the existing M10
+            // manager and shared primitives.
+            (TunnelType::ConnectClient, ServiceTunnelKind::ConnectClient),
+            (TunnelType::SocksIrc, ServiceTunnelKind::SocksIrc),
+            (TunnelType::HttpServer, ServiceTunnelKind::HttpServer),
+            (
+                TunnelType::HttpBidirServer,
+                ServiceTunnelKind::HttpBidirServer,
+            ),
         ] {
             assert_eq!(map_tunnel_type(tunnel_type).expect("backend"), kind);
         }
-        // The remaining six fail before any allocation: the mapping is
-        // a pure function over the type, so no listener, destination,
-        // task, or file can exist for them.
-        for tunnel_type in [
-            TunnelType::ConnectClient,
-            TunnelType::SocksIrc,
-            TunnelType::HttpServer,
-            TunnelType::HttpBidirServer,
-            TunnelType::StreamrClient,
-            TunnelType::StreamrServer,
-        ] {
+        // Only the two Streamr families fail before any allocation:
+        // the mapping is a pure function over the type, so no
+        // listener, destination, task, or file can exist for them
+        // until Plan 291.
+        for tunnel_type in [TunnelType::StreamrClient, TunnelType::StreamrServer] {
             assert!(
                 matches!(
                     map_tunnel_type(tunnel_type),

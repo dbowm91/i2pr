@@ -489,6 +489,7 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }];
     let manager = Arc::new(
         ServiceTunnelManager::new(ServiceTunnelManagerConfig {

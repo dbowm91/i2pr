@@ -212,6 +212,7 @@ mod tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }
     }
 
@@ -231,6 +232,7 @@ mod tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }
     }
 

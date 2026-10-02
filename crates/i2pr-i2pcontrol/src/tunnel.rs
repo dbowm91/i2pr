@@ -143,7 +143,7 @@ impl TunnelType {
 
     /// Whether i2pr already has a real backend at Plan 289 scope (the six
     /// M10 families). Plan 290/291 families report explicit unsupported
-    /// until their plans close.
+    /// until their plans close. Retained as the Plan 289 floor pin.
     pub const fn has_plan289_backend(self) -> bool {
         matches!(
             self,
@@ -153,6 +153,26 @@ impl TunnelType {
                 | Self::Socks
                 | Self::IrcClient
                 | Self::IrcServer
+        )
+    }
+
+    /// Whether i2pr has a real backend at Plan 290 scope (the six
+    /// M10 families plus the four composed families). Only the two
+    /// Streamr families report explicit unsupported until Plan 291
+    /// closes.
+    pub const fn has_plan290_backend(self) -> bool {
+        matches!(
+            self,
+            Self::Client
+                | Self::Server
+                | Self::HttpClient
+                | Self::Socks
+                | Self::IrcClient
+                | Self::IrcServer
+                | Self::ConnectClient
+                | Self::SocksIrc
+                | Self::HttpServer
+                | Self::HttpBidirServer
         )
     }
 

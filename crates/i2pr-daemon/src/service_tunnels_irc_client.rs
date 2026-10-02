@@ -146,7 +146,8 @@ pub async fn run_irc_connection(
             connection_id,
             target.remote.clone(),
         ));
-        let outcome = run_irc_filtered_loop(stream, endpoint, &options, &cancellation).await;
+        let outcome =
+            run_irc_filtered_loop(stream, endpoint, &options, &cancellation, Vec::new()).await;
         manager.with_destination_bridge(runtime.destination_id, |bridge| {
             let _ = bridge.streaming_mut().remove_connection(connection_id);
         });
@@ -209,19 +210,28 @@ const IRC_READ_POLL: Duration = Duration::from_millis(50);
 /// rewrite state retained across the connection). Structural
 /// violations close the connection; unknown/dropped lines are
 /// skipped without disturbing siblings.
-async fn run_irc_filtered_loop(
+///
+/// Plan 290: shared with the `socks-irc` composition, which feeds
+/// same-read post-CONNECT bytes as `initial_inbound` (empty for
+/// the ordinary `irc-client` path) so no filtered byte is lost or
+/// reordered at the SOCKS->IRC handoff.
+pub(crate) async fn run_irc_filtered_loop(
     stream: TcpStream,
     endpoint: Arc<dyn StreamPumpEndpoint>,
     options: &IrcClientOptions,
     cancellation: &CancellationToken,
+    initial_inbound: Vec<u8>,
 ) -> IrcConnectionOutcome {
     let limits = IrcLimits::defaults();
     let substitutions = PrivacySubstitutions::default();
     let mut ping_state = PingRewriteState::new();
     let (mut reader, mut writer) = stream.into_split();
-    let mut inbound = Vec::new();
+    let mut inbound = initial_inbound;
     let mut outbound = Vec::new();
     let mut chunk = [0_u8; 1024];
+    if inbound.len() > limits.line_buffer_max_bytes {
+        return IrcConnectionOutcome::StructuralFailure;
+    }
     loop {
         if cancellation.is_cancelled() || endpoint.is_terminal() {
             return IrcConnectionOutcome::TunnelClosed;

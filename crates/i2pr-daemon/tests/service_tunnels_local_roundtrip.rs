@@ -62,6 +62,7 @@ fn client_spec(id: &str, kind: ServiceTunnelKind, target: DestinationRef) -> Ser
         http_options,
         socks5_options,
         irc_options,
+        connect_options: None,
     }
 }
 
@@ -81,6 +82,7 @@ fn server_spec(id: &str, kind: ServiceTunnelKind, target: SocketAddr) -> Service
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }
 }
 

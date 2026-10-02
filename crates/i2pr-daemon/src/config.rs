@@ -1814,18 +1814,35 @@ fn normalize_service_tunnels(
         let max_buffered = entry
             .max_buffered_bytes_per_direction
             .unwrap_or(raw.max_buffered_bytes_per_direction);
-        let http_options = if matches!(kind, ServiceTunnelKind::HttpClient) {
+        let http_options = if matches!(
+            kind,
+            ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer
+        ) {
             Some(i2pr_service_tunnels::HttpClientOptions::defaults())
         } else {
             None
         };
-        let socks5_options = if matches!(kind, ServiceTunnelKind::Socks5Client) {
+        let socks5_options = if matches!(
+            kind,
+            ServiceTunnelKind::Socks5Client | ServiceTunnelKind::SocksIrc
+        ) {
             Some(i2pr_service_tunnels::Socks5ClientOptions::defaults())
         } else {
             None
         };
-        let irc_options = if matches!(kind, ServiceTunnelKind::IrcClient) {
+        let irc_options = if matches!(
+            kind,
+            ServiceTunnelKind::IrcClient | ServiceTunnelKind::SocksIrc
+        ) {
             Some(i2pr_service_tunnels::IrcClientOptions::defaults())
+        } else {
+            None
+        };
+        // Plan 290: the strict CONNECT profile carries its own
+        // CONNECT-only port policy; the HTTP server profile carries
+        // no options (fixed secure filter over `HttpLimits`).
+        let connect_options = if matches!(kind, ServiceTunnelKind::ConnectClient) {
+            Some(i2pr_service_tunnels::ConnectClientOptions::defaults())
         } else {
             None
         };
@@ -1844,6 +1861,7 @@ fn normalize_service_tunnels(
             http_options,
             socks5_options,
             irc_options,
+            connect_options,
         };
         spec.validate().map_err(|err| match err {
             i2pr_service_tunnels::ServiceTunnelError::DuplicateId { .. }
@@ -1892,9 +1910,11 @@ fn normalize_service_tunnels(
     })?;
 
     // Plan 175 §13/§6 + Plan 176 §13 + Plan 177 §13 + Plan 178 §13
-    // + Plan 179 §14: `generic-client`, `generic-server`,
-    // `http-client`, `socks5-client`, `irc-client`, and now
-    // `irc-server` tunnels may activate after their plans land.
+    // + Plan 179 §14 + Plan 290: `generic-client`,
+    // `generic-server`, `http-client`, `socks5-client`,
+    // `irc-client`, `irc-server`, `connect-client`, `socks-irc`,
+    // `http-server`, and `http-bidir-server` tunnels may activate
+    // after their plans land.
     // The `ServiceTunnelKind` enum is closed; the match is
     // exhaustive, so every known kind is accepted and the loop
     // exists as a documented invariant.
@@ -1905,7 +1925,11 @@ fn normalize_service_tunnels(
             | i2pr_service_tunnels::ServiceTunnelKind::HttpClient
             | i2pr_service_tunnels::ServiceTunnelKind::Socks5Client
             | i2pr_service_tunnels::ServiceTunnelKind::IrcClient
-            | i2pr_service_tunnels::ServiceTunnelKind::IrcServer => {}
+            | i2pr_service_tunnels::ServiceTunnelKind::IrcServer
+            | i2pr_service_tunnels::ServiceTunnelKind::ConnectClient
+            | i2pr_service_tunnels::ServiceTunnelKind::SocksIrc
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpServer
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpBidirServer => {}
         }
     }
 

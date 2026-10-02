@@ -33,15 +33,22 @@
 //!
 //! Plan 174/175 enabled `generic-client` / `generic-server`. Plan
 //! 176 adds the runtime-neutral HTTP module for `http-client`. Plan
-//! 177 adds the runtime-neutral SOCKS5 module for `socks5-client`.
-//! Plan 178 adds the runtime-neutral IRC client module for
-//! `irc-client`. Plan 179 adds the runtime-neutral IRC server
-//! registration interceptor for `irc-server`. No listener starts in
+//! 177 adds the runtime-neutral SOCKS5 module for `socks5-client`
+//! (plus Plan 290 bounded SOCKS4a CONNECT parity for the pinned
+//! historical SOCKS 4/4a/5 profile). Plan 178 adds the
+//! runtime-neutral IRC client module for `irc-client`. Plan 179
+//! adds the runtime-neutral IRC server registration interceptor for
+//! `irc-server`. Plan 290 adds the strict CONNECT-only client
+//! profile (`connect-client`), the SOCKS+IRC composition
+//! (`socks-irc`), the filtered HTTP server (`http-server`), and
+//! the deprecated bidirectional HTTP server (`http-bidir-server`)
+//! over the same shared primitives. No listener starts in
 //! this crate and no Tokio primitive exists here.
 
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod connect;
 pub mod destination;
 pub mod errors;
 pub mod events;
@@ -58,15 +65,17 @@ pub use config::{
     ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
     ServiceTunnelSpec,
 };
+pub use connect::{CONNECT_DEFAULT_PORT, CONNECT_OPTIONS_MAX_PORTS, ConnectClientOptions};
 pub use destination::{DestinationRef, StaticAliasTable};
 pub use errors::ServiceTunnelError;
 pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
 pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
 pub use http::{
-    HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits,
-    HttpRequestHead, ParseError, PrivacyPolicy, RequestLine, RequestTarget, TargetKind,
-    TargetParseError, UserAgentPolicy, build_error_response, parse_authority_form,
-    parse_request_head, parse_request_target, rewrite_headers,
+    FilteredServerRequest, HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind,
+    HttpLimits, HttpRequestHead, ParseError, PrivacyPolicy, RequestLine, RequestTarget, TargetKind,
+    TargetParseError, UserAgentPolicy, build_error_response, filter_server_request,
+    filter_server_response, parse_authority_form, parse_request_head, parse_request_target,
+    rewrite_headers,
 };
 pub use irc::{
     IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcError, IrcErrorKind,
@@ -79,7 +88,8 @@ pub use irc::{
 };
 pub use socks5::{
     ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser, RequestOutcome,
-    RequestParser, Socks5ClientOptions, Socks5Error, Socks5ErrorKind, Socks5Limits,
+    RequestParser, SOCKS4A_GRANTED, SOCKS4A_REJECTED, SOCKS4A_REPLY_LEN, Socks4aOutcome,
+    Socks4aRequestParser, Socks5ClientOptions, Socks5Error, Socks5ErrorKind, Socks5Limits,
     Socks5ReplyCode, build_reply as build_socks5_reply,
-    build_reply_from_code as build_socks5_reply_from_code,
+    build_reply_from_code as build_socks5_reply_from_code, build_socks4a_reply,
 };

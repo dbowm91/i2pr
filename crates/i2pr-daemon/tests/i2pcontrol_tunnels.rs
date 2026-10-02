@@ -441,7 +441,8 @@ async fn tunnel_unsupported_and_secret_rejected_over_wire() {
         Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
     let (_state, address, _scope, _parent) = start_service(&config).await;
     let token = authenticate(address).await;
-    // Types without a Plan 289 backend fail before resource allocation.
+    // Types without a Plan 290 backend (the two Streamr families
+    // until Plan 291) fail before resource allocation.
     let response = tunnel(
         address,
         &token,
@@ -454,7 +455,7 @@ async fn tunnel_unsupported_and_secret_rejected_over_wire() {
         response["error"]["message"]
             .as_str()
             .expect("message")
-            .contains("Plan 289")
+            .contains("Plan 290")
     );
     // Secret options never reach storage: rejected with no secret echo.
     let response = tunnel(
@@ -679,4 +680,132 @@ async fn tunnel_disabled_mode_preserves_state() {
         snapshot_before, snapshot_after,
         "disabled mode mutates nothing"
     );
+}
+
+/// Plan 290: the four composed families are real TunnelManager
+/// backends over the wire. Each kind completes
+/// create/get/stop/start/delete with its exact Proposal spelling,
+/// and per-kind required fields fail before any side effect.
+#[tokio::test]
+async fn tunnel_plan290_family_lifecycle_over_wire() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let b32 = format!("{}.b32.i2p", "a".repeat(52));
+    let mut id: u32 = 2;
+
+    // (name, type, options, expects_listener_bind).
+    let target_port = distinct_port();
+    let cc_port = distinct_port();
+    let si_port = distinct_port();
+    let hb_port = distinct_port();
+    let families = [
+        (
+            "cc290",
+            "connectclient",
+            serde_json::json!({"target_destination": b32, "listen_port": cc_port}),
+            true,
+        ),
+        (
+            "si290",
+            "socksirc",
+            serde_json::json!({"target_destination": b32, "listen_port": si_port}),
+            true,
+        ),
+        (
+            "hs290",
+            "httpserver",
+            serde_json::json!({"target_host": "127.0.0.1", "target_port": target_port}),
+            false,
+        ),
+        (
+            "hb290",
+            "httpbidirserver",
+            serde_json::json!({
+                "target_host": "127.0.0.1",
+                "target_port": target_port,
+                "listen_port": hb_port,
+            }),
+            true,
+        ),
+    ];
+    for (name, kind, options, has_bind) in families {
+        let response = tunnel(
+            address,
+            &token,
+            serde_json::json!({"action": "create", "name": name, "type": kind, "options": options}),
+            id,
+        )
+        .await;
+        id += 1;
+        assert!(
+            response.get("error").is_none(),
+            "{kind} create succeeds: {response}"
+        );
+        assert_eq!(response["result"]["running"], serde_json::json!(true));
+        let response = tunnel(
+            address,
+            &token,
+            serde_json::json!({"action": "get", "name": name}),
+            id,
+        )
+        .await;
+        id += 1;
+        assert_eq!(response["result"]["type"], serde_json::json!(kind));
+        assert_eq!(response["result"]["status"], serde_json::json!("running"));
+        if has_bind {
+            assert!(
+                response["result"]["bind"].as_str().is_some(),
+                "{kind} reports its loopback bind: {response}"
+            );
+        }
+        for action in ["stop", "start", "delete"] {
+            let response = tunnel(
+                address,
+                &token,
+                serde_json::json!({"action": action, "name": name}),
+                id,
+            )
+            .await;
+            id += 1;
+            assert!(
+                response.get("error").is_none(),
+                "{kind} {action} succeeds: {response}"
+            );
+        }
+        let response = tunnel(
+            address,
+            &token,
+            serde_json::json!({"action": "get", "name": name}),
+            id,
+        )
+        .await;
+        id += 1;
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+    }
+
+    // Required fields fail before allocation: a server kind without
+    // its target halves, and a client kind without its destination.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "hs-bad", "type": "httpserver"}),
+        id,
+    )
+    .await;
+    id += 1;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({
+            "action": "create", "name": "cc-bad", "type": "connectclient",
+            "options": {"listen_port": distinct_port()},
+        }),
+        id,
+    )
+    .await;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
 }

@@ -114,6 +114,7 @@ fn irc_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec 
         http_options: None,
         socks5_options: None,
         irc_options: Some(IrcClientOptions::default()),
+        connect_options: None,
     }
 }
 

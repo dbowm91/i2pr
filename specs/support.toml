@@ -1671,3 +1671,29 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/289-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.composed-tunnel-families"
+protocol = "i2pcontrol"
+structure = "proposal-170-ten-family-composed-backends"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 290 closed the four composed Proposal 170 tunnel families as real bounded backends under the one existing M10 ServiceTunnelManager by composing existing primitives (no second routing stack): connectclient (strict-CONNECT client over the shared pump, 443 default, 405/403 discipline), socksirc (shared SOCKS4a/SOCKS5 version-peek negotiation into the IRC privacy filter with no raw bypass), httpserver (filtered server relay over the persistent server destination with the server privacy contract and paced multi-segment body forward), httpbidirserver (deprecated bidirectional composition of both halves under one generation and one persistent identity, no outproxy). Ten of twelve types have backends; streamrclient/streamrserver stay UnsupportedType until Plan 291."
+evidence = [
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/connect.rs",
+    "crates/i2pr-service-tunnels/src/socks5/socks4a.rs",
+    "crates/i2pr-service-tunnels/src/http/server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/service_tunnels_socks_irc.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_connect_client_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_socks_irc_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_server_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_bidir_product.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md",
+    "plans/closure/i2pcontrol-proposal-170/290-status.md",
+]
+advertised = false

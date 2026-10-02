@@ -27,7 +27,7 @@ transport internals.
 | `router_info` | `router_info.rs` | Exact 30-selector inventory with return types | `RouterInfoSelector`, `ROUTER_INFO_SELECTORS`, `ReturnType` |
 | `client_services` | `client_services.rs` | Exact 6-service inventory + constant/map classification | `ClientService`, `CLIENT_SERVICES` |
 | `address_book` | `address_book.rs` | 4 book types, 6 fields, 13 `SetConfig` keys + path/inert classification | `BookType`, `AddressBookField`, `BOOK_TYPES`, `ADDRESS_BOOK_FIELDS`, `SET_CONFIG_KEYS` |
-| `tunnel` | `tunnel.rs` | 7 actions, 12 types (6 with Plan 289 backends), 6 statuses, name validation | `TunnelAction`, `TunnelType`, `TunnelStatus`, `TUNNEL_ACTIONS`, `TUNNEL_TYPES` |
+| `tunnel` | `tunnel.rs` | 7 actions, 12 types (10 with Plan 290 backends; Streamr pair stays unsupported until Plan 291), 6 statuses, name validation | `TunnelAction`, `TunnelType`, `TunnelStatus`, `TUNNEL_ACTIONS`, `TUNNEL_TYPES` |
 | `tunnel_options` | `tunnel_options.rs` | 46 options with value types, sensitivity (4 secret), plan ownership | `TunnelOption`, `TUNNEL_OPTIONS`, `SECRET_OPTIONS`, `OptionSensitivity`, `OptionValueType` |
 | `tunnel_request` | `tunnel_request.rs` | Plan 289: closed TunnelManager request envelope (action/name/type/new_name/options rules, frozen-universe option keys, scalar-only values) | `TunnelManagerRequest`, `TunnelRequestError`, `decode_tunnel_request` |
 | `auth` | `auth.rs` | API-1 vocabulary: ceilings (32 B / 1 day / 1024 / 256) + six error codes | `AuthErrorCode`, `TOKEN_BYTES`, `TOKEN_LIFETIME_SECS`, `MAX_LIVE_TOKENS`, `MAX_PRESENTED_TOKEN_LEN` |
@@ -76,7 +76,8 @@ on this crate (enforced by `scripts/check-dependency-direction.sh`).
 
 `tests/contract.rs`: exact inventories, deterministic parsing, typed
 literal failures, max/max+1 bounds, secret classification, matrix
-mirror + availability census, Plan 289 envelope rules.
+mirror + availability census, Plan 289 envelope rules, Plan 290
+ten-backend count.
 
 ## Distinctive design choices
 
@@ -95,6 +96,7 @@ mirror + availability census, Plan 289 envelope rules.
 - `plans/closure/i2pcontrol-proposal-170/286-status.md` (foundation).
 - `plans/closure/i2pcontrol-proposal-170/288-status.md` (inspection).
 - `plans/closure/i2pcontrol-proposal-170/289-status.md` (TunnelManager control).
+- `plans/closure/i2pcontrol-proposal-170/290-status.md` (composed families).
 - `docs/provenance/proposal-170-manifest.md` (frozen pins, R/B/X).
 - `specs/CONFORMANCE.md` §Proposal 170 support model (7 dimensions).
 - `docs/architecture/i2pr-daemon.md` (`i2pcontrol.rs`,

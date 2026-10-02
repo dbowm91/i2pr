@@ -63,6 +63,7 @@ pub mod limits;
 pub mod parser;
 pub mod response;
 pub mod rewrite;
+pub mod server;
 pub mod target;
 
 pub use config::{
@@ -79,6 +80,7 @@ pub use response::{
     ERROR_GATEWAY_TIMEOUT_BYTES_LEN, build_error_response,
 };
 pub use rewrite::{rewrite_headers, validate_authority_host};
+pub use server::{FilteredServerRequest, filter_server_request, filter_server_response};
 pub use target::{
     RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_request_target,
 };

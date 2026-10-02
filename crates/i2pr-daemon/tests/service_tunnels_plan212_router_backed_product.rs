@@ -232,6 +232,7 @@ fn build_generic_client(destination: DestinationRef) -> ServiceTunnelSpec {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }
 }
 
@@ -252,6 +253,7 @@ fn build_generic_server(target: SocketAddr) -> ServiceTunnelSpec {
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
     }
 }
 

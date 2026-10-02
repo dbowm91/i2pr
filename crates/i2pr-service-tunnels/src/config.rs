@@ -146,6 +146,10 @@ impl ServiceClientGroupId {
 /// Every variant parses from its kebab-case configuration spelling.
 /// No listener is active in Plan 174; the daemon rejects
 /// `enabled = true` entries as not-yet-available until Plan 175.
+/// Plan 290 adds the four composed Proposal 170 families
+/// (`connect-client`, `socks-irc`, `http-server`,
+/// `http-bidir-server`) over the existing streaming/HTTP/SOCKS/IRC
+/// primitives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ServiceTunnelKind {
     /// Generic TCP client tunnel.
@@ -160,6 +164,17 @@ pub enum ServiceTunnelKind {
     IrcClient,
     /// IRC server tunnel profile.
     IrcServer,
+    /// Strict HTTP CONNECT-only client (Plan 290).
+    ConnectClient,
+    /// SOCKS negotiation with the IRC client privacy filter on all
+    /// post-CONNECT traffic (Plan 290).
+    SocksIrc,
+    /// Filtered HTTP server (Plan 290).
+    HttpServer,
+    /// Deprecated bidirectional HTTP server: filtered HTTP server
+    /// half plus a no-outproxy HTTP client half under one lifecycle
+    /// generation and one persistent server identity (Plan 290).
+    HttpBidirServer,
 }
 
 impl ServiceTunnelKind {
@@ -172,9 +187,13 @@ impl ServiceTunnelKind {
             "socks5-client" => Ok(Self::Socks5Client),
             "irc-client" => Ok(Self::IrcClient),
             "irc-server" => Ok(Self::IrcServer),
+            "connect-client" => Ok(Self::ConnectClient),
+            "socks-irc" => Ok(Self::SocksIrc),
+            "http-server" => Ok(Self::HttpServer),
+            "http-bidir-server" => Ok(Self::HttpBidirServer),
             _ => Err(ServiceTunnelError::InvalidKind {
                 value: truncated(value),
-                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, or irc-server",
+                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, irc-server, connect-client, socks-irc, http-server, or http-bidir-server",
             }),
         }
     }
@@ -188,13 +207,26 @@ impl ServiceTunnelKind {
             Self::Socks5Client => "socks5-client",
             Self::IrcClient => "irc-client",
             Self::IrcServer => "irc-server",
+            Self::ConnectClient => "connect-client",
+            Self::SocksIrc => "socks-irc",
+            Self::HttpServer => "http-server",
+            Self::HttpBidirServer => "http-bidir-server",
         }
     }
 
     /// Returns `true` for server-side kinds that terminate at a
     /// loopback/Unix target.
+    ///
+    /// Plan 290: `HttpServer` is server-side. `HttpBidirServer`
+    /// reports client-side here because it always carries a
+    /// loopback listener (its server half is visible through the
+    /// dedicated destination identity, not through this bit); the
+    /// daemon builds both a listener and a server target for it.
     pub fn is_server(self) -> bool {
-        matches!(self, Self::GenericServer | Self::IrcServer)
+        matches!(
+            self,
+            Self::GenericServer | Self::IrcServer | Self::HttpServer
+        )
     }
 
     /// Returns `true` for client-side kinds that originate from a
@@ -497,14 +529,17 @@ pub struct ServiceTunnelSpec {
     /// Service deadlines.
     pub timeouts: ServiceTimeouts,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
-    /// kinds; ignored otherwise.
+    /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
     /// SOCKS5-specific profile options. Mandatory for
-    /// `Socks5Client` kinds; ignored otherwise.
+    /// `Socks5Client` and `SocksIrc` kinds; ignored otherwise.
     pub socks5_options: Option<crate::socks5::Socks5ClientOptions>,
-    /// IRC-specific profile options. Mandatory for `IrcClient`
-    /// kinds; ignored otherwise.
+    /// IRC-specific profile options. Mandatory for `IrcClient` and
+    /// `SocksIrc` kinds; ignored otherwise.
     pub irc_options: Option<crate::irc::IrcClientOptions>,
+    /// Strict CONNECT profile options. Mandatory for
+    /// `ConnectClient` kinds; ignored otherwise.
+    pub connect_options: Option<crate::connect::ConnectClientOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -536,7 +571,9 @@ impl ServiceTunnelSpec {
             ServiceTunnelKind::GenericClient
             | ServiceTunnelKind::HttpClient
             | ServiceTunnelKind::Socks5Client
-            | ServiceTunnelKind::IrcClient => {
+            | ServiceTunnelKind::IrcClient
+            | ServiceTunnelKind::ConnectClient
+            | ServiceTunnelKind::SocksIrc => {
                 if self.listener.is_none() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
@@ -556,7 +593,9 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer => {
+            ServiceTunnelKind::GenericServer
+            | ServiceTunnelKind::IrcServer
+            | ServiceTunnelKind::HttpServer => {
                 if self.listener.is_some() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
@@ -582,15 +621,49 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
+            // Plan 290: the bidirectional HTTP server carries both a
+            // loopback client listener and a loopback/unix server
+            // target under one lifecycle generation and one
+            // persistent server identity. It never carries a remote
+            // destination reference: the client half resolves
+            // per-request destinations like `http-client` (no
+            // outproxy), and only the server half publishes.
+            ServiceTunnelKind::HttpBidirServer => {
+                if self.listener.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a loopback listener for the client half",
+                    });
+                }
+                if self.target.is_none() && self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a loopback or unix target for the server half",
+                    });
+                }
+                if self.destination.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server must not carry a remote destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a dedicated destination",
+                    });
+                }
+            }
         }
-        // Plan 176: http-client must carry HTTP profile options;
-        // non-HTTP kinds must not.
+        // Plan 176 + Plan 290: http-client and the http-bidir-server
+        // client half must carry HTTP profile options; non-HTTP
+        // kinds must not.
         match self.kind {
-            ServiceTunnelKind::HttpClient => {
+            ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer => {
                 let options = self.http_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "http-client requires http_options",
+                        reason: "http-client kinds require http_options",
                     }
                 })?;
                 options.validate()?;
@@ -604,14 +677,14 @@ impl ServiceTunnelSpec {
                 }
             }
         }
-        // Plan 177: socks5-client must carry SOCKS5 profile options;
-        // non-SOCKS5 kinds must not.
+        // Plan 177 + Plan 290: socks5-client and socks-irc must
+        // carry SOCKS5 profile options; other kinds must not.
         match self.kind {
-            ServiceTunnelKind::Socks5Client => {
+            ServiceTunnelKind::Socks5Client | ServiceTunnelKind::SocksIrc => {
                 let options = self.socks5_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "socks5-client requires socks5_options",
+                        reason: "socks kinds require socks5_options",
                     }
                 })?;
                 options.validate()?;
@@ -620,19 +693,19 @@ impl ServiceTunnelSpec {
                 if self.socks5_options.is_some() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
-                        reason: "socks5_options must not be set for non-SOCKS5 kinds",
+                        reason: "socks5_options must not be set for non-SOCKS kinds",
                     });
                 }
             }
         }
-        // Plan 178: irc-client must carry IRC profile options;
-        // non-IRC kinds must not.
+        // Plan 178 + Plan 290: irc-client and socks-irc must carry
+        // IRC profile options; other kinds must not.
         match self.kind {
-            ServiceTunnelKind::IrcClient => {
+            ServiceTunnelKind::IrcClient | ServiceTunnelKind::SocksIrc => {
                 let options = self.irc_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "irc-client requires irc_options",
+                        reason: "irc kinds require irc_options",
                     }
                 })?;
                 options.validate()?;
@@ -642,6 +715,27 @@ impl ServiceTunnelSpec {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "irc_options must not be set for non-IRC kinds",
+                    });
+                }
+            }
+        }
+        // Plan 290: connect-client must carry strict CONNECT profile
+        // options; other kinds must not.
+        match self.kind {
+            ServiceTunnelKind::ConnectClient => {
+                let options = self.connect_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "connect-client requires connect_options",
+                    }
+                })?;
+                options.validate()?;
+            }
+            _ => {
+                if self.connect_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "connect_options must not be set for non-CONNECT kinds",
                     });
                 }
             }
@@ -740,6 +834,7 @@ mod tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         }
     }
 
@@ -756,14 +851,27 @@ mod tests {
             ("socks5-client", ServiceTunnelKind::Socks5Client),
             ("irc-client", ServiceTunnelKind::IrcClient),
             ("irc-server", ServiceTunnelKind::IrcServer),
+            ("connect-client", ServiceTunnelKind::ConnectClient),
+            ("socks-irc", ServiceTunnelKind::SocksIrc),
+            ("http-server", ServiceTunnelKind::HttpServer),
+            ("http-bidir-server", ServiceTunnelKind::HttpBidirServer),
         ];
         for (text, expected) in cases {
             assert_eq!(ServiceTunnelKind::parse(text).expect("kind"), expected);
             assert_eq!(expected.as_str(), text);
         }
-        assert!(ServiceTunnelKind::parse("http-server").is_err());
+        assert!(ServiceTunnelKind::parse("httpserver").is_err());
         assert!(ServiceTunnelKind::parse("GENERIC-CLIENT").is_err());
         assert!(ServiceTunnelKind::parse("").is_err());
+        // Server-side classification covers the generic, IRC, and
+        // HTTP server profiles; the bidirectional profile reports
+        // client-side (it always carries a loopback listener).
+        assert!(ServiceTunnelKind::HttpServer.is_server());
+        assert!(!ServiceTunnelKind::HttpServer.is_client());
+        assert!(!ServiceTunnelKind::HttpBidirServer.is_server());
+        assert!(ServiceTunnelKind::HttpBidirServer.is_client());
+        assert!(!ServiceTunnelKind::ConnectClient.is_server());
+        assert!(!ServiceTunnelKind::SocksIrc.is_server());
     }
 
     #[test]
@@ -840,6 +948,7 @@ mod tests {
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -898,5 +1007,94 @@ mod tests {
         bad_options.allowed_hosts.insert("example.com".to_owned());
         spec.irc_options = Some(bad_options);
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn connect_client_requires_options() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::ConnectClient;
+        assert!(spec.validate().is_err());
+        spec.connect_options = Some(crate::connect::ConnectClientOptions::default());
+        spec.validate().expect("connect options validate");
+        // Non-CONNECT kinds must not carry connect_options.
+        spec.kind = ServiceTunnelKind::GenericClient;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn socks_irc_requires_both_option_sets() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::SocksIrc;
+        assert!(spec.validate().is_err());
+        spec.socks5_options = Some(crate::socks5::Socks5ClientOptions::default());
+        assert!(spec.validate().is_err(), "irc_options still missing");
+        spec.irc_options = Some(crate::irc::IrcClientOptions::default());
+        spec.validate().expect("socks-irc options validate");
+    }
+
+    #[test]
+    fn http_server_is_server_sided_without_options() {
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("web").expect("id"),
+            kind: ServiceTunnelKind::HttpServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::parse("127.0.0.1:8080").expect("target")),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+        };
+        spec.validate().expect("http-server validates");
+        // A listener or a remote destination contradicts the server profile.
+        let mut bad = spec.clone();
+        bad.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8081").expect("listener"));
+        assert!(bad.validate().is_err());
+        let mut bad = spec.clone();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn http_bidir_server_carries_both_halves() {
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("bidir").expect("id"),
+            kind: ServiceTunnelKind::HttpBidirServer,
+            enabled: false,
+            listener: Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener")),
+            target: Some(ServerTarget::parse("127.0.0.1:8081").expect("target")),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: Some(crate::http::HttpClientOptions::default()),
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+        };
+        spec.validate().expect("http-bidir-server validates");
+        // Missing either half fails.
+        let mut bad = spec.clone();
+        bad.listener = None;
+        assert!(bad.validate().is_err());
+        let mut bad = spec.clone();
+        bad.target = None;
+        assert!(bad.validate().is_err());
+        // The client half requires http_options.
+        let mut bad = spec.clone();
+        bad.http_options = None;
+        assert!(bad.validate().is_err());
+        // A remote destination reference contradicts the single-identity rule.
+        let mut bad = spec.clone();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
     }
 }
