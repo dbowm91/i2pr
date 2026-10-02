@@ -629,6 +629,29 @@ pub async fn activate_controlled(
         monotonic_ms: params.wall_now_ms,
     };
     if publish_local_router_info(params.coordinator, &encoded, &permit, time).is_err() {
+        // The f-RI is already installed on the runtime: install the
+        // same-address non-f record (the permit-gated withdrawal form)
+        // so a publish failure cannot leave a live advertisement behind
+        // (Plan 283 invariant 6). Best-effort: shutdown racing it owns
+        // the sockets anyway. Nothing is published to the coordinator
+        // NetDB; the failed activation publishes nothing.
+        if let Ok(withdrawn) = i2pr_netdb::LocalRouterInfoBuilder::new(params.bundle)
+            .build_floodfill_withdrawal(
+                Date::from_millis(params.wall_now_ms),
+                Mapping::empty(),
+                material.address.clone(),
+                &permit,
+            )
+            .and_then(|built| {
+                built
+                    .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
+                    .map_err(|_| i2pr_netdb::LocalRouterInfoError::InvalidMapping {
+                        context: "encode",
+                    })
+            })
+        {
+            let _ = service.install_local_router_info(withdrawn, params.wall_now_ms);
+        }
         params.coordinator.fail_activation();
         return Err(ControlledActivationError::PublishFailed);
     }

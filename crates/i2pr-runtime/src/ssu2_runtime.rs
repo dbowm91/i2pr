@@ -2382,6 +2382,20 @@ impl Ssu2RuntimeService {
         }
     }
 
+    /// Returns the currently installed local RouterInfo bytes, if readable.
+    ///
+    /// Diagnostics and controlled-activation rollback use only: the bytes
+    /// are public material (the same bytes future handshakes emit), never
+    /// key material. Returns `None` only when the installation lock is
+    /// unavailable.
+    pub fn installed_local_router_info(&self) -> Option<Vec<u8>> {
+        self.shared
+            .local_router_info
+            .lock()
+            .map(|installed| installed.clone())
+            .ok()
+    }
+
     /// Atomically installs a locally signed RouterInfo for future SessionConfirmed handshakes.
     /// The encoded size, signature, publication freshness, router hash, network id, and SSU2
     /// endpoint/key binding are checked before replacement; existing authenticated sessions

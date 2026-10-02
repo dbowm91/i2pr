@@ -1625,3 +1625,73 @@ async fn cancelled_dial_returns_admission_to_baseline() {
     alice.shutdown().await;
     bob.shutdown().await;
 }
+
+#[tokio::test]
+async fn activation_publish_failure_rolls_back_to_previous_router_info() {
+    let alice = start_service(make_keys()).await;
+    // A coordinator bound to a different local hash: evidence,
+    // eligibility, build, and install all succeed, but local publication
+    // (keyed by the coordinator's local router) fails after install.
+    let other = make_keys();
+    let mut coordinator = fresh_coordinator(other.hash);
+    let cancel = CancellationToken::new();
+    let outcome = activate_controlled(ControlledActivationParams {
+        scope: &alice.scope,
+        handle: &alice.handle,
+        coordinator: &mut coordinator,
+        bundle: &alice.keys.bundle,
+        alice_static_public: alice.keys.static_public,
+        alice_intro: alice.keys.intro,
+        base_eligibility: eligible_base(),
+        wall_now_ms: wall_ms(),
+        step_timeout: EXCHANGE_STEP,
+        poll_interval: EXCHANGE_POLL,
+        cancellation: &cancel,
+    })
+    .await;
+    assert!(
+        matches!(outcome, Err(ControlledActivationError::PublishFailed)),
+        "publish fails after a successful install"
+    );
+    assert_ne!(
+        coordinator.role_state(),
+        FloodfillRoleState::Active,
+        "failed activation leaves the role non-Active"
+    );
+    // Invariant 6: the runtime no longer advertises caps=f. The rollback
+    // installs the same-address non-f record (the startup placeholder
+    // bytes are not reinstallable through validation, so byte-identity
+    // with them is not the property under test).
+    let rolled_back = alice
+        .handle
+        .service()
+        .installed_local_router_info()
+        .expect("installed bytes readable");
+    let rolled_back_info = RouterInfo::decode(
+        &rolled_back,
+        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
+    )
+    .expect("rolled-back bytes decode");
+    assert!(
+        !caps_of(&rolled_back_info).contains('f'),
+        "publish failure removes caps=f from the installed record"
+    );
+    assert_eq!(
+        address_of(&rolled_back_info)
+            .options()
+            .get("port")
+            .map(str::to_string),
+        Some(alice.addr().port().to_string()),
+        "rollback keeps the live qualified address"
+    );
+    assert_eq!(
+        alice
+            .handle
+            .service()
+            .snapshot()
+            .local_router_info_generation,
+        2,
+        "install plus rollback reinstall each bump the generation"
+    );
+    alice.shutdown().await;
+}
