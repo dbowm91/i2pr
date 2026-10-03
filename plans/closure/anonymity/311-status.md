@@ -8,7 +8,7 @@ Plan of record: [`311-service-lifecycle-startup-and-graceful-drain.md`](../../im
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| Readiness-gated group activation | `register_service_tunnel_manager` in `crates/i2pr-daemon/src/service_tunnels.rs` prepares and starts the normal configured M10 manager without a router-readiness handle or Plan 315 group-pool owner. `ServiceProduct::start` does provision before listeners, but repository call-site search finds it only in qualification/test drivers, not normal daemon graph composition. | Not integrated into the daemon product. |
+| Readiness-gated group activation | `register_service_tunnel_manager` in `crates/i2pr-daemon/src/service_tunnels.rs` can prepare and start a manager, but a repository call-site search finds no production caller. `ServiceProduct::start` provisions before listeners, but its only call sites are qualification tests and it creates a separate SSU2 stack under a test child scope. | Not integrated into the daemon product. |
 | Distinct graceful and hard shutdown | `run_daemon` in `crates/i2pr-daemon/src/lib.rs` turns Ctrl-C directly into `SupervisorHandle::shutdown(Requested)`. `Supervisor::shutdown` in `crates/i2pr-runtime/src/supervisor.rs` immediately cancels root and active service tokens before joining. | No service pre-drain phase or upgrade path exists. |
 | Bounded natural group retirement | `Supervisor::MAX_SHUTDOWN_DEADLINE` is 30 seconds. Current service-loop cancellation also governs connection tasks. The Plan 315 pool advance/replenish path is only driven through the separate `ServiceProduct::poll_inbound` composition. | Cannot safely retain daemon transport and existing group streams for the required natural lease/tunnel window. |
 | No refresh/replacement after Retiring; hard bypass; coarse status | No daemon-owned group lifecycle state or pre-shutdown control surface exists to own these transitions. | Not implementable at the current composition boundary. |
@@ -33,6 +33,6 @@ No behavior or configuration changed. The blocker is architectural, not evidence
 
 ## Unblock audit and roadmap disposition
 
-Plan 316 is registered as the required daemon/runtime integration corrective and is dependency-ready from Plans 315 and ADR 0030. Plan 312 is independent of Plan 311 and has since passed its pinned-i2pd directional handshake baseline; Plan 313 is ready. Plan 308 remains independently blocked on its controlled ordinary-HTTP topology. Plan 310 remains an immutable blocked historical record corrected by Plans 314–315.
+Plan 316 was registered as the daemon/runtime integration corrective. Its audit established that the normal daemon has no usable group-pool provider; Plan 317 is now registered to integrate the single daemon-owned router message path, validated peer material, and Plan 315 group pools before Plan 316 resumes. Plan 312 is independent of Plan 311 and passed its pinned-i2pd directional handshake baseline; Plan 313 is ready. Plan 308 remains independently blocked on its controlled ordinary-HTTP topology. Plan 310 remains an immutable blocked historical record corrected by Plans 314–315.
 
-Disposition: Plan 311 is blocked at the normal daemon composition boundary. Resume its lifecycle acceptance after Plan 316 passes; continue Plan 312 independently.
+Disposition: Plan 311 is blocked at the normal daemon composition boundary. Resume its lifecycle acceptance after Plans 317 and 316 pass; Plan 312 and Plan 313 proceed independently.
