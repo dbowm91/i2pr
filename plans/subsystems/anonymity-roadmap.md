@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 and Plan 307 are closed. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plans 308 and 309 are dependency-ready; Plans 310–313 remain behind the group-pool, lifecycle, and Streaming evidence gates. This workstream remains parallel to M12/router-mainline development.
+Status: Plans 296 and 307 are closed. Plan 308 is blocked on the controlled ordinary-HTTP peer topology and three-family captures; Plan 309 is active independently. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plans 310–313 remain behind the group-pool, lifecycle, and Streaming evidence gates. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -87,7 +87,7 @@ The group is not linkable by design to the hosting RouterInfo.
 296 passed
 
 307 service-boundary router unlinkability + sanitation [passed]
-  -> 308 HTTP ordinary-proxy differential [ready]
+  -> 308 HTTP ordinary-proxy differential [blocked: controlled topology]
   -> 309 Destination groups + service multiplexing [ready]
        -> 310 group-owned multi-hop pools + selector
             -> 311 startup/graceful lifecycle
@@ -113,7 +113,7 @@ Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may pro
 | 304 | stopped | retained Ubuntu/reference foundation | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | plans/closure/anonymity/304-status.md |
 | 305 | stopped | retained owner/reference audit | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | plans/closure/anonymity/305-status.md |
 | 307 | passed-service-boundary-router-unlinkability-and-input-sanitation | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | plans/closure/anonymity/307-status.md |
-| 308 | in progress | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 304 artifacts and ADR 0030 satisfy other dependencies |
+| 308 | blocked on controlled HTTP reference topology | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/308-status.md; capture tooling exists, but controlled ordinary Destination and three-family captures remain absent |
 | 309 | in progress | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 305 audit and ADR 0030 satisfy other dependencies |
 | 310 | blocked on 309 | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | future |
 | 311 | blocked on 310 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | future |
@@ -149,4 +149,4 @@ The workstream is complete only when direct service-boundary leaks are absent; H
 
 ## 12. Milestone status summary
 
-Plan 307 is the only dependency-ready anonymity handoff at registration. Plans 308–313 are registered in the graph above. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
+Plan 307 passed. Plan 308 remains blocked on ordinary HTTP topology evidence; Plan 309 is active and independently ready from Plan 307. Plans 310–313 retain their downstream gates. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
