@@ -111,9 +111,21 @@ cleanup() {
   for pid in "${PIDS[@]:-}"; do
     wait "${pid}" 2>/dev/null || true
   done
+  # Diagnostic aid (default off): keep the ephemeral scratch (reference
+  # router logs) on failure so the exact stop point can be attributed.
+  # Reference private keys stay owner-only under /tmp and are never
+  # copied to evidence.
+  if [[ "${I2PR_M12_KEEP_SCRATCH_ON_FAIL:-0}" == "1" && "${LANE_FAILED:-0}" == "1" ]]; then
+    echo "==> lane failed; scratch preserved at ${SCRATCH}" >&2
+    return 0
+  fi
   [[ -z "${SCRATCH:-}" || ! -d "${SCRATCH}" ]] || rm -rf "${SCRATCH}"
 }
 trap cleanup EXIT
+# Any failure past this point leaves live references behind unless the
+# trap cleans up; mark the lane failed so KEEP_SCRATCH can preserve the
+# scratch for diagnosis. Cleared only on the final pass line.
+LANE_FAILED=1
 
 record_guarded() { # label detail rc
   local label="$1" detail="$2" rc="$3"
@@ -362,9 +374,10 @@ echo "==> P live; final-starting JC into the live mesh"
 start_java jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" "${JAVA_JC_SAM_PORT}" "${JAVA_JC_I2CP_PORT}" transit jc
 wait_java_ready jc "${SCRATCH}/jcdata" "${JAVA_JC_PORT}" 480
 echo "==> establishing the lane SAM destination on JC"
-python3 - "${JAVA_JC_SAM_PORT}" <<'PY' >"${EVIDENCE_DIR}/sam-destination.result" 2>&1 &
+python3 - "${JAVA_JC_SAM_PORT}" "${EVIDENCE_DIR}/sam-attempts.log" <<'PY' >"${EVIDENCE_DIR}/sam-destination.result" 2>&1 &
 import socket, sys, time
 port = int(sys.argv[1])
+attempt_path = sys.argv[2]
 # Bounded warmup window: HELLO is bridge-local, but SESSION CREATE runs
 # through the router's I2CP server and blocks on client-tunnel leases
 # while the mesh finishes forming. Each attempt uses a fresh connection
@@ -374,12 +387,17 @@ deadline = time.time() + 300
 established = False
 last = "no-attempt"
 attempt = 0
+attempt_log = open(attempt_path, "w")
+def note(outcome):
+    attempt_log.write(f"attempt={attempt} t={int(time.time())} {outcome}\n")
+    attempt_log.flush()
 while time.time() < deadline and not established:
     attempt += 1
     try:
         session = socket.create_connection(("127.0.0.1", port), timeout=5)
     except OSError as exc:
         last = f"connect-failed: {exc}"
+        note(f"class=connect-failed detail={exc}")
         time.sleep(5)
         continue
     try:
@@ -397,10 +415,13 @@ while time.time() < deadline and not established:
         )
         if "RESULT=OK" in reply:
             established = True
+            note("class=established")
         else:
             last = f"create-rejected: {reply}"
+            note(f"class=create-rejected reply={reply}")
     except (OSError, AssertionError) as exc:
         last = f"attempt-failed: {exc}"
+        note(f"class=attempt-failed detail={exc}")
     finally:
         try:
             session.close()
@@ -613,3 +634,4 @@ if awk -F'\t' '$3 != "passed" { found = 1 } END { exit found ? 0 : 1 }' "${RESUL
   exit 1
 fi
 echo "Plan 279 Java lane passed; sanitized evidence: ${EVIDENCE_DIR}"
+LANE_FAILED=0
