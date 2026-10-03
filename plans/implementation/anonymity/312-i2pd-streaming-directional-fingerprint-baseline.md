@@ -2,9 +2,11 @@
 
 Status at registration: **blocked-on-plan310**
 
+Current dependency authority: **blocked-on-plan315**. Plan 310 remains an immutable blocked record; Plans 314–315 are its registered corrective sequence, and Plan 315 must pass before this evidence lane executes.
+
 Classification: evidence infrastructure only.
 
-Hard dependencies: Plan 310 passed; ADR 0030; exact i2pd 2.61.0 pin.
+Hard dependencies: Plan 315 passed (which transitively requires Plan 314); ADR 0030; exact i2pd 2.61.0 pin.
 
 ## 1. Objective
 
