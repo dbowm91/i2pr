@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plans 296, 307, 309, 312, 314, and 315 are closed. Plan 308 is independently blocked on the controlled ordinary-HTTP peer topology and three-family captures. Plan 310 remains the authoritative historical blocked record for the one-peer service-build/group-pool defect; its corrective sequence passed. Plan 317 is blocked because its qualification product cannot be attached to the normal daemon without splitting SSU2/inbound ownership; Plan 318 is ready to implement the production single-owner product and group-pool provider. Plan 316 and Plan 311 remain blocked pending provider and lifecycle integration. Plan 313 is ready after Plan 312's pinned-i2pd handshake baseline. Plans 297–305 remain historical stopped records. ADR 0030 establishes explicit Destination linkability domains, router-to-Destination unlinkability, separates HTTP evidence from hostile Streaming evidence, and targets pinned i2pd for Streaming convergence. This workstream remains parallel to M12/router-mainline development.
+Status: Plans 296, 307, 309, 312, 314, 315, and 318 are closed. Plan 308 is independently blocked on the controlled ordinary-HTTP peer topology and three-family captures. Plan 310 remains the authoritative historical blocked record for the one-peer service-build/group-pool defect; its corrective sequence passed. Plan 317 remains blocked historical evidence for the qualification-only owner attempt. Plan 318 supplies the normal-daemon single-owner group provider; Plan 316 is ready for lifecycle integration, while Plan 311 remains blocked pending 316. Plan 313 is ready after Plan 312's pinned-i2pd handshake baseline. Plans 297–305 remain historical stopped records. ADR 0030 establishes explicit Destination linkability domains, router-to-Destination unlinkability, separates HTTP evidence from hostile Streaming evidence, and targets pinned i2pd for Streaming convergence. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -38,6 +38,8 @@ A Destination is allowed to identify several services because the user chose tha
 - Plan 313: evidence-driven i2pd Streaming convergence.
 - Plan 314: corrective multi-hop production build contract, validated-NetDB selector, and deterministic three-hop proof.
 - Plan 315: corrective Destination-group pool ownership and Destination-operation integration.
+- Plan 316: normal-daemon Destination-group lifecycle, graceful retirement, and hard-shutdown integration.
+- Plan 318: normal-daemon single-owner provider, validated bootstrap handoff, and readiness-gated Plan 314/315 product.
 
 ## 3. Non-goals
 
@@ -47,11 +49,7 @@ No production-anonymity claim, Tor Browser equivalence, global passive-adversary
 
 Plan 296 removed known direct client-boundary leaks. Plan 304 retained an Ubuntu preflight/reference cache but over-coupled HTTP and hostile Streaming. Plan 305 correctly discovered that the production service path still has one service-owned Destination and one-peer build requests, but its mandatory per-target identity rule is superseded by ADR 0030.
 
-Current code still needs:
-- a production Destination build request that carries a complete selected path rather than one peer;
-- group-owned Destination pools consuming that established multi-hop material for LeaseSet/data/lookup/publication;
-- lifecycle separation between router process and service availability;
-- a practical Streaming fingerprint target.
+Current code now carries exact-three production build requests and group-owned pools through the normal daemon's single SSU2/inbound owner. Remaining work includes lifecycle separation between router process and service availability, plus a practical Streaming fingerprint target.
 
 Plan 310's failed pass established that these first two items are architecture boundaries, not a requirement to stand up an external three-router i2pd network. The corrective sequence therefore uses deterministic validated RouterInfo fixtures and the real short-build cryptographic state machine for Plans 314–315; live multi-router topology may be added later as non-gating interoperability infrastructure.
 
@@ -94,9 +92,9 @@ The group is not linkable by design to the hosting RouterInfo.
        -> 310 original multi-hop/pool plan [blocked historical record]
   -> 314 multi-hop request + selector + deterministic 3-hop proof [passed corrective]
                  -> 315 group-owned pool + Destination-operation integration [passed]
-                      -> 317 normal-daemon group-pool provider [blocked: owner boundary]
-                      -> 318 single-owner normal-daemon group product [active]
-                                -> 316 daemon-owned group lifecycle integration [blocked pending 318]
+                      -> 317 qualification-owner provider attempt [blocked historical]
+                      -> 318 single-owner normal-daemon group product [passed]
+                                -> 316 daemon-owned group lifecycle integration [ready]
                                      -> 311 startup/graceful lifecycle [blocked pending 316]
                       -> 312 i2pd Streaming directional baseline [passed: handshake metadata]
                            -> 313 i2pd Streaming convergence [ready]
@@ -105,7 +103,7 @@ passing 308 + 315 + 311 + 313
   -> future integrated anonymity successor to stopped Plan 301
 ~~~
 
-Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plans 314 and 315 passed the corrective build/selector and group-pool/consumer halves. Plan316's attempt confirmed that `register_service_tunnel_manager` has no production call site and the only `ServiceProduct::start` owners are qualification tests; its separate SSU2 owner cannot be grafted into the normal graph without splitting transport/inbound ownership. Plan317 confirmed that its proposed direct transfer cannot satisfy the normal graph's single-owner contract: the bootstrap store is not handed to the graph, the qualification product starts a second SSU2 owner under a test scope, and the normal inbound pump has no group-pool hook. Its closure adds a fail-closed graph guard for enabled service configurations and registers Plan318 to implement the production single-owner product/provider. Plan316 and Plan311 remain blocked in sequence on that provider and lifecycle work. Plan312 passed an exact-pinned i2pd clean-handshake comparison for client/server roles; only flags, FROM inclusion, maximum packet payload, and initial payload length were registered. Maximum packet payload differs in both roles (i2pr 1730; i2pd 1812). Plan313 is ready to address measured differences. Plan308 remains independently blocked.
+Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plans 314 and 315 passed the corrective build/selector and group-pool/consumer halves. The original Plan 316 attempt found no production provider; Plan 317 then confirmed the qualification product could not be grafted into the normal graph without a second SSU2 owner or split inbound queue. Plan 318 corrected that boundary: `run_daemon` now supplies the validated bootstrap snapshot to the existing SSU2 service, which owns exact-three group builds, bounded startup-message replay, Plan 315 pools, and readiness-gated service supervisors. Plan 318 passed and the Plan 316 status amendment moves lifecycle integration to ready. Plan 311 remains blocked pending 316. Plan 312 passed an exact-pinned i2pd clean-handshake comparison for client/server roles; only flags, FROM inclusion, maximum packet payload, and initial payload length were registered. Maximum packet payload differs in both roles (i2pr 1730; i2pd 1812). Plan 313 is ready to address measured differences. Plan 308 remains independently blocked.
 
 ## 7. Milestones
 
@@ -125,12 +123,12 @@ Plan 308 proceeded independently and remains blocked on HTTP topology evidence; 
 | 310 | blocked-service-product-has-no-bounded-multipath-candidate-owner | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | `plans/closure/anonymity/310-status.md`; immutable blocked record: one-peer request/provisioning path remains, with no group-owned multipath lifecycle |
 | 314 | passed-plan310-multihop-build-contract-and-deterministic-three-hop-proof | architecture/anonymity capability foundation | plans/implementation/anonymity/314-plan310-multihop-build-contract-and-deterministic-proof.md | plans/closure/anonymity/314-status.md; request, selector, continuity, and deterministic crypto proof passed; no external topology gate |
 | 315 | passed-plan310-destination-group-pool-ownership-and-destination-operations | architecture/anonymity capability | plans/implementation/anonymity/315-plan310-destination-group-pool-integration.md | plans/closure/anonymity/315-status.md; canonical group pools feed LeaseSet, inbound ownership, data, lookup, and publication consumers |
-| 311 | blocked | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | Normal daemon lacks the group lifecycle/pre-shutdown owner; Plans 317 and 316 are corrective prerequisites |
+| 311 | blocked | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | Revisit after Plan 316 closes production lifecycle integration |
 | 312 | passed-pinned-i2pd-directional-handshake-fingerprint-baseline | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | Exact-pinned lane passed; sanitized four-role handshake traces and matrix are recorded in the closure |
 | 313 | ready | convergence capability | plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md | Only measured handshake differences are in scope; unobserved dimensions require new evidence |
-| 316 | blocked-normal-daemon-has-no-production-group-pool-provider | daemon/runtime lifecycle corrective | plans/implementation/anonymity/316-daemon-owned-service-group-lifecycle-integration.md | `plans/closure/anonymity/316-status.md`; resume after Plan318 supplies a single-owner group-pool provider |
+| 316 | ready | daemon/runtime lifecycle corrective | plans/implementation/anonymity/316-daemon-owned-service-group-lifecycle-integration.md | `plans/closure/anonymity/316-unblock-amendment-plan318-provider-passed.md`; Plan 318 supplies the single-owner group provider |
 | 317 | blocked | daemon/router product capability foundation | plans/closure/anonymity/317-status.md | Qualification product and normal graph have incompatible SSU2/inbound owners; Plan318 replaces this attempt |
-| 318 | active | daemon/router product capability corrective | plans/implementation/anonymity/318-normal-daemon-single-owner-group-product.md | Implement the production single-owner product, validated store handoff, Plan314/315 group path, and readiness gates |
+| 318 | passed-normal-daemon-single-owner-group-product-readiness-gated | daemon/router product capability corrective | plans/implementation/anonymity/318-normal-daemon-single-owner-group-product.md | `plans/closure/anonymity/318-status.md`; normal daemon owns the validated store handoff, Plan 314/315 group path, bounded replay, and readiness gates |
 
 ## 8. Cross-cutting requirements
 
@@ -161,4 +159,4 @@ The workstream is complete only when direct service-boundary leaks are absent; H
 
 ## 12. Milestone status summary
 
-Plans 307, 309, 312, 314, and 315 passed. Plan 308 remains independently blocked on ordinary HTTP topology evidence. Plan 310 remains an immutable blocked record at the service-product candidate/path/pool boundary; the corrective sequence completed the remaining requirements. Plan317 is blocked at the normal-daemon owner boundary; Plan318 is ready as its provider corrective. Plan316 is blocked pending Plan318, and Plan311 is blocked pending Plan316. Plan313 is ready after Plan312's handshake baseline. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
+Plans 307, 309, 312, 314, 315, and 318 passed. Plan 308 remains independently blocked on ordinary HTTP topology evidence. Plan 310 remains an immutable blocked record at the service-product candidate/path/pool boundary; the corrective sequence completed the remaining requirements. Plan 317 remains blocked historical authority for the qualification-owner attempt. Plan 316 is ready after Plan 318 supplied the production provider; Plan 311 remains blocked pending lifecycle completion. Plan 313 is ready after Plan 312's handshake baseline. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
