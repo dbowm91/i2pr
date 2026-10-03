@@ -5043,52 +5043,80 @@ mod plan202_routing_tests {
             "127.0.0.4:0",
         );
         dedicated_http.policy = DestinationPolicy::Dedicated;
-        let manager = Arc::new(
-            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
-                data_dir: directory.path().to_path_buf(),
-                aggregate_connection_ceiling: 8,
-                per_service_connection_ceiling: 4,
-                specs: Arc::new(ServiceTunnelSet {
-                    tunnels: vec![
-                        group_client(
-                            "http",
-                            "clients",
-                            ServiceTunnelKind::HttpClient,
-                            "127.0.0.1:0",
-                        ),
-                        group_client(
-                            "socks",
-                            "clients",
-                            ServiceTunnelKind::Socks5Client,
-                            "127.0.0.2:0",
-                        ),
-                        group_client(
-                            "http-second",
-                            "clients",
-                            ServiceTunnelKind::HttpClient,
-                            "127.0.0.3:0",
-                        ),
-                        dedicated_http,
-                    ],
-                }),
-                aliases: Arc::new(StaticAliasTable::new()),
-            })
-            .expect("manager"),
-        );
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![
+                group_client(
+                    "http",
+                    "clients",
+                    ServiceTunnelKind::HttpClient,
+                    "127.0.0.1:0",
+                ),
+                group_client(
+                    "socks",
+                    "clients",
+                    ServiceTunnelKind::Socks5Client,
+                    "127.0.0.2:0",
+                ),
+                group_client(
+                    "http-second",
+                    "clients",
+                    ServiceTunnelKind::HttpClient,
+                    "127.0.0.3:0",
+                ),
+                group_client(
+                    "socks-second",
+                    "clients",
+                    ServiceTunnelKind::Socks5Client,
+                    "127.0.0.5:0",
+                ),
+                dedicated_http,
+            ],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
         let runtimes = manager.prepare().await.expect("prepare clients");
-        assert_eq!(runtimes.len(), 4);
+        assert_eq!(runtimes.len(), 5);
         let destinations: HashMap<&str, DestinationId> = runtimes
             .iter()
             .map(|runtime| (runtime.spec_id.as_str(), runtime.destination_id))
             .collect();
         assert_eq!(destinations["http"], destinations["socks"]);
         assert_eq!(destinations["http"], destinations["http-second"]);
+        assert_eq!(destinations["http"], destinations["socks-second"]);
         assert_ne!(destinations["http"], destinations["dedicated-http"]);
         assert_eq!(manager.snapshot().active_service_destinations, 2);
         assert!(
             !ServiceDestinationStore::for_group(directory.path(), "clients")
                 .expect("group store")
                 .exists()
+        );
+        let old_group_id = destinations["http"];
+        drop(runtimes);
+        drop(manager);
+        let restarted = build_manager();
+        let restarted_runtimes = restarted.prepare().await.expect("restart clients");
+        let restarted_group_id = restarted_runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "http")
+            .expect("HTTP runtime")
+            .destination_id;
+        assert_ne!(restarted_group_id, old_group_id);
+        assert!(
+            restarted_runtimes
+                .iter()
+                .filter(|runtime| runtime.spec_id != "dedicated-http")
+                .all(|runtime| runtime.destination_id == restarted_group_id)
         );
     }
 
