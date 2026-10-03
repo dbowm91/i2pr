@@ -152,10 +152,7 @@ fn memchr_split(response: &[u8]) -> usize {
 }
 
 /// Sends one JSON-RPC body with compliant framing.
-async fn post_json(
-    address: SocketAddr,
-    body: &serde_json::Value,
-) -> (u16, serde_json::Value) {
+async fn post_json(address: SocketAddr, body: &serde_json::Value) -> (u16, serde_json::Value) {
     let bytes = serde_json::to_vec(body).expect("body serializes");
     let head = format!(
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
@@ -193,7 +190,10 @@ fn sanitized(value: &serde_json::Value) -> serde_json::Value {
             map.iter()
                 .map(|(key, item)| {
                     if key == "Token" || key == "Password" {
-                        (key.clone(), serde_json::Value::String("[redacted]".to_owned()))
+                        (
+                            key.clone(),
+                            serde_json::Value::String("[redacted]".to_owned()),
+                        )
                     } else {
                         (key.clone(), sanitized(item))
                     }
@@ -292,10 +292,7 @@ async fn run_corpus(
 
     // One batched RouterInfo request over every answerable selector.
     let mut params = serde_json::Map::new();
-    params.insert(
-        "Token".to_owned(),
-        serde_json::Value::String(token.clone()),
-    );
+    params.insert("Token".to_owned(), serde_json::Value::String(token.clone()));
     for selector in ANSWERABLE {
         params.insert(selector.to_owned(), serde_json::Value::Null);
     }
@@ -367,7 +364,10 @@ async fn run_corpus(
         }),
     )
     .await;
-    assert!(response["result"].is_object(), "services answer: {response}");
+    assert!(
+        response["result"].is_object(),
+        "services answer: {response}"
+    );
     answered += 6;
     shapes.push_str(&shape_hash(&response["result"]));
 
@@ -484,8 +484,7 @@ async fn run_corpus(
 #[tokio::test]
 async fn differential_corpus_against_production_composition() {
     let data = tempfile::tempdir().expect("temp data dir");
-    let config =
-        Config::parse(&config_text(data.path(), TEST_PASSWORD)).expect("config parses");
+    let config = Config::parse(&config_text(data.path(), TEST_PASSWORD)).expect("config parses");
     // Production publishers, no services running: every attestation
     // the composition root installs is live.
     let (_graph, inspection) =
@@ -534,8 +533,13 @@ async fn differential_corpus_against_production_composition() {
     let (answered, gapped, errors, shape) = run_corpus(address, TEST_PASSWORD, true).await;
     assert_eq!(answered, 28, "22 rows + 6 services answer");
     assert_eq!(gapped, 8, "hash + news + 6 address-book rows gap");
-    assert_eq!(errors, 4, "address-book, tunnel, determination, method errors");
-    println!("PLAN295-CORPUS target=local answered={answered} gapped={gapped} errors={errors} shape={shape}");
+    assert_eq!(
+        errors, 4,
+        "address-book, tunnel, determination, method errors"
+    );
+    println!(
+        "PLAN295-CORPUS target=local answered={answered} gapped={gapped} errors={errors} shape={shape}"
+    );
 }
 
 /// External differential corpus against a provisioned router.
@@ -550,15 +554,13 @@ async fn differential_corpus_against_provisioned_target() {
     let target = std::env::var("I2PR_I2PCONTROL_TARGET").expect(
         "I2PR_I2PCONTROL_TARGET=host:port is required for the external differential corpus",
     );
-    let password = std::env::var("I2PR_I2PCONTROL_PASSWORD").expect(
-        "I2PR_I2PCONTROL_PASSWORD is required for the external differential corpus",
-    );
+    let password = std::env::var("I2PR_I2PCONTROL_PASSWORD")
+        .expect("I2PR_I2PCONTROL_PASSWORD is required for the external differential corpus");
     let address: SocketAddr = target
         .parse()
         .expect("I2PR_I2PCONTROL_TARGET must be host:port");
     assert!(
-        address.ip() != IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
-            || address.port() != 0,
+        address.ip() != IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)) || address.port() != 0,
         "target must be explicit"
     );
     let (answered, gapped, errors, shape) = run_corpus(address, &password, false).await;

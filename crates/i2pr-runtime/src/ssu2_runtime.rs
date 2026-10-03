@@ -5816,7 +5816,8 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_validate_ordering_and_bounds() {        assert!(Ssu2RuntimeDeadlines::default().validate().is_ok());
+    fn deadlines_validate_ordering_and_bounds() {
+        assert!(Ssu2RuntimeDeadlines::default().validate().is_ok());
         let zero = Ssu2RuntimeDeadlines {
             handshake: Duration::ZERO,
             ..Default::default()

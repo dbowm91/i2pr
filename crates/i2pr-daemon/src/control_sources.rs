@@ -222,11 +222,7 @@ impl tracing::field::Visit for FieldDump {
         self.push(field.name(), &value.to_string());
     }
 
-    fn record_debug(
-        &mut self,
-        field: &tracing::field::Field,
-        value: &dyn core::fmt::Debug,
-    ) {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
         self.push(field.name(), &format!("{value:?}"));
     }
 }
@@ -346,13 +342,7 @@ impl ControlMetrics {
     /// Coverage is exactly the registered sources: local
     /// loopback/destination traffic that bypasses the transport
     /// counters is not counted, and the dossier says so.
-    pub fn observe_transport(
-        &self,
-        rx_bytes: u64,
-        tx_bytes: u64,
-        rx_dgrams: u64,
-        tx_dgrams: u64,
-    ) {
+    pub fn observe_transport(&self, rx_bytes: u64, tx_bytes: u64, rx_dgrams: u64, tx_dgrams: u64) {
         if let Ok(mut state) = self.state.lock() {
             state.observed = true;
             state.rx_bytes = rx_bytes;
@@ -375,7 +365,9 @@ impl ControlMetrics {
     /// tests; production passes [`Instant::now`]).
     pub fn tick_at(&self, now: Instant) {
         if let Ok(mut state) = self.state.lock() {
-            let elapsed = state.last_tick.map(|last| now.saturating_duration_since(last));
+            let elapsed = state
+                .last_tick
+                .map(|last| now.saturating_duration_since(last));
             state.last_tick = Some(now);
             let (rx_delta, tx_delta, rx_dgrams, tx_dgrams) = (
                 state.rx_bytes.saturating_sub(state.base_rx_bytes),
@@ -481,14 +473,23 @@ mod tests {
         let (lines, _) = ring.snapshot();
         assert_eq!(lines.len(), 9);
         for line in &lines {
-            assert_eq!(line.message, REDACTED_MESSAGE, "unredacted: {}", line.wire());
+            assert_eq!(
+                line.message,
+                REDACTED_MESSAGE,
+                "unredacted: {}",
+                line.wire()
+            );
         }
     }
 
     #[test]
     fn ring_keeps_ordinary_naming_traffic() {
         let ring = LogRing::new();
-        ring.record("INFO", "addressbook", "private address book committed generation 7");
+        ring.record(
+            "INFO",
+            "addressbook",
+            "private address book committed generation 7",
+        );
         ring.record("INFO", "daemon", "control plane ready");
         let (lines, _) = ring.snapshot();
         assert_eq!(lines.len(), 2);
@@ -521,8 +522,7 @@ mod tests {
     fn layer_feeds_ring_through_subscriber() {
         use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt as _;
         let ring = Arc::new(LogRing::new());
-        let subscriber =
-            tracing_subscriber::registry().with(LogRingLayer::new(Arc::clone(&ring)));
+        let subscriber = tracing_subscriber::registry().with(LogRingLayer::new(Arc::clone(&ring)));
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: "daemon", "control plane ready");
             tracing::debug!(target: "daemon", "verbose detail");
@@ -549,14 +549,7 @@ mod tests {
         metrics.observe_transport(10_000, 5_000, 100, 50);
         metrics.tick_at(first);
         // Baseline tick establishes the window without computing rates.
-        assert!(
-            metrics
-                .state
-                .lock()
-                .expect("state")
-                .rates
-                .is_empty()
-        );
+        assert!(metrics.state.lock().expect("state").rates.is_empty());
         let second = first + std::time::Duration::from_secs(10);
         metrics.observe_transport(30_000, 15_000, 300, 150);
         metrics.tick_at(second);

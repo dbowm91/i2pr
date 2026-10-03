@@ -449,7 +449,11 @@ impl core::fmt::Debug for InspectionHandles {
             .field("bans_published", &snapshots.bans.is_some())
             .field(
                 "log_live",
-                &self.log_live.lock().map(|live| live.is_some()).unwrap_or(false),
+                &self
+                    .log_live
+                    .lock()
+                    .map(|live| live.is_some())
+                    .unwrap_or(false),
             )
             .field(
                 "metrics_live",
@@ -724,21 +728,22 @@ pub fn router_info_result(
         owner,
     };
     match selector {
-        RouterInfoSelector::RouterVersion => Ok(serde_json::Value::String(ROUTER_VERSION.to_owned())),
-        RouterInfoSelector::RouterApiVersion => {
-            Ok(serde_json::Value::from(ROUTER_API_VERSION))
+        RouterInfoSelector::RouterVersion => {
+            Ok(serde_json::Value::String(ROUTER_VERSION.to_owned()))
         }
+        RouterInfoSelector::RouterApiVersion => Ok(serde_json::Value::from(ROUTER_API_VERSION)),
         RouterInfoSelector::RouterUptime => Ok(serde_json::Value::from(uptime_secs)),
         RouterInfoSelector::RouterStatus => {
             Ok(serde_json::Value::String(ROUTER_STATUS_RUNNING.to_owned()))
         }
         RouterInfoSelector::RouterNetworkId => Ok(serde_json::Value::from(handles.network_id())),
-        RouterInfoSelector::RouterHash => snapshots.router_hash.map(serde_json::Value::String).ok_or_else(
-            || match row.availability {
+        RouterInfoSelector::RouterHash => snapshots
+            .router_hash
+            .map(serde_json::Value::String)
+            .ok_or_else(|| match row.availability {
                 SourceAvailability::PublishedGated { owner, owner_plan } => gap(owner, owner_plan),
                 _ => gap("bootstrap identity", "288"),
-            },
-        ),
+            }),
         RouterInfoSelector::NetDbKnownPeers => snapshots
             .netdb_known
             .map(|peers| strings_value(&peers))
@@ -793,9 +798,7 @@ pub fn router_info_result(
                 serde_json::json!({"inbound_bps": inbound_bps, "outbound_bps": outbound_bps})
             })
             .ok_or_else(|| unpublished_295(&row)),
-        RouterInfoSelector::AddressBookPrivate => {
-            addressbook_book_value(handles, 0, &row)
-        }
+        RouterInfoSelector::AddressBookPrivate => addressbook_book_value(handles, 0, &row),
         RouterInfoSelector::AddressBookLocal => addressbook_book_value(handles, 1, &row),
         RouterInfoSelector::AddressBookRouter => addressbook_book_value(handles, 2, &row),
         RouterInfoSelector::AddressBookPublished => addressbook_book_value(handles, 3, &row),
