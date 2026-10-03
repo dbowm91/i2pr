@@ -1,9 +1,9 @@
 //! Plan 294 canonical AddressBook runtime owner (daemon half).
 //!
 //! [`AddressBookManager`] owns the validated `[addressbook]`
-//! configuration, the committed [`AddressBook`](i2pr_addressbook::AddressBook),
+//! configuration, the committed [`AddressBook`],
 //! opaque generation persistence through
-//! [`AddressBookGenerationStore`](i2pr_storage::AddressBookGenerationStore),
+//! [`AddressBookGenerationStore`],
 //! the published read-only resolver snapshot shared with SAM,
 //! service-tunnel, and inspection consumers, the bounded refresh queue
 //! plus diagnostic artifact, and first-activation snapshot import.
@@ -389,10 +389,7 @@ impl AddressBookManager {
         if !self.enqueue_current_for_refresh(reason) && self.take_refresh_work().is_none() {
             return;
         }
-        loop {
-            let Some(_set) = self.take_refresh_work() else {
-                break;
-            };
+        while let Some(_set) = self.take_refresh_work() {
             let diagnostic = self.run_refresh_once(reason);
             self.record_diagnostic(&diagnostic);
             let _ = self.refresh_finished();
@@ -532,15 +529,14 @@ fn append_bounded_line(state_dir: &Path, log_file: &str, line: &str) {
     }
     let _ = writeln!(file, "{line}");
     drop(file);
-    if let Ok(metadata) = fs::symlink_metadata(&path) {
-        if metadata.len() > MAX_DIAGNOSTIC_ARTIFACT_BYTES {
-            if let Ok(contents) = fs::read(&path) {
-                let keep = contents
-                    .len()
-                    .saturating_sub(DIAGNOSTIC_ARTIFACT_RETAIN_BYTES as usize);
-                let _ = fs::write(&path, &contents[keep..]);
-            }
-        }
+    if let Ok(metadata) = fs::symlink_metadata(&path)
+        && metadata.len() > MAX_DIAGNOSTIC_ARTIFACT_BYTES
+        && let Ok(contents) = fs::read(&path)
+    {
+        let keep = contents
+            .len()
+            .saturating_sub(DIAGNOSTIC_ARTIFACT_RETAIN_BYTES as usize);
+        let _ = fs::write(&path, &contents[keep..]);
     }
 }
 
