@@ -122,6 +122,8 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 293 | blocked on 292 | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | future |
 | 294 | ready | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | future |
 | 295 | blocked on 288 + 293 + 294 | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | future |
+| 296 | blocked on 292 | capability | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | future |
+| 297 | blocked on 292 | capability | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | future |
 
 ## 8. Cross-cutting requirements
 

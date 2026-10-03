@@ -46,6 +46,7 @@ pub mod methods;
 pub mod router_info;
 pub mod source_matrix;
 pub mod tunnel;
+pub mod tunnel_matrix;
 pub mod tunnel_options;
 pub mod tunnel_request;
 
