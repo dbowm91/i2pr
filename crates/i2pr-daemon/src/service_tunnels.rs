@@ -199,10 +199,6 @@ pub struct ServiceRuntime {
     /// (Plan 291). No TCP listener or target; UDP endpoints live
     /// in the spec options.
     is_streamr_server: bool,
-    /// Effective destination config this runtime was built with
-    /// (Plan 292 shaping projection of the spec; mirrors reuse it
-    /// so the registry matches the live pool sizing).
-    pub(crate) destination_config: DestinationConfig,
     /// Last observed activity in process-monotonic milliseconds
     /// (Plan 292 idle sweep; connection ends and Streamr events
     /// advance it; construction seeds it).
@@ -3199,20 +3195,19 @@ impl ServiceTunnelManager {
                 .expect("Destination group staged")
                 .runtime,
         );
+        let is_http_bidir = matches!(spec.kind, ServiceTunnelKind::HttpBidirServer);
         let is_server = matches!(
             spec.kind,
             ServiceTunnelKind::GenericServer
                 | ServiceTunnelKind::IrcServer
                 | ServiceTunnelKind::HttpServer
                 | ServiceTunnelKind::StreamrServer
-        );
+        ) || is_http_bidir;
         // Plan 290: the bidirectional profile carries both halves.
-        let is_http_bidir = matches!(spec.kind, ServiceTunnelKind::HttpBidirServer);
         // Plan 291: Streamr halves carry UDP endpoints, never TCP
         // listeners or targets.
         let is_streamr_client = matches!(spec.kind, ServiceTunnelKind::StreamrClient);
         let is_streamr_server = matches!(spec.kind, ServiceTunnelKind::StreamrServer);
-        let streaming_config = Self::streaming_config_for(spec);
         // Plan 182: server tunnels listen on the wildcard Streaming
         // port 0, matching the proven SAM convention (connect with
         // local/remote port 0 on every client path). The previous
@@ -3297,8 +3292,6 @@ impl ServiceTunnelManager {
         // shaping (stored shaping unless a sweep reduction
         // overrode it), never the shared manager default.
         let shaping = self.reduced_shaping_for(spec);
-        let destination_config =
-            Self::destination_config_for_shaping(&shaping).with_reply_bundling(spec.reply_bundling);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -3323,7 +3316,6 @@ impl ServiceTunnelManager {
             is_http_bidir,
             is_streamr_client,
             is_streamr_server,
-            destination_config,
             last_activity_ms: AtomicU64::new(service_streaming_now_ms()),
             streamr_subscribers: AtomicUsize::new(0),
             effective_shaping: shaping,
@@ -5045,9 +5037,20 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -5077,9 +5080,20 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         };
         match kind {
             ServiceTunnelKind::HttpClient => {
@@ -8467,6 +8481,7 @@ mod plan296_sweep_policy_tests {
                 .collect(),
             destination: None,
             policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),

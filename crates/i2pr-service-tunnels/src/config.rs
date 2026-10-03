@@ -1435,7 +1435,8 @@ impl ServiceTunnelSet {
                     persistent: false,
                 });
             group.members.push(service.id.clone());
-            group.persistent |= service.kind.is_server();
+            group.persistent |= service.kind.is_server()
+                || matches!(service.kind, ServiceTunnelKind::HttpBidirServer);
         }
         groups.into_values().collect()
     }
@@ -1478,9 +1479,20 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -1624,6 +1636,7 @@ mod tests {
             )],
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -1670,6 +1683,7 @@ mod tests {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -2010,6 +2024,7 @@ mod tests {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -2049,6 +2064,7 @@ mod tests {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -2111,6 +2127,7 @@ mod tests {
             targets: Vec::new(),
             destination: Some(DestinationRef::parse(&canonical_b32()).expect("destination")),
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -2144,6 +2161,7 @@ mod tests {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),

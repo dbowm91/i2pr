@@ -53,6 +53,7 @@ fn build_manager(data_dir: &Path) -> ServiceTunnelManager {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 4,
             max_buffered_bytes_per_direction: 65536,
             timeouts: ServiceTimeouts::defaults(),

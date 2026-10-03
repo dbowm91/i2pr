@@ -1039,6 +1039,7 @@ fi
 SERVICE_TUNNELS_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_tunnels.rs"
 SERVICE_DELIVERY_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_delivery.rs"
 SERVICE_PRODUCT_RS="${REPO_ROOT}/crates/i2pr-daemon/src/service_product.rs"
+DESTINATION_POOL_RS="${REPO_ROOT}/crates/i2pr-client/src/pool.rs"
 SAM_STREAMS_RS="${REPO_ROOT}/crates/i2pr-daemon/src/sam/streams.rs"
 
 # 14. Plan 210 §C — the production code path must not derive a
@@ -1195,8 +1196,9 @@ if ! grep -q -F 'build_signed_lease_set2' "${SERVICE_PRODUCT_RS}"; then
   echo "evidence check failed: Plan 212 §9 — production provisioning must derive the service LS2 via build_signed_lease_set2" >&2
   failures=$((failures + 1))
 fi
-if ! grep -q -F 'InboundLeaseSource::from_parts' "${SERVICE_PRODUCT_RS}"; then
-  echo "evidence check failed: Plan 212 §9 — production provisioning must build InboundLeaseSource::from_parts from installed route metadata" >&2
+if ! grep -q -F 'destination.inbound_lease_sources(now_secs)' "${SERVICE_PRODUCT_RS}" ||
+   ! grep -q -F 'InboundLeaseSource::from_parts' "${DESTINATION_POOL_RS}"; then
+  echo "evidence check failed: Plan 212 §9 — production provisioning must publish lease sources derived from established pool registrations" >&2
   failures=$((failures + 1))
 fi
 

@@ -59,6 +59,7 @@ fn base_spec(id: &str, kind: ServiceTunnelKind) -> ServiceTunnelSpec {
         targets: Vec::new(),
         destination: None,
         policy: DestinationPolicy::Dedicated,
+        inbound_port: None,
         max_connections: 8,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: ServiceTimeouts::defaults(),

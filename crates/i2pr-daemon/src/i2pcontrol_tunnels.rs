@@ -1735,6 +1735,7 @@ pub fn build_control_spec(
         targets: Vec::new(),
         destination,
         policy: DestinationPolicy::Dedicated,
+        inbound_port: None,
         max_connections,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
