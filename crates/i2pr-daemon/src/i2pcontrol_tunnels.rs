@@ -1646,8 +1646,10 @@ fn static_spec_reason(error: i2pr_service_tunnels::ServiceTunnelError) -> &'stat
 /// keys), so echoing the key name leaks no value.
 fn rejected_option_reason(tunnel_type: TunnelType, key: &str) -> String {
     match disposition_for(tunnel_type.canonical_index(), key) {
-        Some(CellDisposition::BlockedPrimitive { plan, primitive }) => {
-            format!("{key} is not yet supported (Plan {plan} owns {primitive})")
+        Some(CellDisposition::ExplicitIncompatibility { limitation }) => {
+            format!(
+                "{key} is not supported ({limitation}; Plan 293 determination, carried by Plan 295)"
+            )
         }
         Some(CellDisposition::CorrectivePending { plan, reason }) => {
             format!("{key} is not yet supported (Plan {plan} owns {reason})")
@@ -3693,7 +3695,9 @@ mod tests {
                 "unexpected error for {key}={value}: {error:?}"
             );
         }
-        // Residuals name their owning plan (in-mask kinds only).
+        // Residuals name their limitation (in-mask kinds only): 296/297
+        // corrective reasons name the owning plan, 293 deep primitives
+        // name the determination and its Plan 295 carriage.
         for (key, value) in [
             ("tunnel_backup_quantity", "x"),
             ("tunnel_variance", "x"),
@@ -3705,7 +3709,7 @@ mod tests {
                 .expect_err("residual rejected");
             assert!(
                 matches!(&error, ControlError::UnsupportedOption(message)
-                    if message.contains("Plan 296") || message.contains("Plan 293")),
+                    if message.contains("Plan 296") || message.contains("Plan 293 determination")),
                 "unexpected error for {key}: {error:?}"
             );
         }
@@ -3718,7 +3722,8 @@ mod tests {
         let error = normalize_definition("httpout", TunnelType::HttpClient, &options, false)
             .expect_err("outproxy rejected");
         assert!(
-            matches!(&error, ControlError::UnsupportedOption(message) if message.contains("Plan 293")),
+            matches!(&error, ControlError::UnsupportedOption(message)
+                if message.contains("Plan 293 determination") && message.contains("Plan 295")),
             "unexpected error: {error:?}"
         );
         // use_ssl residual on a server kind names Plan 297.
@@ -3744,6 +3749,125 @@ mod tests {
         let spec = build_control_spec(&definition).expect("streamr shaping builds");
         assert_eq!(spec.kind, ServiceTunnelKind::StreamrServer);
         assert_eq!(spec.shaping.inbound_quantity, 3);
+    }
+
+    #[test]
+    fn plan293_deep_primitives_rejected_with_named_limitation() {
+        fn base_options(tunnel_type: TunnelType) -> BTreeMap<String, String> {
+            match tunnel_type {
+                TunnelType::Server | TunnelType::HttpServer | TunnelType::HttpBidirServer => {
+                    server_options("127.0.0.1:9090")
+                }
+                TunnelType::StreamrClient | TunnelType::StreamrServer => {
+                    let mut options = BTreeMap::new();
+                    options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+                    options.insert("local_udp_port".to_owned(), "5001".to_owned());
+                    options
+                }
+                _ => client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0),
+            }
+        }
+        // sig_type applies to every kind: the Java spelling, the numeric
+        // type, the lone i2pr-supported value, and a legacy name all fail
+        // with the SigType limitation. No singleton accept exists because
+        // accepting the one generatable value would select nothing.
+        for tunnel_type in [
+            TunnelType::Client,
+            TunnelType::Server,
+            TunnelType::HttpClient,
+            TunnelType::Socks,
+            TunnelType::IrcClient,
+            TunnelType::IrcServer,
+            TunnelType::ConnectClient,
+            TunnelType::SocksIrc,
+            TunnelType::HttpServer,
+            TunnelType::HttpBidirServer,
+            TunnelType::StreamrClient,
+            TunnelType::StreamrServer,
+        ] {
+            for value in ["EDDSA_SHA512_ED25519", "7", "Ed25519", "DSA-SHA1"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("sig_type".to_owned(), value.to_owned());
+                let error = normalize_definition("sigbad", tunnel_type, &options, false)
+                    .expect_err("sig_type rejected");
+                assert!(
+                    matches!(&error, ControlError::UnsupportedOption(message)
+                        if message.contains("sig_type")
+                            && message.contains("SigType")
+                            && message.contains("Plan 293 determination")
+                            && message.contains("Plan 295")),
+                    "unexpected error for {tunnel_type:?} sig_type={value}: {error:?}"
+                );
+            }
+        }
+        // LeaseSet security keys on publishing kinds: every mode fails,
+        // including explicit disable (omit the field for ordinary
+        // publication) and every secret companion. Secret values never
+        // reach the message, the mirror, or the store.
+        for tunnel_type in [
+            TunnelType::Server,
+            TunnelType::HttpServer,
+            TunnelType::HttpBidirServer,
+            TunnelType::StreamrServer,
+        ] {
+            for (key, value) in [
+                ("encrypt_lease_set", "true"),
+                ("encrypt_lease_set", "false"),
+                ("encrypt_lease_set", "disable"),
+                ("leaseset_password", "hunter2"),
+                ("leaseset_blinding_secret", "hunter2"),
+                ("leaseset_client_auth", "hunter2"),
+            ] {
+                let mut options = base_options(tunnel_type);
+                options.insert(key.to_owned(), value.to_owned());
+                let error = normalize_definition("lsbad", tunnel_type, &options, false)
+                    .expect_err("leaseset security rejected");
+                match &error {
+                    ControlError::UnsupportedOption(message) => {
+                        assert!(
+                            message.contains(key)
+                                && message.contains("LeaseSet")
+                                && message.contains("Plan 293 determination")
+                                && message.contains("Plan 295"),
+                            "unexpected message for {tunnel_type:?} {key}: {message}"
+                        );
+                        assert!(
+                            !message.contains(value) || key == "encrypt_lease_set",
+                            "secret value leaked for {tunnel_type:?} {key}"
+                        );
+                    }
+                    other => panic!("unexpected error for {tunnel_type:?} {key}: {other:?}"),
+                }
+            }
+        }
+        // Outproxy provider on the proxy kinds: any supplied plugin
+        // reference fails with the provider limitation.
+        for tunnel_type in [TunnelType::HttpClient, TunnelType::ConnectClient] {
+            for value in ["true", "http://outproxy.i2p", ""] {
+                let mut options = base_options(tunnel_type);
+                options.insert("use_outproxy_plugin".to_owned(), value.to_owned());
+                let error = normalize_definition("opbad", tunnel_type, &options, false)
+                    .expect_err("outproxy rejected");
+                assert!(
+                    matches!(&error, ControlError::UnsupportedOption(message)
+                        if message.contains("use_outproxy_plugin")
+                            && message.contains("outproxy provider")
+                            && message.contains("Plan 293 determination")
+                            && message.contains("Plan 295")),
+                    "unexpected error for {tunnel_type:?}: {error:?}"
+                );
+            }
+        }
+        // Out-of-mask pairs still reject before allocation; the message
+        // names the key without a limitation (no disposition applies).
+        let mut options = base_options(TunnelType::Client);
+        options.insert("encrypt_lease_set".to_owned(), "true".to_owned());
+        let error = normalize_definition("lsmask", TunnelType::Client, &options, false)
+            .expect_err("out-of-mask rejected");
+        assert_eq!(
+            error,
+            ControlError::UnsupportedOption("encrypt_lease_set".to_owned())
+        );
     }
 
     #[test]

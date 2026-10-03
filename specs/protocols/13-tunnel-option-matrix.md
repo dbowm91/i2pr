@@ -27,18 +27,24 @@ explicit i2pr interpretations below.
   struct/field/sweep, never a storage mirror.
 - `NOT_APPLICABLE_CELLS = 37`: the kind has no consuming layer for
   the key even though the Proposal mask group covers it.
-- `BLOCKED_293_CELLS = 30`: applicable, but the primitive is
-  genuinely absent (dynamic SigType, LeaseSet security, outproxy
-  provider). Only Plan 293 may own blocked cells.
+- `INCOMPATIBLE_CELLS = 30` (Plan 293 resolution of the former
+  `BLOCKED_293_CELLS`): applicable, but the key names a capability
+  i2pr explicitly does not provide — dynamic SigType (12 cells),
+  encrypted/blinded LeaseSet security and client authorization
+  (16 cells), outproxy provider (2 cells). Supplying the key fails
+  before allocation with the named limitation; omitting it selects
+  ordinary i2pr behavior. Determinations and evidence live in
+  `specs/protocols/14-tunnel-deep-option-determinations.md`; Plan
+  295 carries the limitations into the final support claim.
 - `CORRECTIVE_296_CELLS = 39` (pool backup-quantity/variance,
   multihoming, reply bundling) and `CORRECTIVE_297_CELLS = 3`
   (server `use_ssl` local TLS identity). Rejected keys name the
-  owning plan; nothing is accepted inertly.
+  limitation or owning plan; nothing is accepted inertly.
 
 Refinement rule (uniform): within an applicable mask group, a kind
 without the consuming layer (TCP endpoint, HTTP presentation,
 streaming stack, UDP media path) is not-applicable; every other
-cell is apply, blocked, or corrective.
+cell is apply, incompatible, or corrective.
 
 ## i2pr interpretations
 

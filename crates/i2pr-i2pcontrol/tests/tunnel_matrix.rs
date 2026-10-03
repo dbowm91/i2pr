@@ -1,13 +1,15 @@
-//! Plan 292 matrix completeness and disposition-shape tests.
+//! Plan 292 matrix completeness and disposition-shape tests, with Plan 293
+//! determinations applied.
 //!
 //! The frozen inventory fixes 46 options and 12 types; the mask
-//! populations fix 336 applicable cells. These tests pin the Plan 292
-//! disposition census so no option silently disappears and no residual
-//! hides outside the named owner plans (293, 296, 297).
+//! populations fix 336 applicable cells. These tests pin the disposition
+//! census so no option silently disappears and no residual hides outside
+//! the named limitation/corrective plans (293 determinations carried by
+//! 295; correctives 296, 297).
 
 use i2pr_i2pcontrol::tunnel::TUNNEL_TYPES;
 use i2pr_i2pcontrol::tunnel_matrix::{
-    APPLY_CELLS, BLOCKED_293_CELLS, CORRECTIVE_296_CELLS, CORRECTIVE_297_CELLS, CellDisposition,
+    APPLY_CELLS, CORRECTIVE_296_CELLS, CORRECTIVE_297_CELLS, CellDisposition, INCOMPATIBLE_CELLS,
     MATRIX, MATRIX_CELLS, NOT_APPLICABLE_CELLS, find_cell,
 };
 use i2pr_i2pcontrol::tunnel_options::TUNNEL_OPTIONS;
@@ -48,13 +50,13 @@ fn matrix_covers_every_applicable_cell() {
 fn disposition_census_is_exact() {
     assert_eq!(APPLY_CELLS, 227);
     assert_eq!(NOT_APPLICABLE_CELLS, 37);
-    assert_eq!(BLOCKED_293_CELLS, 30);
+    assert_eq!(INCOMPATIBLE_CELLS, 30);
     assert_eq!(CORRECTIVE_296_CELLS, 39);
     assert_eq!(CORRECTIVE_297_CELLS, 3);
     assert_eq!(
         APPLY_CELLS
             + NOT_APPLICABLE_CELLS
-            + BLOCKED_293_CELLS
+            + INCOMPATIBLE_CELLS
             + CORRECTIVE_296_CELLS
             + CORRECTIVE_297_CELLS,
         MATRIX_CELLS
@@ -81,9 +83,13 @@ fn every_cell_carries_a_named_disposition() {
                     cell.option_index
                 );
             }
-            CellDisposition::BlockedPrimitive { plan, primitive } => {
-                assert_eq!(plan, 293, "blocked cell names plan {plan}, want 293");
-                assert!(!primitive.is_empty());
+            CellDisposition::ExplicitIncompatibility { limitation } => {
+                assert!(
+                    !limitation.is_empty(),
+                    "incompatible cell ({}, {}) has no limitation",
+                    cell.type_index,
+                    cell.option_index
+                );
             }
             CellDisposition::CorrectivePending { plan, reason } => {
                 assert!(
@@ -150,15 +156,15 @@ fn spot_dispositions_match_plan_record() {
         find_cell(3, 27).expect("proxy_password cell").disposition,
         CellDisposition::Apply { .. }
     ));
-    // (client, sig_type) -> Plan 293 algorithm agility.
+    // (client, sig_type) -> Plan 293 SigType incompatibility.
     assert!(matches!(
         find_cell(0, 40).expect("sig_type cell").disposition,
-        CellDisposition::BlockedPrimitive { plan: 293, .. }
+        CellDisposition::ExplicitIncompatibility { .. }
     ));
     // (streamrserver, encrypt_lease_set) -> Plan 293 LeaseSet security.
     assert!(matches!(
         find_cell(11, 41).expect("encrypt cell").disposition,
-        CellDisposition::BlockedPrimitive { plan: 293, .. }
+        CellDisposition::ExplicitIncompatibility { .. }
     ));
     // (client, reply_bundling) -> Plan 296 garlic primitive.
     assert!(matches!(
@@ -168,6 +174,54 @@ fn spot_dispositions_match_plan_record() {
     // (httpclient, use_outproxy_plugin) -> Plan 293 provider semantics.
     assert!(matches!(
         find_cell(2, 45).expect("outproxy cell").disposition,
-        CellDisposition::BlockedPrimitive { plan: 293, .. }
+        CellDisposition::ExplicitIncompatibility { .. }
     ));
+}
+
+/// Plan 293: every one of the 30 deep-primitive cells carries the exact
+/// class limitation, and no other cell does.
+#[test]
+fn plan293_incompatible_cells_match_class_limitations() {
+    const SIGTYPE_LIMITATION: &str =
+        "dynamic destination SigType has no key-generation owner (Ed25519-only)";
+    const LEASESET_LIMITATION: &str =
+        "encrypted/blinded LeaseSet security and client authorization have no publication owner";
+    const OUTPROXY_LIMITATION: &str = "outproxy provider semantics have no I2P-routed provider";
+    let mut incompatible = 0;
+    for cell in MATRIX {
+        match cell.disposition {
+            CellDisposition::ExplicitIncompatibility { limitation } => {
+                incompatible += 1;
+                let expected = if cell.option_index == 40 {
+                    SIGTYPE_LIMITATION
+                } else if (41..=44).contains(&cell.option_index) {
+                    LEASESET_LIMITATION
+                } else if cell.option_index == 45 {
+                    OUTPROXY_LIMITATION
+                } else {
+                    panic!(
+                        "unexpected incompatible cell ({}, {})",
+                        cell.type_index, cell.option_index
+                    );
+                };
+                assert_eq!(
+                    limitation, expected,
+                    "wrong limitation for cell ({}, {})",
+                    cell.type_index, cell.option_index
+                );
+            }
+            _ => {
+                assert!(
+                    !(cell.option_index == 40
+                        || (41..=44).contains(&cell.option_index)
+                        || cell.option_index == 45),
+                    "deep-primitive cell ({}, {}) lost its incompatibility",
+                    cell.type_index,
+                    cell.option_index
+                );
+            }
+        }
+    }
+    assert_eq!(incompatible, 30);
+    assert_eq!(incompatible, INCOMPATIBLE_CELLS);
 }

@@ -1755,3 +1755,20 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/292-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.deep-tunnel-option-determinations"
+protocol = "i2pcontrol"
+structure = "proposal-170-deep-primitive-incompatibilities-with-limitations"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 293 resolved the 30 deep TunnelManager cells as explicit incompatibilities with named limitations carried by Plan 295 (zero promotions): sig_type on all 12 types (Ed25519-only destination identity per ADR 0004; no key-generation owner; singleton accept would be inert), LeaseSet security on the 4 publishing kinds (no blinded/encrypted publication owner, no type-5 framing owner, no client-authorization verifier; explicit disable also rejected, omission selects ordinary type-3 publication), use_outproxy_plugin on httpclient/connectclient (no I2P-routed provider; a provider would need a forbidden clearnet subsystem). Supplying any of the six keys fails before allocation with the limitation; out-of-mask pairs still reject naming the key; LeaseSet secrets never reach messages, mirrors, stores, or logs. Findings match the pinned reference fork's own zero-promotion outcomes (M121/M146/M152/M162). Wire-shape divergences found during determination (EncryptLeaseSet Boolean-vs-enum, LeaseSetClientAuths array-vs-split-secrets, missing OptionalLookup, SigType text-or-integer, UseOutproxyPlugin boolean, outproxy applicability, SetConfig key set) are recorded for Plan 295 adjudication."
+evidence = [
+    "specs/protocols/14-tunnel-deep-option-determinations.md",
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md",
+    "plans/closure/i2pcontrol-proposal-170/293-status.md",
+]
+advertised = false

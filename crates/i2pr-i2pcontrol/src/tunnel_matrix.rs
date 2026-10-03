@@ -2,8 +2,11 @@
 //!
 //! The frozen inventory ([`crate::tunnel_options::TUNNEL_OPTIONS`]) states
 //! which of the 46 wire keys applies to which of the 12 tunnel types (336
-//! applicable cells). This module records exactly one Plan 292 disposition
-//! per applicable cell:
+//! applicable cells). This module records exactly one disposition per
+//! applicable cell. Plan 292 assigned the initial dispositions; Plan 293
+//! resolved every `BlockedPrimitive` cell into either an apply owner or,
+//! where the primitive is demonstrably absent under project guardrails,
+//! an explicit incompatibility carried by Plan 295:
 //!
 //! - [`CellDisposition::Apply`]: a named runtime/persistence owner consumes
 //!   the key for the kind. The owner string names the consuming
@@ -13,13 +16,16 @@
 //!   refinement rule is uniform: within an applicable mask group, a kind
 //!   without the consuming layer (TCP endpoint, HTTP presentation,
 //!   streaming stack, UDP media path) is not-applicable; every other cell
-//!   must be apply, blocked, or corrective. Raw TCP servers have no HTTP
+//!   must be apply, incompatible, or corrective. Raw TCP servers have no HTTP
 //!   presentation layer; stream kinds have no TCP endpoints; Streamr kinds
 //!   ride the datagram path, not the streaming stack.
-//! - [`CellDisposition::BlockedPrimitive`]: applicable, but the required
-//!   primitive is genuinely absent and owned by Plan 293 (signature,
-//!   LeaseSet security, outproxy provider). No other plan may own a
-//!   blocked cell.
+//! - [`CellDisposition::ExplicitIncompatibility`]: applicable, but the key
+//!   names a capability i2pr explicitly does not provide (dynamic
+//!   destination SigType, encrypted/blinded LeaseSet security and client
+//!   authorization, outproxy provider). The limitation string names the
+//!   missing owner. Supplying the key fails before allocation with the
+//!   limitation; omitting it selects the ordinary i2pr behavior. Plan 295
+//!   carries these limitations into the final support claim.
 //! - [`CellDisposition::CorrectivePending`]: applicable, but the required
 //!   primitive needs a new corrective plan (296: pool shaping residuals,
 //!   multihoming, reply bundling; 297: local TLS identity). The plan
@@ -38,7 +44,8 @@
 
 use crate::tunnel_options::TUNNEL_OPTIONS;
 
-/// Plan 292 disposition of one applicable (type, option) cell.
+/// Plan 292 disposition of one applicable (type, option) cell, with Plan
+/// 293 determinations applied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CellDisposition {
     /// A named runtime/persistence owner consumes the key for the kind.
@@ -51,12 +58,10 @@ pub enum CellDisposition {
         /// Why this kind cannot consume the key.
         reason: &'static str,
     },
-    /// Applicable but the primitive is absent; owned by Plan 293.
-    BlockedPrimitive {
-        /// Owning plan (always 293).
-        plan: u16,
-        /// Missing primitive identity.
-        primitive: &'static str,
+    /// Applicable but explicitly unsupported; owned by Plan 293.
+    ExplicitIncompatibility {
+        /// Missing-owner limitation (named, carried by Plan 295).
+        limitation: &'static str,
     },
     /// Applicable but needs a new corrective plan (296 or 297).
     CorrectivePending {
@@ -74,7 +79,7 @@ pub struct MatrixCell {
     pub type_index: usize,
     /// Index into [`crate::tunnel_options::TUNNEL_OPTIONS`].
     pub option_index: usize,
-    /// Plan 292 disposition.
+    /// Matrix disposition (Plan 292 assignment, Plan 293 determinations applied).
     pub disposition: CellDisposition,
 }
 
@@ -222,21 +227,28 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         36..=39 => CellDisposition::Apply {
             owner: "StreamrOptions subscribe and fanout bounds",
         },
-        // 40 sig_type: algorithm-agile destination identity (Plan 293).
-        40 => CellDisposition::BlockedPrimitive {
-            plan: 293,
-            primitive: "dynamic destination SigType",
+        // 40 sig_type: Plan 293 determination. i2pr destination identity
+        // is Ed25519-only (ADR 0004); no key-generation owner exists for
+        // any other SigType, and accepting the lone supported value would
+        // be inert (it selects nothing). Any supplied value fails before
+        // allocation; omission selects ordinary Ed25519 destinations.
+        40 => CellDisposition::ExplicitIncompatibility {
+            limitation: "dynamic destination SigType has no key-generation owner (Ed25519-only)",
         },
         // 41 encrypt_lease_set / 42 leaseset_password /
-        // 43 leaseset_blinding_secret / 44 leaseset_client_auth.
-        41..=44 => CellDisposition::BlockedPrimitive {
-            plan: 293,
-            primitive: "encrypted/blinded LeaseSet security and client authorization",
+        // 43 leaseset_blinding_secret / 44 leaseset_client_auth: Plan 293
+        // determination. No blinded/encrypted LeaseSet publication owner,
+        // no type-5 framing owner, and no client-authorization verifier
+        // exist; any supplied value fails before allocation, including
+        // explicit disable (omit the field for ordinary publication).
+        41..=44 => CellDisposition::ExplicitIncompatibility {
+            limitation: "encrypted/blinded LeaseSet security and client authorization have no publication owner",
         },
-        // 45 use_outproxy_plugin: no safe I2P-routed provider exists.
-        45 => CellDisposition::BlockedPrimitive {
-            plan: 293,
-            primitive: "outproxy provider semantics",
+        // 45 use_outproxy_plugin: Plan 293 determination. No safe
+        // I2P-routed outproxy provider exists, and a provider would need
+        // a general clearnet subsystem the guardrails forbid.
+        45 => CellDisposition::ExplicitIncompatibility {
+            limitation: "outproxy provider semantics have no I2P-routed provider",
         },
         // Unreachable for in-mask callers; never an apply.
         _ => CellDisposition::NotApplicable {
@@ -275,23 +287,58 @@ const fn build_matrix() -> [MatrixCell; MATRIX_CELLS] {
     out
 }
 
-/// Counts cells with the given disposition shape.
-const fn count_cells(
-    is_apply: bool,
-    is_not_applicable: bool,
-    blocked_plan: u16,
-    corrective_plan: u16,
-) -> usize {
+/// Counts cells with [`CellDisposition::Apply`].
+const fn count_apply() -> usize {
     let mut n: usize = 0;
     let mut i: usize = 0;
     while i < MATRIX_CELLS {
-        let matches = match MATRIX[i].disposition {
-            CellDisposition::Apply { .. } => is_apply,
-            CellDisposition::NotApplicable { .. } => is_not_applicable,
-            CellDisposition::BlockedPrimitive { plan, .. } => plan == blocked_plan,
-            CellDisposition::CorrectivePending { plan, .. } => plan == corrective_plan,
-        };
-        if matches {
+        if matches!(MATRIX[i].disposition, CellDisposition::Apply { .. }) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// Counts cells with [`CellDisposition::NotApplicable`].
+const fn count_not_applicable() -> usize {
+    let mut n: usize = 0;
+    let mut i: usize = 0;
+    while i < MATRIX_CELLS {
+        if matches!(MATRIX[i].disposition, CellDisposition::NotApplicable { .. }) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// Counts cells with [`CellDisposition::ExplicitIncompatibility`].
+const fn count_incompatible() -> usize {
+    let mut n: usize = 0;
+    let mut i: usize = 0;
+    while i < MATRIX_CELLS {
+        if matches!(
+            MATRIX[i].disposition,
+            CellDisposition::ExplicitIncompatibility { .. }
+        ) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// Counts cells with [`CellDisposition::CorrectivePending`] for one plan.
+const fn count_corrective(plan: u16) -> usize {
+    let mut n: usize = 0;
+    let mut i: usize = 0;
+    while i < MATRIX_CELLS {
+        if let CellDisposition::CorrectivePending {
+            plan: cell_plan, ..
+        } = MATRIX[i].disposition
+            && cell_plan == plan
+        {
             n += 1;
         }
         i += 1;
@@ -300,15 +347,17 @@ const fn count_cells(
 }
 
 /// Apply cells: every one needs a named runtime owner (Plan 292 target).
-pub const APPLY_CELLS: usize = count_cells(true, false, 0, 0);
+pub const APPLY_CELLS: usize = count_apply();
 /// Refined not-applicable cells (kind lacks the consuming layer).
-pub const NOT_APPLICABLE_CELLS: usize = count_cells(false, true, 0, 0);
-/// Plan 293 residual cells (signature, LeaseSet, outproxy provider).
-pub const BLOCKED_293_CELLS: usize = count_cells(false, false, 293, 0);
+pub const NOT_APPLICABLE_CELLS: usize = count_not_applicable();
+/// Plan 293 explicit incompatibilities (signature, LeaseSet, outproxy
+/// provider): applicable keys that fail before allocation with a named
+/// limitation carried by Plan 295.
+pub const INCOMPATIBLE_CELLS: usize = count_incompatible();
 /// Plan 296 residual cells (pool shaping, multihoming, reply bundling).
-pub const CORRECTIVE_296_CELLS: usize = count_cells(false, false, 0, 296);
+pub const CORRECTIVE_296_CELLS: usize = count_corrective(296);
 /// Plan 297 residual cells (local TLS identity).
-pub const CORRECTIVE_297_CELLS: usize = count_cells(false, false, 0, 297);
+pub const CORRECTIVE_297_CELLS: usize = count_corrective(297);
 
 /// Finds the cell for a (type, option) pair; `None` outside the mask.
 pub fn find_cell(type_index: usize, option_index: usize) -> Option<MatrixCell> {
@@ -327,8 +376,8 @@ pub fn find_cell(type_index: usize, option_index: usize) -> Option<MatrixCell> {
 /// Looks up the disposition for a wire key on a type index.
 ///
 /// Returns `None` for unknown keys or pairs outside the inventory
-/// mask. The daemon control boundary uses this to name the owning
-/// plan when rejecting blocked or corrective-pending keys.
+/// mask. The daemon control boundary uses this to name the limitation
+/// when rejecting incompatible or corrective-pending keys.
 pub fn disposition_for(type_index: usize, option_name: &str) -> Option<CellDisposition> {
     let mut option_index: usize = 0;
     while option_index < TUNNEL_OPTIONS.len() {
