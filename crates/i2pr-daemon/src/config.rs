@@ -1125,7 +1125,7 @@ pub struct Config {
 ///
 /// This is intent, not authority: `enabled = true` asks the daemon to
 /// evaluate normal-path eligibility on every bounded tick. The
-/// [`FloodfillEligibilitySnapshot`] AND-gate still decides, `caps=f`
+/// `i2pr_netdb::FloodfillEligibilitySnapshot` AND-gate still decides, `caps=f`
 /// is built only through the permit-gated builder after the role
 /// reaches Active, and any eligibility loss withdraws the
 /// advertisement. The struct carries no key material, no permit, and

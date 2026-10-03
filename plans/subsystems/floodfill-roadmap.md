@@ -143,7 +143,8 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
 | 302 | passed | passed-m12-floodfill-reply-wire-form-and-replication-answered | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | plans/closure/floodfill/302-status.md |
 | 303 | passed | passed-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | plans/closure/floodfill/303-status.md |
-| 279 | in-progress | in-progress-m12-second-family-qualification-and-activation | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
+| 279 | stopped | stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | plans/closure/floodfill/279-status.md |
+| 306 | ready | registered-m12-loopback-reachability-caps-and-java-requalification | plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md | future |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 
@@ -167,7 +168,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 - Floodfill work is lower priority than router-owned/client work and participates in global
   resource governance.
 - caps=f follows readiness and health; configuration alone cannot create advertisement.
-- Broad normal-daemon advertisement remains unavailable until Plan 279 satisfies ADR 0026.
+- Broad normal-daemon advertisement remains unavailable until the second-family gate passes (Plan 279 stopped; ready Plan 306 owns the next step).
 
 ## 9. Verification strategy
 
@@ -242,7 +243,9 @@ pinned to that surface by a test that fails if the claim outruns the implementat
 closes **retained**: the `specs/CONFORMANCE.md` mixed-router step is unmet and needs one
 bounded exact-pinned external attempt, so Plan 278 is unblocked to `ready` but no external
 row is claimed.
-Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
+Plan 279 stopped after three frozen-budget Java attempts at the caps-gated
+initiation boundary (see `plans/closure/floodfill/279-status.md`); Plan 280
+remains stopped pending a separately reviewed
 I2P-compatible Red25519 provider.
 
 The post-284/285 bounded attempt ran and spent Plan 278's frozen budget. It closed both
@@ -263,12 +266,17 @@ re-publication of the seeded client key (`outcome=["idempotent"]`,
 `replication_offered=0`), so no replication is offered by design. Matrix F is
 structurally unpassable while the lane seeds the publisher key; ready Plan 303
 owns the single trigger change (seed A/B only) plus matrix A–I execution.
-Plan 279 stays blocked on the Plan 303 path.
+Plan 279 executed after the Plan 303 pass and stopped as recorded above.
 
 Plan 303 passed on head `c069e6c`: with the single lane change (seed A/B
 only, driver-only diff), the one fresh-budget attempt passes all 10 matrix
 rows — the publisher store inserts with replication offered, 4 zero-token
 direct replica stores land, the reference confirms the publish with zero
 expired drops, and all 7 lookups are answered. The one-family (i2pd 2.61.0)
-controlled matrix is closed. Plan 279 is unblocked to ready (its own
-qualification still has to run); Plan 278 stays stopped as history.
+controlled matrix is closed. Plan 279 executed its three frozen-budget Java
+attempts and stopped at the publisher rendezvous on all three (stock Java
+loads, verifies, and floodfill-lists the controlled RI but never initiates
+transport to it); its lane, rendezvous, relay mesh, census, withdrawal, and
+evidence checker are retained. Ready Plan 306 owns the reachability-caps
+design plus both requalifications under fresh budgets. Plan 278 stays
+stopped as history.
