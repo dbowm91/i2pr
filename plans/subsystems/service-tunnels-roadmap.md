@@ -1,12 +1,13 @@
 # Service Tunnels Roadmap
 
-Status: closed
+Status: M10 product authority closed at Plan 215; cross-cutting anonymity extensions Plans 307 and 309–311 are registered under the anonymity roadmap and do not reopen M10 closure.
 
 Long-term references:
 
 - `GUARDRAILS.md` (non-negotiable security/architecture constraints)
 - `specs/CONFORMANCE.md` (what counts as protocol-support evidence)
 - `specs/support.toml` (machine-readable support inventory)
+- `docs/adr/0030-destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md` (future Destination-group/linkability architecture)
 
 Research specs (dossier map: `specs/README.md`):
 
@@ -38,10 +39,11 @@ Historic plans: 173–182, 195, 199, 202–204, 206–215 (global i2pr numbers, 
 
 Plan 215 (`passed-m10-hosted-plan214-tunnel-config-generation-corrective-and-exact-head-reverification`) is the closed M10 product authority. Plan 248 / ADR 0026 supersede Plan 204's Java-dependent convergence gate. Plan 204 is retained as historical bookkeeping and was not retroactively executed. Plans 231-247 remain Java compatibility history and do not change M10 authority.
 
+ADR 0030 now owns future anonymity-related service composition. It permits explicit Destination groups shared across multiple client services and across multiple server services on distinct I2P ports. `Dedicated` remains shorthand, multiple instances of the same tunnel kind are valid within resource ceilings, and intentional Destination sharing is not treated as router anonymity failure. Plans 307 and 309–311 implement that extension under the anonymity workstream.
+
 ## 5. Target architecture
 
-Retained historical subsystem: no new architecture is planned here. Changes require a new plan-of-record
-in this subsystem, following `plans/README.md`.
+M10 remains historically closed. Cross-cutting anonymity evolution is intentionally owned by the anonymity roadmap rather than renumbering M10. The future service composition root consumes one Destination-group owner per explicit linkability domain; individual service definitions reference that owner. Server groups may demultiplex distinct I2P ports, client services may intentionally share a group, and group identity/tunnel state remains separate from router identity.
 
 ## 6. Dependency graph
 
@@ -97,6 +99,9 @@ Environment-gated lanes are `#[ignore]`-gated: ordinary runs skip them, explicit
 
 ## 10. Risks and decision points
 
+- Do not reintroduce one-Destination-per-service as a universal invariant; ADR 0030 makes group sharing explicit and intentional.
+- Do not infer that configured three-hop Destination policy is active until Plan 310 replaces the current one-peer service build path.
+- Proposal 170 TunnelManager/server-family work must consume the same Destination-group owner rather than create a parallel service identity stack.
 - Plan 204's Java-dependent convergence gate is superseded by Plan 248 / ADR 0026. Java full-router compatibility remains retained debt and does not reopen M10 product closure.
 - Remote branch `origin/plan-m10-closure` (Plan 199 executable-registration era) is superseded
   by the 200–204 decomposition and the 210–215 closures — do not merge (see

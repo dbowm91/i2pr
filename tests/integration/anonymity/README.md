@@ -29,3 +29,12 @@ three family runners produce HTTP and Streaming smoke rows. Stock Java and
 i2pd Streaming APIs expose application streams, not the server packet response
 boundary required to control ACK/loss stimuli; their existing application
 lanes must not be counted as Plan 304 evidence.
+
+
+## ADR 0030 continuation
+
+The Plan 298/304 three-family hostile-Destination contract above is retained historical evidence and is not the future Streaming qualification gate. ADR 0030 selects exact-pinned i2pd 2.61.0 as the Streaming observable-profile authority.
+
+Plans 312–313 use directional black-box measurement: i2pr owns the opposite endpoint while unmodified i2pd runs as the client or server under test. Java I2P may be recorded for context but is not a pass/fail Streaming dependency.
+
+HTTP qualification is separated from hostile Streaming. Plan 308 may use ordinary controlled server Destinations and the retained Ubuntu/reference artifacts without waiting for a raw packet-control seam inside Java or i2pd.
