@@ -491,6 +491,17 @@ impl DestinationTunnelCoordinator {
         &self.store
     }
 
+    /// Returns the bounded, privacy-safe build-candidate projection of the
+    /// authoritative validated RouterInfo store.
+    pub fn destination_peer_candidates(
+        &self,
+    ) -> (
+        Vec<crate::destination_peers::DestinationPeerCandidate>,
+        crate::destination_peers::CandidateProjectionSummary,
+    ) {
+        crate::destination_peers::project_validated_store(&self.store)
+    }
+
     /// Returns the validated remote LeaseSet2 cache.
     pub fn lease_store(&self) -> &LeaseSet2Store {
         &self.lease_store

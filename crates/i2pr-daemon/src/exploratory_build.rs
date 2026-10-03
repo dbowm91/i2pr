@@ -1,4 +1,5 @@
-//! Plan 185 daemon-owned exploratory build coordinator.
+//! Plan 185 daemon-owned short-build coordinator, extended by Plan 314 to
+//! share one attempt owner across exploratory and qualified Destination paths.
 //!
 //! The coordinator owns the bounded, single-scheduler surface that
 //! translates the existing [`crate::router_i2np::dispatch_router_i2np`]
@@ -60,6 +61,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::Duration;
 
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage};
@@ -160,7 +162,7 @@ impl std::fmt::Display for BuildDirection {
 /// Per-peer static configuration used to derive the short-build
 /// path. The coordinator never derives this from netDb lookups;
 /// the caller supplies it through the bounded authoritative store.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PeerBuildMaterial {
     /// Router hash (the receiving peer's identity).
     pub router_hash: Hash,
@@ -177,6 +179,19 @@ pub struct PeerBuildMaterial {
     pub role: HopRole,
 }
 
+impl fmt::Debug for PeerBuildMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PeerBuildMaterial")
+            .field("router_hash", &"<redacted>")
+            .field("static_encryption_key", &"<redacted>")
+            .field("receive_tunnel", &self.receive_tunnel)
+            .field("next_tunnel", &self.next_tunnel)
+            .field("role", &self.role)
+            .finish()
+    }
+}
+
 impl PeerBuildMaterial {
     /// Returns the canonical [`HopSpec`] the coordinator hands the
     /// state machine.
@@ -191,8 +206,9 @@ impl PeerBuildMaterial {
     }
 }
 
-/// Submission record for one build attempt.
-#[derive(Clone, Debug)]
+/// One-peer exploratory submission record. Qualified Destination builds use
+/// [`DestinationBuildRequest`] and share the coordinator's same attempt core.
+#[derive(Clone)]
 pub struct BuildRequest {
     /// Direction this build is for.
     pub direction: BuildDirection,
@@ -215,6 +231,89 @@ pub struct BuildRequest {
     /// inbound builds; the local creator's identity is the only
     /// valid source.
     pub originator_hash: Option<Hash>,
+}
+
+impl fmt::Debug for BuildRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BuildRequest")
+            .field("direction", &self.direction)
+            .field("peer", &self.peer)
+            .field("creator_tunnel_id", &self.creator_tunnel_id)
+            .field("message_id", &self.message_id)
+            .field("outbound_reply_router", &"<redacted>")
+            .field("originator_hash", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Qualified Destination build request. Its ordered peers are kept separate
+/// from the one-peer exploratory request and must contain exactly three hops.
+#[derive(Clone)]
+pub struct DestinationBuildRequest {
+    /// Direction this build is for.
+    pub direction: BuildDirection,
+    /// Ordered remote hop material selected by the Destination peer selector.
+    pub peers: Vec<PeerBuildMaterial>,
+    /// Creator tunnel id reserved for established material.
+    pub creator_tunnel_id: TunnelId,
+    /// Per-attempt I2NP message id.
+    pub message_id: u32,
+    /// Local router hash used by the outbound terminal hop.
+    pub outbound_reply_router: Option<Hash>,
+    /// Local router hash used by the inbound terminal hop.
+    pub originator_hash: Option<Hash>,
+}
+
+impl fmt::Debug for DestinationBuildRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DestinationBuildRequest")
+            .field("direction", &self.direction)
+            .field("peer_count", &self.peers.len())
+            .field("peers", &"<redacted>")
+            .field("creator_tunnel_id", &self.creator_tunnel_id)
+            .field("message_id", &self.message_id)
+            .field("outbound_reply_router", &"<redacted>")
+            .field("originator_hash", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+struct BuildPathRequest {
+    direction: BuildDirection,
+    peers: Vec<PeerBuildMaterial>,
+    creator_tunnel_id: TunnelId,
+    message_id: u32,
+    outbound_reply_router: Option<Hash>,
+    originator_hash: Option<Hash>,
+}
+
+impl From<BuildRequest> for BuildPathRequest {
+    fn from(request: BuildRequest) -> Self {
+        Self {
+            direction: request.direction,
+            peers: vec![request.peer],
+            creator_tunnel_id: request.creator_tunnel_id,
+            message_id: request.message_id,
+            outbound_reply_router: request.outbound_reply_router,
+            originator_hash: request.originator_hash,
+        }
+    }
+}
+
+impl From<DestinationBuildRequest> for BuildPathRequest {
+    fn from(request: DestinationBuildRequest) -> Self {
+        Self {
+            direction: request.direction,
+            peers: request.peers,
+            creator_tunnel_id: request.creator_tunnel_id,
+            message_id: request.message_id,
+            outbound_reply_router: request.outbound_reply_router,
+            originator_hash: request.originator_hash,
+        }
+    }
 }
 
 /// Outcome of one resolved attempt that the coordinator hands back
@@ -334,10 +433,10 @@ impl BuildCoordinatorOutcome {
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum BuildCoordinatorError {
     /// The supplied request violated a coordinator-level invariant.
-    #[error("exploratory build coordinator rejected the request: {0}")]
+    #[error("short-build coordinator rejected the request: {0}")]
     Coordinator(&'static str),
     /// The path validator rejected the supplied path.
-    #[error("exploratory build path is invalid: {reason}")]
+    #[error("short-build path is invalid: {reason}")]
     InvalidPath {
         /// Short reason from the validator.
         reason: &'static str,
@@ -383,7 +482,6 @@ pub struct BuildCoordinatorCounters {
 #[allow(dead_code)]
 struct PendingBuild {
     direction: BuildDirection,
-    peer: PeerBuildMaterial,
     /// Outbound peer hash (the receiving router). The coordinator
     /// matches inbound replies whose authenticated peer equals
     /// this value.
@@ -593,6 +691,41 @@ impl ExploratoryBuildCoordinator {
     where
         R: CryptoRng + RngCore,
     {
+        self.submit_path(request.into(), delivery, bridge, bridge_header, rng)
+    }
+
+    /// Submits an exact-three-hop Destination request through the same shared
+    /// short-build engine as exploratory requests.
+    pub fn submit_destination<R>(
+        &mut self,
+        request: DestinationBuildRequest,
+        delivery: &RouterDeliveryService,
+        bridge: &ShortBuildI2npBridge,
+        bridge_header: BridgeHeader,
+        rng: &mut R,
+    ) -> Result<SubmitResult, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
+        if request.peers.len() != crate::destination_peers::QUALIFIED_DESTINATION_HOPS {
+            return Err(BuildCoordinatorError::InvalidPath {
+                reason: "qualified Destination path must contain exactly three hops",
+            });
+        }
+        self.submit_path(request.into(), delivery, bridge, bridge_header, rng)
+    }
+
+    fn submit_path<R>(
+        &mut self,
+        request: BuildPathRequest,
+        delivery: &RouterDeliveryService,
+        bridge: &ShortBuildI2npBridge,
+        bridge_header: BridgeHeader,
+        rng: &mut R,
+    ) -> Result<SubmitResult, BuildCoordinatorError>
+    where
+        R: CryptoRng + RngCore,
+    {
         if self.paused {
             return Err(BuildCoordinatorError::Coordinator(
                 "coordinator is paused after consecutive failures",
@@ -603,14 +736,14 @@ impl ExploratoryBuildCoordinator {
                 "too many pending builds",
             ));
         }
-        if request.peer.router_hash.as_bytes().iter().all(|b| *b == 0) {
+        if request.peers.is_empty()
+            || request.peers.iter().any(|peer| {
+                peer.router_hash.as_bytes().iter().all(|byte| *byte == 0)
+                    || peer.static_encryption_key.iter().all(|byte| *byte == 0)
+            })
+        {
             return Err(BuildCoordinatorError::Coordinator(
-                "peer router hash is zero",
-            ));
-        }
-        if request.peer.static_encryption_key.iter().all(|b| *b == 0) {
-            return Err(BuildCoordinatorError::Coordinator(
-                "peer static encryption key is zero",
+                "build path contains invalid peer material",
             ));
         }
         if request.message_id == 0 {
@@ -624,19 +757,7 @@ impl ExploratoryBuildCoordinator {
         let direction = request.direction;
         let now_ms = self.now_ms;
         let attempt_id = self.next_attempt_id();
-        let creator_tunnel_id = request.creator_tunnel_id;
-        let path_attempt = BuildAttemptId::new(attempt_id.get());
-        let path = ShortBuildPath {
-            attempt_id: path_attempt,
-            direction: direction.tunnel_direction(),
-            originator_hash: request.originator_hash,
-            outbound_reply_router: request.outbound_reply_router,
-            creator_tunnel_id,
-            hops: vec![request.peer.hop_spec()],
-            request_time: Date::from_millis(now_ms),
-            next_message_id: request.message_id,
-            options: Default::default(),
-        };
+        let path = short_build_path(&request, BuildAttemptId::new(attempt_id.get()), now_ms);
         path.validate().map_err(map_construction_error)?;
         let deadline_ms = now_ms.saturating_add(BUILD_DEADLINE_MS);
         let mut state = ShortBuildStateMachine::with_cryptography(
@@ -680,7 +801,10 @@ impl ExploratoryBuildCoordinator {
             .map_err(|_| {
                 BuildCoordinatorError::Coordinator("I2NP short-transport encoding failed")
             })?;
-        let peer = PeerId::from_hash(request.peer.router_hash);
+        let first_peer_hash = request.peers.first().map(|peer| peer.router_hash).ok_or(
+            BuildCoordinatorError::Coordinator("build path has no first hop"),
+        )?;
+        let peer = PeerId::from_hash(first_peer_hash);
         let delivery_request = RouterDeliveryRequest::new(peer, wire, BUILD_DELIVERY_TIMEOUT)
             .map_err(|_| {
                 BuildCoordinatorError::Coordinator("delivery request validation failed")
@@ -699,7 +823,13 @@ impl ExploratoryBuildCoordinator {
             });
         }
         state.mark_dispatched().map_err(map_construction_error)?;
-        let target_peer = PeerId::from_hash(request.peer.router_hash);
+        let reply_peer_hash = match direction {
+            BuildDirection::Inbound => first_peer_hash,
+            BuildDirection::Outbound => request.peers.last().map(|peer| peer.router_hash).ok_or(
+                BuildCoordinatorError::Coordinator("build path has no terminal hop"),
+            )?,
+        };
+        let target_peer = PeerId::from_hash(reply_peer_hash);
         // Plan 188: retain the OBEP Garlic material for garlic-wrapped
         // endpoint replies. The state machine owns the authoritative
         // copy; this is the coordinator's correlation copy for
@@ -710,11 +840,12 @@ impl ExploratoryBuildCoordinator {
         };
         let pending = PendingBuild {
             direction,
-            peer: request.peer.clone(),
             target_peer,
             deadline_ms,
             message_id: request.message_id,
-            next_tunnel: request.peer.next_tunnel,
+            next_tunnel: request.peers.last().map(|peer| peer.next_tunnel).ok_or(
+                BuildCoordinatorError::Coordinator("build path has no terminal hop"),
+            )?,
             garlic_key,
             garlic_tag,
             state,
@@ -1447,6 +1578,28 @@ fn registry_activation_reason(error: i2pr_tunnel::pool::ActivationError) -> &'st
     }
 }
 
+fn short_build_path(
+    request: &BuildPathRequest,
+    attempt_id: BuildAttemptId,
+    now_ms: u64,
+) -> ShortBuildPath {
+    ShortBuildPath {
+        attempt_id,
+        direction: request.direction.tunnel_direction(),
+        originator_hash: request.originator_hash,
+        outbound_reply_router: request.outbound_reply_router,
+        creator_tunnel_id: request.creator_tunnel_id,
+        hops: request
+            .peers
+            .iter()
+            .map(PeerBuildMaterial::hop_spec)
+            .collect(),
+        request_time: Date::from_millis(now_ms),
+        next_message_id: request.message_id,
+        options: Default::default(),
+    }
+}
+
 /// Test-only seam: returns the typed [`TunnelState`] for the
 /// supplied slot when present. Used by the unit suites to assert
 /// pool-side bookkeeping.
@@ -1477,6 +1630,8 @@ pub fn preallocate_creator_tunnel_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
 
     #[test]
     fn coordinator_starts_with_no_pending_attempts() {
@@ -1485,6 +1640,72 @@ mod tests {
         assert_eq!(coord.counters().installed, 0);
         assert_eq!(coord.counters().pending, 0);
         assert!(!coord.is_paused());
+    }
+
+    #[test]
+    fn selected_destination_order_is_preserved_into_shared_short_build_path() {
+        let candidates = vec![
+            crate::destination_peers::test_candidate(701, "family-a", "10.1.1.1", 1201),
+            crate::destination_peers::test_candidate(702, "family-b", "10.2.1.1", 1202),
+            crate::destination_peers::test_candidate(703, "family-c", "10.3.1.1", 1203),
+            crate::destination_peers::test_candidate(704, "family-d", "10.4.1.1", 1204),
+        ];
+        let mut rng = ChaCha8Rng::seed_from_u64(705);
+        let selected = crate::destination_peers::select_destination_path(&candidates, &mut rng)
+            .expect("exact-three selection");
+        let expected = selected
+            .iter()
+            .map(crate::destination_peers::DestinationPeerCandidate::router_hash)
+            .collect::<Vec<_>>();
+        let peers = selected
+            .into_iter()
+            .enumerate()
+            .map(|(index, candidate)| PeerBuildMaterial {
+                router_hash: candidate.router_hash(),
+                static_encryption_key: *candidate.static_encryption_key(),
+                receive_tunnel: TunnelId::new(0x7000 + index as u32).expect("receive"),
+                next_tunnel: TunnelId::new(0x7001 + index as u32).expect("next"),
+                role: if index == 2 {
+                    HopRole::OutboundEndpoint
+                } else {
+                    HopRole::Participant
+                },
+            })
+            .collect::<Vec<_>>();
+        let request = DestinationBuildRequest {
+            direction: BuildDirection::Outbound,
+            peers,
+            creator_tunnel_id: TunnelId::new(0x7010).expect("creator"),
+            message_id: 0x7011,
+            outbound_reply_router: Some(Hash::from_bytes([0x71; 32])),
+            originator_hash: None,
+        };
+        let path_request = BuildPathRequest::from(request);
+        let path = short_build_path(&path_request, BuildAttemptId::new(1), 1_700_000_000_000);
+        assert_eq!(
+            path.hops
+                .iter()
+                .map(HopSpec::router_hash)
+                .collect::<Vec<_>>(),
+            expected,
+            "the same shared path conversion used by submit_path preserves selector order"
+        );
+        path.validate().expect("valid submitted path");
+    }
+
+    #[test]
+    fn destination_build_request_debug_redacts_router_identity_and_build_keys() {
+        let peer = PeerBuildMaterial {
+            router_hash: Hash::from_bytes([0xA5; 32]),
+            static_encryption_key: [0x5A; 32],
+            receive_tunnel: TunnelId::new(0x7110).expect("receive"),
+            next_tunnel: TunnelId::new(0x7111).expect("next"),
+            role: HopRole::Participant,
+        };
+        let debug = format!("{peer:?}");
+        assert!(!debug.contains("a5a5"));
+        assert!(!debug.contains("90, 90, 90"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

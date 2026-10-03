@@ -11,6 +11,7 @@ pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub mod control_sources;
+pub mod destination_peers;
 pub mod destination_streaming;
 pub mod destination_tunnels;
 pub mod error;

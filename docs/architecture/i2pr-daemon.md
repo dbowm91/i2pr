@@ -37,6 +37,14 @@ installed_ib=1`, no synthesis, no wire change); the historical
 `plans/implementation/mixed-router-interop/188-m6-mixed-router-streaming-with-i2pd.md` Streaming
 file remains historical context only and is superseded by
 [`plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md`](../../plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md).
+Plan 314 adds a separate qualified Destination request carrying an ordered
+three-peer path. `destination_peers.rs` projects bounded build and Java-profile
+diversity facts from the validated store owned by `DestinationTunnelCoordinator`;
+`ServiceProduct` selects exactly three peers or fails closed, then the same
+`ExploratoryBuildCoordinator` pending-attempt owner and `ShortBuildStateMachine`
+process the request. Exploratory `BuildRequest` remains one-peer. Deterministic
+local tests exercise real three-hop cryptographic trajectories; this does not
+establish external three-router interoperability.
 Plan 190 isolates and corrects the inbound NetDB reply-path
 metadata defect that left 5/7 destination rows blocked after the
 Plan 188 installs (typed public `InboundGatewayRoute` in
@@ -735,7 +743,7 @@ What it **does not** do yet:
 
 ## Module layout
 
-Twenty-five files at the crate root plus the `sam/`
+Twenty-six files at the crate root plus the `sam/`
 subdirectory (four files). The table below covers every `src/` file;
 the row count matches the filesystem:
 
@@ -755,6 +763,7 @@ the row count matches the filesystem:
 | `src/exploratory_build.rs` | Plans 185/188 daemon-owned exploratory build coordinator (bounded pending table, monotonic attempt / creator tunnel ids, single central scheduler, strict OTBRM extraction + forwarded-STBM + TunnelGateway Garlic paths, `register_*_with_material` installs through `ExploratoryPool` then activates once into `DataPlaneRegistry`) | `ExploratoryBuildCoordinator`, `BuildRequest`, `BuildDirection`, `PeerBuildMaterial`, `BuildCoordinatorOutcome`, `BuildCoordinatorCounters`, `SubmitResult`, `InboundRouteOutcome`, `tunnel_state_at`, `next_creator_tunnel_id_value` |
 | `src/tunnel_liveness.rs` | Plan 185 bounded creator-side tunnel liveness scheduler (first-test / repeat / response-timeout / failure-threshold policy well below the two-minute idle deletion boundary; one central scheduler, no per-tunnel task or timer) | `TunnelLivenessScheduler`, `LivenessConfig`, `LivenessAction`, `LivenessTestId`, `LivenessCounters`, `LivenessError`, `route_inbound_with_liveness`, `first_due_after`, `repeat_interval`, `response_timeout` |
 | `src/netdb_tunnels.rs` | Plan 186 daemon-owned NetDB-over-tunnels coordinator (authoritative bounded store, ordinary-path reference bootstrap, floodfill verification, tunnel-path proofs, bounded lookup/publication/search matrices, typed tunnel-loss) | `NetDbTunnelCoordinator`, `NetDbTunnelError`, `NetDbTunnelCounters`, `TunnelPathProof`, `PublicationPathProof` |
+| `src/destination_peers.rs` | Plan 314 bounded validated-RouterInfo projection and exact-three Java-profile selector with OS-seeded production randomness | `DestinationPeerCandidate`, `DestinationSelectionError`, `CandidateProjectionSummary`, `project_validated_store`, `select_destination_path`, `select_destination_path_os` |
 | `src/destination_tunnels.rs` | Plan 187 daemon-owned destination LeaseSet2/Garlic-over-tunnels coordinator (authoritative RouterInfo store + store-parameter LeaseSet2 lookup, authoritative LeaseSet2 cache, real-material proofs rejecting `LocalZeroHop`, bounded local-LS2 publication with protocol-derived ack, registry-backed Garlic recovery, typed tunnel-loss), extended by Plan 190 with `reply_path_for_inbound_route` (typed `InboundGatewayRoute` → `i2pr_netdb::ReplyPath` adapter) and `ReplyPathDerivationError`. Plan 188 lands consumed-reference installs both directions; Plan 190 isolates and corrects the inbound NetDB reply-path metadata defect. Plan 201 §G adds the Branch G (store-acked-remote-lookup-fails) diagnostic observation surface: eleven new sanitized `DestinationTunnelCounters` (lookup_key_matches / _mismatches, floodfill_candidates_present / _absent, reply_paths_derived / _unresolved, ls2_records_decoded / _decode_rejected / _signature_rejected, inbound_cells_garlic_completed / _incomplete) plus the public `note_lookup_boundary(label, value)` typed observation surface. | `DestinationTunnelCoordinator`, `DestinationTunnelError`, `DestinationTunnelCounters`, `DestinationTunnelPathProof`, `RemoteMaterialProof`, `RemoteLeaseSummary`, `LeaseStoreIngestOutcome`, `reply_path_for_inbound_route`, `ReplyPathDerivationError`, `note_lookup_boundary` |
 | `src/service_delivery.rs` | Plan 202 daemon-owned M10 production remote Destination/Streaming delivery capability (typed `RoutingDecision` enum + bounded `RemoteDeliveryCounters`); Plan 206 promoted the marker/counter shape into an executable backend (`RemoteDestinationBackend` owns the shared `DestinationTunnelCoordinator` + authenticated router delivery service). The capability is shared across every service the manager owns (Plan 202 §5 / Plan 206 §5); it carries the typed `RoutingDecision` enum (`LocalCoOwned` / `RemoteRouter` / `RemoteUnresolved`), the bounded `RemoteDeliveryCounters` (`remote_lookup_started` / `remote_lookup_succeeded` / `remote_lookup_failed` / `remote_stream_connect_started` / `remote_stream_established` / `remote_outbound_requests` / `remote_inbound_payloads` / `remote_route_retries` / `remote_route_timeouts` / `remote_tunnel_loss` / `local_coowned_deliveries` / `unknown_peer` / `remote_lookup_cache_hit` / `remote_outbound_composed` / `remote_inbound_dispatched` — the three operation-boundary counters advance only through typed backend seams), the in-flight resolution table (`MAX_CONCURRENT_REMOTE_RESOLUTIONS = 32`), the pure `classify_destination` helper, and the canonical hash conversion helpers. Plan 203 inherits the counters surface for the positive remote HTTP + IRC application interop lane. | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `RemoteDestinationBackend`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
 | `src/service_generation.rs` | Plan 180 generation diff classification surface | `ServiceGeneration`, generation diff types |
@@ -794,6 +803,7 @@ The `sam/` files above are the four files in the `src/sam/` subdirectory; everyt
 - `pub mod control_sources;`
 - `pub mod destination_streaming;`
 - `pub mod destination_tunnels;`
+- `pub mod destination_peers;`
 - `pub mod error;`
 - `pub mod i2cp;`
 - `pub mod inbound_dispatch;`

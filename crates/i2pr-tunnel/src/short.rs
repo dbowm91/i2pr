@@ -135,6 +135,11 @@ impl HopSpec {
         &self.hop_hash_prefix
     }
 
+    /// Returns the full RouterHash used by this build hop.
+    pub const fn router_hash(&self) -> Hash {
+        self.router_hash
+    }
+
     /// Returns the receive tunnel identifier this hop is given.
     pub const fn receive_tunnel(&self) -> TunnelId {
         self.receive_tunnel
@@ -1335,10 +1340,14 @@ mod tests {
     }
 
     fn build_path_with_direction(rng_seed: u64, direction: TunnelDirection) -> ShortBuildPath {
-        let hop_count: u8 = match direction {
-            TunnelDirection::Outbound => 2,
-            TunnelDirection::Inbound => 2,
-        };
+        build_path_with_hop_count(rng_seed, direction, 2)
+    }
+
+    fn build_path_with_hop_count(
+        rng_seed: u64,
+        direction: TunnelDirection,
+        hop_count: u8,
+    ) -> ShortBuildPath {
         let mut hops = Vec::new();
         for value in 1_u8..=hop_count {
             let mut bytes = [0_u8; 32];
@@ -1712,6 +1721,151 @@ mod tests {
             matches!(outcome, Some(ShortBuildOutcome::Established { .. })),
             "matched inbound trajectory must deterministically reach Established"
         );
+    }
+
+    fn strict_three_hop_trajectory(direction: TunnelDirection) {
+        let path = build_path_with_hop_count(
+            if matches!(direction, TunnelDirection::Outbound) {
+                301
+            } else {
+                401
+            },
+            direction,
+            3,
+        );
+        path.validate().expect("valid exact-three path");
+        let expected_hashes = path
+            .hops
+            .iter()
+            .map(HopSpec::router_hash)
+            .collect::<Vec<_>>();
+        let expected_roles = match direction {
+            TunnelDirection::Outbound => vec![
+                HopRole::Participant,
+                HopRole::Participant,
+                HopRole::OutboundEndpoint,
+            ],
+            TunnelDirection::Inbound => vec![
+                HopRole::InboundGateway,
+                HopRole::Participant,
+                HopRole::Participant,
+            ],
+        };
+        assert_eq!(
+            path.hops.iter().map(|hop| hop.role).collect::<Vec<_>>(),
+            expected_roles
+        );
+        let mut machine = ShortBuildStateMachine::new(path, 60_000);
+        let mut rng =
+            ChaCha8Rng::seed_from_u64(if matches!(direction, TunnelDirection::Outbound) {
+                302
+            } else {
+                402
+            });
+        let message = machine.prepare(&mut rng).expect("prepare");
+        assert_eq!(
+            message.records.len(),
+            1 + 4 * SHORT_BUILD_RECORD_SIZE,
+            "three-hop requests retain the one originator fake slot"
+        );
+        let _action = machine.deliver_action(message).expect("deliver action");
+        machine.mark_dispatched().expect("dispatch");
+        let cryptography = crate::build_crypto::EciesX25519BuildCryptography::new();
+        let hops_privs: Vec<[u8; EPHEMERAL_KEY_LEN]> = (1..=3_u8).map(privkey_for).collect();
+        let hops_hashes: Vec<Hash> = (1..=3_u8)
+            .map(|value| {
+                let mut bytes = [0_u8; 32];
+                for (idx, byte) in bytes.iter_mut().enumerate() {
+                    *byte = value.wrapping_add(idx as u8);
+                }
+                Hash::from_bytes(bytes)
+            })
+            .collect();
+        let mut payload = machine.last_payload().expect("prepared payload").to_vec();
+        for (hop_priv, hop_hash) in hops_privs.iter().zip(hops_hashes.iter()) {
+            let (next_payload, _result) = multirecord::MessageHopProcessor::process_hop(
+                &cryptography,
+                &payload,
+                hop_priv,
+                hop_hash,
+                crate::short_record::ShortResponseCode::Accepted,
+                &mut rng,
+            )
+            .expect("production hop processing");
+            payload = next_payload;
+        }
+        let outcome = machine
+            .handle_event(BuildEvent::BuildReply {
+                reply: Zeroizing::new(payload),
+            })
+            .expect("ordinary reply postprocessor");
+        assert!(matches!(
+            outcome,
+            Some(ShortBuildOutcome::Established { .. })
+        ));
+        let material = machine
+            .take_established_material(60)
+            .expect("established material");
+        assert_eq!(material.direction(), direction);
+        assert_eq!(material.hops().len(), 3);
+        assert_eq!(
+            material
+                .hops()
+                .iter()
+                .map(|hop| hop.peer().hash())
+                .collect::<Vec<_>>(),
+            expected_hashes
+        );
+        let roles = material
+            .hops()
+            .iter()
+            .map(|hop| hop.role())
+            .collect::<Vec<_>>();
+        match direction {
+            TunnelDirection::Outbound => {
+                assert_eq!(
+                    roles,
+                    vec![
+                        EstablishedRole::Participant,
+                        EstablishedRole::Participant,
+                        EstablishedRole::OutboundEndpoint,
+                    ]
+                );
+                assert_eq!(
+                    material.hops()[0].receive_tunnel(),
+                    TunnelId::new(0x12d01).unwrap()
+                );
+                assert!(material.hops()[0].next().is_some());
+            }
+            TunnelDirection::Inbound => {
+                assert_eq!(
+                    roles,
+                    vec![
+                        EstablishedRole::InboundGateway,
+                        EstablishedRole::Participant,
+                        EstablishedRole::Participant,
+                    ]
+                );
+                assert_eq!(
+                    material.inbound_gateway().1,
+                    material.hops()[0].receive_tunnel()
+                );
+                assert_eq!(
+                    material.local_inbound_receive(),
+                    material.hops()[2].next_tunnel().unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn strict_outbound_three_hop_trajectory_reaches_established_with_ordered_material() {
+        strict_three_hop_trajectory(TunnelDirection::Outbound);
+    }
+
+    #[test]
+    fn strict_inbound_three_hop_trajectory_reaches_established_with_ordered_material() {
+        strict_three_hop_trajectory(TunnelDirection::Inbound);
     }
 
     #[test]

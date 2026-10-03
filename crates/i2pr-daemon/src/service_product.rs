@@ -20,7 +20,8 @@
 //!   -> Ssu2DaemonService::start (binds UDP sockets under ChildScope)
 //!   -> dial_reference_peer (authenticated SSU2 to the i2pd cache)
 //!   -> bootstrap_reference_router_info (NetDB)
-//!   -> ExploratoryBuildCoordinator (tunnel material)
+//!   -> bounded validated-NetDB candidate projection + DestinationPeerSelector
+//!   -> exact-three DestinationBuildRequest through the shared build coordinator
 //!   -> DestinationTunnelCoordinator (LeaseSet2 lookup)
 //!   -> RemoteDestinationBackend (router delivery + coordinator)
 //!   -> ServiceTunnelManager::new(specs)
@@ -58,7 +59,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_crypto::RouterIdentityBundle;
 use i2pr_netdb::{DestinationHash, LookupPolicy, RouterHash, RouterInfoStoreConfig};
-use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, RouterInfo};
+use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_service_tunnels::{ServiceTunnelSet, StaticAliasTable};
 use i2pr_transport::Deadline;
@@ -71,11 +72,12 @@ use rand_core::SeedableRng;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::destination_peers::{DestinationPeerCandidate, select_destination_path_os};
 use crate::destination_tunnels::{
     DestinationTunnelCoordinator, LeaseStoreIngestOutcome, reply_path_for_inbound_route,
 };
 use crate::exploratory_build::{
-    BuildCoordinatorOutcome, BuildDirection, BuildRequest, ExploratoryBuildCoordinator,
+    BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
     PeerBuildMaterial,
 };
 use crate::inbound_dispatch::{self, InboundDispatchOutcome};
@@ -136,9 +138,8 @@ impl Plan212TunnelIdAllocator {
 }
 
 /// Tunable tunnel ids the production composition owns end-to-end.
-/// Two pairs — outbound (creator + OBEP) and inbound (IBGW) —
-/// install through the existing `ExploratoryBuildCoordinator`
-/// (Plan 185) and never appear in driver code.
+/// Exact-three inbound/outbound paths install through the shared
+/// `ExploratoryBuildCoordinator` short-build core and never appear in driver code.
 ///
 /// Plan 212 §9 — the fixed constants below remain the default seed
 /// for the first service only; additional services allocate
@@ -402,6 +403,9 @@ pub enum ServiceProductError {
     /// registration, target lookup, or server publication).
     #[error("service router provisioning failed: {0}")]
     Provisioning(String),
+    /// The validated NetDB could not supply one complete qualified path.
+    #[error("Destination peer selection failed: {0}")]
+    DestinationSelection(#[from] crate::destination_peers::DestinationSelectionError),
     /// Router-backed network state is missing or expired for a
     /// counted remote path.
     #[error("router network state missing or expired: {0}")]
@@ -554,7 +558,7 @@ impl ServiceProduct {
         let local_router_hash = spec.router_bundle.identity().hash().map_err(|error| {
             ServiceProductError::InvalidIdentity(format!("router hash: {error:?}"))
         })?;
-        let router_peer = if let Some(reference) = &spec.reference {
+        let router_bootstrap = if let Some(reference) = &spec.reference {
             Some(
                 dial_and_bootstrap_router_only(
                     &mut ssu2_handle,
@@ -603,7 +607,7 @@ impl ServiceProduct {
         // traffic. When no reference peer is configured (local
         // product) this is a no-op and supervisors start
         // immediately.
-        if let Some(peer) = router_peer {
+        if let Some(peer) = router_bootstrap {
             let mut allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
             if let Err(error) = provision_all_service_router_material(
                 &manager,
@@ -1031,9 +1035,7 @@ fn wall_secs() -> u64 {
 /// bootstrap. Carries only transport/bootstrap facts; never an
 /// application Destination hash.
 #[derive(Clone, Copy, Debug)]
-struct RouterPeerMaterial {
-    peer_hash: Hash,
-    encryption_key: [u8; 32],
+struct RouterBootstrapMaterial {
     local_hash: Hash,
 }
 
@@ -1041,7 +1043,7 @@ struct RouterPeerMaterial {
 /// RouterInfo into the shared coordinator. Router bootstrap only:
 /// RouterInfo verification, authoritative RouterInfo bootstrap,
 /// authenticated SSU2 dial/session establishment, and peer material
-/// preparation for real tunnel builds. It must NOT perform an
+/// preparation for candidate selection. It must NOT perform an
 /// application LeaseSet2 lookup; per-service lookup is
 /// `resolve_remote_destination_for_service`.
 ///
@@ -1060,7 +1062,7 @@ async fn dial_and_bootstrap_router_only(
     reference: &ReferencePeer,
     local_router_hash: Hash,
     options: ServiceProductOptions,
-) -> Result<RouterPeerMaterial, ServiceProductError> {
+) -> Result<RouterBootstrapMaterial, ServiceProductError> {
     let (peer_hash, peer_ssu2) = verify_reference_router_info(&reference.router_info_bytes)
         .map_err(|error| ServiceProductError::InvalidRouterInfo(error.to_string()))?;
     let material = match peer_ssu2.address_material() {
@@ -1079,18 +1081,6 @@ async fn dial_and_bootstrap_router_only(
         responder_static,
         responder_intro,
     )?;
-    let router_info = RouterInfo::decode(
-        &reference.router_info_bytes,
-        i2pr_runtime::constants::MAX_ESTABLISHMENT_ROUTER_INFO_BYTES,
-    )
-    .map_err(|error| ServiceProductError::InvalidRouterInfo(error.to_string()))?;
-    let encryption_key: [u8; 32] = router_info
-        .router_identity()
-        .public_key()
-        .as_bytes()
-        .try_into()
-        .map_err(|_| ServiceProductError::EncryptionKey)?;
-
     // Establish the authenticated session.
     let _ = Box::pin(ssu2_handle.dial(target, options.dial_timeout, &CancellationToken::new()))
         .await
@@ -1125,9 +1115,7 @@ async fn dial_and_bootstrap_router_only(
         ));
     }
 
-    Ok(RouterPeerMaterial {
-        peer_hash,
-        encryption_key,
+    Ok(RouterBootstrapMaterial {
         local_hash: local_router_hash,
     })
 }
@@ -1530,13 +1518,48 @@ async fn resolve_remote_destination_for_service_inner(
 /// Tunnel ids allocate disjointly per service via
 /// [`Plan212TunnelIdAllocator`]. A failed provisioning pass fails
 /// atomically (caller tears down staged listeners).
+fn selected_peer_material(
+    candidates: Vec<DestinationPeerCandidate>,
+    roles: [HopRole; 3],
+    receives: [u32; 3],
+    nexts: [u32; 3],
+    spec_id: &str,
+) -> Result<Vec<PeerBuildMaterial>, ServiceProductError> {
+    if candidates.len() != 3 {
+        return Err(ServiceProductError::Provisioning(format!(
+            "{spec_id}: qualified selector returned a non-three-hop path"
+        )));
+    }
+    candidates
+        .into_iter()
+        .zip(roles)
+        .zip(receives)
+        .zip(nexts)
+        .map(|(((candidate, role), receive), next)| {
+            let receive_tunnel = TunnelId::new(receive).map_err(|_| {
+                ServiceProductError::Provisioning(format!("{spec_id}: invalid receive id"))
+            })?;
+            let next_tunnel = TunnelId::new(next).map_err(|_| {
+                ServiceProductError::Provisioning(format!("{spec_id}: invalid next id"))
+            })?;
+            Ok(PeerBuildMaterial {
+                router_hash: candidate.router_hash(),
+                static_encryption_key: *candidate.static_encryption_key(),
+                receive_tunnel,
+                next_tunnel,
+                role,
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn provision_all_service_router_material(
     manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
     coordinator: &mut ExploratoryBuildCoordinator,
     destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
     ssu2_handle: &mut Ssu2DaemonHandle,
-    peer: &RouterPeerMaterial,
+    peer: &RouterBootstrapMaterial,
     runtimes: &[Arc<crate::service_tunnels::ServiceRuntime>],
     options: ServiceProductOptions,
     allocator: &mut Plan212TunnelIdAllocator,
@@ -1556,49 +1579,65 @@ async fn provision_all_service_router_material(
         if !provisioned_destinations.insert(runtime.destination_id) {
             continue;
         }
-        // Allocate a disjoint tunnel-id set for this service.
-        // Layout per service: outbound creator, OBEP receive, OBEP
-        // next, inbound creator, IBGW receive, IBGW next.
-        let ids = allocator.allocate_set(6);
-        let (ob_creator, obep_receive, obep_next, ib_creator, ibgw_receive, ibgw_next) =
-            (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+        // Project from the authoritative validated RouterInfo store and
+        // select independently randomized, exact-three paths. A sparse or
+        // metadata-incomplete store fails closed before any build submission.
+        let (candidates, _projection_summary) = {
+            let guard = destination_tunnels.lock().await;
+            guard.destination_peer_candidates()
+        };
+        let outbound_candidates = select_destination_path_os(&candidates)?;
+        let inbound_candidates = select_destination_path_os(&candidates)?;
+
+        // Ten disjoint IDs cover each local creator, three remote receives,
+        // the outbound terminal return tunnel, and the local inbound endpoint.
+        let ids = allocator.allocate_set(10);
+        let (ob_creator, ib_creator) = (ids[0], ids[5]);
         // Skip zero (allocator never emits it) and skip ids still
         // present in the registry (bounded retry).
-        for id in [
-            ob_creator,
-            obep_receive,
-            obep_next,
-            ib_creator,
-            ibgw_receive,
-            ibgw_next,
-        ] {
-            if id == 0 {
+        for id in &ids {
+            if *id == 0 {
                 return Err(ServiceProductError::Provisioning(format!(
                     "{spec_id}: allocator emitted zero tunnel id"
                 )));
             }
         }
         let bridge = ShortBuildI2npBridge::new();
-        let mut rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(u64::from(ob_creator)));
+        let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+            ServiceProductError::Provisioning("operating-system randomness unavailable".to_owned())
+        })?;
         let delivery = ssu2_handle.delivery().clone();
         // Plan 213 — mask the low two bits before OR-ing the
         // direction bit so outbound (`| 0x01`) and inbound
         // (`| 0x02`) message ids stay distinct for every service
         // (later allocator ids already carry low bits).
         let message_base: u32 = (ob_creator ^ 0x51A7_0000) & !0x03;
-        let outbound = BuildRequest {
+        let outbound_peers = selected_peer_material(
+            outbound_candidates,
+            [
+                HopRole::Participant,
+                HopRole::Participant,
+                HopRole::OutboundEndpoint,
+            ],
+            [ids[1], ids[2], ids[3]],
+            [ids[2], ids[3], ids[4]],
+            &spec_id,
+        )?;
+        let inbound_peers = selected_peer_material(
+            inbound_candidates,
+            [
+                HopRole::InboundGateway,
+                HopRole::Participant,
+                HopRole::Participant,
+            ],
+            [ids[6], ids[7], ids[8]],
+            [ids[7], ids[8], ids[9]],
+            &spec_id,
+        )?;
+        let inbound_gateway_hash = inbound_peers[0].router_hash;
+        let outbound = DestinationBuildRequest {
             direction: BuildDirection::Outbound,
-            peer: PeerBuildMaterial {
-                router_hash: peer.peer_hash,
-                static_encryption_key: peer.encryption_key,
-                receive_tunnel: TunnelId::new(obep_receive).map_err(|_| {
-                    ServiceProductError::Provisioning(format!("{spec_id}: bad OBEP receive id"))
-                })?,
-                next_tunnel: TunnelId::new(obep_next).map_err(|_| {
-                    ServiceProductError::Provisioning(format!("{spec_id}: bad OBEP next id"))
-                })?,
-                role: HopRole::OutboundEndpoint,
-            },
+            peers: outbound_peers,
             creator_tunnel_id: TunnelId::new(ob_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad outbound creator id"))
             })?,
@@ -1607,7 +1646,7 @@ async fn provision_all_service_router_material(
             originator_hash: None,
         };
         coordinator
-            .submit(
+            .submit_destination(
                 outbound,
                 &delivery,
                 &bridge,
@@ -1618,19 +1657,9 @@ async fn provision_all_service_router_material(
                 &mut rng,
             )
             .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
-        let inbound = BuildRequest {
+        let inbound = DestinationBuildRequest {
             direction: BuildDirection::Inbound,
-            peer: PeerBuildMaterial {
-                router_hash: peer.peer_hash,
-                static_encryption_key: peer.encryption_key,
-                receive_tunnel: TunnelId::new(ibgw_receive).map_err(|_| {
-                    ServiceProductError::Provisioning(format!("{spec_id}: bad IBGW receive id"))
-                })?,
-                next_tunnel: TunnelId::new(ibgw_next).map_err(|_| {
-                    ServiceProductError::Provisioning(format!("{spec_id}: bad IBGW next id"))
-                })?,
-                role: HopRole::InboundGateway,
-            },
+            peers: inbound_peers,
             creator_tunnel_id: TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?,
@@ -1639,7 +1668,7 @@ async fn provision_all_service_router_material(
             originator_hash: Some(peer.local_hash),
         };
         coordinator
-            .submit(
+            .submit_destination(
                 inbound,
                 &delivery,
                 &bridge,
@@ -1703,19 +1732,18 @@ async fn provision_all_service_router_material(
         // consulting `inbound_gateway_route` for each candidate.
         // Fall back to scanning `inbound_receive_ids` for the
         // most recent entry when the exact mapping is ambiguous
-        // in the controlled single-peer lane.
+        // in the controlled one-path lane.
         let registry_receive_ids = coordinator.registry().inbound_receive_ids();
         if registry_receive_ids.is_empty() {
             return Err(ServiceProductError::InboundBuildMissing);
         }
-        // Prefer the receive id whose gateway route matches our
-        // peer; otherwise take the last installed id (controlled
-        // lane has one inbound tunnel per service, installed in
-        // order).
+        // Prefer the receive id whose gateway route matches the
+        // selected inbound path's first hop; otherwise use the last
+        // installed id only as an internal allocation disambiguator.
         let mut chosen_local_receive: Option<TunnelId> = None;
         for candidate in registry_receive_ids.iter().rev() {
             if let Some(route) = coordinator.registry().inbound_gateway_route(*candidate)
-                && route.gateway_router == peer.peer_hash
+                && route.gateway_router == inbound_gateway_hash
             {
                 chosen_local_receive = Some(*candidate);
                 break;
