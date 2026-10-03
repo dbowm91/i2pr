@@ -240,7 +240,7 @@ fn parse_configured_destination(value: &str) -> Result<DestinationRef, ServiceTu
     Ok(DestinationRef::ConfiguredDestination(value.to_owned()))
 }
 
-fn decode_base32_label(label: &str) -> Option<[u8; 32]> {
+pub(crate) fn decode_base32_label(label: &str) -> Option<[u8; 32]> {
     let mut out = [0_u8; 32];
     let mut accumulator: u32 = 0;
     let mut bits: u8 = 0;

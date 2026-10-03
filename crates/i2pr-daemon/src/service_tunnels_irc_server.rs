@@ -459,10 +459,14 @@ pub async fn run_irc_server_loop(
     // stays 0 so a missing value can never resurrect the old
     // port-1 mismatch.
     let port = manager.server_streaming_port_for(runtime).unwrap_or(0_u16);
+    let drain_cancel = runtime.cancellation_token();
     loop {
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop polling promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();
@@ -475,9 +479,17 @@ pub async fn run_irc_server_loop(
             // Plan 182: answer the SYN before waiting for
             // Established. Without the SYN response the handshake
             // can never complete; see `accept_irc_inbound_syn`.
-            if accept_irc_inbound_syn(manager, runtime, connection_id).is_none() {
+            let Some(peer) = accept_irc_inbound_syn(manager, runtime, connection_id) else {
                 debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc accept failed");
                 runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            // Plan 292: peer policy (structurally empty for IRC
+            // server kinds, which cannot carry access lists, but
+            // enforced uniformly so a validation gap can never
+            // silently admit).
+            if !runtime.access.allows(&peer.destination_hash) {
+                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
             debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc SYN answered");
@@ -606,12 +618,7 @@ async fn spawn_irc_server_connection(
                 .failed_connects
                 .fetch_add(1, Ordering::Relaxed);
         }
-        runtime_for_task
-            .active_connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some(value.saturating_sub(1))
-            })
-            .ok();
+        runtime_for_task.connection_finished_now();
         debug!(
             service = %spec_id_for_log,
             ?outcome,

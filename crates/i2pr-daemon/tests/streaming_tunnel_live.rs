@@ -292,6 +292,10 @@ fn deliver_streaming_request(
         &mut receiver.streaming,
         StreamingManager::new(StreamingConfig::balanced()),
     );
+    // Plan 291: the local seam carries a connectionless datagram
+    // manager alongside the streaming halves; no datagrams flow
+    // in these streaming trajectories.
+    let mut datagrams = i2pr_client::datagram::DatagramManager::new();
     let mut sender_inputs = LocalDeliverySender {
         identity: &sender.identity,
         routing: &mut sender.routing,
@@ -307,6 +311,7 @@ fn deliver_streaming_request(
         session: &mut receiver.receiver_session,
         routing: &mut receiver.receiver_routing,
         streaming: &mut receiver.receiver_streaming,
+        datagrams: &mut datagrams,
         canonical_streaming: Some(&mut canonical_streaming),
         lease_set2_store: &mut receiver.receiver_lease_set2_store,
         now_seconds: NOW_SECONDS,

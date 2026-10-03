@@ -227,6 +227,10 @@ pub struct ServiceProductSpec {
     pub reference: Option<ReferencePeer>,
     /// Tunable bounds; defaults to [`ServiceProductOptions::default`].
     pub options: ServiceProductOptions,
+    /// Canonical address-book resolver cell (Plan 294). Empty by
+    /// default; install the active subsystem's shared handle to let
+    /// alias misses resolve through the same owner SAM uses.
+    pub addressbook: crate::addressbook::SharedAddressBook,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -588,6 +592,7 @@ impl ServiceProduct {
                 .map_err(|error| ServiceProductError::ManagerBuild(error.to_string()))?,
         );
         manager.install_router_delivery(capability);
+        manager.set_addressbook_handle(spec.addressbook.clone());
         let runtimes = manager
             .prepare()
             .await

@@ -9,10 +9,12 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+i2pr-addressbook = { path = "../i2pr-addressbook" }
 i2pr-api = { path = "../i2pr-api" }
 i2pr-client = { path = "../i2pr-client" }
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-core = { path = "../i2pr-core" }
+i2pr-i2pcontrol = { path = "../i2pr-i2pcontrol" }
 i2pr-netdb = { path = "../i2pr-netdb" }
 i2pr-netdb-persist = { path = "../i2pr-netdb-persist" }
 i2pr-proto = { path = "../i2pr-proto" }
@@ -23,12 +25,19 @@ i2pr-transport = { path = "../i2pr-transport" }
 i2pr-tunnel = { path = "../i2pr-tunnel" }
 rand_chacha = "0.9"
 rand_core = "0.9"
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]

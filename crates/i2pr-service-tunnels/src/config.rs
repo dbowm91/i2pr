@@ -146,6 +146,10 @@ impl ServiceClientGroupId {
 /// Every variant parses from its kebab-case configuration spelling.
 /// No listener is active in Plan 174; the daemon rejects
 /// `enabled = true` entries as not-yet-available until Plan 175.
+/// Plan 290 adds the four composed Proposal 170 families
+/// (`connect-client`, `socks-irc`, `http-server`,
+/// `http-bidir-server`) over the existing streaming/HTTP/SOCKS/IRC
+/// primitives.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum ServiceTunnelKind {
     /// Generic TCP client tunnel.
@@ -160,6 +164,25 @@ pub enum ServiceTunnelKind {
     IrcClient,
     /// IRC server tunnel profile.
     IrcServer,
+    /// Strict HTTP CONNECT-only client (Plan 290).
+    ConnectClient,
+    /// SOCKS negotiation with the IRC client privacy filter on all
+    /// post-CONNECT traffic (Plan 290).
+    SocksIrc,
+    /// Filtered HTTP server (Plan 290).
+    HttpServer,
+    /// Deprecated bidirectional HTTP server: filtered HTTP server
+    /// half plus a no-outproxy HTTP client half under one lifecycle
+    /// generation and one persistent server identity (Plan 290).
+    HttpBidirServer,
+    /// Streamr media subscriber: repliable-datagram subscribes to
+    /// a configured producer, raw-datagram media to a loopback UDP
+    /// target (Plan 291).
+    StreamrClient,
+    /// Streamr media publisher: persistent destination, loopback
+    /// UDP media source, bounded authenticated subscriber table,
+    /// raw-datagram fanout (Plan 291).
+    StreamrServer,
 }
 
 impl ServiceTunnelKind {
@@ -172,9 +195,15 @@ impl ServiceTunnelKind {
             "socks5-client" => Ok(Self::Socks5Client),
             "irc-client" => Ok(Self::IrcClient),
             "irc-server" => Ok(Self::IrcServer),
+            "connect-client" => Ok(Self::ConnectClient),
+            "socks-irc" => Ok(Self::SocksIrc),
+            "http-server" => Ok(Self::HttpServer),
+            "http-bidir-server" => Ok(Self::HttpBidirServer),
+            "streamr-client" => Ok(Self::StreamrClient),
+            "streamr-server" => Ok(Self::StreamrServer),
             _ => Err(ServiceTunnelError::InvalidKind {
                 value: truncated(value),
-                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, or irc-server",
+                reason: "must be generic-client, generic-server, http-client, socks5-client, irc-client, irc-server, connect-client, socks-irc, http-server, http-bidir-server, streamr-client, or streamr-server",
             }),
         }
     }
@@ -188,13 +217,34 @@ impl ServiceTunnelKind {
             Self::Socks5Client => "socks5-client",
             Self::IrcClient => "irc-client",
             Self::IrcServer => "irc-server",
+            Self::ConnectClient => "connect-client",
+            Self::SocksIrc => "socks-irc",
+            Self::HttpServer => "http-server",
+            Self::HttpBidirServer => "http-bidir-server",
+            Self::StreamrClient => "streamr-client",
+            Self::StreamrServer => "streamr-server",
         }
     }
 
     /// Returns `true` for server-side kinds that terminate at a
     /// loopback/Unix target.
+    ///
+    /// Plan 290: `HttpServer` is server-side. `HttpBidirServer`
+    /// reports client-side here because it always carries a
+    /// loopback listener (its server half is visible through the
+    /// dedicated destination identity, not through this bit); the
+    /// daemon builds both a listener and a server target for it.
+    ///
+    /// Plan 291: `StreamrServer` is server-side (it publishes one
+    /// persistent destination and terminates inbound subscribes at
+    /// a loopback UDP source); the daemon carves it out of the TCP
+    /// target path because it carries UDP endpoints, not a TCP
+    /// target.
     pub fn is_server(self) -> bool {
-        matches!(self, Self::GenericServer | Self::IrcServer)
+        matches!(
+            self,
+            Self::GenericServer | Self::IrcServer | Self::HttpServer | Self::StreamrServer
+        )
     }
 
     /// Returns `true` for client-side kinds that originate from a
@@ -471,6 +521,223 @@ impl ServiceTimeouts {
     }
 }
 
+/// Proposal 170 tunnel quantity ceiling (the pool allows more; the
+/// Proposal binds control-plane values to 1..=6).
+pub const MAX_TUNNEL_QUANTITY: u8 = 6;
+/// Proposal 170 tunnel length ceiling (0..=3 on the wire; 0 is
+/// rejected by service-destination policy, see [`TunnelShaping`]).
+pub const MAX_TUNNEL_LENGTH_HOPS: u8 = 3;
+/// Proposal 170 backup-quantity ceiling (Plan 296): 0..=3 standby
+/// tunnels held ready beyond the per-direction quantity target.
+pub const MAX_TUNNEL_BACKUP_QUANTITY: u8 = 3;
+/// Proposal 170 length-variance bound (Plan 296): per-build hop
+/// adjustment sampled uniformly from `-variance..=+variance`.
+pub const MAX_TUNNEL_LENGTH_VARIANCE: i8 = 2;
+/// Directional pool maximum mirrored from the destination tunnel
+/// pool ceiling (Plan 296): a per-direction quantity plus backup
+/// may not exceed the tunnels the pool can hold. The destination
+/// crate owns the authoritative ceiling; the daemon cross-checks
+/// equality in its shaping tests so the mirror cannot drift.
+pub const MAX_EFFECTIVE_DIRECTION_TUNNELS: u8 = 8;
+
+/// Validated per-tunnel pool shaping (Plan 292, extended by Plan 296).
+///
+/// `tunnel_quantity` is the symmetric default; `inbound_quantity` and
+/// `outbound_quantity` override per direction. `tunnel_length` is the
+/// symmetric default; per-direction lengths must agree because the
+/// pool uses a single hop length (the control boundary rejects
+/// differing per-direction lengths instead of silently dropping one).
+/// Length 0 (zero-hop) is rejected: service destinations run in
+/// `Remote` tunnel mode and the destination policy does not permit
+/// zero-hop service pools.
+///
+/// Plan 296: `backup_quantity` (0..=3) holds that many extra tunnels
+/// ready beyond each per-direction quantity target; established
+/// tunnels past the base target count as standby and promote
+/// automatically when a base tunnel fails. The per-direction
+/// effective target (`quantity + backup`) may not exceed
+/// [`MAX_EFFECTIVE_DIRECTION_TUNNELS`]. `length_variance` (-2..=+2)
+/// randomizes each build's hop length around the configured length
+/// within the pool hop policy (see the destination crate's build
+/// sampler); 0 disables variance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TunnelShaping {
+    /// Inbound pool target (1..=6).
+    pub inbound_quantity: u8,
+    /// Outbound pool target (1..=6).
+    pub outbound_quantity: u8,
+    /// Shared pool hop length (1..=3).
+    pub length_hops: u8,
+    /// Standby tunnels held ready per direction (0..=3).
+    pub backup_quantity: u8,
+    /// Per-build hop-length variance (-2..=+2).
+    pub length_variance: i8,
+}
+
+impl TunnelShaping {
+    /// Shaping that reproduces `DestinationConfig::balanced` exactly.
+    pub fn balanced() -> Self {
+        Self {
+            inbound_quantity: 2,
+            outbound_quantity: 2,
+            length_hops: 2,
+            backup_quantity: 0,
+            length_variance: 0,
+        }
+    }
+
+    /// Validates explicit shaping values.
+    pub fn try_new(
+        inbound_quantity: u8,
+        outbound_quantity: u8,
+        length_hops: u8,
+        backup_quantity: u8,
+        length_variance: i8,
+    ) -> Result<Self, ServiceTunnelError> {
+        if inbound_quantity == 0 || inbound_quantity > MAX_TUNNEL_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "inbound_quantity",
+                reason: "must be within 1..=6",
+            });
+        }
+        if outbound_quantity == 0 || outbound_quantity > MAX_TUNNEL_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "outbound_quantity",
+                reason: "must be within 1..=6",
+            });
+        }
+        if length_hops == 0 || length_hops > MAX_TUNNEL_LENGTH_HOPS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "length_hops",
+                reason: "must be within 1..=3 (zero-hop is not permitted for service destinations)",
+            });
+        }
+        if backup_quantity > MAX_TUNNEL_BACKUP_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "must be within 0..=3",
+            });
+        }
+        if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&length_variance) {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "length_variance",
+                reason: "must be within -2..=+2",
+            });
+        }
+        if inbound_quantity.saturating_add(backup_quantity) > MAX_EFFECTIVE_DIRECTION_TUNNELS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "inbound quantity plus backup exceeds the pool directional maximum of 8",
+            });
+        }
+        if outbound_quantity.saturating_add(backup_quantity) > MAX_EFFECTIVE_DIRECTION_TUNNELS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "outbound quantity plus backup exceeds the pool directional maximum of 8",
+            });
+        }
+        Ok(Self {
+            inbound_quantity,
+            outbound_quantity,
+            length_hops,
+            backup_quantity,
+            length_variance,
+        })
+    }
+}
+
+/// Round-robin dial start for one multihomed server connection
+/// (Plan 296): the `connection_sequence`-th connection starts at
+/// `sequence % target_count`, then fails over sequentially. The
+/// daemon owns the per-runtime monotonic sequence counter; this
+/// helper pins the rotation contract. An empty list selects 0
+/// (callers guarantee non-empty; the dial fails closed with no
+/// targets).
+pub fn multihoming_start_index(connection_sequence: usize, target_count: usize) -> usize {
+    if target_count == 0 {
+        return 0;
+    }
+    connection_sequence % target_count
+}
+
+/// Minimum idle deadline in milliseconds (Plan 292).
+pub const MIN_IDLE_TIMEOUT_MS: u64 = 1_000;
+/// Maximum idle deadline in milliseconds (24 hours).
+pub const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
+/// Default idle deadline applied when idle action flags are set
+/// without an explicit timeout (10 minutes, documented i2pr policy).
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
+
+/// Validated per-tunnel idle policy (Plan 292).
+///
+/// A deadline with no action flag is inert, so it is rejected;
+/// action flags without a deadline take [`DEFAULT_IDLE_TIMEOUT_MS`]
+/// at the control boundary. `None` (disabled) is the default: every
+/// existing tunnel keeps its current always-on behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IdlePolicy {
+    /// Idle deadline in milliseconds (`None` disables the sweep).
+    pub timeout_ms: Option<u64>,
+    /// Stop the runtime once idle past the deadline.
+    pub close_on_idle: bool,
+    /// Rebuild tunnel pools in place once idle past the deadline
+    /// (identity stable; ephemeral client identities follow the
+    /// existing restart-regeneration behavior).
+    pub new_dest_on_idle: bool,
+    /// Halve pool targets toward one once idle past the deadline
+    /// (runtime-only; a restart restores the stored shaping).
+    pub reduce_on_idle: bool,
+}
+
+impl IdlePolicy {
+    /// Disabled policy: no deadline, no actions.
+    pub fn disabled() -> Self {
+        Self {
+            timeout_ms: None,
+            close_on_idle: false,
+            new_dest_on_idle: false,
+            reduce_on_idle: false,
+        }
+    }
+
+    /// Validates an explicit policy. Rejects out-of-range deadlines.
+    /// Inert policies (a deadline with no action) are rejected by
+    /// spec validation and the control boundary, which own the
+    /// service identifier for the diagnostic.
+    pub fn try_new(
+        timeout_ms: Option<u64>,
+        close_on_idle: bool,
+        new_dest_on_idle: bool,
+        reduce_on_idle: bool,
+    ) -> Result<Self, ServiceTunnelError> {
+        if let Some(timeout) = timeout_ms {
+            if !(MIN_IDLE_TIMEOUT_MS..=MAX_IDLE_TIMEOUT_MS).contains(&timeout) {
+                return Err(ServiceTunnelError::ExceedsCeiling {
+                    field: "idle_timeout",
+                    reason: "must be within 1000..=86400000 milliseconds",
+                });
+            }
+            if !(close_on_idle || new_dest_on_idle || reduce_on_idle) {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id: String::new(),
+                    reason: "idle_timeout without an idle action is inert",
+                });
+            }
+        }
+        Ok(Self {
+            timeout_ms,
+            close_on_idle,
+            new_dest_on_idle,
+            reduce_on_idle,
+        })
+    }
+
+    /// Whether the sweep considers this policy.
+    pub fn enabled(self) -> bool {
+        self.timeout_ms.is_some()
+    }
+}
+
 /// One validated service-tunnel specification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceTunnelSpec {
@@ -496,15 +763,75 @@ pub struct ServiceTunnelSpec {
     pub max_buffered_bytes_per_direction: usize,
     /// Service deadlines.
     pub timeouts: ServiceTimeouts,
+    /// Pool shaping (length/quantity projection into the destination
+    /// tunnel pool). Defaults to [`TunnelShaping::balanced`].
+    pub shaping: TunnelShaping,
+    /// Interactive streaming profile (Plan 292): selects the
+    /// constrained-window streaming configuration for
+    /// latency-sensitive tunnels. `false` keeps the balanced
+    /// windows. Streamr kinds must leave this unset (the datagram
+    /// path has no streaming windows).
+    pub streaming_interactive: bool,
+    /// Idle policy (Plan 292): deadline-gated close, pool rebuild,
+    /// or pool reduction for quiet tunnels. Disabled by default.
+    pub idle: IdlePolicy,
+    /// Inbound peer allow/deny policy (Plan 292). Only server kinds
+    /// may carry entries; every other kind must stay empty.
+    pub access: crate::access::ServerAccessPolicy,
+    /// Per-peer loopback source bind on server-to-target dials
+    /// (Plan 292 `unique_local_address`). When set, the server
+    /// dials its TCP target from a deterministic 127/8 address
+    /// derived from the peer hash instead of the default
+    /// wildcard source. Only the masked server kinds
+    /// (generic, HTTP server, bidirectional) may set it; the
+    /// option has no consuming dial for any other kind.
+    pub unique_local_address: bool,
+    /// Server target selection across the configured target list
+    /// (Plan 296 `multihoming`). When set, each inbound connection
+    /// dials a round-robin-selected target with sequential failover
+    /// instead of the first target only; the flag requires at
+    /// least two configured targets. Unset keeps first-target
+    /// failover (configuration-layer fallback, no wire key).
+    /// Only the masked server kinds (generic, HTTP server,
+    /// bidirectional) may set it.
+    pub multihoming: bool,
+    /// Garlic reply bundling on the destination delivery path
+    /// (Plan 296 `reply_bundling`). When set, the outbound sweep
+    /// may carry multiple same-remote application payloads as
+    /// multiple data cloves in one New Session Reply garlic
+    /// message. Unset keeps one payload per garlic message. All
+    /// kinds may set it.
+    pub reply_bundling: bool,
+    /// TLS to the loopback target on server-to-target dials
+    /// (Plan 297 `use_ssl`). When set, the server negotiates TLS
+    /// to the configured loopback target using the daemon's
+    /// explicit TLS identity/trust policy before proxying
+    /// application bytes; verification failure fails the
+    /// connection with no plaintext fallback. Unset keeps
+    /// plaintext. Only the masked server kinds (generic, HTTP
+    /// server, bidirectional) may set it, and only with
+    /// loopback-TCP targets.
+    pub use_ssl: bool,
+    /// HTTP server presentation policy (Plan 292
+    /// `address_helper` / `jump_list` gates). Only the HTTP
+    /// server kinds consume it; every other kind must carry
+    /// the default (both gates open).
+    pub http_policy: crate::http::HttpServerPolicy,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
-    /// kinds; ignored otherwise.
+    /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
     /// SOCKS5-specific profile options. Mandatory for
-    /// `Socks5Client` kinds; ignored otherwise.
+    /// `Socks5Client` and `SocksIrc` kinds; ignored otherwise.
     pub socks5_options: Option<crate::socks5::Socks5ClientOptions>,
-    /// IRC-specific profile options. Mandatory for `IrcClient`
-    /// kinds; ignored otherwise.
+    /// IRC-specific profile options. Mandatory for `IrcClient` and
+    /// `SocksIrc` kinds; ignored otherwise.
     pub irc_options: Option<crate::irc::IrcClientOptions>,
+    /// Strict CONNECT profile options. Mandatory for
+    /// `ConnectClient` kinds; ignored otherwise.
+    pub connect_options: Option<crate::connect::ConnectClientOptions>,
+    /// Streamr profile options. Mandatory for `StreamrClient` and
+    /// `StreamrServer` kinds; ignored otherwise.
+    pub streamr_options: Option<crate::streamr::StreamrOptions>,
 }
 
 impl ServiceTunnelSpec {
@@ -525,6 +852,13 @@ impl ServiceTunnelSpec {
             });
         }
         self.timeouts.validate()?;
+        TunnelShaping::try_new(
+            self.shaping.inbound_quantity,
+            self.shaping.outbound_quantity,
+            self.shaping.length_hops,
+            self.shaping.backup_quantity,
+            self.shaping.length_variance,
+        )?;
         if self.targets.len() > MAX_CONFIGURED_TARGETS {
             return Err(ServiceTunnelError::ExceedsCeiling {
                 field: "targets",
@@ -536,7 +870,9 @@ impl ServiceTunnelSpec {
             ServiceTunnelKind::GenericClient
             | ServiceTunnelKind::HttpClient
             | ServiceTunnelKind::Socks5Client
-            | ServiceTunnelKind::IrcClient => {
+            | ServiceTunnelKind::IrcClient
+            | ServiceTunnelKind::ConnectClient
+            | ServiceTunnelKind::SocksIrc => {
                 if self.listener.is_none() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
@@ -556,7 +892,9 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer => {
+            ServiceTunnelKind::GenericServer
+            | ServiceTunnelKind::IrcServer
+            | ServiceTunnelKind::HttpServer => {
                 if self.listener.is_some() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
@@ -582,15 +920,112 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
+            // Plan 290: the bidirectional HTTP server carries both a
+            // loopback client listener and a loopback/unix server
+            // target under one lifecycle generation and one
+            // persistent server identity. It never carries a remote
+            // destination reference: the client half resolves
+            // per-request destinations like `http-client` (no
+            // outproxy), and only the server half publishes.
+            ServiceTunnelKind::HttpBidirServer => {
+                if self.listener.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a loopback listener for the client half",
+                    });
+                }
+                if self.target.is_none() && self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a loopback or unix target for the server half",
+                    });
+                }
+                if self.destination.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server must not carry a remote destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "http-bidir-server requires a dedicated destination",
+                    });
+                }
+            }
+            // Plan 291: the Streamr subscriber carries no TCP
+            // listener and no TCP target. It resolves the
+            // configured producer destination, subscribes over
+            // repliable datagrams, and forwards raw media to the
+            // loopback UDP target. The UDP endpoints live in
+            // `streamr_options`, never in `listener`/`target`.
+            ServiceTunnelKind::StreamrClient => {
+                if self.listener.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client must not carry a TCP listener",
+                    });
+                }
+                if self.target.is_some() || !self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client must not carry a TCP server target",
+                    });
+                }
+                if self.destination.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires the producer destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires a dedicated destination",
+                    });
+                }
+            }
+            // Plan 291: the Streamr publisher carries no TCP
+            // listener, no TCP target, and no remote destination.
+            // It publishes one persistent destination, receives
+            // media on the loopback UDP source, and fans raw media
+            // out to authenticated subscribers.
+            ServiceTunnelKind::StreamrServer => {
+                if self.listener.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a TCP listener",
+                    });
+                }
+                if self.target.is_some() || !self.targets.is_empty() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a TCP server target",
+                    });
+                }
+                if self.destination.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server must not carry a remote destination reference",
+                    });
+                }
+                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server requires a dedicated destination",
+                    });
+                }
+            }
         }
-        // Plan 176: http-client must carry HTTP profile options;
-        // non-HTTP kinds must not.
+        // Plan 176 + Plan 290: http-client and the http-bidir-server
+        // client half must carry HTTP profile options; non-HTTP
+        // kinds must not.
         match self.kind {
-            ServiceTunnelKind::HttpClient => {
+            ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer => {
                 let options = self.http_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "http-client requires http_options",
+                        reason: "http-client kinds require http_options",
                     }
                 })?;
                 options.validate()?;
@@ -604,14 +1039,14 @@ impl ServiceTunnelSpec {
                 }
             }
         }
-        // Plan 177: socks5-client must carry SOCKS5 profile options;
-        // non-SOCKS5 kinds must not.
+        // Plan 177 + Plan 290: socks5-client and socks-irc must
+        // carry SOCKS5 profile options; other kinds must not.
         match self.kind {
-            ServiceTunnelKind::Socks5Client => {
+            ServiceTunnelKind::Socks5Client | ServiceTunnelKind::SocksIrc => {
                 let options = self.socks5_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "socks5-client requires socks5_options",
+                        reason: "socks kinds require socks5_options",
                     }
                 })?;
                 options.validate()?;
@@ -620,19 +1055,19 @@ impl ServiceTunnelSpec {
                 if self.socks5_options.is_some() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
-                        reason: "socks5_options must not be set for non-SOCKS5 kinds",
+                        reason: "socks5_options must not be set for non-SOCKS kinds",
                     });
                 }
             }
         }
-        // Plan 178: irc-client must carry IRC profile options;
-        // non-IRC kinds must not.
+        // Plan 178 + Plan 290: irc-client and socks-irc must carry
+        // IRC profile options; other kinds must not.
         match self.kind {
-            ServiceTunnelKind::IrcClient => {
+            ServiceTunnelKind::IrcClient | ServiceTunnelKind::SocksIrc => {
                 let options = self.irc_options.as_ref().ok_or_else(|| {
                     ServiceTunnelError::ContradictoryOptions {
                         id: id.clone(),
-                        reason: "irc-client requires irc_options",
+                        reason: "irc kinds require irc_options",
                     }
                 })?;
                 options.validate()?;
@@ -644,6 +1079,221 @@ impl ServiceTunnelSpec {
                         reason: "irc_options must not be set for non-IRC kinds",
                     });
                 }
+            }
+        }
+        // Plan 290: connect-client must carry strict CONNECT profile
+        // options; other kinds must not.
+        match self.kind {
+            ServiceTunnelKind::ConnectClient => {
+                let options = self.connect_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "connect-client requires connect_options",
+                    }
+                })?;
+                options.validate()?;
+            }
+            _ => {
+                if self.connect_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "connect_options must not be set for non-CONNECT kinds",
+                    });
+                }
+            }
+        }
+        // Plan 291: streamr halves must carry Streamr profile
+        // options with the half-appropriate UDP endpoint present;
+        // other kinds must not.
+        match self.kind {
+            ServiceTunnelKind::StreamrClient => {
+                let options = self.streamr_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "streamr-client requires streamr_options",
+                    }
+                })?;
+                options.validate()?;
+                if options.local_udp.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-client requires the loopback UDP media target",
+                    });
+                }
+            }
+            ServiceTunnelKind::StreamrServer => {
+                let options = self.streamr_options.as_ref().ok_or_else(|| {
+                    ServiceTunnelError::ContradictoryOptions {
+                        id: id.clone(),
+                        reason: "streamr-server requires streamr_options",
+                    }
+                })?;
+                options.validate()?;
+                if options.local_udp.is_none() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr-server requires the loopback UDP media source",
+                    });
+                }
+                if options.remote_sink.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "remote_sink applies to streamr-client only",
+                    });
+                }
+            }
+            _ => {
+                if self.streamr_options.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "streamr_options must not be set for non-Streamr kinds",
+                    });
+                }
+            }
+        }
+        // Plan 292: the interactive streaming profile needs the
+        // streaming stack, which Streamr kinds do not have.
+        if self.streaming_interactive
+            && matches!(
+                self.kind,
+                ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "streaming_interactive must not be set for Streamr kinds",
+            });
+        }
+        // Plan 292: a deadline with no action is inert; name the
+        // service (the constructor cannot).
+        if self.idle.timeout_ms.is_some()
+            && !(self.idle.close_on_idle || self.idle.new_dest_on_idle || self.idle.reduce_on_idle)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "idle_timeout without an idle action is inert",
+            });
+        }
+        IdlePolicy::try_new(
+            self.idle.timeout_ms,
+            self.idle.close_on_idle,
+            self.idle.new_dest_on_idle,
+            self.idle.reduce_on_idle,
+        )?;
+        // Plan 292: only server kinds terminate inbound I2P streams,
+        // so only they may carry a peer policy.
+        if !self.access.is_empty()
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "access lists apply to server kinds only",
+            });
+        }
+        // Plan 292: the deterministic source bind consumes the
+        // server-to-target dial, which only the masked server
+        // kinds perform.
+        if self.unique_local_address
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "unique_local_address applies to server kinds only",
+            });
+        }
+        // Plan 292: the presentation gates consume the HTTP
+        // server filter, which only the HTTP server kinds run.
+        if self.http_policy != crate::http::HttpServerPolicy::default()
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "address_helper and jump_list apply to HTTP server kinds only",
+            });
+        }
+        // Plan 296: multihoming consumes the server-to-target
+        // dial target list, which only the masked server kinds
+        // perform. The flag additionally requires at least two
+        // configured targets: with a single target there is
+        // nothing to select across, so accepting it would be
+        // inert (never accepted inertly).
+        if self.multihoming
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "multihoming applies to server kinds only",
+            });
+        }
+        if self.multihoming {
+            let target_count =
+                usize::from(self.target.is_some()).saturating_add(self.targets.len());
+            if target_count < 2 {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "multihoming requires at least two configured targets",
+                });
+            }
+            // Multihoming selection dials loopback TCP in order;
+            // Unix-domain targets have no TCP dial, so they cannot
+            // take part in selection.
+            let unix_target = matches!(self.target, Some(ServerTarget::UnixPath(_)))
+                || self
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, ServerTarget::UnixPath(_)));
+            if unix_target {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "multihoming requires loopback-TCP targets",
+                });
+            }
+        }
+        // Plan 297: server TLS terminates on the loopback TCP
+        // target leg, which only the masked server kinds dial;
+        // Unix-domain targets have no TLS handshake.
+        if self.use_ssl
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "use_ssl applies to server kinds only",
+            });
+        }
+        if self.use_ssl {
+            let unix_target = matches!(self.target, Some(ServerTarget::UnixPath(_)))
+                || self
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, ServerTarget::UnixPath(_)));
+            if unix_target {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "use_ssl requires loopback-TCP targets",
+                });
             }
         }
         Ok(())
@@ -737,14 +1387,242 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }
     }
 
     fn canonical_b32() -> String {
         format!("{}.b32.i2p", "a".repeat(52))
+    }
+
+    #[test]
+    fn streamr_with_interactive_profile_is_contradictory() {
+        // Plan 292: Streamr kinds ride the datagram path, so the
+        // interactive streaming bit must stay unset for them.
+        let base = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        let mut spec = ServiceTunnelSpec {
+            kind: ServiceTunnelKind::StreamrServer,
+            listener: None,
+            target: None,
+            destination: None,
+            ..base
+        };
+        let streamr = crate::streamr::StreamrOptions {
+            local_udp: Some("127.0.0.1:5001".parse().expect("udp")),
+            ..crate::streamr::StreamrOptions::default()
+        };
+        spec.streamr_options = Some(streamr);
+        spec.streaming_interactive = true;
+        assert!(spec.validate().is_err());
+        spec.streaming_interactive = false;
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn shaping_bounds_follow_proposal_ceilings() {
+        // Plan 292: quantity 1..=6, length 1..=3; zero-hop rejected.
+        // Plan 296: backup 0..=3, variance -2..=+2, and each
+        // direction's quantity plus backup fits the pool maximum.
+        let shaped = TunnelShaping::try_new(4, 5, 3, 0, 0).expect("shaping");
+        assert_eq!(shaped.inbound_quantity, 4);
+        assert_eq!(shaped.outbound_quantity, 5);
+        assert_eq!(shaped.length_hops, 3);
+        assert_eq!(shaped.backup_quantity, 0);
+        assert_eq!(shaped.length_variance, 0);
+        for (inbound, outbound, length) in [
+            (0, 2, 2),
+            (7, 2, 2),
+            (2, 0, 2),
+            (2, 7, 2),
+            (2, 2, 0),
+            (2, 2, 4),
+        ] {
+            assert!(
+                TunnelShaping::try_new(inbound, outbound, length, 0, 0).is_err(),
+                "shaping ({inbound}, {outbound}, {length}) must fail"
+            );
+        }
+        // Balanced shaping is the pre-292 default.
+        assert_eq!(
+            TunnelShaping::balanced(),
+            TunnelShaping::try_new(2, 2, 2, 0, 0).expect("balanced")
+        );
+    }
+
+    #[test]
+    fn shaping_backup_and_variance_bounds() {
+        // Plan 296: Proposal bounds bind (backup 0..=3, variance
+        // -2..=+2); per-direction quantity plus backup fits the
+        // pool directional maximum of 8.
+        let shaped = TunnelShaping::try_new(2, 3, 2, 3, -2).expect("shaping");
+        assert_eq!(shaped.backup_quantity, 3);
+        assert_eq!(shaped.length_variance, -2);
+        let shaped = TunnelShaping::try_new(6, 6, 3, 2, 2).expect("shaping");
+        assert_eq!(shaped.backup_quantity, 2);
+        assert_eq!(shaped.length_variance, 2);
+        for (inbound, outbound, backup, variance) in [
+            (2, 2, 4, 0),
+            (2, 2, u8::MAX, 0),
+            (6, 6, 3, 0),
+            (6, 2, 3, 0),
+            (2, 6, 3, 0),
+            (2, 2, 0, 3),
+            (2, 2, 0, -3),
+            (2, 2, 0, i8::MAX),
+            (2, 2, 0, i8::MIN),
+        ] {
+            assert!(
+                TunnelShaping::try_new(inbound, outbound, 2, backup, variance).is_err(),
+                "shaping backup {backup} variance {variance} must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn multihoming_needs_server_kind_and_two_targets() {
+        // Plan 296: multihoming consumes the server dial target
+        // list; client kinds and single-target servers reject it.
+        let mut server = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("mh-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp(
+                "127.0.0.1:8080".parse().expect("addr"),
+            )),
+            targets: vec![ServerTarget::LoopbackTcp(
+                "127.0.0.1:8081".parse().expect("addr"),
+            )],
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: true,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        assert!(server.validate().is_ok());
+        // A single target leaves nothing to select across.
+        server.targets.clear();
+        assert!(server.validate().is_err());
+        // Unix targets cannot take part in TCP selection.
+        server.targets = vec![ServerTarget::UnixPath("/tmp/mh.sock".to_owned())];
+        assert!(server.validate().is_err());
+        // Client kinds never dial a server target.
+        let mut client = client_spec("mh-client", "127.0.0.1:7070", "example.i2p");
+        client.multihoming = true;
+        assert!(client.validate().is_err());
+    }
+
+    #[test]
+    fn use_ssl_needs_server_kind_and_tcp_targets() {
+        // Plan 297: server TLS terminates on the loopback TCP
+        // target leg; client kinds and Unix targets reject it.
+        let mut server = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("tls-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp(
+                "127.0.0.1:8443".parse().expect("addr"),
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: true,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        assert!(server.validate().is_ok());
+        server.targets = vec![ServerTarget::LoopbackTcp(
+            "127.0.0.1:8444".parse().expect("addr"),
+        )];
+        assert!(server.validate().is_ok());
+        server.target = Some(ServerTarget::UnixPath("/tmp/tls.sock".to_owned()));
+        assert!(server.validate().is_err());
+        let mut client = client_spec("tls-client", "127.0.0.1:7070", "example.i2p");
+        client.use_ssl = true;
+        assert!(client.validate().is_err());
+    }
+
+    #[test]
+    fn multihoming_selection_rotates_in_order() {
+        // Plan 296: the rotation contract is sequence modulo
+        // target count; an empty list selects 0 and fails closed
+        // at the dial.
+        assert_eq!(multihoming_start_index(0, 3), 0);
+        assert_eq!(multihoming_start_index(1, 3), 1);
+        assert_eq!(multihoming_start_index(2, 3), 2);
+        assert_eq!(multihoming_start_index(3, 3), 0);
+        assert_eq!(multihoming_start_index(4, 1), 0);
+        assert_eq!(multihoming_start_index(7, 0), 0);
+    }
+
+    #[test]
+    fn idle_policy_bounds_and_inert_rejection() {
+        // Plan 292: deadlines are milliseconds within
+        // 1000..=86400000; disabled is the default.
+        assert!(!IdlePolicy::disabled().enabled());
+        let armed = IdlePolicy::try_new(Some(60_000), true, false, false).expect("armed");
+        assert!(armed.enabled());
+        for timeout in [0, 999, 86_400_001, u64::MAX] {
+            assert!(
+                IdlePolicy::try_new(Some(timeout), true, false, false).is_err(),
+                "timeout {timeout} must fail"
+            );
+        }
+        // A deadline with no action is inert: the constructor
+        // rejects it, and spec validation names the service.
+        assert!(IdlePolicy::try_new(Some(60_000), false, false, false).is_err());
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.idle = IdlePolicy {
+            timeout_ms: Some(60_000),
+            close_on_idle: false,
+            new_dest_on_idle: false,
+            reduce_on_idle: false,
+        };
+        assert!(spec.validate().is_err());
+        spec.idle = IdlePolicy::try_new(Some(60_000), false, true, false).expect("idle");
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
@@ -756,14 +1634,27 @@ mod tests {
             ("socks5-client", ServiceTunnelKind::Socks5Client),
             ("irc-client", ServiceTunnelKind::IrcClient),
             ("irc-server", ServiceTunnelKind::IrcServer),
+            ("connect-client", ServiceTunnelKind::ConnectClient),
+            ("socks-irc", ServiceTunnelKind::SocksIrc),
+            ("http-server", ServiceTunnelKind::HttpServer),
+            ("http-bidir-server", ServiceTunnelKind::HttpBidirServer),
         ];
         for (text, expected) in cases {
             assert_eq!(ServiceTunnelKind::parse(text).expect("kind"), expected);
             assert_eq!(expected.as_str(), text);
         }
-        assert!(ServiceTunnelKind::parse("http-server").is_err());
+        assert!(ServiceTunnelKind::parse("httpserver").is_err());
         assert!(ServiceTunnelKind::parse("GENERIC-CLIENT").is_err());
         assert!(ServiceTunnelKind::parse("").is_err());
+        // Server-side classification covers the generic, IRC, and
+        // HTTP server profiles; the bidirectional profile reports
+        // client-side (it always carries a loopback listener).
+        assert!(ServiceTunnelKind::HttpServer.is_server());
+        assert!(!ServiceTunnelKind::HttpServer.is_client());
+        assert!(!ServiceTunnelKind::HttpBidirServer.is_server());
+        assert!(ServiceTunnelKind::HttpBidirServer.is_client());
+        assert!(!ServiceTunnelKind::ConnectClient.is_server());
+        assert!(!ServiceTunnelKind::SocksIrc.is_server());
     }
 
     #[test]
@@ -837,9 +1728,20 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         };
         assert!(server.validate().is_err());
     }
@@ -897,6 +1799,239 @@ mod tests {
         let mut bad_options = crate::irc::IrcClientOptions::default();
         bad_options.allowed_hosts.insert("example.com".to_owned());
         spec.irc_options = Some(bad_options);
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn connect_client_requires_options() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::ConnectClient;
+        assert!(spec.validate().is_err());
+        spec.connect_options = Some(crate::connect::ConnectClientOptions::default());
+        spec.validate().expect("connect options validate");
+        // Non-CONNECT kinds must not carry connect_options.
+        spec.kind = ServiceTunnelKind::GenericClient;
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn socks_irc_requires_both_option_sets() {
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::SocksIrc;
+        assert!(spec.validate().is_err());
+        spec.socks5_options = Some(crate::socks5::Socks5ClientOptions::default());
+        assert!(spec.validate().is_err(), "irc_options still missing");
+        spec.irc_options = Some(crate::irc::IrcClientOptions::default());
+        spec.validate().expect("socks-irc options validate");
+    }
+
+    #[test]
+    fn http_server_is_server_sided_without_options() {
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("web").expect("id"),
+            kind: ServiceTunnelKind::HttpServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::parse("127.0.0.1:8080").expect("target")),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        spec.validate().expect("http-server validates");
+        // A listener or a remote destination contradicts the server profile.
+        let mut bad = spec.clone();
+        bad.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8081").expect("listener"));
+        assert!(bad.validate().is_err());
+        let mut bad = spec.clone();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn http_bidir_server_carries_both_halves() {
+        let spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("bidir").expect("id"),
+            kind: ServiceTunnelKind::HttpBidirServer,
+            enabled: false,
+            listener: Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener")),
+            target: Some(ServerTarget::parse("127.0.0.1:8081").expect("target")),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: Some(crate::http::HttpClientOptions::default()),
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        spec.validate().expect("http-bidir-server validates");
+        // Missing either half fails.
+        let mut bad = spec.clone();
+        bad.listener = None;
+        assert!(bad.validate().is_err());
+        let mut bad = spec.clone();
+        bad.target = None;
+        assert!(bad.validate().is_err());
+        // The client half requires http_options.
+        let mut bad = spec.clone();
+        bad.http_options = None;
+        assert!(bad.validate().is_err());
+        // A remote destination reference contradicts the single-identity rule.
+        let mut bad = spec.clone();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn streamr_kinds_parse_with_kebab_spellings() {
+        assert_eq!(
+            ServiceTunnelKind::parse("streamr-client").expect("parse"),
+            ServiceTunnelKind::StreamrClient
+        );
+        assert_eq!(
+            ServiceTunnelKind::parse("streamr-server").expect("parse"),
+            ServiceTunnelKind::StreamrServer
+        );
+        assert_eq!(ServiceTunnelKind::StreamrClient.as_str(), "streamr-client");
+        assert_eq!(ServiceTunnelKind::StreamrServer.as_str(), "streamr-server");
+        assert!(ServiceTunnelKind::StreamrServer.is_server());
+        assert!(!ServiceTunnelKind::StreamrClient.is_server());
+    }
+
+    fn streamr_client_spec() -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("streamr-sub").expect("id"),
+            kind: ServiceTunnelKind::StreamrClient,
+            enabled: false,
+            listener: None,
+            target: None,
+            targets: Vec::new(),
+            destination: Some(DestinationRef::parse(&canonical_b32()).expect("destination")),
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: Some(crate::streamr::StreamrOptions {
+                local_udp: Some("127.0.0.1:5000".parse().expect("udp")),
+                ..crate::streamr::StreamrOptions::default()
+            }),
+        }
+    }
+
+    fn streamr_server_spec() -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("streamr-pub").expect("id"),
+            kind: ServiceTunnelKind::StreamrServer,
+            enabled: false,
+            listener: None,
+            target: None,
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: Some(crate::streamr::StreamrOptions {
+                local_udp: Some("127.0.0.1:5001".parse().expect("udp")),
+                ..crate::streamr::StreamrOptions::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn streamr_client_requires_producer_and_media_target() {
+        streamr_client_spec().validate().expect("validates");
+        // No options at all fails.
+        let mut bad = streamr_client_spec();
+        bad.streamr_options = None;
+        assert!(bad.validate().is_err());
+        // No media endpoint at all fails.
+        let mut bad = streamr_client_spec();
+        bad.streamr_options.as_mut().expect("options").local_udp = None;
+        assert!(bad.validate().is_err());
+        // TCP listener/target contradict the datagram profile.
+        let mut bad = streamr_client_spec();
+        bad.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener"));
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_client_spec();
+        bad.destination = None;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn streamr_server_requires_media_source() {
+        streamr_server_spec().validate().expect("validates");
+        let mut bad = streamr_server_spec();
+        bad.streamr_options = None;
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_server_spec();
+        bad.streamr_options.as_mut().expect("options").local_udp = None;
+        assert!(bad.validate().is_err());
+        let mut bad = streamr_server_spec();
+        bad.destination = Some(DestinationRef::parse(&canonical_b32()).expect("destination"));
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn non_streamr_kinds_must_not_carry_streamr_options() {
+        let mut spec = streamr_client_spec();
+        spec.kind = ServiceTunnelKind::GenericClient;
+        spec.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener"));
         assert!(spec.validate().is_err());
     }
 }

@@ -50,6 +50,7 @@ use i2pr_tunnel::{
 };
 use rand_core::{CryptoRng, RngCore, TryRngCore};
 
+use crate::bundle::{BundleError, ReplyBundling, encode_bundled_reply_payload};
 use crate::identity::DestinationId;
 use crate::lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, SelectedLease,
@@ -912,19 +913,7 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
 ) -> Result<OutboundDeliveryPlan, SendError> {
     let remote_static = routing.remote_static_public_key(remote_hash)?;
     let selected = routing.select_lease(remote_hash, now_seconds, rng)?;
-    // Plan 192: the inner envelope is the 9-byte NTCP2/SSU2
-    // short-transport form i2pd's `HandleECIESX25519GarlicClove`
-    // parses inside ECIES cloves (`Garlic.cpp:1023-1028`). The
-    // 16-byte standard header would be misread as part of the inner
-    // Data body and overflow `HandleDataMessage`'s length check.
-    let inner_envelope_bytes = request
-        .inner_envelope
-        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
-        .map_err(SendError::DataCodec)?;
-    let data_clove = GarlicCloveBlock {
-        delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
-        message: inner_envelope_bytes.clone(),
-    };
+    let (data_clove, inner_envelope_bytes) = data_clove_for(remote_hash, request)?;
     // Plan 127 §5: choose the destination ECIES form from
     // destination-scoped session state before building the payload
     // so a fresh bound New Session always bundles the local
@@ -948,12 +937,149 @@ pub fn compose_outbound_delivery<R: CryptoRng + RngCore>(
             encode_new_session_payload(now_seconds, &data_clove).map_err(SendError::Payload)?
         }
     };
+    seal_wrap_and_forward(
+        session,
+        outbound,
+        local_id,
+        local_static_secret,
+        remote_hash,
+        &remote_static,
+        form,
+        payload_bytes,
+        inner_envelope_bytes,
+        selected,
+        now_seconds,
+        now_ms,
+        rng,
+    )
+}
+
+/// Compose one bundled New Session Reply delivery plan carrying
+/// every supplied request's application payload as its own data
+/// clove (Plan 296 reply bundling).
+///
+/// The caller groups same-remote requests (the daemon outbound sweep
+/// groups consecutive same-remote runs); every other contract
+/// matches the single composer: lease selection, the reply-form
+/// session seal, and the canonical Garlic carrier. Only the reply
+/// form bundles — a bound New Session or Existing Session plan
+/// fails with [`BundleError::FormNotBundlable`] so the handshake
+/// bundle (Plan 127 §2) and the lean session path never change
+/// shape. The diagnostic `inner_envelope_bytes` carries the first
+/// request's envelope.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_bundled_reply_delivery<R: CryptoRng + RngCore>(
+    routing: &DestinationRouting,
+    session: &mut EciesSessionManager,
+    outbound: &DestinationOutboundRole,
+    local_id: DestinationId,
+    local_static_secret: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+    remote_hash: DestinationHash,
+    requests: &[OutboundRequest],
+    bundling: ReplyBundling,
+    now_seconds: u32,
+    now_ms: u64,
+    rng: &mut R,
+) -> Result<OutboundDeliveryPlan, BundleError> {
+    if !bundling.is_enabled() {
+        return Err(BundleError::PolicyDisabled);
+    }
+    if requests.is_empty() {
+        return Err(BundleError::EmptyBundle);
+    }
+    if requests.len() > usize::from(bundling.max_cloves()) {
+        return Err(BundleError::TooManyCloves {
+            actual: requests.len(),
+            maximum: usize::from(bundling.max_cloves()),
+        });
+    }
+    let remote_static = routing.remote_static_public_key(remote_hash)?;
+    let selected = routing.select_lease(remote_hash, now_seconds, rng)?;
+    let form = session.planned_outbound_form(&remote_static, now_seconds);
+    if !matches!(form, PlannedOutboundForm::NewSessionReply) {
+        return Err(BundleError::FormNotBundlable {
+            planned: form_name_of_planned(form),
+        });
+    }
+    let mut cloves = Vec::with_capacity(requests.len());
+    let mut first_envelope = Vec::new();
+    for (index, request) in requests.iter().enumerate() {
+        let (clove, envelope) = data_clove_for(remote_hash, request)?;
+        if index == 0 {
+            first_envelope = envelope;
+        }
+        cloves.push(clove);
+    }
+    let payload_bytes = encode_bundled_reply_payload(now_seconds, &cloves, bundling.max_cloves())?;
+    seal_wrap_and_forward(
+        session,
+        outbound,
+        local_id,
+        local_static_secret,
+        remote_hash,
+        &remote_static,
+        form,
+        payload_bytes,
+        first_envelope,
+        selected,
+        now_seconds,
+        now_ms,
+        rng,
+    )
+    .map_err(BundleError::from)
+}
+
+/// Builds the destination-addressed application data clove for one
+/// outbound request: the Plan 192 short-transport inner envelope is
+/// the clove body. Shared by the single and bundled reply composers
+/// so both paths emit byte-identical cloves.
+fn data_clove_for(
+    remote_hash: DestinationHash,
+    request: &OutboundRequest,
+) -> Result<(GarlicCloveBlock, Vec<u8>), SendError> {
+    // Plan 192: the inner envelope is the 9-byte NTCP2/SSU2
+    // short-transport form i2pd's `HandleECIESX25519GarlicClove`
+    // parses inside ECIES cloves (`Garlic.cpp:1023-1028`). The
+    // 16-byte standard header would be misread as part of the inner
+    // Data body and overflow `HandleDataMessage`'s length check.
+    let inner_envelope_bytes = request
+        .inner_envelope
+        .encode_short_transport_to_vec(MAX_I2NP_PAYLOAD_SIZE)
+        .map_err(SendError::DataCodec)?;
+    let data_clove = GarlicCloveBlock {
+        delivery: GarlicDelivery::Destination(*remote_hash.as_bytes()),
+        message: inner_envelope_bytes.clone(),
+    };
+    Ok((data_clove, inner_envelope_bytes))
+}
+
+/// Seals one composed garlic payload through the session manager and
+/// wraps the encrypted envelope in the canonical Garlic carrier the
+/// outbound tunnel data plane forwards. Shared by the single and
+/// bundled reply composers so the carrier contract (Plans 124, 193,
+/// 213) holds identically for both.
+#[allow(clippy::too_many_arguments)]
+fn seal_wrap_and_forward<R: CryptoRng + RngCore>(
+    session: &mut EciesSessionManager,
+    outbound: &DestinationOutboundRole,
+    local_id: DestinationId,
+    local_static_secret: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+    remote_hash: DestinationHash,
+    remote_static: &[u8; i2pr_crypto::X25519_KEY_LENGTH],
+    form: PlannedOutboundForm,
+    payload_bytes: Vec<u8>,
+    inner_envelope_bytes: Vec<u8>,
+    selected: SelectedLease,
+    now_seconds: u32,
+    now_ms: u64,
+    rng: &mut R,
+) -> Result<OutboundDeliveryPlan, SendError> {
     let mut outbound_message = session
         .encrypt_to_remote(
             local_id,
             local_static_secret,
             remote_hash.as_bytes(),
-            &remote_static,
+            remote_static,
             &payload_bytes,
             now_seconds,
             rng,

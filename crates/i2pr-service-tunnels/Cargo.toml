@@ -8,7 +8,10 @@ description = "Runtime-neutral Milestone 10 service-tunnel configuration, destin
 publish = false
 
 [dependencies]
+base64ct.workspace = true
 i2pr-proto = { path = "../i2pr-proto" }
+sha2.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 
 [lints]

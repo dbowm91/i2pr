@@ -120,6 +120,40 @@ readiness/health. Current state is `architecture-frozen` in progress under Plan 
 there is no M12 implementation, floodfill serving, or `caps=f` claim. Plan 272 proceeds on Plan 271 plus the Plan 281 type-5-deferred support floor (RouterInfo plus DatabaseStore types 1, 3, and 7); Plan 280 stopped with no acceptable maintained Rust provider for Red25519 (signature type 11), so type-5 EncryptedLeaseSet records remain deferred until a separately reviewed provider plan passes. No tier implies
 public-network operation, production readiness, anonymity, or privacy guarantees.
 
+### Proposal 170 / I2PControl support model (Plan 286)
+
+Every Proposal 170 capability is classified independently across seven
+dimensions. Parser acceptance or persisted inert options are never runtime
+support; full support is claimed only when every applicable cell has a real
+source/effect or a protocol-permitted explicit neutral disposition.
+
+1. **wire** — exact JSON-RPC 2.0 envelope, method/selector/action/type/
+   option spelling, error-code, and ceiling behavior per the frozen Plan 286
+   contract (`crates/i2pr-i2pcontrol`, provenance at
+   `docs/provenance/proposal-170-manifest.md`).
+2. **source** — the authoritative router owner behind every readable
+   selector (identity/publication, transport, NetDB, tunnels, services,
+   canonical AddressBook). Missing sources fail explicitly; zero/false/
+   empty fabrications are forbidden.
+3. **runtime effect** — a real owner consumes every applicable mutation or
+   option cell (apply-or-reject; no inert accepted options).
+4. **persistence/atomicity** — mutating control state publishes versioned
+   recoverable generations with prior-generation fallback; success means
+   durable intent and runtime generation agree.
+5. **feature isolation** — disabled/default mode allocates no listener,
+   managed certificate, token table, background task, or Proposal state,
+   and cannot influence ordinary resolution or routing.
+6. **security/secret handling** — loopback-by-default TLS with no plaintext
+   fallback, API-1 token lifecycle, source-IP throttling, bounded budgets
+   on every body/batch/connection/request, and redaction of passwords,
+   tokens, destination secrets, and proxy/client-auth material.
+7. **evidence** — literal fixtures, malformed/+1 cases, deterministic
+   state-machine tests, restart/recovery proofs, and (at Plan 295)
+   differential qualification against the pinned fork/Java/i2pd references.
+
+`specs/support.toml` gains Proposal 170 rows only when the first
+capability closes with evidence; registration alone claims nothing.
+
 ## Source-to-code traceability
 
 Every protocol module should identify:

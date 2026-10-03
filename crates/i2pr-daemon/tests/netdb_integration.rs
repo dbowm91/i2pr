@@ -138,6 +138,23 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             tunnels: i2pr_service_tunnels::ServiceTunnelSet::new(),
             aliases: i2pr_service_tunnels::StaticAliasTable::new(),
+            tls_policy: None,
+        },
+        i2pcontrol: i2pr_daemon::config::I2pControlConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 7650,
+            password: i2pr_daemon::config::I2pControlPassword::default(),
+            certificate: None,
+            private_key: None,
+            max_connections: 64,
+            max_body_bytes: 1_048_576,
+            request_deadline: std::time::Duration::from_millis(5_000),
+            shutdown_timeout: std::time::Duration::from_millis(2_000),
+        },
+        addressbook: i2pr_daemon::addressbook::AddressBookSubsystemConfig {
+            enabled: false,
+            state_dir: data_dir.join("addressbook"),
         },
     }
 }

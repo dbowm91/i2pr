@@ -1629,3 +1629,273 @@ evidence = [
     "plans/closure/floodfill/274-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.routerinfo-inspection-plane"
+protocol = "i2pcontrol"
+structure = "proposal-170-routerinfo-select-form-and-source-matrix"
+scope = "experimental"
+status = "experimental"
+notes = "Plans 288 and 295 closed the read-only Proposal 170 RouterInfo inspection plane: null-valued select form with canonical validation (unknown/case-drift/non-null/base i2p.* keys rejected as invalid params), whole-request explicit failure for unowned selectors (no partial responses, no fabricated zero/false/empty), 5 live static selectors (version/api/uptime/status/network-id), identity-gated router.hash, and 27 owner-backed rows (static attestations, live SSU2/log/metrics reads, one justified clock-skew neutral). Counts serialize as one-element lists per the frozen List shape. Router news stays unsupported by explicit determination."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/source_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-i2pcontrol/tests/final_matrix.rs",
+    "crates/i2pr-daemon/src/control_sources.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_differential.rs",
+    "plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md",
+    "plans/closure/i2pcontrol-proposal-170/288-status.md",
+    "plans/closure/i2pcontrol-proposal-170/295-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.clientservicesinfo-inspection-plane"
+protocol = "i2pcontrol"
+structure = "proposal-170-clientservicesinfo-truthful-service-state"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 288 closed truthful ClientServicesInfo: all six services answer (disabled is authoritative config truth, never a failure); I2PTunnel splits the startup inventory client/server with live-manager overlay (names/kinds/enablement/running/binds; address-book addresses deferred to Plan 294); HTTPProxy/SOCKS report first-enabled binds; SAM reports bounded live session ids/counts without destinations or socket peer addresses (stricter than i2pd); BOB is a deliberate disabled constant; I2CP reports live session/connection/destination counts."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/source_matrix.rs",
+    "crates/i2pr-api/src/sam/registry.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_inspection.rs",
+    "plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md",
+    "plans/closure/i2pcontrol-proposal-170/288-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.tunnelmanager-control-state"
+protocol = "i2pcontrol"
+structure = "proposal-170-tunnelmanager-seven-action-control-ownership"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 289 closed the TunnelManager control plane over the one existing M10 manager for the six families with real runtime backends (client/server/httpclient/socks/ircclient/ircserver): closed seven-action envelope (rename via new_name on edit), startup-vs-control provenance with collision fail-closed, versioned generation store (stage/publish/pointer/recovery/retention, 1 MiB ceiling), validate-mirror-stage-reconcile-publish-verify transaction with immediate-release drain and 5 s reconcile-back, 7-option real-effect subset (every other option fails unsupported, secrets rejected before storage), per-name supervisor snapshots with StartOnLoad-vs-running truthfulness, startup restore and disabled-mode isolation. Remaining six types and the wider option matrix belong to Plans 290-293."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_request.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md",
+    "plans/closure/i2pcontrol-proposal-170/289-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.composed-tunnel-families"
+protocol = "i2pcontrol"
+structure = "proposal-170-ten-family-composed-backends"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 290 closed the four composed Proposal 170 tunnel families as real bounded backends under the one existing M10 ServiceTunnelManager by composing existing primitives (no second routing stack): connectclient (strict-CONNECT client over the shared pump, 443 default, 405/403 discipline), socksirc (shared SOCKS4a/SOCKS5 version-peek negotiation into the IRC privacy filter with no raw bypass), httpserver (filtered server relay over the persistent server destination with the server privacy contract and paced multi-segment body forward), httpbidirserver (deprecated bidirectional composition of both halves under one generation and one persistent identity, no outproxy). Ten of twelve types have backends; streamrclient/streamrserver stay UnsupportedType until Plan 291."
+evidence = [
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/connect.rs",
+    "crates/i2pr-service-tunnels/src/socks5/socks4a.rs",
+    "crates/i2pr-service-tunnels/src/http/server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/service_tunnels_socks_irc.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_connect_client_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_socks_irc_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_server_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_bidir_product.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md",
+    "plans/closure/i2pcontrol-proposal-170/290-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.repliable-datagram-and-streamr"
+protocol = "i2pcontrol"
+structure = "proposal-170-twelve-family-datagram-backends"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 291 closed the bounded authenticated repliable-datagram substrate and both Streamr families as real backends under the one existing M10 ServiceTunnelManager: runtime-neutral Datagram1 (protocol 17, Ed25519 sender authentication) and raw (protocol 18) framing with 1200-byte ceilings and bounded queues; adapter/local-seam/bridge dispatch for 17/18 beside Streaming; streamrclient (bounded subscribe cadence with terminal unsubscribe, producer-bound media forwarding to loopback UDP) and streamrserver (persistent destination, loopback UDP media source, 10-entry 60 s authenticated subscriber table, raw fanout). All twelve Proposal types have backends. Raw datagrams carry no sender proof by design; the client forwards only transport-authenticated producer media."
+evidence = [
+    "specs/protocols/12-repliable-datagrams-streamr.md",
+    "crates/i2pr-client/src/datagram.rs",
+    "crates/i2pr-client/src/streaming_adapter.rs",
+    "crates/i2pr-client/src/streaming/local_delivery.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/streamr.rs",
+    "crates/i2pr-daemon/src/service_tunnels_streamr.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_streamr_product.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md",
+    "plans/closure/i2pcontrol-proposal-170/291-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.tunnel-option-matrix-and-noncrypto-completion"
+protocol = "i2pcontrol"
+structure = "proposal-170-type-by-option-dispositions-with-owners"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 292 closed the exact Proposal 170 tunnel-type x option matrix (336 cells: 227 apply with named owners, 37 not-applicable, 30 blocked on Plan 293, 39 corrective on Plan 296, 3 corrective on Plan 297) and implemented every dependency-ready non-cryptographic cell with apply-or-reject semantics: tunnel shaping (1..=3 length, 1..=6 quantity, per-direction projection), interactive streaming profile, idle sweep (close/rebuild/reduce), proxy authentication (407/RFC 1929, verifier-only storage), server access lists (pre-SYN gate), HTTP presentation gates (helper/jump classes, 403), per-peer loopback source dial with counted platform fallback, and the Streamr sink redirect. Blocked cells name Plan 293 (SigType, LeaseSet security, outproxy provider); corrective cells name Plans 296 (pool shaping, multihoming, reply bundling) and 297 (local TLS identity). No inert storage anywhere."
+evidence = [
+    "specs/protocols/13-tunnel-option-matrix.md",
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-service-tunnels/src/auth.rs",
+    "crates/i2pr-service-tunnels/src/access.rs",
+    "crates/i2pr-service-tunnels/src/idle.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/generation.rs",
+    "crates/i2pr-service-tunnels/src/streamr.rs",
+    "crates/i2pr-service-tunnels/src/http/server.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_streamr.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_proxy_auth_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_access_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_unique_local_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_streamr_product.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_http_server_product.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md",
+    "plans/closure/i2pcontrol-proposal-170/292-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.deep-tunnel-option-determinations"
+protocol = "i2pcontrol"
+structure = "proposal-170-deep-primitive-incompatibilities-with-limitations"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 293 resolved the 30 deep TunnelManager cells as explicit incompatibilities with named limitations carried by Plan 295 (zero promotions): sig_type on all 12 types (Ed25519-only destination identity per ADR 0004; no key-generation owner; singleton accept would be inert), LeaseSet security on the 4 publishing kinds (no blinded/encrypted publication owner, no type-5 framing owner, no client-authorization verifier; explicit disable also rejected, omission selects ordinary type-3 publication), use_outproxy_plugin on httpclient/connectclient (no I2P-routed provider; a provider would need a forbidden clearnet subsystem). Supplying any of the six keys fails before allocation with the limitation; out-of-mask pairs still reject naming the key; LeaseSet secrets never reach messages, mirrors, stores, or logs. Findings match the pinned reference fork's own zero-promotion outcomes (M121/M146/M152/M162). Wire-shape divergences found during determination (EncryptLeaseSet Boolean-vs-enum, LeaseSetClientAuths array-vs-split-secrets, missing OptionalLookup, SigType text-or-integer, UseOutproxyPlugin boolean, outproxy applicability, SetConfig key set) are recorded for Plan 295 adjudication."
+evidence = [
+    "specs/protocols/14-tunnel-deep-option-determinations.md",
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md",
+    "plans/closure/i2pcontrol-proposal-170/293-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.canonical-addressbook-and-resolver-integration"
+protocol = "i2pcontrol"
+structure = "proposal-170-addressbook-owner-with-resolver-and-getters"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 294 added the canonical i2pr-addressbook owner driving both ordinary naming and Proposal 170 administration: four books with private/local/router/published/subscribed precedence, typed hostname and full-Destination validation, thirteen-key SetConfig with per-key dispositions (confined artifact paths, hourly cadence, fetch-path-only proxy, inert theme, artifact-only log, fetch-stage timeout, entry ceiling), bounded subscription ingestion with wholesale derived replacement, deterministic versioned generations with current/backup atomic persistence, bounded refresh queue with cadence worker and diagnostic artifact, read-only resolver snapshots shared with SAM naming and service-tunnel alias-miss resolution (static aliases win), AddressBook method with one-mode-per-request whole-validation and exact result shapes, and six RouterInfo getters over the same committed generation. Disabled by default with filesystem-inert isolation; corrupt generations fail into sticky-error inactivity, never partial state. No downloader owner exists yet (refresh reports unavailable); the SetConfig thirteen differ as a set from the reference fork and stay frozen for Plan 295 adjudication."
+evidence = [
+    "specs/protocols/15-canonical-addressbook.md",
+    "crates/i2pr-addressbook/src/lib.rs",
+    "crates/i2pr-addressbook/tests/contract.rs",
+    "crates/i2pr-storage/src/address_book_generation.rs",
+    "crates/i2pr-daemon/src/addressbook.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_addressbook_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md",
+    "plans/closure/i2pcontrol-proposal-170/294-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.control-source-owners"
+protocol = "i2pcontrol"
+structure = "proposal-170-log-ring-ban-ledger-and-rolling-metrics"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 295 added the three remaining control-plane source owners: a bounded redacted daemon log ring (INFO and above, secret-marker replacement, 256 entries, 192 B lines, eviction count) fed by a tracing layer installed beside the formatted stdout path; an explicit ban ledger attesting the empty set (no reporters and no ban criteria exist); and a rolling control-metrics owner (O(1) tick over registered cumulative transport counters, bandwidth pair plus four ssu2.* rates, build-outcome pair). The SSU2 factory publishes its cloned runtime service for live session/error reads with metrics priming. All owners are synchronous, memory-only, task-free, and poison-degrading."
+evidence = [
+    "crates/i2pr-daemon/src/control_sources.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/tests/ssu2_local.rs",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.final-conformance-and-differential"
+protocol = "i2pcontrol"
+structure = "proposal-170-final-matrix-differential-lane-and-qualified-profile"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 295 closed Proposal 170 conformance under an exact qualified profile (29 of 30 selectors sourced; news unsupported by determination; 30 deep cells incompatible by Plan 293; 42 cells owned by Plans 296/297): machine-checked final census (5 methods, 30 selectors at 27/1/1/1, 6 services, 13 config keys, 7 actions, 12 types, 46 options, 336 cells at 227/37/30/39/3), a repository-owned differential corpus proving 28 answers plus 8 plan-marked gaps plus 4 typed errors over the wire with a sanitized shape hash, a fail-closed integration lane with a static evidence checker, and a static differential against the exact-pinned fork, Java PR 6, and i2pd with every difference classified (proposal-controls / adopted / intentional-stricter / recorded-ambiguity). Live-external rows stay env-gated and unclaimed."
+evidence = [
+    "specs/protocols/16-final-conformance-and-differential.md",
+    "crates/i2pr-i2pcontrol/tests/final_matrix.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_differential.rs",
+    "tests/integration/i2pcontrol/run-differential.sh",
+    "tests/integration/i2pcontrol/evidence/i2pcontrol-differential.json",
+    "scripts/check-i2pcontrol-acceptance-evidence.sh",
+    "plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md",
+    "plans/closure/i2pcontrol-proposal-170/295-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.pool-shaping-and-bundling-residuals"
+protocol = "i2pcontrol"
+structure = "proposal-170-standby-variance-multihoming-bundling-owners"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 296 closed the 39 Plan 292 residual cells into named apply owners (matrix now 266 apply, 37 not-applicable, 30 incompatible, 0 corrective-296, 3 corrective-297): tunnel_backup_quantity (0..=3 standby held ready per direction, effective pool targets, promotion counted on failure/expiry, per-direction pool-maximum sum check) and tunnel_variance (-2..=+2 per-build hop sampling within the pool hop policy, injected randomness) through TunnelShaping into DestinationConfig and the destination pool; multihoming as documented target selection (round-robin server dial with sequential failover, two-target minimum, server kinds only, Unix targets rejected); reply_bundling as garlic multi-data-clove New Session Replies composed by the delivery owner, routed atomically inbound, and batched by the outbound sweep with per-index reports and no-double-send fallback. The control surface carries a singular target, so multihoming=true via control always meets the two-target minimum as a named contradiction; the dial-selection owner serves multi-target specs. No new wire keys."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/generation.rs",
+    "crates/i2pr-client/src/config.rs",
+    "crates/i2pr-client/src/pool.rs",
+    "crates/i2pr-client/src/bundle.rs",
+    "crates/i2pr-client/src/routing.rs",
+    "crates/i2pr-client/src/dispatch.rs",
+    "crates/i2pr-client/src/streaming/local_delivery.rs",
+    "crates/i2pr-client/tests/plan296_trajectory.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_multihoming_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md",
+    "plans/closure/i2pcontrol-proposal-170/296-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.local-tls-identity-for-use-ssl"
+protocol = "i2pcontrol"
+structure = "proposal-170-server-tls-policy-and-dial"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 297 closed the 3 server use_ssl residual cells into a named apply owner (matrix now 269 apply, 37 not-applicable, 30 incompatible, 0 corrective): an explicit operator-owned daemon TLS identity/trust policy (provisioned PEM identity with X.509 expiry surfacing, SPKI pins and/or explicit trust roots with never ambient system roots, explicit loopback opt-in, verifies-nothing rejected at load), a pinned/rooted TLS handshake on the server-to-target dial with typed counted failures and no plaintext fallback, per-runtime handshake counters and identity expiry in control state, and redacted secret handling throughout. Client-side UseSSL stays unclaimed (outside the frozen inventory); Unix targets and non-server kinds stay rejected."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/generation.rs",
+    "crates/i2pr-daemon/src/service_tunnels_tls.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_tls_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md",
+    "plans/closure/i2pcontrol-proposal-170/297-status.md",
+]
+advertised = false

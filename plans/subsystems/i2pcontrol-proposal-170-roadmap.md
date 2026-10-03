@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plan 286 dependency-ready; Plans 287–295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plans 286–297 passed. This workstream is parallel to M12 and does not gate router-mainline progression. The Proposal 170 workstream is fully closed.
 
 Long-term references:
 - GUARDRAILS.md
@@ -112,16 +112,18 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 286 | ready | invariant/infrastructure | plans/implementation/i2pcontrol-proposal-170/286-parallel-authority-provenance-and-contract-foundation.md | future |
-| 287 | blocked on 286 | infrastructure/capability | plans/implementation/i2pcontrol-proposal-170/287-secure-base-i2pcontrol-jsonrpc-auth-tls.md | future |
-| 288 | blocked on 287 | capability | plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md | future |
-| 289 | blocked on 287 | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md | future |
-| 290 | blocked on 289 | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | future |
-| 291 | blocked on 289 | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md | future |
-| 292 | blocked on 290 + 291 | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | future |
-| 293 | blocked on 292 | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | future |
-| 294 | blocked on 287 | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | future |
-| 295 | blocked on 288 + 293 + 294 | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | future |
+| 286 | passed | invariant/infrastructure | plans/implementation/i2pcontrol-proposal-170/286-parallel-authority-provenance-and-contract-foundation.md | plans/closure/i2pcontrol-proposal-170/286-status.md (`passed-prop170-parallel-authority-provenance-and-contract-foundation`) |
+| 287 | passed | infrastructure/capability | plans/implementation/i2pcontrol-proposal-170/287-secure-base-i2pcontrol-jsonrpc-auth-tls.md | plans/closure/i2pcontrol-proposal-170/287-status.md (`passed-prop170-secure-base-i2pcontrol-jsonrpc-auth-tls`) |
+| 288 | passed | capability | plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md | plans/closure/i2pcontrol-proposal-170/288-status.md (`passed-prop170-routerinfo-and-clientservices-inspection-plane`) |
+| 289 | passed | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md | plans/closure/i2pcontrol-proposal-170/289-status.md (`passed-prop170-tunnelmanager-control-state-and-existing-service-adapter`) |
+| 290 | passed | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | plans/closure/i2pcontrol-proposal-170/290-status.md (`passed-prop170-composed-tunnel-families`) |
+| 291 | passed | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md | plans/closure/i2pcontrol-proposal-170/291-status.md (`passed-prop170-repliable-datagram-and-streamr`) |
+| 292 | passed | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | plans/closure/i2pcontrol-proposal-170/292-status.md (`passed-prop170-tunnel-option-matrix-and-noncrypto-completion`) |
+| 293 | passed | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | plans/closure/i2pcontrol-proposal-170/293-status.md (`passed-prop170-deep-tunnel-option-determinations`) |
+| 294 | passed | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | plans/closure/i2pcontrol-proposal-170/294-status.md (`passed-prop170-canonical-addressbook-and-resolver-integration`) |
+| 295 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | plans/closure/i2pcontrol-proposal-170/295-status.md (`passed-prop170-full-source-completion-and-differential-conformance`) |
+| 296 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | plans/closure/i2pcontrol-proposal-170/296-status.md (`passed-prop170-pool-shaping-and-bundling-residuals`) |
+| 297 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | plans/closure/i2pcontrol-proposal-170/297-status.md (`passed-prop170-local-tls-identity-for-use-ssl`) |
 
 ## 8. Cross-cutting requirements
 
@@ -178,4 +180,25 @@ This workstream is complete only when:
 
 ## 12. Status summary
 
-Plan 286 is dependency-ready and may begin alongside M12 Plan 285. The remainder of the workstream is registered but dependency-gated. No Proposal 170 capability is claimed by registration alone.
+Plan 286 passed with the frozen provenance manifest, the runtime-neutral
+`i2pr-i2pcontrol` contract crate, and the conformance dimensions (see
+`plans/closure/i2pcontrol-proposal-170/286-status.md`). Plan 287 passed
+with the secured optional loopback-default listener, API-1 authentication,
+and the typed dispatch floor (see
+`plans/closure/i2pcontrol-proposal-170/287-status.md`). Plan 288 passed
+with the truthful bounded source matrix (5 live + 16 publish-gated + 9
+unavailable, 0 permitted-neutral), the narrow daemon inspection handles,
+and the RouterInfo/ClientServicesInfo select-form dispatch with
+whole-request gap failures (see
+`plans/closure/i2pcontrol-proposal-170/288-status.md`); residual NetDB,
+transport, tunnel, rate, log, news, and ban sources belong to Plan 295
+(publication wiring) and Plan 294 (AddressBook). Plan 289 passed with
+the seven-action TunnelManager control plane over the one existing M10
+manager for the six families with real backends, the versioned
+generation store, and the validate-mirror-stage-reconcile-publish-verify
+transaction (see
+`plans/closure/i2pcontrol-proposal-170/289-status.md`); the remaining
+six types belong to Plans 290–291 and the wider option matrix to Plans
+292–293. Plans 290–297 are closed; the workstream is complete.
+The remainder of the workstream is registered but dependency-gated. No
+Proposal 170 capability is claimed by registration alone.

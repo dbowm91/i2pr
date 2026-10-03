@@ -101,6 +101,9 @@ pub struct DestinationTunnelPool {
     zero_hop_inbound: Option<(TunnelSlot, LocalZeroHopInbound)>,
     zero_hop_outbound: Option<(TunnelSlot, LocalZeroHopOutbound)>,
     next_zero_hop_slot: u32,
+    /// Cumulative standby-to-base promotions since construction or
+    /// the last [`Self::release_all`] (Plan 296).
+    standby_promotions: u64,
 }
 
 impl DestinationTunnelPool {
@@ -119,6 +122,7 @@ impl DestinationTunnelPool {
             // never alias a remote pool slot. Remote slots allocate
             // from zero upward; zero-hop allocates from 0x4000_0000.
             next_zero_hop_slot: 0x4000_0000,
+            standby_promotions: 0,
         })
     }
 
@@ -273,7 +277,14 @@ impl DestinationTunnelPool {
     /// evicted because their tunnels expired. Zero-hop entries expire
     /// through the same deterministic clock and are removed so the
     /// lease source disappears.
+    ///
+    /// Plan 296: remote evictions that standby tunnels cover count
+    /// as standby promotions (a standby moves into base coverage).
     pub fn advance_time(&mut self, now_seconds: u64) -> Vec<TunnelSlot> {
+        let standby_in_before = self.standby_inbound();
+        let standby_out_before = self.standby_outbound();
+        let inbound_before = self.inner.inbound_len();
+        let outbound_before = self.inner.outbound_len();
         let mut evicted = self.inner.advance_time(now_seconds);
         if let Some((slot, entry)) = &self.zero_hop_inbound
             && !entry.is_usable(now_seconds)
@@ -287,6 +298,12 @@ impl DestinationTunnelPool {
             evicted.push(*slot);
             self.zero_hop_outbound = None;
         }
+        let inbound_lost = inbound_before.saturating_sub(self.inner.inbound_len());
+        let outbound_lost = outbound_before.saturating_sub(self.inner.outbound_len());
+        self.standby_promotions = self.standby_promotions.saturating_add(
+            (inbound_lost.min(standby_in_before) as u64)
+                .saturating_add(outbound_lost.min(standby_out_before) as u64),
+        );
         evicted
     }
 
@@ -318,6 +335,12 @@ impl DestinationTunnelPool {
 
     /// Marks a slot failed, removing it and incrementing the bounded failure
     /// counter. Zero-hop slots are removed from the zero-hop tables.
+    ///
+    /// Plan 296: losing a remote slot while standby tunnels are held
+    /// counts one standby promotion (a standby moves into base
+    /// coverage, so usability computed on the base target is
+    /// preserved). Deliberate [`Self::remove`] capacity changes do
+    /// not promote.
     pub fn mark_failed(&mut self, slot: TunnelSlot) -> bool {
         if let Some((stored, _)) = &self.zero_hop_inbound
             && *stored == slot
@@ -333,8 +356,20 @@ impl DestinationTunnelPool {
             let _ = self.note_build_failure();
             return true;
         }
+        let standby_in_before = self.standby_inbound();
+        let standby_out_before = self.standby_outbound();
+        let inbound_before = self.inner.inbound_len();
+        let outbound_before = self.inner.outbound_len();
         let removed = self.inner.mark_failed(slot).is_some();
         if removed {
+            // Exactly one remote slot left; a held standby covers it.
+            if inbound_before > self.inner.inbound_len() {
+                if standby_in_before > 0 {
+                    self.standby_promotions = self.standby_promotions.saturating_add(1);
+                }
+            } else if outbound_before > self.inner.outbound_len() && standby_out_before > 0 {
+                self.standby_promotions = self.standby_promotions.saturating_add(1);
+            }
             let _ = self.note_build_failure();
         }
         removed
@@ -361,6 +396,34 @@ impl DestinationTunnelPool {
     /// Number of registered inbound tunnels (remote + zero-hop).
     pub fn inbound_len(&self) -> usize {
         self.inner.inbound_len() + usize::from(self.zero_hop_inbound.is_some())
+    }
+
+    /// Established remote inbound tunnels held ready beyond the base
+    /// quantity target (Plan 296 standby). Zero-hop local routes are
+    /// not standby: they are not built spares. Standby tunnels
+    /// promote automatically when a base tunnel fails or expires
+    /// (see [`Self::standby_promotions`]).
+    pub fn standby_inbound(&self) -> usize {
+        self.inner
+            .inbound_len()
+            .saturating_sub(usize::from(self.config.inbound_target()))
+    }
+
+    /// Established remote outbound tunnels held ready beyond the base
+    /// quantity target (Plan 296 standby; see
+    /// [`Self::standby_inbound`]).
+    pub fn standby_outbound(&self) -> usize {
+        self.inner
+            .outbound_len()
+            .saturating_sub(usize::from(self.config.outbound_target()))
+    }
+
+    /// Cumulative standby-to-base promotions since construction or
+    /// the last [`Self::release_all`]. Each promotion is one lost
+    /// base tunnel a held standby covered, preserving usability
+    /// computed on the base target.
+    pub const fn standby_promotions(&self) -> u64 {
+        self.standby_promotions
     }
 
     /// Number of registered outbound tunnels (remote + zero-hop).
@@ -478,6 +541,7 @@ impl DestinationTunnelPool {
             released += 1;
         }
         self.consecutive_failures = 0;
+        self.standby_promotions = 0;
         released
     }
 }
@@ -612,7 +676,8 @@ mod tests {
     #[test]
     fn build_failures_are_bounded_and_reset_on_success() {
         let config =
-            DestinationConfig::try_new(2, 2, 1, 2, 600, 2, 2, 64, 1024, 60, 120).expect("config");
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 2, 64, 1024, 60, 120)
+                .expect("config");
         let mut pool = DestinationTunnelPool::new(config).expect("pool");
         assert_eq!(
             pool.note_build_failure(),
@@ -643,6 +708,82 @@ mod tests {
         pool.register_outbound(established_outbound(19), 0)
             .expect("register");
         assert!(pool.is_usable(0));
+    }
+
+    #[test]
+    fn standby_tunnels_promote_on_primary_failure() {
+        // Plan 296: base target 2 plus backup 2 holds two standby
+        // inbound tunnels; failing base tunnels promotes standby
+        // (usability on the base target preserved) while failures
+        // still count toward the replacement threshold.
+        let config =
+            DestinationConfig::try_new(2, 2, 1, 2, 2, 0, false, 600, 2, 8, 64, 1024, 60, 120)
+                .expect("config");
+        let mut pool = DestinationTunnelPool::new(config).expect("pool");
+        for seed in [31, 32, 33, 34] {
+            pool.register_inbound(established_inbound(seed), 0)
+                .expect("register");
+        }
+        for seed in [35, 36] {
+            pool.register_outbound(established_outbound(seed), 0)
+                .expect("register");
+        }
+        assert_eq!(pool.standby_inbound(), 2);
+        assert_eq!(pool.standby_outbound(), 0);
+        assert_eq!(pool.standby_promotions(), 0);
+        assert!(pool.is_usable(0));
+        // The effective target bounds registration: a fifth
+        // inbound tunnel has nowhere to stand by.
+        assert!(
+            pool.register_inbound(established_inbound(37), 0).is_err(),
+            "registration past base plus backup must fail"
+        );
+        // Fail two base tunnels: both promote, usability holds,
+        // and both failures count toward the threshold.
+        for _ in 0..2 {
+            let slot = pool.inbound_lease_sources(0)[0].slot();
+            assert!(pool.mark_failed(slot));
+        }
+        assert_eq!(pool.standby_promotions(), 2);
+        assert_eq!(pool.standby_inbound(), 0);
+        assert!(pool.is_usable(0));
+        assert_eq!(pool.consecutive_failures(), 2);
+        assert!(!pool.replacement_paused());
+        // Fail the remaining base tunnels: no standby left, so no
+        // further promotion and usability is lost.
+        for _ in 0..2 {
+            let slot = pool.inbound_lease_sources(0)[0].slot();
+            assert!(pool.mark_failed(slot));
+        }
+        assert_eq!(pool.standby_promotions(), 2);
+        assert!(!pool.is_usable(0));
+    }
+
+    #[test]
+    fn standby_expiry_promotes_and_release_resets() {
+        // Plan 296: expiry promotes like failure; release_all
+        // returns the pool (and the promotion counter) to baseline.
+        let config =
+            DestinationConfig::try_new(2, 2, 1, 2, 1, 0, false, 600, 2, 8, 64, 1024, 60, 120)
+                .expect("config");
+        let mut pool = DestinationTunnelPool::new(config).expect("pool");
+        for seed in [41, 42, 43] {
+            pool.register_inbound(established_inbound(seed), 0)
+                .expect("register");
+        }
+        pool.register_outbound(established_outbound(44), 0)
+            .expect("register");
+        assert_eq!(pool.standby_inbound(), 1);
+        let lifetime = u64::from(DestinationConfig::balanced().tunnel_lifetime_seconds());
+        // All three inbound tunnels plus the outbound tunnel expire
+        // together; the single held standby promotes once.
+        assert_eq!(pool.advance_time(lifetime).len(), 4);
+        assert_eq!(pool.standby_promotions(), 1);
+        // Every slot already expired, so release drops nothing but
+        // still returns the promotion counter to baseline.
+        assert_eq!(pool.release_all(), 0);
+        assert_eq!(pool.standby_promotions(), 0);
+        assert_eq!(pool.standby_inbound(), 0);
     }
 
     #[test]

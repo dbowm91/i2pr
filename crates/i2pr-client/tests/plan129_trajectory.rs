@@ -1479,9 +1479,17 @@ fn plan_129_non_protocol_six_client_payload_never_reaches_streaming() {
     };
     let connections_before = side_b.streaming.connection_count();
     let (_, outcome) = pipe(&mut side_a, &mut side_b, &request, 0x1290_7100, clock);
+    // Plan 291: protocol 17 carries a decoded datagram to the
+    // datagram layer, never to Streaming. The outcome variant
+    // changed; the Plan 129 invariant (streaming untouched) holds.
     match outcome {
-        InboundStreamingOutcome::UnsupportedProtocol { protocol } => assert_eq!(protocol, 17),
-        other => panic!("expected UnsupportedProtocol, got {other:?}"),
+        InboundStreamingOutcome::DatagramReceived {
+            protocol, payload, ..
+        } => {
+            assert_eq!(protocol, 17);
+            assert_eq!(payload, b"future-datagram");
+        }
+        other => panic!("expected DatagramReceived, got {other:?}"),
     }
     assert_eq!(
         side_b.streaming.connection_count(),

@@ -6,15 +6,20 @@
 
 #![forbid(unsafe_code)]
 
+pub mod addressbook;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+pub mod control_sources;
 pub mod destination_streaming;
 pub mod destination_tunnels;
 pub mod error;
 pub mod exploratory_build;
 pub mod floodfill;
 pub mod i2cp;
+pub mod i2pcontrol;
+pub mod i2pcontrol_inspection;
+pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
@@ -27,15 +32,22 @@ pub mod service_generation;
 pub mod service_product;
 pub mod service_tunnels;
 pub mod service_tunnels_http;
+pub mod service_tunnels_http_bidir;
+pub mod service_tunnels_http_server;
 pub mod service_tunnels_irc_client;
 pub mod service_tunnels_irc_server;
 pub mod service_tunnels_socks5;
+pub mod service_tunnels_socks_irc;
+pub mod service_tunnels_streamr;
+pub mod service_tunnels_tls;
 pub mod transit_compose;
 pub mod transit_owner;
 pub mod tunnel_liveness;
 
 pub use error::DaemonError;
 pub use i2cp::{I2cpServiceError, I2cpServiceSnapshot, I2cpServiceState};
+pub use i2pcontrol::{I2pControlServiceError, I2pControlServiceSnapshot, I2pControlServiceState};
+pub use i2pcontrol_inspection::InspectionHandles;
 pub use netdb_seam::{
     CompositionOutcome, ExploratoryPathStatus, LeaseSet2ResponseOutcome, NetDbSeam, NetDbSeamError,
 };
@@ -140,6 +152,31 @@ pub fn execute(cli: Cli) -> Result<CommandOutcome, DaemonError> {
 /// no `ntcp2-transport` service is registered under the current Plan 101
 /// activation guard.
 pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
+    build_daemon_graph_with_inspection(config).map(|(graph, _)| graph)
+}
+
+/// Builds the daemon service graph plus the shared Plan 288 inspection
+/// handles.
+///
+/// The handles carry static configuration truth (network id, service
+/// enablement/binds, startup service inventory). Each optional service
+/// factory publishes its live state into the shared handles after
+/// construction, so the I2PControl inspection plane reads from the real
+/// owners without a global router context. Callers that only need the
+/// graph use [`build_daemon_graph`].
+pub fn build_daemon_graph_with_inspection(
+    config: &Config,
+) -> Result<(i2pr_runtime::ServiceGraph, Arc<InspectionHandles>), DaemonError> {
+    let inspection = Arc::new(InspectionHandles::from_config(config));
+    let graph = build_daemon_graph_inner(config, &inspection)?;
+    Ok((graph, inspection))
+}
+
+/// Shared graph construction over explicit inspection handles.
+fn build_daemon_graph_inner(
+    config: &Config,
+    inspection: &Arc<InspectionHandles>,
+) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
     if config.transport.ntcp2.enabled {
         return Err(DaemonError::RuntimeSupervisorFailed(
             "NTCP2 activation is not available while support is experimental".to_string(),
@@ -193,16 +230,65 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
+    // Plan 294: activate the canonical address-book subsystem before
+    // any service factory runs so every consumer installs the same
+    // shared resolver cell. Disabled (default) activation never
+    // touches the filesystem and publishes nothing; consumers keep
+    // their legacy behavior.
+    let addressbook = Arc::new(crate::addressbook::AddressBookManager::activate(
+        config.addressbook.clone(),
+    ));
+    inspection.publish_addressbook(addressbook.shared());
+
+    // Plan 295: install the control-plane source owners and attest the
+    // static rows. Live rows (log ring, metrics, SSU2) are read per
+    // request; rows with no owner in this graph attest empty at
+    // composition (the owners were consulted: none exist in the
+    // default graph), never fabricated.
+    inspection.publish_log_ring(crate::control_sources::LogRing::global());
+    inspection.publish_metrics(Arc::new(crate::control_sources::ControlMetrics::new()));
+    let bans = crate::control_sources::BanLedger::new();
+    if inspection.publish_bans(bans.attested()).is_err() {
+        tracing::warn!("ban attestation rejected");
+    }
+    if inspection
+        .publish_netdb(
+            Vec::new(),
+            Vec::new(),
+            crate::i2pcontrol_inspection::FloodfillMode::Disabled,
+        )
+        .is_err()
+    {
+        tracing::warn!("netdb attestation rejected");
+    }
+    if inspection
+        .publish_transport(Vec::new(), Vec::new(), "loopback-only", Vec::new())
+        .is_err()
+    {
+        tracing::warn!("transport attestation rejected");
+    }
+    if inspection.publish_tunnels(0, 0, 0, 0).is_err() {
+        tracing::warn!("tunnel attestation rejected");
+    }
+
     if config.sam.enabled {
-        register_sam_service(&mut builder, config)?;
+        register_sam_service(&mut builder, config, inspection, &addressbook)?;
     }
 
     if config.i2cp.enabled {
-        register_i2cp_service(&mut builder, config)?;
+        register_i2cp_service(&mut builder, config, inspection)?;
+    }
+
+    if config.i2pcontrol.enabled {
+        register_i2pcontrol_service(&mut builder, config, inspection, &addressbook)?;
+    }
+
+    if addressbook.is_active() {
+        register_addressbook_refresh_service(&mut builder, &addressbook)?;
     }
 
     if config.ssu2.enabled {
-        register_ssu2_service(&mut builder, config)?;
+        register_ssu2_service(&mut builder, config, inspection)?;
     }
 
     builder
@@ -217,16 +303,22 @@ pub fn build_daemon_graph(config: &Config) -> Result<i2pr_runtime::ServiceGraph,
 fn register_sam_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
+    inspection: &Arc<InspectionHandles>,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
     let address = sam_config.bind_socket();
     let sam_name = ServiceName::new("sam-bridge").expect("valid service name");
+    let inspection = Arc::clone(inspection);
+    let addressbook = Arc::clone(addressbook);
     builder
         .register(ServiceSpec::new(
             sam_name,
             ServiceClassification::Optional,
             move |ctx| {
                 let sam_config = sam_config.clone();
+                let inspection = Arc::clone(&inspection);
+                let addressbook = Arc::clone(&addressbook);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -245,6 +337,12 @@ fn register_sam_service(
                             );
                         }
                     };
+                    // Publish the live owner for the Plan 288
+                    // inspection plane (read-only snapshot access).
+                    inspection.publish_sam(Arc::clone(&state));
+                    // Install the Plan 294 canonical resolver cell (a
+                    // no-op empty cell unless the subsystem is active).
+                    state.set_addressbook_handle(addressbook.shared());
                     let token = cancellation.clone();
                     let join_result =
                         i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
@@ -281,16 +379,19 @@ fn register_sam_service(
 fn register_i2cp_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
+    inspection: &Arc<InspectionHandles>,
 ) -> Result<(), DaemonError> {
     let i2cp_config = config.i2cp.clone();
     let address = i2cp_config.bind_socket();
     let i2cp_name = ServiceName::new("i2cp-bridge").expect("valid service name");
+    let inspection = Arc::clone(inspection);
     builder
         .register(ServiceSpec::new(
             i2cp_name,
             ServiceClassification::Optional,
             move |ctx| {
                 let i2cp_config = i2cp_config.clone();
+                let inspection = Arc::clone(&inspection);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -309,6 +410,9 @@ fn register_i2cp_service(
                             );
                         }
                     };
+                    // Publish the live owner for the Plan 288
+                    // inspection plane (read-only snapshot access).
+                    inspection.publish_i2cp(Arc::clone(&state));
                     let token = cancellation.clone();
                     let join_result =
                         i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
@@ -337,6 +441,143 @@ fn register_i2cp_service(
     Ok(())
 }
 
+/// Registers the supervised I2PControl HTTPS service in the supplied
+/// builder. The factory captures the [`I2pControlServiceState`] so the
+/// per-connection tokio tasks own Arc clones that share the same token
+/// and throttle tables. Plan 287 keeps I2PControl experimental,
+/// loopback-by-default, and disabled by default with no plaintext
+/// fallback.
+fn register_i2pcontrol_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    inspection: &Arc<InspectionHandles>,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
+) -> Result<(), DaemonError> {
+    let i2pcontrol_config = config.i2pcontrol.clone();
+    let address = i2pcontrol_config.bind_socket();
+    let i2pcontrol_name = ServiceName::new("i2pcontrol").expect("valid service name");
+    // Plan 289: the control-owned service manager is built here (store
+    // beneath the router data dir, fresh control-only manager) and
+    // installed on the service state before serving. Construction
+    // touches only the filesystem; definitions load and reconcile at
+    // service startup. A construction failure fails the service
+    // fail-closed without touching the network.
+    let control = match i2pcontrol_tunnels::TunnelControlState::for_config(config) {
+        Ok(control) => Arc::new(control),
+        Err(error) => {
+            return Err(DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register I2PControl service: {error}"
+            )));
+        }
+    };
+    let inspection = Arc::clone(inspection);
+    let addressbook = Arc::clone(addressbook);
+    builder
+        .register(ServiceSpec::new(
+            i2pcontrol_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let i2pcontrol_config = i2pcontrol_config.clone();
+                let inspection = Arc::clone(&inspection);
+                let addressbook = Arc::clone(&addressbook);
+                let control = Arc::clone(&control);
+                let cancellation = ctx.cancellation().clone();
+                let children = ctx.children();
+                Box::pin(async move {
+                    let state = match I2pControlServiceState::new_with_inspection(
+                        i2pcontrol_config,
+                        inspection,
+                    ) {
+                        Ok(state) => Arc::new(state),
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "I2PControl service construction failed: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    state.set_control_manager(Arc::clone(&control));
+                    state.set_addressbook_manager(Arc::clone(&addressbook));
+                    let token = cancellation.clone();
+                    let join_result =
+                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
+                            state.run(address, children, token).await
+                        })
+                        .await;
+                    if join_result.is_err() {
+                        let detail = i2pr_core::HealthDetail::new(
+                            "I2PControl listener failed to start within the bounded timeout",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::Internal,
+                                detail,
+                            ),
+                        );
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register I2PControl service: {e}"
+            ))
+        })?;
+    Ok(())
+}
+/// Registers the Plan 294 subscription-refresh worker. The worker
+/// wakes once per committed refresh interval and drains the bounded
+/// queue through the manager (attempt, diagnostic artifact, promote).
+/// With no downloader owner composed, attempts report unavailable;
+/// the cadence, queue discipline, and artifact remain live and
+/// tested. Cancellation stops the worker between wakes.
+fn register_addressbook_refresh_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
+) -> Result<(), DaemonError> {
+    let worker_name = ServiceName::new("addressbook-refresh").expect("valid service name");
+    let manager = Arc::clone(addressbook);
+    builder
+        .register(ServiceSpec::new(
+            worker_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let manager = Arc::clone(&manager);
+                let cancellation = ctx.cancellation().clone();
+                Box::pin(async move {
+                    if !manager.is_active() {
+                        return i2pr_runtime::ServiceResult::RequestedShutdown;
+                    }
+                    loop {
+                        let hours = manager.refresh_interval_hours().max(1);
+                        tokio::select! {
+                            _ = cancellation.cancelled() => break,
+                            _ = tokio::time::sleep(Duration::from_secs(hours * 3600)) => {
+                                manager.run_queued_refreshes(
+                                    i2pr_addressbook::RefreshReason::IntervalElapsed,
+                                );
+                            }
+                        }
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register address-book refresh service: {e}"
+            ))
+        })?;
+    Ok(())
+}
 /// Registers the supervised loopback SSU2 router service in the
 /// supplied builder. Plan 184 owns the first daemon activation of
 /// the existing SSU2 runtime under the strict controlled profile
@@ -350,6 +591,7 @@ fn register_i2cp_service(
 fn register_ssu2_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
+    inspection: &Arc<InspectionHandles>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
@@ -358,6 +600,7 @@ fn register_ssu2_service(
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
     let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
+    let inspection = Arc::clone(inspection);
     builder
         .register(ServiceSpec::new(
             ssu2_name,
@@ -365,6 +608,7 @@ fn register_ssu2_service(
             move |ctx| {
                 let ssu2_config = ssu2_config.clone();
                 let data_dir = data_dir.clone();
+                let inspection = Arc::clone(&inspection);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -481,6 +725,11 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    // Plan 295: publish the cloned runtime service so
+                    // the inspection plane reads session/error
+                    // snapshots and primes the metrics windows without
+                    // touching the pump path.
+                    inspection.publish_ssu2(handle.service().clone());
                     // Central dispatcher pump: no task per message, no
                     // unbounded retention. Outcomes are classified and
                     // dropped; Plan 185/186 own the live tunnel/NetDB
@@ -574,7 +823,7 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let (report, _bootstrap_handle) = bootstrap_daemon(&config, now_seconds, None)?;
+    let (report, bootstrap_handle) = bootstrap_daemon(&config, now_seconds, None)?;
     tracing::info!(
         state = %report.final_state,
         record_count = report.snapshot.record_count,
@@ -583,7 +832,25 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         "bootstrap pipeline completed"
     );
 
-    let graph = build_daemon_graph(&config)?;
+    let (graph, inspection) = build_daemon_graph_with_inspection(&config)?;
+    // Publish the local router hash for the Plan 288 inspection plane.
+    // The hash is public RouterInfo material; no secret crosses into the
+    // control plane. When bootstrap built no local RouterInfo the row
+    // stays publish-gated and `router.hash` fails explicitly.
+    if let Ok(bootstrap) = bootstrap_handle.lock()
+        && let Some(hash) = bootstrap.local_hash()
+    {
+        match i2pr_netdb::encode(hash.as_bytes()) {
+            Ok(hash_b64) => {
+                if inspection.publish_router_hash(&hash_b64).is_err() {
+                    tracing::warn!("router hash publication rejected");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "router hash encoding failed");
+            }
+        }
+    }
 
     let supervisor =
         i2pr_runtime::Supervisor::new(graph, Duration::from_secs(30)).map_err(|e| {
@@ -610,11 +877,23 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
 
 /// Initializes the future daemon logging subscriber using validated settings.
 ///
-/// Repeated initialization is intentionally harmless for embedding tests.  A
-/// later composition plan will own subscriber layering and redaction policy.
+/// The subscriber layers the normal formatted stdout path (gated by
+/// the configured `EnvFilter`) with the Plan 295 [`control_sources`]
+/// log-ring feed (INFO and above, secret-marker redaction). Repeated
+/// initialization is intentionally harmless for embedding tests: the
+/// first installed subscriber wins and the global ring keeps feeding
+/// it.
 pub fn initialize_logging(config: &config::LoggingConfig) {
+    use tracing_subscriber::layer::Layer as _;
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
     let filter = tracing_subscriber::EnvFilter::new(config.filter.clone());
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let ring_layer =
+        crate::control_sources::LogRingLayer::new(crate::control_sources::LogRing::global());
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .with(ring_layer)
+        .try_init();
 }
 
 #[cfg(test)]

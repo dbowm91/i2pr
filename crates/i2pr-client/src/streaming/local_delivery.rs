@@ -47,11 +47,12 @@ use i2pr_tunnel::{
 use rand_chacha::ChaCha8Rng;
 use rand_core::{CryptoRng, RngCore, SeedableRng};
 
+use crate::bundle::ReplyBundling;
 use crate::dispatch::{DestinationDispatcher, InboundDispatchOutcome};
 use crate::identity::DestinationIdentity;
 use crate::routing::{
-    DestinationOutboundRole, DestinationRouting, OutboundRequest, SendError,
-    compose_outbound_delivery,
+    DestinationOutboundRole, DestinationRouting, OutboundDeliveryPlan, OutboundRequest, SendError,
+    compose_bundled_reply_delivery, compose_outbound_delivery,
 };
 use crate::session::EciesSessionManager;
 use crate::streaming::manager::StreamingManager;
@@ -89,6 +90,9 @@ pub enum LocalDeliveryError {
     Reconstruct(ReconstructError),
     /// The streaming adapter rejected the inbound packet.
     Adapter(StreamingAdapterError),
+    /// The datagram manager rejected the inbound datagram
+    /// (malformed, unverifiable, oversize, or queue-full).
+    Datagram(crate::datagram::DatagramError),
     /// The supplied inbound tunnel has no first hop (IBGW)
     /// configured. The local seam needs the IBGW's receive tunnel
     /// id to gate the post-OBEP action; without a first hop the
@@ -108,6 +112,7 @@ impl std::fmt::Display for LocalDeliveryError {
             Self::NoPayload => formatter.write_str("no queued application payload"),
             Self::Reconstruct(error) => write!(formatter, "reconstruct: {error}"),
             Self::Adapter(error) => write!(formatter, "streaming adapter: {error}"),
+            Self::Datagram(error) => write!(formatter, "datagram manager: {error}"),
             Self::InvalidInboundTunnel => formatter.write_str("inbound tunnel has no IBGW hop"),
             Self::Session(error) => write!(formatter, "ECIES session pairing: {error}"),
         }
@@ -187,6 +192,11 @@ pub enum LocalDeliveryOutcome {
         /// Inbound adapter observation (Plan 129 §3).
         observation: InboundStreamingOutcome,
     },
+    /// A repliable (17) or raw (18) datagram was authenticated
+    /// (where applicable) and queued on the receiver's
+    /// [`crate::datagram::DatagramManager`] (Plan 291). Streaming
+    /// never sees it.
+    DatagramDelivered,
     /// The dispatcher rejected the carrier envelope.
     DispatchRejected(InboundDispatchOutcome),
 }
@@ -227,6 +237,11 @@ pub struct LocalDeliveryReceiver<'a> {
     /// manager that handles inbound SYN observations and data
     /// traffic for established receiver-side streams.
     pub streaming: &'a mut StreamingManager,
+    /// The receiver's connectionless datagram manager. Repliable
+    /// (17) and raw (18) client payloads authenticate and queue
+    /// here; no initiator/mirror split exists because datagrams
+    /// carry no connection state (Plan 291).
+    pub datagrams: &'a mut crate::datagram::DatagramManager,
     /// Optional receiver-side canonical outbound StreamingManager
     /// that owns the outbound SYN trackers (Plan 129 §3, Plan 144
     /// §3: the SYN response must reach the *same* StreamingManager
@@ -260,27 +275,48 @@ pub fn deliver<R: CryptoRng + RngCore>(
     _outbound_tunnel_id: TunnelId,
     rng: &mut R,
 ) -> Result<LocalDeliveryOutcome, LocalDeliveryError> {
-    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
-    // The action's tunnel_id is the inbound gateway's receive
-    // tunnel id at the gateway router — the Lease2 `tunnel_id` the
-    // outbound delivery plan selects. The local seam uses the IBGW
-    // hop's tunnel id (the inbound tunnel's first hop) as the
-    // gating value, not the local_inbound_receive endpoint id the
-    // tunnel reassembler expects at the very end.
-    let inbound_ibgw_tunnel_id = inbound_tunnel
-        .hops()
-        .first()
-        .map(|hop| hop.receive_tunnel())
-        .ok_or(LocalDeliveryError::InvalidInboundTunnel)?;
-    let local_static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH] =
-        *sender.identity.static_secret_bytes();
+    let outbound_request = outbound_request_for(request, sender)?;
     let remote_hash =
         DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(request.destination_hash));
-
     // 1. Compose the outbound delivery plan via the canonical
     //    Plan 129 adapter. The fresh bound NS / NSR / ES form is
     //    selected by the routing pipeline.
-    //
+    let plan = compose_outbound_delivery(
+        sender.routing,
+        sender.session,
+        sender.outbound,
+        sender.identity.id(),
+        sender.identity.static_secret_bytes(),
+        remote_hash,
+        &outbound_request,
+        sender.now_seconds,
+        sender.now_ms,
+        rng,
+    )?;
+    let outcome = drive_to_dispatch(
+        &plan,
+        sender,
+        receiver,
+        outbound_hop0_hash,
+        outbound_hop1_hash,
+        inbound_tunnel,
+        inbound_hop1_hash,
+        inbound_hop2_hash,
+        _outbound_tunnel_id,
+        rng,
+    )?;
+    drain_single_to_streaming(outcome, sender, receiver)
+}
+
+/// Decodes one `TransportSendRequest` into its canonical outbound
+/// request: the Plan 192 streaming-envelope unwrap plus the
+/// i2pd-compatible I2CP body wrapping exactly one gzip member.
+/// Shared by the single and batched delivery paths so both build
+/// byte-identical requests.
+fn outbound_request_for(
+    request: &TransportSendRequest,
+    sender: &LocalDeliverySender<'_>,
+) -> Result<OutboundRequest, LocalDeliveryError> {
     // Plan 192: the streaming manager already produced an
     // I2P-style gzip-wrapped client payload (with the negotiated
     // local/remote Streaming ports and the protocol byte embedded
@@ -297,31 +333,53 @@ pub fn deliver<R: CryptoRng + RngCore>(
         MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
     )
     .map_err(|error| LocalDeliveryError::Adapter(StreamingAdapterError::ClientPayload(error)))?;
-    let outbound_request = OutboundRequest::new(
+    OutboundRequest::new(
         streaming_envelope.protocol,
         streaming_envelope.source_port,
         streaming_envelope.destination_port,
         &streaming_envelope.payload,
         sender.now_ms,
         Some(sender.local_lease_set2.clone()),
-    )?;
-    let plan = compose_outbound_delivery(
-        sender.routing,
-        sender.session,
-        sender.outbound,
-        sender.identity.id(),
-        &local_static_secret,
-        remote_hash,
-        &outbound_request,
-        sender.now_seconds,
-        sender.now_ms,
-        rng,
-    )?;
+    )
+    .map_err(LocalDeliveryError::from)
+}
+
+/// Drives one composed delivery plan through the synthetic OBEP
+/// hop, the receiver-side inbound chain, the authenticated
+/// dispatcher, and the loopback session pairing (steps 2-4 of
+/// [`deliver`]). Shared by the single and batched delivery paths
+/// so both traverse byte-identical tunnel and authentication
+/// seams; only payload assembly (step 1) and streaming drain
+/// (step 5) differ.
+#[allow(clippy::too_many_arguments)]
+fn drive_to_dispatch<R: CryptoRng + RngCore>(
+    plan: &OutboundDeliveryPlan,
+    sender: &mut LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    outbound_hop0_hash: i2pr_proto::Hash,
+    outbound_hop1_hash: i2pr_proto::Hash,
+    inbound_tunnel: EstablishedTunnel,
+    inbound_hop1_hash: i2pr_proto::Hash,
+    inbound_hop2_hash: i2pr_proto::Hash,
+    _outbound_tunnel_id: TunnelId,
+    rng: &mut R,
+) -> Result<InboundDispatchOutcome, LocalDeliveryError> {
+    // The action's tunnel_id is the inbound gateway's receive
+    // tunnel id at the gateway router — the Lease2 `tunnel_id` the
+    // outbound delivery plan selects. The local seam uses the IBGW
+    // hop's tunnel id (the inbound tunnel's first hop) as the
+    // gating value, not the local_inbound_receive endpoint id the
+    // tunnel reassembler expects at the very end.
+    let inbound_ibgw_tunnel_id = inbound_tunnel
+        .hops()
+        .first()
+        .map(|hop| hop.receive_tunnel())
+        .ok_or(LocalDeliveryError::InvalidInboundTunnel)?;
 
     // 2. Drive the synthetic OBEP hop to recover the post-OBEP
     //    action (authenticated-router-link-bypassed local seam).
     let action = synthesise_obep_action(
-        &plan,
+        plan,
         sender.outbound,
         outbound_hop0_hash,
         outbound_hop1_hash,
@@ -355,7 +413,7 @@ pub fn deliver<R: CryptoRng + RngCore>(
     );
     match &outcome {
         InboundDispatchOutcome::Rejected(_) => {
-            return Ok(LocalDeliveryOutcome::DispatchRejected(outcome));
+            return Ok(outcome);
         }
         InboundDispatchOutcome::NewSessionProcessed {
             validated_remote_lease_set2,
@@ -393,15 +451,86 @@ pub fn deliver<R: CryptoRng + RngCore>(
             sender.now_seconds,
         )?;
     }
+    Ok(outcome)
+}
 
-    // 5. Drain the queued application payload and feed it into the
-    //    receiver's StreamingManager via the standard adapter
-    //    entry point.
+/// Drains one queued application payload into the receiver's
+/// StreamingManager (step 5 of [`deliver`], single path). Dispatch
+/// rejections surface as [`LocalDeliveryOutcome::DispatchRejected`]
+/// without touching the queue.
+fn drain_single_to_streaming(
+    outcome: InboundDispatchOutcome,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+) -> Result<LocalDeliveryOutcome, LocalDeliveryError> {
+    if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
+        return Ok(LocalDeliveryOutcome::DispatchRejected(outcome));
+    }
+    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    // A single-composed delivery routes at most one payload: pop
+    // exactly once so any foreign multi-data message's extra cloves
+    // linger for subsequent drains, exactly as before Plan 296.
     let payload = receiver
         .dispatcher
         .pop_payload(receiver.identity.id())
         .ok_or(LocalDeliveryError::NoPayload)?;
-    let payload_bytes = payload.bytes().to_vec();
+    match feed_one_payload(
+        payload.bytes().to_vec(),
+        sender,
+        receiver,
+        local_destination_hash_bytes,
+    )? {
+        FedPayload::Streaming(observation) => Ok(LocalDeliveryOutcome::Delivered { observation }),
+        FedPayload::Datagram => Ok(LocalDeliveryOutcome::DatagramDelivered),
+    }
+}
+
+/// One drained application payload and how the receiver consumed it.
+#[derive(Debug)]
+enum FedPayload {
+    /// Fed into a StreamingManager; the caller checks the
+    /// observation (only `StreamingDispatched` counts as delivered).
+    Streaming(InboundStreamingOutcome),
+    /// Authenticated as a repliable/raw datagram and queued on the
+    /// connectionless manager (Plan 291).
+    Datagram,
+}
+
+/// Drains every queued application payload into the receiver (step 5
+/// of [`deliver_batched`]). One entry per popped payload in pop
+/// (wire) order; dispatch rejections drain nothing. Feed errors map
+/// per payload so one bad payload cannot misattribute its siblings.
+fn drain_all_to_streaming(
+    outcome: InboundDispatchOutcome,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+) -> Vec<Result<FedPayload, LocalDeliveryError>> {
+    if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
+        return Vec::new();
+    }
+    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let mut fed = Vec::new();
+    while let Some(payload) = receiver.dispatcher.pop_payload(receiver.identity.id()) {
+        fed.push(feed_one_payload(
+            payload.bytes().to_vec(),
+            sender,
+            receiver,
+            local_destination_hash_bytes,
+        ));
+    }
+    fed
+}
+
+/// Feeds one queued application payload into the receiver's
+/// StreamingManager via the standard adapter entry point. Shared by
+/// both drains so single and bundled deliveries observe identical
+/// streaming/datagram routing.
+fn feed_one_payload(
+    payload_bytes: Vec<u8>,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    local_destination_hash_bytes: [u8; 32],
+) -> Result<FedPayload, LocalDeliveryError> {
     // Peek the streaming packet header to route the packet to the
     // correct StreamingManager. Plan 144 §3: the streaming manager
     // that issued the outbound SYN owns the outbound connection
@@ -461,8 +590,181 @@ pub fn deliver<R: CryptoRng + RngCore>(
         &local_destination_hash_bytes,
         sender.now_ms,
     )?;
-    let _ = outcome;
-    Ok(LocalDeliveryOutcome::Delivered { observation })
+    // Plan 291: repliable/raw datagrams authenticate and queue on
+    // the connectionless manager; everything else keeps the
+    // streaming observation path.
+    if let InboundStreamingOutcome::DatagramReceived {
+        protocol,
+        source_port,
+        destination_port,
+        payload,
+    } = observation
+    {
+        receiver
+            .datagrams
+            .process_inbound(
+                protocol,
+                source_port,
+                destination_port,
+                &payload,
+                local_destination_hash_bytes,
+                sender.now_ms,
+            )
+            .map_err(LocalDeliveryError::Datagram)?;
+        return Ok(FedPayload::Datagram);
+    }
+    Ok(FedPayload::Streaming(observation))
+}
+
+/// Per-index outcome of one [`deliver_batched`] call: positions into
+/// the caller's request slice.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BatchedDeliveryReport {
+    /// Input positions delivered (streaming-dispatched, datagram-fed,
+    /// or dispatch-rejected, matching the single-path sweep
+    /// counters, which count rejections as delivered).
+    pub delivered: Vec<usize>,
+    /// Input positions that failed (decode, compose, drive, feed, or
+    /// a non-dispatched streaming observation, mirroring the
+    /// bridge's `NotStreaming` rule). The caller terminates each
+    /// failed request's stream.
+    pub failed: Vec<usize>,
+    /// Delivered positions whose payload reached an application
+    /// consumer (a `StreamingDispatched` observation or the datagram
+    /// manager); a subset of [`Self::delivered`]. Diagnostics only.
+    pub observed: Vec<usize>,
+}
+
+/// Outcome of one [`deliver_batched`] call.
+#[derive(Debug)]
+pub enum BatchedAttempt {
+    /// The batch traveled as one bundled New Session Reply; the
+    /// report carries per-index delivery positions. A fully failed
+    /// report still means "bundled and sent" (the session advanced),
+    /// so the caller must NOT retry these requests singly.
+    Bundled(BatchedDeliveryReport),
+    /// No bundling attempted: the policy is disabled, fewer than two
+    /// requests decoded, the remotes are mixed, or the bundled
+    /// composer refused (nothing sealed, session untouched). The
+    /// caller runs the single path per request; indices that failed
+    /// request decode are reported for stream termination.
+    Singles {
+        /// Input positions whose request failed to decode.
+        decode_failed: Vec<usize>,
+    },
+}
+
+/// Delivers a same-remote batch of `TransportSendRequest`s as one
+/// bundled New Session Reply when the destination's reply-bundling
+/// policy enables it (Plan 296).
+///
+/// The caller groups consecutive same-remote requests (the daemon
+/// outbound sweep groups its drained runs); mixed-remote input falls
+/// back to [`BatchedAttempt::Singles`] so no bundle ever mixes
+/// remotes. Bundled compose refusal also falls back (nothing sealed).
+/// A sealed-but-undeliverable bundle reports every index failed
+/// without retry: re-sending would duplicate application bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_batched<R: CryptoRng + RngCore>(
+    requests: &[TransportSendRequest],
+    bundling: ReplyBundling,
+    sender: &mut LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    outbound_hop0_hash: i2pr_proto::Hash,
+    outbound_hop1_hash: i2pr_proto::Hash,
+    inbound_tunnel: EstablishedTunnel,
+    inbound_hop1_hash: i2pr_proto::Hash,
+    inbound_hop2_hash: i2pr_proto::Hash,
+    _outbound_tunnel_id: TunnelId,
+    rng: &mut R,
+) -> BatchedAttempt {
+    // Decode partition: decode failures terminate without touching
+    // the session, so they are reported for per-request cleanup.
+    let mut indices = Vec::new();
+    let mut outbound_requests = Vec::new();
+    let mut decode_failed = Vec::new();
+    let mut remote: Option<DestinationHash> = None;
+    let mut uniform_remote = true;
+    for (index, request) in requests.iter().enumerate() {
+        match outbound_request_for(request, sender) {
+            Ok(outbound) => {
+                let hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
+                    request.destination_hash,
+                ));
+                match remote {
+                    None => remote = Some(hash),
+                    Some(first) if first == hash => {}
+                    _ => uniform_remote = false,
+                }
+                indices.push(index);
+                outbound_requests.push(outbound);
+            }
+            Err(_) => decode_failed.push(index),
+        }
+    }
+    if uniform_remote
+        && outbound_requests.len() >= 2
+        && bundling.is_enabled()
+        && let Some(remote_hash) = remote
+        && let Ok(plan) = compose_bundled_reply_delivery(
+            sender.routing,
+            sender.session,
+            sender.outbound,
+            sender.identity.id(),
+            sender.identity.static_secret_bytes(),
+            remote_hash,
+            &outbound_requests,
+            bundling,
+            sender.now_seconds,
+            sender.now_ms,
+            rng,
+        )
+    {
+        let mut report = BatchedDeliveryReport::default();
+        match drive_to_dispatch(
+            &plan,
+            sender,
+            receiver,
+            outbound_hop0_hash,
+            outbound_hop1_hash,
+            inbound_tunnel,
+            inbound_hop1_hash,
+            inbound_hop2_hash,
+            _outbound_tunnel_id,
+            rng,
+        ) {
+            Ok(outcome) => {
+                let drained = drain_all_to_streaming(outcome, sender, receiver);
+                if drained.is_empty() {
+                    // Dispatch rejected the carrier: parity with
+                    // the single-path sweep counters, which count
+                    // rejections as delivered.
+                    report.delivered.extend(indices.iter().copied());
+                } else {
+                    for (position, index) in indices.iter().enumerate() {
+                        match drained.get(position) {
+                            Some(Ok(FedPayload::Streaming(
+                                InboundStreamingOutcome::StreamingDispatched { .. },
+                            ))) => {
+                                report.delivered.push(*index);
+                                report.observed.push(*index);
+                            }
+                            Some(Ok(FedPayload::Datagram)) => {
+                                report.delivered.push(*index);
+                                report.observed.push(*index);
+                            }
+                            _ => report.failed.push(*index),
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                report.failed.extend(indices.iter().copied());
+            }
+        }
+        return BatchedAttempt::Bundled(report);
+    }
+    BatchedAttempt::Singles { decode_failed }
 }
 
 /// Recovers the post-OBEP router-delivery action from a composed
@@ -559,4 +861,466 @@ fn feed_inbound_chain(
         return Err(ReconstructError::NotGarlic.into());
     }
     Ok(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datagram::DatagramManager;
+    use crate::streaming::config::StreamingConfig;
+    use i2pr_proto::streaming::{ClientPayload, encode_client_payload};
+    use i2pr_tunnel::{
+        EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection, TunnelPeer,
+    };
+
+    const NOW_SECONDS: u32 = 5_200;
+    const NOW_MS: u64 = 400_000;
+
+    fn peer(value: i2pr_proto::Hash) -> TunnelPeer {
+        TunnelPeer::from_hash(value)
+    }
+
+    fn hop_hash(seed: u64, index: u8) -> i2pr_proto::Hash {
+        let mut bytes = [0_u8; 32];
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            *byte = index.wrapping_add(offset as u8) ^ (seed as u8).wrapping_add(offset as u8);
+        }
+        i2pr_proto::Hash::from_bytes(bytes)
+    }
+
+    fn layer_keys(seed: u8) -> LayerKeys {
+        LayerKeys::new(
+            [seed; 32],
+            [seed.wrapping_add(1); 32],
+            [seed.wrapping_add(2); 32],
+        )
+    }
+
+    fn outbound_tunnel(seed: u64) -> EstablishedTunnel {
+        let hops = vec![
+            EstablishedHop::with_next(
+                peer(hop_hash(seed, 1)),
+                EstablishedRole::Participant,
+                TunnelId::new(0x0100_0000_u32.wrapping_add(seed as u32)).expect("id"),
+                layer_keys(0x50),
+                EstablishedNextHop::new(
+                    peer(hop_hash(seed, 2)),
+                    TunnelId::new(0x0100_0001_u32.wrapping_add(seed as u32)).expect("id"),
+                ),
+            ),
+            EstablishedHop::terminal(
+                peer(hop_hash(seed, 2)),
+                EstablishedRole::OutboundEndpoint,
+                TunnelId::new(0x0100_0001_u32.wrapping_add(seed as u32)).expect("id"),
+                layer_keys(0x51),
+            ),
+        ];
+        EstablishedTunnel::new(
+            TunnelDirection::Outbound,
+            TunnelId::new(0x0200_0000_u32.wrapping_add(seed as u32)).expect("id"),
+            hops,
+            0,
+            None,
+            None,
+        )
+        .expect("outbound established")
+    }
+
+    fn inbound_tunnel(seed: u64) -> EstablishedTunnel {
+        let local_receive = TunnelId::new(0x0300_0000_u32.wrapping_add(seed as u32)).expect("id");
+        let ibgw_tunnel = TunnelId::new(0x0400_0000_u32.wrapping_add(seed as u32)).expect("id");
+        let hops = vec![
+            EstablishedHop::with_next(
+                peer(hop_hash(seed, 1)),
+                EstablishedRole::InboundGateway,
+                ibgw_tunnel,
+                layer_keys(0x60),
+                EstablishedNextHop::new(
+                    peer(hop_hash(seed, 2)),
+                    TunnelId::new(0x0400_0001_u32.wrapping_add(seed as u32)).expect("id"),
+                ),
+            ),
+            EstablishedHop::with_next(
+                peer(hop_hash(seed, 2)),
+                EstablishedRole::Participant,
+                TunnelId::new(0x0400_0001_u32.wrapping_add(seed as u32)).expect("id"),
+                layer_keys(0x61),
+                EstablishedNextHop::new(peer(hop_hash(seed, 3)), local_receive),
+            ),
+        ];
+        EstablishedTunnel::new(
+            TunnelDirection::Inbound,
+            TunnelId::new(0x0500_0000_u32.wrapping_add(seed as u32)).expect("id"),
+            hops,
+            0,
+            Some((peer(hop_hash(seed, 1)), ibgw_tunnel)),
+            Some(local_receive),
+        )
+        .expect("inbound established")
+    }
+
+    /// Owned per-side state plus the signed LeaseSet2 peers resolve.
+    struct Fixture {
+        identity: DestinationIdentity,
+        lease_set2: i2pr_proto::LeaseSet2,
+        routing: DestinationRouting,
+        session: EciesSessionManager,
+        outbound_role: DestinationOutboundRole,
+        dispatcher: DestinationDispatcher,
+        streaming: StreamingManager,
+        datagrams: DatagramManager,
+        lease_store: LeaseSet2Store,
+    }
+
+    impl Fixture {
+        fn new(seed: u64) -> Self {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let identity = DestinationIdentity::generate(&mut rng).expect("identity");
+            let mut pool = crate::pool::DestinationTunnelPool::new(
+                crate::config::DestinationConfig::balanced(),
+            )
+            .expect("pool");
+            pool.register_inbound(
+                inbound_tunnel(seed).into_extracted(),
+                u64::from(NOW_SECONDS),
+            )
+            .expect("inbound registered");
+            pool.register_outbound(
+                outbound_tunnel(seed).into_extracted(),
+                u64::from(NOW_SECONDS),
+            )
+            .expect("outbound registered");
+            let lease_sources = pool.inbound_lease_sources(u64::from(NOW_SECONDS));
+            let lease_set2 =
+                crate::leaseset::build_signed_lease_set2(&identity, &lease_sources, NOW_SECONDS)
+                    .expect("signed ls2");
+            let mut dispatcher = DestinationDispatcher::new();
+            dispatcher
+                .register_destination(identity.id())
+                .expect("register");
+            dispatcher
+                .bind_destination_hash(identity.id(), identity.id().as_netdb_key())
+                .expect("bind");
+            Self {
+                identity,
+                lease_set2,
+                routing: DestinationRouting::new(
+                    crate::routing::DestinationRoutingConfig::balanced(),
+                ),
+                session: EciesSessionManager::new(crate::session::EciesSessionConfig::balanced()),
+                outbound_role: DestinationOutboundRole::new(
+                    outbound_tunnel(seed),
+                    NOW_MS + 300_000,
+                ),
+                dispatcher,
+                streaming: StreamingManager::new(StreamingConfig::balanced()),
+                datagrams: DatagramManager::new(),
+                lease_store: LeaseSet2Store::default(),
+            }
+        }
+
+        fn hash_bytes(&self) -> [u8; 32] {
+            *self.identity.id().as_hash().as_bytes()
+        }
+
+        fn preresolve(&mut self, remote: &Fixture) {
+            let validated = i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
+                remote.lease_set2.clone(),
+                Some(remote.identity.id().as_netdb_key()),
+                i2pr_netdb::LeaseSet2ValidationContext::new(NOW_SECONDS),
+            )
+            .expect("validated remote ls2");
+            self.routing
+                .install_remote_lease_set2(validated)
+                .expect("install resolved remote ls2");
+        }
+    }
+
+    fn request_to(remote_hash: [u8; 32], payload: &[u8]) -> TransportSendRequest {
+        // Protocol 18 (raw datagram): the receiver consumes these
+        // through the connectionless datagram manager with only a
+        // size check, so no streaming connections are needed to
+        // prove bundled delivery end to end.
+        let envelope = encode_client_payload(&ClientPayload {
+            protocol: 18,
+            source_port: 0x12A0,
+            destination_port: 0x12B0,
+            payload: payload.to_vec(),
+        })
+        .expect("encode client payload");
+        TransportSendRequest {
+            destination_hash: remote_hash,
+            source_port: 0x12A0,
+            destination_port: 0x12B0,
+            application_payload: envelope,
+            sequence: 0,
+            send_stream_id: 0,
+            receive_stream_id: 0,
+        }
+    }
+
+    /// Drives the receiver's bound New Session into the sender so the
+    /// sender holds a sealable reply context (the NSR form).
+    fn handshake_ns_for_sender(sender: &mut Fixture, receiver: &mut Fixture, rng: &mut ChaCha8Rng) {
+        let first = crate::session::encode_new_session_payload(
+            NOW_SECONDS,
+            &crate::session::local_clove(NOW_SECONDS, 1, vec![0xCC; 8]),
+        )
+        .expect("first payload");
+        let outbound = receiver
+            .session
+            .encrypt_to_remote(
+                receiver.identity.id(),
+                receiver.identity.static_secret_bytes(),
+                &[0xB0; 32],
+                &sender.identity.static_public_bytes(),
+                &first,
+                NOW_SECONDS,
+                rng,
+            )
+            .expect("bound new session");
+        let crate::session::EciesOutboundMessage::NewSession { message } = outbound else {
+            panic!("first send must initiate a bound New Session");
+        };
+        sender
+            .session
+            .accept_new_session(
+                sender.identity.id(),
+                sender.identity.static_secret_bytes(),
+                &sender.identity.static_public_bytes(),
+                &message,
+                NOW_SECONDS,
+            )
+            .expect("sender accepts");
+    }
+
+    /// Splits owned fixtures into delivery bundles for one
+    /// `deliver_batched` call. The inbound tunnel belongs to the
+    /// receiver's registered pool tunnel family (same seed), so the
+    /// selected lease's tunnel id gates correctly.
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_batched_between(
+        requests: &[TransportSendRequest],
+        bundling: ReplyBundling,
+        sender: &mut Fixture,
+        receiver: &mut Fixture,
+        receiver_seed: u64,
+        rng: &mut ChaCha8Rng,
+    ) -> BatchedAttempt {
+        let mut sender_inputs = LocalDeliverySender {
+            identity: &sender.identity,
+            routing: &mut sender.routing,
+            session: &mut sender.session,
+            outbound: &sender.outbound_role,
+            local_lease_set2: &sender.lease_set2,
+            now_seconds: NOW_SECONDS,
+            now_ms: NOW_MS,
+        };
+        let mut receiver_inputs = LocalDeliveryReceiver {
+            identity: &receiver.identity,
+            dispatcher: &mut receiver.dispatcher,
+            session: &mut receiver.session,
+            routing: &mut receiver.routing,
+            streaming: &mut receiver.streaming,
+            datagrams: &mut receiver.datagrams,
+            canonical_streaming: None,
+            lease_set2_store: &mut receiver.lease_store,
+            now_seconds: NOW_SECONDS,
+        };
+        deliver_batched(
+            requests,
+            bundling,
+            &mut sender_inputs,
+            &mut receiver_inputs,
+            i2pr_proto::Hash::from_bytes([0xA1; 32]),
+            i2pr_proto::Hash::from_bytes([0xA2; 32]),
+            inbound_tunnel(receiver_seed),
+            i2pr_proto::Hash::from_bytes([0xB1; 32]),
+            i2pr_proto::Hash::from_bytes([0xB2; 32]),
+            TunnelId::new(0x0200_0000).expect("tunnel id"),
+            rng,
+        )
+    }
+
+    #[test]
+    fn batched_bundles_two_replies_with_policy_enabled() {
+        // Plan 296: two same-remote requests travel as one bundled
+        // reply; both payloads queue on the receiver in wire order.
+        let mut sender = Fixture::new(0x2961);
+        let mut receiver = Fixture::new(0x2962);
+        sender.preresolve(&receiver);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2963);
+        handshake_ns_for_sender(&mut sender, &mut receiver, &mut rng);
+        let requests = vec![
+            request_to(receiver.hash_bytes(), b"batched-first-payload"),
+            request_to(receiver.hash_bytes(), b"batched-second-payload"),
+        ];
+        match deliver_batched_between(
+            &requests,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x2962,
+            &mut rng,
+        ) {
+            BatchedAttempt::Bundled(report) => {
+                assert_eq!(report.delivered, vec![0, 1]);
+                assert!(report.failed.is_empty());
+                assert_eq!(report.observed, vec![0, 1]);
+            }
+            BatchedAttempt::Singles { .. } => panic!("enabled policy must bundle"),
+        }
+        let first = receiver.datagrams.drain_received();
+        assert_eq!(first.len(), 2, "both bundled payloads feed datagrams");
+        assert_eq!(first[0].payload, b"batched-first-payload");
+        assert_eq!(first[1].payload, b"batched-second-payload");
+    }
+
+    #[test]
+    fn batched_singles_when_policy_disabled() {
+        // Plan 296: a disabled policy never seals a bundle (the
+        // reply context stays installed for the single path).
+        let mut sender = Fixture::new(0x2964);
+        let mut receiver = Fixture::new(0x2965);
+        sender.preresolve(&receiver);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2966);
+        handshake_ns_for_sender(&mut sender, &mut receiver, &mut rng);
+        let requests = vec![
+            request_to(receiver.hash_bytes(), b"single-one"),
+            request_to(receiver.hash_bytes(), b"single-two"),
+        ];
+        match deliver_batched_between(
+            &requests,
+            ReplyBundling::disabled(),
+            &mut sender,
+            &mut receiver,
+            0x2965,
+            &mut rng,
+        ) {
+            BatchedAttempt::Singles { decode_failed } => {
+                assert!(decode_failed.is_empty());
+            }
+            BatchedAttempt::Bundled(_) => panic!("disabled policy must not bundle"),
+        }
+        assert!(
+            sender
+                .session
+                .has_provisional_responder(&receiver.identity.static_public_bytes()),
+            "refused bundle must leave the reply context installed"
+        );
+    }
+
+    #[test]
+    fn batched_singles_on_mixed_remote_single_and_decode_failure() {
+        // Plan 296: mixed remotes, lone requests, and undecodable
+        // requests all take the single path with per-index decode
+        // failures reported.
+        let mut sender = Fixture::new(0x2967);
+        let mut receiver = Fixture::new(0x2968);
+        sender.preresolve(&receiver);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x2969);
+        handshake_ns_for_sender(&mut sender, &mut receiver, &mut rng);
+        // Mixed remotes never mix in one bundle.
+        let mixed = vec![
+            request_to(receiver.hash_bytes(), b"mixed-one"),
+            request_to([0xEE; 32], b"mixed-two"),
+        ];
+        match deliver_batched_between(
+            &mixed,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x2968,
+            &mut rng,
+        ) {
+            BatchedAttempt::Singles { decode_failed } => {
+                assert!(decode_failed.is_empty());
+            }
+            BatchedAttempt::Bundled(_) => panic!("mixed remotes must not bundle"),
+        }
+        // A lone request is a degenerate batch of one.
+        let lone = vec![request_to(receiver.hash_bytes(), b"lone")];
+        match deliver_batched_between(
+            &lone,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x2968,
+            &mut rng,
+        ) {
+            BatchedAttempt::Singles { decode_failed } => {
+                assert!(decode_failed.is_empty());
+            }
+            BatchedAttempt::Bundled(_) => panic!("lone requests must not bundle"),
+        }
+        // Garbage bytes fail decode at their own index only.
+        let mut bad = request_to(receiver.hash_bytes(), b"good");
+        bad.application_payload = vec![0xFF; 4];
+        let partial = vec![bad, request_to(receiver.hash_bytes(), b"good-two")];
+        match deliver_batched_between(
+            &partial,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x2968,
+            &mut rng,
+        ) {
+            BatchedAttempt::Singles { decode_failed } => {
+                assert_eq!(decode_failed, vec![0]);
+            }
+            BatchedAttempt::Bundled(_) => panic!("decode failures must not bundle"),
+        }
+    }
+
+    #[test]
+    fn batched_existing_session_falls_back_to_singles() {
+        // Plan 296: once the session pairs (Existing Session form),
+        // the bundled composer refuses without touching the session,
+        // and the single path still delivers.
+        let mut sender = Fixture::new(0x296A);
+        let mut receiver = Fixture::new(0x296B);
+        sender.preresolve(&receiver);
+        receiver.preresolve(&sender);
+        let mut rng = ChaCha8Rng::seed_from_u64(0x296C);
+        handshake_ns_for_sender(&mut sender, &mut receiver, &mut rng);
+        // Complete the pairing: the sender seals its reply, the
+        // receiver accepts it, and both sides hold a paired
+        // Existing Session afterwards.
+        let pair_requests = vec![
+            request_to(receiver.hash_bytes(), b"pair-one"),
+            request_to(receiver.hash_bytes(), b"pair-two"),
+        ];
+        match deliver_batched_between(
+            &pair_requests,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x296B,
+            &mut rng,
+        ) {
+            BatchedAttempt::Bundled(report) => {
+                assert_eq!(report.delivered, vec![0, 1]);
+            }
+            BatchedAttempt::Singles { .. } => panic!("first reply must bundle"),
+        }
+        // The session is now paired: bundling refuses the
+        // Existing Session form.
+        let follow = vec![
+            request_to(receiver.hash_bytes(), b"follow-one"),
+            request_to(receiver.hash_bytes(), b"follow-two"),
+        ];
+        match deliver_batched_between(
+            &follow,
+            ReplyBundling::enabled(),
+            &mut sender,
+            &mut receiver,
+            0x296B,
+            &mut rng,
+        ) {
+            BatchedAttempt::Singles { decode_failed } => {
+                assert!(decode_failed.is_empty());
+            }
+            BatchedAttempt::Bundled(_) => panic!("existing sessions must not bundle"),
+        }
+    }
 }

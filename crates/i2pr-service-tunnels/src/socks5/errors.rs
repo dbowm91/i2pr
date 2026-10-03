@@ -95,6 +95,9 @@ pub enum Socks5ErrorKind {
     DomainCeiling,
     /// Domain contains NUL/control/whitespace bytes.
     MalformedDomain,
+    /// SOCKS4a USERID contains control bytes or exceeds the
+    /// ceiling (Plan 290).
+    MalformedUserid,
     /// Domain fails `.i2p` policy (clearnet, IP literal, localhost,
     /// mixed-suffix, malformed alias, etc).
     NonI2pTarget,
@@ -125,6 +128,7 @@ impl Socks5ErrorKind {
             | Socks5ErrorKind::WrongRequestVersion
             | Socks5ErrorKind::BadReserved
             | Socks5ErrorKind::MalformedDomain
+            | Socks5ErrorKind::MalformedUserid
             | Socks5ErrorKind::RequestCeiling
             | Socks5ErrorKind::BufferCeilingExceeded
             | Socks5ErrorKind::InvalidLimits => Socks5ReplyCode::GeneralFailure,

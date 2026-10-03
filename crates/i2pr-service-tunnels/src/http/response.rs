@@ -59,6 +59,26 @@ fn sanitize_detail(detail: &str) -> String {
     out
 }
 
+/// Builds one bounded `407 Proxy Authentication Required`
+/// response (Plan 292).
+///
+/// The realm is a static operator-independent constant naming the
+/// listener family, never request content. The connection closes
+/// after the response: the client retries with credentials on a new
+/// connection (standard Basic practice; no request state is kept).
+pub fn proxy_auth_required(realm: &str) -> Vec<u8> {
+    let body = "Proxy Authentication Required";
+    let mut response = String::with_capacity(256);
+    response.push_str("HTTP/1.1 407 Proxy Authentication Required\r\n");
+    response.push_str("Content-Type: text/plain; charset=utf-8\r\n");
+    response.push_str("Connection: close\r\n");
+    response.push_str(&format!("Proxy-Authenticate: Basic realm=\"{realm}\"\r\n"));
+    response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    response.push_str("\r\n");
+    response.push_str(body);
+    response.into_bytes()
+}
+
 /// Convenience constructor for [`HttpError`].
 pub fn http_error(kind: HttpErrorKind, reason: &'static str) -> HttpError {
     HttpError::new(kind, reason)

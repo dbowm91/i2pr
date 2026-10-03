@@ -308,7 +308,10 @@ impl RequestParser {
 /// accumulation; this function only enforces the RFC 1928 + I2P
 /// policy outcomes (clearnet, IP literal, localhost, mixed-suffix,
 /// malformed alias).
-fn validate_domain_policy(bytes: &[u8]) -> Result<(), Socks5Error> {
+///
+/// Shared with the Plan 290 SOCKS4a parser (`super::socks4a`), which
+/// enforces the identical `.i2p`-only policy on 4a domains.
+pub(crate) fn validate_domain_policy(bytes: &[u8]) -> Result<(), Socks5Error> {
     let rejected = |kind, reason| Socks5Error::new(kind, reason);
     if bytes.is_empty() {
         return Err(rejected(Socks5ErrorKind::ZeroDomain, "domain is empty"));

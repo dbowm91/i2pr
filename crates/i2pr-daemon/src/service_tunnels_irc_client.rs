@@ -146,7 +146,8 @@ pub async fn run_irc_connection(
             connection_id,
             target.remote.clone(),
         ));
-        let outcome = run_irc_filtered_loop(stream, endpoint, &options, &cancellation).await;
+        let outcome =
+            run_irc_filtered_loop(stream, endpoint, &options, &cancellation, Vec::new()).await;
         manager.with_destination_bridge(runtime.destination_id, |bridge| {
             let _ = bridge.streaming_mut().remove_connection(connection_id);
         });
@@ -209,19 +210,28 @@ const IRC_READ_POLL: Duration = Duration::from_millis(50);
 /// rewrite state retained across the connection). Structural
 /// violations close the connection; unknown/dropped lines are
 /// skipped without disturbing siblings.
-async fn run_irc_filtered_loop(
+///
+/// Plan 290: shared with the `socks-irc` composition, which feeds
+/// same-read post-CONNECT bytes as `initial_inbound` (empty for
+/// the ordinary `irc-client` path) so no filtered byte is lost or
+/// reordered at the SOCKS->IRC handoff.
+pub(crate) async fn run_irc_filtered_loop(
     stream: TcpStream,
     endpoint: Arc<dyn StreamPumpEndpoint>,
     options: &IrcClientOptions,
     cancellation: &CancellationToken,
+    initial_inbound: Vec<u8>,
 ) -> IrcConnectionOutcome {
     let limits = IrcLimits::defaults();
     let substitutions = PrivacySubstitutions::default();
     let mut ping_state = PingRewriteState::new();
     let (mut reader, mut writer) = stream.into_split();
-    let mut inbound = Vec::new();
+    let mut inbound = initial_inbound;
     let mut outbound = Vec::new();
     let mut chunk = [0_u8; 1024];
+    if inbound.len() > limits.line_buffer_max_bytes {
+        return IrcConnectionOutcome::StructuralFailure;
+    }
     loop {
         if cancellation.is_cancelled() || endpoint.is_terminal() {
             return IrcConnectionOutcome::TunnelClosed;
@@ -415,10 +425,14 @@ pub async fn run_irc_client_loop(
         "irc client tunnel bound loopback listener"
     );
     let _ = spec.irc_options.clone().unwrap_or_default();
+    let drain_cancel = runtime.cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -474,12 +488,7 @@ pub async fn run_irc_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_t
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_t.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,

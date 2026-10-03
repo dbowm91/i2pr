@@ -1,11 +1,13 @@
 [workspace]
 members = [
+    "crates/i2pr-addressbook",
     "crates/i2pr-api",
     "crates/i2pr-crypto",
     "crates/i2pr-proto",
     "crates/i2pr-client",
     "crates/i2pr-core",
     "crates/i2pr-daemon",
+    "crates/i2pr-i2pcontrol",
     "crates/i2pr-netdb",
     "crates/i2pr-netdb-persist",
     "crates/i2pr-runtime",
@@ -42,8 +44,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hmac = { version = "0.12.1", default-features = false }
 rand_chacha = "0.9"
 rand_core = { version = "0.9", default-features = false }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+rustls-pki-types = { version = "1.12", default-features = false, features = ["std"] }
 sad-rsa = { version = "0.10", default-features = false, features = ["std", "encoding", "sha2"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
 sha2 = "0.10"
 siphasher = { version = "1.0.3", default-features = false }
 subtle = { version = "2.6", default-features = false }
@@ -53,6 +59,7 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tokio = { version = "1.48", default-features = false, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time", "test-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 x509-cert = { version = "0.2", features = ["builder", "pem"] }

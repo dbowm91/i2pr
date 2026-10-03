@@ -89,9 +89,20 @@ fn client_spec(id: &str, listener_port: u16) -> ServiceTunnelSpec {
         max_connections: 4,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+        shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+        streaming_interactive: false,
+        idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        multihoming: false,
+        reply_bundling: false,
+        use_ssl: false,
+        http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
+        streamr_options: None,
     }
 }
 
@@ -110,9 +121,20 @@ fn server_spec(id: &str, target_port: u16) -> ServiceTunnelSpec {
         max_connections: 4,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+        shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+        streaming_interactive: false,
+        idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        multihoming: false,
+        reply_bundling: false,
+        use_ssl: false,
+        http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
+        connect_options: None,
+        streamr_options: None,
     }
 }
 

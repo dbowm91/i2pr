@@ -534,6 +534,12 @@ pub fn project_options(
             1,
             1,
             defaults.length_hops(),
+            // I2CP carries no backup/variance/bundling keys: the
+            // localhost profile keeps zero standby, no variance,
+            // and unbundled delivery.
+            0,
+            0,
+            false,
             defaults.tunnel_lifetime_seconds(),
             defaults.build_concurrency(),
             defaults.failure_threshold(),
@@ -608,6 +614,12 @@ pub fn project_options(
         outbound_target_value,
         minimum_usable_inbound,
         length_hops,
+        // I2CP backup/variance keys are noted and dropped (the
+        // target drives pool sizing); bundling is an I2PControl
+        // tunnel option, never an I2CP session option.
+        0,
+        0,
+        false,
         lifetime_seconds,
         build_concurrency,
         failure_threshold,

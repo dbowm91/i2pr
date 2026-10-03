@@ -1,0 +1,21 @@
+[package]
+name = "i2pr-addressbook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Canonical runtime-neutral i2pr address-book owner: four administrative books, resolver precedence, subscriptions, and versioned generations (Plan 294)"
+publish = false
+
+[dependencies]
+i2pr-proto = { path = "../i2pr-proto" }
+base64ct = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+i2pr-i2pcontrol = { path = "../i2pr-i2pcontrol" }
+
+[lints]
+workspace = true

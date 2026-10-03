@@ -12,6 +12,10 @@
 //!   (Base32 / static-alias only; clearnet, IP literals,
 //!   `localhost`, mixed-suffix confusion, control/NUL/whitespace,
 //!   and BIND/UDP ASSOCIATE rejected);
+//! - Plan 290 bounded SOCKS4a CONNECT parsing (domain extension
+//!   only; plain SOCKS4 IPv4 literals fail closed) with the
+//!   identical `.i2p`-only domain policy, for the pinned
+//!   historical SOCKS 4/4a/5 profile parity;
 //! - bounded typed reply generation that never echoes untrusted
 //!   request bytes and uses a neutral loopback bind (`127.0.0.1:0`).
 //!
@@ -22,7 +26,9 @@
 //!
 //! ## Mandatory behavior
 //!
-//! - SOCKS5 version `0x05` only;
+//! - SOCKS5 version `0x05` for greeting + DOMAINNAME CONNECT, plus
+//!   Plan 290 bounded SOCKS4a (`0x04`) CONNECT in domain-extension
+//!   form only (plain SOCKS4 IPv4 literals rejected);
 //! - `NO AUTHENTICATION REQUIRED (0x00)` only;
 //! - `CONNECT (0x01)` command only;
 //! - `DOMAINNAME (0x03)` address type only;
@@ -56,6 +62,7 @@ pub mod limits;
 pub mod negotiation;
 pub mod reply;
 pub mod request;
+pub mod socks4a;
 
 pub use config::{
     ConnectPortPolicy, DEFAULT_CONNECT_PORT, SOCKS_VERSION, SOCKS5_CMD_BIND, SOCKS5_CMD_CONNECT,
@@ -71,4 +78,8 @@ pub use negotiation::{GreetingOutcome, GreetingParser};
 pub use reply::{REPLY_LEN, build_reply, build_reply_from_code};
 pub use request::{
     ConnectDestination, PORT_FIELD_LEN, REQUEST_HEADER_LEN, RequestOutcome, RequestParser,
+};
+pub use socks4a::{
+    SOCKS4A_GRANTED, SOCKS4A_REJECTED, SOCKS4A_REPLY_LEN, Socks4aOutcome, Socks4aRequestParser,
+    build_socks4a_reply,
 };

@@ -309,6 +309,26 @@ async fn tokenless_establishment_over_real_udp() {
     b.shutdown_scope().await;
 }
 
+/// Plan 295: the bounded active-peer-hash projection names exactly the
+/// live session peer on both directions and goes empty after release.
+#[tokio::test]
+async fn active_peer_hashes_names_live_session_peers() {
+    let a = start_fixture(make_router_keys()).await;
+    let b = start_fixture(make_router_keys()).await;
+    assert!(a.service.active_peer_hashes().is_empty());
+    assert!(b.service.active_peer_hashes().is_empty());
+
+    let _established = dial(&a, &b.keys, b.addr()).await;
+    wait_for_active(&a, 1).await;
+    wait_for_active(&b, 1).await;
+
+    assert_eq!(a.service.active_peer_hashes(), vec![b.keys.hash]);
+    assert_eq!(b.service.active_peer_hashes(), vec![a.keys.hash]);
+
+    a.shutdown_scope().await;
+    b.shutdown_scope().await;
+}
+
 #[tokio::test]
 async fn cached_token_establishment_with_stale_recovery() {
     let a = start_fixture(make_router_keys()).await;

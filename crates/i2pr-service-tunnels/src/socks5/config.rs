@@ -132,6 +132,11 @@ pub struct Socks5ClientOptions {
     /// destinations the proxy will accept. When empty, any valid
     /// `.i2p` host is accepted (subject to Base32/alias resolution).
     pub allowed_hosts: Vec<String>,
+    /// Listener proxy authentication (Plan 292). When set, the
+    /// SOCKS5 greeting must negotiate RFC 1929 username/password
+    /// and verify; when unset, no-authentication stays accepted
+    /// (pre-292 behavior).
+    pub proxy_auth: Option<crate::auth::ProxyCredentials>,
 }
 
 impl Socks5ClientOptions {

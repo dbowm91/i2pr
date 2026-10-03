@@ -31,7 +31,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use i2pr_netdb::{DestinationHash, LeaseSet2Store, LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::{
@@ -229,7 +229,7 @@ impl From<CodecError> for InboundDispatchError {
 /// destination runtime.
 #[derive(Debug)]
 struct InboundApplicationQueue {
-    pending: Vec<DestinationPayload>,
+    pending: VecDeque<DestinationPayload>,
     queued_bytes: usize,
     max_messages: usize,
     max_bytes: usize,
@@ -238,7 +238,7 @@ struct InboundApplicationQueue {
 impl InboundApplicationQueue {
     fn new(max_messages: usize, max_bytes: usize) -> Self {
         Self {
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             queued_bytes: 0,
             max_messages,
             max_bytes,
@@ -260,18 +260,29 @@ impl InboundApplicationQueue {
             });
         }
         self.queued_bytes = projected;
-        self.pending.push(payload);
+        self.pending.push_back(payload);
         Ok(())
     }
 
     fn pop(&mut self) -> Option<DestinationPayload> {
-        let payload = self.pending.pop()?;
+        // Plan 296: FIFO like `BoundedPayloadQueue` (the oldest
+        // payload first), so bundled replies deliver in wire order.
+        let payload = self.pending.pop_front()?;
         self.queued_bytes = self.queued_bytes.saturating_sub(payload.len());
         Some(payload)
     }
 
     fn len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Whether the queue can admit `extra_messages` more payloads
+    /// totaling `extra_bytes` without breaching either ceiling.
+    /// Mirrors [`Self::push`] exactly so batch admission is atomic:
+    /// a batch that fits here routes infallibly below.
+    fn can_hold(&self, extra_messages: usize, extra_bytes: usize) -> bool {
+        self.pending.len().saturating_add(extra_messages) <= self.max_messages
+            && self.queued_bytes.saturating_add(extra_bytes) <= self.max_bytes
     }
 
     fn release_all(&mut self) -> usize {
@@ -329,6 +340,11 @@ pub struct DestinationDispatcher {
 /// Decrypted clove set extracted from one authenticated payload.
 struct DecryptedCloves {
     application_clove: GarlicCloveBlock,
+    /// Every non-LeaseSet2 data clove in wire order. Single-clove
+    /// payloads carry exactly one (identical to
+    /// `application_clove`); bundled replies (Plan 296) carry one
+    /// per bundled application payload.
+    application_cloves: Vec<GarlicCloveBlock>,
     clove_count: usize,
     /// Bundled DatabaseStore LeaseSet2 candidates found in the
     /// payload sequence.
@@ -629,9 +645,54 @@ impl DestinationDispatcher {
         plaintext: &[u8],
     ) -> Result<usize, InboundDispatchError> {
         let cloves = decode_cloves(plaintext)?;
-        let clove_count = cloves.clove_count;
-        self.route_application_clove(local_id, &cloves.application_clove)?;
-        Ok(clove_count)
+        // Plan 296: bundled replies carry several application data
+        // cloves; route every one in wire order. Admission is
+        // atomic: the pre-count cap, the uniform-target check, and
+        // the queue capacity check all run before the first push,
+        // so a rejected bundle leaves no partial queue effect.
+        // Single-clove traffic (all current senders) routes exactly
+        // as before.
+        if cloves.application_cloves.len() > crate::bundle::MAX_BUNDLED_DATA_CLOVES {
+            return Err(InboundDispatchError::Payload(
+                EciesPayloadError::TooManyDataCloves {
+                    actual: cloves.application_cloves.len(),
+                    maximum: crate::bundle::MAX_BUNDLED_DATA_CLOVES,
+                },
+            ));
+        }
+        let local_hash = *local_id.as_hash();
+        for clove in &cloves.application_cloves {
+            let target_hash = match clove.delivery {
+                GarlicDelivery::Local => local_hash,
+                GarlicDelivery::Destination(bytes) => Hash::from_bytes(bytes),
+            };
+            if target_hash != local_hash {
+                return Err(InboundDispatchError::UnknownDestination(
+                    DestinationHash::from_hash(target_hash),
+                ));
+            }
+        }
+        let state = self.destinations.get(&local_id).ok_or_else(|| {
+            InboundDispatchError::UnknownDestination(DestinationHash::from_hash(local_hash))
+        })?;
+        let needed_bytes: usize = cloves
+            .application_cloves
+            .iter()
+            .map(|clove| clove.message.len())
+            .sum();
+        if !state
+            .queue
+            .can_hold(cloves.application_cloves.len(), needed_bytes)
+        {
+            return Err(InboundDispatchError::QueueFull(PayloadError::QueueFull {
+                queued: state.queue.len(),
+                maximum: MAX_INBOUND_PENDING_MESSAGES,
+            }));
+        }
+        for clove in &cloves.application_cloves {
+            self.route_application_clove(local_id, clove)?;
+        }
+        Ok(cloves.clove_count)
     }
 
     /// Routes the application clove to the local owner named by the
@@ -747,6 +808,7 @@ fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchErr
         .map_err(EciesPayloadError::Codec)
         .map_err(InboundDispatchError::Payload)?;
     let mut application_clove: Option<GarlicCloveBlock> = None;
+    let mut application_cloves = Vec::new();
     let mut first_clove: Option<GarlicCloveBlock> = None;
     let mut clove_count = 0_usize;
     let mut sender_lease_set2s = Vec::new();
@@ -764,8 +826,14 @@ fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchErr
             // the Streaming adapter (`NotI2npData`). Skipping LS2
             // cloves keeps both orders working (LS2-first for i2pd,
             // data-first for older local captures).
-            if application_clove.is_none() && extract_lease_set2_from_clove(clove).is_none() {
-                application_clove = Some(clove.clone());
+            if extract_lease_set2_from_clove(clove).is_none() {
+                if application_clove.is_none() {
+                    application_clove = Some(clove.clone());
+                }
+                // Plan 296: bundled replies carry several data
+                // cloves; every non-LS2 clove is application data
+                // and routes in wire order.
+                application_cloves.push(clove.clone());
             }
             if let Some(ls2) = extract_lease_set2_from_clove(clove) {
                 sender_lease_set2s.push(ls2);
@@ -778,8 +846,12 @@ fn decode_cloves(plaintext: &[u8]) -> Result<DecryptedCloves, InboundDispatchErr
     let application_clove = application_clove.or(first_clove);
     let application_clove =
         application_clove.ok_or(InboundDispatchError::Payload(EciesPayloadError::NoClove))?;
+    if application_cloves.is_empty() {
+        application_cloves.push(application_clove.clone());
+    }
     Ok(DecryptedCloves {
         application_clove,
+        application_cloves,
         clove_count,
         sender_lease_set2s,
     })

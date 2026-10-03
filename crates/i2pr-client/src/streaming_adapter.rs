@@ -41,6 +41,7 @@
 use i2pr_netdb::DestinationHash;
 use i2pr_proto::{
     ClientPayloadDecodeError, CodecError, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
+    PROTOCOL_TYPE_DATAGRAM, PROTOCOL_TYPE_RAW,
 };
 use i2pr_tunnel::TunnelRoleError;
 use rand_core::{CryptoRng, RngCore};
@@ -150,6 +151,21 @@ pub enum InboundStreamingOutcome {
     UnsupportedProtocol {
         /// Observed I2P protocol number.
         protocol: u8,
+    },
+    /// The client payload carried a repliable (17) or raw (18)
+    /// datagram. The decoded datagram bytes ride along so the
+    /// owning destination's [`crate::datagram::DatagramManager`]
+    /// can authenticate and queue them (Plan 291); Streaming never
+    /// sees them.
+    DatagramReceived {
+        /// Observed I2P protocol number (17 or 18).
+        protocol: u8,
+        /// Sender's I2P destination port.
+        source_port: u16,
+        /// Receiver's I2P destination port.
+        destination_port: u16,
+        /// Decoded datagram bytes (Datagram1 envelope or raw payload).
+        payload: Vec<u8>,
     },
 }
 
@@ -293,6 +309,15 @@ impl StreamingDestinationAdapter {
         let envelope = i2pr_proto::decode_i2cp_data_body(&data_payload)
             .map_err(StreamingAdapterError::I2cpDataBody)?;
         if envelope.protocol != i2pr_proto::PROTOCOL_TYPE_STREAMING {
+            if envelope.protocol == PROTOCOL_TYPE_DATAGRAM || envelope.protocol == PROTOCOL_TYPE_RAW
+            {
+                return Ok(InboundStreamingOutcome::DatagramReceived {
+                    protocol: envelope.protocol,
+                    source_port: envelope.from_port,
+                    destination_port: envelope.to_port,
+                    payload: envelope.payload,
+                });
+            }
             return Ok(InboundStreamingOutcome::UnsupportedProtocol {
                 protocol: envelope.protocol,
             });

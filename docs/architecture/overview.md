@@ -79,6 +79,8 @@ crates/
   i2pr-client/              Destination lifecycle, ECIES session/routing, Streaming
   i2pr-api/                 Runtime-neutral SAM 3.1 + I2CP wire/state (no sockets)
   i2pr-service-tunnels/     Runtime-neutral tunnel config/policy (no sockets)
+  i2pr-i2pcontrol/          Proposal 170 wire/domain contract (no I/O)
+  i2pr-addressbook/         Canonical naming owner: books/resolver/subscriptions (no I/O)
   i2pr-daemon/              CLI/config/composition root; owns all listeners
   i2pr-testkit/             Deterministic fixtures only (test-only)
 tools/
@@ -113,6 +115,9 @@ i2pr-core <- i2pr-transport <- i2pr-runtime <- i2pr-daemon (composition root)
                                                  |
                               i2pr-service-tunnels (policy only)
 
+i2pr-proto <- i2pr-addressbook (naming only) <- i2pr-daemon (sole consumer)
+i2pr-i2pcontrol (contract only) <---------------+
+
 i2pr-testkit (test-only; production crates must not depend on it)
 tools/i2pr-interop (non-production; depends on transport + runtime + storage)
 ```
@@ -140,6 +145,7 @@ design choices.
 | `i2pr-client` | Destination runtime | Destination identity/pools/registry, Standard LeaseSet2 lifecycle, ECIES-X25519-AEAD-Ratchet sessions, garlic routing/dispatch, Streaming. | [i2pr-client.md](i2pr-client.md) |
 | `i2pr-api` | App protocols | SAM 3.1 parser/registry/server-state/STREAM bridge + I2CP preamble/frame/message codecs, connection/session/option machines, data plane. No sockets. | [i2pr-api.md](i2pr-api.md) |
 | `i2pr-service-tunnels` | Service policy | Runtime-neutral kinds, destination refs, aliases, ceilings, HTTP/SOCKS5/IRC parser/policy surfaces. Daemon owns listeners. | [i2pr-service-tunnels.md](i2pr-service-tunnels.md) |
+| `i2pr-addressbook` | Naming owner | Canonical `.i2p` books, precedence resolver, subscriptions, versioned generations. No I/O. | [i2pr-addressbook.md](i2pr-addressbook.md) |
 | `i2pr-daemon` | Composition root | CLI, TOML config, identity lifecycle, NetDB/bootstrap pipeline, SSU2 router service, SAM/I2CP listeners, service-tunnel executors, `ServiceProduct::start`. | [i2pr-daemon.md](i2pr-daemon.md) |
 | `i2pr-testkit` | Test simulation | `ManualClock`, `NetworkScheduler`, virtual links, `FaultScript`, deterministic RNG. Test-only. | [i2pr-testkit.md](i2pr-testkit.md) |
 | `tools/i2pr-interop` | Test launcher | Disposable NTCP2 composition root: temp identity/RouterInfo, listener-or-dial, DeliveryStatus smoke, bounded cleanup. | [tooling.md](tooling.md) |
@@ -410,6 +416,7 @@ not weaken the script.
 - `check-sam-acceptance-evidence.sh`,
   `check-ssu2-acceptance-evidence.sh`,
   `check-i2cp-acceptance-evidence.sh`,
+  `check-i2pcontrol-acceptance-evidence.sh`,
   `check-service-tunnel-acceptance-evidence.sh`,
   `check-exploratory-tunnel-evidence.sh`,
   `check-netdb-tunnel-evidence.sh`,

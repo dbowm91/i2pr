@@ -154,16 +154,59 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
     {
         return DiffClass::ReplaceDestination;
     }
+    if prev.shaping != next.shaping {
+        // Pool sizing changed: the destination runtime is constructed
+        // with its config, so shaping edits replace the destination
+        // runtime (pools rebuild under the same identity; active
+        // streams follow the existing replace drain path).
+        return DiffClass::ReplaceDestination;
+    }
+    if prev.http_options != next.http_options
+        || prev.socks5_options != next.socks5_options
+        || prev.connect_options != next.connect_options
+        || prev.streamr_options != next.streamr_options
+        || prev.access != next.access
+    {
+        // Credential, cadence, and peer-policy edits rebuild: live
+        // listeners and loops capture their options at supervisor
+        // start, so stale credentials, cadence, or policies must
+        // never linger on a running runtime. (Side effect: profile
+        // tweaks in these structs now take effect via rebuild
+        // instead of waiting for a restart.)
+        return DiffClass::ReplaceDestination;
+    }
+    if prev.streaming_interactive != next.streaming_interactive {
+        // The streaming managers are constructed with their window
+        // configuration, so profile edits replace the destination
+        // runtime the same way shaping edits do.
+        return DiffClass::ReplaceDestination;
+    }
     if prev.max_connections != next.max_connections
         || prev.max_buffered_bytes_per_direction != next.max_buffered_bytes_per_direction
         || prev.timeouts != next.timeouts
-        || prev.http_options != next.http_options
-        || prev.socks5_options != next.socks5_options
         || prev.irc_options != next.irc_options
+        || prev.idle != next.idle
+        || prev.unique_local_address != next.unique_local_address
+        || prev.http_policy != next.http_policy
+        || prev.multihoming != next.multihoming
+        || prev.reply_bundling != next.reply_bundling
+        || prev.use_ssl != next.use_ssl
     {
         // Resource/deadline/profile-only differences are safe to
         // swap in place; nothing has been wired that depends on
-        // these values being immutable.
+        // these values being immutable. Plan 292: the idle sweep
+        // reads the committed spec each tick, so idle edits take
+        // effect without rebuilding the runtime. The server
+        // target dial and the HTTP presentation filter likewise
+        // read the committed dial/presentation behavior per
+        // connection and per request. Plan 296: multihoming target
+        // selection reads the committed flag and target list per
+        // connection, and the outbound sweep reads the committed
+        // reply-bundling flag per sweep, so both edits take effect
+        // without rebuilding the runtime. Plan 297: the server TLS
+        // dial reads the committed use_ssl flag per connection
+        // against the daemon TLS policy, so those edits take effect
+        // without rebuilding the runtime either.
         return DiffClass::MutableInPlace;
     }
     DiffClass::Unchanged
@@ -179,7 +222,10 @@ pub fn kind_string(kind: ServiceTunnelKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts};
+    use crate::config::{
+        DestinationPolicy, IdlePolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts,
+        TunnelShaping,
+    };
     use crate::destination::DestinationRef;
 
     mod replace_byte {
@@ -209,9 +255,20 @@ mod tests {
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -228,9 +285,20 @@ mod tests {
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }
     }
 
@@ -242,11 +310,101 @@ mod tests {
     }
 
     #[test]
+    fn shaping_change_is_replace_destination() {
+        // Plan 292: pool sizing is baked into the destination
+        // runtime at construction, so any shaping edit replaces
+        // the destination (pools rebuild under the same identity).
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.shaping = TunnelShaping::try_new(4, 4, 2, 0, 0).expect("shaping");
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
+        let mut length_only = prev.clone();
+        length_only.shaping = TunnelShaping::try_new(2, 2, 3, 0, 0).expect("shaping");
+        assert_eq!(
+            diff_spec(&prev, &length_only),
+            DiffClass::ReplaceDestination
+        );
+    }
+
+    #[test]
+    fn profile_change_is_replace_destination() {
+        // Plan 292: the streaming managers are constructed with
+        // their window configuration, so profile edits replace the
+        // destination runtime like shaping edits do.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.streaming_interactive = true;
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
+    }
+
+    #[test]
+    fn idle_change_is_mutable_in_place() {
+        // Plan 292: the sweep reads the committed spec each tick,
+        // so idle edits take effect without rebuilding the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.idle = IdlePolicy::try_new(Some(60_000), true, false, false).expect("idle");
+        assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
+    }
+
+    #[test]
     fn resource_limit_change_is_mutable_in_place() {
         let prev = client_spec("alpha");
         let mut next = prev.clone();
         next.max_connections = 8;
         assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn dial_and_presentation_changes_are_mutable_in_place() {
+        // Plan 292: the server target dial reads the committed
+        // unique-local flag per connection and the HTTP filter
+        // reads the committed presentation policy per request, so
+        // both edits take effect without rebuilding the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.unique_local_address = true;
+        assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
+        let mut gated = prev.clone();
+        gated.http_policy = crate::http::HttpServerPolicy {
+            address_helper: false,
+            jump_list: true,
+        };
+        assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn shaping_and_delivery_flag_edits_classify() {
+        // Plan 296: backup/variance ride the shaping struct (any
+        // shaping edit replaces the destination); multihoming and
+        // reply bundling read the committed spec per
+        // connection/sweep, so those edits are mutable in place.
+        let prev = client_spec("alpha");
+        let mut shaped = prev.clone();
+        shaped.shaping = TunnelShaping::try_new(2, 2, 2, 1, 1).expect("shaping");
+        assert_eq!(diff_spec(&prev, &shaped), DiffClass::ReplaceDestination);
+        let mut multi = prev.clone();
+        multi.multihoming = true;
+        assert_eq!(diff_spec(&prev, &multi), DiffClass::MutableInPlace);
+        let mut bundled = prev.clone();
+        bundled.reply_bundling = true;
+        assert_eq!(diff_spec(&prev, &bundled), DiffClass::MutableInPlace);
+        let mut tls = prev.clone();
+        tls.use_ssl = true;
+        assert_eq!(diff_spec(&prev, &tls), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn streamr_sink_change_is_replace_destination() {
+        // Plan 292: the subscriber loop captures its UDP sink at
+        // supervisor start, so sink edits rebuild the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.streamr_options = Some(crate::streamr::StreamrOptions {
+            remote_sink: Some("127.0.0.1:5009".parse().expect("sink")),
+            ..crate::streamr::StreamrOptions::default()
+        });
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
     }
 
     #[test]

@@ -300,6 +300,10 @@ pub struct SamServiceState {
     /// listener starts serving. Consulted once per drained delivery
     /// sweep. Never retains payloads, identities, or keys.
     fault_profile: Arc<Mutex<SamDeliveryFaultProfile>>,
+    /// Plan 294 canonical address-book resolver cell. Empty unless
+    /// the composition root installs the active subsystem's shared
+    /// handle; session-registry and Base32 paths always precede it.
+    addressbook: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
 impl SamServiceState {
@@ -339,7 +343,26 @@ impl SamServiceState {
             destination_drivers,
             delivery_counters,
             fault_profile,
+            addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
+    }
+
+    /// Installs the canonical address-book resolver cell (Plan 294).
+    /// The installed clone shares one `Arc` with the subsystem, so
+    /// later commits propagate without re-installation.
+    pub fn set_addressbook_handle(&self, handle: crate::addressbook::SharedAddressBook) {
+        if let Ok(mut slot) = self.addressbook.lock() {
+            *slot = handle;
+        }
+    }
+
+    /// Looks up one `.i2p` hostname in the canonical address book
+    /// (`None` when the subsystem is inactive or the name is absent).
+    pub fn addressbook_lookup(&self, name: &str) -> Option<i2pr_addressbook::ResolvedEntry> {
+        self.addressbook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.lookup(name))
     }
 
     /// Returns the validated SAM configuration.
@@ -680,6 +703,7 @@ impl SamServiceState {
             lease_set2,
             outbound_role,
             now_seconds,
+            i2pr_client::streaming::config::StreamingConfig::balanced(),
         );
         let bridge_handle = match self.sam_destinations.lock() {
             Ok(mut destinations) => destinations.install(destination_id, bridge),
@@ -1954,13 +1978,28 @@ fn execute_naming_lookup(
         }
     }
 
-    let result = if name.to_ascii_lowercase().ends_with(".i2p") {
-        ReplyResult::KeyNotFound
-    } else {
-        ReplyResult::InvalidKey
-    };
+    // Plan 294: ordinary `.i2p` names consult the canonical address
+    // book when the subsystem is active; session-registry and Base32
+    // paths above always precede it. Inactive or absent stays
+    // KeyNotFound, exactly as before Plan 294. One trailing dot is
+    // the canonical DNS root marker and strips before the suffix
+    // check (the owner canonicalizes identically).
+    let bare = name.strip_suffix('.').unwrap_or(&name);
+    if bare.to_ascii_lowercase().ends_with(".i2p") {
+        if let Some(entry) = state.addressbook_lookup(&name) {
+            return Ok(NamingLookupApplied {
+                value: entry.destination,
+            });
+        }
+        return Err(NamingLookupFailed {
+            result: ReplyResult::KeyNotFound,
+            message: "name is unavailable in the local naming surface".to_owned(),
+        });
+    }
+
+    // Non-`.i2p` names never reach naming authorities.
     Err(NamingLookupFailed {
-        result,
+        result: ReplyResult::InvalidKey,
         message: "name is unavailable in the local naming surface".to_owned(),
     })
 }
@@ -3094,5 +3133,57 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn plan294_naming_lookup_consults_the_canonical_owner() {
+        use crate::addressbook::{AddressBookManager, AddressBookSubsystemConfig};
+        use i2pr_api::sam::naming::NamingLookupRequest;
+        let config = SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            limits: SamLimits::defaults(),
+        };
+        let state = SamServiceState::new(config).expect("state");
+        let lookup = |name: &str| {
+            execute_naming_lookup(
+                &state,
+                ServerConnectionState::AwaitHello,
+                NamingLookupRequest {
+                    name: name.to_owned(),
+                },
+            )
+        };
+        // Inactive subsystem: ordinary `.i2p` names stay KeyNotFound.
+        assert!(lookup("absent.i2p").is_err());
+        // Active subsystem: committed entries resolve through the same
+        // owner the control plane mutates.
+        let directory = tempfile::tempdir().expect("temp directory");
+        let manager = AddressBookManager::activate(AddressBookSubsystemConfig {
+            enabled: true,
+            state_dir: directory.path().join("addressbook"),
+        });
+        assert!(manager.is_active());
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        let destination = i2pr_api::sam::base64::encode(&bytes);
+        manager
+            .apply_entry(i2pr_addressbook::EntryMutation {
+                book: i2pr_addressbook::BookKind::Local,
+                hostname: "sam-peer.i2p".to_owned(),
+                destination: Some(destination.clone()),
+                delete: false,
+            })
+            .expect("entry");
+        state.set_addressbook_handle(manager.shared());
+        let applied = lookup("sam-peer.i2p").expect("address-book hit");
+        assert_eq!(applied.value, destination);
+        // Case and trailing-dot forms canonicalize identically.
+        let applied = lookup("SAM-PEER.I2P.").expect("canonical hit");
+        assert_eq!(applied.value, destination);
+        // Non-book names and non-`.i2p` names keep their verdicts.
+        assert!(lookup("missing.i2p").is_err());
+        assert!(lookup("not-a-name").is_err());
     }
 }

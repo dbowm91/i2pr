@@ -29,11 +29,12 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use i2pr_client::streaming::StreamingError;
@@ -60,7 +61,7 @@ use i2pr_storage::{
 use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
@@ -74,7 +75,7 @@ use crate::router_i2np::{RouterDeliveryRequest, RouterDeliveryService};
 use crate::sam::fabric::{DeliverySweepCounters, SamLocalProductFabric, degrade_to_reason};
 use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
-    bridge_to_peer,
+    bridge_to_peer, bridge_to_peer_batched,
 };
 use crate::sam::streams::{
     RouterDestinationNetworkState, RouterInboundDispatchReport, RouterNetworkSummary,
@@ -86,6 +87,8 @@ use crate::service_tunnels_http::run_http_client_loop;
 use crate::service_tunnels_irc_client::run_irc_client_loop;
 use crate::service_tunnels_irc_server::run_irc_server_loop;
 use crate::service_tunnels_socks5::run_socks5_client_loop;
+use i2pr_client::bundle::ReplyBundling;
+use i2pr_client::streaming::local_delivery::BatchedAttempt;
 
 /// Process-local monotonic clock used for Streaming deadlines.
 pub fn service_streaming_now_ms() -> u64 {
@@ -160,9 +163,9 @@ pub struct ServiceRuntime {
     /// Listener for client tunnels (loopback TCP).
     pub(crate) client_listener: Option<TcpListener>,
     /// Local TCP target address for server tunnels.
-    server_target: Option<SocketAddr>,
+    pub(crate) server_target: Option<SocketAddr>,
     /// I2P destination port for server tunnel Streaming listener.
-    server_streaming_port: Option<u16>,
+    pub(crate) server_streaming_port: Option<u16>,
     /// Whether this is a server-side tunnel.
     is_server: bool,
     /// Whether this is an HTTP client tunnel.
@@ -173,6 +176,96 @@ pub struct ServiceRuntime {
     is_irc: bool,
     /// Whether this is an IRC server tunnel.
     is_irc_server: bool,
+    /// Whether this is a strict CONNECT-only client tunnel
+    /// (Plan 290).
+    is_connect_client: bool,
+    /// Whether this is a SOCKS+IRC filter composition tunnel
+    /// (Plan 290).
+    is_socks_irc: bool,
+    /// Whether this is a filtered HTTP server tunnel (Plan 290).
+    is_http_server: bool,
+    /// Whether this is a bidirectional HTTP server tunnel carrying
+    /// both a client listener and a server target under one
+    /// generation and one persistent identity (Plan 290).
+    is_http_bidir: bool,
+    /// Whether this is a Streamr media subscriber tunnel
+    /// (Plan 291). No TCP listener or target; UDP endpoints live
+    /// in the spec options.
+    is_streamr_client: bool,
+    /// Whether this is a Streamr media publisher tunnel
+    /// (Plan 291). No TCP listener or target; UDP endpoints live
+    /// in the spec options.
+    is_streamr_server: bool,
+    /// Effective destination config this runtime was built with
+    /// (Plan 292 shaping projection of the spec; mirrors reuse it
+    /// so the registry matches the live pool sizing).
+    pub(crate) destination_config: DestinationConfig,
+    /// Last observed activity in process-monotonic milliseconds
+    /// (Plan 292 idle sweep; connection ends and Streamr events
+    /// advance it; construction seeds it).
+    pub(crate) last_activity_ms: AtomicU64,
+    /// Current Streamr subscriber count (Plan 292 idle sweep;
+    /// maintained by the publisher loop, zero elsewhere).
+    pub(crate) streamr_subscribers: AtomicUsize,
+    /// Effective pool shaping this runtime was built with (the
+    /// stored shaping unless a sweep reduction overrode it).
+    pub(crate) effective_shaping: i2pr_service_tunnels::TunnelShaping,
+    /// Inbound peer allow/deny policy (Plan 292; cached at build so
+    /// accept paths never lock for policy).
+    pub(crate) access: i2pr_service_tunnels::ServerAccessPolicy,
+    /// Policy-denied inbound connections (Plan 292 evidence;
+    /// handshake failures keep using `failed_connects`).
+    pub(crate) access_denied: AtomicUsize,
+    /// Unique-local dials that fell back to the wildcard source
+    /// because the platform has no derived alias assigned (Plan
+    /// 292 evidence; the connection still succeeds).
+    pub(crate) unique_local_fallbacks: AtomicUsize,
+    /// Monotonic multihoming connection sequence (Plan 296): the
+    /// per-connection dial start for round-robin target selection.
+    /// Advanced only for multihomed specs; legacy specs never touch
+    /// it, so their dial order cannot change.
+    pub(crate) multihoming_next: AtomicUsize,
+    /// Server TLS handshakes that verified and completed (Plan 297
+    /// evidence; plaintext dials never touch these).
+    pub(crate) tls_handshakes_ok: AtomicUsize,
+    /// Server TLS handshakes that failed verification or
+    /// negotiation (Plan 297 evidence; no plaintext fallback on
+    /// any failure).
+    pub(crate) tls_handshakes_failed: AtomicUsize,
+}
+
+impl ServiceRuntime {
+    /// Clones the per-service supervisor cancellation token.
+    ///
+    /// Plan 289: profile supervisor loops observe this token so drained
+    /// runtimes stop accepting promptly instead of holding their
+    /// listeners until scope shutdown.
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    /// Records activity at `now_ms` (monotonic maximum; concurrent
+    /// completions never move the watermark backwards).
+    pub(crate) fn note_activity(&self, now_ms: u64) {
+        self.last_activity_ms.fetch_max(now_ms, Ordering::Relaxed);
+    }
+
+    /// Marks one connection finished and records the moment it became
+    /// quieter (Plan 292 idle sweep input).
+    pub(crate) fn connection_finished(&self, now_ms: u64) {
+        self.active_connections
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
+        self.note_activity(now_ms);
+    }
+
+    /// Marks one connection finished at the process-monotonic clock.
+    /// Connection tasks call this so no call site imports the clock.
+    pub(crate) fn connection_finished_now(&self) {
+        self.connection_finished(service_streaming_now_ms());
+    }
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -195,6 +288,15 @@ impl std::fmt::Debug for ServiceRuntime {
     }
 }
 
+/// One Plan 292 idle-sweep decision bound to a service id.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdleSweepDecision {
+    /// Service id the decision applies to.
+    pub spec_id: String,
+    /// Action the sweep selected.
+    pub action: i2pr_service_tunnels::IdleSweepAction,
+}
+
 /// Service tunnel manager composition root.
 pub struct ServiceTunnelManager {
     config: ServiceTunnelManagerConfig,
@@ -206,6 +308,10 @@ pub struct ServiceTunnelManager {
     destination_registry: Mutex<DestinationRegistry>,
     /// Destination configuration (shared, balanced profile).
     destination_config: DestinationConfig,
+    /// Plan 292 sweep reduction overrides by service id. A present
+    /// entry replaces the stored shaping at runtime build; absent
+    /// means the stored shaping applies.
+    reduced_shaping: Mutex<HashMap<String, i2pr_service_tunnels::TunnelShaping>>,
     /// Aggregate connection permit semaphore.
     aggregate_permit: Arc<Semaphore>,
     /// Plan 180 §3 committed generation. `Some` after at least one
@@ -236,6 +342,12 @@ pub struct ServiceTunnelManager {
     /// bridge). The capability is shared across every service the
     /// manager owns; no per-service router/SSU2 stack is created.
     router_delivery: Mutex<Option<crate::service_delivery::ServiceDestinationDelivery>>,
+    /// Plan 297 — explicit local TLS identity/trust policy shared
+    /// across every service the manager owns. Installed once by the
+    /// composition root from daemon configuration (or by tests);
+    /// `use_ssl` dials without an installed policy fail before
+    /// connecting.
+    service_tls_policy: Mutex<Option<Arc<crate::service_tunnels_tls::ServiceTlsPolicy>>>,
     /// Plan 206 §9 — destination hash → owning service runtime
     /// mapping for inbound dispatch. The manager retains one entry
     /// per inbound-owning runtime; the daemon composition root
@@ -261,6 +373,10 @@ pub struct ServiceTunnelManager {
     /// closed and advance a bounded rejection counter; the
     /// counter is plaintext so the static checker can inspect it.
     inbound_orphan_receives: AtomicUsize,
+    /// Plan 294 canonical address-book resolver cell. Empty unless the
+    /// composition root installs the active subsystem's shared handle;
+    /// static aliases always win over address-book entries.
+    addressbook: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -277,6 +393,29 @@ impl std::fmt::Debug for ServiceTunnelManager {
             )
             .finish_non_exhaustive()
     }
+}
+
+/// Groups consecutive same-remote requests into `(start, len)`
+/// runs (Plan 296): the outbound sweep bundles one reply per
+/// multi-request run when the destination's reply-bundling policy
+/// enables it. Grouping preserves global order; every request
+/// belongs to exactly one group.
+fn group_consecutive_same_remote(
+    requests: &[i2pr_client::streaming::transport::TransportSendRequest],
+) -> Vec<(usize, usize)> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    while start < requests.len() {
+        let mut len = 1;
+        while start + len < requests.len()
+            && requests[start + len].destination_hash == requests[start].destination_hash
+        {
+            len += 1;
+        }
+        groups.push((start, len));
+        start += len;
+    }
+    groups
 }
 
 impl ServiceTunnelManager {
@@ -298,6 +437,7 @@ impl ServiceTunnelManager {
                 })?,
             )),
             destination_config: DestinationConfig::service_compatibility_profile(),
+            reduced_shaping: Mutex::new(HashMap::new()),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
             committed_generation: Mutex::new(None),
             draining_generations: Mutex::new(Vec::new()),
@@ -306,10 +446,22 @@ impl ServiceTunnelManager {
             delivery_counters: Mutex::new(HashMap::new()),
             destination_drivers: Mutex::new(HashMap::new()),
             router_delivery: Mutex::new(None),
+            service_tls_policy: Mutex::new(None),
             inbound_owners: Mutex::new(HashMap::new()),
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
+            addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
+    }
+
+    /// Installs the canonical address-book resolver cell (Plan 294).
+    /// The composition root calls this once after subsystem
+    /// activation; clones share one `Arc`, so later commits
+    /// propagate without re-installation.
+    pub fn set_addressbook_handle(&self, handle: crate::addressbook::SharedAddressBook) {
+        if let Ok(mut slot) = self.addressbook.lock() {
+            *slot = handle;
+        }
     }
 
     /// Returns the validated configuration.
@@ -430,13 +582,15 @@ impl ServiceTunnelManager {
                 .runtime
                 .bridge
                 .with(|bridge| bridge.identity());
-            let mirror_dest_runtime =
-                DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                    .map_err(|error| {
-                        ServiceTunnelError::DestinationRuntime(format!(
-                            "mirror destination runtime for committed generation: {error}"
-                        ))
-                    })?;
+            let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                identity_arc,
+                staged_runtime.runtime.destination_config,
+            )
+            .map_err(|error| {
+                ServiceTunnelError::DestinationRuntime(format!(
+                    "mirror destination runtime for committed generation: {error}"
+                ))
+            })?;
             self.install_runtime(&staged_runtime.runtime, mirror_dest_runtime)?;
             ordered.push(Arc::clone(&staged_runtime.runtime));
         }
@@ -606,14 +760,16 @@ impl ServiceTunnelManager {
                 let bridge_data = self.bridge_data_for(prev_runtime)?;
                 new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
                 let identity_arc = prev_runtime.bridge.with(|bridge| bridge.identity());
-                let dest_runtime =
-                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                        .map_err(|error| {
-                            ServiceTunnelError::DestinationRuntime(format!(
-                                "{} unchanged destination runtime: {error}",
-                                spec.id.as_str()
-                            ))
-                        })?;
+                let dest_runtime = DestinationRuntime::with_shared_identity(
+                    identity_arc,
+                    prev_runtime.destination_config,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "{} unchanged destination runtime: {error}",
+                        spec.id.as_str()
+                    ))
+                })?;
                 if let Err(error) = new_destination_registry.insert(dest_runtime) {
                     return Err(ServiceTunnelError::DestinationRuntime(format!(
                         "{} unchanged destination registry insert: {error}",
@@ -763,14 +919,16 @@ impl ServiceTunnelManager {
             // instances that share the same identity.
             for runtime in new_runtimes.values() {
                 let identity_arc = runtime.bridge.with(|bridge| bridge.identity());
-                let mirror_dest_runtime =
-                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                        .map_err(|error| {
-                            ServiceTunnelError::DestinationRuntime(format!(
-                                "{} mirror destination runtime: {error}",
-                                runtime.spec_id
-                            ))
-                        })?;
+                let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                    identity_arc,
+                    runtime.destination_config,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "{} mirror destination runtime: {error}",
+                        runtime.spec_id
+                    ))
+                })?;
                 if let Err(error) = destination_registry.insert(mirror_dest_runtime) {
                     return Err(ServiceTunnelError::DestinationRuntime(format!(
                         "{} mirror destination registry insert: {error}",
@@ -915,13 +1073,33 @@ impl ServiceTunnelManager {
             let manager_for_task = Arc::clone(self);
             let runtime_for_task = Arc::clone(&runtime);
             let spec_id = runtime.spec_id.clone();
+            // Plan 289: resolve the spec from the committed generation
+            // first, then the construction-time config. `reconcile`
+            // publishes new generations without rewriting the
+            // construction config, so a config-only lookup goes stale
+            // for any runtime added after construction.
             let spec = self
-                .config
-                .specs
-                .tunnels
-                .iter()
-                .find(|s| s.id.as_str() == spec_id)
-                .cloned()
+                .committed_generation
+                .lock()
+                .ok()
+                .and_then(|guard| {
+                    guard.as_ref().and_then(|generation| {
+                        generation
+                            .committed_specs
+                            .tunnels
+                            .iter()
+                            .find(|s| s.id.as_str() == spec_id)
+                            .cloned()
+                    })
+                })
+                .or_else(|| {
+                    self.config
+                        .specs
+                        .tunnels
+                        .iter()
+                        .find(|s| s.id.as_str() == spec_id)
+                        .cloned()
+                })
                 .ok_or_else(|| {
                     ServiceTunnelError::InvalidConfig(format!("{spec_id} spec missing for runtime"))
                 })?;
@@ -1380,6 +1558,9 @@ impl ServiceTunnelManager {
             sender.with(|bridge| {
                 let mut all = bridge.streaming_mut().drain_outbound();
                 all.extend(bridge.receiver_streaming_mut().drain_outbound());
+                // Plan 291: connectionless datagram requests ride
+                // the same sweep; the manager self-queues on send.
+                all.extend(bridge.datagrams_mut().drain_outbound());
                 all
             });
         if requests.is_empty() {
@@ -1400,7 +1581,36 @@ impl ServiceTunnelManager {
         };
         let mut os_rng = OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
-        for request in requests {
+        // Plan 296: attempt bundled reply delivery for consecutive
+        // same-remote runs when the destination's reply-bundling
+        // policy enables it. Handled indices skip the single loop
+        // below; Singles fallbacks and disabled policies run the
+        // exact single path per request.
+        let mut handled = vec![false; requests.len()];
+        if self.reply_bundling_for_destination(destination_id) {
+            for (start, len) in group_consecutive_same_remote(&requests) {
+                if len > 1 {
+                    self.deliver_group_bundled(
+                        destination_id,
+                        &requests[start..start + len],
+                        start,
+                        &mut handled,
+                        &mut counters,
+                        outbound_hop0_hash,
+                        outbound_hop1_hash,
+                        outbound_tunnel_id,
+                        now_seconds,
+                        now_ms,
+                        &mut rng,
+                    )
+                    .await;
+                }
+            }
+        }
+        for (index, request) in requests.iter().enumerate() {
+            if handled[index] {
+                continue;
+            }
             let peer_destination_hash = request.destination_hash;
             let peer = destinations_arc
                 .lock()
@@ -1420,7 +1630,7 @@ impl ServiceTunnelManager {
                     // typed `Err(_)` is a remote-route failure and
                     // increments `delivery_failed` instead.
                     match self
-                        .route_outbound_remote_request(destination_id, &request, now_seconds)
+                        .route_outbound_remote_request(destination_id, request, now_seconds)
                         .await
                     {
                         Ok(true) => {
@@ -1428,7 +1638,7 @@ impl ServiceTunnelManager {
                         }
                         Ok(false) => {
                             counters.unknown_peer = counters.unknown_peer.saturating_add(1);
-                            self.terminate_failed_delivery(destination_id, &request);
+                            self.terminate_failed_delivery(destination_id, request);
                         }
                         Err(error) => {
                             debug!(
@@ -1436,7 +1646,7 @@ impl ServiceTunnelManager {
                                 "service remote route failed; terminating request"
                             );
                             counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                            self.terminate_failed_delivery(destination_id, &request);
+                            self.terminate_failed_delivery(destination_id, request);
                         }
                     }
                     continue;
@@ -1458,7 +1668,7 @@ impl ServiceTunnelManager {
                 Err(error) => {
                     debug!(error = %error, "service local peer LeaseSet2 validation failed");
                     counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                    self.terminate_failed_delivery(destination_id, &request);
+                    self.terminate_failed_delivery(destination_id, request);
                     continue;
                 }
             };
@@ -1469,7 +1679,7 @@ impl ServiceTunnelManager {
             }) {
                 debug!(error = %error, "service local peer LeaseSet2 install failed");
                 counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                self.terminate_failed_delivery(destination_id, &request);
+                self.terminate_failed_delivery(destination_id, request);
                 continue;
             }
             let inbound_factory_present =
@@ -1487,7 +1697,7 @@ impl ServiceTunnelManager {
                     } else {
                         counters.missing_factory = counters.missing_factory.saturating_add(1);
                     }
-                    self.terminate_failed_delivery(destination_id, &request);
+                    self.terminate_failed_delivery(destination_id, request);
                     continue;
                 }
             };
@@ -1496,7 +1706,7 @@ impl ServiceTunnelManager {
                 &peer,
                 outbound_hop0_hash,
                 outbound_hop1_hash,
-                &request,
+                request,
                 now_seconds,
                 now_ms,
                 outbound_tunnel_id,
@@ -1507,10 +1717,127 @@ impl ServiceTunnelManager {
                 counters.delivered = counters.delivered.saturating_add(1);
             } else {
                 counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                self.terminate_failed_delivery(destination_id, &request);
+                self.terminate_failed_delivery(destination_id, request);
             }
         }
         counters
+    }
+
+    /// Attempts one bundled reply delivery for a consecutive
+    /// same-remote request group (Plan 296).    ///
+    /// Marks every group index handled (delivered or
+    /// terminated-failed) with sweep counters applied. Singles
+    /// fallbacks leave decodable indices unhandled for the single
+    /// loop; decode failures terminate immediately. Missing peers
+    /// and missing inbound factories leave the group fully
+    /// unhandled so the single loop applies its identical
+    /// per-request accounting. The caller only invokes this for
+    /// multi-request groups with the destination's reply-bundling
+    /// policy enabled.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_group_bundled<R: rand_core::CryptoRng + rand_core::RngCore>(
+        &self,
+        destination_id: DestinationId,
+        group: &[i2pr_client::streaming::transport::TransportSendRequest],
+        group_start: usize,
+        handled: &mut [bool],
+        counters: &mut DeliverySweepCounters,
+        outbound_hop0_hash: i2pr_proto::Hash,
+        outbound_hop1_hash: i2pr_proto::Hash,
+        outbound_tunnel_id: i2pr_tunnel::TunnelId,
+        now_seconds: u32,
+        now_ms: u64,
+        rng: &mut R,
+    ) {
+        let destinations_arc = &self.sam_destinations;
+        let peer_destination_hash = group[0].destination_hash;
+        let peer = destinations_arc
+            .lock()
+            .expect("sam destinations poisoned")
+            .lookup_by_peer_hash(&peer_destination_hash);
+        let Some(peer) = peer else {
+            // No local peer: the single loop runs the typed remote
+            // route per request.
+            return;
+        };
+        let sender_clone = destinations_arc
+            .lock()
+            .expect("sam destinations poisoned")
+            .get(destination_id)
+            .expect("sender still registered");
+        let (peer_lease_set2, peer_identity_key) =
+            peer.with(|bridge| (bridge.lease_set2().clone(), bridge.identity_netdb_key()));
+        let peer_lease_set2 = match ValidatedLeaseSet2::from_lease_set2(
+            peer_lease_set2,
+            Some(peer_identity_key),
+            LeaseSet2ValidationContext::new(now_seconds),
+        ) {
+            Ok(validated) => validated,
+            Err(error) => {
+                debug!(error = %error, "service local peer LeaseSet2 validation failed");
+                for (offset, request) in group.iter().enumerate() {
+                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, request);
+                    handled[group_start + offset] = true;
+                }
+                return;
+            }
+        };
+        if let Err(error) = sender_clone.with(|bridge| {
+            bridge
+                .routing_mut()
+                .install_remote_lease_set2(peer_lease_set2)
+        }) {
+            debug!(error = %error, "service local peer LeaseSet2 install failed");
+            for (offset, request) in group.iter().enumerate() {
+                counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                self.terminate_failed_delivery(destination_id, request);
+                handled[group_start + offset] = true;
+            }
+            return;
+        }
+        let inbound_tunnel = peer.with(|bridge| {
+            bridge
+                .inbound_tunnel_factory()
+                .and_then(|factory| factory.build_inbound_tunnel().ok())
+        });
+        let Some(inbound_tunnel) = inbound_tunnel else {
+            // No inbound vehicle: the single loop applies its
+            // identical per-request factory accounting.
+            return;
+        };
+        match bridge_to_peer_batched(
+            &sender_clone,
+            &peer,
+            outbound_hop0_hash,
+            outbound_hop1_hash,
+            group,
+            ReplyBundling::enabled(),
+            now_seconds,
+            now_ms,
+            outbound_tunnel_id,
+            inbound_tunnel,
+            rng,
+        ) {
+            BatchedAttempt::Bundled(report) => {
+                for index in &report.delivered {
+                    counters.delivered = counters.delivered.saturating_add(1);
+                    handled[group_start + index] = true;
+                }
+                for index in &report.failed {
+                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &group[*index]);
+                    handled[group_start + index] = true;
+                }
+            }
+            BatchedAttempt::Singles { decode_failed } => {
+                for index in &decode_failed {
+                    counters.delivery_failed = counters.delivery_failed.saturating_add(1);
+                    self.terminate_failed_delivery(destination_id, &group[*index]);
+                    handled[group_start + index] = true;
+                }
+            }
+        }
     }
 
     /// Releases the local connection behind a failed delivery so a
@@ -1976,10 +2303,11 @@ impl ServiceTunnelManager {
     }
 
     /// Plan 212 §7 — returns true when the named service spec is a
-    /// server profile (`GenericServer` / `IrcServer`) that requires
-    /// ordinary LS2 publication for independent routers to initiate
-    /// toward it. Client-only profiles never call the publication
-    /// path merely to receive replies.
+    /// server profile (`GenericServer` / `IrcServer` / `HttpServer` /
+    /// `HttpBidirServer`) that requires ordinary LS2 publication for
+    /// independent routers to initiate toward it. Client-only
+    /// profiles never call the publication path merely to receive
+    /// replies.
     pub fn spec_is_server(&self, spec_id: &str) -> bool {
         self.config
             .specs
@@ -1989,7 +2317,11 @@ impl ServiceTunnelManager {
             .is_some_and(|spec| {
                 matches!(
                     spec.kind,
-                    ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                        | ServiceTunnelKind::StreamrServer
                 )
             })
     }
@@ -2305,6 +2637,323 @@ impl ServiceTunnelManager {
         self.destination_config
     }
 
+    /// Projects one spec's shaping into its live destination config
+    /// (Plan 292). Unshaped specs reproduce
+    /// [`DestinationConfig::balanced`] exactly, so pre-292 behavior
+    /// is unchanged. Plan 296 carries backup, variance, and the
+    /// reply-bundling delivery flag alongside.
+    pub fn destination_config_for(
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> DestinationConfig {
+        Self::destination_config_for_shaping(&spec.shaping).with_reply_bundling(spec.reply_bundling)
+    }
+
+    /// Projects explicit shaping into a destination config.
+    pub fn destination_config_for_shaping(
+        shaping: &i2pr_service_tunnels::TunnelShaping,
+    ) -> DestinationConfig {
+        DestinationConfig::from_service_shaping(
+            shaping.inbound_quantity,
+            shaping.outbound_quantity,
+            shaping.length_hops,
+            shaping.backup_quantity,
+            shaping.length_variance,
+        )
+    }
+
+    /// Resolves the effective shaping for one spec: a sweep
+    /// reduction override when present, else the stored shaping.
+    pub fn reduced_shaping_for(
+        &self,
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> i2pr_service_tunnels::TunnelShaping {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .get(spec.id.as_str())
+            .copied()
+            .unwrap_or(spec.shaping)
+    }
+
+    /// Installs a sweep reduction override for one service id.
+    pub fn set_reduced_shaping(&self, spec_id: &str, shaping: i2pr_service_tunnels::TunnelShaping) {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .insert(spec_id.to_owned(), shaping);
+    }
+
+    /// Clears a sweep reduction override (fresh start or explicit
+    /// edit restores the stored shaping).
+    pub fn clear_reduced_shaping(&self, spec_id: &str) {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .remove(spec_id);
+    }
+
+    /// Returns the sweep reduction override for one service id, if
+    /// any (control applied-path and status reporting).
+    pub fn reduced_override(&self, spec_id: &str) -> Option<i2pr_service_tunnels::TunnelShaping> {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .get(spec_id)
+            .copied()
+    }
+
+    /// Returns the effective shaping of one live runtime, if present.
+    pub fn effective_shaping_for(
+        &self,
+        spec_id: &str,
+    ) -> Option<i2pr_service_tunnels::TunnelShaping> {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.effective_shaping)
+    }
+
+    /// Returns the number of server-side SYN rejections recorded for
+    /// one live runtime (allow/deny list evidence; missing runtime
+    /// reports zero).
+    pub fn access_denied_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.access_denied.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Unique-local dials that fell back to the wildcard source
+    /// for one live runtime (platform-alias evidence; missing
+    /// runtime reports zero).
+    pub fn unique_local_fallbacks_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.unique_local_fallbacks.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+    /// Reads one committed spec by service id (live view: edits
+    /// classified `MutableInPlace` apply to new connections and
+    /// requests without rebuilding the runtime).
+    fn committed_spec_for(&self, spec_id: &str) -> Option<i2pr_service_tunnels::ServiceTunnelSpec> {
+        self.committed_generation
+            .lock()
+            .expect("committed poisoned")
+            .as_ref()?
+            .committed_specs
+            .tunnels
+            .iter()
+            .find(|candidate| candidate.id.as_str() == spec_id)
+            .cloned()
+    }
+
+    /// Whether server-to-target dials for one service use the
+    /// per-peer loopback source bind (Plan 292
+    /// `unique_local_address`; missing spec means legacy dial).
+    pub fn unique_local_for(&self, spec_id: &str) -> bool {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.unique_local_address)
+            .unwrap_or(false)
+    }
+
+    /// Whether one service selects across its target list per
+    /// connection (Plan 296 `multihoming`; missing spec means
+    /// legacy first-target dial).
+    pub fn multihoming_for(&self, spec_id: &str) -> bool {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.multihoming)
+            .unwrap_or(false)
+    }
+
+    /// Whether one service negotiates TLS to its loopback target
+    /// (Plan 297 `use_ssl`; missing spec means plaintext). Reads
+    /// the committed spec per connection so flag edits (mutable in
+    /// place) take effect without rebuilding the runtime.
+    pub fn use_ssl_for(&self, spec_id: &str) -> bool {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.use_ssl)
+            .unwrap_or(false)
+    }
+
+    /// Server TLS handshake counters for one live runtime (Plan 297
+    /// evidence; missing runtime reports zero).
+    pub fn tls_handshakes_for(&self, spec_id: &str) -> (usize, usize) {
+        let runtimes = self.runtimes.lock().expect("runtimes poisoned");
+        runtimes
+            .get(spec_id)
+            .map(|runtime| {
+                (
+                    runtime.tls_handshakes_ok.load(Ordering::Relaxed),
+                    runtime.tls_handshakes_failed.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or((0, 0))
+    }
+
+    /// Installs the explicit TLS identity/trust policy (Plan 297).
+    /// The composition root calls this once from daemon
+    /// configuration before preparing services; tests install
+    /// directly.
+    pub fn set_service_tls_policy(
+        &self,
+        policy: Arc<crate::service_tunnels_tls::ServiceTlsPolicy>,
+    ) {
+        *self
+            .service_tls_policy
+            .lock()
+            .expect("service TLS policy poisoned") = Some(policy);
+    }
+
+    /// Returns the installed TLS policy, if any (Plan 297).
+    pub fn service_tls_policy(&self) -> Option<Arc<crate::service_tunnels_tls::ServiceTlsPolicy>> {
+        self.service_tls_policy
+            .lock()
+            .expect("service TLS policy poisoned")
+            .clone()
+    }
+
+    /// Whether one destination's outbound sweep may bundle
+    /// same-remote replies into one garlic message (Plan 296
+    /// `reply_bundling`; missing spec means one payload per
+    /// message). Reads the committed spec per sweep so flag edits
+    /// (mutable in place) take effect without rebuilding the
+    /// runtime.
+    pub fn reply_bundling_for_destination(&self, destination_id: DestinationId) -> bool {
+        let spec_id = self
+            .runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .values()
+            .find(|runtime| runtime.destination_id == destination_id)
+            .map(|runtime| runtime.spec_id.clone());
+        spec_id
+            .and_then(|id| self.committed_spec_for(&id))
+            .map(|spec| spec.reply_bundling)
+            .unwrap_or(false)
+    }
+
+    /// Ordered loopback-TCP dial targets for one inbound server
+    /// connection (Plan 296): the committed target list rotated to
+    /// the connection's round-robin start when multihoming is
+    /// enabled, else the staged single target. The rotation counter
+    /// advances only for multihomed specs, so legacy dial order
+    /// cannot change. Unix targets never appear (spec validation
+    /// rejects multihoming with Unix targets).
+    pub fn server_dial_targets_for(&self, runtime: &ServiceRuntime) -> Vec<SocketAddr> {
+        if self.multihoming_for(&runtime.spec_id)
+            && let Some(spec) = self.committed_spec_for(&runtime.spec_id)
+        {
+            let mut targets = Vec::new();
+            if let Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr)) = spec.target {
+                targets.push(addr);
+            }
+            for target in &spec.targets {
+                if let i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr) = target {
+                    targets.push(*addr);
+                }
+            }
+            if targets.len() >= 2 {
+                let sequence = runtime.multihoming_next.fetch_add(1, Ordering::Relaxed);
+                let start = i2pr_service_tunnels::multihoming_start_index(sequence, targets.len());
+                let mut rotated = Vec::with_capacity(targets.len());
+                rotated.extend_from_slice(&targets[start..]);
+                rotated.extend_from_slice(&targets[..start]);
+                return rotated;
+            }
+        }
+        runtime.server_target.into_iter().collect()
+    }
+
+    /// HTTP server presentation policy for one service (Plan 292
+    /// `address_helper` / `jump_list`; missing spec keeps both
+    /// gates open, matching the spec default).
+    pub fn http_policy_for(&self, spec_id: &str) -> i2pr_service_tunnels::HttpServerPolicy {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.http_policy)
+            .unwrap_or_default()
+    }
+
+    /// One idle-sweep decision bound to a service id.
+    ///
+    /// Plan 292: the daemon control layer applies these through the
+    /// existing stop/restart transactions; this computation only
+    /// selects. Reduction overrides install before the decision is
+    /// returned so the subsequent restart rebuilds with them, and
+    /// every decided runtime gets a fresh activity watermark (one
+    /// full deadline of grace before the next decision).
+    pub fn idle_sweep(&self, now_ms: u64) -> Vec<IdleSweepDecision> {
+        use i2pr_service_tunnels::{IdleSweepAction, idle_decision};
+        let specs = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned")
+            .as_ref()
+            .map(|generation| generation.committed_specs.tunnels.clone())
+            .unwrap_or_default();
+        let runtimes = self.runtimes.lock().expect("runtimes poisoned");
+        let mut decisions = Vec::new();
+        for runtime in runtimes.values() {
+            let Some(spec) = specs
+                .iter()
+                .find(|candidate| candidate.id.as_str() == runtime.spec_id)
+            else {
+                continue;
+            };
+            if !spec.enabled || !spec.idle.enabled() {
+                continue;
+            }
+            let Some(action) = idle_decision(
+                &spec.idle,
+                runtime.active_connections.load(Ordering::Relaxed),
+                runtime.streamr_subscribers.load(Ordering::Relaxed),
+                runtime.last_activity_ms.load(Ordering::Relaxed),
+                now_ms,
+            ) else {
+                continue;
+            };
+            if action == IdleSweepAction::ReducePools {
+                let effective = runtime.effective_shaping;
+                let reduced = i2pr_service_tunnels::TunnelShaping {
+                    inbound_quantity: (effective.inbound_quantity / 2).max(1),
+                    outbound_quantity: (effective.outbound_quantity / 2).max(1),
+                    length_hops: effective.length_hops,
+                    backup_quantity: effective.backup_quantity,
+                    length_variance: effective.length_variance,
+                };
+                if reduced == effective {
+                    // Already minimal: deciding again would restart
+                    // forever without changing anything.
+                    continue;
+                }
+                self.set_reduced_shaping(&runtime.spec_id, reduced);
+            }
+            runtime.note_activity(now_ms);
+            decisions.push(IdleSweepDecision {
+                spec_id: runtime.spec_id.clone(),
+                action,
+            });
+        }
+        decisions
+    }
+
+    /// Projects one spec's streaming profile into its bridge
+    /// configuration (Plan 292). Non-interactive specs reproduce the
+    /// balanced streaming defaults exactly.
+    pub fn streaming_config_for(
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> i2pr_client::streaming::config::StreamingConfig {
+        if spec.streaming_interactive {
+            i2pr_client::streaming::config::StreamingConfig::interactive()
+        } else {
+            i2pr_client::streaming::config::StreamingConfig::balanced()
+        }
+    }
+
     /// Inserts one DestinationRuntime into the per-service registry.
     pub fn register_destination_runtime(
         &self,
@@ -2344,16 +2993,38 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<StagedRuntime, ServiceTunnelError> {
         let id_owned = spec.id.as_str().to_owned();
+        // Plan 297: server TLS needs the daemon's explicit
+        // identity/trust policy installed; without one the tunnel
+        // fails before any destination allocates or listener binds.
+        if spec.use_ssl && self.service_tls_policy().is_none() {
+            return Err(ServiceTunnelError::InvalidConfig(format!(
+                "{id_owned} use_ssl requires a daemon TLS policy"
+            )));
+        }
         let is_server = matches!(
             spec.kind,
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+            ServiceTunnelKind::GenericServer
+                | ServiceTunnelKind::IrcServer
+                | ServiceTunnelKind::HttpServer
+                | ServiceTunnelKind::StreamrServer
         );
+        // Plan 290: the bidirectional profile carries both halves.
+        let is_http_bidir = matches!(spec.kind, ServiceTunnelKind::HttpBidirServer);
+        // Plan 291: Streamr halves carry UDP endpoints, never TCP
+        // listeners or targets.
+        let is_streamr_client = matches!(spec.kind, ServiceTunnelKind::StreamrClient);
+        let is_streamr_server = matches!(spec.kind, ServiceTunnelKind::StreamrServer);
         let bridge_data = self.create_bridge_for_spec(spec).await?;
+        // Plan 292: the interactive profile selects constrained
+        // streaming windows for both bridge managers; every other
+        // spec keeps the balanced defaults.
+        let streaming_config = Self::streaming_config_for(spec);
         let bridge = SamDestinationBridge::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
             bridge_data.lease_set2,
             bridge_data.outbound_role,
             bridge_data.now_seconds,
+            streaming_config,
         );
         let handle = SamDestinationHandle::new(bridge);
         // Plan 182: install the fabric inbound-tunnel factory so the
@@ -2375,7 +3046,11 @@ impl ServiceTunnelManager {
         // feeds (server SYNs dispatch into `receiver_streaming`
         // so the polled server loop below observes them through
         // the same tested accept path as local traffic).
-        let server_streaming_port = if is_server { Some(0_u16) } else { None };
+        let server_streaming_port = if (is_server || is_http_bidir) && !is_streamr_server {
+            Some(0_u16)
+        } else {
+            None
+        };
         if let Some(port) = server_streaming_port {
             let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
             let effective: ListenerOutcome = match outcome_result {
@@ -2391,7 +3066,7 @@ impl ServiceTunnelManager {
                 )));
             }
         }
-        let client_listener = if !is_server {
+        let client_listener = if (!is_server || is_http_bidir) && !is_streamr_client {
             let listener_spec = spec.listener.ok_or_else(|| {
                 ServiceTunnelError::InvalidConfig(format!("{id_owned} missing loopback listener"))
             })?;
@@ -2403,7 +3078,7 @@ impl ServiceTunnelManager {
         } else {
             None
         };
-        let server_target = if is_server {
+        let server_target = if (is_server || is_http_bidir) && !is_streamr_server {
             let target = spec
                 .target
                 .as_ref()
@@ -2432,6 +3107,15 @@ impl ServiceTunnelManager {
         let is_socks5 = matches!(spec.kind, ServiceTunnelKind::Socks5Client);
         let is_irc = matches!(spec.kind, ServiceTunnelKind::IrcClient);
         let is_irc_server = matches!(spec.kind, ServiceTunnelKind::IrcServer);
+        let is_connect_client = matches!(spec.kind, ServiceTunnelKind::ConnectClient);
+        let is_socks_irc = matches!(spec.kind, ServiceTunnelKind::SocksIrc);
+        let is_http_server = matches!(spec.kind, ServiceTunnelKind::HttpServer);
+        // Plan 292: the live pool sizing comes from the effective
+        // shaping (stored shaping unless a sweep reduction
+        // overrode it), never the shared manager default.
+        let shaping = self.reduced_shaping_for(spec);
+        let destination_config =
+            Self::destination_config_for_shaping(&shaping).with_reply_bundling(spec.reply_bundling);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -2449,10 +3133,26 @@ impl ServiceTunnelManager {
             is_socks5,
             is_irc,
             is_irc_server,
+            is_connect_client,
+            is_socks_irc,
+            is_http_server,
+            is_http_bidir,
+            is_streamr_client,
+            is_streamr_server,
+            destination_config,
+            last_activity_ms: AtomicU64::new(service_streaming_now_ms()),
+            streamr_subscribers: AtomicUsize::new(0),
+            effective_shaping: shaping,
+            access: spec.access.clone(),
+            access_denied: AtomicUsize::new(0),
+            unique_local_fallbacks: AtomicUsize::new(0),
+            multihoming_next: AtomicUsize::new(0),
+            tls_handshakes_ok: AtomicUsize::new(0),
+            tls_handshakes_failed: AtomicUsize::new(0),
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
-            self.destination_config,
+            destination_config,
         )
         .map_err(|error| {
             ServiceTunnelError::DestinationRuntime(format!("destination runtime: {error}"))
@@ -2511,9 +3211,20 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
+        // Plan 290: the HTTP server and bidirectional profiles join
+        // the persistent-identity branch: their server halves
+        // publish one stable destination across restarts and
+        // no-op/target-only transitions. Plan 291: the Streamr
+        // publisher joins them (subscribers address it across
+        // restarts); the Streamr subscriber stays ephemeral like
+        // Java's keyless consumer.
         let identity = if matches!(
             spec.kind,
-            ServiceTunnelKind::GenericServer | ServiceTunnelKind::IrcServer
+            ServiceTunnelKind::GenericServer
+                | ServiceTunnelKind::IrcServer
+                | ServiceTunnelKind::HttpServer
+                | ServiceTunnelKind::HttpBidirServer
+                | ServiceTunnelKind::StreamrServer
         ) {
             let store =
                 ServiceDestinationStore::for_service(&self.config.data_dir, spec.id.as_str())
@@ -2641,12 +3352,17 @@ impl ServiceTunnelManager {
                 })
             }
             DestinationRef::StaticAlias(alias) => {
-                let target = self
-                    .config
-                    .aliases
-                    .get(alias)
-                    .ok_or_else(|| DestinationFailure::UnknownAlias(alias.clone()))?;
-                self.resolve_reference(target)
+                if let Some(target) = self.config.aliases.get(alias) {
+                    return self.resolve_reference(target);
+                }
+                // Plan 294: static aliases win; on a miss the canonical
+                // address book is the next naming authority. A hit
+                // decodes to a destination hash that flows through the
+                // existing local/remote machinery below.
+                if let Some(entry) = self.addressbook_lookup(alias) {
+                    return self.resolve_addressbook_entry(&entry);
+                }
+                Err(DestinationFailure::UnknownAlias(alias.clone()))
             }
             DestinationRef::ConfiguredDestination(material) => {
                 let bytes = i2pr_api::sam::base64::decode(material, 4096)
@@ -2673,6 +3389,41 @@ impl ServiceTunnelManager {
                 })
             }
         }
+    }
+
+    /// Looks up one static-alias miss in the canonical address book
+    /// (`None` when the subsystem is inactive or the name is absent).
+    fn addressbook_lookup(&self, alias: &str) -> Option<i2pr_addressbook::ResolvedEntry> {
+        self.addressbook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.lookup(alias))
+    }
+
+    /// Resolves one address-book hit through the existing machinery:
+    /// the stored destination decodes defensively (it was validated
+    /// at commit), co-owned destinations serve locally, and anything
+    /// else defers to the router-backed remote lookup with the
+    /// entry's hostname as the lookup label.
+    fn resolve_addressbook_entry(
+        &self,
+        entry: &i2pr_addressbook::ResolvedEntry,
+    ) -> Result<ClientTarget, DestinationFailure> {
+        let bytes = i2pr_api::sam::base64::decode(&entry.destination, 4096)
+            .map_err(|_| DestinationFailure::InvalidMaterial)?;
+        let destination = Destination::decode(&bytes, 4096)
+            .map_err(|error| DestinationFailure::InvalidMaterialDecode(error.to_string()))?;
+        let hash = *destination
+            .hash()
+            .map_err(|error| DestinationFailure::InvalidMaterialDecode(error.to_string()))?
+            .as_bytes();
+        if let Some(target) = self.lookup_local_service_destination(&hash) {
+            return Ok(target);
+        }
+        Err(DestinationFailure::LookupRequired {
+            label: entry.hostname.as_str().to_owned(),
+            hash,
+        })
     }
 
     /// Looks up a local service destination by its hash.
@@ -2958,12 +3709,60 @@ async fn run_service_loop(
 ) {
     let id = runtime.spec_id.clone();
     debug!(service = %id, "service tunnel supervisor entered");
-    let result = if runtime.is_irc_server {
+    let result = if runtime.is_streamr_server {
+        crate::service_tunnels_streamr::run_streamr_server_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_streamr_client {
+        crate::service_tunnels_streamr::run_streamr_client_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_irc_server {
         run_irc_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_http_bidir {
+        crate::service_tunnels_http_bidir::run_http_bidir_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
+    } else if runtime.is_http_server {
+        crate::service_tunnels_http_server::run_http_server_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_server {
         run_server_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_connect_client {
+        crate::service_tunnels_http::run_connect_client_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_http {
         run_http_client_loop(&manager, &runtime, &spec, &task_cancellation).await
+    } else if runtime.is_socks_irc {
+        crate::service_tunnels_socks_irc::run_socks_irc_loop(
+            &manager,
+            &runtime,
+            &spec,
+            &task_cancellation,
+        )
+        .await
     } else if runtime.is_socks5 {
         run_socks5_client_loop(&manager, &runtime, &spec, &task_cancellation).await
     } else if runtime.is_irc {
@@ -3004,7 +3803,15 @@ async fn run_client_loop(
                 error = %error,
                 "client tunnel destination resolve failed; service will not accept connections"
             );
-            let _ = cancellation.cancelled().await;
+            // Plan 289: park on both tokens. A drained runtime must
+            // unpark here too, or the parked task would hold its
+            // listener past removal.
+            let drain_cancel = runtime.cancellation_token();
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {}
+                _ = drain_cancel.cancelled() => {}
+            }
             return Ok(());
         }
     };
@@ -3012,6 +3819,12 @@ async fn run_client_loop(
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly. The
+            // manager cancels `runtime.cancellation` when a runtime
+            // leaves the committed generation; without this branch the
+            // supervisor task (which owns a runtime clone) would hold
+            // its listener indefinitely.
+            _ = runtime.cancellation.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -3063,12 +3876,7 @@ async fn run_client_loop(
             // run_client_connection returns without touching it so
             // failed handshakes cannot pin phantom slots (the HTTP /
             // SOCKS / IRC loops already follow this shape).
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             drop(permit_for_task);
         });
     }
@@ -3097,29 +3905,70 @@ async fn run_server_loop(
         tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: see the client accept loop above; drained
+            // server runtimes stop polling promptly.
+            _ = runtime.cancellation.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();
-        manager.with_destination_bridge(runtime.destination_id, |bridge| {
-            while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
-                accepted_ids.push(connection_id);
-            }
-        });
+        accepted_ids.extend(poll_streaming_accept(manager, runtime, port));
         for connection_id in accepted_ids {
-            handle_server_syn(manager, runtime, target_socket, connection_id, cancellation).await;
+            handle_server_syn(manager, runtime, connection_id, cancellation).await;
         }
     }
     Ok(())
 }
 
-async fn handle_server_syn(
+/// Plan 290: polls one Streaming accept queue for newly arrived
+/// inbound SYNs. Shared by the generic server loop and the
+/// filtered HTTP server loop so both observe the same tested
+/// accept path.
+pub(crate) fn poll_streaming_accept(
     manager: &Arc<ServiceTunnelManager>,
     runtime: &Arc<ServiceRuntime>,
-    target: SocketAddr,
+    port: u16,
+) -> Vec<ConnectionId> {
+    let mut accepted_ids = Vec::new();
+    manager.with_destination_bridge(runtime.destination_id, |bridge| {
+        while let Some(connection_id) = bridge.receiver_streaming_mut().accept(port) {
+            accepted_ids.push(connection_id);
+        }
+    });
+    accepted_ids
+}
+
+/// Plan 290: answers one inbound SYN with the connection's real
+/// authenticated peer metadata, acquires the aggregate permit, and
+/// returns the peer plus the permit for the per-connection task.
+/// Shared by the generic server path and the HTTP server path so
+/// SYN acceptance, driver wakeups, and ceiling accounting stay
+/// identical across server profiles.
+pub(crate) async fn accept_server_syn(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
     connection_id: ConnectionId,
-    cancellation: &CancellationToken,
-) {
+) -> Option<(RemoteDestination, OwnedSemaphorePermit)> {
     let now_ms = service_streaming_now_ms();
+    // Plan 292: resolve the authenticated peer hash first so the
+    // access policy denies before any handshake bytes are admitted
+    // (no SYN response is queued for denied peers). Shared by the
+    // generic and HTTP server paths.
+    let peer_hash = manager
+        .with_destination_bridge(runtime.destination_id, |bridge| {
+            bridge
+                .receiver_streaming()
+                .get_connection(connection_id)
+                .map(|conn| *conn.peer_destination_hash())
+        })
+        .flatten();
+    let Some(peer_hash) = peer_hash else {
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    if !runtime.access.allows(&peer_hash) {
+        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
     // Plan 182: answer the SYN with the connection's real
     // authenticated peer metadata and real port tuple (SAM parity
     // with `sam.rs` accept). The previous code passed a zeroed peer
@@ -3168,7 +4017,7 @@ async fn handle_server_syn(
     });
     let Some(peer) = accept_outcome.flatten() else {
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
-        return;
+        return None;
     };
     // Wake the delivery driver so the queued SYN response is routed
     // back to the originator without waiting for the fallback tick.
@@ -3181,12 +4030,27 @@ async fn handle_server_syn(
             "server tunnel aggregate ceiling reached; rejecting inbound SYN"
         );
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
-        return;
+        return None;
     };
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
+    Some((peer, aggregate_permit))
+}
+
+async fn handle_server_syn(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    connection_id: ConnectionId,
+    cancellation: &CancellationToken,
+) {
+    let Some((peer, permit_for_task)) = accept_server_syn(manager, runtime, connection_id).await
+    else {
+        return;
+    };
+    // Plan 296: resolve the ordered dial targets per connection so
+    // multihoming rotation advances once per accepted SYN.
+    let dial_targets = manager.server_dial_targets_for(runtime);
     // Plan 182: hold the aggregate slot for the connection
     // lifetime (see the client-loop note above).
-    let permit_for_task = aggregate_permit;
     let manager_for_task = Arc::clone(manager);
     let runtime_for_task = Arc::clone(runtime);
     let cancellation_for_task = cancellation.clone();
@@ -3195,7 +4059,7 @@ async fn handle_server_syn(
         if let Err(error) = run_server_connection(
             manager_for_task,
             runtime_for_task.clone(),
-            target,
+            dial_targets,
             connection_id,
             peer,
             cancellation_for_task,
@@ -3216,22 +4080,204 @@ async fn handle_server_syn(
     });
 }
 
+/// Server-to-target byte stream: plaintext TCP or a verified TLS
+/// session over it (Plan 297 `use_ssl`). The pump and the HTTP
+/// relay are generic over `AsyncRead + AsyncWrite + Unpin`, so both
+/// variants flow through the identical data path after the
+/// handshake.
+pub(crate) enum ServerTargetStream {
+    /// Plaintext loopback TCP (`use_ssl` unset).
+    Plain(TcpStream),
+    /// Verified TLS over loopback TCP (`use_ssl` set; boxed: the
+    /// session state dwarfs the plaintext variant).
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl tokio::io::AsyncRead for ServerTargetStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for ServerTargetStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Upgrades an established server-target TCP stream to TLS under
+/// the manager's explicit policy (Plan 297). The policy must be
+/// installed (tunnel staging rejects `use_ssl` without one);
+/// verification failure fails typed with no plaintext fallback.
+pub(crate) async fn upgrade_server_target_tls(
+    manager: &ServiceTunnelManager,
+    runtime: &ServiceRuntime,
+    stream: TcpStream,
+    used_target: SocketAddr,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, BoxError> {
+    let Some(policy) = manager.service_tls_policy() else {
+        return Err(Box::new(std::io::Error::other(format!(
+            "{} use_ssl requires a daemon TLS policy",
+            runtime.spec_id
+        ))));
+    };
+    crate::service_tunnels_tls::tls_connect(stream, used_target, &policy)
+        .await
+        .map_err(|error| {
+            Box::new(std::io::Error::other(format!(
+                "{} server target TLS failed: {error}",
+                runtime.spec_id
+            ))) as BoxError
+        })
+}
+
+/// Dials the first reachable target in selection order (Plan 296
+/// multihoming failover). Single-target lists behave exactly like
+/// [`dial_server_target`]. Returns the connected stream, the target
+/// it reached, and the unique-local fallback flag.
+///
+/// Every attempt shares the caller's overall connect deadline (the
+/// caller wraps this in `timeout`): refused targets fail over fast
+/// while an unresponsive target consumes the deadline, preserving
+/// the existing per-connection timeout semantic. An empty list
+/// fails closed without dialing.
+pub(crate) async fn dial_server_targets(
+    targets: &[SocketAddr],
+    peer_hash: &[u8; 32],
+    unique_local: bool,
+) -> std::io::Result<(TcpStream, SocketAddr, bool)> {
+    let mut last_error = None;
+    for target in targets {
+        match dial_server_target(*target, peer_hash, unique_local).await {
+            Ok((stream, fell_back)) => return Ok((stream, *target, fell_back)),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "server dial target list is empty",
+        )
+    }))
+}
+/// Dials a server-side TCP target. With `unique_local` set, the
+/// socket binds a deterministic 127/8 source derived from the peer
+/// hash (Plan 292 `unique_local_address`) so the local target can
+/// distinguish callers by source address; otherwise the default
+/// wildcard source is used. The bind stays inside 127/8, so the
+/// loopback-only invariant holds either way.
+///
+/// Platforms without the derived alias assigned (macOS configures
+/// only 127.0.0.1) reject the bind with `AddrNotAvailable`; only
+/// that case falls back to the wildcard source (reported as
+/// `fell_back` so the runtime can count it). Any other bind
+/// failure fails the dial: a resource error must never masquerade
+/// as a policy fallback.
+pub(crate) async fn dial_server_target(
+    target: SocketAddr,
+    peer_hash: &[u8; 32],
+    unique_local: bool,
+) -> std::io::Result<(TcpStream, bool)> {
+    if !unique_local {
+        return TcpStream::connect(target)
+            .await
+            .map(|stream| (stream, false));
+    }
+    let source = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, peer_hash[0], peer_hash[1], peer_hash[2])),
+        0,
+    );
+    let socket = TcpSocket::new_v4()?;
+    match socket.bind(source) {
+        Ok(()) => socket.connect(target).await.map(|stream| (stream, false)),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+            TcpStream::connect(target)
+                .await
+                .map(|stream| (stream, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn run_server_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
-    target: SocketAddr,
+    dial_targets: Vec<SocketAddr>,
     connection_id: ConnectionId,
     peer: RemoteDestination,
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
-    let target_stream = match timeout(
+    let unique_local = manager.unique_local_for(&runtime.spec_id);
+    let dial = timeout(
         Duration::from_millis(connect_deadline),
-        TcpStream::connect(target),
+        dial_server_targets(&dial_targets, &peer.destination_hash, unique_local),
     )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
+    .await;
+    let target_stream = match dial {
+        Ok(Ok((stream, used_target, fell_back))) => {
+            if fell_back {
+                runtime
+                    .unique_local_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            // Plan 297: negotiate TLS to the loopback target under
+            // the daemon's explicit policy before proxying
+            // application bytes. Verification failure fails the
+            // connection (typed, counted) and never falls back to
+            // plaintext; `use_ssl` unset keeps the plaintext dial.
+            if manager.use_ssl_for(&runtime.spec_id) {
+                match upgrade_server_target_tls(&manager, &runtime, stream, used_target).await {
+                    Ok(tls) => {
+                        runtime.tls_handshakes_ok.fetch_add(1, Ordering::Relaxed);
+                        ServerTargetStream::Tls(Box::new(tls))
+                    }
+                    Err(error) => {
+                        runtime
+                            .tls_handshakes_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
+            } else {
+                ServerTargetStream::Plain(stream)
+            }
+        }
         Ok(Err(error)) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
             return Err(Box::new(std::io::Error::other(format!(
@@ -3815,6 +4861,52 @@ mod plan202_routing_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn unique_local_dial_binds_deterministic_source() {
+        // Plan 292: the dial source is 127.<hash[0:3]> when the
+        // flag is set and the wildcard source otherwise. Whether
+        // the platform has the derived alias assigned is probed
+        // first: Linux binds the whole 127/8, while macOS only
+        // configures 127.0.0.1 and the dial must fall back to the
+        // wildcard source instead of failing the connection.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let target = listener.local_addr().expect("addr");
+        let hash = peer_hash(0xAB);
+        let probe =
+            tokio::net::TcpSocket::new_v4()
+                .expect("socket")
+                .bind(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0xAB, 0xAC, 0xAD)),
+                    0,
+                ));
+        let (stream, fell_back) = dial_server_target(target, &hash, true)
+            .await
+            .expect("unique-local dial");
+        if probe.is_ok() {
+            assert!(!fell_back, "bound source needs no fallback");
+            assert_eq!(
+                stream.local_addr().expect("local").ip().to_string(),
+                "127.171.172.173"
+            );
+        } else {
+            assert!(fell_back, "missing alias falls back");
+            assert_eq!(
+                stream.local_addr().expect("local").ip().to_string(),
+                "127.0.0.1"
+            );
+        }
+        let (stream, fell_back) = dial_server_target(target, &hash, false)
+            .await
+            .expect("wildcard dial");
+        assert!(!fell_back);
+        assert_eq!(
+            stream.local_addr().expect("local").ip().to_string(),
+            "127.0.0.1"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn routing_decision_starts_as_remote_unresolved() {
         let directory = temp_data_dir("plan202-routing");
         let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -3933,9 +5025,20 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(
@@ -4004,9 +5107,20 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         };
         let (target_result, decision) = manager.resolve_client_destination_with_decision(&spec);
         assert!(target_result.is_err(), "destination decode still fails");
@@ -4033,9 +5147,20 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4134,6 +5259,100 @@ mod plan202_routing_tests {
             counters.unknown_peer, 0,
             "unknown labels must not advance any counter"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan294_addressbook_resolution_tests {
+    use super::*;
+    use i2pr_service_tunnels::DestinationRef;
+    use std::path::Path;
+
+    fn empty_manager(data_dir: &Path) -> ServiceTunnelManager {
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds")
+    }
+
+    fn destination_text() -> String {
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        i2pr_api::sam::base64::encode(&bytes)
+    }
+
+    fn active_handle(dir: &Path) -> crate::addressbook::SharedAddressBook {
+        let manager = crate::addressbook::AddressBookManager::activate(
+            crate::addressbook::AddressBookSubsystemConfig {
+                enabled: true,
+                state_dir: dir.join("addressbook"),
+            },
+        );
+        assert!(manager.is_active());
+        manager
+            .apply_entry(i2pr_addressbook::EntryMutation {
+                book: i2pr_addressbook::BookKind::Router,
+                hostname: "peer.i2p".to_owned(),
+                destination: Some(destination_text()),
+                delete: false,
+            })
+            .expect("entry");
+        manager.shared()
+    }
+
+    #[test]
+    fn alias_miss_falls_through_to_the_address_book() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = empty_manager(directory.path());
+        let reference = DestinationRef::parse("peer.i2p").expect("static alias");
+        // No handle installed: the legacy UnknownAlias verdict.
+        assert!(matches!(
+            manager.resolve_reference(&reference),
+            Err(DestinationFailure::UnknownAlias(_))
+        ));
+        // Installed handle: the book hit decodes to a destination hash
+        // that the existing machinery routes remotely (no co-owned
+        // destination here), labeled with the entry hostname.
+        manager.set_addressbook_handle(active_handle(directory.path()));
+        match manager.resolve_reference(&reference) {
+            Err(DestinationFailure::LookupRequired { label, hash }) => {
+                assert_eq!(label, "peer.i2p");
+                assert_eq!(hash.len(), 32);
+            }
+            other => panic!("expected remote lookup, got {other:?}"),
+        }
+        // Static aliases still win over the address book: an operator
+        // alias for the same name resolves through the alias table.
+        let mut aliases = StaticAliasTable::new();
+        aliases
+            .insert(
+                "peer.i2p",
+                DestinationRef::parse(&format!("{}.b32.i2p", "a".repeat(52))).expect("b32"),
+            )
+            .expect("alias inserts");
+        let aliased = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(aliases),
+        })
+        .expect("manager builds");
+        aliased.set_addressbook_handle(active_handle(directory.path()));
+        match aliased.resolve_reference(&reference) {
+            Err(DestinationFailure::LookupRequired { label, .. }) => {
+                assert_eq!(label, "a".repeat(52));
+            }
+            other => panic!("expected alias-target lookup, got {other:?}"),
+        }
     }
 }
 
@@ -4274,9 +5493,20 @@ mod plan206_remote_composition_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4458,9 +5688,20 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4523,9 +5764,20 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4631,9 +5883,20 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4709,9 +5972,20 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         let manager = Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4885,9 +6159,20 @@ mod plan210_real_service_destination_material_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5249,9 +6534,20 @@ mod plan212_router_backed_service_destination_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
+            connect_options: None,
+            streamr_options: None,
         }];
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -5600,9 +6896,20 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                multihoming: false,
+                reply_bundling: false,
+                use_ssl: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
+                streamr_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-svc-2").expect("id"),
@@ -5618,9 +6925,20 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                multihoming: false,
+                reply_bundling: false,
+                use_ssl: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
+                streamr_options: None,
             },
         ];
         let manager = Arc::new(
@@ -5674,9 +6992,20 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                multihoming: false,
+                reply_bundling: false,
+                use_ssl: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
+                streamr_options: None,
             },
             ServiceTunnelSpec {
                 id: i2pr_service_tunnels::ServiceTunnelId::parse("plan212-ib-2").expect("id"),
@@ -5692,9 +7021,20 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                multihoming: false,
+                reply_bundling: false,
+                use_ssl: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
+                connect_options: None,
+                streamr_options: None,
             },
         ];
         let manager = Arc::new(
@@ -5938,6 +7278,7 @@ mod plan212_router_backed_service_destination_tests {
             payloads_dequeued: 1,
             streaming_packets_accepted: 1,
             streaming_rejected: 0,
+            datagrams_accepted: 0,
         };
         assert!(report.streaming_packets_accepted == 1);
         assert!(report.garlic_authenticated);
@@ -5956,6 +7297,7 @@ mod plan212_router_backed_service_destination_tests {
             payloads_dequeued: 3,
             streaming_packets_accepted: 2,
             streaming_rejected: 1,
+            datagrams_accepted: 0,
         };
         assert_eq!(report.payloads_dequeued, 3);
         assert_eq!(
@@ -6369,5 +7711,186 @@ mod plan212_router_backed_service_destination_tests {
             hit.is_none(),
             "unknown service destination must miss the remote-mirror seam"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan296_sweep_policy_tests {
+    use super::*;
+    use i2pr_client::streaming::transport::TransportSendRequest;
+    use i2pr_service_tunnels::{ServiceTunnelId, ServiceTunnelSpec};
+
+    fn request_for(remote: [u8; 32]) -> TransportSendRequest {
+        TransportSendRequest {
+            destination_hash: remote,
+            source_port: 0,
+            destination_port: 0,
+            application_payload: vec![0xAA],
+            sequence: 0,
+            send_stream_id: 0,
+            receive_stream_id: 0,
+        }
+    }
+
+    #[test]
+    fn grouping_preserves_global_order() {
+        // Plan 296: consecutive same-remote requests form runs;
+        // every request belongs to exactly one group.
+        let a = [0xA1; 32];
+        let b = [0xB2; 32];
+        let requests = vec![
+            request_for(a),
+            request_for(a),
+            request_for(b),
+            request_for(a),
+            request_for(a),
+        ];
+        assert_eq!(
+            group_consecutive_same_remote(&requests),
+            vec![(0, 2), (2, 1), (3, 2)]
+        );
+        assert!(group_consecutive_same_remote(&[]).is_empty());
+        assert_eq!(
+            group_consecutive_same_remote(&[request_for(a)]),
+            vec![(0, 1)]
+        );
+    }
+
+    fn temp_data_dir(name: &str) -> tempfile::TempDir {
+        let directory = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir()
+            .expect("tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("set tempdir permissions");
+        }
+        directory
+    }
+
+    fn server_spec(
+        id: &str,
+        first: std::net::SocketAddr,
+        rest: Vec<std::net::SocketAddr>,
+        multihoming: bool,
+        reply_bundling: bool,
+    ) -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse(id).expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(first)),
+            targets: rest
+                .into_iter()
+                .map(i2pr_service_tunnels::ServerTarget::LoopbackTcp)
+                .collect(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::Dedicated,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming,
+            reply_bundling,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        }
+    }
+
+    fn manager_for(
+        specs: Vec<ServiceTunnelSpec>,
+        data_dir: &std::path::Path,
+    ) -> Arc<ServiceTunnelManager> {
+        Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: data_dir.to_path_buf(),
+                aggregate_connection_ceiling: 4,
+                per_service_connection_ceiling: 2,
+                specs: Arc::new(ServiceTunnelSet { tunnels: specs }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager builds"),
+        )
+    }
+
+    /// Plan 296: the sweep reads the committed reply-bundling flag
+    /// per destination; unknown destinations default off.
+    #[tokio::test(flavor = "current_thread")]
+    async fn reply_bundling_flag_reads_committed_spec() {
+        let directory = temp_data_dir("plan296-bundling-flag");
+        let target: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let manager = manager_for(
+            vec![
+                server_spec("bundled", target, Vec::new(), false, true),
+                server_spec("plain", target, Vec::new(), false, false),
+            ],
+            directory.path(),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        assert_eq!(runtimes.len(), 2);
+        for runtime in &runtimes {
+            let expected = runtime.spec_id == "bundled";
+            assert_eq!(
+                manager.reply_bundling_for_destination(runtime.destination_id),
+                expected,
+                "flag follows the committed spec for {}",
+                runtime.spec_id
+            );
+        }
+        let foreign = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xFE; 32]));
+        assert!(!manager.reply_bundling_for_destination(foreign));
+    }
+
+    /// Plan 296: multihomed dial targets rotate per connection while
+    /// legacy specs always resolve the staged first target.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dial_targets_rotate_for_multihomed_specs() {
+        let directory = temp_data_dir("plan296-dial-rotation");
+        let addr_a: std::net::SocketAddr = "127.0.0.1:18081".parse().unwrap();
+        let addr_b: std::net::SocketAddr = "127.0.0.1:18082".parse().unwrap();
+        let manager = manager_for(
+            vec![
+                server_spec("rotating", addr_a, vec![addr_b], true, false),
+                server_spec("legacy", addr_a, vec![addr_b], false, false),
+            ],
+            directory.path(),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let rotating = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "rotating")
+            .expect("rotating runtime");
+        let legacy = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "legacy")
+            .expect("legacy runtime");
+        assert!(manager.multihoming_for("rotating"));
+        assert!(!manager.multihoming_for("legacy"));
+        assert_eq!(
+            manager.server_dial_targets_for(rotating),
+            vec![addr_a, addr_b]
+        );
+        assert_eq!(
+            manager.server_dial_targets_for(rotating),
+            vec![addr_b, addr_a]
+        );
+        assert_eq!(
+            manager.server_dial_targets_for(rotating),
+            vec![addr_a, addr_b]
+        );
+        assert_eq!(manager.server_dial_targets_for(legacy), vec![addr_a]);
+        assert_eq!(manager.server_dial_targets_for(legacy), vec![addr_a]);
     }
 }

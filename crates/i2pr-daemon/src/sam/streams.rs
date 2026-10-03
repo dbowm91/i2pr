@@ -27,14 +27,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use i2pr_client::bundle::ReplyBundling;
 use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::manager::StreamingManager;
 use i2pr_client::streaming::transport::TransportSendRequest;
 use i2pr_client::{
-    DestinationDispatcher, DestinationId, DestinationIdentity, DestinationOutboundRole,
-    DestinationRouting, DestinationRoutingConfig, EciesSessionConfig, EciesSessionManager,
-    LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver,
-    LocalDeliverySender, StreamingDestinationAdapter, deliver,
+    BatchedAttempt, DestinationDispatcher, DestinationId, DestinationIdentity,
+    DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, EciesSessionConfig,
+    EciesSessionManager, LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome,
+    LocalDeliveryReceiver, LocalDeliverySender, StreamingDestinationAdapter, deliver,
+    deliver_batched,
 };
 use i2pr_crypto::OsRng;
 use i2pr_netdb::LeaseSet2Store;
@@ -226,11 +228,14 @@ pub struct RouterInboundDispatchReport {
     /// `StreamingDestinationAdapter::receive` into the canonical
     /// service `StreamingManager`.
     pub streaming_packets_accepted: usize,
-    /// Number of payloads rejected by the adapter (non-streaming
-    /// protocol counts as rejected for the streaming path; Garlic
-    /// auth failures return `garlic_authenticated = false` with
-    /// zero dequeued).
+    /// Number of payloads rejected by the adapter (unknown
+    /// non-datagram protocols count as rejected; Garlic auth
+    /// failures return `garlic_authenticated = false` with zero
+    /// dequeued).
     pub streaming_rejected: usize,
+    /// Number of repliable/raw datagram payloads authenticated
+    /// and queued on the bridge datagram manager (Plan 291).
+    pub datagrams_accepted: usize,
 }
 
 /// Per-destination SAM STREAM bridge.
@@ -248,6 +253,10 @@ pub struct SamDestinationBridge {
     receiver_session: EciesSessionManager,
     receiver_routing: DestinationRouting,
     receiver_streaming: StreamingManager,
+    /// Plan 291: connectionless repliable/raw datagram manager. A
+    /// single manager serves both directions because datagrams
+    /// carry no connection state (no initiator/mirror split).
+    datagrams: i2pr_client::datagram::DatagramManager,
     receiver_lease_set2_store: LeaseSet2Store,
     receiver_now_seconds: u32,
     diagnostics: BridgeDiagnostics,
@@ -286,7 +295,13 @@ impl SamDestinationBridge {
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
     ) -> Self {
-        Self::with_shared_identity(Arc::new(identity), lease_set2, outbound_role, now_seconds)
+        Self::with_shared_identity(
+            Arc::new(identity),
+            lease_set2,
+            outbound_role,
+            now_seconds,
+            StreamingConfig::balanced(),
+        )
     }
 
     /// Builds the sender-side bridge plus the receiver-side mirror for one
@@ -295,11 +310,16 @@ impl SamDestinationBridge {
     /// Plan 149 §3 Option A: the SAM service builds one secret allocation
     /// per logical destination and shares the `Arc` with the destination
     /// runtime. The bridge never reconstructs a second private identity.
+    ///
+    /// Plan 292: the streaming profile selects the window/ACK
+    /// configuration for both managers (balanced default, interactive
+    /// for latency-sensitive service tunnels).
     pub fn with_shared_identity(
         identity: Arc<DestinationIdentity>,
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
+        streaming_config: StreamingConfig,
     ) -> Self {
         let mut receiver_dispatcher = DestinationDispatcher::new();
         receiver_dispatcher
@@ -325,7 +345,7 @@ impl SamDestinationBridge {
         Self {
             identity,
             lease_set2,
-            streaming: StreamingManager::new(StreamingConfig::balanced()),
+            streaming: StreamingManager::new(streaming_config.clone()),
             routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
             session_manager: EciesSessionManager::new(EciesSessionConfig::balanced()),
             outbound_role,
@@ -334,7 +354,8 @@ impl SamDestinationBridge {
             receiver_dispatcher,
             receiver_session: EciesSessionManager::new(EciesSessionConfig::balanced()),
             receiver_routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
-            receiver_streaming: StreamingManager::new(StreamingConfig::balanced()),
+            receiver_streaming: StreamingManager::new(streaming_config),
+            datagrams: i2pr_client::datagram::DatagramManager::new(),
             receiver_lease_set2_store: LeaseSet2Store::default(),
             receiver_now_seconds: now_seconds,
             diagnostics: BridgeDiagnostics::new(),
@@ -402,6 +423,20 @@ impl SamDestinationBridge {
     /// path uses [`Self::streaming_mut`].
     pub fn receiver_streaming(&self) -> &StreamingManager {
         &self.receiver_streaming
+    }
+
+    /// Returns the bridge's connectionless datagram manager. The
+    /// manager authenticates inbound repliable datagrams and queues
+    /// raw media events for the owning service runtime (Plan 291).
+    pub fn datagrams(&self) -> &i2pr_client::datagram::DatagramManager {
+        &self.datagrams
+    }
+
+    /// Mutable accessor for the datagram manager. Used by the
+    /// delivery seams (`bridge_to_peer` swap-and-restore,
+    /// router-backed sink) and the owning service runtime drain.
+    pub fn datagrams_mut(&mut self) -> &mut i2pr_client::datagram::DatagramManager {
+        &mut self.datagrams
     }
 
     /// Polls retransmission and delayed-ACK state for both manager
@@ -964,6 +999,7 @@ impl SamDestinationBridge {
                     payloads_dequeued: 0,
                     streaming_packets_accepted: 0,
                     streaming_rejected: 0,
+                    datagrams_accepted: 0,
                 });
             }
         };
@@ -974,6 +1010,7 @@ impl SamDestinationBridge {
                 payloads_dequeued: 0,
                 streaming_packets_accepted: 0,
                 streaming_rejected: 0,
+                datagrams_accepted: 0,
             });
         };
         // Drain every queued payload for the local destination (not
@@ -982,6 +1019,7 @@ impl SamDestinationBridge {
         let mut dequeued = 0_usize;
         let mut accepted = 0_usize;
         let mut rejected = 0_usize;
+        let mut datagrams_accepted = 0_usize;
         while let Some(payload) = self.dispatcher.pop_payload(local_id) {
             dequeued = dequeued.saturating_add(1);
             // Plan 213: server profiles feed the receiver mirror so
@@ -1020,12 +1058,39 @@ impl SamDestinationBridge {
                 ) => {
                     rejected = rejected.saturating_add(1);
                 }
+                Ok(i2pr_client::streaming_adapter::InboundStreamingOutcome::DatagramReceived {
+                    protocol,
+                    source_port,
+                    destination_port,
+                    payload,
+                }) => {
+                    // Plan 291: repliable datagrams authenticate
+                    // here; raw datagrams bound-check here. Either
+                    // rejection counts against the datagram path,
+                    // never the streaming path.
+                    if self
+                        .datagrams
+                        .process_inbound(
+                            protocol,
+                            source_port,
+                            destination_port,
+                            &payload,
+                            remote_hash,
+                            now_ms,
+                        )
+                        .is_ok()
+                    {
+                        datagrams_accepted = datagrams_accepted.saturating_add(1);
+                    } else {
+                        rejected = rejected.saturating_add(1);
+                    }
+                }
                 Err(_) => {
                     rejected = rejected.saturating_add(1);
                 }
             }
         }
-        if accepted > 0 {
+        if accepted > 0 || datagrams_accepted > 0 {
             self.diagnostics.record_inbound_dispatch();
         } else {
             self.diagnostics.record_inbound_observation();
@@ -1035,6 +1100,7 @@ impl SamDestinationBridge {
             payloads_dequeued: dequeued,
             streaming_packets_accepted: accepted,
             streaming_rejected: rejected,
+            datagrams_accepted,
         })
     }
 }
@@ -1292,27 +1358,39 @@ impl From<LocalDeliveryError> for BridgeDeliveryError {
     }
 }
 
-/// Drives one outbound `TransportSendRequest` from one bridge
-/// into the peer bridge's receiver mirror using the full Plan 129
-/// stack. The peer inbound tunnel is supplied by the caller (the
-/// daemon's `SamServiceState::streaming_pools`) because
-/// `EstablishedTunnel` does not implement `Clone` and the seam
-/// consumes it once per delivery.
-#[allow(clippy::too_many_arguments)]
-pub fn bridge_to_peer<R: CryptoRng + RngCore>(
+/// Checked-out sender/receiver delivery state for one bridge-to-peer
+/// delivery. The bridge fields are not `mut` at the struct level, so
+/// deliveries swap them with empty placeholders, run, then move them
+/// back. Shared by the single and batched seams so both traverse the
+/// identical swap discipline.
+struct CheckedOutDelivery {
+    sender_identity_arc: Arc<DestinationIdentity>,
+    sender_outbound_role: DestinationOutboundRole,
+    sender_lease_set2: LeaseSet2,
+    sender_routing: DestinationRouting,
+    sender_session: EciesSessionManager,
+    receiver_dispatcher: DestinationDispatcher,
+    receiver_session: EciesSessionManager,
+    receiver_routing: DestinationRouting,
+    receiver_streaming: StreamingManager,
+    receiver_datagrams: i2pr_client::datagram::DatagramManager,
+    peer_canonical_streaming: StreamingManager,
+    receiver_lease_set2_store: LeaseSet2Store,
+    receiver_now_seconds: u32,
+    identity_arc: Arc<DestinationIdentity>,
+    inbound_hop1_hash: Hash,
+    inbound_hop2_hash: Hash,
+}
+
+/// Swaps the delivery fields out of both bridges and extracts the
+/// inbound tunnel's hop hashes without holding either bridge lock.
+fn checkout_delivery(
     sender: &SamDestinationHandle,
     peer: &SamDestinationHandle,
-    outbound_hop0_hash: Hash,
-    outbound_hop1_hash: Hash,
-    request: &TransportSendRequest,
-    now_seconds: u32,
-    now_ms: u64,
-    outbound_tunnel_id: TunnelId,
-    peer_inbound_tunnel: EstablishedTunnel,
-    rng: &mut R,
-) -> Result<(), BridgeDeliveryError> {
-    // Step 1: extract the hop hashes from the inbound tunnel so we
-    // can pass them to deliver() without holding the bridge lock.
+    peer_inbound_tunnel: &EstablishedTunnel,
+) -> CheckedOutDelivery {
+    // Step 1: extract the hop hashes from the inbound tunnel so the
+    // delivery can use them without holding the bridge lock.
     let inbound_hop1_hash = peer_inbound_tunnel
         .hops()
         .first()
@@ -1323,44 +1401,50 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         .map_or(Hash::from_bytes([0_u8; 32]), |hop| hop.peer().hash());
 
     // Step 2: take the peer receiver-state fields out of the peer
-    // bridge, build the LocalDeliveryReceiver/LocalDeliverySender
-    // bundles, run deliver(), then move the fields back into the
-    // bridge. The bridge fields are not `mut` at the struct level,
-    // so we have to swap them with empty placeholders, run the
-    // delivery, then swap them back.
-    let mut receiver_dispatcher = {
+    // bridge (and the sender fields out of the sender bridge). The
+    // bridge fields are not `mut` at the struct level, so we swap
+    // them with empty placeholders, run the delivery, then swap them
+    // back.
+    let receiver_dispatcher = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(&mut peer_guard.receiver_dispatcher, empty_dispatcher())
     };
-    let mut receiver_session = {
+    let receiver_session = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(
             &mut peer_guard.receiver_session,
             EciesSessionManager::new(EciesSessionConfig::balanced()),
         )
     };
-    let mut receiver_routing = {
+    let receiver_routing = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(
             &mut peer_guard.receiver_routing,
             DestinationRouting::new(DestinationRoutingConfig::balanced()),
         )
     };
-    let mut receiver_streaming = {
+    let receiver_streaming = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(
             &mut peer_guard.receiver_streaming,
             StreamingManager::new(StreamingConfig::balanced()),
         )
     };
-    let mut peer_canonical_streaming = {
+    let receiver_datagrams = {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        std::mem::replace(
+            &mut peer_guard.datagrams,
+            i2pr_client::datagram::DatagramManager::new(),
+        )
+    };
+    let peer_canonical_streaming = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::replace(
             &mut peer_guard.streaming,
             StreamingManager::new(StreamingConfig::balanced()),
         )
     };
-    let mut receiver_lease_set2_store = {
+    let receiver_lease_set2_store = {
         let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
         std::mem::take(&mut peer_guard.receiver_lease_set2_store)
     };
@@ -1387,64 +1471,69 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         let sender_guard = sender.inner.lock().expect("sender bridge poisoned");
         sender_guard.lease_set2.clone()
     };
-    let mut sender_routing = {
+    let sender_routing = {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
         std::mem::replace(
             &mut sender_guard.routing,
             DestinationRouting::new(DestinationRoutingConfig::balanced()),
         )
     };
-    let mut sender_session = {
+    let sender_session = {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
         std::mem::replace(
             &mut sender_guard.session_manager,
             EciesSessionManager::new(EciesSessionConfig::balanced()),
         )
     };
-
-    let mut sender_inputs = LocalDeliverySender {
-        identity: &sender_identity_arc,
-        routing: &mut sender_routing,
-        session: &mut sender_session,
-        outbound: &sender_outbound_role,
-        local_lease_set2: &sender_lease_set2,
-        now_seconds,
-        now_ms,
-    };
-    let mut receiver_inputs = LocalDeliveryReceiver {
-        identity: &identity_arc,
-        dispatcher: &mut receiver_dispatcher,
-        session: &mut receiver_session,
-        routing: &mut receiver_routing,
-        streaming: &mut receiver_streaming,
-        canonical_streaming: Some(&mut peer_canonical_streaming),
-        lease_set2_store: &mut receiver_lease_set2_store,
-        now_seconds: receiver_now_seconds,
-    };
-
-    let outcome = deliver(
-        request,
-        &mut sender_inputs,
-        &mut receiver_inputs,
-        outbound_hop0_hash,
-        outbound_hop1_hash,
-        peer_inbound_tunnel,
+    // Return every field by value; the caller bundles them into the
+    // delivery inputs it needs.
+    CheckedOutDelivery {
+        sender_identity_arc,
+        sender_outbound_role,
+        sender_lease_set2,
+        sender_routing,
+        sender_session,
+        receiver_dispatcher,
+        receiver_session,
+        receiver_routing,
+        receiver_streaming,
+        receiver_datagrams,
+        peer_canonical_streaming,
+        receiver_lease_set2_store,
+        receiver_now_seconds,
+        identity_arc,
         inbound_hop1_hash,
         inbound_hop2_hash,
-        outbound_tunnel_id,
-        rng,
-    );
+    }
+}
 
-    // Restore the moved fields back into their owning bridges.
-    //
-    // Plan 149 §7: the receiver routing was extracted from the peer's
-    // CANONICAL `routing` field, so the modified routing (with the
-    // freshly installed remote LeaseSet2) must land back in the
-    // canonical field. The original `receiver_routing` mirror field
-    // is untouched by this call and stays where it was.
+/// Moves checked-out delivery fields back into their owning bridges.
+///
+/// Plan 149 §7: the receiver routing was extracted from the peer's
+/// CANONICAL `routing` field, so the modified routing (with the
+/// freshly installed remote LeaseSet2) must land back in the
+/// canonical field. The original `receiver_routing` mirror field
+/// is untouched by this call and stays where it was.
+fn restore_delivery(
+    sender: &SamDestinationHandle,
+    peer: &SamDestinationHandle,
+    checked: CheckedOutDelivery,
+) {
+    let CheckedOutDelivery {
+        sender_routing,
+        sender_session,
+        sender_outbound_role,
+        receiver_dispatcher,
+        receiver_session,
+        receiver_routing,
+        receiver_streaming,
+        receiver_datagrams,
+        peer_canonical_streaming,
+        receiver_lease_set2_store,
+        ..
+    } = checked;
     {
         let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
-        sender_guard.record_outbound_dispatch(request.clone());
         sender_guard.routing = sender_routing;
         sender_guard.session_manager = sender_session;
         sender_guard.outbound_role = sender_outbound_role;
@@ -1456,8 +1545,74 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
         peer_guard.receiver_session = receiver_session;
         peer_guard.routing = receiver_routing;
         peer_guard.receiver_streaming = receiver_streaming;
+        peer_guard.datagrams = receiver_datagrams;
         peer_guard.streaming = peer_canonical_streaming;
         peer_guard.receiver_lease_set2_store = receiver_lease_set2_store;
+    }
+}
+
+/// Drives one outbound `TransportSendRequest` from one bridge
+/// into the peer bridge's receiver mirror using the full Plan 129
+/// stack. The peer inbound tunnel is supplied by the caller (the
+/// daemon's `SamServiceState::streaming_pools`) because
+/// `EstablishedTunnel` does not implement `Clone` and the seam
+/// consumes it once per delivery.
+#[allow(clippy::too_many_arguments)]
+pub fn bridge_to_peer<R: CryptoRng + RngCore>(
+    sender: &SamDestinationHandle,
+    peer: &SamDestinationHandle,
+    outbound_hop0_hash: Hash,
+    outbound_hop1_hash: Hash,
+    request: &TransportSendRequest,
+    now_seconds: u32,
+    now_ms: u64,
+    outbound_tunnel_id: TunnelId,
+    peer_inbound_tunnel: EstablishedTunnel,
+    rng: &mut R,
+) -> Result<(), BridgeDeliveryError> {
+    let mut checked = checkout_delivery(sender, peer, &peer_inbound_tunnel);
+    let mut sender_inputs = LocalDeliverySender {
+        identity: &checked.sender_identity_arc,
+        routing: &mut checked.sender_routing,
+        session: &mut checked.sender_session,
+        outbound: &checked.sender_outbound_role,
+        local_lease_set2: &checked.sender_lease_set2,
+        now_seconds,
+        now_ms,
+    };
+    let mut receiver_inputs = LocalDeliveryReceiver {
+        identity: &checked.identity_arc,
+        dispatcher: &mut checked.receiver_dispatcher,
+        session: &mut checked.receiver_session,
+        routing: &mut checked.receiver_routing,
+        streaming: &mut checked.receiver_streaming,
+        datagrams: &mut checked.receiver_datagrams,
+        canonical_streaming: Some(&mut checked.peer_canonical_streaming),
+        lease_set2_store: &mut checked.receiver_lease_set2_store,
+        now_seconds: checked.receiver_now_seconds,
+    };
+
+    let outcome = deliver(
+        request,
+        &mut sender_inputs,
+        &mut receiver_inputs,
+        outbound_hop0_hash,
+        outbound_hop1_hash,
+        peer_inbound_tunnel,
+        checked.inbound_hop1_hash,
+        checked.inbound_hop2_hash,
+        outbound_tunnel_id,
+        rng,
+    );
+
+    {
+        let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+        sender_guard.record_outbound_dispatch(request.clone());
+    }
+    restore_delivery(sender, peer, checked);
+    {
+        let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+        peer_guard.record_inbound_dispatch();
     }
 
     let outcome = outcome?;
@@ -1475,7 +1630,101 @@ pub fn bridge_to_peer<R: CryptoRng + RngCore>(
                 Err(BridgeDeliveryError::NotStreaming)
             }
         }
+        LocalDeliveryOutcome::DatagramDelivered => {
+            let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+            peer_guard.record_inbound_observation();
+            drop(peer_guard);
+            Ok(())
+        }
         LocalDeliveryOutcome::DispatchRejected(_) => Ok(()),
+    }
+}
+
+/// Drives a same-remote batch of `TransportSendRequest`s from one
+/// bridge into the peer bridge's receiver mirror as one bundled New
+/// Session Reply when the destination's reply-bundling policy enables
+/// it (Plan 296).
+///
+/// The swap discipline, carrier contract, and diagnostics recording
+/// match [`bridge_to_peer`]; only payload assembly differs (one
+/// multi-clove reply instead of one message per request). The caller
+/// groups consecutive same-remote requests; mixed-remote input
+/// returns [`BatchedAttempt::Singles`] and the caller runs the
+/// single seam per request. A bundled-but-undeliverable batch
+/// reports every index failed without retry: the session already
+/// advanced, so re-sending would duplicate application bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn bridge_to_peer_batched<R: CryptoRng + RngCore>(
+    sender: &SamDestinationHandle,
+    peer: &SamDestinationHandle,
+    outbound_hop0_hash: Hash,
+    outbound_hop1_hash: Hash,
+    requests: &[TransportSendRequest],
+    bundling: ReplyBundling,
+    now_seconds: u32,
+    now_ms: u64,
+    outbound_tunnel_id: TunnelId,
+    peer_inbound_tunnel: EstablishedTunnel,
+    rng: &mut R,
+) -> BatchedAttempt {
+    let mut checked = checkout_delivery(sender, peer, &peer_inbound_tunnel);
+    let mut sender_inputs = LocalDeliverySender {
+        identity: &checked.sender_identity_arc,
+        routing: &mut checked.sender_routing,
+        session: &mut checked.sender_session,
+        outbound: &checked.sender_outbound_role,
+        local_lease_set2: &checked.sender_lease_set2,
+        now_seconds,
+        now_ms,
+    };
+    let mut receiver_inputs = LocalDeliveryReceiver {
+        identity: &checked.identity_arc,
+        dispatcher: &mut checked.receiver_dispatcher,
+        session: &mut checked.receiver_session,
+        routing: &mut checked.receiver_routing,
+        streaming: &mut checked.receiver_streaming,
+        datagrams: &mut checked.receiver_datagrams,
+        canonical_streaming: Some(&mut checked.peer_canonical_streaming),
+        lease_set2_store: &mut checked.receiver_lease_set2_store,
+        now_seconds: checked.receiver_now_seconds,
+    };
+    let attempt = deliver_batched(
+        requests,
+        bundling,
+        &mut sender_inputs,
+        &mut receiver_inputs,
+        outbound_hop0_hash,
+        outbound_hop1_hash,
+        peer_inbound_tunnel,
+        checked.inbound_hop1_hash,
+        checked.inbound_hop2_hash,
+        outbound_tunnel_id,
+        rng,
+    );
+    match attempt {
+        BatchedAttempt::Bundled(report) => {
+            {
+                let mut sender_guard = sender.inner.lock().expect("sender bridge poisoned");
+                for index in &report.delivered {
+                    sender_guard.record_outbound_dispatch(requests[*index].clone());
+                }
+            }
+            restore_delivery(sender, peer, checked);
+            {
+                let mut peer_guard = peer.inner.lock().expect("peer bridge poisoned");
+                for _ in &report.delivered {
+                    peer_guard.record_inbound_dispatch();
+                }
+                for _ in &report.observed {
+                    peer_guard.record_inbound_observation();
+                }
+            }
+            BatchedAttempt::Bundled(report)
+        }
+        BatchedAttempt::Singles { decode_failed } => {
+            restore_delivery(sender, peer, checked);
+            BatchedAttempt::Singles { decode_failed }
+        }
     }
 }
 

@@ -50,7 +50,11 @@ struct RawConfig {
     #[serde(default)]
     i2cp: RawI2cpConfig,
     #[serde(default)]
+    i2pcontrol: RawI2pControlConfig,
+    #[serde(default)]
     service_tunnels: RawServiceTunnelsConfig,
+    #[serde(default)]
+    addressbook: RawAddressBookConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,6 +286,88 @@ impl Default for RawI2cpConfig {
     }
 }
 
+/// Operator password for the Plan 287 I2PControl listener.
+///
+/// The inner value never appears in `Debug` output, logs, or snapshots:
+/// formatting emits a fixed redaction marker. Comparison uses the bounded
+/// constant-time helper in `crate::i2pcontrol`.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq)]
+#[serde(transparent)]
+pub struct I2pControlPassword(String);
+
+impl I2pControlPassword {
+    /// Borrows the password bytes for bounded constant-time comparison.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// Password length in bytes.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no password is configured.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for I2pControlPassword {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("I2pControlPassword([redacted])")
+    }
+}
+
+/// Raw Plan 287 I2PControl service configuration.
+///
+/// The listener is disabled by default and loopback-only by default.
+/// `password` has no insecure factory default: enabling the service with an
+/// empty or missing password fails semantic validation before bind.
+/// Explicit TLS material (`certificate` + `private_key`) is optional for
+/// loopback binds (managed ephemeral self-signed TLS is used instead) and
+/// mandatory for any non-loopback bind. There is no plaintext fallback.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawI2pControlConfig {
+    #[serde(default = "default_i2pcontrol_enabled")]
+    enabled: bool,
+    #[serde(default = "default_i2pcontrol_bind_address")]
+    bind_address: String,
+    #[serde(default = "default_i2pcontrol_port")]
+    port: u16,
+    #[serde(default)]
+    password: I2pControlPassword,
+    #[serde(default)]
+    certificate: String,
+    #[serde(default)]
+    private_key: String,
+    #[serde(default = "default_i2pcontrol_max_connections")]
+    max_connections: u32,
+    #[serde(default = "default_i2pcontrol_max_body_bytes")]
+    max_body_bytes: usize,
+    #[serde(default = "default_i2pcontrol_request_deadline_ms")]
+    request_deadline_ms: u64,
+    #[serde(default = "default_i2pcontrol_shutdown_timeout_ms")]
+    shutdown_timeout_ms: u64,
+}
+
+impl Default for RawI2pControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_i2pcontrol_enabled(),
+            bind_address: default_i2pcontrol_bind_address(),
+            port: default_i2pcontrol_port(),
+            password: I2pControlPassword::default(),
+            certificate: String::new(),
+            private_key: String::new(),
+            max_connections: default_i2pcontrol_max_connections(),
+            max_body_bytes: default_i2pcontrol_max_body_bytes(),
+            request_deadline_ms: default_i2pcontrol_request_deadline_ms(),
+            shutdown_timeout_ms: default_i2pcontrol_shutdown_timeout_ms(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSamConfig {
@@ -419,6 +505,11 @@ struct RawServiceTunnelsConfig {
     tunnel: Vec<RawServiceTunnelEntry>,
     #[serde(default)]
     alias: Vec<RawServiceTunnelAlias>,
+    /// Plan 297: explicit local TLS identity/trust policy for
+    /// server `use_ssl` dials. Absent means no TLS policy: `use_ssl`
+    /// tunnels fail before connecting.
+    #[serde(default)]
+    tls: Option<RawServiceTlsConfig>,
 }
 
 impl Default for RawServiceTunnelsConfig {
@@ -434,8 +525,35 @@ impl Default for RawServiceTunnelsConfig {
             shutdown_timeout_ms: default_service_tunnels_shutdown_timeout_ms(),
             tunnel: Vec::new(),
             alias: Vec::new(),
+            tls: None,
         }
     }
+}
+
+/// Raw `[service_tunnels.tls]` explicit TLS identity/trust policy
+/// (Plan 297). The identity pair is optional (used as the client
+/// certificate only when the loopback target requests client
+/// authentication); verification needs pinned end-entity
+/// certificates, explicit trust roots, or both — never ambient
+/// system roots, and there is no unauthenticated opt-in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServiceTlsConfig {
+    /// PEM certificate for the endpoint identity (requires
+    /// `private_key_path`).
+    #[serde(default)]
+    certificate_path: Option<std::path::PathBuf>,
+    /// PEM private key for the endpoint identity (requires
+    /// `certificate_path`).
+    #[serde(default)]
+    private_key_path: Option<std::path::PathBuf>,
+    /// PEM bundle of pinned end-entity certificates, used as
+    /// trust anchors.
+    #[serde(default)]
+    pinned_certificates_path: Option<std::path::PathBuf>,
+    /// PEM bundle of explicit trust roots.
+    #[serde(default)]
+    trust_roots_path: Option<std::path::PathBuf>,
 }
 
 /// One raw `[[service_tunnels.tunnel]]` entry.
@@ -460,6 +578,12 @@ struct RawServiceTunnelEntry {
     max_connections: Option<usize>,
     #[serde(default)]
     max_buffered_bytes_per_direction: Option<usize>,
+    /// Plan 291: loopback UDP media endpoint for `streamr-server`
+    /// (media source) and `streamr-client` (media target)
+    /// (`ip:port`, explicit; no silent default for where media
+    /// enters or exits).
+    #[serde(default)]
+    local_udp: Option<String>,
 }
 
 /// One raw `[[service_tunnels.alias]]` static alias mapping.
@@ -468,6 +592,28 @@ struct RawServiceTunnelEntry {
 struct RawServiceTunnelAlias {
     name: String,
     target: String,
+}
+
+/// Raw Plan 294 `[addressbook]` configuration.
+///
+/// Disabled by default. While disabled the subsystem never touches the
+/// filesystem; `state_dir` only resolves to a path.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAddressBookConfig {
+    #[serde(default = "default_addressbook_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    state_dir: Option<String>,
+}
+
+impl Default for RawAddressBookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_addressbook_enabled(),
+            state_dir: None,
+        }
+    }
 }
 
 fn default_profile() -> String {
@@ -680,6 +826,45 @@ const MAX_I2CP_COMMAND_TIMEOUT_MS: u64 = 3_600_000;
 const MIN_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 1_000;
 const MAX_I2CP_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
 
+// --- Plan 287 I2PControl defaults: disabled, loopback-only, no password. ---
+
+fn default_i2pcontrol_enabled() -> bool {
+    false
+}
+
+fn default_i2pcontrol_bind_address() -> String {
+    String::from("127.0.0.1")
+}
+
+const fn default_i2pcontrol_port() -> u16 {
+    7650
+}
+
+const fn default_i2pcontrol_max_connections() -> u32 {
+    64
+}
+
+const fn default_i2pcontrol_max_body_bytes() -> usize {
+    1_048_576
+}
+
+const fn default_i2pcontrol_request_deadline_ms() -> u64 {
+    5_000
+}
+
+const fn default_i2pcontrol_shutdown_timeout_ms() -> u64 {
+    2_000
+}
+
+/// Hard compile-time maxima bounding every `[i2pcontrol]` resource knob.
+const MAX_I2PCONTROL_CONNECTIONS: u32 = 256;
+const MAX_I2PCONTROL_BODY_BYTES: usize = 1_048_576;
+const MIN_I2PCONTROL_REQUEST_DEADLINE_MS: u64 = 1_000;
+const MAX_I2PCONTROL_REQUEST_DEADLINE_MS: u64 = 60_000;
+const MIN_I2PCONTROL_SHUTDOWN_TIMEOUT_MS: u64 = 500;
+const MAX_I2PCONTROL_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
+const MAX_I2PCONTROL_PASSWORD_BYTES: usize = 1_024;
+
 // --- Plan 158 SSU2 defaults: disabled, loopback-only, non-advertised. ---
 
 fn default_ssu2_enabled() -> bool {
@@ -762,6 +947,10 @@ const MIN_SSU2_SERVICE_PORT: u16 = 1024;
 // --- Plan 174 service-tunnel defaults: disabled, loopback-only, no listener. ---
 
 const fn default_service_tunnels_enabled() -> bool {
+    false
+}
+
+const fn default_addressbook_enabled() -> bool {
     false
 }
 
@@ -851,6 +1040,57 @@ impl I2cpConfig {
             command_timeout: Duration::MAX,
             shutdown_timeout: Duration::from_secs(5),
         }
+    }
+}
+
+/// Normalized Plan 287 I2PControl HTTPS/JSON-RPC listener configuration.
+///
+/// Disabled by default. The loopback default bind is `127.0.0.1:7650`
+/// with `::1` supported explicitly. Enabling with an empty or missing
+/// password fails validation before bind. Managed ephemeral self-signed
+/// TLS covers loopback identities only; any non-loopback bind requires a
+/// complete explicit certificate/private-key pair and fails validation
+/// before listener bind or managed-certificate side effects. There is no
+/// plaintext fallback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct I2pControlConfig {
+    /// Whether the I2PControl listener is enabled.
+    pub enabled: bool,
+    /// Bind IP. Non-loopback requires explicit TLS material.
+    pub bind_address: IpAddr,
+    /// Bind port. `0` selects an ephemeral port (integration tests).
+    pub port: u16,
+    /// Operator password for `Authenticate` (redacted in `Debug`; zeroized in use).
+    pub password: I2pControlPassword,
+    /// Optional explicit certificate PEM path (requires `private_key`).
+    pub certificate: Option<PathBuf>,
+    /// Optional explicit private-key PEM path (requires `certificate`).
+    pub private_key: Option<PathBuf>,
+    /// Maximum concurrent accepted TLS connections.
+    pub max_connections: u32,
+    /// Maximum HTTP request body in bytes (≤ 1 MiB hard cap).
+    pub max_body_bytes: usize,
+    /// Per-request deadline.
+    pub request_deadline: Duration,
+    /// Graceful shutdown deadline.
+    pub shutdown_timeout: Duration,
+}
+
+impl I2pControlConfig {
+    /// Returns the configured bind address.
+    pub const fn bind_socket(&self) -> SocketAddr {
+        SocketAddr::new(self.bind_address, self.port)
+    }
+
+    /// Whether the bind address is a loopback identity eligible for
+    /// managed self-signed TLS.
+    pub fn is_loopback_bind(&self) -> bool {
+        self.bind_address.is_loopback()
+    }
+
+    /// Whether explicit operator-owned TLS material is configured.
+    pub fn has_explicit_tls(&self) -> bool {
+        self.certificate.is_some() && self.private_key.is_some()
     }
 }
 
@@ -1077,9 +1317,14 @@ pub struct Config {
     pub ssu2: Ssu2Config,
     /// I2CP listener settings (Plan 167; disabled, loopback-only).
     pub i2cp: I2cpConfig,
+    /// I2PControl listener settings (Plan 287; disabled, loopback-only TLS).
+    pub i2pcontrol: I2pControlConfig,
     /// Service-tunnel settings (Plan 174; disabled, loopback-only,
     /// no listener yet).
     pub service_tunnels: ServiceTunnelsConfig,
+    /// Address-book settings (Plan 294; disabled by default; no
+    /// filesystem effect while disabled).
+    pub addressbook: crate::addressbook::AddressBookSubsystemConfig,
 }
 
 /// Normalized Plan 174 service-tunnel configuration.
@@ -1100,6 +1345,10 @@ pub struct ServiceTunnelsConfig {
     pub tunnels: i2pr_service_tunnels::ServiceTunnelSet,
     /// Validated static alias table.
     pub aliases: i2pr_service_tunnels::StaticAliasTable,
+    /// Explicit local TLS identity/trust policy for server
+    /// `use_ssl` dials (Plan 297; `None` means no policy and
+    /// `use_ssl` tunnels fail before connecting).
+    pub tls_policy: Option<crate::service_tunnels_tls::TlsPolicyHandle>,
 }
 
 impl Config {
@@ -1204,7 +1453,9 @@ impl Config {
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
+        let i2pcontrol = normalize_i2pcontrol(&raw.i2pcontrol, &raw.limits)?;
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
+        let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -1228,9 +1479,122 @@ impl Config {
             sam,
             ssu2,
             i2cp,
+            i2pcontrol,
             service_tunnels,
+            addressbook,
         })
     }
+}
+
+/// Normalizes the Plan 287 `[i2pcontrol]` block.
+///
+/// Fail-closed order: bind shape, TLS-material pairing, non-loopback TLS
+/// requirement, password presence when enabled, then resource ceilings.
+/// Every rejection happens before any listener bind or managed-certificate
+/// side effect.
+fn normalize_i2pcontrol(
+    raw: &RawI2pControlConfig,
+    global: &RawLimitsConfig,
+) -> Result<I2pControlConfig, ConfigError> {
+    let bind_address: IpAddr = raw
+        .bind_address
+        .parse()
+        .map_err(|_| ConfigError::Semantic {
+            field: "i2pcontrol.bind_address",
+            reason: "must be a valid IP address",
+        })?;
+    let certificate = if raw.certificate.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(raw.certificate.trim()))
+    };
+    let private_key = if raw.private_key.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(raw.private_key.trim()))
+    };
+    // Half-configured TLS always fails, enabled or not: there is no
+    // fallback from bad explicit material to managed TLS.
+    if certificate.is_some() != private_key.is_some() {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.certificate",
+            reason: "certificate and private_key must both be set or both be empty",
+        });
+    }
+    // Non-loopback (including wildcard) binds require a complete explicit
+    // certificate/private-key pair before anything else happens.
+    if !bind_address.is_loopback() && certificate.is_none() {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.bind_address",
+            reason: "non-loopback bind requires explicit certificate and private_key",
+        });
+    }
+    if raw.enabled {
+        if raw.password.is_empty() {
+            return Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                reason: "must be non-empty when the I2PControl listener is enabled",
+            });
+        }
+        if raw.password.len() > MAX_I2PCONTROL_PASSWORD_BYTES {
+            return Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                reason: "must not exceed 1024 bytes",
+            });
+        }
+    }
+    if raw.max_connections == 0 || raw.max_connections > MAX_I2PCONTROL_CONNECTIONS {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.max_connections",
+            reason: "must be within 1..=256",
+        });
+    }
+    if raw.max_body_bytes == 0 || raw.max_body_bytes > MAX_I2PCONTROL_BODY_BYTES {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.max_body_bytes",
+            reason: "must be within 1..=1048576",
+        });
+    }
+    if raw.request_deadline_ms < MIN_I2PCONTROL_REQUEST_DEADLINE_MS
+        || raw.request_deadline_ms > MAX_I2PCONTROL_REQUEST_DEADLINE_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.request_deadline_ms",
+            reason: "must be within 1000..=60000",
+        });
+    }
+    if raw.shutdown_timeout_ms < MIN_I2PCONTROL_SHUTDOWN_TIMEOUT_MS
+        || raw.shutdown_timeout_ms > MAX_I2PCONTROL_SHUTDOWN_TIMEOUT_MS
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.shutdown_timeout_ms",
+            reason: "must be within 500..=30000",
+        });
+    }
+    // The I2PControl connection/body budget must fit the router-wide
+    // ceilings so an optional disabled-by-default listener can never
+    // overcommit global resources.
+    let aggregate_budget = u64::from(raw.max_connections).saturating_mul(raw.max_body_bytes as u64);
+    if u64::from(raw.max_connections) > global.max_tasks
+        || aggregate_budget > global.max_buffered_bytes
+    {
+        return Err(ConfigError::Semantic {
+            field: "i2pcontrol.aggregate",
+            reason: "I2PControl connection and body ceilings exceed router-wide budgets",
+        });
+    }
+    Ok(I2pControlConfig {
+        enabled: raw.enabled,
+        bind_address,
+        port: raw.port,
+        password: raw.password.clone(),
+        certificate,
+        private_key,
+        max_connections: raw.max_connections,
+        max_body_bytes: raw.max_body_bytes,
+        request_deadline: Duration::from_millis(raw.request_deadline_ms),
+        shutdown_timeout: Duration::from_millis(raw.shutdown_timeout_ms),
+    })
 }
 
 fn normalize_i2cp(
@@ -1525,18 +1889,63 @@ fn normalize_service_tunnels(
         let max_buffered = entry
             .max_buffered_bytes_per_direction
             .unwrap_or(raw.max_buffered_bytes_per_direction);
-        let http_options = if matches!(kind, ServiceTunnelKind::HttpClient) {
+        let http_options = if matches!(
+            kind,
+            ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer
+        ) {
             Some(i2pr_service_tunnels::HttpClientOptions::defaults())
         } else {
             None
         };
-        let socks5_options = if matches!(kind, ServiceTunnelKind::Socks5Client) {
+        let socks5_options = if matches!(
+            kind,
+            ServiceTunnelKind::Socks5Client | ServiceTunnelKind::SocksIrc
+        ) {
             Some(i2pr_service_tunnels::Socks5ClientOptions::defaults())
         } else {
             None
         };
-        let irc_options = if matches!(kind, ServiceTunnelKind::IrcClient) {
+        let irc_options = if matches!(
+            kind,
+            ServiceTunnelKind::IrcClient | ServiceTunnelKind::SocksIrc
+        ) {
             Some(i2pr_service_tunnels::IrcClientOptions::defaults())
+        } else {
+            None
+        };
+        // Plan 290: the strict CONNECT profile carries its own
+        // CONNECT-only port policy; the HTTP server profile carries
+        // no options (fixed secure filter over `HttpLimits`).
+        let connect_options = if matches!(kind, ServiceTunnelKind::ConnectClient) {
+            Some(i2pr_service_tunnels::ConnectClientOptions::defaults())
+        } else {
+            None
+        };
+        // Plan 291: the Streamr halves carry validated UDP
+        // endpoints plus freeze-default cadence/ceiling policy.
+        // Endpoints are explicit per half (no silent default for
+        // where media enters or exits); loopback shape is enforced
+        // by `StreamrOptions::validate`.
+        let streamr_options = if matches!(
+            kind,
+            ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+        ) {
+            let local_udp = entry
+                .local_udp
+                .as_deref()
+                .map(|text| {
+                    text.parse::<std::net::SocketAddr>()
+                        .map_err(|_| ConfigError::Semantic {
+                            field: "service_tunnels.tunnel.udp",
+                            reason: "local UDP endpoint must be a loopback ip:port",
+                        })
+                })
+                .transpose()?;
+            let options = i2pr_service_tunnels::StreamrOptions {
+                local_udp,
+                ..i2pr_service_tunnels::StreamrOptions::default()
+            };
+            Some(options)
         } else {
             None
         };
@@ -1552,9 +1961,20 @@ fn normalize_service_tunnels(
             max_connections,
             max_buffered_bytes_per_direction: max_buffered,
             timeouts,
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options,
             socks5_options,
             irc_options,
+            connect_options,
+            streamr_options,
         };
         spec.validate().map_err(|err| match err {
             i2pr_service_tunnels::ServiceTunnelError::DuplicateId { .. }
@@ -1603,9 +2023,11 @@ fn normalize_service_tunnels(
     })?;
 
     // Plan 175 §13/§6 + Plan 176 §13 + Plan 177 §13 + Plan 178 §13
-    // + Plan 179 §14: `generic-client`, `generic-server`,
-    // `http-client`, `socks5-client`, `irc-client`, and now
-    // `irc-server` tunnels may activate after their plans land.
+    // + Plan 179 §14 + Plan 290 + Plan 291: `generic-client`,
+    // `generic-server`, `http-client`, `socks5-client`,
+    // `irc-client`, `irc-server`, `connect-client`, `socks-irc`,
+    // `http-server`, `http-bidir-server`, `streamr-client`, and
+    // `streamr-server` tunnels may activate after their plans land.
     // The `ServiceTunnelKind` enum is closed; the match is
     // exhaustive, so every known kind is accepted and the loop
     // exists as a documented invariant.
@@ -1616,7 +2038,13 @@ fn normalize_service_tunnels(
             | i2pr_service_tunnels::ServiceTunnelKind::HttpClient
             | i2pr_service_tunnels::ServiceTunnelKind::Socks5Client
             | i2pr_service_tunnels::ServiceTunnelKind::IrcClient
-            | i2pr_service_tunnels::ServiceTunnelKind::IrcServer => {}
+            | i2pr_service_tunnels::ServiceTunnelKind::IrcServer
+            | i2pr_service_tunnels::ServiceTunnelKind::ConnectClient
+            | i2pr_service_tunnels::ServiceTunnelKind::SocksIrc
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpServer
+            | i2pr_service_tunnels::ServiceTunnelKind::HttpBidirServer
+            | i2pr_service_tunnels::ServiceTunnelKind::StreamrClient
+            | i2pr_service_tunnels::ServiceTunnelKind::StreamrServer => {}
         }
     }
 
@@ -1626,6 +2054,111 @@ fn normalize_service_tunnels(
         timeouts,
         tunnels: set,
         aliases,
+        tls_policy: raw
+            .tls
+            .as_ref()
+            .map(normalize_service_tls)
+            .transpose()?
+            .map(crate::service_tunnels_tls::TlsPolicyHandle::new),
+    })
+}
+
+/// Normalizes the Plan 297 `[service_tunnels.tls]` block.
+///
+/// File I/O happens here at configuration load (fail fast, before
+/// any bind), never per connection. Error reasons are static;
+/// paths and key material never enter diagnostics.
+fn normalize_service_tls(
+    raw: &RawServiceTlsConfig,
+) -> Result<crate::service_tunnels_tls::ServiceTlsPolicy, ConfigError> {
+    use crate::service_tunnels_tls::read_tls_file;
+    if raw.certificate_path.is_some() != raw.private_key_path.is_some() {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.tls",
+            reason: "certificate_path and private_key_path are both required",
+        });
+    }
+    let identity = match (&raw.certificate_path, &raw.private_key_path) {
+        (Some(cert_path), Some(key_path)) => Some((
+            read_tls_file("certificate", cert_path).map_err(tls_config_error)?,
+            read_tls_file("private key", key_path).map_err(tls_config_error)?,
+        )),
+        (None, None) => None,
+        // The completeness check above excludes the mixed cases.
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(ConfigError::Semantic {
+                field: "service_tunnels.tls",
+                reason: "certificate_path and private_key_path are both required",
+            });
+        }
+    };
+    let roots_pem = raw
+        .trust_roots_path
+        .as_ref()
+        .map(|path| read_tls_file("trust roots", path).map_err(tls_config_error))
+        .transpose()?;
+    let pins_pem = raw
+        .pinned_certificates_path
+        .as_ref()
+        .map(|path| read_tls_file("pinned certificates", path).map_err(tls_config_error))
+        .transpose()?;
+    crate::service_tunnels_tls::ServiceTlsPolicy::from_parts(identity, pins_pem, roots_pem)
+        .map_err(tls_config_error)
+}
+
+/// Maps a TLS policy failure to a static config reason (never echoes
+/// paths, pins, or key material).
+fn tls_config_error(error: crate::service_tunnels_tls::ServiceTlsError) -> ConfigError {
+    use crate::service_tunnels_tls::ServiceTlsError as Tls;
+    let reason = match error {
+        Tls::IncompleteIdentity => "certificate_path and private_key_path are both required",
+        Tls::CannotRead { .. } => "a configured TLS file cannot be read",
+        Tls::CannotParse { .. } => "a configured TLS file does not parse",
+        Tls::EmptyChain => "the certificate file holds no certificate",
+        Tls::EmptyRoots => "a trust bundle file holds no certificate",
+        Tls::BadCertificate => "a certificate does not parse as X.509",
+        Tls::IdentityMismatch => "the certificate and key do not combine",
+        Tls::VerifiesNothing => "the policy verifies nothing",
+        Tls::NoPolicy => "no TLS policy is installed",
+        Tls::Handshake(_) => "the TLS handshake failed",
+    };
+    ConfigError::Semantic {
+        field: "service_tunnels.tls",
+        reason,
+    }
+}
+
+/// Normalizes the Plan 294 `[addressbook]` block.
+///
+/// Shape-only validation: `enabled` defaults false; `state_dir` must
+/// be non-empty without NUL bytes and resolves against the router
+/// data directory when relative. Existence/permission checks happen
+/// at activation (failure deactivates with a sticky error), never
+/// here: parsing must not touch the filesystem.
+fn normalize_addressbook(
+    raw: &RawAddressBookConfig,
+    data_dir: &Path,
+) -> Result<crate::addressbook::AddressBookSubsystemConfig, ConfigError> {
+    let state_dir = match raw.state_dir.as_deref() {
+        None => data_dir.join(i2pr_storage::ADDRESSBOOK_STATE_SUBDIR),
+        Some(value) => {
+            if value.trim().is_empty() || value.contains('\0') {
+                return Err(ConfigError::Semantic {
+                    field: "addressbook.state_dir",
+                    reason: "must be a non-empty path without NUL bytes",
+                });
+            }
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                data_dir.join(path)
+            }
+        }
+    };
+    Ok(crate::addressbook::AddressBookSubsystemConfig {
+        enabled: raw.enabled,
+        state_dir,
     })
 }
 
@@ -2207,6 +2740,103 @@ data_dir = "./state"
             Config::parse(&too_few_bytes),
             Err(ConfigError::Semantic {
                 field: "sam.aggregate",
+                ..
+            })
+        ));
+    }
+
+    /// Plan 287 `[i2pcontrol]` defaults: disabled, loopback, no password.
+    const I2PCONTROL_BASE: &str = "schema_version = 1\n[router]\ndata_dir = \"state\"\n";
+
+    #[test]
+    fn i2pcontrol_defaults_are_disabled_loopback_and_passwordless() {
+        let config = Config::parse(I2PCONTROL_BASE).expect("defaults parse");
+        assert!(!config.i2pcontrol.enabled);
+        assert_eq!(config.i2pcontrol.bind_socket().port(), 7650);
+        assert!(config.i2pcontrol.is_loopback_bind());
+        assert!(!config.i2pcontrol.has_explicit_tls());
+        assert!(config.i2pcontrol.password.is_empty());
+        // The redacted password never leaks through Debug.
+        assert!(format!("{:?}", config.i2pcontrol).contains("[redacted]"));
+    }
+
+    #[test]
+    fn i2pcontrol_enabled_requires_a_password() {
+        let text = format!("{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.password",
+                ..
+            })
+        ));
+        let text =
+            format!("{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\n");
+        let config = Config::parse(&text).expect("password enables");
+        assert_eq!(config.i2pcontrol.password.as_str(), "operator");
+    }
+
+    #[test]
+    fn i2pcontrol_non_loopback_requires_explicit_tls() {
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\nbind_address = \"0.0.0.0\"\npassword = \"operator\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.bind_address",
+                ..
+            })
+        ));
+        let half = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\ncertificate = \"/tmp/c.pem\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&half),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.certificate",
+                ..
+            })
+        ));
+        // Complete explicit material parses (loading happens at service
+        // construction, before bind).
+        let full = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\nbind_address = \"0.0.0.0\"\npassword = \"operator\"\ncertificate = \"/tmp/c.pem\"\nprivate_key = \"/tmp/k.pem\"\n"
+        );
+        let config = Config::parse(&full).expect("explicit TLS parses");
+        assert!(config.i2pcontrol.has_explicit_tls());
+        assert!(!config.i2pcontrol.is_loopback_bind());
+    }
+
+    #[test]
+    fn i2pcontrol_resource_knobs_respect_hard_maxima() {
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nmax_connections = 257\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.max_connections",
+                ..
+            })
+        ));
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nmax_body_bytes = 1048577\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.max_body_bytes",
+                ..
+            })
+        ));
+        let text = format!(
+            "{I2PCONTROL_BASE}[i2pcontrol]\nenabled = true\npassword = \"operator\"\nrequest_deadline_ms = 61\n"
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic {
+                field: "i2pcontrol.request_deadline_ms",
                 ..
             })
         ));
@@ -2982,5 +3612,109 @@ data_dir = "./state"
             MINIMAL
         );
         assert!(Config::parse(&text).is_err());
+    }
+
+    #[test]
+    fn addressbook_section_defaults_to_disabled() {
+        let config = Config::parse(MINIMAL).expect("minimal parses");
+        assert!(!config.addressbook.enabled);
+        assert_eq!(
+            config.addressbook.state_dir,
+            config.router.data_dir.join("addressbook")
+        );
+    }
+
+    #[test]
+    fn addressbook_section_resolves_state_dir() {
+        // Explicit relative directories resolve under the data dir.
+        let text = format!("{MINIMAL}\n[addressbook]\nenabled = true\nstate_dir = \"books\"\n");
+        let config = Config::parse(&text).expect("relative dir");
+        assert!(config.addressbook.enabled);
+        assert_eq!(
+            config.addressbook.state_dir,
+            config.router.data_dir.join("books")
+        );
+        // Absolute directories pass through.
+        let text =
+            format!("{MINIMAL}\n[addressbook]\nenabled = true\nstate_dir = \"/tmp/abs-books\"\n");
+        let config = Config::parse(&text).expect("absolute dir");
+        assert_eq!(
+            config.addressbook.state_dir,
+            PathBuf::from("/tmp/abs-books")
+        );
+        // Empty and NUL-bearing directories fail shape validation.
+        let text = format!("{MINIMAL}\n[addressbook]\nstate_dir = \"   \"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        // Unknown keys fail closed.
+        let text = format!("{MINIMAL}\n[addressbook]\nfetch_command = \"curl\"\n");
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    /// Writes a fresh self-signed PEM identity pair into the
+    /// directory for TLS policy tests, returning the paths plus a
+    /// pinned-certificates bundle holding the same certificate.
+    fn write_tls_identity(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("fixture cert");
+        let cert_path = dir.join("tls-cert.pem");
+        let key_path = dir.join("tls-key.pem");
+        let pins_path = dir.join("tls-pins.pem");
+        std::fs::write(&cert_path, certified.cert.pem().as_bytes()).expect("write cert");
+        std::fs::write(&key_path, certified.key_pair.serialize_pem().as_bytes())
+            .expect("write key");
+        std::fs::write(&pins_path, certified.cert.pem().as_bytes()).expect("write pins");
+        (cert_path, key_path, pins_path)
+    }
+
+    #[test]
+    fn service_tls_policy_parses_pins_identity_and_rejections() {
+        let directory = tempdir().expect("temp directory");
+        let (cert_path, key_path, pins_path) = write_tls_identity(directory.path());
+        // Pinned certificates alone build a verifying policy.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\npinned_certificates_path = {:?}\n",
+            pins_path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("pin policy parses");
+        let policy = config.service_tunnels.tls_policy.expect("policy present");
+        assert_eq!(policy.policy().verify_mode(), "pin");
+        assert!(policy.policy().identity_expires_unix().is_none());
+        // A provisioned identity loads with a real expiry.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\ncertificate_path = {:?}\nprivate_key_path = {:?}\npinned_certificates_path = {:?}\n",
+            cert_path.to_string_lossy(),
+            key_path.to_string_lossy(),
+            pins_path.to_string_lossy(),
+        );
+        let config = Config::parse(&text).expect("identity policy parses");
+        let policy = config.service_tunnels.tls_policy.expect("policy present");
+        let expires = policy
+            .policy()
+            .identity_expires_unix()
+            .expect("expiry surfaces");
+        assert!(expires > 1_700_000_000, "expiry is a real Unix time");
+        // Absent policy stays absent.
+        let config = Config::parse(MINIMAL).expect("minimal parses");
+        assert!(config.service_tunnels.tls_policy.is_none());
+        // Lone identity halves and empty policies fail.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\ncertificate_path = {:?}\n",
+            cert_path.to_string_lossy()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        let text = format!("{MINIMAL}\n[service_tunnels.tls]\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        // Unknown keys fail closed.
+        let text = format!("{MINIMAL}\n[service_tunnels.tls]\ntrust_anchor = true\n");
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
     }
 }

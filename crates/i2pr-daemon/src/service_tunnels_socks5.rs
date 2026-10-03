@@ -36,8 +36,9 @@ use i2pr_client::streaming::manager::{
 use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
-    ConnectDestination, GreetingOutcome, GreetingParser, RequestOutcome, RequestParser,
-    Socks5ClientOptions, Socks5Error, Socks5ErrorKind, Socks5Limits, build_socks5_reply,
+    ConnectDestination, GreetingOutcome, GreetingParser, ProxyCredentials, RequestOutcome,
+    RequestParser, Socks4aOutcome, Socks4aRequestParser, Socks5ClientOptions, Socks5Error,
+    Socks5ErrorKind, Socks5Limits, build_socks4a_reply, build_socks5_reply,
     build_socks5_reply_from_code,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -75,23 +76,45 @@ pub enum Socks5ConnectionOutcome {
     /// The configured destination was unknown and no I2P connect
     /// was attempted.
     BadGateway,
+    /// Proxy authentication failed (or was required but missing)
+    /// and the socket was closed after the bounded reply.
+    AuthFailed,
     /// The header read or connect deadline expired.
     TimedOut,
 }
 
 /// Reads the complete SOCKS5 greeting section from the supplied
 /// stream into a bounded buffer, dispatching into the runtime-
-/// neutral greeting parser. Returns the bytes after the greeting
-/// (which belong to the request section) on success.
+/// neutral greeting parser. `initial` carries already-consumed
+/// bytes (the version peek) that belong to the greeting section.
+/// Returns the bytes after the greeting (which belong to the
+/// request section) on success.
 async fn read_greeting<S>(
     stream: &mut S,
+    initial: Vec<u8>,
     limits: Socks5Limits,
     deadline: Duration,
+    auth_required: bool,
 ) -> Result<(GreetingOutcome, Vec<u8>), Socks5Error>
 where
     S: AsyncRead + Unpin,
 {
     let mut parser = GreetingParser::new();
+    let advanced = if auth_required {
+        parser.advance_auth(&initial, limits)
+    } else {
+        parser.advance(&initial, limits)
+    };
+    if !initial.is_empty()
+        && let Some((outcome, consumed)) = advanced?
+    {
+        let remainder = if consumed < initial.len() {
+            initial[consumed..].to_vec()
+        } else {
+            Vec::new()
+        };
+        return Ok((outcome, remainder));
+    }
     let mut chunk = [0_u8; 256];
     let started = Instant::now();
     loop {
@@ -124,7 +147,12 @@ where
                 ));
             }
         };
-        match parser.advance(&chunk[..read], limits)? {
+        let advanced = if auth_required {
+            parser.advance_auth(&chunk[..read], limits)?
+        } else {
+            parser.advance(&chunk[..read], limits)?
+        };
+        match advanced {
             Some((outcome, consumed)) => {
                 // Bytes past the greeting terminator belong to the
                 // CONNECT request; forward them as the initial
@@ -202,6 +230,311 @@ where
     }
 }
 
+/// Reads one complete SOCKS4a CONNECT request section (the
+/// version byte is already consumed into `initial`), dispatching
+/// into the runtime-neutral 4a parser. Returns the parsed
+/// [`Socks4aOutcome`] on success.
+async fn read_socks4a_request<S>(
+    stream: &mut S,
+    initial: Vec<u8>,
+    limits: Socks5Limits,
+    deadline: Duration,
+) -> Result<Socks4aOutcome, Socks5Error>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut parser = Socks4aRequestParser::new();
+    if !initial.is_empty()
+        && let Some(outcome) = parser.advance(&initial, limits)?
+    {
+        return Ok(outcome);
+    }
+    let mut chunk = [0_u8; 1024];
+    let started = Instant::now();
+    loop {
+        let elapsed = started.elapsed();
+        if elapsed >= deadline {
+            return Err(Socks5Error::new(
+                Socks5ErrorKind::BufferCeilingExceeded,
+                "4a request read deadline exceeded",
+            ));
+        }
+        let remaining = deadline.saturating_sub(elapsed);
+        let read = match timeout(remaining, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => {
+                return Err(Socks5Error::new(
+                    Socks5ErrorKind::BufferCeilingExceeded,
+                    "EOF before 4a request terminator",
+                ));
+            }
+            Ok(Ok(n)) => n,
+            Ok(Err(_error)) => {
+                return Err(Socks5Error::new(
+                    Socks5ErrorKind::BufferCeilingExceeded,
+                    "4a request read io error",
+                ));
+            }
+            Err(_) => {
+                return Err(Socks5Error::new(
+                    Socks5ErrorKind::BufferCeilingExceeded,
+                    "4a request read deadline exceeded",
+                ));
+            }
+        };
+        match parser.advance(&chunk[..read], limits)? {
+            Some(outcome) => return Ok(outcome),
+            None => continue,
+        }
+    }
+}
+
+/// One negotiated SOCKS CONNECT target shared by the `socks` and
+/// `socks-irc` backends. Both protocol versions converge here;
+/// only the success/reject reply framing differs downstream.
+pub struct SocksNegotiation {
+    /// Parsed CONNECT destination (`.i2p`-only, validated).
+    pub destination: ConnectDestination,
+    /// Same-read bytes after the CONNECT request (first tunnel
+    /// bytes for opaque profiles, first filter bytes for
+    /// `socks-irc`).
+    pub leftover: Vec<u8>,
+    /// Whether the peer negotiated SOCKS4a (8-byte reply framing)
+    /// rather than SOCKS5 (10-byte reply framing).
+    pub via_socks4a: bool,
+}
+
+/// Negotiates one SOCKS CONNECT (SOCKS5 greeting + request, or
+/// bare SOCKS4a request after a `0x04` version peek) and emits the
+/// version-appropriate greeting/reject replies inline. Returns the
+/// negotiated target, or the connection outcome after flushing
+/// the terminal reply and shutting the socket down.
+///
+/// Plan 290: shared by the ordinary `socks` backend (pinned
+/// SOCKS 4/4a/5 parity) and the `socks-irc` composition. The
+/// success reply is NOT emitted here: it goes out only after real
+/// Streaming establishment, per profile.
+pub async fn negotiate_socks_destination(
+    stream: &mut TcpStream,
+    limits: Socks5Limits,
+    auth: Option<&ProxyCredentials>,
+) -> Result<SocksNegotiation, Socks5ConnectionOutcome> {
+    // Version peek: SOCKS4a has no greeting, so the first byte
+    // decides the negotiation path.
+    let mut version = [0_u8; 1];
+    let peeked = timeout(GREETING_READ_DEADLINE, stream.read_exact(&mut version)).await;
+    if peeked.is_err() {
+        let _ = stream.shutdown().await;
+        return Err(Socks5ConnectionOutcome::BadGreeting);
+    }
+    if version[0] == i2pr_service_tunnels::socks5::socks4a::SOCKS4A_VERSION {
+        // SOCKS4a carries no authentication: an auth-guarded
+        // listener rejects it instead of downgrading.
+        if auth.is_some() {
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::AuthFailed);
+        }
+        return negotiate_socks4a(stream, limits).await;
+    }
+    if version[0] != i2pr_service_tunnels::socks5::config::SOCKS_VERSION {
+        let _ = stream.shutdown().await;
+        return Err(Socks5ConnectionOutcome::BadGreeting);
+    }
+    // Step 1: greeting read + negotiation (version byte re-fed).
+    // With credentials configured only `0x02` is acceptable.
+    let (greeting_outcome, request_initial) = match read_greeting(
+        stream,
+        vec![version[0]],
+        limits,
+        GREETING_READ_DEADLINE,
+        auth.is_some(),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(_error) => {
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::BadGreeting);
+        }
+    };
+    match greeting_outcome {
+        GreetingOutcome::UsernamePassword => {
+            let credentials = match auth {
+                Some(credentials) => credentials,
+                None => {
+                    let no_accept = GreetingParser::no_acceptable_method_reply();
+                    let _ = stream.write_all(&no_accept).await;
+                    let _ = stream.shutdown().await;
+                    return Err(Socks5ConnectionOutcome::BadGreeting);
+                }
+            };
+            // Select username/password, then run the RFC 1929
+            // subnegotiation before the request stage.
+            if let Err(error) = stream.write_all(&[0x05, 0x02]).await {
+                debug!(error = %error, "method selection write failed");
+                let _ = stream.shutdown().await;
+                return Err(Socks5ConnectionOutcome::BadGreeting);
+            }
+            negotiate_user_pass(stream, credentials).await?;
+        }
+        GreetingOutcome::NoAuthentication => {
+            if auth.is_some() {
+                // Unreachable through `advance_auth`, but a
+                // no-auth selection on a guarded listener must
+                // never proceed.
+                let no_accept = GreetingParser::no_acceptable_method_reply();
+                let _ = stream.write_all(&no_accept).await;
+                let _ = stream.shutdown().await;
+                return Err(Socks5ConnectionOutcome::AuthFailed);
+            }
+            let reply = GreetingParser::no_auth_reply();
+            if let Err(error) = stream.write_all(&reply).await {
+                debug!(error = %error, "greeting reply write failed");
+                let _ = stream.shutdown().await;
+                return Err(Socks5ConnectionOutcome::BadGreeting);
+            }
+        }
+        GreetingOutcome::NoAcceptableMethod => {
+            let no_accept = GreetingParser::no_acceptable_method_reply();
+            if let Err(error) = stream.write_all(&no_accept).await {
+                debug!(error = %error, "no-acceptable-method write failed");
+            }
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::BadGreeting);
+        }
+    }
+    // Step 2: CONNECT request read + parse.
+    let request_outcome =
+        match read_request(stream, request_initial, limits, REQUEST_READ_DEADLINE).await {
+            Ok(value) => value,
+            Err(_error) => {
+                let _ = stream.shutdown().await;
+                return Err(Socks5ConnectionOutcome::BadRequest);
+            }
+        };
+    let (destination, leftover) = match request_outcome {
+        RequestOutcome::ReadyToConnect {
+            destination,
+            leftover,
+        } => (destination, leftover),
+        RequestOutcome::Rejected { reply_code } => {
+            let reply = build_socks5_reply_from_code(reply_code);
+            let _ = write_reply(stream, reply).await;
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::Forbidden);
+        }
+    };
+    Ok(SocksNegotiation {
+        destination,
+        leftover,
+        via_socks4a: false,
+    })
+}
+
+/// Runs one RFC 1929 username/password subnegotiation and verifies
+/// it against the tunnel credentials (Plan 292).
+///
+/// Replies `01 00` and proceeds on verified credentials, `01 01`
+/// and closes when the complete section parses but verification
+/// fails. Framing violations close silently: the stream position is
+/// unrecoverable, so no status oracle is emitted. All reads share
+/// the greeting deadline; the section is bounded to 513 bytes by
+/// the protocol's own length octets.
+async fn negotiate_user_pass(
+    stream: &mut TcpStream,
+    credentials: &ProxyCredentials,
+) -> Result<(), Socks5ConnectionOutcome> {
+    let mut header = [0_u8; 2];
+    if timeout(GREETING_READ_DEADLINE, stream.read_exact(&mut header))
+        .await
+        .is_err()
+    {
+        return Err(auth_failed_closed(stream).await);
+    }
+    if header[0] != 0x01 {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let username_len = header[1] as usize;
+    if username_len == 0 || username_len > i2pr_service_tunnels::MAX_PROXY_USERNAME_LEN {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let mut username = vec![0_u8; username_len];
+    if timeout(GREETING_READ_DEADLINE, stream.read_exact(&mut username))
+        .await
+        .is_err()
+    {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let mut length = [0_u8; 1];
+    if timeout(GREETING_READ_DEADLINE, stream.read_exact(&mut length))
+        .await
+        .is_err()
+    {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let password_len = length[0] as usize;
+    if password_len == 0 || password_len > i2pr_service_tunnels::MAX_PROXY_PASSWORD_LEN {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let mut password = vec![0_u8; password_len];
+    if timeout(GREETING_READ_DEADLINE, stream.read_exact(&mut password))
+        .await
+        .is_err()
+    {
+        return Err(auth_failed_closed(stream).await);
+    }
+    let verified = match (String::from_utf8(username), String::from_utf8(password)) {
+        (Ok(user), Ok(pass)) => credentials.verify(&user, &pass),
+        _ => false,
+    };
+    let reply = if verified { [0x01, 0x00] } else { [0x01, 0x01] };
+    if stream.write_all(&reply).await.is_err() {
+        return Err(auth_failed_closed(stream).await);
+    }
+    if !verified {
+        return Err(auth_failed_closed(stream).await);
+    }
+    Ok(())
+}
+
+/// Shuts the socket and reports authentication failure (framing
+/// violations close silently: the stream position is
+/// unrecoverable, so no status oracle is emitted).
+async fn auth_failed_closed(stream: &mut TcpStream) -> Socks5ConnectionOutcome {
+    let _ = stream.shutdown().await;
+    Socks5ConnectionOutcome::AuthFailed
+}
+
+/// Negotiates the SOCKS4a bare-request path (no greeting).
+async fn negotiate_socks4a(
+    stream: &mut TcpStream,
+    limits: Socks5Limits,
+) -> Result<SocksNegotiation, Socks5ConnectionOutcome> {
+    let outcome =
+        match read_socks4a_request(stream, vec![0x04], limits, REQUEST_READ_DEADLINE).await {
+            Ok(value) => value,
+            Err(_error) => {
+                let _ = stream.shutdown().await;
+                return Err(Socks5ConnectionOutcome::BadRequest);
+            }
+        };
+    let (destination, leftover) = match outcome {
+        Socks4aOutcome::ReadyToConnect {
+            destination,
+            leftover,
+        } => (destination, leftover),
+        Socks4aOutcome::Rejected => {
+            let _ = stream.write_all(&build_socks4a_reply(false)).await;
+            let _ = stream.shutdown().await;
+            return Err(Socks5ConnectionOutcome::Forbidden);
+        }
+    };
+    Ok(SocksNegotiation {
+        destination,
+        leftover,
+        via_socks4a: true,
+    })
+}
+
 /// Writes a bounded SOCKS5 reply and (optionally) shuts down the
 /// write half of the socket.
 async fn write_reply<S>(stream: &mut S, reply: [u8; 10]) -> std::io::Result<()>
@@ -214,10 +547,41 @@ where
     Ok(())
 }
 
+/// Writes one bounded SOCKS4a reply (8 bytes, never echoes
+/// request state).
+async fn write_socks4a_reply(stream: &mut TcpStream, granted: bool) -> std::io::Result<()> {
+    if let Err(error) = stream.write_all(&build_socks4a_reply(granted)).await {
+        debug!(error = %error, "socks4a reply write failed");
+    }
+    Ok(())
+}
+
+/// Emits one version-appropriate terminal reject reply (SOCKS4a
+/// 8-byte 91 framing or SOCKS5 10-byte RFC 1928 framing) and shuts
+/// the socket down.
+///
+/// Plan 290: shared with the `socks-irc` composition.
+pub async fn reject_socks_request(
+    stream: &mut TcpStream,
+    via_socks4a: bool,
+    code: i2pr_service_tunnels::Socks5ReplyCode,
+) {
+    if via_socks4a {
+        let _ = write_socks4a_reply(stream, false).await;
+    } else {
+        let reply = build_socks5_reply(code);
+        let _ = write_reply(stream, reply).await;
+    }
+    let _ = stream.shutdown().await;
+}
+
 /// Resolves a parsed CONNECT destination to a [`ClientTarget`]. The
 /// proxy only forwards requests whose host matches the configured
 /// service destination (Base32) or an entry in the alias table.
-fn resolve_target_for_service(
+///
+/// Plan 290: shared with the `socks-irc` composition (identical
+/// resolution policy after either SOCKS version negotiates).
+pub fn resolve_target_for_service(
     manager: &ServiceTunnelManager,
     service_destination: i2pr_client::DestinationId,
     destination: &ConnectDestination,
@@ -251,7 +615,9 @@ fn resolve_target_for_service(
 
 /// Opens a Streaming connection to the supplied remote destination
 /// and waits until `Established` (or returns a typed error).
-async fn open_streaming(
+///
+/// Plan 290: shared with the `socks-irc` composition.
+pub async fn open_streaming(
     manager: &ServiceTunnelManager,
     destination_id: i2pr_client::DestinationId,
     remote: &RemoteDestination,
@@ -308,7 +674,11 @@ async fn open_streaming(
     Ok(connection_id)
 }
 
-async fn wait_for_established(
+/// Bounded wait for one Streaming connection to reach
+/// `Established`.
+///
+/// Plan 290: shared with the `socks-irc` composition.
+pub async fn wait_for_established(
     manager: &ServiceTunnelManager,
     destination_id: i2pr_client::DestinationId,
     connection_id: ConnectionId,
@@ -334,7 +704,9 @@ async fn wait_for_established(
 
 /// Closes the Streaming connection after the per-connection pump
 /// exits. Emits a CLOSE packet on success and a RESET on error.
-fn terminate_streaming(
+///
+/// Plan 290: shared with the `socks-irc` composition.
+pub fn terminate_streaming(
     manager: &ServiceTunnelManager,
     destination_id: i2pr_client::DestinationId,
     connection_id: ConnectionId,
@@ -379,9 +751,11 @@ fn terminate_streaming(
     });
 }
 
-/// Per-connection SOCKS5 proxy entry. Reads greeting, negotiates
-/// no-auth, parses CONNECT, opens Streaming, sends success, runs
-/// the shared Plan 174 byte pump.
+/// Per-connection SOCKS proxy entry. Negotiates SOCKS5 (greeting
+/// + CONNECT) or bare SOCKS4a CONNECT through the shared Plan 290
+///   negotiator, opens Streaming, sends the version-appropriate
+///   success reply only after `Established`, and runs the shared
+///   Plan 174 byte pump.
 pub async fn run_socks5_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -391,65 +765,37 @@ pub async fn run_socks5_connection(
 ) -> Socks5ConnectionOutcome {
     let limits = Socks5Limits::defaults();
     let mut stream = stream;
-    // Step 1: greeting read + negotiation.
-    let (greeting_outcome, request_initial) =
-        match read_greeting(&mut stream, limits, GREETING_READ_DEADLINE).await {
+    // Steps 1-2: version dispatch + negotiation (replies for
+    // rejections are emitted inside the negotiator).
+    let negotiation =
+        match negotiate_socks_destination(&mut stream, limits, options.proxy_auth.as_ref()).await {
             Ok(value) => value,
-            Err(_error) => {
-                let _ = stream.shutdown().await;
-                return Socks5ConnectionOutcome::BadGreeting;
-            }
+            Err(outcome) => return outcome,
         };
-    let _ = greeting_outcome; // Currently only NoAuthentication is reachable.
-    let reply = match greeting_outcome {
-        GreetingOutcome::NoAuthentication => GreetingParser::no_auth_reply(),
-        GreetingOutcome::NoAcceptableMethod => {
-            let no_accept = GreetingParser::no_acceptable_method_reply();
-            if let Err(error) = stream.write_all(&no_accept).await {
-                debug!(error = %error, "no-acceptable-method write failed");
-            }
-            let _ = stream.shutdown().await;
-            return Socks5ConnectionOutcome::BadGreeting;
-        }
-    };
-    if let Err(error) = stream.write_all(&reply).await {
-        debug!(error = %error, "greeting reply write failed");
-        let _ = stream.shutdown().await;
-        return Socks5ConnectionOutcome::BadGreeting;
-    }
-    // Step 2: CONNECT request read + parse.
-    let request_outcome =
-        match read_request(&mut stream, request_initial, limits, REQUEST_READ_DEADLINE).await {
-            Ok(value) => value,
-            Err(_error) => {
-                let _ = stream.shutdown().await;
-                return Socks5ConnectionOutcome::BadRequest;
-            }
-        };
-    let (destination, leftover) = match request_outcome {
-        RequestOutcome::ReadyToConnect {
-            destination,
-            leftover,
-        } => (destination, leftover),
-        RequestOutcome::Rejected { reply_code } => {
-            let reply = build_socks5_reply_from_code(reply_code);
-            let _ = write_reply(&mut stream, reply).await;
-            let _ = stream.shutdown().await;
-            return Socks5ConnectionOutcome::Forbidden;
-        }
-    };
+    let destination = negotiation.destination;
+    let leftover = negotiation.leftover;
+    let via_socks4a = negotiation.via_socks4a;
+    // Version-appropriate terminal replies: SOCKS4a peers receive
+    // the 8-byte 91 framing, SOCKS5 peers the 10-byte RFC 1928
+    // framing.
     if !options.port_policy.allows_connect_port(destination.port) {
-        let reply = build_socks5_reply(i2pr_service_tunnels::Socks5ReplyCode::ConnectionNotAllowed);
-        let _ = write_reply(&mut stream, reply).await;
-        let _ = stream.shutdown().await;
+        reject_socks_request(
+            &mut stream,
+            via_socks4a,
+            i2pr_service_tunnels::Socks5ReplyCode::ConnectionNotAllowed,
+        )
+        .await;
         return Socks5ConnectionOutcome::Forbidden;
     }
     let target = match resolve_target_for_service(&manager, runtime.destination_id, &destination) {
         Ok(value) => value,
         Err(_error) => {
-            let reply = build_socks5_reply(i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable);
-            let _ = write_reply(&mut stream, reply).await;
-            let _ = stream.shutdown().await;
+            reject_socks_request(
+                &mut stream,
+                via_socks4a,
+                i2pr_service_tunnels::Socks5ReplyCode::HostUnreachable,
+            )
+            .await;
             return Socks5ConnectionOutcome::BadGateway;
         }
     };
@@ -465,23 +811,35 @@ pub async fn run_socks5_connection(
         Ok(id) => id,
         Err(error) => {
             let code = error.reply_code();
-            let reply = build_socks5_reply(code);
-            let _ = write_reply(&mut stream, reply).await;
-            let _ = stream.shutdown().await;
+            reject_socks_request(&mut stream, via_socks4a, code).await;
             return Socks5ConnectionOutcome::BadGateway;
         }
     };
-    let success = build_socks5_reply(i2pr_service_tunnels::Socks5ReplyCode::Success);
-    if let Err(error) = stream.write_all(&success).await {
-        debug!(error = %error, "socks5 success reply write failed");
-        terminate_streaming(
-            &manager,
-            runtime.destination_id,
-            connection_id,
-            &target.remote,
-            true,
-        );
-        return Socks5ConnectionOutcome::BadRequest;
+    if via_socks4a {
+        if let Err(error) = write_socks4a_reply(&mut stream, true).await {
+            debug!(error = %error, "socks4a success reply write failed");
+            terminate_streaming(
+                &manager,
+                runtime.destination_id,
+                connection_id,
+                &target.remote,
+                true,
+            );
+            return Socks5ConnectionOutcome::BadRequest;
+        }
+    } else {
+        let success = build_socks5_reply(i2pr_service_tunnels::Socks5ReplyCode::Success);
+        if let Err(error) = stream.write_all(&success).await {
+            debug!(error = %error, "socks5 success reply write failed");
+            terminate_streaming(
+                &manager,
+                runtime.destination_id,
+                connection_id,
+                &target.remote,
+                true,
+            );
+            return Socks5ConnectionOutcome::BadRequest;
+        }
     }
     if let Err(error) = stream.flush().await {
         debug!(error = %error, "socks5 success reply flush failed");
@@ -523,7 +881,10 @@ pub async fn run_socks5_connection(
     Socks5ConnectionOutcome::TunnelClosed
 }
 
-fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 {
+/// Looks up the configured connect deadline for one service.
+///
+/// Plan 290: shared with the `socks-irc` composition.
+pub fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 {
     manager
         .config()
         .specs
@@ -555,10 +916,14 @@ pub async fn run_socks5_client_loop(
         "socks5 client tunnel bound loopback listener"
     );
     let options = spec.socks5_options.clone().unwrap_or_default();
+    let drain_cancel = runtime.cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -610,12 +975,7 @@ pub async fn run_socks5_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,

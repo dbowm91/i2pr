@@ -39,9 +39,10 @@ use i2pr_client::streaming::manager::{
 use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
-    DestinationRef, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits, HttpRequestHead,
-    RequestTarget, TargetKind, build_error_response, parse_authority_form, parse_request_head,
-    parse_request_target, rewrite_headers,
+    ConnectClientOptions, DestinationRef, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits,
+    HttpRequestHead, ProxyCredentials, RequestTarget, TargetKind, build_error_response,
+    decode_basic_credentials, parse_authority_form, parse_request_head, parse_request_target,
+    proxy_auth_required, rewrite_headers,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -76,6 +77,9 @@ pub enum HttpConnectionOutcome {
     /// The configured destination was unknown and no I2P connect
     /// was attempted.
     BadGateway,
+    /// Proxy authentication failed (or was required but missing)
+    /// and a 407 challenge was emitted before close.
+    Unauthorized,
     /// The header read or connect deadline expired.
     TimedOut,
 }
@@ -418,6 +422,37 @@ pub async fn run_http_connection(
     .await
 }
 
+/// Enforces listener proxy authentication (Plan 292): verifies
+/// `Proxy-Authorization: Basic` against the tunnel credentials.
+/// Answers 407 and closes on any failure (missing, malformed, or
+/// wrong credentials answer identically); returns true when the
+/// request may proceed. The credential header is consumed at the
+/// edge: downstream rewrite strips it before any upstream byte.
+async fn enforce_proxy_auth(
+    stream: &mut TcpStream,
+    head: &HttpRequestHead,
+    auth: Option<&ProxyCredentials>,
+) -> bool {
+    let Some(credentials) = auth else {
+        return true;
+    };
+    let authorized = head
+        .headers
+        .iter()
+        .find(|entry| entry.name.as_str() == "proxy-authorization")
+        .and_then(|entry| decode_basic_credentials(&entry.value))
+        .map(|(user, pass)| credentials.verify(&user, &pass))
+        .unwrap_or(false);
+    if authorized {
+        return true;
+    }
+    let _ = stream
+        .write_all(&proxy_auth_required(credentials.realm()))
+        .await;
+    let _ = stream.shutdown().await;
+    false
+}
+
 async fn handle_connect(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -427,6 +462,12 @@ async fn handle_connect(
     head: HttpRequestHead,
     limits: HttpLimits,
 ) -> HttpConnectionOutcome {
+    // Plan 292: proxy authentication gates CONNECT before any
+    // target parsing or streaming (also covers the strict-CONNECT
+    // path, which adapts its options into this handler).
+    if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
+        return HttpConnectionOutcome::Unauthorized;
+    }
     let authority =
         match parse_authority_form(&head.line.target, limits.connect_authority_max_bytes) {
             Ok(value) => value,
@@ -545,6 +586,11 @@ async fn handle_proxy_request(
     initial_body: Vec<u8>,
     _limits: HttpLimits,
 ) -> HttpConnectionOutcome {
+    // Plan 292: proxy authentication gates plain-proxy requests the
+    // same way it gates CONNECT.
+    if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
+        return HttpConnectionOutcome::Unauthorized;
+    }
     let target = match parse_request_target(&head.line.target) {
         Ok(value) => value,
         Err(error) => {
@@ -675,10 +721,14 @@ pub async fn run_http_client_loop(
         "http client tunnel bound loopback listener"
     );
     let options = spec.http_options.clone().unwrap_or_default();
+    let drain_cancel = runtime.cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
             _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -730,16 +780,181 @@ pub async fn run_http_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,
                 "http client connection finished"
+            );
+        });
+    }
+    Ok(())
+}
+
+/// Per-connection strict CONNECT entry for the Plan 290
+/// `connect-client` profile. Reads HTTP/1.1 headers, parses the
+/// request, rejects any non-`CONNECT` method with a bounded `405`
+/// before any I2P work starts, and otherwise runs the exact
+/// `handle_connect` path the `http-client` profile uses (shared
+/// authority validation, CONNECT port policy, destination
+/// resolution, Streaming establishment, opaque pump).
+///
+/// The profile is not an alias: it has its own kind, option
+/// applicability (`ConnectClientOptions`), and lifecycle identity.
+pub async fn run_connect_only_connection(
+    manager: Arc<ServiceTunnelManager>,
+    runtime: Arc<ServiceRuntime>,
+    stream: TcpStream,
+    cancellation: CancellationToken,
+    options: ConnectClientOptions,
+) -> HttpConnectionOutcome {
+    let limits = HttpLimits::defaults();
+    let mut stream = stream;
+    let (head_bytes, _initial_body) =
+        match read_http_head(&mut stream, limits, HEADER_READ_DEADLINE).await {
+            Ok(value) => value,
+            Err(error) => {
+                let kind = if matches!(error.kind, HttpErrorKind::BufferCeilingExceeded) {
+                    HttpErrorKind::BufferCeilingExceeded
+                } else {
+                    HttpErrorKind::MalformedHeaders
+                };
+                let _ = write_error_response(&mut stream, build_error_response(kind, error.reason))
+                    .await;
+                return HttpConnectionOutcome::BadRequest;
+            }
+        };
+    let head = match parse_request_head(&head_bytes, limits) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(error.error.kind, error.error.reason),
+            )
+            .await;
+            return HttpConnectionOutcome::BadRequest;
+        }
+    };
+    if head.line.method != "CONNECT" {
+        let _ = write_error_response(
+            &mut stream,
+            build_error_response(
+                HttpErrorKind::MethodNotAllowed,
+                "connect-client accepts CONNECT only",
+            ),
+        )
+        .await;
+        return HttpConnectionOutcome::Forbidden;
+    }
+    // Adapt the CONNECT-only port policy onto the shared CONNECT
+    // executor input; header-rewrite policy never applies because
+    // CONNECT carries no forwarded headers.
+    let http_options = HttpClientOptions {
+        privacy: i2pr_service_tunnels::PrivacyPolicy {
+            connect_allowed_ports: options.connect_allowed_ports,
+            ..i2pr_service_tunnels::PrivacyPolicy::default()
+        },
+        destination_ports: std::collections::BTreeSet::new(),
+        allowed_hosts: Vec::new(),
+        // Plan 292: the strict-CONNECT executor enforces the same
+        // credentials as the shared CONNECT handler.
+        proxy_auth: options.proxy_auth.clone(),
+    };
+    handle_connect(
+        manager,
+        runtime,
+        stream,
+        cancellation,
+        http_options,
+        head,
+        limits,
+    )
+    .await
+}
+
+/// Runs the per-service supervisor loop for a strict CONNECT-only
+/// client tunnel.
+pub async fn run_connect_client_loop(
+    manager: &Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    cancellation: &CancellationToken,
+) -> Result<(), crate::service_tunnels::ServiceTunnelError> {
+    let listener = runtime.client_listener.as_ref().ok_or_else(|| {
+        crate::service_tunnels::ServiceTunnelError::InvalidConfig(
+            "connect client tunnel missing loopback listener".to_owned(),
+        )
+    })?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|error| crate::service_tunnels::ServiceTunnelError::Bind(error.to_string()))?;
+    tracing::info!(
+        service = %spec.id.as_str(),
+        bind = %local_addr,
+        "connect client tunnel bound loopback listener"
+    );
+    let options = spec.connect_options.clone().unwrap_or_default();
+    let drain_cancel = runtime.cancellation_token();
+    loop {
+        let accept = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => break,
+            // Plan 289: drained runtimes stop accepting promptly (see
+            // `run_client_loop`).
+            _ = drain_cancel.cancelled() => break,
+            accept = listener.accept() => accept,
+        };
+        let (stream, _peer) = match accept {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    service = %spec.id.as_str(),
+                    error = %error,
+                    "connect client listener accept failed"
+                );
+                continue;
+            }
+        };
+        let aggregate_permit: Option<tokio::sync::OwnedSemaphorePermit> =
+            manager.aggregate_permit().try_acquire_owned().ok();
+        let Some(permit_for_task) = aggregate_permit else {
+            warn!(
+                service = %runtime.spec_id,
+                "connect client tunnel aggregate ceiling reached; rejecting connection"
+            );
+            runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+            drop(stream);
+            continue;
+        };
+        runtime.active_connections.fetch_add(1, Ordering::Relaxed);
+        let manager_for_task = Arc::clone(manager);
+        let runtime_for_task = Arc::clone(runtime);
+        let options_for_task = options.clone();
+        let cancellation_for_task = cancellation.clone();
+        let spec_id_for_log = runtime.spec_id.clone();
+        tokio::spawn(async move {
+            let _permit_for_task = permit_for_task;
+            let outcome = run_connect_only_connection(
+                manager_for_task,
+                runtime_for_task.clone(),
+                stream,
+                cancellation_for_task,
+                options_for_task,
+            )
+            .await;
+            if matches!(
+                outcome,
+                HttpConnectionOutcome::BadGateway | HttpConnectionOutcome::Forbidden
+            ) {
+                runtime_for_task
+                    .failed_connects
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            runtime_for_task.connection_finished_now();
+            debug!(
+                service = %spec_id_for_log,
+                ?outcome,
+                "connect client connection finished"
             );
         });
     }
