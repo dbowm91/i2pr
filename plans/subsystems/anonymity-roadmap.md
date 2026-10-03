@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plans 296 and 307 are closed. Plan 308 is blocked on the controlled ordinary-HTTP peer topology and three-family captures; Plan 309 is active independently. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plans 310–313 remain behind the group-pool, lifecycle, and Streaming evidence gates. This workstream remains parallel to M12/router-mainline development.
+Status: Plans 296, 307, and 309 are closed. Plan 308 is blocked on the controlled ordinary-HTTP peer topology and three-family captures. Plan 310 is ready after Plan 309; Plans 311–313 remain behind the group-pool, lifecycle, and Streaming evidence gates. Plans 297–305 remain historical stopped records. ADR 0030 establishes explicit Destination linkability domains, router-to-Destination unlinkability, separates HTTP evidence from hostile Streaming evidence, and targets pinned i2pd for Streaming convergence. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -46,9 +46,6 @@ No production-anonymity claim, Tor Browser equivalence, global passive-adversary
 Plan 296 removed known direct client-boundary leaks. Plan 304 retained an Ubuntu preflight/reference cache but over-coupled HTTP and hostile Streaming. Plan 305 correctly discovered that the production service path still has one service-owned Destination and one-peer build requests, but its mandatory per-target identity rule is superseded by ADR 0030.
 
 Current code still needs:
-- systematic server/client sanitation coverage;
-- general Destination-group ownership;
-- explicit server port multiplexing;
 - real multi-hop service paths rather than config-only three-hop intent;
 - lifecycle separation between router process and service availability;
 - a practical Streaming fingerprint target.
@@ -88,8 +85,8 @@ The group is not linkable by design to the hosting RouterInfo.
 
 307 service-boundary router unlinkability + sanitation [passed]
   -> 308 HTTP ordinary-proxy differential [blocked: controlled topology]
-  -> 309 Destination groups + service multiplexing [ready]
-       -> 310 group-owned multi-hop pools + selector
+  -> 309 Destination groups + service multiplexing [passed]
+       -> 310 group-owned multi-hop pools + selector [ready]
             -> 311 startup/graceful lifecycle
             -> 312 i2pd Streaming directional baseline
                  -> 313 i2pd Streaming convergence
@@ -98,7 +95,7 @@ passing 308 + 310 + 311 + 313
   -> future integrated anonymity successor to stopped Plan 301
 ~~~
 
-Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may proceed independently after 310.
+Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plans 311 and 312 may proceed independently after Plan 310.
 
 ## 7. Milestones
 
@@ -114,8 +111,8 @@ Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may pro
 | 305 | stopped | retained owner/reference audit | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | plans/closure/anonymity/305-status.md |
 | 307 | passed-service-boundary-router-unlinkability-and-input-sanitation | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | plans/closure/anonymity/307-status.md |
 | 308 | blocked on controlled HTTP reference topology | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/308-status.md; capture tooling exists, but controlled ordinary Destination and three-family captures remain absent |
-| 309 | in progress | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 305 audit and ADR 0030 satisfy other dependencies |
-| 310 | blocked on 309 | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | future |
+| 309 | passed-destination-linkability-domain-service-group-composition | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/309-status.md; explicit group owner, persistence migration, and server-port composition passed |
+| 310 | ready | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | Plan 309 passed; retained Plan 305 reference-diversity matrix and ADR 0030 remain inputs |
 | 311 | blocked on 310 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | future |
 | 312 | blocked on 310 | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | future |
 | 313 | blocked on 312 | convergence capability | plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md | future |
@@ -149,4 +146,4 @@ The workstream is complete only when direct service-boundary leaks are absent; H
 
 ## 12. Milestone status summary
 
-Plan 307 passed. Plan 308 remains blocked on ordinary HTTP topology evidence; Plan 309 is active and independently ready from Plan 307. Plans 310–313 retain their downstream gates. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
+Plans 307 and 309 passed. Plan 308 remains blocked on ordinary HTTP topology evidence. Plan 310 is ready; Plans 311 and 312 remain blocked on 310, and Plan 313 remains blocked on 312. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
