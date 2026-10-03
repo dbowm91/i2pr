@@ -273,6 +273,11 @@ of Tokio is enforced by `scripts/check-runtime-boundaries.sh`.
 - `send_i2np` admits through `delivery_capability` +
   `enqueue_on_link`, then queues into the bounded session outbound
   queue; `Ssu2InboundI2np` messages leave through a bounded channel.
+- The normal daemon remains the single receiver for that handoff. Plan 318's
+  group startup may consume messages while it waits for short-build replies;
+  those messages enter a bounded FIFO replay and then pass through the same
+  normal router/floodfill dispatcher before live queue traffic resumes. The
+  replay is daemon composition state; the runtime queue contract is unchanged.
 - M12 Plan 282 adds `publication_material(wall_now_ms)`, which builds a strict direct SSU2
   RouterAddress inside the runtime from its actual bound socket, runtime-owned static/intro keys,
   and the live unexpired reachability snapshot. Unknown, non-direct, expired, unbound, and closed

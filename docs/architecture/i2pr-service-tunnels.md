@@ -917,6 +917,20 @@ all M10 sockets and tasks.
     no-unbounded-Tokio-channel, and exactly-one-entry-point
     Plan 180 §15 invariants.
 
+## Normal-daemon Destination-group product (Plan 318)
+
+The normal `ssu2-router` service passes its existing `Ssu2DaemonHandle`,
+runtime `ChildScope`, cancellation token, and a capped snapshot of validated
+bootstrap RouterInfos into `ServiceProduct::start_over_existing_daemon`.
+Group selection, selected-peer transport resolution, short-build replies,
+and Plan 315 pool operations use that owner. During pre-listener provisioning,
+messages received while waiting for build replies are retained in a bounded
+FIFO and replayed to the normal router/floodfill dispatcher before live queue
+traffic; overflow aborts startup. Service supervisors and the router service
+readiness signal are delayed until every enabled group meets its usable-pool
+threshold. This local composition does not qualify external reachability or
+anonymity properties.
+
 ## Cross-references
 
 - Plans 173 (roadmap authority), 174 (foundation),

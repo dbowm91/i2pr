@@ -1494,7 +1494,7 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v214() {
     let spec = ServiceProductSpec {
         data_dir: data_dir.path().to_path_buf(),
         ssu2_bind: bind,
-        router_bundle: bundle,
+        router_bundle: Arc::new(bundle),
         service_tunnels: Arc::clone(&specs),
         aliases: Arc::clone(&alias_table),
         aggregate_connection_ceiling: 8,

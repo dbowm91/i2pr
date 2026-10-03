@@ -592,7 +592,7 @@ async fn plan212_router_backed_generic_directions() {
     let spec = ServiceProductSpec {
         data_dir: data_dir.path().to_path_buf(),
         ssu2_bind: bind,
-        router_bundle: bundle,
+        router_bundle: Arc::new(bundle),
         service_tunnels: Arc::clone(&specs),
         aliases: Arc::clone(&alias_table),
         aggregate_connection_ceiling: 8,

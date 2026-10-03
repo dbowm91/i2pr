@@ -169,7 +169,7 @@ pub fn build_daemon_graph_with_inspection(
     config: &Config,
 ) -> Result<(i2pr_runtime::ServiceGraph, Arc<InspectionHandles>), DaemonError> {
     let inspection = Arc::new(InspectionHandles::from_config(config));
-    let graph = build_daemon_graph_inner(config, &inspection)?;
+    let graph = build_daemon_graph_inner(config, &inspection, None)?;
     Ok((graph, inspection))
 }
 
@@ -177,17 +177,28 @@ pub fn build_daemon_graph_with_inspection(
 fn build_daemon_graph_inner(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
 ) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
-    if config
+    let has_enabled_service_tunnels = config
         .service_tunnels
         .tunnels
         .tunnels
         .iter()
-        .any(|tunnel| tunnel.enabled)
-    {
+        .any(|tunnel| tunnel.enabled);
+    if has_enabled_service_tunnels && bootstrap.is_none() {
         return Err(DaemonError::RuntimeSupervisorFailed(
             "enabled service tunnels require the normal-daemon Destination-group provider, which is not active"
                 .to_owned(),
+        ));
+    }
+    if has_enabled_service_tunnels && !config.ssu2.enabled {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "enabled service tunnels require the normal SSU2 owner".to_owned(),
+        ));
+    }
+    if has_enabled_service_tunnels && !config.service_tunnels.enabled {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "enabled service tunnels require service_tunnels.enabled = true".to_owned(),
         ));
     }
     if config.transport.ntcp2.enabled {
@@ -301,7 +312,7 @@ fn build_daemon_graph_inner(
     }
 
     if config.ssu2.enabled {
-        register_ssu2_service(&mut builder, config, inspection)?;
+        register_ssu2_service(&mut builder, config, inspection, &addressbook, bootstrap)?;
     }
 
     builder
@@ -599,6 +610,56 @@ const NORMAL_FLOODFILL_MAX_RECORD_AGE_MS: u64 = 60 * 60 * 1000;
 /// Bounded drain for one normal withdrawal.
 const NORMAL_FLOODFILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// One inbound queue owner for the normal daemon. The group product wraps
+/// the same SSU2 handle; it never starts another transport or receiver.
+enum NormalSsu2Owner {
+    Router(crate::router_i2np::Ssu2DaemonHandle),
+    Groups(crate::service_product::ServiceProduct),
+}
+
+impl NormalSsu2Owner {
+    fn handle(&self) -> &crate::router_i2np::Ssu2DaemonHandle {
+        match self {
+            Self::Router(handle) => handle,
+            Self::Groups(product) => product.ssu2_handle(),
+        }
+    }
+
+    async fn next_inbound(&mut self) -> Option<i2pr_runtime::Ssu2InboundI2np> {
+        match self {
+            Self::Router(handle) => handle.next_inbound().await,
+            Self::Groups(product) => product.next_inbound().await,
+        }
+    }
+
+    async fn process_group_inbound(
+        &mut self,
+        inbound: &i2pr_runtime::Ssu2InboundI2np,
+    ) -> Result<(), crate::service_product::ServiceProductError> {
+        if let Self::Groups(product) = self {
+            product.process_inbound(inbound).await;
+            product.advance_destination_pools().await?;
+        }
+        Ok(())
+    }
+
+    async fn advance_groups(&mut self) -> Result<(), crate::service_product::ServiceProductError> {
+        if let Self::Groups(product) = self {
+            product.advance_destination_pools().await?;
+        }
+        Ok(())
+    }
+
+    async fn shutdown(self) {
+        match self {
+            Self::Router(handle) => handle.shutdown(),
+            Self::Groups(product) => {
+                let _ = product.shutdown().await;
+            }
+        }
+    }
+}
+
 /// Runs one bounded Plan 279 evaluation tick for the router-owned
 /// floodfill state: re-reads operator intent, gathers live signals,
 /// evaluates, and applies the resulting step. Status output is
@@ -717,6 +778,8 @@ fn register_ssu2_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
     inspection: &Arc<InspectionHandles>,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
+    bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
@@ -724,6 +787,10 @@ fn register_ssu2_service(
     use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
+    let router_info_store_config =
+        RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
+    let service_tunnels = config.service_tunnels.clone();
+    let addressbook = Arc::clone(addressbook);
     let floodfill_enabled = config.floodfill.enabled;
     let floodfill_config_path = config.source_path.clone();
     let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
@@ -735,10 +802,15 @@ fn register_ssu2_service(
             move |ctx| {
                 let ssu2_config = ssu2_config.clone();
                 let data_dir = data_dir.clone();
+                let router_info_store_config = router_info_store_config;
                 let inspection = Arc::clone(&inspection);
                 let floodfill_config_path = floodfill_config_path.clone();
+                let service_tunnels = service_tunnels.clone();
+                let bootstrap = bootstrap.clone();
+                let addressbook = Arc::clone(&addressbook);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
+                let readiness = ctx.readiness();
                 Box::pin(async move {
                     // Strict profile is enforced twice: once at config
                     // parse time and again here so a future bypass
@@ -774,6 +846,7 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    let bundle = Arc::new(bundle);
                     // Controlled RouterInfo host/port: prefer IPv4
                     // loopback when bound, otherwise IPv6 loopback.
                     // An ephemeral `port = 0` uses a loopback
@@ -839,7 +912,7 @@ fn register_ssu2_service(
                             );
                         }
                     };
-                    let mut handle = match daemon_service.start(&children, &ssu2_config).await {
+                    let handle = match daemon_service.start(&children, &ssu2_config).await {
                         Ok(handle) => handle,
                         Err(error) => {
                             let detail =
@@ -920,17 +993,141 @@ fn register_ssu2_service(
                     );
                     evaluation
                         .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut group_tick = tokio::time::interval(Duration::from_millis(250));
+                    group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let pump_started = tokio::time::Instant::now();
                     let token = cancellation.clone();
+                    let has_enabled_groups = service_tunnels
+                        .tunnels
+                        .tunnels
+                        .iter()
+                        .any(|tunnel| tunnel.enabled);
+                    let mut owner = if has_enabled_groups {
+                        let Some(bootstrap) = bootstrap.as_ref() else {
+                            handle.shutdown();
+                            let detail = i2pr_core::HealthDetail::new(
+                                "validated bootstrap store unavailable for Destination groups",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        };
+                        let router_infos = match bootstrap.lock() {
+                            Ok(bootstrap) => bootstrap.validated_router_info_snapshot(),
+                            Err(_) => {
+                                handle.shutdown();
+                                let detail = i2pr_core::HealthDetail::new(
+                                    "validated bootstrap store unavailable for Destination groups",
+                                )
+                                .ok();
+                                return i2pr_runtime::ServiceResult::Failed(
+                                    i2pr_core::ServiceFailure::new(
+                                        i2pr_core::ServiceFailureCategory::InvalidState,
+                                        detail,
+                                    ),
+                                );
+                            }
+                        };
+                        let Some(ssu2_bind) = handle.local_v4().or_else(|| handle.local_v6()) else {
+                            handle.shutdown();
+                            let detail = i2pr_core::HealthDetail::new(
+                                "Destination groups require a bound loopback SSU2 endpoint",
+                            )
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        };
+                        let spec = crate::service_product::ServiceProductSpec {
+                            data_dir: data_dir.clone(),
+                            ssu2_bind,
+                            router_bundle: Arc::clone(&bundle),
+                            service_tunnels: Arc::new(service_tunnels.tunnels.clone()),
+                            aliases: Arc::new(service_tunnels.aliases.clone()),
+                            aggregate_connection_ceiling: service_tunnels
+                                .limits
+                                .max_active_connections_aggregate,
+                            per_service_connection_ceiling: service_tunnels
+                                .limits
+                                .max_active_connections_per_service,
+                            reference: None,
+                            options: crate::service_product::ServiceProductOptions::default(),
+                            addressbook: addressbook.shared(),
+                        };
+                        match crate::service_product::ServiceProduct::start_over_existing_daemon(
+                            spec,
+                            handle,
+                            children.clone(),
+                            token.clone(),
+                            router_infos,
+                            router_info_store_config,
+                        )
+                        .await
+                        {
+                            Ok(product) => NormalSsu2Owner::Groups(product),
+                            Err(error) => {
+                                let detail = i2pr_core::HealthDetail::new(format!(
+                                    "Destination-group product failed before readiness: {error}"
+                                ))
+                                .ok();
+                                return i2pr_runtime::ServiceResult::Failed(
+                                    i2pr_core::ServiceFailure::new(
+                                        i2pr_core::ServiceFailureCategory::InvalidState,
+                                        detail,
+                                    ),
+                                );
+                            }
+                        }
+                    } else {
+                        NormalSsu2Owner::Router(handle)
+                    };
+                    if matches!(
+                        &owner,
+                        NormalSsu2Owner::Groups(product)
+                            if !product.readiness().router_ready()
+                    ) {
+                        owner.shutdown().await;
+                        let detail = i2pr_core::HealthDetail::new(
+                            "Destination-group readiness was not established",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
+                    if readiness.signal_ready().is_err() {
+                        owner.shutdown().await;
+                        let detail = i2pr_core::HealthDetail::new(
+                            "SSU2 service readiness signal was rejected",
+                        )
+                        .ok();
+                        return i2pr_runtime::ServiceResult::Failed(
+                            i2pr_core::ServiceFailure::new(
+                                i2pr_core::ServiceFailureCategory::InvalidState,
+                                detail,
+                            ),
+                        );
+                    }
                     loop {
                         tokio::select! {
                             biased;
                             _ = token.cancelled() => {
-                                handle.shutdown();
+                                owner.shutdown().await;
                                 return i2pr_runtime::ServiceResult::RequestedShutdown;
                             }
-                            inbound = handle.next_inbound() => {
+                            inbound = owner.next_inbound() => {
                                 let Some(inbound) = inbound else {
+                                    owner.shutdown().await;
                                     return i2pr_runtime::ServiceResult::RequestedShutdown;
                                 };
                                 let now_ms = std::time::SystemTime::now()
@@ -952,7 +1149,7 @@ fn register_ssu2_service(
                                         Ok(_) => {
                                             state
                                                 .drain_effects(
-                                                    &handle,
+                                                    owner.handle(),
                                                     now_ms,
                                                     NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
                                                     &token,
@@ -962,6 +1159,19 @@ fn register_ssu2_service(
                                         }
                                         Err(_) => {}
                                     }
+                                }
+                                if owner.process_group_inbound(&inbound).await.is_err() {
+                                    owner.shutdown().await;
+                                    let detail = i2pr_core::HealthDetail::new(
+                                        "Destination-group pool advancement failed",
+                                    )
+                                    .ok();
+                                    return i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::Internal,
+                                            detail,
+                                        ),
+                                    );
                                 }
                                 if !served {
                                     // Bounded dispatch: success and failure
@@ -985,13 +1195,28 @@ fn register_ssu2_service(
                                 if let Some(state) = floodfill.as_mut() {
                                     run_floodfill_evaluation(
                                         state,
-                                        &handle,
+                                        owner.handle(),
                                         &bundle,
                                         &data_dir,
                                         floodfill_config_path.as_deref(),
                                         &token,
                                     )
                                     .await;
+                                }
+                            }
+                            _ = group_tick.tick() => {
+                                if owner.advance_groups().await.is_err() {
+                                    owner.shutdown().await;
+                                    let detail = i2pr_core::HealthDetail::new(
+                                        "Destination-group pool advancement failed",
+                                    )
+                                    .ok();
+                                    return i2pr_runtime::ServiceResult::Failed(
+                                        i2pr_core::ServiceFailure::new(
+                                            i2pr_core::ServiceFailureCategory::Internal,
+                                            detail,
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -1060,7 +1285,9 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         "bootstrap pipeline completed"
     );
 
-    let (graph, inspection) = build_daemon_graph_with_inspection(&config)?;
+    let inspection = Arc::new(InspectionHandles::from_config(&config));
+    let graph =
+        build_daemon_graph_inner(&config, &inspection, Some(Arc::clone(&bootstrap_handle)))?;
     // Publish the local router hash for the Plan 288 inspection plane.
     // The hash is public RouterInfo material; no secret crosses into the
     // control plane. When bootstrap built no local RouterInfo the row
@@ -1278,6 +1505,29 @@ mod tests {
             err,
             DaemonError::RuntimeSupervisorFailed(message)
                 if message.contains("normal-daemon Destination-group provider, which is not active")
+        ));
+    }
+
+    #[test]
+    fn daemon_graph_requires_the_service_tunnel_subsystem_switch() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n[service_tunnels]\nenabled = false\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("service tunnel config is valid");
+        let bootstrap = Arc::new(Mutex::new(bootstrap::Bootstrap::new(
+            RouterInfoStoreConfig::default(),
+            config.reseed.clone(),
+        )));
+        let inspection = Arc::new(InspectionHandles::from_config(&config));
+        let error = build_daemon_graph_inner(&config, &inspection, Some(bootstrap))
+            .expect_err("individual enabled tunnel must honor the subsystem switch");
+        assert!(matches!(
+            error,
+            DaemonError::RuntimeSupervisorFailed(message)
+                if message.contains("service_tunnels.enabled = true")
         ));
     }
 }

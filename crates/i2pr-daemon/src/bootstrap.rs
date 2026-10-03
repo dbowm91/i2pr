@@ -45,6 +45,10 @@ use crate::config::{Config, ReseedConfig, ReseedSourceConfig};
 /// runaway allocations regardless of operator configuration.
 pub const MAX_RESEED_BYTES_HARD: usize = 16 * 1024 * 1024;
 
+/// Maximum validated RouterInfos copied into the daemon's group-provider
+/// bootstrap handoff.
+pub const MAX_GROUP_PROVIDER_ROUTER_INFOS: usize = 256;
+
 /// Bounded bootstrap state vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BootstrapState {
@@ -243,6 +247,18 @@ impl Bootstrap {
     /// Returns the populated store after the bootstrap run.
     pub fn store(&self) -> &RouterInfoStore {
         &self.store
+    }
+
+    /// Returns a bounded snapshot of validated RouterInfos for a daemon
+    /// product that needs to build a private, authoritative candidate store.
+    /// The snapshot is capped independently of the configured NetDB ceiling;
+    /// callers cannot turn a large bootstrap store into an unbounded copy.
+    pub fn validated_router_info_snapshot(&self) -> Vec<i2pr_netdb::ValidatedRouterInfo> {
+        self.store
+            .iter()
+            .take(MAX_GROUP_PROVIDER_ROUTER_INFOS)
+            .map(|(_, record)| record.clone())
+            .collect()
     }
 
     /// Returns the current local RouterInfo snapshot, if any.
@@ -587,5 +603,29 @@ mod tests {
         let snapshot = store_summary(&store);
         assert_eq!(snapshot.record_count, 0);
         assert_eq!(snapshot.state, BootstrapState::Empty);
+    }
+
+    #[test]
+    fn group_provider_snapshot_is_bounded_and_contains_only_validated_records() {
+        let config = ReseedConfig {
+            enabled: false,
+            max_sources: 4,
+            max_su3_bytes: 1024,
+            sources: Vec::new(),
+        };
+        let mut bootstrap = Bootstrap::new(RouterInfoStoreConfig::default(), config);
+        for seed in 0..=(MAX_GROUP_PROVIDER_ROUTER_INFOS as u64) {
+            let record = crate::destination_peers::test_validated_record(
+                seed,
+                Some("group-provider-test"),
+                Some(("127.0.0.1", 10_000 + seed as u16)),
+            );
+            assert!(matches!(
+                bootstrap.store.insert(record),
+                i2pr_netdb::InsertOutcome::Inserted
+            ));
+        }
+        let snapshot = bootstrap.validated_router_info_snapshot();
+        assert_eq!(snapshot.len(), MAX_GROUP_PROVIDER_ROUTER_INFOS);
     }
 }

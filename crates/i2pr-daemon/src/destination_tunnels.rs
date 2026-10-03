@@ -73,8 +73,8 @@ use std::collections::BTreeMap;
 
 use i2pr_client::DestinationTunnelPool;
 use i2pr_netdb::{
-    DestinationHash, LeaseSet2Store, LookupAction, LookupId, LookupPolicy, ReplyPath,
-    ReplyPathError, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
+    DestinationHash, InsertOutcome, LeaseSet2Store, LookupAction, LookupId, LookupPolicy,
+    ReplyPath, ReplyPathError, ResponseOutcome, RouterHash, RouterInfoStore, RouterInfoStoreConfig,
     router_hash_from_destination, select_floodfill_candidates,
 };
 use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_COMMON_STRUCTURE_SIZE, MAX_I2NP_PAYLOAD_SIZE};
@@ -489,6 +489,17 @@ impl DestinationTunnelCoordinator {
     /// Returns the authoritative bounded RouterInfo store.
     pub fn store(&self) -> &RouterInfoStore {
         &self.store
+    }
+
+    /// Inserts a record that has already passed the canonical
+    /// `ValidatedRouterInfo` constructor, preserving the store's normal
+    /// conflict and capacity policy. This is used to seed a product-local
+    /// authoritative store from the bounded daemon bootstrap snapshot.
+    pub fn insert_validated_router_info(
+        &mut self,
+        record: i2pr_netdb::ValidatedRouterInfo,
+    ) -> InsertOutcome {
+        self.store.insert(record)
     }
 
     /// Returns the bounded, privacy-safe build-candidate projection of the
