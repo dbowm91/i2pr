@@ -2,7 +2,7 @@
 
 Status: `passed-service-boundary-router-unlinkability-and-input-sanitation`
 
-Implementation commit: `06ee4bf` (`fix(privacy): close service boundary input leaks (Plan 307)`).
+Implementation commits: `06ee4bf` (`fix(privacy): close service boundary input leaks (Plan 307)`) and `c4a55c3` (`test(privacy): cover equal duplicate Host rejection (Plan 307)`).
 
 ## Requirement-to-evidence matrix
 
@@ -20,7 +20,7 @@ Implementation commit: `06ee4bf` (`fix(privacy): close service boundary input le
 
 - `cargo fmt --all --check` — passed.
 - `cargo check --locked --workspace --all-targets` — passed.
-- `cargo test --locked -p i2pr-service-tunnels --all-targets -- --test-threads=1` — 222 passed.
+- `cargo test --locked -p i2pr-service-tunnels --all-targets -- --test-threads=1` — 222 passed on the production implementation; rerun after the test-only follow-up commit `c4a55c3` — 223 passed.
 - `cargo test --locked -p i2pr-daemon --all-targets -- --test-threads=1` — 1,345 passed, 33 ignored, 60 suites.
 - `cargo test --locked --workspace --all-targets -- --test-threads=1` — 3,271 passed, 34 ignored, 110 suites.
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — passed with no issues.
