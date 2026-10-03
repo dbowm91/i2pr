@@ -47,11 +47,12 @@ use i2pr_tunnel::{
 use rand_chacha::ChaCha8Rng;
 use rand_core::{CryptoRng, RngCore, SeedableRng};
 
+use crate::bundle::ReplyBundling;
 use crate::dispatch::{DestinationDispatcher, InboundDispatchOutcome};
 use crate::identity::DestinationIdentity;
 use crate::routing::{
-    DestinationOutboundRole, DestinationRouting, OutboundRequest, SendError,
-    compose_outbound_delivery,
+    DestinationOutboundRole, DestinationRouting, OutboundDeliveryPlan, OutboundRequest, SendError,
+    compose_bundled_reply_delivery, compose_outbound_delivery,
 };
 use crate::session::EciesSessionManager;
 use crate::streaming::manager::StreamingManager;
@@ -274,27 +275,48 @@ pub fn deliver<R: CryptoRng + RngCore>(
     _outbound_tunnel_id: TunnelId,
     rng: &mut R,
 ) -> Result<LocalDeliveryOutcome, LocalDeliveryError> {
-    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
-    // The action's tunnel_id is the inbound gateway's receive
-    // tunnel id at the gateway router — the Lease2 `tunnel_id` the
-    // outbound delivery plan selects. The local seam uses the IBGW
-    // hop's tunnel id (the inbound tunnel's first hop) as the
-    // gating value, not the local_inbound_receive endpoint id the
-    // tunnel reassembler expects at the very end.
-    let inbound_ibgw_tunnel_id = inbound_tunnel
-        .hops()
-        .first()
-        .map(|hop| hop.receive_tunnel())
-        .ok_or(LocalDeliveryError::InvalidInboundTunnel)?;
-    let local_static_secret: [u8; i2pr_crypto::X25519_KEY_LENGTH] =
-        *sender.identity.static_secret_bytes();
+    let outbound_request = outbound_request_for(request, sender)?;
     let remote_hash =
         DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(request.destination_hash));
-
     // 1. Compose the outbound delivery plan via the canonical
     //    Plan 129 adapter. The fresh bound NS / NSR / ES form is
     //    selected by the routing pipeline.
-    //
+    let plan = compose_outbound_delivery(
+        sender.routing,
+        sender.session,
+        sender.outbound,
+        sender.identity.id(),
+        sender.identity.static_secret_bytes(),
+        remote_hash,
+        &outbound_request,
+        sender.now_seconds,
+        sender.now_ms,
+        rng,
+    )?;
+    let outcome = drive_to_dispatch(
+        &plan,
+        sender,
+        receiver,
+        outbound_hop0_hash,
+        outbound_hop1_hash,
+        inbound_tunnel,
+        inbound_hop1_hash,
+        inbound_hop2_hash,
+        _outbound_tunnel_id,
+        rng,
+    )?;
+    drain_single_to_streaming(outcome, sender, receiver)
+}
+
+/// Decodes one `TransportSendRequest` into its canonical outbound
+/// request: the Plan 192 streaming-envelope unwrap plus the
+/// i2pd-compatible I2CP body wrapping exactly one gzip member.
+/// Shared by the single and batched delivery paths so both build
+/// byte-identical requests.
+fn outbound_request_for(
+    request: &TransportSendRequest,
+    sender: &LocalDeliverySender<'_>,
+) -> Result<OutboundRequest, LocalDeliveryError> {
     // Plan 192: the streaming manager already produced an
     // I2P-style gzip-wrapped client payload (with the negotiated
     // local/remote Streaming ports and the protocol byte embedded
@@ -311,26 +333,48 @@ pub fn deliver<R: CryptoRng + RngCore>(
         MAX_STREAMING_ADAPTER_PAYLOAD_BYTES,
     )
     .map_err(|error| LocalDeliveryError::Adapter(StreamingAdapterError::ClientPayload(error)))?;
-    let outbound_request = OutboundRequest::new(
+    OutboundRequest::new(
         streaming_envelope.protocol,
         streaming_envelope.source_port,
         streaming_envelope.destination_port,
         &streaming_envelope.payload,
         sender.now_ms,
         Some(sender.local_lease_set2.clone()),
-    )?;
-    let plan = compose_outbound_delivery(
-        sender.routing,
-        sender.session,
-        sender.outbound,
-        sender.identity.id(),
-        &local_static_secret,
-        remote_hash,
-        &outbound_request,
-        sender.now_seconds,
-        sender.now_ms,
-        rng,
-    )?;
+    )
+    .map_err(LocalDeliveryError::from)
+}
+
+/// Drives one composed delivery plan through the synthetic OBEP
+/// hop, the receiver-side inbound chain, the authenticated
+/// dispatcher, and the loopback session pairing (steps 2-4 of
+/// [`deliver`]). Shared by the single and batched delivery paths
+/// so both traverse byte-identical tunnel and authentication
+/// seams; only payload assembly (step 1) and streaming drain
+/// (step 5) differ.
+#[allow(clippy::too_many_arguments)]
+fn drive_to_dispatch<R: CryptoRng + RngCore>(
+    plan: &OutboundDeliveryPlan,
+    sender: &mut LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    outbound_hop0_hash: i2pr_proto::Hash,
+    outbound_hop1_hash: i2pr_proto::Hash,
+    inbound_tunnel: EstablishedTunnel,
+    inbound_hop1_hash: i2pr_proto::Hash,
+    inbound_hop2_hash: i2pr_proto::Hash,
+    _outbound_tunnel_id: TunnelId,
+    rng: &mut R,
+) -> Result<InboundDispatchOutcome, LocalDeliveryError> {
+    // The action's tunnel_id is the inbound gateway's receive
+    // tunnel id at the gateway router — the Lease2 `tunnel_id` the
+    // outbound delivery plan selects. The local seam uses the IBGW
+    // hop's tunnel id (the inbound tunnel's first hop) as the
+    // gating value, not the local_inbound_receive endpoint id the
+    // tunnel reassembler expects at the very end.
+    let inbound_ibgw_tunnel_id = inbound_tunnel
+        .hops()
+        .first()
+        .map(|hop| hop.receive_tunnel())
+        .ok_or(LocalDeliveryError::InvalidInboundTunnel)?;
 
     // 2. Drive the synthetic OBEP hop to recover the post-OBEP
     //    action (authenticated-router-link-bypassed local seam).
@@ -369,7 +413,7 @@ pub fn deliver<R: CryptoRng + RngCore>(
     );
     match &outcome {
         InboundDispatchOutcome::Rejected(_) => {
-            return Ok(LocalDeliveryOutcome::DispatchRejected(outcome));
+            return Ok(outcome);
         }
         InboundDispatchOutcome::NewSessionProcessed {
             validated_remote_lease_set2,
@@ -407,15 +451,89 @@ pub fn deliver<R: CryptoRng + RngCore>(
             sender.now_seconds,
         )?;
     }
+    Ok(outcome)
+}
 
-    // 5. Drain the queued application payload and feed it into the
-    //    receiver's StreamingManager via the standard adapter
-    //    entry point.
+/// Drains one queued application payload into the receiver's
+/// StreamingManager (step 5 of [`deliver`], single path). Dispatch
+/// rejections surface as [`LocalDeliveryOutcome::DispatchRejected`]
+/// without touching the queue.
+fn drain_single_to_streaming(
+    outcome: InboundDispatchOutcome,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+) -> Result<LocalDeliveryOutcome, LocalDeliveryError> {
+    if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
+        return Ok(LocalDeliveryOutcome::DispatchRejected(outcome));
+    }
+    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    // A single-composed delivery routes at most one payload: pop
+    // exactly once so any foreign multi-data message's extra cloves
+    // linger for subsequent drains, exactly as before Plan 296.
     let payload = receiver
         .dispatcher
         .pop_payload(receiver.identity.id())
         .ok_or(LocalDeliveryError::NoPayload)?;
-    let payload_bytes = payload.bytes().to_vec();
+    match feed_one_payload(
+        payload.bytes().to_vec(),
+        sender,
+        receiver,
+        local_destination_hash_bytes,
+    )? {
+        FedPayload::Streaming(observation) => Ok(LocalDeliveryOutcome::Delivered { observation }),
+        FedPayload::Datagram => Ok(LocalDeliveryOutcome::DatagramDelivered),
+    }
+}
+
+/// One drained application payload and how the receiver consumed it.
+#[derive(Debug)]
+enum FedPayload {
+    /// Fed into a StreamingManager; the caller checks the
+    /// observation (only `StreamingDispatched` counts as delivered).
+    Streaming(InboundStreamingOutcome),
+    /// Authenticated as a repliable/raw datagram and queued on the
+    /// connectionless manager (Plan 291).
+    Datagram,
+}
+
+/// Drains every queued application payload into the receiver (step 5
+/// of [`deliver_batched`]). One entry per popped payload in pop
+/// (wire) order; dispatch rejections drain nothing. Feed errors map
+/// per payload so one bad payload cannot misattribute its siblings.
+fn drain_all_to_streaming(
+    outcome: InboundDispatchOutcome,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+) -> Vec<Result<FedPayload, LocalDeliveryError>> {
+    if matches!(outcome, InboundDispatchOutcome::Rejected(_)) {
+        return Vec::new();
+    }
+    let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
+    let mut fed = Vec::new();
+    while let Some(payload) = receiver
+        .dispatcher
+        .pop_payload(receiver.identity.id())
+    {
+        fed.push(feed_one_payload(
+            payload.bytes().to_vec(),
+            sender,
+            receiver,
+            local_destination_hash_bytes,
+        ));
+    }
+    fed
+}
+
+/// Feeds one queued application payload into the receiver's
+/// StreamingManager via the standard adapter entry point. Shared by
+/// both drains so single and bundled deliveries observe identical
+/// streaming/datagram routing.
+fn feed_one_payload(
+    payload_bytes: Vec<u8>,
+    sender: &LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    local_destination_hash_bytes: [u8; 32],
+) -> Result<FedPayload, LocalDeliveryError> {
     // Peek the streaming packet header to route the packet to the
     // correct StreamingManager. Plan 144 §3: the streaming manager
     // that issued the outbound SYN owns the outbound connection
@@ -475,7 +593,6 @@ pub fn deliver<R: CryptoRng + RngCore>(
         &local_destination_hash_bytes,
         sender.now_ms,
     )?;
-    let _ = outcome;
     // Plan 291: repliable/raw datagrams authenticate and queue on
     // the connectionless manager; everything else keeps the
     // streaming observation path.
@@ -497,9 +614,150 @@ pub fn deliver<R: CryptoRng + RngCore>(
                 sender.now_ms,
             )
             .map_err(LocalDeliveryError::Datagram)?;
-        return Ok(LocalDeliveryOutcome::DatagramDelivered);
+        return Ok(FedPayload::Datagram);
     }
-    Ok(LocalDeliveryOutcome::Delivered { observation })
+    Ok(FedPayload::Streaming(observation))
+}
+
+/// Per-index outcome of one [`deliver_batched`] call: positions into
+/// the caller's request slice.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BatchedDeliveryReport {
+    /// Input positions delivered (streaming-dispatched or
+    /// datagram-fed; dispatch rejections count as delivered, matching
+    /// the single-path sweep counters).
+    pub delivered: Vec<usize>,
+    /// Input positions that failed (decode, compose, drive, feed, or
+    /// a non-dispatched streaming observation). The caller
+    /// terminates each failed request's stream.
+    pub failed: Vec<usize>,
+}
+
+/// Outcome of one [`deliver_batched`] call.
+#[derive(Debug)]
+pub enum BatchedAttempt {
+    /// The batch traveled as one bundled New Session Reply; the
+    /// report carries per-index delivery positions. A fully failed
+    /// report still means "bundled and sent" (the session advanced),
+    /// so the caller must NOT retry these requests singly.
+    Bundled(BatchedDeliveryReport),
+    /// No bundling attempted: the policy is disabled, fewer than two
+    /// requests decoded, the remotes are mixed, or the bundled
+    /// composer refused (nothing sealed, session untouched). The
+    /// caller runs the single path per request; indices that failed
+    /// request decode are reported for stream termination.
+    Singles {
+        /// Input positions whose request failed to decode.
+        decode_failed: Vec<usize>,
+    },
+}
+
+/// Delivers a same-remote batch of `TransportSendRequest`s as one
+/// bundled New Session Reply when the destination's reply-bundling
+/// policy enables it (Plan 296).
+///
+/// The caller groups consecutive same-remote requests (the daemon
+/// outbound sweep groups its drained runs); mixed-remote input falls
+/// back to [`BatchedAttempt::Singles`] so no bundle ever mixes
+/// remotes. Bundled compose refusal also falls back (nothing sealed).
+/// A sealed-but-undeliverable bundle reports every index failed
+/// without retry: re-sending would duplicate application bytes.
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_batched<R: CryptoRng + RngCore>(
+    requests: &[TransportSendRequest],
+    bundling: ReplyBundling,
+    sender: &mut LocalDeliverySender<'_>,
+    receiver: &mut LocalDeliveryReceiver<'_>,
+    outbound_hop0_hash: i2pr_proto::Hash,
+    outbound_hop1_hash: i2pr_proto::Hash,
+    inbound_tunnel: EstablishedTunnel,
+    inbound_hop1_hash: i2pr_proto::Hash,
+    inbound_hop2_hash: i2pr_proto::Hash,
+    _outbound_tunnel_id: TunnelId,
+    rng: &mut R,
+) -> BatchedAttempt {
+    // Decode partition: decode failures terminate without touching
+    // the session, so they are reported for per-request cleanup.
+    let mut indices = Vec::new();
+    let mut outbound_requests = Vec::new();
+    let mut decode_failed = Vec::new();
+    let mut remote: Option<DestinationHash> = None;
+    let mut uniform_remote = true;
+    for (index, request) in requests.iter().enumerate() {
+        match outbound_request_for(request, sender) {
+            Ok(outbound) => {
+                let hash = DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(
+                    request.destination_hash,
+                ));
+                match remote {
+                    None => remote = Some(hash),
+                    Some(first) if first == hash => {}
+                    _ => uniform_remote = false,
+                }
+                indices.push(index);
+                outbound_requests.push(outbound);
+            }
+            Err(_) => decode_failed.push(index),
+        }
+    }
+    if uniform_remote && outbound_requests.len() >= 2 && bundling.is_enabled() {
+        if let Some(remote_hash) = remote
+            && let Ok(plan) = compose_bundled_reply_delivery(
+                sender.routing,
+                sender.session,
+                sender.outbound,
+                sender.identity.id(),
+                sender.identity.static_secret_bytes(),
+                remote_hash,
+                &outbound_requests,
+                bundling,
+                sender.now_seconds,
+                sender.now_ms,
+                rng,
+            )
+        {
+            let mut report = BatchedDeliveryReport::default();
+            match drive_to_dispatch(
+                &plan,
+                sender,
+                receiver,
+                outbound_hop0_hash,
+                outbound_hop1_hash,
+                inbound_tunnel,
+                inbound_hop1_hash,
+                inbound_hop2_hash,
+                _outbound_tunnel_id,
+                rng,
+            ) {
+                Ok(outcome) => {
+                    let drained = drain_all_to_streaming(outcome, sender, receiver);
+                    if drained.is_empty() {
+                        // Dispatch rejected the carrier: parity with
+                        // the single-path sweep counters, which count
+                        // rejections as delivered.
+                        report.delivered.extend(indices.iter().copied());
+                    } else {
+                        for (position, index) in indices.iter().enumerate() {
+                            match drained.get(position) {
+                                Some(Ok(FedPayload::Streaming(
+                                    InboundStreamingOutcome::StreamingDispatched { .. },
+                                )))
+                                | Some(Ok(FedPayload::Datagram)) => {
+                                    report.delivered.push(*index);
+                                }
+                                _ => report.failed.push(*index),
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    report.failed.extend(indices.iter().copied());
+                }
+            }
+            return BatchedAttempt::Bundled(report);
+        }
+    }
+    BatchedAttempt::Singles { decode_failed }
 }
 
 /// Recovers the post-OBEP router-delivery action from a composed

@@ -1607,6 +1607,8 @@ pub fn build_control_spec(
         idle,
         access,
         unique_local_address,
+        multihoming: false,
+        reply_bundling: false,
         http_policy,
         http_options,
         socks5_options,

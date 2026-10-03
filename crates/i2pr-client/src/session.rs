@@ -929,10 +929,19 @@ pub fn local_clove(now_seconds: u32, message_id: u32, i2np_body: Vec<u8>) -> Gar
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum EciesPayloadError {
-    /// The I2P ECIES payload block codec rejected the input.
+    /// The I2P ECIES payload codec rejected the input.
     #[error("ECIES payload codec error: {0}")]
     Codec(i2pr_proto::CodecError),
     /// No Garlic Clove block was present in the decoded payload.
     #[error("ECIES decrypted payload did not contain a Garlic Clove")]
     NoClove,
+    /// A reply/existing payload carried more application data cloves
+    /// than the bundling bound accepts (Plan 296).
+    #[error("ECIES payload carries {actual} data cloves, maximum {maximum}")]
+    TooManyDataCloves {
+        /// Supplied data clove count.
+        actual: usize,
+        /// Accepted maximum.
+        maximum: usize,
+    },
 }

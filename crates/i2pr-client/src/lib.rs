@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod bundle;
 pub mod datagram;
 pub mod dispatch;
 pub mod identity;
@@ -48,9 +49,13 @@ pub use config::{
     DestinationConfig, DestinationConfigError, DestinationTunnelMode, LocalRouterContext,
     MAX_AGGREGATE_COMMAND_QUEUE_DEPTH, MAX_DESTINATION_BUILD_CONCURRENCY,
     MAX_DESTINATION_FAILURE_THRESHOLD, MAX_DESTINATION_INBOUND, MAX_DESTINATION_OUTBOUND,
+    MAX_DESTINATION_BACKUP_QUANTITY, MAX_DESTINATION_LENGTH_VARIANCE,
     MAX_LEASE_PUBLICATION_MARGIN_SECONDS, MAX_LEASE_ROTATION_MARGIN_SECONDS,
     MAX_LOCAL_DESTINATIONS, MAX_PENDING_DESTINATION_BYTES, MAX_PENDING_DESTINATION_MESSAGES,
     RegistryConfig,
+};
+pub use bundle::{
+    BundleError, MAX_BUNDLED_DATA_CLOVES, ReplyBundling, encode_bundled_reply_payload,
 };
 pub use datagram::{
     DATAGRAM1_PROTOCOL, DatagramCounters, DatagramError, DatagramManager, DatagramReceiveEvent,
@@ -94,7 +99,7 @@ pub use routing::{
     DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, DestinationRoutingError,
     EncryptedOutbound, LookupIngestError, LookupIngestOutcome, MAX_ACTIVE_REMOTES,
     MAX_CONCURRENT_REMOTE_LOOKUPS, MAX_PENDING_OUTBOUND_PER_REMOTE, OutboundDeliveryPlan,
-    OutboundRequest, SendError, compose_outbound_delivery,
+    OutboundRequest, SendError, compose_bundled_reply_delivery, compose_outbound_delivery,
 };
 pub use session::{
     AcceptedExistingSession, AcceptedNewSession, AcceptedNewSessionReply, ClassifiedInbound,
@@ -105,7 +110,8 @@ pub use session::{
     encode_garlic_clove_payload, encode_new_session_payload, local_clove,
 };
 pub use streaming::local_delivery::{
-    LocalDeliveryError, LocalDeliveryOutcome, LocalDeliveryReceiver, LocalDeliverySender, deliver,
+    BatchedAttempt, BatchedDeliveryReport, LocalDeliveryError, LocalDeliveryOutcome,
+    LocalDeliveryReceiver, LocalDeliverySender, deliver, deliver_batched,
 };
 pub use streaming_adapter::{
     InboundStreamingOutcome, MAX_STREAMING_ADAPTER_PAYLOAD_BYTES, StreamingAdapterError,

@@ -491,6 +491,8 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         access: i2pr_service_tunnels::ServerAccessPolicy::default(),
         unique_local_address: false,
+        multihoming: false,
+        reply_bundling: false,
         http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

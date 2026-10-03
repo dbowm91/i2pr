@@ -65,6 +65,8 @@ fn client_spec(id: &str, server_b64: &str) -> ServiceTunnelSpec {
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         access: ServerAccessPolicy::default(),
         unique_local_address: false,
+        multihoming: false,
+        reply_bundling: false,
         http_policy: HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

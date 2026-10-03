@@ -116,6 +116,8 @@ fn irc_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec 
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         access: i2pr_service_tunnels::ServerAccessPolicy::default(),
         unique_local_address: false,
+        multihoming: false,
+        reply_bundling: false,
         http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
