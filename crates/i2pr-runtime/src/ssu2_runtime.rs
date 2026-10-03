@@ -1426,6 +1426,30 @@ impl Ssu2RuntimeService {
             .unwrap_or_default()
     }
 
+    /// Returns the router hashes of peers holding at least one live
+    /// session link, bounded at [`MAX_SSU2_ACTIVE_CEILING`] entries.
+    ///
+    /// Read-only public-data observability for the Plan 295 control
+    /// plane (`transport.ssu2.active_sessions`): peer hashes are
+    /// public protocol identity already retained for link routing,
+    /// never secrets. The set is point-in-time; links established or
+    /// released concurrently may appear or vanish between calls.
+    /// Lock poisoning degrades to empty, never to fabrication.
+    pub fn active_peer_hashes(&self) -> Vec<Hash> {
+        self.shared
+            .state
+            .lock()
+            .map(|state| {
+                state
+                    .peer_links
+                    .keys()
+                    .take(MAX_SSU2_ACTIVE_CEILING)
+                    .map(|peer| peer.hash())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Binds the configured sockets and starts one supervised loop
     /// task per bound family under the caller-owned scope.
     pub async fn start(
@@ -5775,8 +5799,24 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_validate_ordering_and_bounds() {
-        assert!(Ssu2RuntimeDeadlines::default().validate().is_ok());
+    fn active_peer_hashes_is_empty_before_any_session() {
+        let keys = make_path_keys();
+        let service = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("service");
+        assert!(service.active_peer_hashes().is_empty());
+        assert_eq!(service.snapshot().active_sessions, 0);
+    }
+
+    #[test]
+    fn deadlines_validate_ordering_and_bounds() {        assert!(Ssu2RuntimeDeadlines::default().validate().is_ok());
         let zero = Ssu2RuntimeDeadlines {
             handshake: Duration::ZERO,
             ..Default::default()
