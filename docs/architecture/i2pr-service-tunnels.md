@@ -350,7 +350,8 @@ i2pr_daemon::service_tunnels_irc_server:
   targets, and ceiling overflow.
 - Client kinds require listener + destination and forbid server
   targets; server kinds require target(s), forbid listener and remote
-  destination, and require dedicated policy.
+  destination. Explicitly grouped server services require distinct,
+  nonzero inbound I2P ports.
 - `ServiceTunnelSpec::http_options` is mandatory for `HttpClient`
   and rejected for every other kind.
 - `ServiceTunnelSpec::socks5_options` is mandatory for
@@ -360,6 +361,41 @@ i2pr_daemon::service_tunnels_irc_server:
 - `ServiceTunnelSpec.kind == IrcServer` reuses the Plan 175
   persistent server destination storage so restart preserves the
   public service Destination.
+
+### Plan 309 Destination groups
+
+`DestinationPolicy::Dedicated` is the default and creates one private
+Destination group per service. An explicit `group` is an intentional
+linkability domain: every member shares one identity, Streaming owner,
+router material, registry entry, and lifecycle. Client-only groups use
+ephemeral identities. A group containing any server persists under
+`service_destinations/groups/<group>/destination.identity`; an existing
+dedicated server identity is migrated byte-for-byte to its corresponding
+group path. Client activity in a persistent mixed group is logged as
+intentionally linkable to the published server Destination.
+
+For example, HTTP and SOCKS proxies can intentionally share a Destination:
+
+```toml
+[[service_tunnels.tunnel]]
+id = "web-proxy"
+kind = "http-client"
+group = "shared-clients"
+listener = "127.0.0.1:4444"
+destination = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p"
+
+[[service_tunnels.tunnel]]
+id = "socks-proxy"
+kind = "socks5-client"
+group = "shared-clients"
+listener = "127.0.0.1:4445"
+destination = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p"
+```
+
+Multiple server services can share a persistent Destination when each uses
+a distinct nonzero `inbound_port`. Reusing a group and port is rejected.
+This sharing intentionally links all member services; it is never selected
+automatically to satisfy a resource limit.
 
 ### Plan 176 HTTP runtime-neutral module
 
@@ -814,7 +850,7 @@ all M10 sockets and tasks.
 6. Shared client destinations require an explicit group; sharing is
    never implicit.
 7. Contradictory client/server options fail before daemon mutation.
-8. Persistent service destinations follow the same versioned,
+8. Persistent group destinations follow the same versioned,
    permission-hardened, atomic, no-replace contract as the router
    identity (see ADR 0006).
 9. `generic-client`, `generic-server`, `http-client`,

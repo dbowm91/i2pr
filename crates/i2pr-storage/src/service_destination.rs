@@ -251,6 +251,24 @@ impl ServiceDestinationStore {
         })
     }
 
+    /// Creates a deterministic store for an explicit Destination
+    /// linkability group. Dedicated services retain their historical
+    /// per-service path; shared groups live under the separate
+    /// `groups/` namespace so a group id cannot alias a service id.
+    pub fn for_group(
+        data_dir: &Path,
+        group_id: &str,
+    ) -> Result<Self, ServiceDestinationStorageError> {
+        validate_service_id(group_id)?;
+        let subdir = data_dir
+            .join(SERVICE_DESTINATIONS_SUBDIR)
+            .join("groups")
+            .join(group_id);
+        Ok(Self {
+            path: subdir.join(SERVICE_DESTINATION_FILE_NAME),
+        })
+    }
+
     /// Creates a store for an exact service destination path. No
     /// validation of the path is performed; callers must own the
     /// filesystem boundary.
@@ -363,6 +381,32 @@ impl ServiceDestinationStore {
         let record = generate_record(rng)?;
         self.save_new(&record)?;
         Ok(record)
+    }
+
+    /// Migrates an existing service-owned identity into this group
+    /// namespace without changing its encoded key bytes. The group
+    /// copy is installed atomically before the legacy file is removed.
+    pub fn migrate_from(
+        &self,
+        legacy: &Self,
+    ) -> Result<ServiceDestinationRecord, ServiceDestinationStorageError> {
+        let record = legacy.load()?;
+        self.save_new(&record)?;
+        legacy.remove()?;
+        Ok(record)
+    }
+
+    /// Removes a validated identity file and syncs its parent after
+    /// a successful namespace migration.
+    pub fn remove(&self) -> Result<(), ServiceDestinationStorageError> {
+        validate_existing_directory(self.parent()).map_err(map_storage)?;
+        let metadata = fs::symlink_metadata(&self.path)
+            .map_err(|source| service_io("inspect service destination for removal", source))?;
+        validate_service_destination_metadata(&metadata)?;
+        fs::remove_file(&self.path)
+            .map_err(|source| service_io("remove migrated service destination", source))?;
+        let _ = sync_directory(self.parent());
+        Ok(())
     }
 }
 
@@ -1019,6 +1063,24 @@ mod tests {
         }
         let ok = ServiceDestinationStore::for_service(directory.path(), "alpha-1");
         assert!(ok.is_ok());
+    }
+
+    #[test]
+    fn group_namespace_is_separate_and_migration_preserves_encoded_identity() {
+        let directory = tempdir().expect("directory");
+        let legacy =
+            ServiceDestinationStore::for_service(directory.path(), "web").expect("legacy store");
+        let group =
+            ServiceDestinationStore::for_group(directory.path(), "public").expect("group store");
+        assert_ne!(legacy.path(), group.path());
+        let original = record(88);
+        legacy.save_new(&original).expect("save legacy");
+        let before = fs::read(legacy.path()).expect("read legacy bytes");
+        let _migrated = group.migrate_from(&legacy).expect("migrate");
+        let after = fs::read(group.path()).expect("read group bytes");
+        assert_eq!(before, after);
+        assert!(!legacy.exists());
+        assert!(group.exists());
     }
 
     fn write_raw(path: &Path, bytes: &[u8]) {

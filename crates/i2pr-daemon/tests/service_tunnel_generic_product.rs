@@ -201,6 +201,7 @@ async fn corrupt_identity_file_fails_service_generation() {
     let identity_path = data_dir
         .path()
         .join("service_destinations")
+        .join("groups")
         .join("alpha-server")
         .join("destination.identity");
     let bytes = std::fs::read(&identity_path).expect("read file");

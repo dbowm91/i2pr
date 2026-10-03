@@ -1545,8 +1545,12 @@ async fn provision_all_service_router_material(
     // service only when the profile requires remote lookup
     // (client profiles). Server profiles skip lookup but still
     // require real outbound/inbound + LS2 + owner registration.
+    let mut provisioned_destinations = std::collections::HashSet::new();
     for runtime in runtimes {
         let spec_id = runtime.spec_id.clone();
+        if !provisioned_destinations.insert(runtime.destination_id) {
+            continue;
+        }
         // Allocate a disjoint tunnel-id set for this service.
         // Layout per service: outbound creator, OBEP receive, OBEP
         // next, inbound creator, IBGW receive, IBGW next.
@@ -1800,9 +1804,13 @@ async fn provision_all_service_router_material(
     // A server spec carries no configured destination reference
     // (`spec_reference_for_service` returns `None`), so gating
     // publication on that lookup would skip every real server.
+    let mut published_destinations = std::collections::HashSet::new();
     for runtime in runtimes {
         let spec_id = runtime.spec_id.clone();
         if manager.spec_is_server(&spec_id) {
+            if !published_destinations.insert(runtime.destination_id) {
+                continue;
+            }
             publish_service_ls2_for_service(
                 manager,
                 destination_tunnels,
