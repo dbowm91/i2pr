@@ -10,7 +10,8 @@
 #                                   NetDB selection is deterministic)
 #   P   i2pr controlled floodfill   (the subject of the qualification)
 #
-# The controlled identity and its `caps=f` RouterInfo are produced by the
+# The controlled identity and its `caps=fR` RouterInfo (peer-test-confirmed
+# reachability, Plan 306 / ADR 0030) are produced by the
 # driver's prepare phase on a fixed loopback port and then seeded into C's
 # netDb layout before C starts. The qualify phase reloads the same identity,
 # rebinds the same port, and re-runs controlled activation against the live
