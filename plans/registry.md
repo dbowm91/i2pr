@@ -134,17 +134,17 @@ Parallel anonymity work is beside, not beneath, M12. Plans 297–305 remain stop
 
 ## Blocked work
 
-| Subsystem | Plan | Blocker |
-|---|---|---|
-| M6 mixed-router interop | 187 / 188 / 191 (historical) | Retained `blocked`/`stopped` tokens; rows partially flipped by Plans 190/192/193 — see roadmap |
-| M12 floodfill | 280 Red25519 provider qualification | Stopped: no acceptable maintained Rust provider; type 5 deferred by Plan 281. |
-| M12 floodfill | 279 second-family qualification/normal activation | stopped (budget spent; corrective Plan 306) | `plans/closure/floodfill/279-status.md` (`stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri`) | Three frozen-budget Java attempts all stop at the publisher rendezvous: stock Java 2.13.0 loads, verifies, and floodfill-lists the controlled RI but never initiates transport to it (caps `f` only; Plan 101 forbids R/tier letters). Zero matrix rows reachable; normal `caps=f` stays unavailable; ADR 0026 stands. |
-| M12 floodfill | 306 loopback reachability-caps + Java requalification | ready | `plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md` | Decide what a loopback controlled RI may truthfully advertise (R iff inbound-proven; tiers stay forbidden), implement behind eligibility/permit gates, then i2pd requal (budget 1) + Java requal (fresh budget 3). Must not widen 279's spent budget. |
-| Anonymity / implementation neutrality | 308 HTTP differential | blocked | Controlled ordinary-HTTP topology and three-family captures remain absent; independent of Plans 314–315. |
-| Anonymity / implementation neutrality | 310 original multi-hop/group-pool plan | blocked; corrective Plan 314 ready | Immutable blocked record; do not retry by demanding an external three-router testnet. Plan 314 owns build/selector proof and Plan 315 owns group-pool consumers. |
-| Anonymity / implementation neutrality | 315 group-pool integration corrective | blocked on 314 | Becomes ready only after Plan 314 closes its exact multi-hop build/selector contract. |
-| Anonymity / implementation neutrality | 311 / 312 | blocked on 315 | Lifecycle and pinned-i2pd Streaming baseline require the corrected group-owned pools. |
-| Anonymity / implementation neutrality | 313 | blocked on 312 | Streaming convergence remains evidence-driven. |
+| Subsystem | Plan | State | Authority / handoff | Blocker / next step |
+|---|---|---|---|---|
+| M6 mixed-router interop | 187 / 188 / 191 (historical) | blocked/stopped historical | See mixed-router roadmap and later Plans 190/192/193 | Retained historical tokens; later rows partially supersede their execution authority. |
+| M12 floodfill | 280 Red25519 provider qualification | stopped | `plans/closure/floodfill/280-status.md` | No acceptable maintained Rust provider; type 5 deferred by Plan 281. |
+| M12 floodfill | 279 second-family qualification/normal activation | stopped (budget spent; corrective Plan 306) | `plans/closure/floodfill/279-status.md` (`stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri`) | Three frozen-budget Java attempts stop at publisher rendezvous; normal `caps=f` remains unavailable and Plan 306 owns the corrective. |
+| M12 floodfill | 306 loopback reachability-caps + Java requalification | ready | `plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md` | Decide truthful loopback reachability caps, implement behind eligibility/permit gates, then execute bounded i2pd + Java requalification without widening Plan 279's spent budget. |
+| Anonymity / implementation neutrality | 308 HTTP differential | blocked | `plans/closure/anonymity/308-status.md` | Controlled ordinary-HTTP topology and three-family captures remain absent; independent of Plans 314–315. |
+| Anonymity / implementation neutrality | 310 original multi-hop/group-pool plan | blocked; corrective Plan 314 ready | `plans/closure/anonymity/310-status.md` | Immutable blocked record; do not retry by demanding an external three-router testnet. Plan 314 owns build/selector proof and Plan 315 owns group-pool consumers. |
+| Anonymity / implementation neutrality | 315 group-pool integration corrective | blocked on 314 | `plans/implementation/anonymity/315-plan310-destination-group-pool-integration.md` | Becomes ready only after Plan 314 closes its exact multi-hop build/selector contract. |
+| Anonymity / implementation neutrality | 311 / 312 | blocked on 315 | `plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md`; `plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md` | Lifecycle and pinned-i2pd Streaming baseline require the corrected group-owned pools. |
+| Anonymity / implementation neutrality | 313 | blocked on 312 | `plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md` | Streaming convergence remains evidence-driven. |
 
 ### Retained / conditional work
 
