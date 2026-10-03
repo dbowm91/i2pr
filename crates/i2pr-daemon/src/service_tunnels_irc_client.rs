@@ -488,12 +488,7 @@ pub async fn run_irc_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_t
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_t.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,

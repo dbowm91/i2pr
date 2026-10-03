@@ -106,6 +106,7 @@ fn irc_server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         timeouts: ServiceTimeouts::defaults(),
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
+        idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         http_options: None,
         socks5_options: None,
         irc_options: None,

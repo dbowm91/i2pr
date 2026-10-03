@@ -506,6 +506,9 @@ impl I2pControlServiceState {
             for (name, reason) in failures {
                 warn!(tunnel = %name, reason = %reason, "control tunnel failed at startup");
             }
+            // Plan 292: the daemon-owned idle sweeper ticks over
+            // control-owned runtimes for the whole service lifetime.
+            control.spawn_idle_sweeper(&children, &cancellation);
         }
         let (listener, _bound_address) = self.bind(bind_address).await?;
         self.serve(listener, children, cancellation).await

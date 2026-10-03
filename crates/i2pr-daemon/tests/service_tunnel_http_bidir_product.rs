@@ -64,6 +64,7 @@ fn base_spec(id: &str, kind: ServiceTunnelKind) -> ServiceTunnelSpec {
         timeouts: ServiceTimeouts::defaults(),
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
+        idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         http_options: None,
         socks5_options: None,
         irc_options: None,

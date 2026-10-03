@@ -591,6 +591,84 @@ impl TunnelShaping {
     }
 }
 
+/// Minimum idle deadline in milliseconds (Plan 292).
+pub const MIN_IDLE_TIMEOUT_MS: u64 = 1_000;
+/// Maximum idle deadline in milliseconds (24 hours).
+pub const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
+/// Default idle deadline applied when idle action flags are set
+/// without an explicit timeout (10 minutes, documented i2pr policy).
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
+
+/// Validated per-tunnel idle policy (Plan 292).
+///
+/// A deadline with no action flag is inert, so it is rejected;
+/// action flags without a deadline take [`DEFAULT_IDLE_TIMEOUT_MS`]
+/// at the control boundary. `None` (disabled) is the default: every
+/// existing tunnel keeps its current always-on behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IdlePolicy {
+    /// Idle deadline in milliseconds (`None` disables the sweep).
+    pub timeout_ms: Option<u64>,
+    /// Stop the runtime once idle past the deadline.
+    pub close_on_idle: bool,
+    /// Rebuild tunnel pools in place once idle past the deadline
+    /// (identity stable; ephemeral client identities follow the
+    /// existing restart-regeneration behavior).
+    pub new_dest_on_idle: bool,
+    /// Halve pool targets toward one once idle past the deadline
+    /// (runtime-only; a restart restores the stored shaping).
+    pub reduce_on_idle: bool,
+}
+
+impl IdlePolicy {
+    /// Disabled policy: no deadline, no actions.
+    pub fn disabled() -> Self {
+        Self {
+            timeout_ms: None,
+            close_on_idle: false,
+            new_dest_on_idle: false,
+            reduce_on_idle: false,
+        }
+    }
+
+    /// Validates an explicit policy. Rejects out-of-range deadlines.
+    /// Inert policies (a deadline with no action) are rejected by
+    /// spec validation and the control boundary, which own the
+    /// service identifier for the diagnostic.
+    pub fn try_new(
+        timeout_ms: Option<u64>,
+        close_on_idle: bool,
+        new_dest_on_idle: bool,
+        reduce_on_idle: bool,
+    ) -> Result<Self, ServiceTunnelError> {
+        if let Some(timeout) = timeout_ms {
+            if !(MIN_IDLE_TIMEOUT_MS..=MAX_IDLE_TIMEOUT_MS).contains(&timeout) {
+                return Err(ServiceTunnelError::ExceedsCeiling {
+                    field: "idle_timeout",
+                    reason: "must be within 1000..=86400000 milliseconds",
+                });
+            }
+            if !(close_on_idle || new_dest_on_idle || reduce_on_idle) {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id: String::new(),
+                    reason: "idle_timeout without an idle action is inert",
+                });
+            }
+        }
+        Ok(Self {
+            timeout_ms,
+            close_on_idle,
+            new_dest_on_idle,
+            reduce_on_idle,
+        })
+    }
+
+    /// Whether the sweep considers this policy.
+    pub fn enabled(self) -> bool {
+        self.timeout_ms.is_some()
+    }
+}
+
 /// One validated service-tunnel specification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceTunnelSpec {
@@ -625,6 +703,9 @@ pub struct ServiceTunnelSpec {
     /// windows. Streamr kinds must leave this unset (the datagram
     /// path has no streaming windows).
     pub streaming_interactive: bool,
+    /// Idle policy (Plan 292): deadline-gated close, pool rebuild,
+    /// or pool reduction for quiet tunnels. Disabled by default.
+    pub idle: IdlePolicy,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
     /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
@@ -964,6 +1045,22 @@ impl ServiceTunnelSpec {
                 reason: "streaming_interactive must not be set for Streamr kinds",
             });
         }
+        // Plan 292: a deadline with no action is inert; name the
+        // service (the constructor cannot).
+        if self.idle.timeout_ms.is_some()
+            && !(self.idle.close_on_idle || self.idle.new_dest_on_idle || self.idle.reduce_on_idle)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "idle_timeout without an idle action is inert",
+            });
+        }
+        IdlePolicy::try_new(
+            self.idle.timeout_ms,
+            self.idle.close_on_idle,
+            self.idle.new_dest_on_idle,
+            self.idle.reduce_on_idle,
+        )?;
         Ok(())
     }
 }
@@ -1057,6 +1154,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1112,6 +1210,34 @@ mod tests {
             TunnelShaping::balanced(),
             TunnelShaping::try_new(2, 2, 2).expect("balanced")
         );
+    }
+
+    #[test]
+    fn idle_policy_bounds_and_inert_rejection() {
+        // Plan 292: deadlines are milliseconds within
+        // 1000..=86400000; disabled is the default.
+        assert!(!IdlePolicy::disabled().enabled());
+        let armed = IdlePolicy::try_new(Some(60_000), true, false, false).expect("armed");
+        assert!(armed.enabled());
+        for timeout in [0, 999, 86_400_001, u64::MAX] {
+            assert!(
+                IdlePolicy::try_new(Some(timeout), true, false, false).is_err(),
+                "timeout {timeout} must fail"
+            );
+        }
+        // A deadline with no action is inert: the constructor
+        // rejects it, and spec validation names the service.
+        assert!(IdlePolicy::try_new(Some(60_000), false, false, false).is_err());
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.idle = IdlePolicy {
+            timeout_ms: Some(60_000),
+            close_on_idle: false,
+            new_dest_on_idle: false,
+            reduce_on_idle: false,
+        };
+        assert!(spec.validate().is_err());
+        spec.idle = IdlePolicy::try_new(Some(60_000), false, true, false).expect("idle");
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
@@ -1219,6 +1345,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1323,6 +1450,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1355,6 +1483,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
             irc_options: None,
@@ -1410,6 +1539,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1436,6 +1566,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,

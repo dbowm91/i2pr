@@ -721,12 +721,7 @@ pub async fn run_http_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,
@@ -893,12 +888,7 @@ pub async fn run_connect_client_loop(
                     .failed_connects
                     .fetch_add(1, Ordering::Relaxed);
             }
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             debug!(
                 service = %spec_id_for_log,
                 ?outcome,

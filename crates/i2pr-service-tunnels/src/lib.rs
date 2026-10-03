@@ -54,18 +54,20 @@ pub mod errors;
 pub mod events;
 pub mod generation;
 pub mod http;
+pub mod idle;
 pub mod irc;
 pub mod socks5;
 pub mod streamr;
 
 pub use config::{
-    DestinationPolicy, LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE,
-    MAX_ACTIVE_CONNECTIONS_PER_SERVICE, MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS,
-    MAX_GROUP_ID_LEN, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS, MAX_STATIC_ALIASES,
+    DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, IdlePolicy, LocalListenerSpec,
+    MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
+    MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS, MAX_GROUP_ID_LEN,
+    MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS, MAX_STATIC_ALIASES,
     MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_QUANTITY, MAX_UNIX_PATH_LEN,
-    MIN_BUFFERED_BYTES_PER_DIRECTION, ServerTarget, ServiceClientGroupId, ServiceResourceLimits,
-    ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
-    TunnelShaping,
+    MIN_BUFFERED_BYTES_PER_DIRECTION, MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceClientGroupId,
+    ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
+    ServiceTunnelSpec, TunnelShaping,
 };
 pub use connect::{CONNECT_DEFAULT_PORT, CONNECT_OPTIONS_MAX_PORTS, ConnectClientOptions};
 pub use destination::{DestinationRef, StaticAliasTable};
@@ -79,6 +81,7 @@ pub use http::{
     filter_server_response, parse_authority_form, parse_request_head, parse_request_target,
     rewrite_headers,
 };
+pub use idle::{IdleSweepAction, idle_decision};
 pub use irc::{
     IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcError, IrcErrorKind,
     IrcLimits, IrcLineParser, IrcServerOptions, IrcServerRegistration, IrcTag, LineDirection,

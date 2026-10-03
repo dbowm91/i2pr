@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use i2pr_client::streaming::StreamingError;
@@ -197,6 +197,16 @@ pub struct ServiceRuntime {
     /// (Plan 292 shaping projection of the spec; mirrors reuse it
     /// so the registry matches the live pool sizing).
     pub(crate) destination_config: DestinationConfig,
+    /// Last observed activity in process-monotonic milliseconds
+    /// (Plan 292 idle sweep; connection ends and Streamr events
+    /// advance it; construction seeds it).
+    pub(crate) last_activity_ms: AtomicU64,
+    /// Current Streamr subscriber count (Plan 292 idle sweep;
+    /// maintained by the publisher loop, zero elsewhere).
+    pub(crate) streamr_subscribers: AtomicUsize,
+    /// Effective pool shaping this runtime was built with (the
+    /// stored shaping unless a sweep reduction overrode it).
+    pub(crate) effective_shaping: i2pr_service_tunnels::TunnelShaping,
 }
 
 impl ServiceRuntime {
@@ -207,6 +217,29 @@ impl ServiceRuntime {
     /// listeners until scope shutdown.
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    /// Records activity at `now_ms` (monotonic maximum; concurrent
+    /// completions never move the watermark backwards).
+    pub(crate) fn note_activity(&self, now_ms: u64) {
+        self.last_activity_ms.fetch_max(now_ms, Ordering::Relaxed);
+    }
+
+    /// Marks one connection finished and records the moment it became
+    /// quieter (Plan 292 idle sweep input).
+    pub(crate) fn connection_finished(&self, now_ms: u64) {
+        self.active_connections
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
+        self.note_activity(now_ms);
+    }
+
+    /// Marks one connection finished at the process-monotonic clock.
+    /// Connection tasks call this so no call site imports the clock.
+    pub(crate) fn connection_finished_now(&self) {
+        self.connection_finished(service_streaming_now_ms());
     }
 }
 
@@ -230,6 +263,15 @@ impl std::fmt::Debug for ServiceRuntime {
     }
 }
 
+/// One Plan 292 idle-sweep decision bound to a service id.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdleSweepDecision {
+    /// Service id the decision applies to.
+    pub spec_id: String,
+    /// Action the sweep selected.
+    pub action: i2pr_service_tunnels::IdleSweepAction,
+}
+
 /// Service tunnel manager composition root.
 pub struct ServiceTunnelManager {
     config: ServiceTunnelManagerConfig,
@@ -241,6 +283,10 @@ pub struct ServiceTunnelManager {
     destination_registry: Mutex<DestinationRegistry>,
     /// Destination configuration (shared, balanced profile).
     destination_config: DestinationConfig,
+    /// Plan 292 sweep reduction overrides by service id. A present
+    /// entry replaces the stored shaping at runtime build; absent
+    /// means the stored shaping applies.
+    reduced_shaping: Mutex<HashMap<String, i2pr_service_tunnels::TunnelShaping>>,
     /// Aggregate connection permit semaphore.
     aggregate_permit: Arc<Semaphore>,
     /// Plan 180 §3 committed generation. `Some` after at least one
@@ -333,6 +379,7 @@ impl ServiceTunnelManager {
                 })?,
             )),
             destination_config: DestinationConfig::balanced(),
+            reduced_shaping: Mutex::new(HashMap::new()),
             aggregate_permit: Arc::new(Semaphore::new(aggregate_ceiling)),
             committed_generation: Mutex::new(None),
             draining_generations: Mutex::new(Vec::new()),
@@ -2381,11 +2428,132 @@ impl ServiceTunnelManager {
     pub fn destination_config_for(
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> DestinationConfig {
+        Self::destination_config_for_shaping(&spec.shaping)
+    }
+
+    /// Projects explicit shaping into a destination config.
+    pub fn destination_config_for_shaping(
+        shaping: &i2pr_service_tunnels::TunnelShaping,
+    ) -> DestinationConfig {
         DestinationConfig::from_service_shaping(
-            spec.shaping.inbound_quantity,
-            spec.shaping.outbound_quantity,
-            spec.shaping.length_hops,
+            shaping.inbound_quantity,
+            shaping.outbound_quantity,
+            shaping.length_hops,
         )
+    }
+
+    /// Resolves the effective shaping for one spec: a sweep
+    /// reduction override when present, else the stored shaping.
+    pub fn reduced_shaping_for(
+        &self,
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> i2pr_service_tunnels::TunnelShaping {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .get(spec.id.as_str())
+            .copied()
+            .unwrap_or(spec.shaping)
+    }
+
+    /// Installs a sweep reduction override for one service id.
+    pub fn set_reduced_shaping(&self, spec_id: &str, shaping: i2pr_service_tunnels::TunnelShaping) {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .insert(spec_id.to_owned(), shaping);
+    }
+
+    /// Clears a sweep reduction override (fresh start or explicit
+    /// edit restores the stored shaping).
+    pub fn clear_reduced_shaping(&self, spec_id: &str) {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .remove(spec_id);
+    }
+
+    /// Returns the sweep reduction override for one service id, if
+    /// any (control applied-path and status reporting).
+    pub fn reduced_override(&self, spec_id: &str) -> Option<i2pr_service_tunnels::TunnelShaping> {
+        self.reduced_shaping
+            .lock()
+            .expect("reduced shaping poisoned")
+            .get(spec_id)
+            .copied()
+    }
+
+    /// Returns the effective shaping of one live runtime, if present.
+    pub fn effective_shaping_for(
+        &self,
+        spec_id: &str,
+    ) -> Option<i2pr_service_tunnels::TunnelShaping> {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.effective_shaping)
+    }
+
+    /// One idle-sweep decision bound to a service id.
+    ///
+    /// Plan 292: the daemon control layer applies these through the
+    /// existing stop/restart transactions; this computation only
+    /// selects. Reduction overrides install before the decision is
+    /// returned so the subsequent restart rebuilds with them, and
+    /// every decided runtime gets a fresh activity watermark (one
+    /// full deadline of grace before the next decision).
+    pub fn idle_sweep(&self, now_ms: u64) -> Vec<IdleSweepDecision> {
+        use i2pr_service_tunnels::{IdleSweepAction, idle_decision};
+        let specs = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned")
+            .as_ref()
+            .map(|generation| generation.committed_specs.tunnels.clone())
+            .unwrap_or_default();
+        let runtimes = self.runtimes.lock().expect("runtimes poisoned");
+        let mut decisions = Vec::new();
+        for runtime in runtimes.values() {
+            let Some(spec) = specs
+                .iter()
+                .find(|candidate| candidate.id.as_str() == runtime.spec_id)
+            else {
+                continue;
+            };
+            if !spec.enabled || !spec.idle.enabled() {
+                continue;
+            }
+            let Some(action) = idle_decision(
+                &spec.idle,
+                runtime.active_connections.load(Ordering::Relaxed),
+                runtime.streamr_subscribers.load(Ordering::Relaxed),
+                runtime.last_activity_ms.load(Ordering::Relaxed),
+                now_ms,
+            ) else {
+                continue;
+            };
+            if action == IdleSweepAction::ReducePools {
+                let effective = runtime.effective_shaping;
+                let reduced = i2pr_service_tunnels::TunnelShaping {
+                    inbound_quantity: (effective.inbound_quantity / 2).max(1),
+                    outbound_quantity: (effective.outbound_quantity / 2).max(1),
+                    length_hops: effective.length_hops,
+                };
+                if reduced == effective {
+                    // Already minimal: deciding again would restart
+                    // forever without changing anything.
+                    continue;
+                }
+                self.set_reduced_shaping(&runtime.spec_id, reduced);
+            }
+            runtime.note_activity(now_ms);
+            decisions.push(IdleSweepDecision {
+                spec_id: runtime.spec_id.clone(),
+                action,
+            });
+        }
+        decisions
     }
 
     /// Projects one spec's streaming profile into its bridge
@@ -2549,9 +2717,11 @@ impl ServiceTunnelManager {
         let is_connect_client = matches!(spec.kind, ServiceTunnelKind::ConnectClient);
         let is_socks_irc = matches!(spec.kind, ServiceTunnelKind::SocksIrc);
         let is_http_server = matches!(spec.kind, ServiceTunnelKind::HttpServer);
-        // Plan 292: the live pool sizing comes from the spec shaping,
-        // never the shared manager default.
-        let destination_config = Self::destination_config_for(spec);
+        // Plan 292: the live pool sizing comes from the effective
+        // shaping (stored shaping unless a sweep reduction
+        // overrode it), never the shared manager default.
+        let shaping = self.reduced_shaping_for(spec);
+        let destination_config = Self::destination_config_for_shaping(&shaping);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -2576,6 +2746,9 @@ impl ServiceTunnelManager {
             is_streamr_client,
             is_streamr_server,
             destination_config,
+            last_activity_ms: AtomicU64::new(service_streaming_now_ms()),
+            streamr_subscribers: AtomicUsize::new(0),
+            effective_shaping: shaping,
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -3263,12 +3436,7 @@ async fn run_client_loop(
             // run_client_connection returns without touching it so
             // failed handshakes cannot pin phantom slots (the HTTP /
             // SOCKS / IRC loops already follow this shape).
-            runtime_for_task
-                .active_connections
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                    Some(value.saturating_sub(1))
-                })
-                .ok();
+            runtime_for_task.connection_finished_now();
             drop(permit_for_task);
         });
     }
@@ -4169,6 +4337,7 @@ mod plan202_routing_tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4244,6 +4413,7 @@ mod plan202_routing_tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4277,6 +4447,7 @@ mod plan202_routing_tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4522,6 +4693,7 @@ mod plan206_remote_composition_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4710,6 +4882,7 @@ mod plan208_remote_route_integration_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4779,6 +4952,7 @@ mod plan208_remote_route_integration_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4891,6 +5065,7 @@ mod plan208_remote_route_integration_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4973,6 +5148,7 @@ mod plan208_remote_route_integration_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5153,6 +5329,7 @@ mod plan210_real_service_destination_material_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5521,6 +5698,7 @@ mod plan212_router_backed_service_destination_tests {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5876,6 +6054,7 @@ mod plan212_router_backed_service_destination_tests {
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5898,6 +6077,7 @@ mod plan212_router_backed_service_destination_tests {
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5958,6 +6138,7 @@ mod plan212_router_backed_service_destination_tests {
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5980,6 +6161,7 @@ mod plan212_router_backed_service_destination_tests {
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
+                idle: i2pr_service_tunnels::IdlePolicy::disabled(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,

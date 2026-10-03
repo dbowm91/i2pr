@@ -203,15 +203,31 @@ async fn drive_streamr_server(
                     if event.protocol != DATAGRAM1_PROTOCOL {
                         continue;
                     }
-                    handle_subscribe(
+                    if handle_subscribe(
                         runtime.spec_id.as_str(),
                         &mut subscribers,
                         options,
                         &event,
                         service_streaming_now_ms(),
-                    );
+                    ) {
+                        // Subscription intake is publisher-visible
+                        // liveness (Plan 292 idle sweep input).
+                        runtime.streamr_subscribers.store(
+                            subscribers.len(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        runtime.note_activity(service_streaming_now_ms());
+                    }
                 }
+                let before = subscribers.len();
                 sweep_expired(&mut subscribers, options, service_streaming_now_ms());
+                if subscribers.len() != before {
+                    runtime.streamr_subscribers.store(
+                        subscribers.len(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    runtime.note_activity(service_streaming_now_ms());
+                }
             }
         }
     }
@@ -228,13 +244,13 @@ fn handle_subscribe(
     options: &StreamrOptions,
     event: &i2pr_client::datagram::DatagramReceiveEvent,
     now_ms: u64,
-) {
+) -> bool {
     if event.payload.len() != 1 {
         debug!(
             service = service_id,
             "streamr control with wrong length dropped"
         );
-        return;
+        return false;
     }
     // Replies swap the observed port pair (Java `MSink`).
     let key = SubscriberKey {
@@ -246,19 +262,25 @@ fn handle_subscribe(
         0x00 => {
             if subscribers.contains_key(&key) {
                 subscribers.insert(key, now_ms);
+                true
             } else if subscribers.len() >= options.max_subscribers {
                 warn!(
                     service = service_id,
                     "streamr subscriber table full; denying subscription"
                 );
+                false
             } else {
                 subscribers.insert(key, now_ms);
                 debug!(service = service_id, "streamr subscription added");
+                true
             }
         }
         0x01 => {
             if subscribers.remove(&key).is_some() {
                 debug!(service = service_id, "streamr subscription removed");
+                true
+            } else {
+                false
             }
         }
         other => {
@@ -267,6 +289,7 @@ fn handle_subscribe(
                 flag = other,
                 "streamr control with bad flag dropped"
             );
+            false
         }
     }
 }
@@ -434,6 +457,9 @@ async fn drive_streamr_client(drive: &ClientDrive<'_>) -> StreamrLoopOutcome {
                     if !is_producer_media(&event, &producer.destination_hash, options) {
                         continue;
                     }
+                    // Producer-bound media arrival is subscriber
+                    // liveness (Plan 292 idle sweep input).
+                    runtime.note_activity(service_streaming_now_ms());
                     if let Err(error) = socket.send_to(&event.payload, remote_udp).await {
                         debug!(
                             service = %runtime.spec_id,

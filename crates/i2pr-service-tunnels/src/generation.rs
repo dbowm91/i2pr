@@ -173,10 +173,13 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         || prev.http_options != next.http_options
         || prev.socks5_options != next.socks5_options
         || prev.irc_options != next.irc_options
+        || prev.idle != next.idle
     {
         // Resource/deadline/profile-only differences are safe to
         // swap in place; nothing has been wired that depends on
-        // these values being immutable.
+        // these values being immutable. Plan 292: the idle sweep
+        // reads the committed spec each tick, so idle edits take
+        // effect without rebuilding the runtime.
         return DiffClass::MutableInPlace;
     }
     DiffClass::Unchanged
@@ -193,7 +196,8 @@ pub fn kind_string(kind: ServiceTunnelKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::{
-        DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts, TunnelShaping,
+        DestinationPolicy, IdlePolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts,
+        TunnelShaping,
     };
     use crate::destination::DestinationRef;
 
@@ -226,6 +230,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -249,6 +254,7 @@ mod tests {
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -290,6 +296,16 @@ mod tests {
         let mut next = prev.clone();
         next.streaming_interactive = true;
         assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
+    }
+
+    #[test]
+    fn idle_change_is_mutable_in_place() {
+        // Plan 292: the sweep reads the committed spec each tick,
+        // so idle edits take effect without rebuilding the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.idle = IdlePolicy::try_new(Some(60_000), true, false, false).expect("idle");
+        assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
     }
 
     #[test]

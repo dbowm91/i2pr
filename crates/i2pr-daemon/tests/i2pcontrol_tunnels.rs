@@ -953,6 +953,8 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
                 "tunnel_quantity": 4,
                 "tunnel_length": 3,
                 "profile": "interactive",
+                "idle_timeout": 60000,
+                "close_on_idle": true,
             },
         }),
         2,
@@ -983,6 +985,10 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     assert_eq!(
         response["result"]["options"]["profile"],
         serde_json::json!("interactive")
+    );
+    assert_eq!(
+        response["result"]["options"]["close_on_idle"],
+        serde_json::json!("true")
     );
 
     // Edit replaces the destination generation with new shaping.

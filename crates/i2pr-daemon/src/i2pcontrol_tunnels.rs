@@ -45,9 +45,10 @@ use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
-    DestinationPolicy, DestinationRef, LocalListenerSpec, MAX_SERVICE_TUNNELS,
-    MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_QUANTITY, ServerTarget, ServiceTunnelId, ServiceTunnelKind,
-    ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping,
+    DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
+    MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_QUANTITY,
+    MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
+    ServiceTunnelSpec, TunnelShaping,
 };
 
 use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
@@ -803,6 +804,11 @@ pub fn build_control_spec(
     let mut outbound_quantity: Option<u8> = None;
     // Plan 292 profile selection (OR-combined effective bit).
     let mut profile_interactive = false;
+    // Plan 292 idle inputs (pairing enforced at build time).
+    let mut idle_timeout_ms: Option<u64> = None;
+    let mut idle_close = false;
+    let mut idle_new_dest = false;
+    let mut idle_reduce = false;
     // Plan 291 Streamr inputs (validated per kind below; ranges
     // enforced by `StreamrOptions::validate` through the final
     // spec validation).
@@ -1025,6 +1031,40 @@ pub fn build_control_spec(
                     profile_interactive = true;
                 }
             }
+            // Plan 292: idle policy. The deadline is milliseconds;
+            // flags without a deadline take the documented default
+            // at build time, while a deadline without flags is
+            // rejected by spec validation (inert configuration).
+            "idle_timeout" => {
+                let timeout = value
+                    .parse::<u64>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "idle_timeout must be an integer in milliseconds",
+                    })?;
+                if !(MIN_IDLE_TIMEOUT_MS..=MAX_IDLE_TIMEOUT_MS).contains(&timeout) {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "idle_timeout must be within 1000..=86400000 milliseconds",
+                    });
+                }
+                idle_timeout_ms = Some(timeout);
+            }
+            "close_on_idle" => {
+                if parse_bool_option(key, value)? {
+                    idle_close = true;
+                }
+            }
+            "new_dest_on_idle" => {
+                if parse_bool_option(key, value)? {
+                    idle_new_dest = true;
+                }
+            }
+            "reduce_on_idle" => {
+                if parse_bool_option(key, value)? {
+                    idle_reduce = true;
+                }
+            }
             // Plan 291: Streamr UDP endpoints and cadence policy.
             // The loopback shape is enforced here; numeric ranges
             // are enforced by `StreamrOptions::validate` through
@@ -1193,6 +1233,20 @@ pub fn build_control_spec(
         outbound_quantity: outbound_quantity.or(symmetric_quantity).unwrap_or(2),
         length_hops: inbound_length.or(outbound_length).unwrap_or(2),
     };
+    // Plan 292: resolve the idle policy. Flags without a deadline
+    // take the documented default; a deadline without flags flows
+    // to spec validation, which rejects it as inert with the
+    // service id. Ranges were enforced per key at parse time.
+    let idle_timeout_ms = match (idle_timeout_ms, idle_close || idle_new_dest || idle_reduce) {
+        (None, true) => Some(DEFAULT_IDLE_TIMEOUT_MS),
+        (timeout, _) => timeout,
+    };
+    let idle = i2pr_service_tunnels::IdlePolicy {
+        timeout_ms: idle_timeout_ms,
+        close_on_idle: idle_close,
+        new_dest_on_idle: idle_new_dest,
+        reduce_on_idle: idle_reduce,
+    };
     let target = match kind {
         ServiceTunnelKind::GenericServer
         | ServiceTunnelKind::IrcServer
@@ -1322,6 +1376,7 @@ pub fn build_control_spec(
         timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
         shaping,
         streaming_interactive: profile_interactive,
+        idle,
         http_options,
         socks5_options,
         irc_options,
@@ -1447,6 +1502,19 @@ pub struct TunnelControlState {
     /// Cancellation installed at startup (None before startup).
     cancellation: Mutex<Option<i2pr_runtime::CancellationToken>>,
 }
+
+/// One applied Plan 292 idle-sweep action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdleSweepApplied {
+    /// Service id the action applied to.
+    pub spec_id: String,
+    /// Action label (`close`, `rebuild-pools`, `reduce-pools`).
+    pub action: &'static str,
+}
+
+/// Plan 292 idle-sweep interval. Per-tunnel deadlines gate action;
+/// the tick itself carries no policy.
+pub const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
 impl TunnelControlState {
     /// Builds control state over an explicit store, startup inventory,
@@ -2173,6 +2241,12 @@ impl TunnelControlState {
         prior: &ControlDefinition,
         running_before: &BTreeSet<String>,
     ) -> Result<serde_json::Value, ControlError> {
+        // Plan 292: the restaged runtime rebuilds from the edited
+        // definition, so any sweep reduction override is dropped
+        // before the rebuild (explicit configuration supersedes
+        // sweep state; failures leave a stopped runtime that an
+        // operator start rebuilds fresh).
+        self.manager.clear_reduced_shaping(name);
         lock(&self.running).remove(name);
         if let Err(error) = self.commit_locked(guard, &[name.to_owned()], false).await {
             self.rollback_state(name, Some((name, prior.clone())), running_before);
@@ -2216,7 +2290,10 @@ impl TunnelControlState {
             normalize_definition(target_name, prior.tunnel_type, merged, start_on_load)?;
         let probe = build_control_spec(&candidate)?;
         self.check_listener_against_startup(&probe)?;
-        // Phase one: add the new definition stopped.
+        // Phase one: add the new definition stopped. The old
+        // name's sweep reduction override is dropped: the renamed
+        // runtime rebuilds from the merged definition.
+        self.manager.clear_reduced_shaping(name);
         lock(&self.definitions).insert(target_name.to_owned(), candidate);
         lock(&self.transitioning).insert(target_name.to_owned());
         if let Err(error) = self
@@ -2288,6 +2365,9 @@ impl TunnelControlState {
         lock(&self.definitions).remove(name);
         lock(&self.running).remove(name);
         lock(&self.failed).remove(name);
+        // Plan 292: a deleted service drops its sweep reduction
+        // override so a later same-name tunnel starts fresh.
+        self.manager.clear_reduced_shaping(name);
         lock(&self.transitioning).insert(name.to_owned());
         match self.commit_locked(&guard, &[name.to_owned()], false).await {
             Ok((generation, _)) => {
@@ -2399,6 +2479,92 @@ impl TunnelControlState {
         }
     }
 
+    /// Plan 292 idle sweep over control-owned runtimes: computes
+    /// decisions from the manager, then applies each through the
+    /// existing stop/restart transactions. Reduction overrides
+    /// install during computation; a failed restart drops its
+    /// override so the stored definition stays authoritative.
+    /// Stale decisions (a tunnel stopped concurrently) are skipped
+    /// by re-checking running intent before applying.
+    pub async fn idle_sweep_once(&self, now_ms: u64) -> Vec<IdleSweepApplied> {
+        let mut applied = Vec::new();
+        for decision in self.manager.idle_sweep(now_ms) {
+            if !self.is_running(&decision.spec_id) {
+                continue;
+            }
+            let request = TunnelManagerRequest {
+                action: match decision.action {
+                    IdleSweepAction::Close => TunnelAction::Stop,
+                    IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
+                        TunnelAction::Restart
+                    }
+                },
+                name: Some(decision.spec_id.clone()),
+                tunnel_type: None,
+                new_name: None,
+                options: BTreeMap::new(),
+            };
+            let outcome = match decision.action {
+                IdleSweepAction::Close => self.stop(&request).await,
+                IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
+                    self.restart(&request).await
+                }
+            };
+            let label = match decision.action {
+                IdleSweepAction::Close => "close",
+                IdleSweepAction::RebuildPools => "rebuild-pools",
+                IdleSweepAction::ReducePools => "reduce-pools",
+            };
+            match outcome {
+                Ok(_) => applied.push(IdleSweepApplied {
+                    spec_id: decision.spec_id,
+                    action: label,
+                }),
+                Err(error) => {
+                    if decision.action == IdleSweepAction::ReducePools {
+                        self.manager.clear_reduced_shaping(&decision.spec_id);
+                    }
+                    lock(&self.failed).insert(decision.spec_id, static_control_reason(&error));
+                }
+            }
+        }
+        applied
+    }
+
+    /// Spawns the daemon-owned periodic idle sweeper. Production
+    /// calls this once after startup; tests drive
+    /// [`Self::idle_sweep_once`] directly for determinism.
+    pub fn spawn_idle_sweeper(
+        self: &Arc<Self>,
+        children: &i2pr_runtime::ChildScope,
+        cancellation: &i2pr_runtime::CancellationToken,
+    ) {
+        let control = Arc::clone(self);
+        let stop = cancellation.clone();
+        if let Err(error) = children.spawn(move |task| async move {
+            loop {
+                tokio::select! {
+                    () = task.cancelled() => break,
+                    () = stop.cancelled() => break,
+                    () = tokio::time::sleep(IDLE_SWEEP_INTERVAL) => {}
+                }
+                for applied in control
+                    .idle_sweep_once(crate::service_tunnels::service_streaming_now_ms())
+                    .await
+                {
+                    tracing::info!(
+                        tunnel = %applied.spec_id,
+                        action = %applied.action,
+                        "idle sweep applied"
+                    );
+                }
+            }
+            Ok(())
+        }) {
+            tracing::warn!(error = ?error, "idle sweeper failed to spawn");
+        }
+    }
+
     /// Shared start path (also used at daemon startup): records running
     /// intent, commits, and starts supervisors for the transitioned
     /// diff. Acquires the op lock.
@@ -2412,6 +2578,10 @@ impl TunnelControlState {
                 definition.tunnel_type.name().to_owned(),
             ));
         }
+        // Plan 292: an operator start builds fresh pools from the
+        // stored definition, dropping any sweep reduction override
+        // (sweep restarts preserve it; only explicit starts clear).
+        self.manager.clear_reduced_shaping(name);
         let running_before = lock(&self.running).clone();
         lock(&self.running).insert(name.to_owned());
         lock(&self.transitioning).insert(name.to_owned());
@@ -3177,6 +3347,174 @@ mod tests {
                 "unexpected error for {key}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn plan292_idle_policy_parses_and_pairs() {
+        // Full policy on a client kind: explicit deadline plus one
+        // action flag each.
+        for flag in ["close_on_idle", "new_dest_on_idle", "reduce_on_idle"] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert("idle_timeout".to_owned(), "5000".to_owned());
+            options.insert(flag.to_owned(), "true".to_owned());
+            let definition = ControlDefinition {
+                name: format!("idle-{flag}"),
+                tunnel_type: TunnelType::Client,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("idle spec builds");
+            assert_eq!(spec.idle.timeout_ms, Some(5_000));
+            assert!(spec.idle.enabled());
+        }
+        // Flags without a deadline take the documented default.
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        let definition = ControlDefinition {
+            name: "srv_idle".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("default deadline builds");
+        assert_eq!(
+            spec.idle.timeout_ms,
+            Some(i2pr_service_tunnels::DEFAULT_IDLE_TIMEOUT_MS)
+        );
+        // A deadline without flags is inert and fails.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("idle_timeout".to_owned(), "5000".to_owned());
+        let error = normalize_definition("lone", TunnelType::Client, &options, false)
+            .expect_err("lone deadline fails");
+        assert!(
+            matches!(
+                error,
+                ControlError::InvalidRequest(_) | ControlError::ContradictoryOptions { .. }
+            ),
+            "unexpected error: {error:?}"
+        );
+        // Out-of-range and non-numeric deadlines fail at the boundary.
+        for value in ["0", "999", "86400001", "five"] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert("idle_timeout".to_owned(), value.to_owned());
+            options.insert("close_on_idle".to_owned(), "true".to_owned());
+            let error = normalize_definition("badidle", TunnelType::Client, &options, false)
+                .expect_err("bad deadline fails");
+            assert!(
+                matches!(error, ControlError::InvalidOption { .. }),
+                "unexpected error for {value}: {error:?}"
+            );
+        }
+        // Idle applies to Streamr kinds too (subscriber/media
+        // activity, not streaming connections).
+        let mut options = BTreeMap::new();
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5001".to_owned());
+        options.insert("idle_timeout".to_owned(), "5000".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        let definition = ControlDefinition {
+            name: "strmidle".to_owned(),
+            tunnel_type: TunnelType::StreamrServer,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("streamr idle builds");
+        assert!(spec.idle.enabled());
+    }
+
+    #[test]
+    fn plan292_idle_sweep_closes_quiet_tunnels() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        // Quiet tunnel with close-on-idle plus a plain sibling that
+        // must never fire (distinct binds; two ephemeral port-0
+        // listeners would collide at the boundary).
+        let ports = distinct_ports(2);
+        let mut options = client_options(&destination, ports[0]);
+        options.insert("idle_timeout".to_owned(), "1000".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        block_on(control.create(&create_request("idleclose", TunnelType::Client, options)))
+            .expect("create runs");
+        let plain = client_options(&destination, ports[1]);
+        block_on(control.create(&create_request("plainsibling", TunnelType::Client, plain)))
+            .expect("sibling runs");
+        assert!(control.is_running("idleclose"));
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        // Before the deadline nothing fires.
+        let applied = block_on(control.idle_sweep_once(base + 500));
+        assert!(applied.is_empty(), "no early fire: {applied:?}");
+        // Past the deadline the quiet tunnel stops; the sibling is
+        // untouched.
+        let applied = block_on(control.idle_sweep_once(base + 60_000));
+        assert_eq!(applied.len(), 1, "one decision: {applied:?}");
+        assert_eq!(applied[0].spec_id, "idleclose");
+        assert_eq!(applied[0].action, "close");
+        assert!(!control.is_running("idleclose"));
+        assert!(control.is_running("plainsibling"));
+        // A second sweep finds nothing (no runtime, no decision).
+        let applied = block_on(control.idle_sweep_once(base + 120_000));
+        assert!(applied.is_empty(), "no repeat: {applied:?}");
+    }
+
+    #[test]
+    fn plan292_idle_sweep_reduces_to_floor_then_stops() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("tunnel_quantity".to_owned(), "4".to_owned());
+        options.insert("idle_timeout".to_owned(), "1000".to_owned());
+        options.insert("reduce_on_idle".to_owned(), "true".to_owned());
+        block_on(control.create(&create_request("idlereduce", TunnelType::Client, options)))
+            .expect("create runs");
+        let generation_before = control.store_generation();
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        let now = base + 60_000;
+        // First sweep halves 4/4 to 2/2 and restarts.
+        let applied = block_on(control.idle_sweep_once(now));
+        assert_eq!(applied.len(), 1, "reduce fires: {applied:?}");
+        assert_eq!(applied[0].action, "reduce-pools");
+        assert!(control.store_generation() > generation_before);
+        assert!(control.is_running("idlereduce"));
+        let halved = control
+            .manager
+            .effective_shaping_for("idlereduce")
+            .expect("runtime lives");
+        assert_eq!(halved.inbound_quantity, 2);
+        assert_eq!(halved.outbound_quantity, 2);
+        // Second sweep halves to the 1/1 floor and restarts again.
+        let applied = block_on(control.idle_sweep_once(now));
+        assert_eq!(applied.len(), 1, "reduce fires again: {applied:?}");
+        let floored = control
+            .manager
+            .effective_shaping_for("idlereduce")
+            .expect("runtime lives");
+        assert_eq!(floored.inbound_quantity, 1);
+        assert_eq!(floored.outbound_quantity, 1);
+        // At the floor the sweep decides nothing (no restart loop).
+        let applied = block_on(control.idle_sweep_once(now));
+        assert!(applied.is_empty(), "floor holds: {applied:?}");
+        assert!(control.is_running("idlereduce"));
+    }
+
+    #[test]
+    fn plan292_idle_sweep_rebuilds_pools_in_place() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("idle_timeout".to_owned(), "1000".to_owned());
+        options.insert("new_dest_on_idle".to_owned(), "true".to_owned());
+        block_on(control.create(&create_request("idlerebuild", TunnelType::Client, options)))
+            .expect("create runs");
+        let generation_before = control.store_generation();
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        let applied = block_on(control.idle_sweep_once(base + 60_000));
+        assert_eq!(applied.len(), 1, "rebuild fires: {applied:?}");
+        assert_eq!(applied[0].action, "rebuild-pools");
+        assert!(control.store_generation() > generation_before);
+        assert!(control.is_running("idlerebuild"));
     }
 
     #[test]

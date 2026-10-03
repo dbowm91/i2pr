@@ -377,6 +377,7 @@ async fn m10_remote_route_integration_through_deliver_outbound() {
         timeouts: ServiceTimeouts::defaults(),
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
+        idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
