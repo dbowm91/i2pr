@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 clap.workspace = true
+i2pr-addressbook = { path = "../i2pr-addressbook" }
 i2pr-api = { path = "../i2pr-api" }
 i2pr-client = { path = "../i2pr-client" }
 i2pr-crypto = { path = "../i2pr-crypto" }

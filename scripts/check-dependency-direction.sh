@@ -31,6 +31,7 @@ expected = {
         "i2pr-crypto", "i2pr-netdb", "i2pr-proto", "i2pr-storage"
     },
     "i2pr-daemon": {
+        "i2pr-addressbook",
         "i2pr-api",
         "i2pr-client",
         "i2pr-core",
@@ -59,6 +60,7 @@ expected = {
         "i2pr-client", "i2pr-crypto", "i2pr-proto", "i2pr-tunnel"
     },
     "i2pr-i2pcontrol": set(),
+    "i2pr-addressbook": {"i2pr-proto"},
 }
 
 for name, allowed in expected.items():

@@ -675,6 +675,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "i2pr-addressbook"
+version = "0.1.0"
+dependencies = [
+ "base64ct",
+ "i2pr-proto",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "i2pr-api"
 version = "0.1.0"
 dependencies = [
@@ -734,6 +745,7 @@ dependencies = [
  "chacha20poly1305",
  "clap",
  "flate2",
+ "i2pr-addressbook",
  "i2pr-api",
  "i2pr-client",
  "i2pr-core",
