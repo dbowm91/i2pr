@@ -1,6 +1,6 @@
 # Plan 317 — Normal-daemon Destination-group pool provider
 
-Status at registration: **ready**.
+Status at registration: **ready**. Current status: **blocked**; corrective successor: Plan 318.
 
 Classification: daemon/router product capability foundation.
 
