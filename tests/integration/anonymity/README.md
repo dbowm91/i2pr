@@ -38,3 +38,9 @@ The Plan 298/304 three-family hostile-Destination contract above is retained his
 Plans 312–313 use directional black-box measurement: i2pr owns the opposite endpoint while unmodified i2pd runs as the client or server under test. Java I2P may be recorded for context but is not a pass/fail Streaming dependency.
 
 HTTP qualification is separated from hostile Streaming. Plan 308 may use ordinary controlled server Destinations and the retained Ubuntu/reference artifacts without waiting for a raw packet-control seam inside Java or i2pd.
+
+Plan 308's bounded HTTP capture normalizer is `canonicalize_http_capture.py`; its
+fail-closed evidence contract is checked by `bash scripts/check-http-anonymity-evidence.sh`.
+The checker requires all three family captures, exact pins, the current source head,
+the fixed corpus, and completed owned-process cleanup. It intentionally fails while
+the controlled peer topology or any family capture is missing.
