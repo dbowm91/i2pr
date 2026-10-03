@@ -1984,8 +1984,11 @@ fn execute_naming_lookup(
     // Plan 294: ordinary `.i2p` names consult the canonical address
     // book when the subsystem is active; session-registry and Base32
     // paths above always precede it. Inactive or absent stays
-    // KeyNotFound, exactly as before Plan 294.
-    if name.to_ascii_lowercase().ends_with(".i2p") {
+    // KeyNotFound, exactly as before Plan 294. One trailing dot is
+    // the canonical DNS root marker and strips before the suffix
+    // check (the owner canonicalizes identically).
+    let bare = name.strip_suffix('.').unwrap_or(&name);
+    if bare.to_ascii_lowercase().ends_with(".i2p") {
         if let Some(entry) = state.addressbook_lookup(&name) {
             return Ok(NamingLookupApplied {
                 value: entry.destination,
@@ -3133,5 +3136,57 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn plan294_naming_lookup_consults_the_canonical_owner() {
+        use crate::addressbook::{AddressBookManager, AddressBookSubsystemConfig};
+        use i2pr_api::sam::naming::NamingLookupRequest;
+        let config = SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().unwrap(),
+            port: 0,
+            limits: SamLimits::defaults(),
+        };
+        let state = SamServiceState::new(config).expect("state");
+        let lookup = |name: &str| {
+            execute_naming_lookup(
+                &state,
+                ServerConnectionState::AwaitHello,
+                NamingLookupRequest {
+                    name: name.to_owned(),
+                },
+            )
+        };
+        // Inactive subsystem: ordinary `.i2p` names stay KeyNotFound.
+        assert!(lookup("absent.i2p").is_err());
+        // Active subsystem: committed entries resolve through the same
+        // owner the control plane mutates.
+        let directory = tempfile::tempdir().expect("temp directory");
+        let manager = AddressBookManager::activate(AddressBookSubsystemConfig {
+            enabled: true,
+            state_dir: directory.path().join("addressbook"),
+        });
+        assert!(manager.is_active());
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        let destination = i2pr_api::sam::base64::encode(&bytes);
+        manager
+            .apply_entry(i2pr_addressbook::EntryMutation {
+                book: i2pr_addressbook::BookKind::Local,
+                hostname: "sam-peer.i2p".to_owned(),
+                destination: Some(destination.clone()),
+                delete: false,
+            })
+            .expect("entry");
+        state.set_addressbook_handle(manager.shared());
+        let applied = lookup("sam-peer.i2p").expect("address-book hit");
+        assert_eq!(applied.value, destination);
+        // Case and trailing-dot forms canonicalize identically.
+        let applied = lookup("SAM-PEER.I2P.").expect("canonical hit");
+        assert_eq!(applied.value, destination);
+        // Non-book names and non-`.i2p` names keep their verdicts.
+        assert!(lookup("missing.i2p").is_err());
+        assert!(lookup("not-a-name").is_err());
     }
 }

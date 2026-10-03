@@ -151,6 +151,10 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             request_deadline: std::time::Duration::from_millis(5_000),
             shutdown_timeout: std::time::Duration::from_millis(2_000),
         },
+        addressbook: i2pr_daemon::addressbook::AddressBookSubsystemConfig {
+            enabled: false,
+            state_dir: data_dir.join("addressbook"),
+        },
     }
 }
 

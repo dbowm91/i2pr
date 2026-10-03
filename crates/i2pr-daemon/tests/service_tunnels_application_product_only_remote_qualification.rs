@@ -1493,6 +1493,7 @@ async fn m10_product_only_remote_http_and_irc_application_interop_v214() {
         per_service_connection_ceiling: 4,
         reference: Some(reference),
         options: ServiceProductOptions::default(),
+        addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

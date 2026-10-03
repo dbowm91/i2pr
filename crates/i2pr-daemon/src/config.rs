@@ -3503,4 +3503,43 @@ data_dir = "./state"
         );
         assert!(Config::parse(&text).is_err());
     }
+
+    #[test]
+    fn addressbook_section_defaults_to_disabled() {
+        let config = Config::parse(MINIMAL).expect("minimal parses");
+        assert!(!config.addressbook.enabled);
+        assert_eq!(
+            config.addressbook.state_dir,
+            config.router.data_dir.join("addressbook")
+        );
+    }
+
+    #[test]
+    fn addressbook_section_resolves_state_dir() {
+        // Explicit relative directories resolve under the data dir.
+        let text = format!("{MINIMAL}\n[addressbook]\nenabled = true\nstate_dir = \"books\"\n");
+        let config = Config::parse(&text).expect("relative dir");
+        assert!(config.addressbook.enabled);
+        assert_eq!(
+            config.addressbook.state_dir,
+            config.router.data_dir.join("books")
+        );
+        // Absolute directories pass through.
+        let text =
+            format!("{MINIMAL}\n[addressbook]\nenabled = true\nstate_dir = \"/tmp/abs-books\"\n");
+        let config = Config::parse(&text).expect("absolute dir");
+        assert_eq!(
+            config.addressbook.state_dir,
+            PathBuf::from("/tmp/abs-books")
+        );
+        // Empty and NUL-bearing directories fail shape validation.
+        let text = format!("{MINIMAL}\n[addressbook]\nstate_dir = \"   \"\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        // Unknown keys fail closed.
+        let text = format!("{MINIMAL}\n[addressbook]\nfetch_command = \"curl\"\n");
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
 }

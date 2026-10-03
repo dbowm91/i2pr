@@ -4802,6 +4802,100 @@ mod plan202_routing_tests {
 }
 
 #[cfg(test)]
+mod plan294_addressbook_resolution_tests {
+    use super::*;
+    use i2pr_service_tunnels::DestinationRef;
+    use std::path::Path;
+
+    fn empty_manager(data_dir: &Path) -> ServiceTunnelManager {
+        ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(StaticAliasTable::new()),
+        })
+        .expect("manager builds")
+    }
+
+    fn destination_text() -> String {
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        i2pr_api::sam::base64::encode(&bytes)
+    }
+
+    fn active_handle(dir: &Path) -> crate::addressbook::SharedAddressBook {
+        let manager = crate::addressbook::AddressBookManager::activate(
+            crate::addressbook::AddressBookSubsystemConfig {
+                enabled: true,
+                state_dir: dir.join("addressbook"),
+            },
+        );
+        assert!(manager.is_active());
+        manager
+            .apply_entry(i2pr_addressbook::EntryMutation {
+                book: i2pr_addressbook::BookKind::Router,
+                hostname: "peer.i2p".to_owned(),
+                destination: Some(destination_text()),
+                delete: false,
+            })
+            .expect("entry");
+        manager.shared()
+    }
+
+    #[test]
+    fn alias_miss_falls_through_to_the_address_book() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = empty_manager(directory.path());
+        let reference = DestinationRef::parse("peer.i2p").expect("static alias");
+        // No handle installed: the legacy UnknownAlias verdict.
+        assert!(matches!(
+            manager.resolve_reference(&reference),
+            Err(DestinationFailure::UnknownAlias(_))
+        ));
+        // Installed handle: the book hit decodes to a destination hash
+        // that the existing machinery routes remotely (no co-owned
+        // destination here), labeled with the entry hostname.
+        manager.set_addressbook_handle(active_handle(directory.path()));
+        match manager.resolve_reference(&reference) {
+            Err(DestinationFailure::LookupRequired { label, hash }) => {
+                assert_eq!(label, "peer.i2p");
+                assert_eq!(hash.len(), 32);
+            }
+            other => panic!("expected remote lookup, got {other:?}"),
+        }
+        // Static aliases still win over the address book: an operator
+        // alias for the same name resolves through the alias table.
+        let mut aliases = StaticAliasTable::new();
+        aliases
+            .insert(
+                "peer.i2p",
+                DestinationRef::parse(&format!("{}.b32.i2p", "a".repeat(52))).expect("b32"),
+            )
+            .expect("alias inserts");
+        let aliased = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+            data_dir: directory.path().to_path_buf(),
+            aggregate_connection_ceiling: 4,
+            per_service_connection_ceiling: 2,
+            specs: Arc::new(ServiceTunnelSet {
+                tunnels: Vec::new(),
+            }),
+            aliases: Arc::new(aliases),
+        })
+        .expect("manager builds");
+        aliased.set_addressbook_handle(active_handle(directory.path()));
+        match aliased.resolve_reference(&reference) {
+            Err(DestinationFailure::LookupRequired { label, .. }) => {
+                assert_eq!(label, "a".repeat(52));
+            }
+            other => panic!("expected alias-target lookup, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
 mod plan206_remote_composition_tests {
     use super::*;
     use crate::destination_tunnels::DestinationTunnelCoordinator;

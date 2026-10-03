@@ -227,8 +227,18 @@ fn build_daemon_graph_inner(
             DaemonError::RuntimeSupervisorFailed(format!("failed to register service: {e}"))
         })?;
 
+    // Plan 294: activate the canonical address-book subsystem before
+    // any service factory runs so every consumer installs the same
+    // shared resolver cell. Disabled (default) activation never
+    // touches the filesystem and publishes nothing; consumers keep
+    // their legacy behavior.
+    let addressbook = Arc::new(crate::addressbook::AddressBookManager::activate(
+        config.addressbook.clone(),
+    ));
+    inspection.publish_addressbook(addressbook.shared());
+
     if config.sam.enabled {
-        register_sam_service(&mut builder, config, inspection)?;
+        register_sam_service(&mut builder, config, inspection, &addressbook)?;
     }
 
     if config.i2cp.enabled {
@@ -236,7 +246,11 @@ fn build_daemon_graph_inner(
     }
 
     if config.i2pcontrol.enabled {
-        register_i2pcontrol_service(&mut builder, config, inspection)?;
+        register_i2pcontrol_service(&mut builder, config, inspection, &addressbook)?;
+    }
+
+    if addressbook.is_active() {
+        register_addressbook_refresh_service(&mut builder, &addressbook)?;
     }
 
     if config.ssu2.enabled {
@@ -256,11 +270,13 @@ fn register_sam_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
     inspection: &Arc<InspectionHandles>,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
     let sam_config = config.sam.clone();
     let address = sam_config.bind_socket();
     let sam_name = ServiceName::new("sam-bridge").expect("valid service name");
     let inspection = Arc::clone(inspection);
+    let addressbook = Arc::clone(addressbook);
     builder
         .register(ServiceSpec::new(
             sam_name,
@@ -268,6 +284,7 @@ fn register_sam_service(
             move |ctx| {
                 let sam_config = sam_config.clone();
                 let inspection = Arc::clone(&inspection);
+                let addressbook = Arc::clone(&addressbook);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -289,6 +306,9 @@ fn register_sam_service(
                     // Publish the live owner for the Plan 288
                     // inspection plane (read-only snapshot access).
                     inspection.publish_sam(Arc::clone(&state));
+                    // Install the Plan 294 canonical resolver cell (a
+                    // no-op empty cell unless the subsystem is active).
+                    state.set_addressbook_handle(addressbook.shared());
                     let token = cancellation.clone();
                     let join_result =
                         i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
@@ -397,6 +417,7 @@ fn register_i2pcontrol_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
     inspection: &Arc<InspectionHandles>,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
 ) -> Result<(), DaemonError> {
     let i2pcontrol_config = config.i2pcontrol.clone();
     let address = i2pcontrol_config.bind_socket();
@@ -416,6 +437,7 @@ fn register_i2pcontrol_service(
         }
     };
     let inspection = Arc::clone(inspection);
+    let addressbook = Arc::clone(addressbook);
     builder
         .register(ServiceSpec::new(
             i2pcontrol_name,
@@ -423,6 +445,7 @@ fn register_i2pcontrol_service(
             move |ctx| {
                 let i2pcontrol_config = i2pcontrol_config.clone();
                 let inspection = Arc::clone(&inspection);
+                let addressbook = Arc::clone(&addressbook);
                 let control = Arc::clone(&control);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
@@ -446,6 +469,7 @@ fn register_i2pcontrol_service(
                         }
                     };
                     state.set_control_manager(Arc::clone(&control));
+                    state.set_addressbook_manager(Arc::clone(&addressbook));
                     let token = cancellation.clone();
                     let join_result =
                         i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
@@ -471,6 +495,51 @@ fn register_i2pcontrol_service(
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!(
                 "failed to register I2PControl service: {e}"
+            ))
+        })?;
+    Ok(())
+}
+/// Registers the Plan 294 subscription-refresh worker. The worker
+/// wakes once per committed refresh interval and drains the bounded
+/// queue through the manager (attempt, diagnostic artifact, promote).
+/// With no downloader owner composed, attempts report unavailable;
+/// the cadence, queue discipline, and artifact remain live and
+/// tested. Cancellation stops the worker between wakes.
+fn register_addressbook_refresh_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    addressbook: &Arc<crate::addressbook::AddressBookManager>,
+) -> Result<(), DaemonError> {
+    let worker_name = ServiceName::new("addressbook-refresh").expect("valid service name");
+    let manager = Arc::clone(addressbook);
+    builder
+        .register(ServiceSpec::new(
+            worker_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let manager = Arc::clone(&manager);
+                let cancellation = ctx.cancellation().clone();
+                Box::pin(async move {
+                    if !manager.is_active() {
+                        return i2pr_runtime::ServiceResult::RequestedShutdown;
+                    }
+                    loop {
+                        let hours = manager.refresh_interval_hours().max(1);
+                        tokio::select! {
+                            _ = cancellation.cancelled() => break,
+                            _ = tokio::time::sleep(Duration::from_secs(hours * 3600)) => {
+                                manager.run_queued_refreshes(
+                                    i2pr_addressbook::RefreshReason::IntervalElapsed,
+                                );
+                            }
+                        }
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|e| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register address-book refresh service: {e}"
             ))
         })?;
     Ok(())

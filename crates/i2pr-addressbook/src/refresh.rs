@@ -86,6 +86,13 @@ impl RefreshQueue {
         }
     }
 
+    /// Takes the active set for immediate fetching (the worker's drain
+    /// primitive; pair with [`Self::finish_active`] to promote the
+    /// coalesced pending set afterwards).
+    pub fn take_active(&mut self) -> Option<SubscriptionSet> {
+        self.active.take()
+    }
+
     /// Whether no fetch is active and none is pending.
     pub fn is_idle(&self) -> bool {
         self.active.is_none() && self.pending.is_none()
@@ -164,6 +171,19 @@ mod tests {
         // No further pending: finishing idles the queue.
         assert!(queue.finish_active().is_none());
         assert!(queue.is_idle());
+    }
+
+    #[test]
+    fn take_active_pairs_with_finish() {
+        let mut queue = RefreshQueue::new();
+        assert!(queue.take_active().is_none());
+        assert!(queue.push(set(&["http://a.i2p/h"]), RefreshReason::Manual));
+        assert!(!queue.push(set(&["http://b.i2p/h"]), RefreshReason::IntervalElapsed));
+        let active = queue.take_active().expect("active taken");
+        assert_eq!(active.urls(), &["http://a.i2p/h".to_owned()]);
+        assert!(queue.take_active().is_none());
+        let promoted = queue.finish_active().expect("pending promotes");
+        assert_eq!(promoted.urls(), &["http://b.i2p/h".to_owned()]);
     }
 
     #[test]

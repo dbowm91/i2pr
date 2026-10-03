@@ -979,16 +979,13 @@ impl I2pControlServiceState {
             },
             AddressBookRequest::Subscriptions { urls } => {
                 match manager.replace_subscriptions(&urls) {
-                    Ok((true, run_now)) => {
-                        if run_now {
-                            let diagnostic = manager.run_refresh_once(
-                                i2pr_addressbook::RefreshReason::SubscriptionsReplaced,
-                            );
-                            manager.record_diagnostic(&diagnostic);
-                        }
+                    Ok(true) => {
+                        manager.run_queued_refreshes(
+                            i2pr_addressbook::RefreshReason::SubscriptionsReplaced,
+                        );
                         Self::addressbook_success(id, "subscriptions replaced")
                     }
-                    Ok((false, _)) => Self::addressbook_success(id, "subscriptions unchanged"),
+                    Ok(false) => Self::addressbook_success(id, "subscriptions unchanged"),
                     Err(error) => Self::addressbook_manager_error(id, &error),
                 }
             }
@@ -2314,5 +2311,175 @@ mod tests {
         // Construction (managed cert generation) succeeds for loopback
         // without touching the filesystem: tested at the socket layer by
         // the black-box suite asserting a clean data directory.
+    }
+
+    #[test]
+    fn plan294_addressbook_method_drives_the_canonical_owner() {
+        use crate::addressbook::{AddressBookManager, AddressBookSubsystemConfig};
+        let directory = tempfile::tempdir().expect("temp directory");
+        let manager = Arc::new(AddressBookManager::activate(AddressBookSubsystemConfig {
+            enabled: true,
+            state_dir: directory.path().join("addressbook"),
+        }));
+        assert!(manager.is_active());
+        let state = test_state(TEST_PASSWORD);
+        state.set_addressbook_manager(Arc::clone(&manager));
+        state
+            .inspection()
+            .publish_addressbook(manager.shared());
+        let token = authenticate(&state, 0);
+        let call = |params: serde_json::Value| {
+            json_of(&dispatch(
+                &state,
+                &serde_json::json!({"jsonrpc": "2.0", "method": "AddressBook", "params": params, "id": 1}),
+                None,
+                0,
+            ))
+        };
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        let destination = i2pr_api::sam::base64::encode(&bytes);
+        // Entry lifecycle with exact result shapes.
+        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}));
+        assert_eq!(
+            response["result"],
+            serde_json::json!({"success": true, "message": "entry created"})
+        );
+        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}));
+        assert_eq!(response["result"]["message"], serde_json::json!("entry updated"));
+        // Getters read the same committed generation the lookup uses.
+        let response = json_of(&dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "addressbook.private": null, "addressbook.subscriptions": null, "addressbook.config": null}, "id": 2}),
+            None,
+            0,
+        ));
+        assert_eq!(
+            response["result"]["addressbook.private"],
+            serde_json::json!({"wire.i2p": destination})
+        );
+        assert_eq!(
+            response["result"]["addressbook.subscriptions"],
+            serde_json::json!({"urls": []})
+        );
+        assert_eq!(
+            response["result"]["addressbook.config"]["theme"],
+            serde_json::json!("")
+        );
+        assert_eq!(
+            response["result"]["addressbook.config"]["max_entries"],
+            serde_json::json!("1000")
+        );
+        // Delete presence selects deletion even with a false value.
+        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Delete": false}));
+        assert_eq!(
+            response["result"],
+            serde_json::json!({"success": true, "message": "entry deleted"})
+        );
+        let response = json_of(&dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "addressbook.private": null}, "id": 3}),
+            None,
+            0,
+        ));
+        assert_eq!(
+            response["result"]["addressbook.private"],
+            serde_json::json!({})
+        );
+        // Shape violations fail whole with no partial effect.
+        for params in [
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "gone.i2p", "Delete": true}),
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "mix.i2p", "Destination": destination, "Delete": true}),
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "mix.i2p", "SetSubscriptions": []}),
+            serde_json::json!({"Token": token, "Type": "nope", "Hostname": "mix.i2p"}),
+            serde_json::json!({"Token": token, "Type": "private"}),
+            serde_json::json!({"Token": token, "Bogus": 1}),
+            serde_json::json!({"Token": token}),
+        ] {
+            let response = call(params);
+            assert!(
+                response.get("error").is_some(),
+                "shape must fail: {response}"
+            );
+        }
+        // Unknown hostnames delete deterministically; values stay valid.
+        let untouched = manager.revision().expect("revision");
+        let response = call(serde_json::json!({"Token": token, "Type": "local", "Hostname": "ghost.i2p", "Destination": "nope"}));
+        assert!(response.get("error").is_some());
+        assert_eq!(manager.revision(), Some(untouched));
+        // Subscriptions and config replacements with exact messages.
+        let response = call(serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}));
+        assert_eq!(
+            response["result"],
+            serde_json::json!({"success": true, "message": "subscriptions replaced"})
+        );
+        let response = call(serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}));
+        assert_eq!(
+            response["result"]["message"],
+            serde_json::json!("subscriptions unchanged")
+        );
+        let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}));
+        assert_eq!(
+            response["result"],
+            serde_json::json!({"success": true, "message": "config applied"})
+        );
+        let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}));
+        assert_eq!(
+            response["result"]["message"],
+            serde_json::json!("config unchanged")
+        );
+        let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": 7}}));
+        assert!(response.get("error").is_some());
+        // Error messages never echo request values.
+        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "secret-host.i2p", "Destination": "hunter2-material"}));
+        let rendered = serde_json::to_string(&response["error"]).expect("render");
+        assert!(!rendered.contains("secret-host"));
+        assert!(!rendered.contains("hunter2"));
+    }
+
+    #[test]
+    fn plan294_addressbook_without_owner_fails_with_plan_marker() {
+        let state = test_state(TEST_PASSWORD);
+        let token = authenticate(&state, 0);
+        // Standalone construction: the Plan 294 marker from the
+        // existing typed floor is preserved.
+        let response = json_of(&dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "AddressBook", "params": {"Token": token}, "id": 1}),
+            None,
+            0,
+        ));
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("Plan 294"),
+            "missing Plan 294 marker"
+        );
+        // Installed but inactive (disabled subsystem): explicit
+        // not-active failure, still no fabrication.
+        let directory = tempfile::tempdir().expect("temp directory");
+        let idle = Arc::new(crate::addressbook::AddressBookManager::activate(
+            crate::addressbook::AddressBookSubsystemConfig {
+                enabled: false,
+                state_dir: directory.path().join("addressbook"),
+            },
+        ));
+        state.set_addressbook_manager(idle);
+        let response = json_of(&dispatch(
+            &state,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "AddressBook", "params": {"Token": token, "Type": "private", "Hostname": "a.i2p"}, "id": 2}),
+            None,
+            0,
+        ));
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("not active"),
+            "missing not-active marker"
+        );
     }
 }

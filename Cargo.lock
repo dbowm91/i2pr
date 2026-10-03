@@ -679,6 +679,7 @@ name = "i2pr-addressbook"
 version = "0.1.0"
 dependencies = [
  "base64ct",
+ "i2pr-i2pcontrol",
  "i2pr-proto",
  "serde",
  "serde_json",

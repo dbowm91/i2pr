@@ -591,6 +591,7 @@ async fn plan212_router_backed_generic_directions() {
         per_service_connection_ceiling: 4,
         reference: Some(reference),
         options: Default::default(),
+        addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

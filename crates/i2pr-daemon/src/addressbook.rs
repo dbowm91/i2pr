@@ -180,17 +180,32 @@ impl AddressBookManager {
         manager
     }
 
-    /// Loads current, then backup, then first-activation import.
-    /// Publishes the fresh/imported generation when no current exists.
+    /// Loads current, then backup, then first-activation import. A
+    /// present-but-invalid current falls back to the backup (the
+    /// last-known-good copy exists for exactly this case); only a
+    /// missing current with no usable backup reaches import. The
+    /// fresh/imported generation publishes when no current exists.
     fn load_or_import(&mut self) -> Result<(), &'static str> {
         let current = self
             .store
             .load_current()
             .map_err(|_| "generation current unreadable")?;
         if let Some(bytes) = current {
-            let book = decode_generation(&bytes).map_err(|_| "generation current invalid")?;
-            self.set_committed(book);
-            return Ok(());
+            if let Ok(book) = decode_generation(&bytes) {
+                self.set_committed(book);
+                return Ok(());
+            }
+            let backup = self
+                .store
+                .load_backup()
+                .map_err(|_| "generation backup unreadable")?;
+            if let Some(backup_bytes) = backup {
+                let book =
+                    decode_generation(&backup_bytes).map_err(|_| "generation backup invalid")?;
+                self.set_committed(book);
+                return Ok(());
+            }
+            return Err("generation current invalid");
         }
         let backup = self
             .store
@@ -269,6 +284,15 @@ impl AddressBookManager {
         })
     }
 
+    /// Live refresh cadence in hours (drives the worker timer).
+    pub fn refresh_interval_hours(&self) -> u64 {
+        self.state
+            .lock()
+            .ok()
+            .map(|state| state.addressbook.config().refresh_interval_hours)
+            .unwrap_or(24)
+    }
+
     /// Applies one entry mutation transactionally: persistence failure
     /// rolls the in-memory commit back.
     pub fn apply_entry(
@@ -278,23 +302,11 @@ impl AddressBookManager {
         self.transact(|book| book.control().apply_entry(mutation))
     }
 
-    /// Replaces subscriptions transactionally; a changed set enqueues
-    /// a refresh and reports whether the caller should run it now.
-    pub fn replace_subscriptions(
-        &self,
-        urls: &[String],
-    ) -> Result<(bool, bool), AddressBookManagerError> {
-        let changed: bool = self.transact(|book| book.control().replace_subscriptions(urls))?;
-        if !changed {
-            return Ok((false, false));
-        }
-        let run_now = self.state.lock().ok().map_or(false, |mut state| {
-            let subscriptions = state.addressbook.subscriptions().clone();
-            state
-                .refresh
-                .push(subscriptions, RefreshReason::SubscriptionsReplaced)
-        });
-        Ok((true, run_now))
+    /// Replaces subscriptions transactionally. A changed set is
+    /// drained through [`Self::run_queued_refreshes`] by the caller;
+    /// the queue coalesces concurrent commits to the newest set.
+    pub fn replace_subscriptions(&self, urls: &[String]) -> Result<bool, AddressBookManagerError> {
+        self.transact(|book| book.control().replace_subscriptions(urls))
     }
 
     /// Applies a whole `SetConfig` map transactionally.
@@ -355,6 +367,42 @@ impl AddressBookManager {
             .lock()
             .ok()
             .and_then(|mut state| state.refresh.finish_active())
+    }
+
+    /// Enqueues the committed subscription set for refresh. Returns
+    /// `true` when the queue was idle and the caller should drain,
+    /// `false` when the set coalesced (or the subsystem is down).
+    pub fn enqueue_current_for_refresh(&self, reason: RefreshReason) -> bool {
+        let mut state = match self.state.lock() {
+            Ok(state) if state.active => state,
+            _ => return false,
+        };
+        let subscriptions = state.addressbook.subscriptions().clone();
+        state.refresh.push(subscriptions, reason)
+    }
+
+    /// Takes the queued set for immediate fetching, if any.
+    pub fn take_refresh_work(&self) -> Option<i2pr_addressbook::SubscriptionSet> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.refresh.take_active())
+    }
+
+    /// Runs the queued refresh chain to idle: every attempt records
+    /// its diagnostic to the bounded artifact.
+    pub fn run_queued_refreshes(&self, reason: RefreshReason) {
+        if !self.enqueue_current_for_refresh(reason) && self.take_refresh_work().is_none() {
+            return;
+        }
+        loop {
+            let Some(_set) = self.take_refresh_work() else {
+                break;
+            };
+            let diagnostic = self.run_refresh_once(reason);
+            self.record_diagnostic(&diagnostic);
+            let _ = self.refresh_finished();
+        }
     }
 
     /// Records one diagnostic to the bounded artifact (level-gated;
@@ -546,4 +594,327 @@ fn import_snapshot_artifacts(
         }
     }
     Ok(imported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enabled_config(dir: &Path) -> AddressBookSubsystemConfig {
+        AddressBookSubsystemConfig {
+            enabled: true,
+            state_dir: dir.join("addressbook"),
+        }
+    }
+
+    fn disabled_config(dir: &Path) -> AddressBookSubsystemConfig {
+        AddressBookSubsystemConfig {
+            enabled: false,
+            state_dir: dir.join("addressbook"),
+        }
+    }
+
+    fn destination_text() -> String {
+        // 384-byte key area + type-5 (Ed25519, X25519) key certificate.
+        let mut bytes = vec![0u8; 384];
+        bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
+        i2pr_api::sam::base64::encode(&bytes)
+    }
+
+    fn entry(
+        book: i2pr_addressbook::BookKind,
+        hostname: &str,
+        destination: Option<String>,
+        delete: bool,
+    ) -> EntryMutation {
+        EntryMutation {
+            book,
+            hostname: hostname.to_owned(),
+            destination,
+            delete,
+        }
+    }
+
+    #[test]
+    fn disabled_manager_never_touches_the_filesystem() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(disabled_config(directory.path()));
+        assert!(!manager.is_active());
+        assert_eq!(manager.activation_error(), None);
+        assert_eq!(manager.revision(), None);
+        assert!(manager.shared().lookup("anything.i2p").is_none());
+        assert_eq!(
+            manager.apply_entry(entry(
+                i2pr_addressbook::BookKind::Private,
+                "a.i2p",
+                Some(destination_text()),
+                false
+            )),
+            Err(AddressBookManagerError::Inactive)
+        );
+        // No file, directory, or side effect anywhere under the data dir.
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .expect("read dir")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn crud_persists_and_reloads_with_stable_revision() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        assert!(manager.is_active());
+        let destination = destination_text();
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Local,
+                "Example.I2P",
+                Some(destination.clone()),
+                false,
+            ))
+            .expect("create");
+        let revision = manager.revision().expect("revision");
+        assert!(revision > 0);
+        // Canonicalization is visible through lookup and getters.
+        let resolved = manager.shared().lookup("example.i2p.").expect("lookup");
+        assert_eq!(resolved.destination, destination);
+        let books = manager.books_view().expect("books");
+        assert_eq!(books[1].len(), 1);
+        assert_eq!(books[1][0].0, "example.i2p");
+        // A fresh manager over the same directory restores everything.
+        drop(manager);
+        let reloaded = AddressBookManager::activate(enabled_config(directory.path()));
+        assert!(reloaded.is_active());
+        assert_eq!(reloaded.revision(), Some(revision));
+        let resolved = reloaded.shared().lookup("example.i2p").expect("lookup");
+        assert_eq!(resolved.destination, destination);
+    }
+
+    #[test]
+    fn corrupt_current_falls_back_to_backup() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = enabled_config(directory.path());
+        let manager = AddressBookManager::activate(config.clone());
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Router,
+                "good.i2p",
+                Some(destination_text()),
+                false,
+            ))
+            .expect("entry");
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Router,
+                "good.i2p",
+                None,
+                true,
+            ))
+            .expect("delete makes a second generation");
+        drop(manager);
+        // Corrupt the current generation; the backup restores (it still
+        // holds the pre-delete generation with the entry).
+        let current = config.state_dir.join("addressbook.current.json");
+        fs::write(&current, b"{not json").expect("corrupt current");
+        let reloaded = AddressBookManager::activate(config.clone());
+        assert!(reloaded.is_active());
+        assert!(reloaded.shared().lookup("good.i2p").is_some());
+        // Both corrupt: inactive with a sticky error, nothing published.
+        fs::write(
+            config.state_dir.join("addressbook.backup.json"),
+            b"{not json either",
+        )
+        .expect("corrupt backup");
+        let dead = AddressBookManager::activate(config);
+        assert!(!dead.is_active());
+        assert!(dead.activation_error().is_some());
+        assert_eq!(dead.revision(), None);
+        assert!(dead.shared().lookup("good.i2p").is_none());
+        assert!(dead.books_view().is_none());
+    }
+
+    #[test]
+    fn snapshot_import_runs_once_on_first_activation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = enabled_config(directory.path());
+        fs::create_dir_all(&config.state_dir).expect("state dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config.state_dir, fs::Permissions::from_mode(0o700))
+                .expect("permissions");
+        }
+        let mut artifact = BTreeMap::new();
+        artifact.insert("seed.i2p".to_owned(), destination_text());
+        fs::write(
+            config.state_dir.join("private.json"),
+            serde_json::to_vec(&artifact).expect("artifact"),
+        )
+        .expect("write artifact");
+        let manager = AddressBookManager::activate(config.clone());
+        assert!(manager.is_active());
+        assert!(manager.shared().lookup("seed.i2p").is_some());
+        // The import published a current generation: a reload keeps the
+        // entry even after the artifact disappears.
+        fs::remove_file(config.state_dir.join("private.json")).expect("remove");
+        drop(manager);
+        let reloaded = AddressBookManager::activate(config);
+        assert!(reloaded.shared().lookup("seed.i2p").is_some());
+    }
+
+    #[test]
+    fn corrupt_snapshot_artifact_fails_activation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = enabled_config(directory.path());
+        fs::create_dir_all(&config.state_dir).expect("state dir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&config.state_dir, fs::Permissions::from_mode(0o700))
+                .expect("permissions");
+        }
+        fs::write(config.state_dir.join("local.json"), b"nope").expect("write");
+        let manager = AddressBookManager::activate(config);
+        assert!(!manager.is_active());
+        assert!(manager.activation_error().is_some());
+    }
+
+    #[test]
+    fn subscriptions_enqueue_refresh_and_ingest_commits() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        // Unchanged set: no refresh, no revision bump.
+        let changed = manager.replace_subscriptions(&[]).expect("empty set");
+        assert!(!changed);
+        let changed = manager
+            .replace_subscriptions(&["http://example.i2p/hosts.txt".to_owned()])
+            .expect("replace");
+        assert!(changed);
+        manager.run_queued_refreshes(i2pr_addressbook::RefreshReason::SubscriptionsReplaced);
+        // A second commit drains identically through the same chain.
+        let changed = manager
+            .replace_subscriptions(&["http://other.i2p/hosts.txt".to_owned()])
+            .expect("replace again");
+        assert!(changed);
+        manager.run_queued_refreshes(i2pr_addressbook::RefreshReason::SubscriptionsReplaced);
+        // Both chained runs recorded their unavailable diagnostics.
+        let log_contents =
+            fs::read_to_string(directory.path().join("addressbook").join("addressbook.log"))
+                .expect("artifact");
+        assert_eq!(
+            log_contents
+                .lines()
+                .filter(|line| line.contains("downloader-unavailable"))
+                .count(),
+            2
+        );
+        // Ingestion commits derived entries last in precedence.
+        let destination = destination_text();
+        let body = format!("sub.i2p={destination}\n");
+        let report = manager.ingest_body(body.as_bytes()).expect("ingest");
+        assert_eq!(report.ingested, 1);
+        assert!(report.changed);
+        let resolved = manager.shared().lookup("sub.i2p").expect("derived");
+        assert_eq!(
+            resolved.provenance,
+            i2pr_addressbook::Provenance::Subscribed
+        );
+        // Operator books shadow derived entries without touching them.
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Published,
+                "sub.i2p",
+                Some(destination.clone()),
+                false,
+            ))
+            .expect("shadow");
+        let resolved = manager.shared().lookup("sub.i2p").expect("shadowed");
+        assert_eq!(
+            resolved.provenance,
+            i2pr_addressbook::Provenance::Book(i2pr_addressbook::BookKind::Published)
+        );
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Published,
+                "sub.i2p",
+                None,
+                true,
+            ))
+            .expect("unshadow");
+        let resolved = manager.shared().lookup("sub.i2p").expect("derived again");
+        assert_eq!(resolved.provenance, i2pr_addressbook::Provenance::Subscribed);
+        // Invalid bodies fail whole without touching derived state.
+        assert!(manager.ingest_body(b"junk\n").is_err());
+        assert!(manager.shared().lookup("sub.i2p").is_some());
+    }
+
+    #[test]
+    fn refresh_without_downloader_is_unavailable_and_logged() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        let diagnostic = manager.run_refresh_once(i2pr_addressbook::RefreshReason::Manual);
+        assert_eq!(
+            diagnostic.outcome,
+            i2pr_addressbook::RefreshOutcome::DownloaderUnavailable
+        );
+        assert!(!diagnostic.line().contains("http"));
+        manager.record_diagnostic(&diagnostic);
+        let log_path = enabled_config(directory.path())
+            .state_dir
+            .join("addressbook.log");
+        let contents = fs::read_to_string(&log_path).expect("artifact");
+        assert!(contents.contains("downloader-unavailable"));
+        // Inactive managers record nothing.
+        let idle = AddressBookManager::activate(disabled_config(directory.path()));
+        idle.record_diagnostic(&diagnostic);
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .expect("read dir")
+                .count(),
+            1,
+            "only the active state dir may exist"
+        );
+    }
+
+    #[test]
+    fn config_tightening_below_current_counts_fails() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Private,
+                "a.i2p",
+                Some(destination_text()),
+                false,
+            ))
+            .expect("entry");
+        let mut entries = BTreeMap::new();
+        entries.insert("max_entries".to_owned(), "1".to_owned());
+        assert!(manager.apply_config(&entries).expect("ceiling 1 holds one") );
+        entries.insert("max_entries".to_owned(), "0".to_owned());
+        assert!(manager.apply_config(&entries).is_err());
+        // Failed tightening leaves the committed config untouched.
+        let (_, config) = manager.config_view().expect("config");
+        assert_eq!(config["max_entries"], "1");
+    }
+
+    #[test]
+    fn manager_errors_carry_no_request_values() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        let hostile = "evil-value-that-must-never-echo.i2p";
+        let error = manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Private,
+                hostile,
+                Some("not-a-destination-hunter2".to_owned()),
+                false,
+            ))
+            .expect_err("invalid destination");
+        let rendered = error.to_string();
+        assert!(!rendered.contains(hostile));
+        assert!(!rendered.contains("hunter2"));
+    }
 }
