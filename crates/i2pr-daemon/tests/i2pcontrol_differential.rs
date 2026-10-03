@@ -26,7 +26,6 @@ use std::time::Duration;
 
 use i2pr_daemon::config::Config;
 use i2pr_daemon::i2pcontrol::I2pControlServiceState;
-use i2pr_daemon::i2pcontrol_inspection::InspectionHandles;
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
