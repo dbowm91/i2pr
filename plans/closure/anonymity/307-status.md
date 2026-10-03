@@ -2,6 +2,17 @@
 
 Status: `passed-service-boundary-router-unlinkability-and-input-sanitation`
 
+## Plan authority and commit lineage
+
+The implementation plan was introduced and registered by
+`4b43675a302693c62f43f0c305d08cf29d4f15e0` (`plans(anonymity): realign Destination domains and i2pd convergence`). The Plan 307 document in that commit is unchanged in this branch; `git log --follow` shows no later edits to the plan itself. That registration commit also placed Plans 307–313 in the ADR 0030 anonymity sequence and updated the registry and roadmap.
+
+The implementation and closure are subsequent commits on the rebased mainline:
+
+- `06ee4bffa0bc0a7e9311f3684c6992932d611536` — Plan 307 production changes and matrix/checker.
+- `c4a55c3ee4a0da7b7df9b88c17218cf597f52305` — equal duplicate-Host regression coverage.
+- `594b10600d5ed82c3517eca4d8c152ae48fbc757` and `667cdf5bb8e42a176e3c346d1a444c398bf60be6` — formal closure/unblock audit and follow-up evidence correction.
+
 Implementation commits: `06ee4bf` (`fix(privacy): close service boundary input leaks (Plan 307)`) and `c4a55c3` (`test(privacy): cover equal duplicate Host rejection (Plan 307)`).
 
 ## Requirement-to-evidence matrix
