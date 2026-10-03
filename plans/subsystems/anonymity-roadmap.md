@@ -86,9 +86,9 @@ The group is not linkable by design to the hosting RouterInfo.
 ~~~text
 296 passed
 
-307 service-boundary router unlinkability + sanitation [ready]
-  -> 308 HTTP ordinary-proxy differential [blocked on 307]
-  -> 309 Destination groups + service multiplexing [blocked on 307]
+307 service-boundary router unlinkability + sanitation [passed]
+  -> 308 HTTP ordinary-proxy differential [ready]
+  -> 309 Destination groups + service multiplexing [ready]
        -> 310 group-owned multi-hop pools + selector
             -> 311 startup/graceful lifecycle
             -> 312 i2pd Streaming directional baseline
