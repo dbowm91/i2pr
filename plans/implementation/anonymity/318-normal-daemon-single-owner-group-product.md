@@ -1,6 +1,6 @@
 # Plan 318 — Normal-daemon single-owner Destination-group product
 
-Status at registration: **ready**.
+Status at registration: **ready**. Current status: **active**.
 
 Corrects Plan 317's unverified assumption that the qualification `ServiceProduct` can be transferred directly into the normal daemon graph. Plan 317's blocked closure records the source audit and partial fail-closed configuration guard. Plan 316 remains blocked until this plan supplies the production provider boundary.
 

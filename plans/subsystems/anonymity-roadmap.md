@@ -95,7 +95,7 @@ The group is not linkable by design to the hosting RouterInfo.
   -> 314 multi-hop request + selector + deterministic 3-hop proof [passed corrective]
                  -> 315 group-owned pool + Destination-operation integration [passed]
                       -> 317 normal-daemon group-pool provider [blocked: owner boundary]
-                           -> 318 single-owner normal-daemon group product [ready]
+                      -> 318 single-owner normal-daemon group product [active]
                                 -> 316 daemon-owned group lifecycle integration [blocked pending 318]
                                      -> 311 startup/graceful lifecycle [blocked pending 316]
                       -> 312 i2pd Streaming directional baseline [passed: handshake metadata]
@@ -130,7 +130,7 @@ Plan 308 proceeded independently and remains blocked on HTTP topology evidence; 
 | 313 | ready | convergence capability | plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md | Only measured handshake differences are in scope; unobserved dimensions require new evidence |
 | 316 | blocked-normal-daemon-has-no-production-group-pool-provider | daemon/runtime lifecycle corrective | plans/implementation/anonymity/316-daemon-owned-service-group-lifecycle-integration.md | `plans/closure/anonymity/316-status.md`; resume after Plan318 supplies a single-owner group-pool provider |
 | 317 | blocked | daemon/router product capability foundation | plans/closure/anonymity/317-status.md | Qualification product and normal graph have incompatible SSU2/inbound owners; Plan318 replaces this attempt |
-| 318 | ready | daemon/router product capability corrective | plans/implementation/anonymity/318-normal-daemon-single-owner-group-product.md | Implement the production single-owner product, validated store handoff, Plan314/315 group path, and readiness gates |
+| 318 | active | daemon/router product capability corrective | plans/implementation/anonymity/318-normal-daemon-single-owner-group-product.md | Implement the production single-owner product, validated store handoff, Plan314/315 group path, and readiness gates |
 
 ## 8. Cross-cutting requirements
 
