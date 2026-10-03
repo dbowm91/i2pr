@@ -4011,9 +4011,8 @@ mod tests {
         // mode, identity expiry, and handshake counters — and never
         // key material or certificate bytes.
         let pinned = {
-            let certified =
-                rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
-                    .expect("fixture cert");
+            let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
+                .expect("fixture cert");
             certified.cert.pem().into_bytes()
         };
         let policy = crate::service_tunnels_tls::ServiceTlsPolicy::from_parts(

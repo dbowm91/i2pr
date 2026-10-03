@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–296 passed; Plan 297 ready. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plans 286–297 passed. This workstream is parallel to M12 and does not gate router-mainline progression. The Proposal 170 workstream is fully closed.
 
 Long-term references:
 - GUARDRAILS.md
@@ -123,7 +123,7 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 294 | passed | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | plans/closure/i2pcontrol-proposal-170/294-status.md (`passed-prop170-canonical-addressbook-and-resolver-integration`) |
 | 295 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | plans/closure/i2pcontrol-proposal-170/295-status.md (`passed-prop170-full-source-completion-and-differential-conformance`) |
 | 296 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | plans/closure/i2pcontrol-proposal-170/296-status.md (`passed-prop170-pool-shaping-and-bundling-residuals`) |
-| 297 | ready | capability | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | future |
+| 297 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | plans/closure/i2pcontrol-proposal-170/297-status.md (`passed-prop170-local-tls-identity-for-use-ssl`) |
 
 ## 8. Cross-cutting requirements
 
@@ -199,6 +199,6 @@ generation store, and the validate-mirror-stage-reconcile-publish-verify
 transaction (see
 `plans/closure/i2pcontrol-proposal-170/289-status.md`); the remaining
 six types belong to Plans 290–291 and the wider option matrix to Plans
-292–293. Plans 290–296 are closed; Plan 297 is ready.
+292–293. Plans 290–297 are closed; the workstream is complete.
 The remainder of the workstream is registered but dependency-gated. No
 Proposal 170 capability is claimed by registration alone.

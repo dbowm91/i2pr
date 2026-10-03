@@ -30,7 +30,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, Error as TlsError};
+use rustls::ClientConfig;
 use tokio::net::TcpStream;
 
 /// Typed service-tunnel TLS failures. Messages name what failed,
@@ -193,8 +193,7 @@ impl ServiceTlsPolicy {
     /// is always the standard WebPKI path over the operator's
     /// anchors; there is no bypass hook anywhere in this module.
     pub fn client_config(&self) -> Result<ClientConfig, ServiceTlsError> {
-        let builder =
-            ClientConfig::builder().with_root_certificates(Arc::clone(&self.roots));
+        let builder = ClientConfig::builder().with_root_certificates(Arc::clone(&self.roots));
         match &self.identity {
             Some(loaded) => builder
                 .with_client_auth_cert(loaded.chain.clone(), loaded.key.clone_key())
@@ -251,7 +250,10 @@ impl Eq for TlsPolicyHandle {}
 /// Loads a PEM trust bundle (pinned end-entity certificates or
 /// explicit roots): at least one parseable certificate, never
 /// ambient roots.
-fn load_bundle(pem: &[u8], what: &'static str) -> Result<Vec<CertificateDer<'static>>, ServiceTlsError> {
+fn load_bundle(
+    pem: &[u8],
+    what: &'static str,
+) -> Result<Vec<CertificateDer<'static>>, ServiceTlsError> {
     use rustls::pki_types::pem::PemObject as _;
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
@@ -347,8 +349,8 @@ mod tests {
     #[test]
     fn pinned_certificate_builds_pin_mode() {
         let (cert_pem, _) = rcgen_self_signed();
-        let policy = ServiceTlsPolicy::from_parts(None, Some(cert_pem), None)
-            .expect("pinned policy builds");
+        let policy =
+            ServiceTlsPolicy::from_parts(None, Some(cert_pem), None).expect("pinned policy builds");
         assert_eq!(policy.verify_mode(), "pin");
         assert_eq!(policy.pin_count(), 1);
         assert!(policy.identity_expires_unix().is_none());
@@ -372,12 +374,9 @@ mod tests {
     #[test]
     fn identity_with_pins_reports_expiry() {
         let (cert_pem, key_pem) = rcgen_self_signed();
-        let policy = ServiceTlsPolicy::from_parts(
-            Some((cert_pem.clone(), key_pem)),
-            Some(cert_pem),
-            None,
-        )
-        .expect("pinned identity builds");
+        let policy =
+            ServiceTlsPolicy::from_parts(Some((cert_pem.clone(), key_pem)), Some(cert_pem), None)
+                .expect("pinned identity builds");
         assert_eq!(policy.verify_mode(), "pin");
         let expires = policy.identity_expires_unix().expect("expiry surfaces");
         assert!(expires > 1_700_000_000, "expiry is a real Unix time");
@@ -391,12 +390,9 @@ mod tests {
         let (cert_pem, _) = rcgen_self_signed();
         let (_, other_key_pem) = rcgen_self_signed();
         let (pin_pem, _) = rcgen_self_signed();
-        let policy = ServiceTlsPolicy::from_parts(
-            Some((cert_pem, other_key_pem)),
-            Some(pin_pem),
-            None,
-        )
-        .expect("policy builds (pairing is checked at client-config build)");
+        let policy =
+            ServiceTlsPolicy::from_parts(Some((cert_pem, other_key_pem)), Some(pin_pem), None)
+                .expect("policy builds (pairing is checked at client-config build)");
         assert!(matches!(
             policy.client_config(),
             Err(ServiceTlsError::IdentityMismatch)
@@ -406,8 +402,8 @@ mod tests {
     #[test]
     fn roots_bundle_loads_and_verifies_mode() {
         let (cert_pem, _) = rcgen_self_signed();
-        let policy = ServiceTlsPolicy::from_parts(None, None, Some(cert_pem))
-            .expect("roots policy builds");
+        let policy =
+            ServiceTlsPolicy::from_parts(None, None, Some(cert_pem)).expect("roots policy builds");
         assert_eq!(policy.verify_mode(), "roots");
         policy.client_config().expect("client config builds");
     }

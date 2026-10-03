@@ -144,8 +144,8 @@ async fn start_tls_echo(
     tokio::sync::mpsc::UnboundedReceiver<()>,
     tokio::task::JoinHandle<usize>,
 ) {
-    let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
-        .expect("fixture cert");
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("fixture cert");
     let cert_pem = certified.cert.pem().into_bytes();
     let cert_der = certified.cert.der().to_vec();
     let key_der = certified.key_pair.serialize_der();
@@ -276,16 +276,15 @@ async fn wrong_pin_fails_closed_without_fallback() {
     let data_dir: PathBuf = directory.path().to_path_buf();
     let (target_addr, _cert_pem, _seen, _echo) = start_tls_echo(1).await;
     let (other_pem, _other_key) = {
-        let certified = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
-            .expect("other cert");
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("other cert");
         (
             certified.cert.pem().into_bytes(),
             certified.key_pair.serialize_pem().into_bytes(),
         )
     };
     let policy = Arc::new(
-        ServiceTlsPolicy::from_parts(None, Some(other_pem), None)
-            .expect("wrong-pin policy builds"),
+        ServiceTlsPolicy::from_parts(None, Some(other_pem), None).expect("wrong-pin policy builds"),
     );
     let server_b64 = probe_server_b64(
         &data_dir,
