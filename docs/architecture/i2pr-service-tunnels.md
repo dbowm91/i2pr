@@ -945,10 +945,10 @@ hard cap bounds the wait. A second signal or fatal supervisor failure skips
 this phase and cancels the supervisor immediately. The product lifecycle
 status carries only phase and coarse remaining-time bucket values.
 
-Startup provisions an inbound path first, waits for it to install, then waits
-one second before submitting the initial outbound path. The normal group
-readiness gate still requires the configured minimum usable inbound pool before
-application supervisors begin. Java I2P's corresponding ordering is reference
+Startup provisions the configured inbound pool first and verifies its usable
+minimum, then waits one second before submitting outbound builds. The normal
+group readiness gate still requires the configured minimum usable inbound
+pool before application supervisors begin. Java I2P's corresponding ordering is reference
 behavior; this bounded i2pr timing policy does not claim Java-equivalent
 anonymity or application fingerprinting behavior.
 

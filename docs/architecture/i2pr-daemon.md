@@ -68,8 +68,9 @@ existing SSU2 dispatcher and service delivery remain alive. The drain ends when
 published inbound leases have expired and tracked service connections reach
 zero, or at the 11-minute hard cap. A second signal upgrades to immediate
 supervisor shutdown; startup-time signals and supervisor failures bypass the
-drain. The one-second outbound startup delay begins after the first inbound
-lease is usable. Status contains only a lifecycle phase and coarse remaining
+drain. The one-second outbound startup delay begins after the configured
+inbound builds are installed and the usable-pool minimum is met. Status
+contains only a lifecycle phase and coarse remaining
 time bucket.
 Plan 190 isolates and corrects the inbound NetDB reply-path
 metadata defect that left 5/7 destination rows blocked after the
