@@ -29,7 +29,7 @@
 //!   not-yet-available floor; unknown methods answer method-not-found.
 //!   No router state is fabricated to exercise dispatch.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -318,6 +318,103 @@ pub struct I2pControlServiceSnapshot {
     pub inflight_available: usize,
 }
 
+/// One decoded Plan 294 `AddressBook` request: exactly one mode.
+enum AddressBookRequest {
+    /// Entry operation (`Type` + `Hostname` + optional `Destination` /
+    /// `Delete`, where `Delete` presence selects deletion).
+    Entry {
+        book: i2pr_addressbook::BookKind,
+        hostname: String,
+        destination: Option<String>,
+        delete: bool,
+    },
+    /// Subscription-set replacement.
+    Subscriptions { urls: Vec<String> },
+    /// Configuration replacement.
+    Config { entries: BTreeMap<String, String> },
+}
+
+/// Decodes one `AddressBook` params object into exactly one mode.
+/// `Token` is skipped (authentication already consumed it). Unknown
+/// fields, mixed modes, and malformed values fail with a static
+/// message; request values never render into errors.
+fn decode_addressbook_request(
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Result<AddressBookRequest, &'static str> {
+    const VOCABULARY: [&str; 6] = [
+        "Type",
+        "Hostname",
+        "Destination",
+        "Delete",
+        "SetSubscriptions",
+        "SetConfig",
+    ];
+    for key in params.keys() {
+        if key != "Token" && !VOCABULARY.contains(&key.as_str()) {
+            return Err("unknown AddressBook field");
+        }
+    }
+    let entry_mode = params.contains_key("Type")
+        || params.contains_key("Hostname")
+        || params.contains_key("Destination")
+        || params.contains_key("Delete");
+    let subscriptions_mode = params.contains_key("SetSubscriptions");
+    let config_mode = params.contains_key("SetConfig");
+    let modes = u8::from(entry_mode) + u8::from(subscriptions_mode) + u8::from(config_mode);
+    if modes != 1 {
+        return Err("AddressBook request selects no single operation");
+    }
+    if subscriptions_mode {
+        let urls = match params.get("SetSubscriptions") {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or("malformed AddressBook field")
+                })
+                .collect::<Result<Vec<String>, &'static str>>()?,
+            _ => return Err("malformed AddressBook field"),
+        };
+        return Ok(AddressBookRequest::Subscriptions { urls });
+    }
+    if config_mode {
+        let entries = match params.get("SetConfig") {
+            Some(serde_json::Value::Object(map)) => map
+                .iter()
+                .map(|(key, value)| {
+                    value
+                        .as_str()
+                        .map(|text| (key.clone(), text.to_owned()))
+                        .ok_or("malformed AddressBook field")
+                })
+                .collect::<Result<BTreeMap<String, String>, &'static str>>()?,
+            _ => return Err("malformed AddressBook field"),
+        };
+        return Ok(AddressBookRequest::Config { entries });
+    }
+    let book = match params.get("Type").and_then(serde_json::Value::as_str) {
+        Some(name) => i2pr_addressbook::BookKind::parse(name)
+            .map_err(|_| "malformed AddressBook field")?,
+        None => return Err("malformed AddressBook field"),
+    };
+    let hostname = match params.get("Hostname").and_then(serde_json::Value::as_str) {
+        Some(name) => name.to_owned(),
+        None => return Err("malformed AddressBook field"),
+    };
+    let destination = match params.get("Destination") {
+        None => None,
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(_) => return Err("malformed AddressBook field"),
+    };
+    Ok(AddressBookRequest::Entry {
+        book,
+        hostname,
+        destination,
+        delete: params.contains_key("Delete"),
+    })
+}
+
 /// Supervised Plan 287 I2PControl service state (daemon-owned).
 pub struct I2pControlServiceState {
     /// Validated service configuration.
@@ -352,6 +449,10 @@ pub struct I2pControlServiceState {
     /// Plan 289 TunnelManager control state (None for standalone
     /// construction; production composition always installs it).
     control: Mutex<Option<Arc<TunnelControlState>>>,
+    /// Plan 294 AddressBook manager (None for standalone
+    /// construction; production composition installs it when the
+    /// subsystem is configured).
+    addressbook: Mutex<Option<Arc<crate::addressbook::AddressBookManager>>>,
 }
 
 impl I2pControlServiceState {
@@ -427,6 +528,7 @@ impl I2pControlServiceState {
             next_connection_id: AtomicU64::new(1),
             inspection,
             control: Mutex::new(None),
+            addressbook: Mutex::new(None),
         })
     }
 
@@ -482,6 +584,16 @@ impl I2pControlServiceState {
     pub fn set_control_manager(&self, control: Arc<TunnelControlState>) {
         if let Ok(mut slot) = self.control.lock() {
             *slot = Some(control);
+        }
+    }
+
+    /// Installs the Plan 294 AddressBook manager. Production
+    /// composition calls this once after subsystem activation;
+    /// standalone construction leaves AddressBook unavailable with
+    /// an explicit Plan 294 marker.
+    pub fn set_addressbook_manager(&self, manager: Arc<crate::addressbook::AddressBookManager>) {
+        if let Ok(mut slot) = self.addressbook.lock() {
+            *slot = Some(manager);
         }
     }
 
@@ -790,30 +902,134 @@ impl I2pControlServiceState {
             i2pr_i2pcontrol::Method::AddressBook => {
                 match self.check_token(&request.params, header_token, now_ms) {
                     Err((code, message)) => (error_envelope(id, code, message), Duration::ZERO),
-                    Ok(()) => {
-                        // AddressBook keeps the typed floor: only the token
-                        // travels this far. Plan 294 owns its select form.
-                        if request.params.keys().any(|key| key != "Token") {
-                            return (
-                                error_envelope(
-                                    id,
-                                    JsonRpcErrorCode::InvalidParams.code(),
-                                    JsonRpcErrorCode::InvalidParams.message(),
-                                ),
-                                Duration::ZERO,
-                            );
-                        }
-                        (
-                            error_envelope(
-                                id,
-                                JsonRpcErrorCode::InternalError.code(),
-                                "AddressBook not yet available (Plan 294)",
-                            ),
-                            Duration::ZERO,
-                        )
-                    }
+                    Ok(()) => self.process_addressbook(id, &request.params),
                 }
             }
+        }
+    }
+
+    /// Dispatches an authenticated `AddressBook` request over the Plan
+    /// 294 canonical form. Exactly one mode per request: an entry
+    /// operation (`Type` + `Hostname` + optional `Destination` /
+    /// `Delete`), a subscription replacement (`SetSubscriptions`), or
+    /// a config replacement (`SetConfig`). Mixed modes, unknown
+    /// fields, and malformed values are invalid params; the whole
+    /// request validates before any mutation. Without an installed
+    /// manager (standalone construction) every request fails
+    /// explicitly with the Plan 294 marker.
+    fn process_addressbook(
+        &self,
+        id: Option<&JsonRpcRequestId>,
+        params: &serde_json::Map<String, serde_json::Value>,
+    ) -> (serde_json::Value, Duration) {
+        let manager = match self.addressbook.lock().ok().and_then(|slot| slot.clone()) {
+            Some(manager) => manager,
+            None => {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InternalError.code(),
+                        "AddressBook owner is not installed (Plan 294)",
+                    ),
+                    Duration::ZERO,
+                );
+            }
+        };
+        if !manager.is_active() {
+            return (
+                error_envelope(
+                    id,
+                    JsonRpcErrorCode::InternalError.code(),
+                    "AddressBook subsystem is not active",
+                ),
+                Duration::ZERO,
+            );
+        }
+        let request = match decode_addressbook_request(params) {
+            Ok(request) => request,
+            Err(message) => {
+                return (
+                    error_envelope(id, JsonRpcErrorCode::InvalidParams.code(), message),
+                    Duration::ZERO,
+                );
+            }
+        };
+        match request {
+            AddressBookRequest::Entry {
+                book,
+                hostname,
+                destination,
+                delete,
+            } => match manager.apply_entry(i2pr_addressbook::EntryMutation {
+                book,
+                hostname,
+                destination,
+                delete,
+            }) {
+                Ok(i2pr_addressbook::EntryOutcome::Created) => {
+                    Self::addressbook_success(id, "entry created")
+                }
+                Ok(i2pr_addressbook::EntryOutcome::Updated) => {
+                    Self::addressbook_success(id, "entry updated")
+                }
+                Ok(i2pr_addressbook::EntryOutcome::Deleted) => {
+                    Self::addressbook_success(id, "entry deleted")
+                }
+                Err(error) => Self::addressbook_manager_error(id, &error),
+            },
+            AddressBookRequest::Subscriptions { urls } => {
+                match manager.replace_subscriptions(&urls) {
+                    Ok((true, run_now)) => {
+                        if run_now {
+                            let diagnostic = manager.run_refresh_once(
+                                i2pr_addressbook::RefreshReason::SubscriptionsReplaced,
+                            );
+                            manager.record_diagnostic(&diagnostic);
+                        }
+                        Self::addressbook_success(id, "subscriptions replaced")
+                    }
+                    Ok((false, _)) => Self::addressbook_success(id, "subscriptions unchanged"),
+                    Err(error) => Self::addressbook_manager_error(id, &error),
+                }
+            }
+            AddressBookRequest::Config { entries } => match manager.apply_config(&entries) {
+                Ok(true) => Self::addressbook_success(id, "config applied"),
+                Ok(false) => Self::addressbook_success(id, "config unchanged"),
+                Err(error) => Self::addressbook_manager_error(id, &error),
+            },
+        }
+    }
+
+    /// Builds a canonical `{success, message}` result envelope.
+    fn addressbook_success(
+        id: Option<&JsonRpcRequestId>,
+        message: &'static str,
+    ) -> (serde_json::Value, Duration) {
+        (
+            success_envelope(
+                id,
+                serde_json::json!({"success": true, "message": message}),
+            ),
+            Duration::ZERO,
+        )
+    }
+
+    /// Maps a manager error to its wire envelope (static strings only;
+    /// request values never render).
+    fn addressbook_manager_error(
+        id: Option<&JsonRpcRequestId>,
+        error: &crate::addressbook::AddressBookManagerError,
+    ) -> (serde_json::Value, Duration) {
+        use crate::addressbook::AddressBookManagerError as ManagerError;
+        match error {
+            ManagerError::Inactive | ManagerError::StoreUnavailable => (
+                error_envelope(id, JsonRpcErrorCode::InternalError.code(), &error.to_string()),
+                Duration::ZERO,
+            ),
+            ManagerError::Rejected(_) => (
+                error_envelope(id, JsonRpcErrorCode::InvalidParams.code(), &error.to_string()),
+                Duration::ZERO,
+            ),
         }
     }
 

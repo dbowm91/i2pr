@@ -50,18 +50,9 @@ struct ConfigShape {
     max_entries: usize,
 }
 
-/// Encodes committed state deterministically.
-pub fn encode_generation(book: &AddressBook) -> Vec<u8> {
-    let config = book.config();
-    let shape = GenerationShape {
-        version: GENERATION_VERSION,
-        revision: book.revision(),
-        private: listed(book, BookKind::Private),
-        local: listed(book, BookKind::Local),
-        router: listed(book, BookKind::Router),
-        published: listed(book, BookKind::Published),
-        subscriptions: book.subscriptions().urls().to_vec(),
-        config: ConfigShape {
+impl ConfigShape {
+    fn capture(config: &crate::config::AddressBookConfig) -> Self {
+        Self {
             book_artifacts: config.book_artifacts.clone(),
             subscriptions_artifact: config.subscriptions_artifact.clone(),
             refresh_interval_hours: config.refresh_interval_hours,
@@ -72,7 +63,21 @@ pub fn encode_generation(book: &AddressBook) -> Vec<u8> {
             log_level: config.log_level.name().to_owned(),
             lookup_timeout_secs: config.lookup_timeout_secs,
             max_entries: config.max_entries,
-        },
+        }
+    }
+}
+
+/// Encodes committed state deterministically.
+pub fn encode_generation(book: &AddressBook) -> Vec<u8> {
+    let shape = GenerationShape {
+        version: GENERATION_VERSION,
+        revision: book.revision(),
+        private: listed(book, BookKind::Private),
+        local: listed(book, BookKind::Local),
+        router: listed(book, BookKind::Router),
+        published: listed(book, BookKind::Published),
+        subscriptions: book.subscriptions().urls().to_vec(),
+        config: ConfigShape::capture(book.config()),
     };
     serde_json::to_vec(&shape).expect("in-memory state serializes")
 }

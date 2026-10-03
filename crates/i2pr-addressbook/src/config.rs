@@ -219,6 +219,46 @@ impl Default for AddressBookConfig {
 }
 
 impl AddressBookConfig {
+    /// Renders all thirteen keys in canonical order for getters and
+    /// generation encoding.
+    pub fn rendered_entries(&self) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+        let keys = [
+            "private_book",
+            "local_book",
+            "router_book",
+            "published_book",
+            "subscriptions",
+            "refresh_interval",
+            "proxy_host",
+            "proxy_port",
+            "theme",
+            "log_file",
+            "log_level",
+            "lookup_timeout",
+            "max_entries",
+        ];
+        let values = [
+            self.book_artifacts[0].clone(),
+            self.book_artifacts[1].clone(),
+            self.book_artifacts[2].clone(),
+            self.book_artifacts[3].clone(),
+            self.subscriptions_artifact.clone(),
+            self.refresh_interval_hours.to_string(),
+            self.proxy_host.clone().unwrap_or_default(),
+            self.proxy_port.map(|port| port.to_string()).unwrap_or_default(),
+            self.theme.clone(),
+            self.log_file.clone(),
+            self.log_level.name().to_owned(),
+            self.lookup_timeout_secs.to_string(),
+            self.max_entries.to_string(),
+        ];
+        for (key, value) in keys.into_iter().zip(values) {
+            map.insert(key.to_owned(), value);
+        }
+        map
+    }
+
     /// Validates a whole `SetConfig` map into an updated configuration
     /// without mutating `self`: unknown keys, bad values, and escaping
     /// paths fail before anything is applied.

@@ -353,6 +353,10 @@ pub struct ServiceTunnelManager {
     /// closed and advance a bounded rejection counter; the
     /// counter is plaintext so the static checker can inspect it.
     inbound_orphan_receives: AtomicUsize,
+    /// Plan 294 canonical address-book resolver cell. Empty unless the
+    /// composition root installs the active subsystem's shared handle;
+    /// static aliases always win over address-book entries.
+    addressbook: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -402,7 +406,18 @@ impl ServiceTunnelManager {
             inbound_owners: Mutex::new(HashMap::new()),
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
+            addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
+    }
+
+    /// Installs the canonical address-book resolver cell (Plan 294).
+    /// The composition root calls this once after subsystem
+    /// activation; clones share one `Arc`, so later commits
+    /// propagate without re-installation.
+    pub fn set_addressbook_handle(&self, handle: crate::addressbook::SharedAddressBook) {
+        if let Ok(mut slot) = self.addressbook.lock() {
+            *slot = handle;
+        }
     }
 
     /// Returns the validated configuration.
@@ -3022,12 +3037,17 @@ impl ServiceTunnelManager {
                 })
             }
             DestinationRef::StaticAlias(alias) => {
-                let target = self
-                    .config
-                    .aliases
-                    .get(alias)
-                    .ok_or_else(|| DestinationFailure::UnknownAlias(alias.clone()))?;
-                self.resolve_reference(target)
+                if let Some(target) = self.config.aliases.get(alias) {
+                    return self.resolve_reference(target);
+                }
+                // Plan 294: static aliases win; on a miss the canonical
+                // address book is the next naming authority. A hit
+                // decodes to a destination hash that flows through the
+                // existing local/remote machinery below.
+                if let Some(entry) = self.addressbook_lookup(alias) {
+                    return self.resolve_addressbook_entry(&entry);
+                }
+                Err(DestinationFailure::UnknownAlias(alias.clone()))
             }
             DestinationRef::ConfiguredDestination(material) => {
                 let bytes = i2pr_api::sam::base64::decode(material, 4096)
@@ -3054,6 +3074,41 @@ impl ServiceTunnelManager {
                 })
             }
         }
+    }
+
+    /// Looks up one static-alias miss in the canonical address book
+    /// (`None` when the subsystem is inactive or the name is absent).
+    fn addressbook_lookup(&self, alias: &str) -> Option<i2pr_addressbook::ResolvedEntry> {
+        self.addressbook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.lookup(alias))
+    }
+
+    /// Resolves one address-book hit through the existing machinery:
+    /// the stored destination decodes defensively (it was validated
+    /// at commit), co-owned destinations serve locally, and anything
+    /// else defers to the router-backed remote lookup with the
+    /// entry's hostname as the lookup label.
+    fn resolve_addressbook_entry(
+        &self,
+        entry: &i2pr_addressbook::ResolvedEntry,
+    ) -> Result<ClientTarget, DestinationFailure> {
+        let bytes = i2pr_api::sam::base64::decode(&entry.destination, 4096)
+            .map_err(|_| DestinationFailure::InvalidMaterial)?;
+        let destination = Destination::decode(&bytes, 4096)
+            .map_err(|error| DestinationFailure::InvalidMaterialDecode(error.to_string()))?;
+        let hash = *destination
+            .hash()
+            .map_err(|error| DestinationFailure::InvalidMaterialDecode(error.to_string()))?
+            .as_bytes();
+        if let Some(target) = self.lookup_local_service_destination(&hash) {
+            return Ok(target);
+        }
+        Err(DestinationFailure::LookupRequired {
+            label: entry.hostname.as_str().to_owned(),
+            hash,
+        })
     }
 
     /// Looks up a local service destination by its hash.

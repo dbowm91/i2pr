@@ -300,6 +300,10 @@ pub struct SamServiceState {
     /// listener starts serving. Consulted once per drained delivery
     /// sweep. Never retains payloads, identities, or keys.
     fault_profile: Arc<Mutex<SamDeliveryFaultProfile>>,
+    /// Plan 294 canonical address-book resolver cell. Empty unless
+    /// the composition root installs the active subsystem's shared
+    /// handle; session-registry and Base32 paths always precede it.
+    addressbook: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
 impl SamServiceState {
@@ -339,7 +343,29 @@ impl SamServiceState {
             destination_drivers,
             delivery_counters,
             fault_profile,
+            addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         })
+    }
+
+    /// Installs the canonical address-book resolver cell (Plan 294).
+    /// The installed clone shares one `Arc` with the subsystem, so
+    /// later commits propagate without re-installation.
+    pub fn set_addressbook_handle(&self, handle: crate::addressbook::SharedAddressBook) {
+        if let Ok(mut slot) = self.addressbook.lock() {
+            *slot = handle;
+        }
+    }
+
+    /// Looks up one `.i2p` hostname in the canonical address book
+    /// (`None` when the subsystem is inactive or the name is absent).
+    pub fn addressbook_lookup(
+        &self,
+        name: &str,
+    ) -> Option<i2pr_addressbook::ResolvedEntry> {
+        self.addressbook
+            .lock()
+            .ok()
+            .and_then(|slot| slot.lookup(name))
     }
 
     /// Returns the validated SAM configuration.
@@ -1955,13 +1981,25 @@ fn execute_naming_lookup(
         }
     }
 
-    let result = if name.to_ascii_lowercase().ends_with(".i2p") {
-        ReplyResult::KeyNotFound
-    } else {
-        ReplyResult::InvalidKey
-    };
+    // Plan 294: ordinary `.i2p` names consult the canonical address
+    // book when the subsystem is active; session-registry and Base32
+    // paths above always precede it. Inactive or absent stays
+    // KeyNotFound, exactly as before Plan 294.
+    if name.to_ascii_lowercase().ends_with(".i2p") {
+        if let Some(entry) = state.addressbook_lookup(&name) {
+            return Ok(NamingLookupApplied {
+                value: entry.destination,
+            });
+        }
+        return Err(NamingLookupFailed {
+            result: ReplyResult::KeyNotFound,
+            message: "name is unavailable in the local naming surface".to_owned(),
+        });
+    }
+
+    // Non-`.i2p` names never reach naming authorities.
     Err(NamingLookupFailed {
-        result,
+        result: ReplyResult::InvalidKey,
         message: "name is unavailable in the local naming surface".to_owned(),
     })
 }

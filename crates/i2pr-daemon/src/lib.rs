@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod addressbook;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;

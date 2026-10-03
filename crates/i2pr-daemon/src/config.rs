@@ -53,6 +53,8 @@ struct RawConfig {
     i2pcontrol: RawI2pControlConfig,
     #[serde(default)]
     service_tunnels: RawServiceTunnelsConfig,
+    #[serde(default)]
+    addressbook: RawAddressBookConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,6 +562,28 @@ struct RawServiceTunnelAlias {
     target: String,
 }
 
+/// Raw Plan 294 `[addressbook]` configuration.
+///
+/// Disabled by default. While disabled the subsystem never touches the
+/// filesystem; `state_dir` only resolves to a path.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAddressBookConfig {
+    #[serde(default = "default_addressbook_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    state_dir: Option<String>,
+}
+
+impl Default for RawAddressBookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_addressbook_enabled(),
+            state_dir: None,
+        }
+    }
+}
+
 fn default_profile() -> String {
     String::from("balanced")
 }
@@ -891,6 +915,10 @@ const MIN_SSU2_SERVICE_PORT: u16 = 1024;
 // --- Plan 174 service-tunnel defaults: disabled, loopback-only, no listener. ---
 
 const fn default_service_tunnels_enabled() -> bool {
+    false
+}
+
+const fn default_addressbook_enabled() -> bool {
     false
 }
 
@@ -1262,6 +1290,9 @@ pub struct Config {
     /// Service-tunnel settings (Plan 174; disabled, loopback-only,
     /// no listener yet).
     pub service_tunnels: ServiceTunnelsConfig,
+    /// Address-book settings (Plan 294; disabled by default; no
+    /// filesystem effect while disabled).
+    pub addressbook: crate::addressbook::AddressBookSubsystemConfig,
 }
 
 /// Normalized Plan 174 service-tunnel configuration.
@@ -1388,6 +1419,7 @@ impl Config {
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
         let i2pcontrol = normalize_i2pcontrol(&raw.i2pcontrol, &raw.limits)?;
         let service_tunnels = normalize_service_tunnels(&raw.service_tunnels, &raw.limits)?;
+        let addressbook = normalize_addressbook(&raw.addressbook, &data_dir)?;
 
         Ok(Self {
             schema_version: raw.schema_version,
@@ -1413,6 +1445,7 @@ impl Config {
             i2cp,
             i2pcontrol,
             service_tunnels,
+            addressbook,
         })
     }
 }
@@ -1982,6 +2015,40 @@ fn normalize_service_tunnels(
         timeouts,
         tunnels: set,
         aliases,
+    })
+}
+
+/// Normalizes the Plan 294 `[addressbook]` block.
+///
+/// Shape-only validation: `enabled` defaults false; `state_dir` must
+/// be non-empty without NUL bytes and resolves against the router
+/// data directory when relative. Existence/permission checks happen
+/// at activation (failure deactivates with a sticky error), never
+/// here: parsing must not touch the filesystem.
+fn normalize_addressbook(
+    raw: &RawAddressBookConfig,
+    data_dir: &Path,
+) -> Result<crate::addressbook::AddressBookSubsystemConfig, ConfigError> {
+    let state_dir = match raw.state_dir.as_deref() {
+        None => data_dir.join(i2pr_storage::ADDRESSBOOK_STATE_SUBDIR),
+        Some(value) => {
+            if value.trim().is_empty() || value.contains('\0') {
+                return Err(ConfigError::Semantic {
+                    field: "addressbook.state_dir",
+                    reason: "must be a non-empty path without NUL bytes",
+                });
+            }
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                data_dir.join(path)
+            }
+        }
+    };
+    Ok(crate::addressbook::AddressBookSubsystemConfig {
+        enabled: raw.enabled,
+        state_dir,
     })
 }
 

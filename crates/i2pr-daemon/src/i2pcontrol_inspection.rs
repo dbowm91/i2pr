@@ -197,6 +197,9 @@ pub struct InspectionHandles {
     i2cp_live: Mutex<Option<Arc<I2cpServiceState>>>,
     /// Live service-tunnel manager published by its owner, when present.
     manager_live: Mutex<Option<Arc<ServiceTunnelManager>>>,
+    /// Canonical address-book resolver cell published by the subsystem
+    /// owner, when active (Plan 294).
+    addressbook_live: Mutex<crate::addressbook::SharedAddressBook>,
 }
 
 impl InspectionHandles {
@@ -216,6 +219,7 @@ impl InspectionHandles {
             sam_live: Mutex::new(None),
             i2cp_live: Mutex::new(None),
             manager_live: Mutex::new(None),
+            addressbook_live: Mutex::new(crate::addressbook::SharedAddressBook::new()),
         }
     }
 
@@ -385,6 +389,15 @@ impl InspectionHandles {
         }
     }
 
+    /// Installs the canonical address-book resolver cell (called once
+    /// by the composition root after subsystem activation; the cell
+    /// shares one `Arc` with the subsystem, so commits propagate).
+    pub fn publish_addressbook(&self, handle: crate::addressbook::SharedAddressBook) {
+        if let Ok(mut live) = self.addressbook_live.lock() {
+            *live = handle;
+        }
+    }
+
     /// Reads the published snapshots without blocking.
     fn snapshots(&self) -> PublishedSnapshots {
         self.published
@@ -442,6 +455,104 @@ fn check_list(key: &'static str, values: &[String]) -> Result<(), PublishError> 
         return Err(PublishError::ListOverBound { key });
     }
     Ok(())
+}
+
+/// Maximum entries rendered for one address-book book row (matches
+/// the committed book ceiling).
+const MAX_ADDRESSBOOK_BOOK_ITEMS: usize = 1000;
+/// Maximum serialized bytes rendered for one address-book book row.
+const MAX_ADDRESSBOOK_BOOK_BYTES: usize = 4_500_000;
+/// Maximum URLs rendered for the subscriptions row.
+const MAX_ADDRESSBOOK_SUBSCRIPTION_ITEMS: usize = 16;
+/// Maximum serialized bytes rendered for the subscriptions row.
+const MAX_ADDRESSBOOK_SUBSCRIPTION_BYTES: usize = 65_536;
+
+/// Reads the published address-book snapshot or gaps with the Plan
+/// 294 owner (uninstalled, inactive, or never published).
+fn addressbook_cells(
+    handles: &InspectionHandles,
+    row: &i2pr_i2pcontrol::SourceRow,
+) -> Result<i2pr_addressbook::AddressBookSnapshot, InspectionGap> {
+    handles
+        .addressbook_live
+        .lock()
+        .ok()
+        .and_then(|slot| slot.snapshot_cloned())
+        .ok_or(InspectionGap {
+            key: row.key,
+            owner_plan: "294",
+            owner: "canonical AddressBook",
+        })
+}
+
+/// Renders one address-book book as a hostname-to-destination map.
+/// Collection ceilings re-check defensively at serialization: a
+/// violation gaps (never truncation, never fabrication).
+fn addressbook_book_value(
+    handles: &InspectionHandles,
+    index: usize,
+    row: &i2pr_i2pcontrol::SourceRow,
+) -> Result<serde_json::Value, InspectionGap> {
+    let internal = || InspectionGap {
+        key: row.key,
+        owner_plan: "294",
+        owner: "canonical AddressBook",
+    };
+    let snapshot = addressbook_cells(handles, row)?;
+    let entries = snapshot.book_entries(index).ok_or_else(internal)?;
+    if entries.len() > MAX_ADDRESSBOOK_BOOK_ITEMS {
+        return Err(internal());
+    }
+    let mut map = serde_json::Map::with_capacity(entries.len());
+    for (name, destination) in entries {
+        map.insert(
+            name.as_str().to_owned(),
+            serde_json::Value::String(destination.clone()),
+        );
+    }
+    let value = serde_json::Value::Object(map);
+    if serde_json::to_vec(&value).map(|bytes| bytes.len()).unwrap_or(usize::MAX)
+        > MAX_ADDRESSBOOK_BOOK_BYTES
+    {
+        return Err(internal());
+    }
+    Ok(value)
+}
+
+/// Renders the committed subscription set as a URL list object.
+fn addressbook_subscriptions_value(
+    handles: &InspectionHandles,
+    row: &i2pr_i2pcontrol::SourceRow,
+) -> Result<serde_json::Value, InspectionGap> {
+    let internal = || InspectionGap {
+        key: row.key,
+        owner_plan: "294",
+        owner: "canonical AddressBook",
+    };
+    let snapshot = addressbook_cells(handles, row)?;
+    if snapshot.subscription_urls().len() > MAX_ADDRESSBOOK_SUBSCRIPTION_ITEMS {
+        return Err(internal());
+    }
+    let value = serde_json::json!({ "urls": snapshot.subscription_urls() });
+    if serde_json::to_vec(&value).map(|bytes| bytes.len()).unwrap_or(usize::MAX)
+        > MAX_ADDRESSBOOK_SUBSCRIPTION_BYTES
+    {
+        return Err(internal());
+    }
+    Ok(value)
+}
+
+/// Renders the committed thirteen-key configuration map.
+fn addressbook_config_value(
+    handles: &InspectionHandles,
+    row: &i2pr_i2pcontrol::SourceRow,
+) -> Result<serde_json::Value, InspectionGap> {
+    let snapshot = addressbook_cells(handles, row)?;
+    let mut map = serde_json::Map::with_capacity(snapshot.config_entries().len());
+    for (key, value) in snapshot.config_entries() {
+        map.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    Ok(serde_json::Value::Object(map))
 }
 
 /// Rejects an over-ceiling publication string.
@@ -634,13 +745,17 @@ pub fn router_info_result(
                 serde_json::json!({"inbound_bps": inbound_bps, "outbound_bps": outbound_bps})
             })
             .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::AddressBookPrivate
-        | RouterInfoSelector::AddressBookLocal
-        | RouterInfoSelector::AddressBookRouter
-        | RouterInfoSelector::AddressBookPublished
-        | RouterInfoSelector::AddressBookSubscriptions
-        | RouterInfoSelector::AddressBookConfig
-        | RouterInfoSelector::LogsRecent
+        RouterInfoSelector::AddressBookPrivate => {
+            addressbook_book_value(handles, 0, &row)
+        }
+        RouterInfoSelector::AddressBookLocal => addressbook_book_value(handles, 1, &row),
+        RouterInfoSelector::AddressBookRouter => addressbook_book_value(handles, 2, &row),
+        RouterInfoSelector::AddressBookPublished => addressbook_book_value(handles, 3, &row),
+        RouterInfoSelector::AddressBookSubscriptions => {
+            addressbook_subscriptions_value(handles, &row)
+        }
+        RouterInfoSelector::AddressBookConfig => addressbook_config_value(handles, &row),
+        RouterInfoSelector::LogsRecent
         | RouterInfoSelector::NewsFeed
         | RouterInfoSelector::BannedPeers => Err(unavailable_gap(row)),
         RouterInfoSelector::ClockSkew => snapshots
@@ -1324,11 +1439,11 @@ mod tests {
         let book_gap = InspectionGap {
             key: "addressbook.private",
             owner_plan: "294",
-            owner: "canonical AddressBook (Plan 294)",
+            owner: "canonical AddressBook",
         };
         assert_eq!(
             book_gap.message(),
-            "addressbook.private not available (Plan 294: canonical AddressBook (Plan 294) unpublished)"
+            "addressbook.private not available (Plan 294: canonical AddressBook unpublished)"
         );
     }
 
@@ -1487,7 +1602,7 @@ mod tests {
 
     #[test]
     fn plan288_matrix_census_matches_contract() {
-        assert_eq!(matrix_census(), (5, 16, 9, 0));
+        assert_eq!(matrix_census(), (11, 16, 3, 0));
     }
 
     #[test]

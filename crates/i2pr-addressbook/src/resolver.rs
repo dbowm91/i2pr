@@ -12,11 +12,15 @@ use std::sync::Arc;
 use crate::book::{BookKind, Provenance, ResolvedEntry};
 use crate::hostname::Hostname;
 
-/// One immutable naming snapshot.
+/// One immutable naming snapshot: the published generation view.
+/// Lookup consults the books; getters additionally render
+/// subscriptions and configuration from the same snapshot.
 #[derive(Clone, Debug)]
 pub struct AddressBookSnapshot {
     books: [BTreeMap<Hostname, String>; 4],
     subscribed: BTreeMap<Hostname, String>,
+    subscriptions: Vec<String>,
+    config: BTreeMap<String, String>,
     revision: u64,
 }
 
@@ -31,6 +35,8 @@ impl AddressBookSnapshot {
                 book_snapshot(book, BookKind::Published),
             ],
             subscribed: book.derived_table().clone(),
+            subscriptions: book.subscriptions().urls().to_vec(),
+            config: book.config().rendered_entries(),
             revision: book.revision(),
         }
     }
@@ -43,6 +49,21 @@ impl AddressBookSnapshot {
     /// Total entries across books plus derived.
     pub fn entry_count(&self) -> usize {
         self.books.iter().map(BTreeMap::len).sum::<usize>() + self.subscribed.len()
+    }
+
+    /// One book's entries in hostname order (`None` out of range).
+    pub fn book_entries(&self, index: usize) -> Option<&BTreeMap<Hostname, String>> {
+        self.books.get(index)
+    }
+
+    /// Committed subscription URLs in order.
+    pub fn subscription_urls(&self) -> &[String] {
+        &self.subscriptions
+    }
+
+    /// Rendered thirteen-key configuration.
+    pub fn config_entries(&self) -> &BTreeMap<String, String> {
+        &self.config
     }
 }
 
@@ -97,6 +118,12 @@ impl AddressBookResolver {
     /// Snapshot revision (lets consumers detect commits).
     pub fn revision(&self) -> u64 {
         self.snapshot.revision
+    }
+
+    /// The wrapped snapshot (getter rendering only; lookup stays the
+    /// naming path).
+    pub fn snapshot(&self) -> &AddressBookSnapshot {
+        &self.snapshot
     }
 }
 
