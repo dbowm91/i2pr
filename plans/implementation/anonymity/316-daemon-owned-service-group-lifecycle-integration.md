@@ -1,6 +1,6 @@
 # Plan 316 — Daemon-owned service-group lifecycle integration corrective
 
-Status at registration: **ready**.
+Status at registration: **ready**. Current status: **active**.
 
 Corrects the integration boundary identified by Plan 311. Plan 311 remains an immutable blocked closure record; this plan owns the runtime and daemon composition changes required before its lifecycle requirements can be implemented against a production consumer.
 
