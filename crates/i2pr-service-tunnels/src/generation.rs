@@ -161,6 +161,12 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         // streams follow the existing replace drain path).
         return DiffClass::ReplaceDestination;
     }
+    if prev.streaming_interactive != next.streaming_interactive {
+        // The streaming managers are constructed with their window
+        // configuration, so profile edits replace the destination
+        // runtime the same way shaping edits do.
+        return DiffClass::ReplaceDestination;
+    }
     if prev.max_connections != next.max_connections
         || prev.max_buffered_bytes_per_direction != next.max_buffered_bytes_per_direction
         || prev.timeouts != next.timeouts
@@ -219,6 +225,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -241,6 +248,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -271,6 +279,17 @@ mod tests {
             diff_spec(&prev, &length_only),
             DiffClass::ReplaceDestination
         );
+    }
+
+    #[test]
+    fn profile_change_is_replace_destination() {
+        // Plan 292: the streaming managers are constructed with
+        // their window configuration, so profile edits replace the
+        // destination runtime like shaping edits do.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.streaming_interactive = true;
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
     }
 
     #[test]

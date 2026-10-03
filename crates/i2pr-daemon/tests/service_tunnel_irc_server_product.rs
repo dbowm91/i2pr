@@ -105,6 +105,7 @@ fn irc_server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+        streaming_interactive: false,
         http_options: None,
         socks5_options: None,
         irc_options: None,

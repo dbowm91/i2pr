@@ -952,6 +952,7 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
                 "listen_port": port,
                 "tunnel_quantity": 4,
                 "tunnel_length": 3,
+                "profile": "interactive",
             },
         }),
         2,
@@ -978,6 +979,10 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     assert_eq!(
         response["result"]["options"]["tunnel_length"],
         serde_json::json!("3")
+    );
+    assert_eq!(
+        response["result"]["options"]["profile"],
+        serde_json::json!("interactive")
     );
 
     // Edit replaces the destination generation with new shaping.

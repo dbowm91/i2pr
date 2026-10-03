@@ -2388,6 +2388,19 @@ impl ServiceTunnelManager {
         )
     }
 
+    /// Projects one spec's streaming profile into its bridge
+    /// configuration (Plan 292). Non-interactive specs reproduce the
+    /// balanced streaming defaults exactly.
+    pub fn streaming_config_for(
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> i2pr_client::streaming::config::StreamingConfig {
+        if spec.streaming_interactive {
+            i2pr_client::streaming::config::StreamingConfig::interactive()
+        } else {
+            i2pr_client::streaming::config::StreamingConfig::balanced()
+        }
+    }
+
     /// Inserts one DestinationRuntime into the per-service registry.
     pub fn register_destination_runtime(
         &self,
@@ -2441,11 +2454,16 @@ impl ServiceTunnelManager {
         let is_streamr_client = matches!(spec.kind, ServiceTunnelKind::StreamrClient);
         let is_streamr_server = matches!(spec.kind, ServiceTunnelKind::StreamrServer);
         let bridge_data = self.create_bridge_for_spec(spec).await?;
+        // Plan 292: the interactive profile selects constrained
+        // streaming windows for both bridge managers; every other
+        // spec keeps the balanced defaults.
+        let streaming_config = Self::streaming_config_for(spec);
         let bridge = SamDestinationBridge::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
             bridge_data.lease_set2,
             bridge_data.outbound_role,
             bridge_data.now_seconds,
+            streaming_config,
         );
         let handle = SamDestinationHandle::new(bridge);
         // Plan 182: install the fabric inbound-tunnel factory so the
@@ -4150,6 +4168,7 @@ mod plan202_routing_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4224,6 +4243,7 @@ mod plan202_routing_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4256,6 +4276,7 @@ mod plan202_routing_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4500,6 +4521,7 @@ mod plan206_remote_composition_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4687,6 +4709,7 @@ mod plan208_remote_route_integration_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4755,6 +4778,7 @@ mod plan208_remote_route_integration_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4866,6 +4890,7 @@ mod plan208_remote_route_integration_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4947,6 +4972,7 @@ mod plan208_remote_route_integration_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5126,6 +5152,7 @@ mod plan210_real_service_destination_material_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5493,6 +5520,7 @@ mod plan212_router_backed_service_destination_tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5847,6 +5875,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5868,6 +5897,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5927,6 +5957,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5948,6 +5979,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+                streaming_interactive: false,
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,

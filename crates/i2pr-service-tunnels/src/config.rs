@@ -619,6 +619,12 @@ pub struct ServiceTunnelSpec {
     /// Pool shaping (length/quantity projection into the destination
     /// tunnel pool). Defaults to [`TunnelShaping::balanced`].
     pub shaping: TunnelShaping,
+    /// Interactive streaming profile (Plan 292): selects the
+    /// constrained-window streaming configuration for
+    /// latency-sensitive tunnels. `false` keeps the balanced
+    /// windows. Streamr kinds must leave this unset (the datagram
+    /// path has no streaming windows).
+    pub streaming_interactive: bool,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
     /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
@@ -945,6 +951,19 @@ impl ServiceTunnelSpec {
                 }
             }
         }
+        // Plan 292: the interactive streaming profile needs the
+        // streaming stack, which Streamr kinds do not have.
+        if self.streaming_interactive
+            && matches!(
+                self.kind,
+                ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "streaming_interactive must not be set for Streamr kinds",
+            });
+        }
         Ok(())
     }
 }
@@ -1037,6 +1056,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1047,6 +1067,24 @@ mod tests {
 
     fn canonical_b32() -> String {
         format!("{}.b32.i2p", "a".repeat(52))
+    }
+
+    #[test]
+    fn streamr_with_interactive_profile_is_contradictory() {
+        // Plan 292: Streamr kinds ride the datagram path, so the
+        // interactive streaming bit must stay unset for them.
+        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        spec.kind = ServiceTunnelKind::StreamrServer;
+        spec.listener = None;
+        spec.target = None;
+        spec.destination = None;
+        let mut streamr = crate::streamr::StreamrOptions::default();
+        streamr.local_udp = Some("127.0.0.1:5001".parse().expect("udp"));
+        spec.streamr_options = Some(streamr);
+        spec.streaming_interactive = true;
+        assert!(spec.validate().is_err());
+        spec.streaming_interactive = false;
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
@@ -1180,6 +1218,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1283,6 +1322,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1314,6 +1354,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
             irc_options: None,
@@ -1368,6 +1409,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1393,6 +1435,7 @@ mod tests {
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
             shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
             http_options: None,
             socks5_options: None,
             irc_options: None,

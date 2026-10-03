@@ -246,6 +246,33 @@ impl StreamingConfig {
         )
         .expect("balanced streaming config is within every ceiling")
     }
+
+    /// Interactive profile (Plan 292): constrained windows and a
+    /// short delayed-ACK deadline for latency-sensitive tunnels.
+    ///
+    /// The mechanism follows the Proposal reference (the interactive
+    /// profile constrains `i2p.streaming.maxWindowSize`); the exact
+    /// values are i2pr policy: 16-packet windows, 32 unacked packets,
+    /// and a 100 ms ACK deadline. Bulk (default) keeps
+    /// [`Self::balanced`].
+    pub fn interactive() -> Self {
+        Self::try_new(
+            64,
+            32,
+            32,
+            16,
+            16,
+            16,
+            32,
+            8,
+            DEFAULT_SETUP_TIMEOUT_MS,
+            DEFAULT_IDLE_TIMEOUT_MS,
+            DEFAULT_CLOSE_TIMEOUT_MS,
+            100,
+            4,
+        )
+        .expect("interactive streaming config is within every ceiling")
+    }
 }
 
 impl Default for StreamingConfig {

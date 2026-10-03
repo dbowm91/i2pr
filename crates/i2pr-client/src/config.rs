@@ -603,6 +603,26 @@ mod tests {
     }
 
     #[test]
+    fn interactive_streaming_profile_constrains_windows() {
+        // Plan 292: the interactive profile keeps bulk timeouts and
+        // stream ceilings but constrains windows and the ACK
+        // deadline for responsiveness.
+        use crate::streaming::config::StreamingConfig;
+        let interactive = StreamingConfig::interactive();
+        let balanced = StreamingConfig::balanced();
+        assert_eq!(interactive.max_send_window_packets, 16);
+        assert_eq!(interactive.max_recv_window_packets, 16);
+        assert_eq!(interactive.max_unacked_packets, 32);
+        assert_eq!(interactive.delayed_ack_ms, 100);
+        assert_eq!(
+            interactive.max_streams_per_destination,
+            balanced.max_streams_per_destination
+        );
+        assert_eq!(interactive.setup_timeout_ms, balanced.setup_timeout_ms);
+        assert_eq!(interactive.close_timeout_ms, balanced.close_timeout_ms);
+    }
+
+    #[test]
     fn balanced_configuration_is_within_bounds() {
         let config = DestinationConfig::balanced();
         assert_eq!(config.inbound_target(), 2);

@@ -680,6 +680,7 @@ impl SamServiceState {
             lease_set2,
             outbound_role,
             now_seconds,
+            i2pr_client::streaming::config::StreamingConfig::balanced(),
         );
         let bridge_handle = match self.sam_destinations.lock() {
             Ok(mut destinations) => destinations.install(destination_id, bridge),

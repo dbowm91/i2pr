@@ -293,7 +293,13 @@ impl SamDestinationBridge {
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
     ) -> Self {
-        Self::with_shared_identity(Arc::new(identity), lease_set2, outbound_role, now_seconds)
+        Self::with_shared_identity(
+            Arc::new(identity),
+            lease_set2,
+            outbound_role,
+            now_seconds,
+            StreamingConfig::balanced(),
+        )
     }
 
     /// Builds the sender-side bridge plus the receiver-side mirror for one
@@ -302,11 +308,16 @@ impl SamDestinationBridge {
     /// Plan 149 §3 Option A: the SAM service builds one secret allocation
     /// per logical destination and shares the `Arc` with the destination
     /// runtime. The bridge never reconstructs a second private identity.
+    ///
+    /// Plan 292: the streaming profile selects the window/ACK
+    /// configuration for both managers (balanced default, interactive
+    /// for latency-sensitive service tunnels).
     pub fn with_shared_identity(
         identity: Arc<DestinationIdentity>,
         lease_set2: LeaseSet2,
         outbound_role: DestinationOutboundRole,
         now_seconds: u32,
+        streaming_config: StreamingConfig,
     ) -> Self {
         let mut receiver_dispatcher = DestinationDispatcher::new();
         receiver_dispatcher
@@ -332,7 +343,7 @@ impl SamDestinationBridge {
         Self {
             identity,
             lease_set2,
-            streaming: StreamingManager::new(StreamingConfig::balanced()),
+            streaming: StreamingManager::new(streaming_config.clone()),
             routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
             session_manager: EciesSessionManager::new(EciesSessionConfig::balanced()),
             outbound_role,
@@ -341,7 +352,7 @@ impl SamDestinationBridge {
             receiver_dispatcher,
             receiver_session: EciesSessionManager::new(EciesSessionConfig::balanced()),
             receiver_routing: DestinationRouting::new(DestinationRoutingConfig::balanced()),
-            receiver_streaming: StreamingManager::new(StreamingConfig::balanced()),
+            receiver_streaming: StreamingManager::new(streaming_config),
             datagrams: i2pr_client::datagram::DatagramManager::new(),
             receiver_lease_set2_store: LeaseSet2Store::default(),
             receiver_now_seconds: now_seconds,

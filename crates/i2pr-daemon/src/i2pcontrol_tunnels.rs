@@ -801,6 +801,8 @@ pub fn build_control_spec(
     let mut outbound_length: Option<u8> = None;
     let mut inbound_quantity: Option<u8> = None;
     let mut outbound_quantity: Option<u8> = None;
+    // Plan 292 profile selection (OR-combined effective bit).
+    let mut profile_interactive = false;
     // Plan 291 Streamr inputs (validated per kind below; ranges
     // enforced by `StreamrOptions::validate` through the final
     // spec validation).
@@ -982,6 +984,46 @@ pub fn build_control_spec(
             }
             "outbound_quantity" => {
                 outbound_quantity = Some(parse_shaping_quantity(key, value)?);
+            }
+            // Plan 292: streaming profile. Only "interactive" is
+            // special (PR6 reference: it constrains the streaming
+            // window); any other value must be the explicit "bulk"
+            // default. The boolean is OR-combined: either knob
+            // selects the interactive windows.
+            "profile" => {
+                if matches!(
+                    kind,
+                    ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "profile applies to streaming kinds only",
+                    });
+                }
+                match value.as_str() {
+                    "interactive" => profile_interactive = true,
+                    "bulk" => {}
+                    _ => {
+                        return Err(ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "profile must be \"bulk\" or \"interactive\"",
+                        });
+                    }
+                }
+            }
+            "interactive" => {
+                if matches!(
+                    kind,
+                    ServiceTunnelKind::StreamrClient | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "interactive applies to streaming kinds only",
+                    });
+                }
+                if parse_bool_option(key, value)? {
+                    profile_interactive = true;
+                }
             }
             // Plan 291: Streamr UDP endpoints and cadence policy.
             // The loopback shape is enforced here; numeric ranges
@@ -1279,6 +1321,7 @@ pub fn build_control_spec(
         max_buffered_bytes_per_direction: 65_536,
         timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
         shaping,
+        streaming_interactive: profile_interactive,
         http_options,
         socks5_options,
         irc_options,
@@ -3059,6 +3102,81 @@ mod tests {
         let spec = build_control_spec(&definition).expect("streamr shaping builds");
         assert_eq!(spec.kind, ServiceTunnelKind::StreamrServer);
         assert_eq!(spec.shaping.inbound_quantity, 3);
+    }
+
+    #[test]
+    fn plan292_profile_selects_streaming_windows() {
+        // profile=interactive and interactive=true both select the
+        // constrained windows; bulk (or absent) keeps balanced.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("profile".to_owned(), "interactive".to_owned());
+        let definition = ControlDefinition {
+            name: "prof".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("profile builds");
+        assert!(spec.streaming_interactive);
+        let selected = crate::service_tunnels::ServiceTunnelManager::streaming_config_for(&spec);
+        assert_eq!(selected.max_send_window_packets, 16);
+        assert_eq!(selected.max_recv_window_packets, 16);
+        assert_eq!(selected.delayed_ack_ms, 100);
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("interactive".to_owned(), "true".to_owned());
+        let definition = ControlDefinition {
+            name: "srvprof".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("interactive builds");
+        assert!(spec.streaming_interactive);
+        // Explicit bulk and absent keys stay balanced.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("profile".to_owned(), "bulk".to_owned());
+        options.insert("interactive".to_owned(), "false".to_owned());
+        let definition = ControlDefinition {
+            name: "bulk".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("bulk builds");
+        assert!(!spec.streaming_interactive);
+        let selected = crate::service_tunnels::ServiceTunnelManager::streaming_config_for(&spec);
+        assert_eq!(
+            selected,
+            i2pr_client::streaming::config::StreamingConfig::balanced()
+        );
+        // Unknown profile values fail instead of storing inertly.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("profile".to_owned(), "turbo".to_owned());
+        let error = normalize_definition("badprof", TunnelType::Client, &options, false)
+            .expect_err("unknown profile fails");
+        assert!(matches!(error, ControlError::InvalidOption { .. }));
+        // Streamr kinds have no streaming stack: both keys fail.
+        for key in ["profile", "interactive"] {
+            let mut options = BTreeMap::new();
+            options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+            options.insert("local_udp_port".to_owned(), "5001".to_owned());
+            options.insert(
+                key.to_owned(),
+                if key == "profile" {
+                    "interactive"
+                } else {
+                    "true"
+                }
+                .to_owned(),
+            );
+            let error =
+                normalize_definition("strmprof", TunnelType::StreamrServer, &options, false)
+                    .expect_err("streamr profile fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error for {key}: {error:?}"
+            );
+        }
     }
 
     #[test]
