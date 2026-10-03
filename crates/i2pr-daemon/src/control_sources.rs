@@ -168,7 +168,7 @@ impl LogRing {
         self.len() == 0
     }
 
-    /// The severity gate label (documents [`RING_MAX_VERBOSITY`]).
+    /// The severity gate label (`INFO` and above; see `RING_MAX_VERBOSITY`).
     pub fn verbosity_gate(&self) -> &'static str {
         RING_MAX_VERBOSITY
     }
