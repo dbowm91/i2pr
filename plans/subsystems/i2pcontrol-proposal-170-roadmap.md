@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–294 passed; Plans 295, 296, 297 ready. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plans 286–295 passed; Plans 296, 297 ready. This workstream is parallel to M12 and does not gate router-mainline progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -121,7 +121,7 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 292 | passed | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | plans/closure/i2pcontrol-proposal-170/292-status.md (`passed-prop170-tunnel-option-matrix-and-noncrypto-completion`) |
 | 293 | passed | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | plans/closure/i2pcontrol-proposal-170/293-status.md (`passed-prop170-deep-tunnel-option-determinations`) |
 | 294 | passed | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | plans/closure/i2pcontrol-proposal-170/294-status.md (`passed-prop170-canonical-addressbook-and-resolver-integration`) |
-| 295 | ready | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | future |
+| 295 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | plans/closure/i2pcontrol-proposal-170/295-status.md (`passed-prop170-full-source-completion-and-differential-conformance`) |
 | 296 | ready | capability | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | future |
 | 297 | ready | capability | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | future |
 
@@ -199,6 +199,6 @@ generation store, and the validate-mirror-stage-reconcile-publish-verify
 transaction (see
 `plans/closure/i2pcontrol-proposal-170/289-status.md`); the remaining
 six types belong to Plans 290–291 and the wider option matrix to Plans
-292–293. Plans 290–294 are closed; Plans 295, 296, 297 are ready.
+292–293. Plans 290–295 are closed; Plans 296, 297 are ready.
 The remainder of the workstream is registered but dependency-gated. No
 Proposal 170 capability is claimed by registration alone.
