@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–291 passed; Plans 292 and 294 ready; Plan 293 and 295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
+Status: Plans 286–291 passed; Plan 292 active; Plan 294 ready; Plan 293 and 295 registered behind the dependency graph. This workstream is parallel to M12 and does not gate router-mainline progression.
 
 Long-term references:
 - GUARDRAILS.md
@@ -118,7 +118,7 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 289 | passed | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/289-tunnelmanager-control-state-and-existing-service-adapter.md | plans/closure/i2pcontrol-proposal-170/289-status.md (`passed-prop170-tunnelmanager-control-state-and-existing-service-adapter`) |
 | 290 | passed | capability | plans/implementation/i2pcontrol-proposal-170/290-composed-tunnel-family-parity.md | plans/closure/i2pcontrol-proposal-170/290-status.md (`passed-prop170-composed-tunnel-families`) |
 | 291 | passed | capability/infrastructure | plans/implementation/i2pcontrol-proposal-170/291-repliable-datagram-and-streamr-tunnel-families.md | plans/closure/i2pcontrol-proposal-170/291-status.md (`passed-prop170-repliable-datagram-and-streamr`) |
-| 292 | ready | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | future |
+| 292 | active | capability | plans/implementation/i2pcontrol-proposal-170/292-tunnel-option-matrix-and-noncrypto-runtime-completion.md | future |
 | 293 | blocked on 292 | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | future |
 | 294 | ready | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | future |
 | 295 | blocked on 288 + 293 + 294 | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | future |

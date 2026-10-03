@@ -1,6 +1,6 @@
 # Plan 292 — Exact TunnelManager option matrix and non-cryptographic runtime completion
 
-Status: registered-prop170-option-matrix-blocked-on-plan290-plan291
+Status: in-progress-prop170-option-matrix
 
 Classification: capability + contract hardening.
 
