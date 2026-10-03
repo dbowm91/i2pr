@@ -459,6 +459,8 @@ struct RawServiceTunnelEntry {
     #[serde(default)]
     group: Option<String>,
     #[serde(default)]
+    inbound_port: Option<u16>,
+    #[serde(default)]
     max_connections: Option<usize>,
     #[serde(default)]
     max_buffered_bytes_per_direction: Option<usize>,
@@ -1441,7 +1443,7 @@ fn normalize_service_tunnels(
     global: &RawLimitsConfig,
 ) -> Result<ServiceTunnelsConfig, ConfigError> {
     use i2pr_service_tunnels::{
-        DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceClientGroupId,
+        DestinationGroupId, DestinationPolicy, LocalListenerSpec, ServerTarget,
         ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind,
         ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
     };
@@ -1574,11 +1576,11 @@ fn normalize_service_tunnels(
             None => DestinationPolicy::Dedicated,
             Some(group) => {
                 let parsed =
-                    ServiceClientGroupId::parse(group).map_err(|_| ConfigError::Semantic {
+                    DestinationGroupId::parse(group).map_err(|_| ConfigError::Semantic {
                         field: "service_tunnels.tunnel.group",
-                        reason: "shared client group id is malformed",
+                        reason: "destination group id is malformed",
                     })?;
-                DestinationPolicy::SharedClientGroup(parsed)
+                DestinationPolicy::SharedGroup(parsed)
             }
         };
         let max_connections = entry.max_connections.unwrap_or(16);
@@ -1609,6 +1611,7 @@ fn normalize_service_tunnels(
             targets,
             destination,
             policy,
+            inbound_port: entry.inbound_port,
             max_connections,
             max_buffered_bytes_per_direction: max_buffered,
             timeouts,
@@ -3008,6 +3011,20 @@ data_dir = "./state"
             MINIMAL
         );
         Config::parse(&text).expect("unix target validates as a path value");
+    }
+
+    #[test]
+    fn service_group_config_applies_to_server_destinations() {
+        let text = format!(
+            "{}\n[service_tunnels]\n[[service_tunnels.tunnel]]\nid = \"web\"\nkind = \"generic-server\"\ntarget = \"127.0.0.1:9090\"\ngroup = \"public-services\"\ninbound_port = 80\n",
+            MINIMAL
+        );
+        let config = Config::parse(&text).expect("explicit server group is valid");
+        assert!(matches!(
+            &config.service_tunnels.tunnels.tunnels[0].policy,
+            i2pr_service_tunnels::DestinationPolicy::SharedGroup(group)
+                if group.as_str() == "public-services"
+        ));
     }
 
     #[test]

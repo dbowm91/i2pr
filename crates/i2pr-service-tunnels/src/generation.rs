@@ -29,7 +29,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::config::{DestinationPolicy, ServiceTunnelKind, ServiceTunnelSpec};
+use crate::config::{ServiceTunnelKind, ServiceTunnelSpec};
 
 /// Typed classification of how one service spec differs from a
 /// prior committed generation.
@@ -141,16 +141,17 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         return DiffClass::ReplaceDestination;
     }
     if prev.kind.is_server() {
-        if prev.target != next.target || prev.targets != next.targets {
-            return DiffClass::ReplaceDestination;
-        }
-        // Server policy must stay Dedicated.
-        if !matches!(next.policy, DestinationPolicy::Dedicated) {
+        if prev.target != next.target
+            || prev.targets != next.targets
+            || prev.policy != next.policy
+            || prev.inbound_port != next.inbound_port
+        {
             return DiffClass::ReplaceDestination;
         }
     } else if prev.listener != next.listener
         || prev.destination != next.destination
         || prev.policy != next.policy
+        || prev.inbound_port != next.inbound_port
     {
         return DiffClass::ReplaceDestination;
     }
@@ -206,6 +207,7 @@ mod tests {
             targets: Vec::new(),
             destination: Some(DestinationRef::parse(&canonical_b32()).expect("dest")),
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -225,6 +227,7 @@ mod tests {
             targets: Vec::new(),
             destination: None,
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),

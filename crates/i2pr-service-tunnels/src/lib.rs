@@ -51,12 +51,12 @@ pub mod irc;
 pub mod socks5;
 
 pub use config::{
-    DestinationPolicy, LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE,
-    MAX_ACTIVE_CONNECTIONS_PER_SERVICE, MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS,
-    MAX_GROUP_ID_LEN, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS, MAX_STATIC_ALIASES,
-    MAX_UNIX_PATH_LEN, MIN_BUFFERED_BYTES_PER_DIRECTION, ServerTarget, ServiceClientGroupId,
-    ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
-    ServiceTunnelSpec,
+    DestinationGroupId, DestinationGroupKey, DestinationGroupSpec, DestinationPolicy,
+    LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
+    MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS, MAX_GROUP_ID_LEN, MAX_SERVICE_ID_LEN,
+    MAX_SERVICE_TUNNELS, MAX_STATIC_ALIASES, MAX_UNIX_PATH_LEN, MIN_BUFFERED_BYTES_PER_DIRECTION,
+    ServerTarget, ServiceClientGroupId, ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId,
+    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
 };
 pub use destination::{DestinationRef, StaticAliasTable};
 pub use errors::ServiceTunnelError;
