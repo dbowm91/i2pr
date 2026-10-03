@@ -25,7 +25,6 @@
 //!   address-book addresses arrive with Plan 294;
 //! - `BOB` is a deliberate constant, not a missing-handler fallback.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +32,9 @@ use i2pr_i2pcontrol::{
     ClientService, ROUTER_INFO_SOURCE_MATRIX, RouterInfoSelector, SourceAvailability, service_row,
     source_row,
 };
+use i2pr_runtime::Ssu2RuntimeService;
 
+use crate::control_sources::{ControlMetrics, LogRing};
 use crate::i2cp::I2cpServiceState;
 use crate::sam::SamServiceState;
 use crate::service_tunnels::ServiceTunnelManager;
@@ -44,15 +45,21 @@ pub const ROUTER_API_VERSION: u64 = 1;
 /// Liveness string reported by `router.status` while dispatch executes.
 pub const ROUTER_STATUS_RUNNING: &str = "running";
 
+/// Neutral clock-skew value reported by `network.clock_skew`.
+///
+/// The Proposal permits `null` (no peers to average); the integer
+/// wire encodes the unmeasured state as `0` with the Plan 295
+/// justification recorded in the source matrix (no peer clocks are
+/// ever observed, so this is a declared neutral, never a
+/// measurement).
+pub const CLOCK_SKEW_NEUTRAL: i64 = 0;
+
 /// Router version string reported by `router.version`: this router's own
 /// crate version, never another router's release string.
 pub const ROUTER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Maximum entries in one published hash/peer list.
 pub const MAX_INSPECTION_LIST: usize = 1024;
-
-/// Maximum entries in a published rates map.
-pub const MAX_INSPECTION_RATES: usize = 8;
 
 /// Maximum bytes of a published mode/state string.
 pub const MAX_INSPECTION_STATE_STRING: usize = 32;
@@ -106,14 +113,9 @@ struct PublishedSnapshots {
     participating: Option<u64>,
     /// Published build-queue depth or `None`.
     build_queue: Option<u64>,
-    /// Published `(succeeded, attempted)` tunnel-build counters or `None`.
-    success: Option<(u64, u64)>,
-    /// Published `(inbound_bps, outbound_bps)` or `None`.
-    bandwidth: Option<(u64, u64)>,
-    /// Published clock-skew observation or `None`.
-    clock_skew: Option<i64>,
-    /// Published rate entries or `None`.
-    rates: Option<BTreeMap<String, u64>>,
+    /// Published authoritative ban set or `None` (Plan 295 explicit
+    /// ban owner; empty means no bans, never an unowned guess).
+    bans: Option<Vec<String>>,
 }
 
 /// Rejection of an over-ceiling or malformed publication.
@@ -124,8 +126,6 @@ pub enum PublishError {
         /// Selector the list belongs to.
         key: &'static str,
     },
-    /// A rates map exceeded [`MAX_INSPECTION_RATES`].
-    RatesOverBound,
     /// A state string exceeded its ceiling.
     StringOverBound {
         /// Selector the string belongs to.
@@ -141,7 +141,6 @@ impl core::fmt::Display for PublishError {
             Self::ListOverBound { key } => {
                 write!(formatter, "inspection list over ceiling for {key}")
             }
-            Self::RatesOverBound => write!(formatter, "inspection rates map over ceiling"),
             Self::StringOverBound { key } => {
                 write!(formatter, "inspection string over ceiling for {key}")
             }
@@ -200,6 +199,17 @@ pub struct InspectionHandles {
     /// Canonical address-book resolver cell published by the subsystem
     /// owner, when active (Plan 294).
     addressbook_live: Mutex<crate::addressbook::SharedAddressBook>,
+    /// Bounded log ring published by the composition root (Plan 295);
+    /// `logs.recent` reads it per request.
+    log_live: Mutex<Option<Arc<LogRing>>>,
+    /// Rolling control metrics published by the composition root
+    /// (Plan 295); success, bandwidth, and rate rows tick and read it
+    /// per request.
+    metrics_live: Mutex<Option<Arc<ControlMetrics>>>,
+    /// Cloned SSU2 runtime service published by the SSU2 factory when
+    /// the service is registered (Plan 295); session and error rows
+    /// read its cheap snapshot accessors per request.
+    ssu2_live: Mutex<Option<Ssu2RuntimeService>>,
 }
 
 impl InspectionHandles {
@@ -220,6 +230,9 @@ impl InspectionHandles {
             i2cp_live: Mutex::new(None),
             manager_live: Mutex::new(None),
             addressbook_live: Mutex::new(crate::addressbook::SharedAddressBook::new()),
+            log_live: Mutex::new(None),
+            metrics_live: Mutex::new(None),
+            ssu2_live: Mutex::new(None),
         }
     }
 
@@ -303,6 +316,9 @@ impl InspectionHandles {
     }
 
     /// Publishes bounded transport views.
+    ///
+    /// Plan 295 serves clock skew as the neutral constant instead, so
+    /// this call carries no clock observation.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_transport(
         &self,
@@ -310,7 +326,6 @@ impl InspectionHandles {
         ssu2_sessions: Vec<String>,
         reachability: &str,
         errors: Vec<String>,
-        clock_skew: i64,
     ) -> Result<(), PublishError> {
         check_list("transport.ntcp2.active_peers", &ntcp2_peers)?;
         check_list("transport.ssu2.active_sessions", &ssu2_sessions)?;
@@ -321,51 +336,62 @@ impl InspectionHandles {
             published.ssu2_sessions = Some(ssu2_sessions);
             published.reachability = Some(reachability.to_owned());
             published.transport_errors = Some(errors);
-            published.clock_skew = Some(clock_skew);
         }
         Ok(())
     }
 
-    /// Publishes bounded tunnel views.
-    #[allow(clippy::too_many_arguments)]
+    /// Publishes bounded tunnel-count views.
+    ///
+    /// Success, bandwidth, and rate rows read the live Plan 295
+    /// metrics owner instead, so this call carries counts only.
     pub fn publish_tunnels(
         &self,
         exploratory: u64,
         client_tunnels: u64,
         participating: u64,
         build_queue: u64,
-        succeeded: u64,
-        attempted: u64,
-        inbound_bps: u64,
-        outbound_bps: u64,
     ) -> Result<(), PublishError> {
         if let Ok(mut published) = self.published.lock() {
             published.exploratory = Some(exploratory);
             published.client_tunnels = Some(client_tunnels);
             published.participating = Some(participating);
             published.build_queue = Some(build_queue);
-            published.success = Some((succeeded, attempted));
-            published.bandwidth = Some((inbound_bps, outbound_bps));
         }
         Ok(())
     }
 
-    /// Publishes bounded rate entries (deterministic key order).
-    pub fn publish_rates(&self, rates: BTreeMap<String, u64>) -> Result<(), PublishError> {
-        if rates.len() > MAX_INSPECTION_RATES {
-            return Err(PublishError::RatesOverBound);
-        }
-        for key in rates.keys() {
-            if key.is_empty() || key.len() > 128 {
-                return Err(PublishError::StringOverBound {
-                    key: "network.rates",
-                });
-            }
-        }
+    /// Publishes the authoritative ban set from the explicit ban
+    /// owner (empty means no bans exist, never an unowned guess).
+    pub fn publish_bans(&self, banned: Vec<String>) -> Result<(), PublishError> {
+        check_list("network.banned_peers", &banned)?;
         if let Ok(mut published) = self.published.lock() {
-            published.rates = Some(rates);
+            published.bans = Some(banned);
         }
         Ok(())
+    }
+
+    /// Publishes the bounded log ring (called once by the composition
+    /// root; the ring keeps feeding from the tracing layer).
+    pub fn publish_log_ring(&self, ring: Arc<LogRing>) {
+        if let Ok(mut live) = self.log_live.lock() {
+            *live = Some(ring);
+        }
+    }
+
+    /// Publishes the rolling control metrics (called once by the
+    /// composition root).
+    pub fn publish_metrics(&self, metrics: Arc<ControlMetrics>) {
+        if let Ok(mut live) = self.metrics_live.lock() {
+            *live = Some(metrics);
+        }
+    }
+
+    /// Publishes the cloned SSU2 runtime service (called by the SSU2
+    /// factory when the service registers; cheap `Arc`-backed clone).
+    pub fn publish_ssu2(&self, service: Ssu2RuntimeService) {
+        if let Ok(mut live) = self.ssu2_live.lock() {
+            *live = Some(service);
+        }
     }
 
     /// Publishes the live SAM state (called once by the SAM factory).
@@ -420,7 +446,27 @@ impl core::fmt::Debug for InspectionHandles {
             .field("netdb_published", &snapshots.netdb_known.is_some())
             .field("transport_published", &snapshots.ntcp2_peers.is_some())
             .field("tunnels_published", &snapshots.exploratory.is_some())
-            .field("rates_published", &snapshots.rates.is_some())
+            .field("bans_published", &snapshots.bans.is_some())
+            .field(
+                "log_live",
+                &self.log_live.lock().map(|live| live.is_some()).unwrap_or(false),
+            )
+            .field(
+                "metrics_live",
+                &self
+                    .metrics_live
+                    .lock()
+                    .map(|live| live.is_some())
+                    .unwrap_or(false),
+            )
+            .field(
+                "ssu2_live",
+                &self
+                    .ssu2_live
+                    .lock()
+                    .map(|live| live.is_some())
+                    .unwrap_or(false),
+            )
             .field(
                 "sam_live",
                 &self
@@ -696,59 +742,57 @@ pub fn router_info_result(
         RouterInfoSelector::NetDbKnownPeers => snapshots
             .netdb_known
             .map(|peers| strings_value(&peers))
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::NetDbActivePeers => snapshots
             .netdb_active
             .map(|peers| strings_value(&peers))
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::NetDbFloodfillMode => snapshots
             .floodfill_mode
             .map(|mode| serde_json::Value::String(mode.as_str().to_owned()))
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::Ntcp2ActivePeers => snapshots
             .ntcp2_peers
             .map(|peers| strings_value(&peers))
-            .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::Ssu2ActiveSessions => snapshots
-            .ssu2_sessions
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::Ssu2ActiveSessions => ssu2_session_strings(handles)
             .map(|sessions| strings_value(&sessions))
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::Reachability => snapshots
             .reachability
             .map(serde_json::Value::String)
-            .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::TransportErrors => snapshots
-            .transport_errors
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::TransportErrors => transport_error_strings(handles)
             .map(|errors| strings_value(&errors))
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::ExploratoryCount => snapshots
             .exploratory
             .map(count_value)
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::ClientCount => snapshots
             .client_tunnels
             .map(count_value)
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::ParticipatingCount => snapshots
             .participating
             .map(count_value)
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::BuildQueue => snapshots
             .build_queue
             .map(count_value)
-            .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::SuccessRate => snapshots
-            .success
-            .map(|(succeeded, attempted)| {
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::SuccessRate => metrics_owner(handles)
+            .map(|metrics| {
+                let (succeeded, attempted) = metrics.success();
                 serde_json::json!({"succeeded": succeeded, "attempted": attempted})
             })
-            .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::Bandwidth => snapshots
-            .bandwidth
-            .map(|(inbound_bps, outbound_bps)| {
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::Bandwidth => metrics_owner(handles)
+            .map(|metrics| {
+                let (inbound_bps, outbound_bps) = metrics.bandwidth();
                 serde_json::json!({"inbound_bps": inbound_bps, "outbound_bps": outbound_bps})
             })
-            .ok_or_else(|| gated_gap(row)),
+            .ok_or_else(|| unpublished_295(&row)),
         RouterInfoSelector::AddressBookPrivate => {
             addressbook_book_value(handles, 0, &row)
         }
@@ -759,44 +803,36 @@ pub fn router_info_result(
             addressbook_subscriptions_value(handles, &row)
         }
         RouterInfoSelector::AddressBookConfig => addressbook_config_value(handles, &row),
-        RouterInfoSelector::LogsRecent
-        | RouterInfoSelector::NewsFeed
-        | RouterInfoSelector::BannedPeers => Err(unavailable_gap(row)),
-        RouterInfoSelector::ClockSkew => snapshots
-            .clock_skew
-            .map(serde_json::Value::from)
-            .ok_or_else(|| gated_gap(row)),
-        RouterInfoSelector::Rates => snapshots
-            .rates
-            .map(|rates| {
-                let entries: serde_json::Map<String, serde_json::Value> = rates
+        RouterInfoSelector::LogsRecent => handles
+            .log_live
+            .lock()
+            .ok()
+            .and_then(|live| live.clone())
+            .map(|ring| {
+                let (lines, dropped) = ring.snapshot();
+                let entries: Vec<serde_json::Value> = lines
+                    .iter()
+                    .map(|line| serde_json::Value::String(line.wire()))
+                    .collect();
+                serde_json::json!({"entries": entries, "dropped": dropped})
+            })
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::NewsFeed => Err(unavailable_gap(row)),
+        RouterInfoSelector::BannedPeers => snapshots
+            .bans
+            .map(|banned| strings_value(&banned))
+            .ok_or_else(|| unpublished_295(&row)),
+        RouterInfoSelector::ClockSkew => Ok(serde_json::Value::from(CLOCK_SKEW_NEUTRAL)),
+        RouterInfoSelector::Rates => metrics_owner(handles)
+            .map(|metrics| {
+                let entries: serde_json::Map<String, serde_json::Value> = metrics
+                    .rates_snapshot()
                     .into_iter()
                     .map(|(key, value)| (key, serde_json::Value::from(value)))
                     .collect();
                 serde_json::Value::Object(entries)
             })
-            .ok_or_else(|| gated_gap(row)),
-    }
-}
-
-/// Builds the gap for a publish-gated row from the matrix row.
-fn gated_gap(row: i2pr_i2pcontrol::SourceRow) -> InspectionGap {
-    match row.availability {
-        SourceAvailability::PublishedGated { owner, owner_plan } => InspectionGap {
-            key: row.key,
-            owner_plan,
-            owner,
-        },
-        SourceAvailability::Unavailable { owner_plan, .. } => InspectionGap {
-            key: row.key,
-            owner_plan,
-            owner: row.owner,
-        },
-        _ => InspectionGap {
-            key: row.key,
-            owner_plan: "288",
-            owner: row.owner,
-        },
+            .ok_or_else(|| unpublished_295(&row)),
     }
 }
 
@@ -819,6 +855,82 @@ fn unavailable_gap(row: i2pr_i2pcontrol::SourceRow) -> InspectionGap {
             owner: row.owner,
         },
     }
+}
+
+/// Builds the gap for a Plan 295 owner-backed row whose owner has not
+/// published yet. Composition installs every owner, so production
+/// never takes this path; handles built without composition keep the
+/// fail-closed slot instead of fabricating.
+fn unpublished_295(row: &i2pr_i2pcontrol::SourceRow) -> InspectionGap {
+    InspectionGap {
+        key: row.key,
+        owner_plan: "295",
+        owner: row.owner,
+    }
+}
+
+/// Reads the published rolling metrics, when installed.
+fn metrics_owner(handles: &InspectionHandles) -> Option<Arc<ControlMetrics>> {
+    handles
+        .metrics_live
+        .lock()
+        .ok()
+        .and_then(|live| live.clone())
+}
+
+/// Reads the published SSU2 runtime service, when the SSU2 service
+/// registered.
+fn ssu2_service(handles: &InspectionHandles) -> Option<Ssu2RuntimeService> {
+    handles.ssu2_live.lock().ok().and_then(|live| live.clone())
+}
+
+/// Live SSU2 session identifiers (sorted, deduplicated 44-char I2P
+/// base64 peer hashes), falling back to the attested static
+/// publication when no SSU2 service registered.
+fn ssu2_session_strings(handles: &InspectionHandles) -> Option<Vec<String>> {
+    if let Some(service) = ssu2_service(handles) {
+        let mut sessions: Vec<String> = service
+            .active_peer_hashes()
+            .iter()
+            .filter_map(|hash| i2pr_netdb::encode(hash.as_bytes()).ok())
+            .collect();
+        sessions.sort();
+        sessions.dedup();
+        return Some(sessions);
+    }
+    handles.snapshots().ssu2_sessions
+}
+
+/// Non-zero SSU2 error counters as `name=value` entries in counter
+/// order, falling back to the attested static publication when no
+/// SSU2 service registered.
+fn transport_error_strings(handles: &InspectionHandles) -> Option<Vec<String>> {
+    if let Some(service) = ssu2_service(handles) {
+        let snapshot = service.snapshot();
+        let counters = [
+            ("ssu2.cheap_drops", snapshot.cheap_drops),
+            ("ssu2.auth_failures", snapshot.auth_failures),
+            ("ssu2.protocol_drops", snapshot.protocol_drops),
+            ("ssu2.token_rejections", snapshot.token_rejections),
+            ("ssu2.replay_rejections", snapshot.replay_rejections),
+            ("ssu2.handshake_timeouts", snapshot.handshake_timeouts),
+            ("ssu2.fault_drops", snapshot.fault_drops),
+            ("ssu2.inbound_queue_drops", snapshot.inbound_queue_drops),
+            ("ssu2.staging_drops", snapshot.staging_drops),
+            ("ssu2.send_without_link", snapshot.send_without_link),
+            ("ssu2.path_rejections", snapshot.path_rejections),
+            ("ssu2.path_expirations", snapshot.path_expirations),
+            ("ssu2.path_denied", snapshot.path_denied),
+        ];
+        return Some(
+            counters
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .map(|(name, count)| format!("{name}={count}"))
+                .collect(),
+        );
+    }
+    handles.snapshots().transport_errors
 }
 
 /// Serializes a bounded string list (publication enforced the ceiling).
@@ -1172,9 +1284,13 @@ mod tests {
     }
 
     #[test]
-    fn plan288_unavailable_selectors_fail_with_owning_plan() {
+    fn plan295_owner_rows_gap_until_published() {
         use i2pr_i2pcontrol::RouterInfoSelector;
         let handles = test_handles();
+        // AddressBook rows stay 294-owned; every Plan 295 owner-backed
+        // row gaps with the 295 marker until composition installs it.
+        // `network.clock_skew` is the exception: the neutral constant
+        // answers without publication.
         for (selector, plan) in [
             (RouterInfoSelector::AddressBookPrivate, "294"),
             (RouterInfoSelector::AddressBookLocal, "294"),
@@ -1185,12 +1301,22 @@ mod tests {
             (RouterInfoSelector::LogsRecent, "295"),
             (RouterInfoSelector::NewsFeed, "295"),
             (RouterInfoSelector::BannedPeers, "295"),
+            (RouterInfoSelector::Ssu2ActiveSessions, "295"),
+            (RouterInfoSelector::TransportErrors, "295"),
+            (RouterInfoSelector::SuccessRate, "295"),
+            (RouterInfoSelector::Bandwidth, "295"),
+            (RouterInfoSelector::Rates, "295"),
         ] {
-            let gap = router_info_result(selector, &handles, 0).expect_err("unavailable");
+            let gap = router_info_result(selector, &handles, 0).expect_err("unpublished");
             assert_eq!(gap.owner_plan, plan, "wrong owner for {}", gap.key);
             assert_eq!(gap.key, selector.name());
         }
-        // The ban row records the missing ban facility explicitly.
+        assert_eq!(
+            value(RouterInfoSelector::ClockSkew, &handles, 0),
+            serde_json::json!(0),
+            "neutral constant answers without publication"
+        );
+        // The ban row records the explicit ban owner once published.
         let gap = router_info_result(RouterInfoSelector::BannedPeers, &handles, 0)
             .expect_err("no ban owner");
         assert!(
@@ -1201,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn plan288_gated_dynamics_fail_until_published() {
+    fn plan295_static_attestations_gap_until_published() {
         use i2pr_i2pcontrol::RouterInfoSelector;
         let handles = test_handles();
         for selector in [
@@ -1209,25 +1335,19 @@ mod tests {
             RouterInfoSelector::NetDbActivePeers,
             RouterInfoSelector::NetDbFloodfillMode,
             RouterInfoSelector::Ntcp2ActivePeers,
-            RouterInfoSelector::Ssu2ActiveSessions,
             RouterInfoSelector::Reachability,
-            RouterInfoSelector::TransportErrors,
             RouterInfoSelector::ExploratoryCount,
             RouterInfoSelector::ClientCount,
             RouterInfoSelector::ParticipatingCount,
             RouterInfoSelector::BuildQueue,
-            RouterInfoSelector::SuccessRate,
-            RouterInfoSelector::Bandwidth,
-            RouterInfoSelector::ClockSkew,
-            RouterInfoSelector::Rates,
         ] {
-            let gap = router_info_result(selector, &handles, 0).expect_err("gated");
+            let gap = router_info_result(selector, &handles, 0).expect_err("unpublished");
             assert_eq!(gap.owner_plan, "295", "wrong owner for {}", gap.key);
         }
     }
 
     #[test]
-    fn plan288_published_dynamics_answer_after_state_transitions() {
+    fn plan295_published_sources_answer_after_attestation() {
         use i2pr_i2pcontrol::RouterInfoSelector;
         let handles = test_handles();
         handles
@@ -1251,7 +1371,6 @@ mod tests {
                 vec!["session-1".to_owned()],
                 "ok",
                 vec!["e1".to_owned()],
-                -3,
             )
             .expect("transport publishes");
         assert_eq!(
@@ -1262,12 +1381,13 @@ mod tests {
             value(RouterInfoSelector::Reachability, &handles, 0),
             serde_json::Value::String("ok".to_owned())
         );
+        // Clock skew is the neutral constant: no publication exists.
         assert_eq!(
             value(RouterInfoSelector::ClockSkew, &handles, 0),
-            serde_json::json!(-3)
+            serde_json::json!(0)
         );
         handles
-            .publish_tunnels(2, 0, 1, 4, 9, 10, 1000, 2000)
+            .publish_tunnels(2, 0, 1, 4)
             .expect("tunnels publish");
         // Count selectors emit a one-element list (frozen List shape).
         assert_eq!(
@@ -1278,21 +1398,50 @@ mod tests {
             value(RouterInfoSelector::BuildQueue, &handles, 0),
             serde_json::json!([4])
         );
+        // The metrics owner serves success, bandwidth, and rates.
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.observe_builds(9, 10);
+        handles.publish_metrics(metrics);
         assert_eq!(
             value(RouterInfoSelector::SuccessRate, &handles, 0),
             serde_json::json!({"succeeded": 9, "attempted": 10})
         );
+        let bandwidth = value(RouterInfoSelector::Bandwidth, &handles, 0);
         assert_eq!(
-            value(RouterInfoSelector::Bandwidth, &handles, 0),
-            serde_json::json!({"inbound_bps": 1000, "outbound_bps": 2000})
+            bandwidth,
+            serde_json::json!({"inbound_bps": 0, "outbound_bps": 0}),
+            "no transport source observed yet"
         );
-        let mut rates = BTreeMap::new();
-        rates.insert("inbound".to_owned(), 7_u64);
-        handles.publish_rates(rates).expect("rates publish");
         assert_eq!(
             value(RouterInfoSelector::Rates, &handles, 0),
-            serde_json::json!({"inbound": 7})
+            serde_json::json!({}),
+            "no transport source observed yet"
         );
+        // The log ring serves redacted lines with the drop count.
+        let ring = Arc::new(LogRing::new());
+        ring.record("INFO", "daemon", "control plane ready");
+        ring.record("INFO", "daemon", "session token abc");
+        handles.publish_log_ring(ring);
+        assert_eq!(
+            value(RouterInfoSelector::LogsRecent, &handles, 0),
+            serde_json::json!({
+                "entries": [
+                    "INFO daemon: control plane ready",
+                    "INFO daemon: [redacted: secret marker]",
+                ],
+                "dropped": 0,
+            })
+        );
+        // The ban ledger attests the empty set.
+        handles.publish_bans(vec![]).expect("bans publish");
+        assert_eq!(
+            value(RouterInfoSelector::BannedPeers, &handles, 0),
+            serde_json::json!([])
+        );
+        // Router news stays unavailable by Plan 295 determination.
+        let gap = router_info_result(RouterInfoSelector::NewsFeed, &handles, 0)
+            .expect_err("news never served");
+        assert_eq!(gap.owner_plan, "295");
         // Deterministic transitions: re-publication replaces state.
         handles
             .publish_netdb(vec![], vec!["peer-b".to_owned()], FloodfillMode::Floodfill)
@@ -1312,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn plan288_publication_rejects_over_ceiling() {
+    fn plan295_publication_rejects_over_ceiling() {
         let handles = test_handles();
         let oversized: Vec<String> = (0..MAX_INSPECTION_LIST + 1)
             .map(|n| format!("p{n}"))
@@ -1324,34 +1473,33 @@ mod tests {
             })
         );
         assert_eq!(
-            handles.publish_transport(oversized.clone(), Vec::new(), "ok", Vec::new(), 0),
+            handles.publish_transport(oversized.clone(), Vec::new(), "ok", Vec::new()),
             Err(PublishError::ListOverBound {
                 key: "transport.ntcp2.active_peers"
             })
         );
         assert_eq!(
-            handles.publish_transport(Vec::new(), Vec::new(), "", Vec::new(), 0),
+            handles.publish_transport(Vec::new(), Vec::new(), "", Vec::new()),
             Err(PublishError::StringOverBound {
                 key: "transport.reachability"
             })
         );
         assert_eq!(
-            handles.publish_transport(Vec::new(), Vec::new(), &"x".repeat(33), Vec::new(), 0),
+            handles.publish_transport(Vec::new(), Vec::new(), &"x".repeat(33), Vec::new()),
             Err(PublishError::StringOverBound {
                 key: "transport.reachability"
             })
         );
-        let mut rates = BTreeMap::new();
-        for n in 0..MAX_INSPECTION_RATES + 1 {
-            rates.insert(format!("rate-{n}"), n as u64);
-        }
         assert_eq!(
-            handles.publish_rates(rates),
-            Err(PublishError::RatesOverBound)
+            handles.publish_bans(oversized.clone()),
+            Err(PublishError::ListOverBound {
+                key: "network.banned_peers"
+            })
         );
-        // Rejected publications leave rows gated (no partial state).
+        // Rejected publications leave rows unpublished (no partial state).
         assert!(router_info_result(RouterInfoSelector::NetDbKnownPeers, &handles, 0).is_err());
-        assert!(router_info_result(RouterInfoSelector::Rates, &handles, 0).is_err());
+        assert!(router_info_result(RouterInfoSelector::BannedPeers, &handles, 0).is_err());
+        assert!(router_info_result(RouterInfoSelector::SuccessRate, &handles, 0).is_err());
     }
 
     #[test]
@@ -1605,8 +1753,8 @@ mod tests {
     }
 
     #[test]
-    fn plan288_matrix_census_matches_contract() {
-        assert_eq!(matrix_census(), (11, 16, 3, 0));
+    fn plan295_matrix_census_matches_contract() {
+        assert_eq!(matrix_census(), (27, 1, 1, 1));
     }
 
     #[test]

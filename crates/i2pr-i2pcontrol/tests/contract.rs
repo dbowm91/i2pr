@@ -595,10 +595,11 @@ fn plan288_source_matrix_mirrors_frozen_inventories() {
             service.name()
         );
     }
-    // Availability census: 11 live (5 base + 6 Plan 294 address-book)
-    // + 16 publish-gated (1 in-plan, 15 residual-295) + 3 unavailable
-    // (all for Plan 295), zero permitted-neutral (strictness is the
-    // Plan 288 default).
+    // Availability census: 27 live (5 base + 6 Plan 294 address-book
+    // + 16 Plan 295 sources) + 1 publish-gated (router.hash, in-plan
+    // 288) + 1 unavailable (router news, unsupported by Plan 295
+    // determination) + 1 permitted-neutral (clock skew, justified by
+    // Plan 295 from the Proposal's null allowance).
     let mut available = 0;
     let mut gated = 0;
     let mut gated_288 = 0;
@@ -649,14 +650,14 @@ fn plan288_source_matrix_mirrors_frozen_inventories() {
         ),
         "router.hash must be Plan 288 publish-gated"
     );
-    assert_eq!(available, 11);
+    assert_eq!(available, 27);
     assert_eq!(gated_288, 1);
-    assert_eq!(gated_295, 15);
+    assert_eq!(gated_295, 0);
     assert_eq!(gated, gated_288 + gated_295);
-    assert_eq!(unavailable, 3);
+    assert_eq!(unavailable, 1);
     assert_eq!(unavailable_294, 0);
-    assert_eq!(unavailable_295, 3);
-    assert_eq!(neutral, 0);
+    assert_eq!(unavailable_295, 1);
+    assert_eq!(neutral, 1);
     assert_eq!(
         i2pr_i2pcontrol::SOURCE_MATRIX_NEUTRAL_COUNT,
         neutral,

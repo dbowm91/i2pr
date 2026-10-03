@@ -10,6 +10,7 @@ pub mod addressbook;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+pub mod control_sources;
 pub mod destination_streaming;
 pub mod destination_tunnels;
 pub mod error;
@@ -835,11 +836,23 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
 
 /// Initializes the future daemon logging subscriber using validated settings.
 ///
-/// Repeated initialization is intentionally harmless for embedding tests.  A
-/// later composition plan will own subscriber layering and redaction policy.
+/// The subscriber layers the normal formatted stdout path (gated by
+/// the configured `EnvFilter`) with the Plan 295 [`control_sources`]
+/// log-ring feed (INFO and above, secret-marker redaction). Repeated
+/// initialization is intentionally harmless for embedding tests: the
+/// first installed subscriber wins and the global ring keeps feeding
+/// it.
 pub fn initialize_logging(config: &config::LoggingConfig) {
+    use tracing_subscriber::layer::Layer as _;
+    use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
     let filter = tracing_subscriber::EnvFilter::new(config.filter.clone());
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let ring_layer =
+        crate::control_sources::LogRingLayer::new(crate::control_sources::LogRing::global());
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .with(ring_layer)
+        .try_init();
 }
 
 #[cfg(test)]
