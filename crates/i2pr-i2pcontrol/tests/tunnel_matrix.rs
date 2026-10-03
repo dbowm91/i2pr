@@ -48,11 +48,11 @@ fn matrix_covers_every_applicable_cell() {
 
 #[test]
 fn disposition_census_is_exact() {
-    assert_eq!(APPLY_CELLS, 266);
+    assert_eq!(APPLY_CELLS, 269);
     assert_eq!(NOT_APPLICABLE_CELLS, 37);
     assert_eq!(INCOMPATIBLE_CELLS, 30);
     assert_eq!(CORRECTIVE_296_CELLS, 0);
-    assert_eq!(CORRECTIVE_297_CELLS, 3);
+    assert_eq!(CORRECTIVE_297_CELLS, 0);
     assert_eq!(
         APPLY_CELLS
             + NOT_APPLICABLE_CELLS
@@ -126,10 +126,10 @@ fn find_cell_respects_masks() {
 
 #[test]
 fn spot_dispositions_match_plan_record() {
-    // (server, use_ssl) -> Plan 297 TLS identity residual.
+    // (server, use_ssl) -> Plan 297 TLS dial owner.
     assert!(matches!(
         find_cell(1, 6).expect("use_ssl cell").disposition,
-        CellDisposition::CorrectivePending { plan: 297, .. }
+        CellDisposition::Apply { .. }
     ));
     // (client, target_host) -> refined not-applicable (I2P destination).
     assert!(matches!(

@@ -38,8 +38,9 @@ explicit i2pr interpretations below.
   295 carries the limitations into the final support claim.
 - `CORRECTIVE_296_CELLS = 0` (Plan 296 closed every residual into a
   named apply owner: pool backup-quantity/variance, multihoming
-  target selection, reply bundling) and `CORRECTIVE_297_CELLS = 3`
-  (server `use_ssl` local TLS identity). Rejected keys name the
+  target selection, reply bundling) and `CORRECTIVE_297_CELLS = 0`
+  (Plan 297 closed the server `use_ssl` residual with an explicit
+  local TLS identity/trust policy). Rejected keys name the
   limitation or owning plan; nothing is accepted inertly.
 
 Refinement rule (uniform): within an applicable mask group, a kind
@@ -116,7 +117,6 @@ dial-selection owner serves multi-target specs built through other
 surfaces.
 
 ### Reply bundling (`reply_bundling`)
-
 Plan 296 owner, all kinds. When set, the outbound delivery path
 may carry multiple same-remote application payloads as multiple
 data cloves in one New Session Reply garlic message (at most four
@@ -240,6 +240,38 @@ ephemeral port and sends media to
 Streamr endpoint. Publisher and non-Streamr kinds reject the
 key. Sink edits replace the destination runtime (the loop
 captures its sink at supervisor start).
+
+### Server TLS (`use_ssl`)
+
+Plan 297 owner, server kinds (generic, HTTP server,
+bidirectional) with loopback-TCP targets only. When set, the
+server negotiates TLS to the configured loopback target before
+proxying application bytes, under the daemon's explicit TLS
+identity/trust policy (`[service_tunnels.tls]`): the endpoint
+identity comes from provisioned PEM (never silent self-signature
+without operator consent) and is offered as the client
+certificate when the target requests client authentication; the
+target's certificate verifies against exact SPKI pins first, then
+explicit trust roots, then — only with explicit loopback opt-in —
+unverified. Ambient system roots are never consulted. A policy
+that verifies nothing is rejected at load, and `use_ssl` dials
+without any installed policy fail before connecting. Verification
+failure fails the connection (typed, counted per runtime) and
+never falls back to plaintext; `use_ssl=false` keeps plaintext
+behavior. TLS implies no interception or MITM capability: the
+endpoint terminates or originates TLS only on the loopback target
+leg it already owns, with no key escrow and no cross-tunnel
+identity reuse. Private key material follows the storage
+precedent (restricted permissions, redacted wrappers, never in
+control output, logs, or errors). Rotation happens via
+configuration change and restart; the provisioned identity expiry
+and the per-runtime handshake counters surface through the
+tunnel's control state. `use_ssl` edits are `MutableInPlace`
+(the dial reads the committed flag per connection).
+
+The pinned PR6 reference maps server `UseSSL` onto TLS between
+the tunnel endpoint and the local target; client-side `UseSSL`
+is outside the frozen inventory and stays unclaimed.
 
 ## Sensitivity
 

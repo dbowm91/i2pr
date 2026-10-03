@@ -382,6 +382,7 @@ async fn m10_remote_route_integration_through_deliver_outbound() {
         unique_local_address: false,
         multihoming: false,
         reply_bundling: false,
+        use_ssl: false,
         http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

@@ -618,8 +618,7 @@ impl TunnelShaping {
                 reason: "must be within 0..=3",
             });
         }
-        if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&length_variance)
-        {
+        if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&length_variance) {
             return Err(ServiceTunnelError::ExceedsCeiling {
                 field: "length_variance",
                 reason: "must be within -2..=+2",
@@ -803,6 +802,16 @@ pub struct ServiceTunnelSpec {
     /// message. Unset keeps one payload per garlic message. All
     /// kinds may set it.
     pub reply_bundling: bool,
+    /// TLS to the loopback target on server-to-target dials
+    /// (Plan 297 `use_ssl`). When set, the server negotiates TLS
+    /// to the configured loopback target using the daemon's
+    /// explicit TLS identity/trust policy before proxying
+    /// application bytes; verification failure fails the
+    /// connection with no plaintext fallback. Unset keeps
+    /// plaintext. Only the masked server kinds (generic, HTTP
+    /// server, bidirectional) may set it, and only with
+    /// loopback-TCP targets.
+    pub use_ssl: bool,
     /// HTTP server presentation policy (Plan 292
     /// `address_helper` / `jump_list` gates). Only the HTTP
     /// server kinds consume it; every other kind must carry
@@ -1258,6 +1267,35 @@ impl ServiceTunnelSpec {
                 });
             }
         }
+        // Plan 297: server TLS terminates on the loopback TCP
+        // target leg, which only the masked server kinds dial;
+        // Unix-domain targets have no TLS handshake.
+        if self.use_ssl
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "use_ssl applies to server kinds only",
+            });
+        }
+        if self.use_ssl {
+            let unix_target = matches!(self.target, Some(ServerTarget::UnixPath(_)))
+                || self
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, ServerTarget::UnixPath(_)));
+            if unix_target {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "use_ssl requires loopback-TCP targets",
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -1356,6 +1394,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1479,6 +1518,7 @@ mod tests {
             unique_local_address: false,
             multihoming: true,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1496,6 +1536,51 @@ mod tests {
         // Client kinds never dial a server target.
         let mut client = client_spec("mh-client", "127.0.0.1:7070", "example.i2p");
         client.multihoming = true;
+        assert!(client.validate().is_err());
+    }
+
+    #[test]
+    fn use_ssl_needs_server_kind_and_tcp_targets() {
+        // Plan 297: server TLS terminates on the loopback TCP
+        // target leg; client kinds and Unix targets reject it.
+        let mut server = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("tls-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp(
+                "127.0.0.1:8443".parse().expect("addr"),
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: true,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        assert!(server.validate().is_ok());
+        server.targets = vec![ServerTarget::LoopbackTcp(
+            "127.0.0.1:8444".parse().expect("addr"),
+        )];
+        assert!(server.validate().is_ok());
+        server.target = Some(ServerTarget::UnixPath("/tmp/tls.sock".to_owned()));
+        assert!(server.validate().is_err());
+        let mut client = client_spec("tls-client", "127.0.0.1:7070", "example.i2p");
+        client.use_ssl = true;
         assert!(client.validate().is_err());
     }
 
@@ -1650,6 +1735,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1760,6 +1846,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1798,6 +1885,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
@@ -1859,6 +1947,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1891,6 +1980,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,

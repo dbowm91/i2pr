@@ -493,6 +493,7 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         unique_local_address: false,
         multihoming: false,
         reply_bundling: false,
+        use_ssl: false,
         http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

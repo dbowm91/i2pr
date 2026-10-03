@@ -190,6 +190,7 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         || prev.http_policy != next.http_policy
         || prev.multihoming != next.multihoming
         || prev.reply_bundling != next.reply_bundling
+        || prev.use_ssl != next.use_ssl
     {
         // Resource/deadline/profile-only differences are safe to
         // swap in place; nothing has been wired that depends on
@@ -202,7 +203,10 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         // selection reads the committed flag and target list per
         // connection, and the outbound sweep reads the committed
         // reply-bundling flag per sweep, so both edits take effect
-        // without rebuilding the runtime.
+        // without rebuilding the runtime. Plan 297: the server TLS
+        // dial reads the committed use_ssl flag per connection
+        // against the daemon TLS policy, so those edits take effect
+        // without rebuilding the runtime either.
         return DiffClass::MutableInPlace;
     }
     DiffClass::Unchanged
@@ -258,6 +262,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -287,6 +292,7 @@ mod tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -383,6 +389,9 @@ mod tests {
         let mut bundled = prev.clone();
         bundled.reply_bundling = true;
         assert_eq!(diff_spec(&prev, &bundled), DiffClass::MutableInPlace);
+        let mut tls = prev.clone();
+        tls.use_ssl = true;
+        assert_eq!(diff_spec(&prev, &tls), DiffClass::MutableInPlace);
     }
 
     #[test]

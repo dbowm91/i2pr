@@ -505,6 +505,11 @@ struct RawServiceTunnelsConfig {
     tunnel: Vec<RawServiceTunnelEntry>,
     #[serde(default)]
     alias: Vec<RawServiceTunnelAlias>,
+    /// Plan 297: explicit local TLS identity/trust policy for
+    /// server `use_ssl` dials. Absent means no TLS policy: `use_ssl`
+    /// tunnels fail before connecting.
+    #[serde(default)]
+    tls: Option<RawServiceTlsConfig>,
 }
 
 impl Default for RawServiceTunnelsConfig {
@@ -520,8 +525,35 @@ impl Default for RawServiceTunnelsConfig {
             shutdown_timeout_ms: default_service_tunnels_shutdown_timeout_ms(),
             tunnel: Vec::new(),
             alias: Vec::new(),
+            tls: None,
         }
     }
+}
+
+/// Raw `[service_tunnels.tls]` explicit TLS identity/trust policy
+/// (Plan 297). The identity pair is optional (used as the client
+/// certificate only when the loopback target requests client
+/// authentication); verification needs pinned end-entity
+/// certificates, explicit trust roots, or both — never ambient
+/// system roots, and there is no unauthenticated opt-in.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServiceTlsConfig {
+    /// PEM certificate for the endpoint identity (requires
+    /// `private_key_path`).
+    #[serde(default)]
+    certificate_path: Option<std::path::PathBuf>,
+    /// PEM private key for the endpoint identity (requires
+    /// `certificate_path`).
+    #[serde(default)]
+    private_key_path: Option<std::path::PathBuf>,
+    /// PEM bundle of pinned end-entity certificates, used as
+    /// trust anchors.
+    #[serde(default)]
+    pinned_certificates_path: Option<std::path::PathBuf>,
+    /// PEM bundle of explicit trust roots.
+    #[serde(default)]
+    trust_roots_path: Option<std::path::PathBuf>,
 }
 
 /// One raw `[[service_tunnels.tunnel]]` entry.
@@ -1313,6 +1345,10 @@ pub struct ServiceTunnelsConfig {
     pub tunnels: i2pr_service_tunnels::ServiceTunnelSet,
     /// Validated static alias table.
     pub aliases: i2pr_service_tunnels::StaticAliasTable,
+    /// Explicit local TLS identity/trust policy for server
+    /// `use_ssl` dials (Plan 297; `None` means no policy and
+    /// `use_ssl` tunnels fail before connecting).
+    pub tls_policy: Option<crate::service_tunnels_tls::TlsPolicyHandle>,
 }
 
 impl Config {
@@ -1932,6 +1968,7 @@ fn normalize_service_tunnels(
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options,
             socks5_options,
@@ -2017,7 +2054,78 @@ fn normalize_service_tunnels(
         timeouts,
         tunnels: set,
         aliases,
+        tls_policy: raw
+            .tls
+            .as_ref()
+            .map(normalize_service_tls)
+            .transpose()?
+            .map(crate::service_tunnels_tls::TlsPolicyHandle::new),
     })
+}
+
+/// Normalizes the Plan 297 `[service_tunnels.tls]` block.
+///
+/// File I/O happens here at configuration load (fail fast, before
+/// any bind), never per connection. Error reasons are static;
+/// paths and key material never enter diagnostics.
+fn normalize_service_tls(
+    raw: &RawServiceTlsConfig,
+) -> Result<crate::service_tunnels_tls::ServiceTlsPolicy, ConfigError> {
+    use crate::service_tunnels_tls::read_tls_file;
+    if raw.certificate_path.is_some() != raw.private_key_path.is_some() {
+        return Err(ConfigError::Semantic {
+            field: "service_tunnels.tls",
+            reason: "certificate_path and private_key_path are both required",
+        });
+    }
+    let identity = match (&raw.certificate_path, &raw.private_key_path) {
+        (Some(cert_path), Some(key_path)) => Some((
+            read_tls_file("certificate", cert_path).map_err(tls_config_error)?,
+            read_tls_file("private key", key_path).map_err(tls_config_error)?,
+        )),
+        (None, None) => None,
+        // The completeness check above excludes the mixed cases.
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(ConfigError::Semantic {
+                field: "service_tunnels.tls",
+                reason: "certificate_path and private_key_path are both required",
+            });
+        }
+    };
+    let roots_pem = raw
+        .trust_roots_path
+        .as_ref()
+        .map(|path| read_tls_file("trust roots", path).map_err(tls_config_error))
+        .transpose()?;
+    let pins_pem = raw
+        .pinned_certificates_path
+        .as_ref()
+        .map(|path| read_tls_file("pinned certificates", path).map_err(tls_config_error))
+        .transpose()?;
+    crate::service_tunnels_tls::ServiceTlsPolicy::from_parts(identity, pins_pem, roots_pem)
+        .map_err(tls_config_error)
+}
+
+/// Maps a TLS policy failure to a static config reason (never echoes
+/// paths, pins, or key material).
+fn tls_config_error(error: crate::service_tunnels_tls::ServiceTlsError) -> ConfigError {
+    use crate::service_tunnels_tls::ServiceTlsError as Tls;
+    let reason = match error {
+        Tls::IncompleteIdentity => "certificate_path and private_key_path are both required",
+        Tls::CannotRead { .. } => "a configured TLS file cannot be read",
+        Tls::CannotParse { .. } => "a configured TLS file does not parse",
+        Tls::EmptyChain => "the certificate file holds no certificate",
+        Tls::EmptyRoots => "a trust bundle file holds no certificate",
+        Tls::BadCertificate => "a certificate does not parse as X.509",
+        Tls::IdentityMismatch => "the certificate and key do not combine",
+        Tls::VerifiesNothing => "the policy verifies nothing",
+        Tls::NoPolicy => "no TLS policy is installed",
+        Tls::Handshake(_) => "the TLS handshake failed",
+    };
+    ConfigError::Semantic {
+        field: "service_tunnels.tls",
+        reason,
+    }
 }
 
 /// Normalizes the Plan 294 `[addressbook]` block.
@@ -3542,6 +3650,71 @@ data_dir = "./state"
         ));
         // Unknown keys fail closed.
         let text = format!("{MINIMAL}\n[addressbook]\nfetch_command = \"curl\"\n");
+        assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
+    }
+
+    /// Writes a fresh self-signed PEM identity pair into the
+    /// directory for TLS policy tests, returning the paths plus a
+    /// pinned-certificates bundle holding the same certificate.
+    fn write_tls_identity(dir: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+        let certified =
+            rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("fixture cert");
+        let cert_path = dir.join("tls-cert.pem");
+        let key_path = dir.join("tls-key.pem");
+        let pins_path = dir.join("tls-pins.pem");
+        std::fs::write(&cert_path, certified.cert.pem().as_bytes()).expect("write cert");
+        std::fs::write(&key_path, certified.key_pair.serialize_pem().as_bytes())
+            .expect("write key");
+        std::fs::write(&pins_path, certified.cert.pem().as_bytes()).expect("write pins");
+        (cert_path, key_path, pins_path)
+    }
+
+    #[test]
+    fn service_tls_policy_parses_pins_identity_and_rejections() {
+        let directory = tempdir().expect("temp directory");
+        let (cert_path, key_path, pins_path) = write_tls_identity(directory.path());
+        // Pinned certificates alone build a verifying policy.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\npinned_certificates_path = {:?}\n",
+            pins_path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("pin policy parses");
+        let policy = config.service_tunnels.tls_policy.expect("policy present");
+        assert_eq!(policy.policy().verify_mode(), "pin");
+        assert!(policy.policy().identity_expires_unix().is_none());
+        // A provisioned identity loads with a real expiry.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\ncertificate_path = {:?}\nprivate_key_path = {:?}\npinned_certificates_path = {:?}\n",
+            cert_path.to_string_lossy(),
+            key_path.to_string_lossy(),
+            pins_path.to_string_lossy(),
+        );
+        let config = Config::parse(&text).expect("identity policy parses");
+        let policy = config.service_tunnels.tls_policy.expect("policy present");
+        let expires = policy
+            .policy()
+            .identity_expires_unix()
+            .expect("expiry surfaces");
+        assert!(expires > 1_700_000_000, "expiry is a real Unix time");
+        // Absent policy stays absent.
+        let config = Config::parse(MINIMAL).expect("minimal parses");
+        assert!(config.service_tunnels.tls_policy.is_none());
+        // Lone identity halves and empty policies fail.
+        let text = format!(
+            "{MINIMAL}\n[service_tunnels.tls]\ncertificate_path = {:?}\n",
+            cert_path.to_string_lossy()
+        );
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        let text = format!("{MINIMAL}\n[service_tunnels.tls]\n");
+        assert!(matches!(
+            Config::parse(&text),
+            Err(ConfigError::Semantic { .. })
+        ));
+        // Unknown keys fail closed.
+        let text = format!("{MINIMAL}\n[service_tunnels.tls]\ntrust_anchor = true\n");
         assert!(matches!(Config::parse(&text), Err(ConfigError::Parse(_))));
     }
 }

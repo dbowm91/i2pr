@@ -38,6 +38,7 @@ pub mod service_tunnels_irc_server;
 pub mod service_tunnels_socks5;
 pub mod service_tunnels_socks_irc;
 pub mod service_tunnels_streamr;
+pub mod service_tunnels_tls;
 pub mod transit_compose;
 pub mod transit_owner;
 pub mod tunnel_liveness;

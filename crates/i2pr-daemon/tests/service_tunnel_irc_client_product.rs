@@ -118,6 +118,7 @@ fn irc_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec 
         unique_local_address: false,
         multihoming: false,
         reply_bundling: false,
+        use_ssl: false,
         http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

@@ -39,7 +39,6 @@ use i2pr_service_tunnels::{
     filter_server_response, parse_origin_form, parse_request_head,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::debug;
 
@@ -105,7 +104,37 @@ pub(crate) async fn run_http_server_connection(
                     .unique_local_fallbacks
                     .fetch_add(1, Ordering::Relaxed);
             }
-            (stream, used)
+            // Plan 297: same TLS upgrade as the generic server
+            // path (verified TLS or typed failure, never
+            // plaintext fallback).
+            if manager.use_ssl_for(&runtime.spec_id) {
+                match crate::service_tunnels::upgrade_server_target_tls(
+                    &manager, &runtime, stream, used,
+                )
+                .await
+                {
+                    Ok(tls) => {
+                        runtime.tls_handshakes_ok.fetch_add(1, Ordering::Relaxed);
+                        (
+                            crate::service_tunnels::ServerTargetStream::Tls(Box::new(tls)),
+                            used,
+                        )
+                    }
+                    Err(_) => {
+                        runtime
+                            .tls_handshakes_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                        remove_streaming(manager.as_ref(), runtime.destination_id, connection_id);
+                        return HttpServerConnectionOutcome::BadGateway;
+                    }
+                }
+            } else {
+                (
+                    crate::service_tunnels::ServerTargetStream::Plain(stream),
+                    used,
+                )
+            }
         }
         Ok(Err(_)) | Err(_) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
@@ -133,15 +162,18 @@ pub(crate) async fn run_http_server_connection(
 }
 
 /// Drives the filter relay for one established server connection.
-async fn drive_relay(
+async fn drive_relay<S>(
     target: SocketAddr,
-    target_stream: TcpStream,
+    target_stream: S,
     endpoint: Arc<dyn StreamPumpEndpoint>,
     policy: i2pr_service_tunnels::HttpServerPolicy,
     cancellation: &CancellationToken,
-) -> HttpServerConnectionOutcome {
+) -> HttpServerConnectionOutcome
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let limits = HttpLimits::defaults();
-    let (mut target_reader, mut target_writer) = target_stream.into_split();
+    let (mut target_reader, mut target_writer) = tokio::io::split(target_stream);
     // Step 1: read the request head from Streaming (slowloris:
     // deadline + retained ceiling).
     let (head_bytes, head_prefix) =
@@ -314,7 +346,7 @@ async fn read_streaming_head(
 /// same-read bytes already buffered past the terminator (response
 /// body prefix; never discarded).
 async fn read_target_head(
-    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
     limits: HttpLimits,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<u8>, Vec<u8>), HttpServerConnectionOutcome> {
@@ -411,7 +443,7 @@ async fn admit_bytes(
 /// bounded chunks.
 async fn forward_body_to_target(
     endpoint: &dyn StreamPumpEndpoint,
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
     prefix: &mut Vec<u8>,
     content_length: u64,
     cancellation: &CancellationToken,
@@ -470,7 +502,7 @@ async fn forward_body_to_target(
 /// instead of being forwarded.
 async fn relay_remainder(
     endpoint: &dyn StreamPumpEndpoint,
-    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
     cancellation: &CancellationToken,
 ) {
     let mut chunk = [0_u8; RELAY_CHUNK_BYTES];

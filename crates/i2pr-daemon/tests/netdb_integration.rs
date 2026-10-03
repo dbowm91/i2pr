@@ -138,6 +138,7 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
             tunnels: i2pr_service_tunnels::ServiceTunnelSet::new(),
             aliases: i2pr_service_tunnels::StaticAliasTable::new(),
+            tls_policy: None,
         },
         i2pcontrol: i2pr_daemon::config::I2pControlConfig {
             enabled: false,

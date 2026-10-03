@@ -1864,3 +1864,27 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/296-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.local-tls-identity-for-use-ssl"
+protocol = "i2pcontrol"
+structure = "proposal-170-server-tls-policy-and-dial"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 297 closed the 3 server use_ssl residual cells into a named apply owner (matrix now 269 apply, 37 not-applicable, 30 incompatible, 0 corrective): an explicit operator-owned daemon TLS identity/trust policy (provisioned PEM identity with X.509 expiry surfacing, SPKI pins and/or explicit trust roots with never ambient system roots, explicit loopback opt-in, verifies-nothing rejected at load), a pinned/rooted TLS handshake on the server-to-target dial with typed counted failures and no plaintext fallback, per-runtime handshake counters and identity expiry in control state, and redacted secret handling throughout. Client-side UseSSL stays unclaimed (outside the frozen inventory); Unix targets and non-server kinds stay rejected."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/generation.rs",
+    "crates/i2pr-daemon/src/service_tunnels_tls.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/config.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_tls_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md",
+    "plans/closure/i2pcontrol-proposal-170/297-status.md",
+]
+advertised = false

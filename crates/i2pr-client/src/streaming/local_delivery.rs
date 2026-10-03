@@ -702,7 +702,9 @@ pub fn deliver_batched<R: CryptoRng + RngCore>(
             Err(_) => decode_failed.push(index),
         }
     }
-    if uniform_remote && outbound_requests.len() >= 2 && bundling.is_enabled()
+    if uniform_remote
+        && outbound_requests.len() >= 2
+        && bundling.is_enabled()
         && let Some(remote_hash) = remote
         && let Ok(plan) = compose_bundled_reply_delivery(
             sender.routing,
@@ -718,49 +720,49 @@ pub fn deliver_batched<R: CryptoRng + RngCore>(
             rng,
         )
     {
-            let mut report = BatchedDeliveryReport::default();
-            match drive_to_dispatch(
-                &plan,
-                sender,
-                receiver,
-                outbound_hop0_hash,
-                outbound_hop1_hash,
-                inbound_tunnel,
-                inbound_hop1_hash,
-                inbound_hop2_hash,
-                _outbound_tunnel_id,
-                rng,
-            ) {
-                Ok(outcome) => {
-                    let drained = drain_all_to_streaming(outcome, sender, receiver);
-                    if drained.is_empty() {
-                        // Dispatch rejected the carrier: parity with
-                        // the single-path sweep counters, which count
-                        // rejections as delivered.
-                        report.delivered.extend(indices.iter().copied());
-                    } else {
-                        for (position, index) in indices.iter().enumerate() {
-                            match drained.get(position) {
-                                Some(Ok(FedPayload::Streaming(
-                                    InboundStreamingOutcome::StreamingDispatched { .. },
-                                ))) => {
-                                    report.delivered.push(*index);
-                                    report.observed.push(*index);
-                                }
-                                Some(Ok(FedPayload::Datagram)) => {
-                                    report.delivered.push(*index);
-                                    report.observed.push(*index);
-                                }
-                                _ => report.failed.push(*index),
+        let mut report = BatchedDeliveryReport::default();
+        match drive_to_dispatch(
+            &plan,
+            sender,
+            receiver,
+            outbound_hop0_hash,
+            outbound_hop1_hash,
+            inbound_tunnel,
+            inbound_hop1_hash,
+            inbound_hop2_hash,
+            _outbound_tunnel_id,
+            rng,
+        ) {
+            Ok(outcome) => {
+                let drained = drain_all_to_streaming(outcome, sender, receiver);
+                if drained.is_empty() {
+                    // Dispatch rejected the carrier: parity with
+                    // the single-path sweep counters, which count
+                    // rejections as delivered.
+                    report.delivered.extend(indices.iter().copied());
+                } else {
+                    for (position, index) in indices.iter().enumerate() {
+                        match drained.get(position) {
+                            Some(Ok(FedPayload::Streaming(
+                                InboundStreamingOutcome::StreamingDispatched { .. },
+                            ))) => {
+                                report.delivered.push(*index);
+                                report.observed.push(*index);
                             }
+                            Some(Ok(FedPayload::Datagram)) => {
+                                report.delivered.push(*index);
+                                report.observed.push(*index);
+                            }
+                            _ => report.failed.push(*index),
                         }
                     }
                 }
-                Err(_) => {
-                    report.failed.extend(indices.iter().copied());
-                }
             }
-            return BatchedAttempt::Bundled(report);
+            Err(_) => {
+                report.failed.extend(indices.iter().copied());
+            }
+        }
+        return BatchedAttempt::Bundled(report);
     }
     BatchedAttempt::Singles { decode_failed }
 }

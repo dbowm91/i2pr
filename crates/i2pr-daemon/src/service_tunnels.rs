@@ -225,6 +225,13 @@ pub struct ServiceRuntime {
     /// Advanced only for multihomed specs; legacy specs never touch
     /// it, so their dial order cannot change.
     pub(crate) multihoming_next: AtomicUsize,
+    /// Server TLS handshakes that verified and completed (Plan 297
+    /// evidence; plaintext dials never touch these).
+    pub(crate) tls_handshakes_ok: AtomicUsize,
+    /// Server TLS handshakes that failed verification or
+    /// negotiation (Plan 297 evidence; no plaintext fallback on
+    /// any failure).
+    pub(crate) tls_handshakes_failed: AtomicUsize,
 }
 
 impl ServiceRuntime {
@@ -335,6 +342,12 @@ pub struct ServiceTunnelManager {
     /// bridge). The capability is shared across every service the
     /// manager owns; no per-service router/SSU2 stack is created.
     router_delivery: Mutex<Option<crate::service_delivery::ServiceDestinationDelivery>>,
+    /// Plan 297 — explicit local TLS identity/trust policy shared
+    /// across every service the manager owns. Installed once by the
+    /// composition root from daemon configuration (or by tests);
+    /// `use_ssl` dials without an installed policy fail before
+    /// connecting.
+    service_tls_policy: Mutex<Option<Arc<crate::service_tunnels_tls::ServiceTlsPolicy>>>,
     /// Plan 206 §9 — destination hash → owning service runtime
     /// mapping for inbound dispatch. The manager retains one entry
     /// per inbound-owning runtime; the daemon composition root
@@ -433,6 +446,7 @@ impl ServiceTunnelManager {
             delivery_counters: Mutex::new(HashMap::new()),
             destination_drivers: Mutex::new(HashMap::new()),
             router_delivery: Mutex::new(None),
+            service_tls_policy: Mutex::new(None),
             inbound_owners: Mutex::new(HashMap::new()),
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
@@ -2756,6 +2770,53 @@ impl ServiceTunnelManager {
             .unwrap_or(false)
     }
 
+    /// Whether one service negotiates TLS to its loopback target
+    /// (Plan 297 `use_ssl`; missing spec means plaintext). Reads
+    /// the committed spec per connection so flag edits (mutable in
+    /// place) take effect without rebuilding the runtime.
+    pub fn use_ssl_for(&self, spec_id: &str) -> bool {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.use_ssl)
+            .unwrap_or(false)
+    }
+
+    /// Server TLS handshake counters for one live runtime (Plan 297
+    /// evidence; missing runtime reports zero).
+    pub fn tls_handshakes_for(&self, spec_id: &str) -> (usize, usize) {
+        let runtimes = self.runtimes.lock().expect("runtimes poisoned");
+        runtimes
+            .get(spec_id)
+            .map(|runtime| {
+                (
+                    runtime.tls_handshakes_ok.load(Ordering::Relaxed),
+                    runtime.tls_handshakes_failed.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or((0, 0))
+    }
+
+    /// Installs the explicit TLS identity/trust policy (Plan 297).
+    /// The composition root calls this once from daemon
+    /// configuration before preparing services; tests install
+    /// directly.
+    pub fn set_service_tls_policy(
+        &self,
+        policy: Arc<crate::service_tunnels_tls::ServiceTlsPolicy>,
+    ) {
+        *self
+            .service_tls_policy
+            .lock()
+            .expect("service TLS policy poisoned") = Some(policy);
+    }
+
+    /// Returns the installed TLS policy, if any (Plan 297).
+    pub fn service_tls_policy(&self) -> Option<Arc<crate::service_tunnels_tls::ServiceTlsPolicy>> {
+        self.service_tls_policy
+            .lock()
+            .expect("service TLS policy poisoned")
+            .clone()
+    }
+
     /// Whether one destination's outbound sweep may bundle
     /// same-remote replies into one garlic message (Plan 296
     /// `reply_bundling`; missing spec means one payload per
@@ -2787,24 +2848,23 @@ impl ServiceTunnelManager {
         if self.multihoming_for(&runtime.spec_id)
             && let Some(spec) = self.committed_spec_for(&runtime.spec_id)
         {
-                let mut targets = Vec::new();
-                if let Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr)) = spec.target {
-                    targets.push(addr);
+            let mut targets = Vec::new();
+            if let Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr)) = spec.target {
+                targets.push(addr);
+            }
+            for target in &spec.targets {
+                if let i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr) = target {
+                    targets.push(*addr);
                 }
-                for target in &spec.targets {
-                    if let i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr) = target {
-                        targets.push(*addr);
-                    }
-                }
-                if targets.len() >= 2 {
-                    let sequence = runtime.multihoming_next.fetch_add(1, Ordering::Relaxed);
-                    let start =
-                        i2pr_service_tunnels::multihoming_start_index(sequence, targets.len());
-                    let mut rotated = Vec::with_capacity(targets.len());
-                    rotated.extend_from_slice(&targets[start..]);
-                    rotated.extend_from_slice(&targets[..start]);
-                    return rotated;
-                }
+            }
+            if targets.len() >= 2 {
+                let sequence = runtime.multihoming_next.fetch_add(1, Ordering::Relaxed);
+                let start = i2pr_service_tunnels::multihoming_start_index(sequence, targets.len());
+                let mut rotated = Vec::with_capacity(targets.len());
+                rotated.extend_from_slice(&targets[start..]);
+                rotated.extend_from_slice(&targets[..start]);
+                return rotated;
+            }
         }
         runtime.server_target.into_iter().collect()
     }
@@ -2933,6 +2993,14 @@ impl ServiceTunnelManager {
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> Result<StagedRuntime, ServiceTunnelError> {
         let id_owned = spec.id.as_str().to_owned();
+        // Plan 297: server TLS needs the daemon's explicit
+        // identity/trust policy installed; without one the tunnel
+        // fails before any destination allocates or listener binds.
+        if spec.use_ssl && self.service_tls_policy().is_none() {
+            return Err(ServiceTunnelError::InvalidConfig(format!(
+                "{id_owned} use_ssl requires a daemon TLS policy"
+            )));
+        }
         let is_server = matches!(
             spec.kind,
             ServiceTunnelKind::GenericServer
@@ -3079,6 +3147,8 @@ impl ServiceTunnelManager {
             access_denied: AtomicUsize::new(0),
             unique_local_fallbacks: AtomicUsize::new(0),
             multihoming_next: AtomicUsize::new(0),
+            tls_handshakes_ok: AtomicUsize::new(0),
+            tls_handshakes_failed: AtomicUsize::new(0),
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -4010,6 +4080,91 @@ async fn handle_server_syn(
     });
 }
 
+/// Server-to-target byte stream: plaintext TCP or a verified TLS
+/// session over it (Plan 297 `use_ssl`). The pump and the HTTP
+/// relay are generic over `AsyncRead + AsyncWrite + Unpin`, so both
+/// variants flow through the identical data path after the
+/// handshake.
+pub(crate) enum ServerTargetStream {
+    /// Plaintext loopback TCP (`use_ssl` unset).
+    Plain(TcpStream),
+    /// Verified TLS over loopback TCP (`use_ssl` set; boxed: the
+    /// session state dwarfs the plaintext variant).
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
+}
+
+impl tokio::io::AsyncRead for ServerTargetStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for ServerTargetStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            Self::Tls(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
+/// Upgrades an established server-target TCP stream to TLS under
+/// the manager's explicit policy (Plan 297). The policy must be
+/// installed (tunnel staging rejects `use_ssl` without one);
+/// verification failure fails typed with no plaintext fallback.
+pub(crate) async fn upgrade_server_target_tls(
+    manager: &ServiceTunnelManager,
+    runtime: &ServiceRuntime,
+    stream: TcpStream,
+    used_target: SocketAddr,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, BoxError> {
+    let Some(policy) = manager.service_tls_policy() else {
+        return Err(Box::new(std::io::Error::other(format!(
+            "{} use_ssl requires a daemon TLS policy",
+            runtime.spec_id
+        ))));
+    };
+    crate::service_tunnels_tls::tls_connect(stream, used_target, &policy)
+        .await
+        .map_err(|error| {
+            Box::new(std::io::Error::other(format!(
+                "{} server target TLS failed: {error}",
+                runtime.spec_id
+            ))) as BoxError
+        })
+}
+
 /// Dials the first reachable target in selection order (Plan 296
 /// multihoming failover). Single-target lists behave exactly like
 /// [`dial_server_target`]. Returns the connected stream, the target
@@ -4094,13 +4249,34 @@ async fn run_server_connection(
     )
     .await;
     let target_stream = match dial {
-        Ok(Ok((stream, _used_target, fell_back))) => {
+        Ok(Ok((stream, used_target, fell_back))) => {
             if fell_back {
                 runtime
                     .unique_local_fallbacks
                     .fetch_add(1, Ordering::Relaxed);
             }
-            stream
+            // Plan 297: negotiate TLS to the loopback target under
+            // the daemon's explicit policy before proxying
+            // application bytes. Verification failure fails the
+            // connection (typed, counted) and never falls back to
+            // plaintext; `use_ssl` unset keeps the plaintext dial.
+            if manager.use_ssl_for(&runtime.spec_id) {
+                match upgrade_server_target_tls(&manager, &runtime, stream, used_target).await {
+                    Ok(tls) => {
+                        runtime.tls_handshakes_ok.fetch_add(1, Ordering::Relaxed);
+                        ServerTargetStream::Tls(Box::new(tls))
+                    }
+                    Err(error) => {
+                        runtime
+                            .tls_handshakes_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
+            } else {
+                ServerTargetStream::Plain(stream)
+            }
         }
         Ok(Err(error)) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
@@ -4856,6 +5032,7 @@ mod plan202_routing_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -4937,6 +5114,7 @@ mod plan202_routing_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -4976,6 +5154,7 @@ mod plan202_routing_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5321,6 +5500,7 @@ mod plan206_remote_composition_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5515,6 +5695,7 @@ mod plan208_remote_route_integration_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5590,6 +5771,7 @@ mod plan208_remote_route_integration_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5708,6 +5890,7 @@ mod plan208_remote_route_integration_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5796,6 +5979,7 @@ mod plan208_remote_route_integration_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -5982,6 +6166,7 @@ mod plan210_real_service_destination_material_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -6356,6 +6541,7 @@ mod plan212_router_backed_service_destination_tests {
             unique_local_address: false,
             multihoming: false,
             reply_bundling: false,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -6717,6 +6903,7 @@ mod plan212_router_backed_service_destination_tests {
                 unique_local_address: false,
                 multihoming: false,
                 reply_bundling: false,
+                use_ssl: false,
                 http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
@@ -6745,6 +6932,7 @@ mod plan212_router_backed_service_destination_tests {
                 unique_local_address: false,
                 multihoming: false,
                 reply_bundling: false,
+                use_ssl: false,
                 http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
@@ -6811,6 +6999,7 @@ mod plan212_router_backed_service_destination_tests {
                 unique_local_address: false,
                 multihoming: false,
                 reply_bundling: false,
+                use_ssl: false,
                 http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
@@ -6839,6 +7028,7 @@ mod plan212_router_backed_service_destination_tests {
                 unique_local_address: false,
                 multihoming: false,
                 reply_bundling: false,
+                use_ssl: false,
                 http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
@@ -7609,6 +7799,7 @@ mod plan296_sweep_policy_tests {
             unique_local_address: false,
             multihoming,
             reply_bundling,
+            use_ssl: false,
             http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,

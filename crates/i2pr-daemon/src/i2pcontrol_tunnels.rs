@@ -142,6 +142,12 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
     "multihoming",
     "reply_bundling",
 ];
+/// Plan 297 option key with a real owner: server `use_ssl` rides
+/// the daemon's explicit TLS identity/trust policy. Membership
+/// admits the key to definitions; the `build_control_spec` owner
+/// arm below consumes it (the `other` arm still rejects ownerless
+/// keys before any allocation).
+pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -845,11 +851,11 @@ fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError>
 /// Builds a validated [`ServiceTunnelSpec`] from a control definition.
 ///
 /// Only options with a real owner are accepted (Plans 289, 291, the
-/// Plan 292 option slice, and the Plan 296 residual slice); every
-/// other supplied option fails as unsupported (never accepted
-/// inertly). Secret-classified options are rejected even though the
-/// subset contains none, so a future subset extension cannot silently
-/// persist secrets.
+/// Plan 292 option slice, the Plan 296 residual slice, and the Plan
+/// 297 TLS slice); every other supplied option fails as unsupported
+/// (never accepted inertly). Secret-classified options are rejected
+/// even though the subset contains none, so a future subset
+/// extension cannot silently persist secrets.
 pub fn build_control_spec(
     definition: &ControlDefinition,
 ) -> Result<ServiceTunnelSpec, ControlError> {
@@ -895,9 +901,12 @@ pub fn build_control_spec(
     let mut unique_local_address = false;
     // Plan 296 delivery inputs: multihoming is kind-gated at parse
     // like the other server dial options; reply bundling applies to
-    // every kind. Defaults preserve the historical behavior.
+    // every kind through the destination delivery path. Defaults preserve the historical behavior.
     let mut multihoming = false;
     let mut reply_bundling = false;
+    // Plan 297 server TLS input (kind-gated at parse like the other
+    // server dial options; the default preserves plaintext).
+    let mut use_ssl = false;
     let mut http_policy = i2pr_service_tunnels::HttpServerPolicy::default();
     // Plan 291 Streamr inputs (validated per kind below; ranges
     // enforced by `StreamrOptions::validate` through the final
@@ -1109,8 +1118,7 @@ pub fn build_control_spec(
                         option: key.clone(),
                         reason: "tunnel variance must be an integer within -2..=+2",
                     })?;
-                if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&variance)
-                {
+                if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&variance) {
                     return Err(ControlError::InvalidOption {
                         option: key.clone(),
                         reason: "tunnel variance must be within -2..=+2",
@@ -1441,6 +1449,24 @@ pub fn build_control_spec(
             "reply_bundling" => {
                 reply_bundling = parse_bool_option("reply_bundling", value)?;
             }
+            // Plan 297: server TLS to the loopback target (server
+            // kinds only; the daemon TLS policy owns identity and
+            // trust, so Unix targets cannot apply here — the
+            // control surface only builds loopback-TCP targets).
+            "use_ssl" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "use_ssl applies to server kinds only",
+                    });
+                }
+                use_ssl = parse_bool_option("use_ssl", value)?;
+            }
             "address_helper" => {
                 if !matches!(
                     kind,
@@ -1719,6 +1745,7 @@ pub fn build_control_spec(
         unique_local_address,
         multihoming,
         reply_bundling,
+        use_ssl,
         http_policy,
         http_options,
         socks5_options,
@@ -1785,6 +1812,7 @@ pub fn normalize_definition(
             && !SUPPORTED_291_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_292_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_296_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_297_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -1894,6 +1922,40 @@ pub struct IdleSweepApplied {
 /// the tick itself carries no policy.
 pub const IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Serializes the Plan 297 TLS state object for one control-owned
+/// tunnel, or `None` when the definition does not enable `use_ssl`
+/// (existing output shapes stay unchanged). The object carries the
+/// verification mode, the provisioned identity expiry (rotation
+/// observability), and the per-runtime handshake counters — never
+/// key material, pins, or certificate bytes.
+fn control_tls_state(
+    manager: &ServiceTunnelManager,
+    name: &str,
+    definition: &ControlDefinition,
+) -> Option<serde_json::Value> {
+    if definition
+        .options
+        .get("use_ssl")
+        .is_none_or(|value| value != "true")
+    {
+        return None;
+    }
+    let policy = manager.service_tls_policy();
+    let (ok, failed) = manager.tls_handshakes_for(name);
+    Some(serde_json::json!({
+        "enabled": true,
+        "verify": policy
+            .as_ref()
+            .map(|policy| policy.verify_mode())
+            .unwrap_or("unconfigured"),
+        "identity_expires": policy
+            .as_ref()
+            .and_then(|policy| policy.identity_expires_unix()),
+        "handshakes_ok": ok,
+        "handshakes_failed": failed,
+    }))
+}
+
 impl TunnelControlState {
     /// Builds control state over an explicit store, startup inventory,
     /// and manager. Definitions load lazily at [`Self::startup`].
@@ -1940,6 +2002,12 @@ impl TunnelControlState {
             ServiceTunnelManager::new(manager_config)
                 .map_err(|error| ControlError::Manager(static_manager_reason(&error)))?,
         );
+        // Plan 297: install the explicit TLS identity/trust policy
+        // before any service prepares, so `use_ssl` tunnels dial
+        // under it from their first connection.
+        if let Some(policy) = &config.service_tunnels.tls_policy {
+            manager.set_service_tls_policy(policy.policy());
+        }
         Ok(Self::new(
             store,
             config.service_tunnels.tunnels.clone(),
@@ -2419,7 +2487,7 @@ impl TunnelControlState {
                 options.insert(key.clone(), serde_json::Value::String(value.clone()));
             }
         }
-        serde_json::json!({
+        let mut response = serde_json::json!({
             "name": name,
             "provenance": TunnelProvenance::ControlOwned.as_str(),
             "type": definition.tunnel_type.name(),
@@ -2431,7 +2499,16 @@ impl TunnelControlState {
             "bind": bind,
             "destination": destination,
             "active_connections": connections,
-        })
+        });
+        // Plan 297: the TLS state object appears only on `use_ssl`
+        // tunnels, so every existing output shape is unchanged.
+        if let Some(tls) = control_tls_state(&self.manager, name, definition) {
+            response
+                .as_object_mut()
+                .expect("tunnel response is an object")
+                .insert("tls".to_owned(), tls);
+        }
+        response
     }
 
     /// Serializes one startup-owned summary (inspectable, immutable).
@@ -3203,6 +3280,44 @@ mod tests {
     }
 
     #[test]
+    fn plan297_use_ssl_generations_carry_no_key_material() {
+        // Plan 297: `use_ssl` persists as a boolean; TLS identity
+        // and trust material lives only in daemon configuration
+        // files, never in control definitions, mirrors, or
+        // generation files.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ControlStore::open(directory.path()).expect("open");
+        let mut options = server_options("127.0.0.1:9443");
+        options.insert("use_ssl".to_owned(), "true".to_owned());
+        let definition = normalize_definition("redact", TunnelType::Server, &options, false)
+            .expect("use_ssl admitted");
+        let mut definitions = BTreeMap::new();
+        definitions.insert("redact".to_owned(), definition);
+        let staged = store.stage(&definitions).expect("stage");
+        store.publish(staged).expect("publish");
+        let raw = std::fs::read(store.generation_path(staged)).expect("generation bytes");
+        let text = String::from_utf8(raw).expect("generation is JSON text");
+        assert!(text.contains("use_ssl"), "the flag persists");
+        for marker in [
+            "-----BEGIN",
+            "PRIVATE KEY",
+            "CERTIFICATE",
+            "sha256",
+            "BEGIN RSA",
+        ] {
+            assert!(
+                !text.contains(marker),
+                "generation files never carry key material"
+            );
+        }
+        let debug = format!("{:?}", definitions["redact"]);
+        assert!(
+            !debug.contains("PRIVATE"),
+            "definition Debug never carries secrets"
+        );
+    }
+
+    #[test]
     fn plan289_store_round_trip_and_recovery() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = ControlStore::open(directory.path()).expect("open");
@@ -3840,14 +3955,97 @@ mod tests {
                 if message.contains("Plan 293 determination") && message.contains("Plan 295")),
             "unexpected error: {error:?}"
         );
-        // use_ssl residual on a server kind names Plan 297.
+        // Plan 297: `use_ssl` applies on server kinds through the
+        // daemon TLS policy owner.
+        for value in ["true", "false"] {
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert("use_ssl".to_owned(), value.to_owned());
+            let definition = normalize_definition("srvtls", TunnelType::Server, &options, false)
+                .expect("use_ssl admitted");
+            let spec = build_control_spec(&definition).expect("use_ssl builds");
+            assert_eq!(spec.use_ssl, value == "true");
+        }
+        // Non-server kinds stay rejected; malformed values fail.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("use_ssl".to_owned(), "true".to_owned());
+        let error = normalize_definition("clitls", TunnelType::Client, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("client use_ssl rejected");
+        assert!(
+            matches!(&error, ControlError::ContradictoryOptions { .. }),
+            "unexpected error: {error:?}"
+        );
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("use_ssl".to_owned(), "maybe".to_owned());
+        let error = normalize_definition("badtls", TunnelType::Server, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("malformed use_ssl rejected");
+        assert!(
+            matches!(&error, ControlError::InvalidOption { option, .. } if option == "use_ssl"),
+            "unexpected error: {error:?}"
+        );
+        // Plan 297: the TLS state object appears only on `use_ssl`
+        // definitions.
+        let manager = crate::service_tunnels::ServiceTunnelManager::new(
+            crate::service_tunnels::ServiceTunnelManagerConfig {
+                data_dir: std::env::temp_dir(),
+                aggregate_connection_ceiling: 1,
+                per_service_connection_ceiling: 1,
+                specs: std::sync::Arc::new(ServiceTunnelSet::new()),
+                aliases: std::sync::Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
+            },
+        )
+        .expect("manager builds");
+        let plain_definition = normalize_definition(
+            "srvplain",
+            TunnelType::Server,
+            &server_options("127.0.0.1:9090"),
+            false,
+        )
+        .expect("plain admitted");
+        assert!(
+            control_tls_state(&manager, "srvplain", &plain_definition).is_none(),
+            "plain tunnels carry no TLS state"
+        );
+        // Plan 297: a `use_ssl` definition reports its verification
+        // mode, identity expiry, and handshake counters — and never
+        // key material or certificate bytes.
+        let pinned = {
+            let certified =
+                rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])
+                    .expect("fixture cert");
+            certified.cert.pem().into_bytes()
+        };
+        let policy = crate::service_tunnels_tls::ServiceTlsPolicy::from_parts(
+            None,
+            Some(pinned.clone()),
+            None,
+        )
+        .expect("pin policy builds");
+        manager.set_service_tls_policy(std::sync::Arc::new(policy));
         let mut options = server_options("127.0.0.1:9090");
         options.insert("use_ssl".to_owned(), "true".to_owned());
-        let error = normalize_definition("srvssl", TunnelType::Server, &options, false)
-            .expect_err("use_ssl rejected");
+        let definition = normalize_definition("srvtls", TunnelType::Server, &options, false)
+            .expect("use_ssl admitted");
+        let state = control_tls_state(&manager, "srvtls", &definition)
+            .expect("use_ssl tunnels carry TLS state");
+        assert_eq!(state.get("enabled"), Some(&serde_json::Value::Bool(true)));
+        assert_eq!(
+            state.get("verify"),
+            Some(&serde_json::Value::String("pin".to_owned()))
+        );
+        assert_eq!(
+            state.get("handshakes_ok"),
+            Some(&serde_json::Value::Number(0.into()))
+        );
+        assert_eq!(
+            state.get("handshakes_failed"),
+            Some(&serde_json::Value::Number(0.into()))
+        );
+        let rendered = serde_json::to_string(&state).expect("state renders");
         assert!(
-            matches!(&error, ControlError::UnsupportedOption(message) if message.contains("Plan 297")),
-            "unexpected error: {error:?}"
+            !rendered.contains("-----BEGIN"),
+            "certificate bytes never appear in control output"
         );
         // Plan 296: backup quantity and length variance apply to
         // shaping with Proposal bounds; the pool-maximum sum check

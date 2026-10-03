@@ -27,10 +27,10 @@
 //!   limitation; omitting it selects the ordinary i2pr behavior. Plan 295
 //!   carries these limitations into the final support claim.
 //! - [`CellDisposition::CorrectivePending`]: applicable, but the required
-//!   primitive needs a new corrective plan (297: local TLS identity).
-//!   The plan number is the owning corrective. Plan 296 closed its
-//!   pool-shaping, multihoming, and reply-bundling residuals into
-//!   apply owners; only the 297 cells remain corrective.
+//!   primitive needs a new corrective plan. All Plan 296 residuals
+//!   closed into apply owners (pool shaping, multihoming, reply
+//!   bundling) as did the Plan 297 `use_ssl` local-TLS-identity
+//!   cell; the variant remains for future correctives.
 //!
 //! Semantic grounding: Proposal 170 revision 2026-05-20 plus the Java
 //! PR6 `TunnelManager` reference (`ClientTunnelCreator` management,
@@ -134,10 +134,12 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
                 reason: "streaming kinds use I2P port 0; no per-tunnel port",
             },
         },
-        // 6 use_ssl: server TLS needs an explicit local trust policy first.
-        6 => CellDisposition::CorrectivePending {
-            plan: 297,
-            reason: "use_ssl local TLS identity and trust policy",
+        // 6 use_ssl: Plan 297 server TLS owner. The flag negotiates
+        // TLS to the configured loopback target under the daemon's
+        // explicit identity/trust policy; verification failure fails
+        // the connection with no plaintext fallback.
+        6 => CellDisposition::Apply {
+            owner: "ServiceTunnelSpec.use_ssl into server TLS target dial",
         },
         // 7 local_udp_host / 8 local_udp_port: streamr UDP endpoint.
         7 | 8 => CellDisposition::Apply {
@@ -368,7 +370,8 @@ pub const INCOMPATIBLE_CELLS: usize = count_incompatible();
 /// Plan 296 residual cells (pool shaping, multihoming, reply bundling).
 /// Closed: every residual now has a named apply owner.
 pub const CORRECTIVE_296_CELLS: usize = count_corrective(296);
-/// Plan 297 residual cells (local TLS identity).
+/// Plan 297 residual cells (local TLS identity). Closed: the
+/// server `use_ssl` cells now have a named apply owner.
 pub const CORRECTIVE_297_CELLS: usize = count_corrective(297);
 
 /// Finds the cell for a (type, option) pair; `None` outside the mask.
