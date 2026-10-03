@@ -84,7 +84,10 @@ mod tests {
             assert!(!parsed.as_str().ends_with('.'));
             assert_eq!(parsed.as_str(), &parsed.as_str().to_ascii_lowercase());
         }
-        assert_eq!(parse_hostname("Example.I2P").expect("case").as_str(), "example.i2p");
+        assert_eq!(
+            parse_hostname("Example.I2P").expect("case").as_str(),
+            "example.i2p"
+        );
     }
 
     #[test]
@@ -107,10 +110,7 @@ mod tests {
                 // Trailing-dot canonicalization still requires a valid body.
                 continue;
             }
-            assert!(
-                parse_hostname(raw).is_err(),
-                "must reject {raw:?}"
-            );
+            assert!(parse_hostname(raw).is_err(), "must reject {raw:?}");
         }
         assert_eq!(
             parse_hostname("UPPER.i2P.").expect("trailing dot").as_str(),

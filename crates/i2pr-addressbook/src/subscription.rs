@@ -174,7 +174,10 @@ mod tests {
             "http://b.i2p/h".to_owned(),
         ])
         .expect("dedup");
-        assert_eq!(set.urls(), &["http://b.i2p/h".to_owned(), "http://a.i2p/h".to_owned()]);
+        assert_eq!(
+            set.urls(),
+            &["http://b.i2p/h".to_owned(), "http://a.i2p/h".to_owned()]
+        );
     }
 
     #[test]

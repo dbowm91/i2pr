@@ -151,11 +151,13 @@ impl AddressBook {
                 });
             }
         }
-        self.subscribed.get(&hostname).map(|destination| ResolvedEntry {
-            hostname,
-            destination: destination.clone(),
-            provenance: Provenance::Subscribed,
-        })
+        self.subscribed
+            .get(&hostname)
+            .map(|destination| ResolvedEntry {
+                hostname,
+                destination: destination.clone(),
+                provenance: Provenance::Subscribed,
+            })
     }
 
     /// Lists one book's entries in hostname order.
@@ -224,7 +226,10 @@ impl AddressBookControl<'_> {
     /// A present delete flag selects deletion even with a false-ish
     /// value; combining delete with a destination fails the whole
     /// request rather than guessing.
-    pub fn apply_entry(&mut self, mutation: EntryMutation) -> Result<EntryOutcome, AddressBookError> {
+    pub fn apply_entry(
+        &mut self,
+        mutation: EntryMutation,
+    ) -> Result<EntryOutcome, AddressBookError> {
         if mutation.delete && mutation.destination.is_some() {
             return Err(AddressBookError::MixedShapes);
         }
@@ -237,17 +242,15 @@ impl AddressBookControl<'_> {
             self.inner.bump_revision();
             return Ok(EntryOutcome::Deleted);
         }
-        let destination_text = mutation.destination.ok_or(AddressBookError::MalformedField)?;
+        let destination_text = mutation
+            .destination
+            .ok_or(AddressBookError::MalformedField)?;
         let decoded = validate_destination_text(&destination_text)?;
         let _ = decoded;
         let book = &mut self.inner.books[mutation.book.precedence_index()];
         let created = !book.contains_key(&hostname);
         if created {
-            let ceiling = self
-                .inner
-                .config
-                .max_entries
-                .clamp(1, MAX_ENTRIES_PER_BOOK);
+            let ceiling = self.inner.config.max_entries.clamp(1, MAX_ENTRIES_PER_BOOK);
             if book.len() >= ceiling {
                 return Err(AddressBookError::BookFull);
             }
@@ -276,7 +279,10 @@ impl AddressBookControl<'_> {
     /// Replaces subscription-derived entries wholesale (ingestion
     /// output). Operator books are untouched, so operator deletions
     /// can never resurrect from a later download.
-    pub fn replace_derived(&mut self, entries: BTreeMap<Hostname, String>) -> Result<bool, AddressBookError> {
+    pub fn replace_derived(
+        &mut self,
+        entries: BTreeMap<Hostname, String>,
+    ) -> Result<bool, AddressBookError> {
         let changed = entries != self.inner.subscribed;
         if changed {
             self.inner.subscribed = entries;
@@ -333,7 +339,12 @@ mod tests {
         String::from_utf8(mapped).expect("alphabet stays ASCII")
     }
 
-    fn entry(book: BookKind, hostname: &str, destination: Option<String>, delete: bool) -> EntryMutation {
+    fn entry(
+        book: BookKind,
+        hostname: &str,
+        destination: Option<String>,
+        delete: bool,
+    ) -> EntryMutation {
         EntryMutation {
             book,
             hostname: hostname.to_owned(),
@@ -349,13 +360,23 @@ mod tests {
         let mut control = book.control();
         assert_eq!(
             control
-                .apply_entry(entry(BookKind::Private, "a.i2p", Some(destination.clone()), false))
+                .apply_entry(entry(
+                    BookKind::Private,
+                    "a.i2p",
+                    Some(destination.clone()),
+                    false
+                ))
                 .expect("create"),
             EntryOutcome::Created
         );
         assert_eq!(
             control
-                .apply_entry(entry(BookKind::Private, "a.i2p", Some(destination.clone()), false))
+                .apply_entry(entry(
+                    BookKind::Private,
+                    "a.i2p",
+                    Some(destination.clone()),
+                    false
+                ))
                 .expect("update"),
             EntryOutcome::Updated
         );
@@ -388,7 +409,12 @@ mod tests {
         let mut book = AddressBook::new();
         let destination = destination_text();
         let mut control = book.control();
-        for kind in [BookKind::Published, BookKind::Router, BookKind::Local, BookKind::Private] {
+        for kind in [
+            BookKind::Published,
+            BookKind::Router,
+            BookKind::Local,
+            BookKind::Private,
+        ] {
             control
                 .apply_entry(entry(kind, "same.i2p", Some(destination.clone()), false))
                 .expect("insert");
@@ -453,7 +479,10 @@ mod tests {
 
     #[test]
     fn unknown_book_spelling_fails() {
-        assert_eq!(BookKind::parse("Private"), Err(AddressBookError::MalformedField));
+        assert_eq!(
+            BookKind::parse("Private"),
+            Err(AddressBookError::MalformedField)
+        );
         assert_eq!(BookKind::parse("router").expect("book"), BookKind::Router);
     }
 }

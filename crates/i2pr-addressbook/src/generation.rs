@@ -112,16 +112,29 @@ pub fn decode_generation(bytes: &[u8]) -> Result<AddressBook, AddressBookError> 
             ("router_book", shape.config.book_artifacts[2].clone()),
             ("published_book", shape.config.book_artifacts[3].clone()),
             ("subscriptions", shape.config.subscriptions_artifact.clone()),
-            ("refresh_interval", shape.config.refresh_interval_hours.to_string()),
-            ("proxy_host", shape.config.proxy_host.clone().unwrap_or_default()),
+            (
+                "refresh_interval",
+                shape.config.refresh_interval_hours.to_string(),
+            ),
+            (
+                "proxy_host",
+                shape.config.proxy_host.clone().unwrap_or_default(),
+            ),
             (
                 "proxy_port",
-                shape.config.proxy_port.map(|port| port.to_string()).unwrap_or_default(),
+                shape
+                    .config
+                    .proxy_port
+                    .map(|port| port.to_string())
+                    .unwrap_or_default(),
             ),
             ("theme", shape.config.theme.clone()),
             ("log_file", shape.config.log_file.clone()),
             ("log_level", shape.config.log_level.clone()),
-            ("lookup_timeout", shape.config.lookup_timeout_secs.to_string()),
+            (
+                "lookup_timeout",
+                shape.config.lookup_timeout_secs.to_string(),
+            ),
             ("max_entries", shape.config.max_entries.to_string()),
         ]
         .into_iter()

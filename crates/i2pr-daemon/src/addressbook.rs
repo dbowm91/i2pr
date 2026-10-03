@@ -30,8 +30,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use i2pr_addressbook::{
     AddressBook, AddressBookResolver, AddressBookSnapshot, EntryMutation, RefreshDiagnostic,
-    RefreshOutcome, RefreshQueue, RefreshReason, ResolvedEntry, decode_generation, encode_generation,
-    ingest_subscription_body,
+    RefreshOutcome, RefreshQueue, RefreshReason, ResolvedEntry, decode_generation,
+    encode_generation, ingest_subscription_body,
 };
 use i2pr_storage::AddressBookGenerationStore;
 
@@ -81,9 +81,10 @@ impl SharedAddressBook {
 
     /// Clones the published snapshot, if any.
     pub fn snapshot_cloned(&self) -> Option<AddressBookSnapshot> {
-        self.inner.read().ok().and_then(|slot| {
-            slot.as_ref().map(|resolver| resolver.snapshot().clone())
-        })
+        self.inner
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|resolver| resolver.snapshot().clone()))
     }
 
     /// Published revision, if any.
@@ -320,11 +321,9 @@ impl AddressBookManager {
     /// Ingests one subscription body transactionally (fetch is
     /// daemon-composed; tests and the worker drive this seam).
     pub fn ingest_body(&self, body: &[u8]) -> Result<IngestReport, AddressBookManagerError> {
-        let entries =
-            ingest_subscription_body(body).map_err(AddressBookManagerError::Rejected)?;
+        let entries = ingest_subscription_body(body).map_err(AddressBookManagerError::Rejected)?;
         let ingested = entries.len();
-        let changed =
-            self.transact(|book| book.control().replace_derived(entries))?;
+        let changed = self.transact(|book| book.control().replace_derived(entries))?;
         Ok(IngestReport { ingested, changed })
     }
 
@@ -336,12 +335,7 @@ impl AddressBookManager {
             .state
             .lock()
             .ok()
-            .map(|state| {
-                (
-                    state.active,
-                    state.addressbook.subscriptions().urls().len(),
-                )
-            })
+            .map(|state| (state.active, state.addressbook.subscriptions().urls().len()))
             .unwrap_or((false, 0));
         if !active {
             return RefreshDiagnostic {
@@ -485,10 +479,7 @@ pub struct IngestReport {
     pub changed: bool,
 }
 
-fn rendered_book(
-    book: &AddressBook,
-    kind: i2pr_addressbook::BookKind,
-) -> Vec<(String, String)> {
+fn rendered_book(book: &AddressBook, kind: i2pr_addressbook::BookKind) -> Vec<(String, String)> {
     book.list(kind)
         .into_iter()
         .map(|(name, destination)| (name.as_str().to_owned(), destination))
@@ -544,7 +535,9 @@ fn append_bounded_line(state_dir: &Path, log_file: &str, line: &str) {
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.len() > MAX_DIAGNOSTIC_ARTIFACT_BYTES {
             if let Ok(contents) = fs::read(&path) {
-                let keep = contents.len().saturating_sub(DIAGNOSTIC_ARTIFACT_RETAIN_BYTES as usize);
+                let keep = contents
+                    .len()
+                    .saturating_sub(DIAGNOSTIC_ARTIFACT_RETAIN_BYTES as usize);
                 let _ = fs::write(&path, &contents[keep..]);
             }
         }
@@ -561,10 +554,12 @@ fn import_snapshot_artifacts(
     use i2pr_addressbook::BookKind;
     let artifacts = book.config().book_artifacts.clone();
     let mut imported = 0;
-    for (artifact, kind) in artifacts
-        .iter()
-        .zip([BookKind::Private, BookKind::Local, BookKind::Router, BookKind::Published])
-    {
+    for (artifact, kind) in artifacts.iter().zip([
+        BookKind::Private,
+        BookKind::Local,
+        BookKind::Router,
+        BookKind::Published,
+    ]) {
         let path = state_dir.join(artifact);
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
@@ -574,9 +569,9 @@ fn import_snapshot_artifacts(
         if bytes.len() > MAX_SNAPSHOT_ARTIFACT_BYTES {
             return Err("snapshot artifact over bound");
         }
-        if fs::symlink_metadata(&path).is_ok_and(|metadata| {
-            metadata.file_type().is_symlink() || !metadata.is_file()
-        }) {
+        if fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+        {
             return Err("snapshot artifact is not a regular file");
         }
         let map: BTreeMap<String, String> =
@@ -653,12 +648,7 @@ mod tests {
             Err(AddressBookManagerError::Inactive)
         );
         // No file, directory, or side effect anywhere under the data dir.
-        assert_eq!(
-            fs::read_dir(directory.path())
-                .expect("read dir")
-                .count(),
-            0
-        );
+        assert_eq!(fs::read_dir(directory.path()).expect("read dir").count(), 0);
     }
 
     #[test]
@@ -844,7 +834,10 @@ mod tests {
             ))
             .expect("unshadow");
         let resolved = manager.shared().lookup("sub.i2p").expect("derived again");
-        assert_eq!(resolved.provenance, i2pr_addressbook::Provenance::Subscribed);
+        assert_eq!(
+            resolved.provenance,
+            i2pr_addressbook::Provenance::Subscribed
+        );
         // Invalid bodies fail whole without touching derived state.
         assert!(manager.ingest_body(b"junk\n").is_err());
         assert!(manager.shared().lookup("sub.i2p").is_some());
@@ -870,9 +863,7 @@ mod tests {
         let idle = AddressBookManager::activate(disabled_config(directory.path()));
         idle.record_diagnostic(&diagnostic);
         assert_eq!(
-            fs::read_dir(directory.path())
-                .expect("read dir")
-                .count(),
+            fs::read_dir(directory.path()).expect("read dir").count(),
             1,
             "only the active state dir may exist"
         );
@@ -892,7 +883,7 @@ mod tests {
             .expect("entry");
         let mut entries = BTreeMap::new();
         entries.insert("max_entries".to_owned(), "1".to_owned());
-        assert!(manager.apply_config(&entries).expect("ceiling 1 holds one") );
+        assert!(manager.apply_config(&entries).expect("ceiling 1 holds one"));
         entries.insert("max_entries".to_owned(), "0".to_owned());
         assert!(manager.apply_config(&entries).is_err());
         // Failed tightening leaves the committed config untouched.

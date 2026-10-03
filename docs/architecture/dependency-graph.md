@@ -23,12 +23,13 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-transport-ssu2` (Plans 155–158) | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `chacha20`, `chacha20poly1305`, `hmac`, `rand_core`, `sha2`, `thiserror`, `zeroize` |
 | `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` + `aes`, `cbc`, `chacha20`, `chacha20poly1305`, `rand_core`, `sha2`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` + `tokio`, `tokio-util`, `futures-util`, `rand_core`, `tracing`, `zeroize` |
-| `i2pr-daemon` | `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel`, `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-i2pcontrol` + `clap`, `serde`, `serde_json`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `subtle`, `tokio`, `tokio-rustls`, `rustls`, `rustls-pki-types`, `rcgen` (Plan 287 TLS/material: review in `plans/closure/i2pcontrol-proposal-170/287-status.md`; `rustls-pemfile` was removed before closure for RUSTSEC-2025-0134) |
+| `i2pr-daemon` | `i2pr-addressbook`, `i2pr-crypto`, `i2pr-core`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-transport`, `i2pr-tunnel`, `i2pr-client`, `i2pr-api`, `i2pr-service-tunnels`, `i2pr-i2pcontrol` + `clap`, `serde`, `serde_json`, `toml`, `thiserror`, `tracing`, `tracing-subscriber`, `rand_core`, `subtle`, `tokio`, `tokio-rustls`, `rustls`, `rustls-pki-types`, `rcgen` (Plan 287 TLS/material: review in `plans/closure/i2pcontrol-proposal-170/287-status.md`; `rustls-pemfile` was removed before closure for RUSTSEC-2025-0134) |
 | `i2pr-service-tunnels` (Plan 174/175) | `i2pr-client`, `i2pr-proto` + `thiserror` (implementation uses `i2pr-proto` only; `i2pr-client` edge explicitly allowed for future destination/Streaming reuse) |
 | `i2pr-testkit` (test-only) | every transport-and-runtime crate + `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 | `i2pr-client` (Plan 120 / Plan 121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` + `rand_chacha`, `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-api` (Plan 136; extended Plan 164+) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` |
 | `i2pr-i2pcontrol` (Plan 286) | (no `i2pr-*` production edge) + `serde`, `serde_json`, `thiserror`. Runtime-neutral Proposal 170 wire/domain contract only; only `i2pr-daemon` may depend on it. |
+| `i2pr-addressbook` (Plan 294) | `i2pr-proto` + `base64ct`, `serde`, `serde_json`, `thiserror`. Runtime-neutral canonical naming owner only; only `i2pr-daemon` may depend on it (`i2pr-storage` persists opaque generations, never parses them). |
 | `tools/i2pr-interop` (non-production) | `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-storage`, `i2pr-transport`, `i2pr-transport-ntcp2` |
 
 Reverse edges (i.e. "may NOT depend on"):
@@ -79,6 +80,11 @@ Reverse edges (i.e. "may NOT depend on"):
   runtime-neutral contract only). Conversely, no router core crate may
   depend on `i2pr-i2pcontrol`; only `i2pr-daemon` adapts the contract
   to router state.
+- `i2pr-addressbook` may depend only on `i2pr-proto` (Plan 294;
+  structural destination validation only). Conversely, no router
+  core crate may depend on `i2pr-addressbook`; only `i2pr-daemon`
+  composes the owner into SAM, service tunnels, and control
+  consumers, and `i2pr-storage` persists opaque generations only.
 
 ## ASCII graph
 

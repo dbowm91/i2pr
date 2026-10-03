@@ -53,7 +53,10 @@ fn ceilings_match() {
         i2pr_addressbook::MAX_SUBSCRIPTION_URL_LEN,
         i2pr_i2pcontrol::MAX_SUBSCRIPTION_URL_LEN
     );
-    assert_eq!(MAX_SUBSCRIPTION_URLS, i2pr_i2pcontrol::MAX_SUBSCRIPTION_URLS);
+    assert_eq!(
+        MAX_SUBSCRIPTION_URLS,
+        i2pr_i2pcontrol::MAX_SUBSCRIPTION_URLS
+    );
 }
 
 #[test]

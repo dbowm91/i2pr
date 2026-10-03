@@ -358,10 +358,7 @@ impl SamServiceState {
 
     /// Looks up one `.i2p` hostname in the canonical address book
     /// (`None` when the subsystem is inactive or the name is absent).
-    pub fn addressbook_lookup(
-        &self,
-        name: &str,
-    ) -> Option<i2pr_addressbook::ResolvedEntry> {
+    pub fn addressbook_lookup(&self, name: &str) -> Option<i2pr_addressbook::ResolvedEntry> {
         self.addressbook
             .lock()
             .ok()

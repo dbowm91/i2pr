@@ -1772,3 +1772,26 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/293-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.canonical-addressbook-and-resolver-integration"
+protocol = "i2pcontrol"
+structure = "proposal-170-addressbook-owner-with-resolver-and-getters"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 294 added the canonical i2pr-addressbook owner driving both ordinary naming and Proposal 170 administration: four books with private/local/router/published/subscribed precedence, typed hostname and full-Destination validation, thirteen-key SetConfig with per-key dispositions (confined artifact paths, hourly cadence, fetch-path-only proxy, inert theme, artifact-only log, fetch-stage timeout, entry ceiling), bounded subscription ingestion with wholesale derived replacement, deterministic versioned generations with current/backup atomic persistence, bounded refresh queue with cadence worker and diagnostic artifact, read-only resolver snapshots shared with SAM naming and service-tunnel alias-miss resolution (static aliases win), AddressBook method with one-mode-per-request whole-validation and exact result shapes, and six RouterInfo getters over the same committed generation. Disabled by default with filesystem-inert isolation; corrupt generations fail into sticky-error inactivity, never partial state. No downloader owner exists yet (refresh reports unavailable); the SetConfig thirteen differ as a set from the reference fork and stay frozen for Plan 295 adjudication."
+evidence = [
+    "specs/protocols/15-canonical-addressbook.md",
+    "crates/i2pr-addressbook/src/lib.rs",
+    "crates/i2pr-addressbook/tests/contract.rs",
+    "crates/i2pr-storage/src/address_book_generation.rs",
+    "crates/i2pr-daemon/src/addressbook.rs",
+    "crates/i2pr-daemon/src/i2pcontrol.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/sam.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_addressbook_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md",
+    "plans/closure/i2pcontrol-proposal-170/294-status.md",
+]
+advertised = false

@@ -394,8 +394,9 @@ fn decode_addressbook_request(
         return Ok(AddressBookRequest::Config { entries });
     }
     let book = match params.get("Type").and_then(serde_json::Value::as_str) {
-        Some(name) => i2pr_addressbook::BookKind::parse(name)
-            .map_err(|_| "malformed AddressBook field")?,
+        Some(name) => {
+            i2pr_addressbook::BookKind::parse(name).map_err(|_| "malformed AddressBook field")?
+        }
         None => return Err("malformed AddressBook field"),
     };
     let hostname = match params.get("Hostname").and_then(serde_json::Value::as_str) {
@@ -1003,10 +1004,7 @@ impl I2pControlServiceState {
         message: &'static str,
     ) -> (serde_json::Value, Duration) {
         (
-            success_envelope(
-                id,
-                serde_json::json!({"success": true, "message": message}),
-            ),
+            success_envelope(id, serde_json::json!({"success": true, "message": message})),
             Duration::ZERO,
         )
     }
@@ -1020,11 +1018,19 @@ impl I2pControlServiceState {
         use crate::addressbook::AddressBookManagerError as ManagerError;
         match error {
             ManagerError::Inactive | ManagerError::StoreUnavailable => (
-                error_envelope(id, JsonRpcErrorCode::InternalError.code(), &error.to_string()),
+                error_envelope(
+                    id,
+                    JsonRpcErrorCode::InternalError.code(),
+                    &error.to_string(),
+                ),
                 Duration::ZERO,
             ),
             ManagerError::Rejected(_) => (
-                error_envelope(id, JsonRpcErrorCode::InvalidParams.code(), &error.to_string()),
+                error_envelope(
+                    id,
+                    JsonRpcErrorCode::InvalidParams.code(),
+                    &error.to_string(),
+                ),
                 Duration::ZERO,
             ),
         }
@@ -2324,9 +2330,7 @@ mod tests {
         assert!(manager.is_active());
         let state = test_state(TEST_PASSWORD);
         state.set_addressbook_manager(Arc::clone(&manager));
-        state
-            .inspection()
-            .publish_addressbook(manager.shared());
+        state.inspection().publish_addressbook(manager.shared());
         let token = authenticate(&state, 0);
         let call = |params: serde_json::Value| {
             json_of(&dispatch(
@@ -2340,13 +2344,20 @@ mod tests {
         bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
         let destination = i2pr_api::sam::base64::encode(&bytes);
         // Entry lifecycle with exact result shapes.
-        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}));
+        let response = call(
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}),
+        );
         assert_eq!(
             response["result"],
             serde_json::json!({"success": true, "message": "entry created"})
         );
-        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}));
-        assert_eq!(response["result"]["message"], serde_json::json!("entry updated"));
+        let response = call(
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}),
+        );
+        assert_eq!(
+            response["result"]["message"],
+            serde_json::json!("entry updated")
+        );
         // Getters read the same committed generation the lookup uses.
         let response = json_of(&dispatch(
             &state,
@@ -2371,7 +2382,9 @@ mod tests {
             serde_json::json!("1000")
         );
         // Delete presence selects deletion even with a false value.
-        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Delete": false}));
+        let response = call(
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Delete": false}),
+        );
         assert_eq!(
             response["result"],
             serde_json::json!({"success": true, "message": "entry deleted"})
@@ -2404,26 +2417,36 @@ mod tests {
         }
         // Unknown hostnames delete deterministically; values stay valid.
         let untouched = manager.revision().expect("revision");
-        let response = call(serde_json::json!({"Token": token, "Type": "local", "Hostname": "ghost.i2p", "Destination": "nope"}));
+        let response = call(
+            serde_json::json!({"Token": token, "Type": "local", "Hostname": "ghost.i2p", "Destination": "nope"}),
+        );
         assert!(response.get("error").is_some());
         assert_eq!(manager.revision(), Some(untouched));
         // Subscriptions and config replacements with exact messages.
-        let response = call(serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}));
+        let response = call(
+            serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}),
+        );
         assert_eq!(
             response["result"],
             serde_json::json!({"success": true, "message": "subscriptions replaced"})
         );
-        let response = call(serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}));
+        let response = call(
+            serde_json::json!({"Token": token, "SetSubscriptions": ["http://example.i2p/hosts.txt"]}),
+        );
         assert_eq!(
             response["result"]["message"],
             serde_json::json!("subscriptions unchanged")
         );
-        let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}));
+        let response = call(
+            serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}),
+        );
         assert_eq!(
             response["result"],
             serde_json::json!({"success": true, "message": "config applied"})
         );
-        let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}));
+        let response = call(
+            serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}),
+        );
         assert_eq!(
             response["result"]["message"],
             serde_json::json!("config unchanged")
@@ -2431,7 +2454,9 @@ mod tests {
         let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": 7}}));
         assert!(response.get("error").is_some());
         // Error messages never echo request values.
-        let response = call(serde_json::json!({"Token": token, "Type": "private", "Hostname": "secret-host.i2p", "Destination": "hunter2-material"}));
+        let response = call(
+            serde_json::json!({"Token": token, "Type": "private", "Hostname": "secret-host.i2p", "Destination": "hunter2-material"}),
+        );
         let rendered = serde_json::to_string(&response["error"]).expect("render");
         assert!(!rendered.contains("secret-host"));
         assert!(!rendered.contains("hunter2"));

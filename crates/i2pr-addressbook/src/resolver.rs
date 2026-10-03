@@ -67,13 +67,8 @@ impl AddressBookSnapshot {
     }
 }
 
-fn book_snapshot(
-    book: &crate::book::AddressBook,
-    kind: BookKind,
-) -> BTreeMap<Hostname, String> {
-    book.list(kind)
-        .into_iter()
-        .collect()
+fn book_snapshot(book: &crate::book::AddressBook, kind: BookKind) -> BTreeMap<Hostname, String> {
+    book.list(kind).into_iter().collect()
 }
 
 /// Narrow read-only resolver shared with SAM, service-tunnel, and
@@ -108,11 +103,14 @@ impl AddressBookResolver {
                 });
             }
         }
-        self.snapshot.subscribed.get(&hostname).map(|destination| ResolvedEntry {
-            hostname,
-            destination: destination.clone(),
-            provenance: Provenance::Subscribed,
-        })
+        self.snapshot
+            .subscribed
+            .get(&hostname)
+            .map(|destination| ResolvedEntry {
+                hostname,
+                destination: destination.clone(),
+                provenance: Provenance::Subscribed,
+            })
     }
 
     /// Snapshot revision (lets consumers detect commits).

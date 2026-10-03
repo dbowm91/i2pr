@@ -32,8 +32,8 @@ use zeroize::Zeroizing;
 pub mod address_book_generation;
 pub use address_book_generation::{
     ADDRESSBOOK_BACKUP_FILE_NAME, ADDRESSBOOK_CURRENT_FILE_NAME, ADDRESSBOOK_STATE_SUBDIR,
-    MAX_ADDRESSBOOK_GENERATION_FILE_SIZE, AddressBookGenerationStore,
-    AddressBookGenerationStorageError,
+    AddressBookGenerationStorageError, AddressBookGenerationStore,
+    MAX_ADDRESSBOOK_GENERATION_FILE_SIZE,
 };
 pub mod service_destination;
 pub use service_destination::{

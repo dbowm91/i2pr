@@ -42,6 +42,13 @@ composition owner decodes bytes, validates them through `i2pr-netdb`,
 and then asks this seam to atomically write or remove the canonical
 bytes. Persistent per-service destinations live in
 `src/service_destination.rs` (`pub mod service_destination`).
+Plan 294 address-book generation files live in
+`src/address_book_generation.rs` (`pub mod address_book_generation`):
+an opaque current/backup file pair (`addressbook.current.json` /
+`addressbook.backup.json`) with atomic publish-and-rotate, symlink /
+permission / size gates, and missing-directory loads as absent. The
+adapter never parses generations; `i2pr-addressbook` owns
+serialization and validation.
 
 ## Public surface
 

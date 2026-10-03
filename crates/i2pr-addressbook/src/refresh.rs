@@ -144,7 +144,10 @@ mod tests {
 
     fn set(urls: &[&str]) -> SubscriptionSet {
         SubscriptionSet::checked(
-            &urls.iter().map(|url| (*url).to_owned()).collect::<Vec<String>>(),
+            &urls
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect::<Vec<String>>(),
         )
         .expect("valid set")
     }
@@ -155,7 +158,10 @@ mod tests {
         assert!(queue.is_idle());
         assert!(queue.push(set(&["http://a.i2p/h"]), RefreshReason::Manual));
         // Active fetch running: two more commits coalesce to the newest.
-        assert!(!queue.push(set(&["http://b.i2p/h"]), RefreshReason::SubscriptionsReplaced));
+        assert!(!queue.push(
+            set(&["http://b.i2p/h"]),
+            RefreshReason::SubscriptionsReplaced
+        ));
         assert!(!queue.push(
             set(&["http://c.i2p/h", "http://d.i2p/h"]),
             RefreshReason::SubscriptionsReplaced
@@ -167,7 +173,10 @@ mod tests {
             next.urls(),
             &["http://c.i2p/h".to_owned(), "http://d.i2p/h".to_owned()]
         );
-        assert_eq!(queue.last_reason(), Some(RefreshReason::SubscriptionsReplaced));
+        assert_eq!(
+            queue.last_reason(),
+            Some(RefreshReason::SubscriptionsReplaced)
+        );
         // No further pending: finishing idles the queue.
         assert!(queue.finish_active().is_none());
         assert!(queue.is_idle());

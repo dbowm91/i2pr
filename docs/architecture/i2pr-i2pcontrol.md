@@ -35,7 +35,7 @@ transport internals.
 | `jsonrpc` | `jsonrpc.rs` | Bounded envelope decode, batch split, canonical envelopes | `JsonRpcRequest`, `RequestId`, `JsonRpcErrorCode`, `success_envelope`, `error_envelope` |
 | `limits` | `limits.rs` | Every wire ceiling (body 1 MiB, batch 32, in-flight 64, names, maps, tunnels) | `MAX_*` constants, `check_len`, `check_str` |
 | `errors` | `errors.rs` | Typed contract errors (no `anyhow`) | `ContractError` |
-| `source_matrix` | `source_matrix.rs` | Plan 288: one machine-readable row per selector/service with owner, ceilings, sensitivity, freshness, availability, test id | `SourceRow`, `SourceAvailability`, `ROUTER_INFO_SOURCE_MATRIX`, `CLIENT_SERVICES_SOURCE_MATRIX`, `matrix_mirrors_inventories` |
+| `source_matrix` | `source_matrix.rs` | Plan 288: one machine-readable row per selector/service with owner, ceilings, sensitivity, freshness, availability, test id; Plan 294 flips the six address-book rows to `Available` on the canonical owner (committed-generation snapshots) | `SourceRow`, `SourceAvailability`, `ROUTER_INFO_SOURCE_MATRIX`, `CLIENT_SERVICES_SOURCE_MATRIX`, `matrix_mirrors_inventories` |
 | `conformance` | `conformance.rs` | Frozen Plan 286 inventory counts + canonical JSON | `ContractInventory`, `assert_frozen_counts` |
 
 ## Public surface

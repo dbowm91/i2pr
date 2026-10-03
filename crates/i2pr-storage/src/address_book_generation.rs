@@ -28,7 +28,9 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-use super::{create_temporary_file, ensure_secure_directory, sync_directory, validate_existing_directory};
+use super::{
+    create_temporary_file, ensure_secure_directory, sync_directory, validate_existing_directory,
+};
 
 /// State subdirectory name under the router data directory.
 pub const ADDRESSBOOK_STATE_SUBDIR: &str = "addressbook";
@@ -133,7 +135,10 @@ impl AddressBookGenerationStore {
         self.load_slot(ADDRESSBOOK_BACKUP_FILE_NAME)
     }
 
-    fn load_slot(&self, file_name: &str) -> Result<Option<Vec<u8>>, AddressBookGenerationStorageError> {
+    fn load_slot(
+        &self,
+        file_name: &str,
+    ) -> Result<Option<Vec<u8>>, AddressBookGenerationStorageError> {
         match fs::symlink_metadata(&self.dir) {
             Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(source) => return Err(storage_io("inspect generation directory", source)),

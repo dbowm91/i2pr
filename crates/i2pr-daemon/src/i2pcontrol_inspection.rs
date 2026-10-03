@@ -511,7 +511,9 @@ fn addressbook_book_value(
         );
     }
     let value = serde_json::Value::Object(map);
-    if serde_json::to_vec(&value).map(|bytes| bytes.len()).unwrap_or(usize::MAX)
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
         > MAX_ADDRESSBOOK_BOOK_BYTES
     {
         return Err(internal());
@@ -534,7 +536,9 @@ fn addressbook_subscriptions_value(
         return Err(internal());
     }
     let value = serde_json::json!({ "urls": snapshot.subscription_urls() });
-    if serde_json::to_vec(&value).map(|bytes| bytes.len()).unwrap_or(usize::MAX)
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
         > MAX_ADDRESSBOOK_SUBSCRIPTION_BYTES
     {
         return Err(internal());

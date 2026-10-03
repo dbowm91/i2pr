@@ -246,7 +246,9 @@ impl AddressBookConfig {
             self.subscriptions_artifact.clone(),
             self.refresh_interval_hours.to_string(),
             self.proxy_host.clone().unwrap_or_default(),
-            self.proxy_port.map(|port| port.to_string()).unwrap_or_default(),
+            self.proxy_port
+                .map(|port| port.to_string())
+                .unwrap_or_default(),
             self.theme.clone(),
             self.log_file.clone(),
             self.log_level.name().to_owned(),
@@ -340,9 +342,10 @@ fn confined_path(value: &str) -> Result<String, AddressBookError> {
     if value.is_empty() || value.len() > MAX_CONFIG_PATH_LEN {
         return Err(AddressBookError::InvalidConfigValue);
     }
-    if value.bytes().any(|byte| {
-        byte < 0x20 || byte == 0x7f || byte == b'/' || byte == b'\\' || byte == b'\0'
-    }) {
+    if value
+        .bytes()
+        .any(|byte| byte < 0x20 || byte == 0x7f || byte == b'/' || byte == b'\\' || byte == b'\0')
+    {
         return Err(AddressBookError::InvalidConfigValue);
     }
     if value == "." || value == ".." {
@@ -361,7 +364,9 @@ fn parse_ranged_u64(text: &str, minimum: u64, maximum: u64) -> Result<u64, Addre
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(AddressBookError::InvalidConfigValue);
     }
-    let value: u64 = text.parse().map_err(|_| AddressBookError::InvalidConfigValue)?;
+    let value: u64 = text
+        .parse()
+        .map_err(|_| AddressBookError::InvalidConfigValue)?;
     if value < minimum || value > maximum {
         return Err(AddressBookError::InvalidConfigValue);
     }
@@ -446,9 +451,7 @@ mod tests {
             "tab\there",
         ] {
             assert!(
-                config
-                    .checked_update(&map(&[("log_file", bad)]))
-                    .is_err(),
+                config.checked_update(&map(&[("log_file", bad)])).is_err(),
                 "must reject {bad:?}"
             );
         }
@@ -462,15 +465,17 @@ mod tests {
     fn numeric_bounds_hold() {
         let config = AddressBookConfig::default();
         for (key, good, bads) in [
-            ("refresh_interval", "720", vec!["0", "721", "12h", " 12", "+12"]),
+            (
+                "refresh_interval",
+                "720",
+                vec!["0", "721", "12h", " 12", "+12"],
+            ),
             ("proxy_port", "8080", vec!["0", "65536", "http"]),
             ("lookup_timeout", "300", vec!["0", "301", "-1"]),
             ("max_entries", "1000", vec!["0", "1001", "lots"]),
         ] {
             assert!(
-                config
-                    .checked_update(&map(&[(key, good)]))
-                    .is_ok(),
+                config.checked_update(&map(&[(key, good)])).is_ok(),
                 "{key}={good} must pass"
             );
             for bad in bads {
@@ -487,9 +492,7 @@ mod tests {
         let config = AddressBookConfig::default();
         for good in ["proxy.i2p", "127.0.0.1", "10.0.0.7"] {
             assert!(
-                config
-                    .checked_update(&map(&[("proxy_host", good)]))
-                    .is_ok(),
+                config.checked_update(&map(&[("proxy_host", good)])).is_ok(),
                 "{good} must pass"
             );
         }
