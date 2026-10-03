@@ -1530,4 +1530,28 @@ mod tests {
                 if message.contains("service_tunnels.enabled = true")
         ));
     }
+
+    #[test]
+    fn daemon_graph_registers_enabled_groups_with_bootstrap_provider() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("service tunnel config is valid");
+        let bootstrap = Arc::new(Mutex::new(bootstrap::Bootstrap::new(
+            RouterInfoStoreConfig::default(),
+            config.reseed.clone(),
+        )));
+        let inspection = Arc::new(InspectionHandles::from_config(&config));
+        let graph = build_daemon_graph_inner(&config, &inspection, Some(bootstrap))
+            .expect("normal graph accepts enabled groups with their production provider");
+        assert!(
+            graph
+                .startup_order()
+                .iter()
+                .any(|service| service.as_str() == "ssu2-router")
+        );
+    }
 }
