@@ -1,0 +1,13 @@
+{
+  "plan": 295,
+  "head": "4ba2efac237971af65df205f680b8bfd840ca868",
+  "lane": "tests/integration/i2pcontrol/run-differential.sh",
+  "local": {
+    "state": "passed",
+    "answered": 28,
+    "gapped": 8,
+    "errors": 4,
+    "shape": "143acaa6dcdd4ac6"
+  },
+  "external": {"state": "blocked-env-absent", "target": null, "corpus": null}
+}
