@@ -50,6 +50,11 @@ RESULTS_FILE="${SCRATCH}/results.tsv"
 # extracted below reach evidence.
 rm -f "${EVIDENCE_DIR}/i2pd.log" \
   "${EVIDENCE_DIR}/driver/driver-evidence.tsv" \
+  "${EVIDENCE_DIR}/driver/fingerprint-i2pr-client.tsv" \
+  "${EVIDENCE_DIR}/driver/fingerprint-i2pd-client.tsv" \
+  "${EVIDENCE_DIR}/driver/fingerprint-i2pr-server.tsv" \
+  "${EVIDENCE_DIR}/driver/fingerprint-i2pd-server.tsv" \
+  "${EVIDENCE_DIR}/driver/fingerprint-manifest.tsv" \
   "${EVIDENCE_DIR}/reference-facts.tsv"
 
 # ---- i2pd cache verification (fail closed before any network use) --------

@@ -46,6 +46,11 @@
 
 #![forbid(unsafe_code)]
 
+// This ignored integration target reuses the testkit schema without
+// adding a package dependency from the daemon crate to i2pr-testkit.
+#[path = "../../i2pr-testkit/src/streaming_fingerprint.rs"]
+mod streaming_fingerprint;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -77,6 +82,10 @@ use i2pr_daemon::tunnel_liveness::{
     FIRST_LIVENESS_DELAY_MS, LivenessAction, LivenessConfig, TunnelLivenessScheduler,
 };
 use i2pr_netdb::{LookupPolicy, RouterHash, RouterInfoStoreConfig};
+use i2pr_proto::streaming::{
+    FLAG_CLOSE, FLAG_RESET, FLAG_SYNCHRONIZE, StreamingOptionDecodeContext, StreamingReceiveLimit,
+    decode_client_payload, decode_streaming_packet,
+};
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, RouterInfo};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use i2pr_transport::{Deadline, PeerId};
@@ -86,6 +95,10 @@ use i2pr_tunnel::identity::{TunnelDirection, TunnelId};
 use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
 use rand_core::{OsRng, SeedableRng};
+use streaming_fingerprint::{
+    FingerprintDirection, FingerprintEvent, FingerprintScenario, FingerprintTerminal,
+    StreamingFingerprintTrace,
+};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(20);
 const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -150,6 +163,165 @@ fn append_evidence(dir: &Path, label: &str, value: &str) {
         .expect("open evidence file");
     use std::io::Write as _;
     writeln!(file, "{label}\t{sanitized}").expect("write evidence row");
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum FingerprintRole {
+    I2prClient,
+    I2pdClient,
+    I2prServer,
+    I2pdServer,
+}
+
+impl FingerprintRole {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::I2prClient => "i2pr-client",
+            Self::I2pdClient => "i2pd-client",
+            Self::I2prServer => "i2pr-server",
+            Self::I2pdServer => "i2pd-server",
+        }
+    }
+
+    const fn direction(self) -> FingerprintDirection {
+        match self {
+            Self::I2prClient | Self::I2pdClient => FingerprintDirection::ToDestination,
+            Self::I2prServer | Self::I2pdServer => FingerprintDirection::FromDestination,
+        }
+    }
+}
+
+/// Plan 312 captures only public Streaming handshake metadata. It
+/// discards packet bytes, Destination material, and stream identifiers;
+/// sequence and ACK values are normalized to per-role origins.
+struct FingerprintCapture {
+    traces: std::collections::HashMap<FingerprintRole, StreamingFingerprintTrace>,
+}
+
+impl FingerprintCapture {
+    fn new() -> Self {
+        Self {
+            traces: std::collections::HashMap::new(),
+        }
+    }
+
+    fn record_outbound(&mut self, role: FingerprintRole, request: &TransportSendRequest) {
+        let Ok(envelope) = decode_client_payload(
+            &request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        ) else {
+            return;
+        };
+        self.record_packet(role, &envelope.payload);
+    }
+
+    fn record_inbound_i2np(&mut self, bytes: &[u8]) {
+        let Ok(message) = I2npMessage::decode_short_transport(bytes, MAX_I2NP_PAYLOAD_SIZE) else {
+            return;
+        };
+        let I2npBody::Data(body) = message.body() else {
+            return;
+        };
+        let Ok(envelope) = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes()) else {
+            return;
+        };
+        let Ok((packet, _)) = decode_streaming_packet(
+            &envelope.payload,
+            StreamingReceiveLimit::destination_path(),
+            StreamingOptionDecodeContext::anonymous(),
+        ) else {
+            return;
+        };
+        let role = if packet.send_stream_id == 0 {
+            FingerprintRole::I2pdClient
+        } else {
+            FingerprintRole::I2pdServer
+        };
+        self.record_decoded(role, &packet);
+    }
+
+    fn record_packet(&mut self, role: FingerprintRole, bytes: &[u8]) {
+        let Ok((packet, _)) = decode_streaming_packet(
+            bytes,
+            StreamingReceiveLimit::destination_path(),
+            StreamingOptionDecodeContext::anonymous(),
+        ) else {
+            return;
+        };
+        self.record_decoded(role, &packet);
+    }
+
+    fn record_decoded(
+        &mut self,
+        role: FingerprintRole,
+        packet: &i2pr_proto::streaming::StreamingPacket,
+    ) {
+        if packet.flags.bits() & FLAG_SYNCHRONIZE == 0 {
+            return;
+        }
+        if self
+            .traces
+            .get(&role)
+            .is_some_and(|trace| !trace.events().is_empty())
+        {
+            return;
+        }
+        let index = self
+            .traces
+            .get(&role)
+            .map_or(0, |trace| trace.events().len()) as u16;
+        let bits = packet.flags.bits();
+        let terminal = if bits & FLAG_CLOSE != 0 {
+            Some(FingerprintTerminal::OrderlyClose)
+        } else if bits & FLAG_RESET != 0 {
+            Some(FingerprintTerminal::Reset)
+        } else {
+            None
+        };
+        let event = FingerprintEvent {
+            index,
+            time_bucket_10ms: 0,
+            direction: role.direction(),
+            flags: bits,
+            payload_len: u16::try_from(packet.payload.len()).unwrap_or(u16::MAX),
+            sequence_delta: 0,
+            acknowledgement_delta: 0,
+            retransmission_ordinal: 0,
+            max_payload: packet.options.max_payload_size,
+            advertised_window: None,
+            choked: None,
+            terminal,
+        };
+        self.traces
+            .entry(role)
+            .or_insert_with(|| StreamingFingerprintTrace::new(FingerprintScenario::CleanHandshake))
+            .push(event)
+            .expect("bounded Plan 312 fingerprint capture");
+    }
+
+    fn write(&self, directory: &Path) {
+        for (role, trace) in &self.traces {
+            assert_eq!(trace.scenario(), FingerprintScenario::CleanHandshake);
+            std::fs::write(
+                directory.join(format!("fingerprint-{}.tsv", role.label())),
+                trace.to_tsv(),
+            )
+            .expect("write Plan 312 fingerprint trace");
+        }
+        std::fs::write(
+            directory.join("fingerprint-manifest.tsv"),
+            concat!(
+                "key\tvalue\n",
+                "i2pd_version\t2.61.0\n",
+                "i2pd_revision\t635b013a612ff47278ef02acf8580a28e10e26c5\n",
+                "scenario\tclean_handshake_default_port\n",
+                "dimensions\tflags,from_included,max_payload,payload_length\n",
+                "raw_packet_bytes\t0\n",
+                "destination_or_stream_ids\t0\n",
+            ),
+        )
+        .expect("write Plan 312 fingerprint manifest");
+    }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -478,6 +650,7 @@ async fn pump_one_streaming_inbound(
     from_hash: &[u8; 32],
     errors: &mut u64,
     pump_evidence_dir: &Path,
+    fingerprint_capture: &mut FingerprintCapture,
 ) -> bool {
     let next = tokio::time::timeout(POLL_INTERVAL, handle.next_inbound()).await;
     let Ok(Some(inbound)) = next else {
@@ -511,6 +684,7 @@ async fn pump_one_streaming_inbound(
     let Some(queued) = dispatcher.pop_payload(local_identity.id()) else {
         return false;
     };
+    fingerprint_capture.record_inbound_i2np(queued.bytes());
     match StreamingDestinationAdapter::receive(
         queued.bytes(),
         local_identity,
@@ -635,6 +809,7 @@ async fn accept_inbound_syn_response(
     local_ls2: &i2pr_proto::LeaseSet2,
     delivery: &i2pr_daemon::router_i2np::RouterDeliveryService,
     rng: &mut ChaCha8Rng,
+    fingerprint_capture: &mut FingerprintCapture,
 ) -> Option<i2pr_client::streaming::connection::ConnectionId> {
     if streaming.listener_backlog(0) < 1 {
         return None;
@@ -674,6 +849,7 @@ async fn accept_inbound_syn_response(
             rng,
         )
         .expect("SYN response");
+    fingerprint_capture.record_outbound(FingerprintRole::I2prServer, &syn_response);
     send_transport_request(
         &syn_response,
         routing,
@@ -710,6 +886,7 @@ async fn pump_until_streaming<F>(
     evidence_dir: &Path,
     deadline: tokio::time::Instant,
     phase: &str,
+    fingerprint_capture: &mut FingerprintCapture,
     satisfied: F,
 ) where
     F: FnMut(&mut StreamingManager) -> bool,
@@ -732,6 +909,7 @@ async fn pump_until_streaming<F>(
         deadline,
         phase,
         None,
+        fingerprint_capture,
         satisfied,
     )
     .await;
@@ -760,6 +938,7 @@ async fn pump_until_streaming_with_state<F>(
     deadline: tokio::time::Instant,
     phase: &str,
     state_connection: Option<i2pr_client::streaming::connection::ConnectionId>,
+    fingerprint_capture: &mut FingerprintCapture,
     mut satisfied: F,
 ) where
     F: FnMut(&mut StreamingManager) -> bool,
@@ -807,6 +986,7 @@ async fn pump_until_streaming_with_state<F>(
             from_hash,
             &mut errors,
             evidence_dir,
+            fingerprint_capture,
         )
         .await;
         // Timer drain on every turn, even with no arrival: a quiet
@@ -843,6 +1023,7 @@ async fn streaming_through_i2pd() {
     assert!(sam_endpoint.ip().is_loopback(), "i2pd SAM must be loopback");
     let evidence_dir = env_path("EVIDENCE_DIR");
     std::fs::create_dir_all(&evidence_dir).expect("evidence dir");
+    let mut fingerprint_capture = FingerprintCapture::new();
 
     let bind_port = bind.port();
     assert!(bind_port != 0, "lane requires a fixed loopback bind");
@@ -1332,6 +1513,7 @@ async fn streaming_through_i2pd() {
     let mut syn_queue = streaming.drain_outbound();
     assert_eq!(syn_queue.len(), 1, "connect must emit exactly one SYN");
     let syn_request = syn_queue.remove(0);
+    fingerprint_capture.record_outbound(FingerprintRole::I2prClient, &syn_request);
     // Plan 193 interop note: one RNG instance serves every transport
     // send in this lane. Reseeding per call with second-resolution
     // wall time hands every send inside the same second the identical
@@ -1635,6 +1817,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + STREAM_WAIT,
         "streaming-reverse",
+        &mut fingerprint_capture,
         |manager| {
             for delivered in manager.drain_delivered_for(connection_id) {
                 rev_collected.extend_from_slice(&delivered.bytes);
@@ -1677,6 +1860,7 @@ async fn streaming_through_i2pd() {
         tokio::time::Instant::now() + STREAM_WAIT,
         "streaming-reverse-multipacket",
         Some(connection_id),
+        &mut fingerprint_capture,
         |manager| {
             for delivered in manager.drain_delivered_for(connection_id) {
                 rev_multi_collected.extend_from_slice(&delivered.bytes);
@@ -1760,6 +1944,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + SYN_ACK_WAIT,
         "streaming-sibling-establish",
+        &mut fingerprint_capture,
         |manager| {
             manager
                 .get_connection(sibling_id)
@@ -1883,6 +2068,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + Duration::from_secs(30),
         "streaming-close",
+        &mut fingerprint_capture,
         |manager| {
             manager
                 .get_connection(connection_id)
@@ -2073,6 +2259,7 @@ async fn streaming_through_i2pd() {
                 reference_hash.as_bytes(),
                 &mut pump_errors,
                 &evidence_dir,
+                &mut fingerprint_capture,
             )
             .await;
             // Timer drain on every CONNECT wait turn: the inbound SYN
@@ -2105,6 +2292,7 @@ async fn streaming_through_i2pd() {
                     &local_ls2,
                     &delivery,
                     &mut send_rng,
+                    &mut fingerprint_capture,
                 )
                 .await;
             }
@@ -2184,6 +2372,7 @@ async fn streaming_through_i2pd() {
                 reference_hash.as_bytes(),
                 &mut accept_errors,
                 &evidence_dir,
+                &mut fingerprint_capture,
             )
             .await;
             drain_streaming_timers(
@@ -2207,6 +2396,7 @@ async fn streaming_through_i2pd() {
                 &local_ls2,
                 &delivery,
                 &mut send_rng,
+                &mut fingerprint_capture,
             )
             .await;
         }
@@ -2260,6 +2450,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + STREAM_WAIT,
         "streaming-b-data",
+        &mut fingerprint_capture,
         |manager| {
             for delivered in manager.drain_delivered_for(b_id) {
                 b_collected.extend_from_slice(&delivered.bytes);
@@ -2400,6 +2591,7 @@ async fn streaming_through_i2pd() {
         &evidence_dir,
         tokio::time::Instant::now() + Duration::from_secs(30),
         "streaming-b-close",
+        &mut fingerprint_capture,
         |manager| {
             manager
                 .get_connection(b_id)
@@ -2458,6 +2650,7 @@ async fn streaming_through_i2pd() {
     assert_eq!(snapshot.pending_inbound, 0);
     assert_eq!(snapshot.active_sessions, 0);
     append_evidence(&evidence_dir, "shutdown-baseline", "true");
+    fingerprint_capture.write(&evidence_dir);
     let _ = PeerId::from_hash(i2pd_hash);
 }
 

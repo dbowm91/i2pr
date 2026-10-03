@@ -37,6 +37,20 @@ The Plan 298/304 three-family hostile-Destination contract above is retained his
 
 Plans 312–313 use directional black-box measurement: i2pr owns the opposite endpoint while unmodified i2pd runs as the client or server under test. Java I2P may be recorded for context but is not a pass/fail Streaming dependency.
 
+Plan 312's bounded handshake baseline runs with
+`bash tests/integration/anonymity/run-plan312-streaming.sh`. It wraps the
+exact-pinned Plan 193 i2pd lane and retains only one SYN/SYN-ACK's registered
+metadata for each i2pr/i2pd client/server role. The registered dimensions are
+flags, FROM inclusion, maximum packet payload, and initial payload length.
+Window/choke, ACK/NACK, RTO/retransmission, loss/reorder, close/reset, terminal,
+and timing behavior are not observed by this scenario and cannot justify Plan
+313 tuning. The runner clears stale traces, fails closed on a missing role or
+pin/schema drift, and writes sanitized traces plus a comparison matrix under
+ignored `target/interop/anonymity/plan312-streaming`. Raw packet bytes,
+Destination identifiers, and stream identifiers are not retained. See
+`plans/closure/anonymity/312-status.md` for the measured differential and
+verification record.
+
 HTTP qualification is separated from hostile Streaming. Plan 308 may use ordinary controlled server Destinations and the retained Ubuntu/reference artifacts without waiting for a raw packet-control seam inside Java or i2pd.
 
 Plan 308's bounded HTTP capture normalizer is `canonicalize_http_capture.py`; its
