@@ -178,6 +178,18 @@ fn build_daemon_graph_inner(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
 ) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
+    if config
+        .service_tunnels
+        .tunnels
+        .tunnels
+        .iter()
+        .any(|tunnel| tunnel.enabled)
+    {
+        return Err(DaemonError::RuntimeSupervisorFailed(
+            "enabled service tunnels require the normal-daemon Destination-group provider, which is not active"
+                .to_owned(),
+        ));
+    }
     if config.transport.ntcp2.enabled {
         return Err(DaemonError::RuntimeSupervisorFailed(
             "NTCP2 activation is not available while support is experimental".to_string(),
@@ -1249,6 +1261,23 @@ mod tests {
                 field: "transport.ntcp2.enabled",
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn daemon_graph_rejects_enabled_service_tunnels_without_provider() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("not-created");
+        let text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"srv\"\nkind = \"generic-server\"\nenabled = true\ntarget = \"127.0.0.1:9090\"\n",
+            path.to_string_lossy()
+        );
+        let config = Config::parse(&text).expect("service tunnel config is valid");
+        let err = build_daemon_graph(&config).expect_err("enabled tunnel must have an owner");
+        assert!(matches!(
+            err,
+            DaemonError::RuntimeSupervisorFailed(message)
+                if message.contains("normal-daemon Destination-group provider, which is not active")
         ));
     }
 }

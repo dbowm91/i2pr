@@ -481,11 +481,12 @@ impl Default for RawSsu2Config {
     }
 }
 
-/// Raw Plan 174 service-tunnel configuration.
+/// Raw service-tunnel configuration.
 ///
-/// Disabled by default and loopback-only. No listener starts in
-/// Plan 174; any `enabled = true` tunnel is rejected as
-/// not-yet-available until Plan 175 rather than silently ignored.
+/// Disabled by default and loopback-only. Configuration parsing
+/// validates enabled specifications; daemon graph construction
+/// rejects them until the normal-daemon Destination-group provider
+/// owns their listeners and router traffic.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServiceTunnelsConfig {
@@ -1384,12 +1385,12 @@ pub struct FloodfillConfig {
     pub enabled: bool,
 }
 
-/// Normalized Plan 174 service-tunnel configuration.
+/// Normalized service-tunnel configuration.
 ///
 /// The surface is strict, disabled by default, and loopback-only
-/// for local listeners. No service listener starts in Plan 174;
-/// any `enabled = true` tunnel is rejected as not-yet-available
-/// until Plan 175 rather than silently ignored.
+/// for local listeners. Enabled specifications pass configuration
+/// validation but daemon graph construction rejects activation until
+/// a normal-daemon Destination-group provider owns them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceTunnelsConfig {
     /// Whether the service-tunnel subsystem is enabled.
