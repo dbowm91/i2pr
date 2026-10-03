@@ -35,7 +35,7 @@ transport internals.
 | `jsonrpc` | `jsonrpc.rs` | Bounded envelope decode, batch split, canonical envelopes | `JsonRpcRequest`, `RequestId`, `JsonRpcErrorCode`, `success_envelope`, `error_envelope` |
 | `limits` | `limits.rs` | Every wire ceiling (body 1 MiB, batch 32, in-flight 64, names, maps, tunnels) | `MAX_*` constants, `check_len`, `check_str` |
 | `errors` | `errors.rs` | Typed contract errors (no `anyhow`) | `ContractError` |
-| `source_matrix` | `source_matrix.rs` | Plan 288: one machine-readable row per selector/service with owner, ceilings, sensitivity, freshness, availability, test id; Plan 294 flips the six address-book rows to `Available` on the canonical owner (committed-generation snapshots) | `SourceRow`, `SourceAvailability`, `ROUTER_INFO_SOURCE_MATRIX`, `CLIENT_SERVICES_SOURCE_MATRIX`, `matrix_mirrors_inventories` |
+| `source_matrix` | `source_matrix.rs` | Plan 288: one machine-readable row per selector/service with owner, ceilings, sensitivity, freshness, availability, test id; Plan 294 flips the six address-book rows to `Available` on the canonical owner (committed-generation snapshots); Plan 295 flips sixteen rows to `Available` on the control-source owners and static attestations, keeps `router.hash` gated and `news.feed` unavailable by determination, and justifies the single `network.clock_skew` neutral | `SourceRow`, `SourceAvailability`, `ROUTER_INFO_SOURCE_MATRIX`, `CLIENT_SERVICES_SOURCE_MATRIX`, `matrix_mirrors_inventories` |
 | `conformance` | `conformance.rs` | Frozen Plan 286 inventory counts + canonical JSON | `ContractInventory`, `assert_frozen_counts` |
 
 ## Public surface
@@ -50,12 +50,16 @@ request envelope, and the conformance inventory.
 - Frozen counts (Plan 286, machine-checked): methods 5, RouterInfo 30,
   services 6, books 4, fields 6, `SetConfig` keys 13, actions 7, types 12,
   options 46, secret 4, auth errors 6, JSON-RPC errors 5, statuses 6.
-- Source-matrix census (Plan 288, machine-checked): 5 available, 16
-  publish-gated (1 in-plan `router.hash`, 15 residual-295), 9 unavailable
-  (6 for Plan 294, 3 for Plan 295), 0 permitted-neutral.
+- Source-matrix census (Plan 295 final, machine-checked): 27
+  available, 1 publish-gated (`router.hash`, in-plan 288), 1
+  unavailable (`news.feed`, unsupported by Plan 295 determination), 1
+  permitted-neutral (`network.clock_skew`, justified from the
+  Proposal's null allowance). Plan 294 flipped the six address-book
+  rows; Plan 295 wired the sixteen remaining owners.
 - Availability is never derived from serializer existence. Unavailable
-  rows fail whole-request; gated rows fail until their owner publishes;
-  neutral rows require explicit protocol justification (none recorded).
+  rows fail whole-request; owner-backed rows fail until their owner
+  publishes (composition installs every owner); the single neutral
+  row carries its explicit protocol justification.
 - The Proposal-direct selector vocabulary (`router.*`, `netdb.*`, …) is
   structurally disjoint from the adopted base `i2p.*` vocabulary
   (verified read-only against pinned i2pd `2d57d3f6`), so base keys can

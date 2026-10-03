@@ -1625,15 +1625,19 @@ protocol = "i2pcontrol"
 structure = "proposal-170-routerinfo-select-form-and-source-matrix"
 scope = "experimental"
 status = "experimental"
-notes = "Plan 288 closed the partial read-only Proposal 170 RouterInfo inspection plane: null-valued select form with canonical validation (unknown/case-drift/non-null/base i2p.* keys rejected as invalid params), whole-request explicit failure for unavailable/unpublished selectors (no partial responses, no fabricated zero/false/empty), 5 live static selectors (version/api/uptime/status/network-id), identity-gated router.hash, publish-gated NetDB/transport/tunnel/clock/rates dynamics, and 9 unavailable rows (6 AddressBook for Plan 294; logs/news/banned-peers for Plan 295). Counts serialize as one-element lists per the frozen List shape. Residual publication wiring belongs to Plan 295."
+notes = "Plans 288 and 295 closed the read-only Proposal 170 RouterInfo inspection plane: null-valued select form with canonical validation (unknown/case-drift/non-null/base i2p.* keys rejected as invalid params), whole-request explicit failure for unowned selectors (no partial responses, no fabricated zero/false/empty), 5 live static selectors (version/api/uptime/status/network-id), identity-gated router.hash, and 27 owner-backed rows (static attestations, live SSU2/log/metrics reads, one justified clock-skew neutral). Counts serialize as one-element lists per the frozen List shape. Router news stays unsupported by explicit determination."
 evidence = [
     "crates/i2pr-i2pcontrol/src/source_matrix.rs",
     "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-i2pcontrol/tests/final_matrix.rs",
+    "crates/i2pr-daemon/src/control_sources.rs",
     "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
     "crates/i2pr-daemon/src/i2pcontrol.rs",
     "crates/i2pr-daemon/tests/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_differential.rs",
     "plans/implementation/i2pcontrol-proposal-170/288-routerinfo-and-clientservices-inspection-plane.md",
     "plans/closure/i2pcontrol-proposal-170/288-status.md",
+    "plans/closure/i2pcontrol-proposal-170/295-status.md",
 ]
 advertised = false
 
@@ -1793,5 +1797,40 @@ evidence = [
     "crates/i2pr-daemon/tests/service_tunnel_addressbook_product.rs",
     "plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md",
     "plans/closure/i2pcontrol-proposal-170/294-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.control-source-owners"
+protocol = "i2pcontrol"
+structure = "proposal-170-log-ring-ban-ledger-and-rolling-metrics"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 295 added the three remaining control-plane source owners: a bounded redacted daemon log ring (INFO and above, secret-marker replacement, 256 entries, 192 B lines, eviction count) fed by a tracing layer installed beside the formatted stdout path; an explicit ban ledger attesting the empty set (no reporters and no ban criteria exist); and a rolling control-metrics owner (O(1) tick over registered cumulative transport counters, bandwidth pair plus four ssu2.* rates, build-outcome pair). The SSU2 factory publishes its cloned runtime service for live session/error reads with metrics priming. All owners are synchronous, memory-only, task-free, and poison-degrading."
+evidence = [
+    "crates/i2pr-daemon/src/control_sources.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_inspection.rs",
+    "crates/i2pr-daemon/src/lib.rs",
+    "crates/i2pr-runtime/src/ssu2_runtime.rs",
+    "crates/i2pr-runtime/tests/ssu2_local.rs",
+]
+advertised = false
+
+[[surface]]
+id = "prop170.final-conformance-and-differential"
+protocol = "i2pcontrol"
+structure = "proposal-170-final-matrix-differential-lane-and-qualified-profile"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 295 closed Proposal 170 conformance under an exact qualified profile (29 of 30 selectors sourced; news unsupported by determination; 30 deep cells incompatible by Plan 293; 42 cells owned by Plans 296/297): machine-checked final census (5 methods, 30 selectors at 27/1/1/1, 6 services, 13 config keys, 7 actions, 12 types, 46 options, 336 cells at 227/37/30/39/3), a repository-owned differential corpus proving 28 answers plus 8 plan-marked gaps plus 4 typed errors over the wire with a sanitized shape hash, a fail-closed integration lane with a static evidence checker, and a static differential against the exact-pinned fork, Java PR 6, and i2pd with every difference classified (proposal-controls / adopted / intentional-stricter / recorded-ambiguity). Live-external rows stay env-gated and unclaimed."
+evidence = [
+    "specs/protocols/16-final-conformance-and-differential.md",
+    "crates/i2pr-i2pcontrol/tests/final_matrix.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_differential.rs",
+    "tests/integration/i2pcontrol/run-differential.sh",
+    "tests/integration/i2pcontrol/evidence/i2pcontrol-differential.json",
+    "scripts/check-i2pcontrol-acceptance-evidence.sh",
+    "plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md",
+    "plans/closure/i2pcontrol-proposal-170/295-status.md",
 ]
 advertised = false

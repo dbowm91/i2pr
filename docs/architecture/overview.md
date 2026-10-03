@@ -416,6 +416,7 @@ not weaken the script.
 - `check-sam-acceptance-evidence.sh`,
   `check-ssu2-acceptance-evidence.sh`,
   `check-i2cp-acceptance-evidence.sh`,
+  `check-i2pcontrol-acceptance-evidence.sh`,
   `check-service-tunnel-acceptance-evidence.sh`,
   `check-exploratory-tunnel-evidence.sh`,
   `check-netdb-tunnel-evidence.sh`,

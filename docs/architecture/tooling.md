@@ -24,6 +24,7 @@ Paths are relative to the workspace root.
 | `scripts/check-ssu2-acceptance-evidence.sh` | Plan 161 SSU2 evidence integrity: no literal unconditional `passed` rows; every required row flows through the exit-code/evidence-key-gated helpers with explicit `--ignored --exact` external selection (CI-enforced). |
 | `scripts/check-i2cp-vectors.sh` | Drift in the I2CP wire fixture corpus under `tests/fixtures/i2cp/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, SHA-256 match, the required Plan 164 fixture IDs, and the narrow `i2pr-api --test i2cp_vectors` suite. |
 | `scripts/check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (Plan 170 9-row lane retained; Plan 172 adds lifecycle rows, raw-driver substitution rejection, zero-lease rejection, and LeaseSet2-install gating): no literal unconditional `passed` rows; every required row flows through the exit-code-gated `record_guarded` helper with digest-equality + strong-parse-path gates and explicit Java/Go pins (CI-enforced). |
+| `scripts/check-i2pcontrol-acceptance-evidence.sh` | Plan 295 I2PControl differential evidence integrity: the local 28/8/4 corpus derives from the executed Rust corpus with a sanitized shape hash; external rows stay env-gated (`blocked-env-absent` until both target env vars are set); no literal pass rows, no forgiveness, no fake env, no secret-carrying evidence (CI-enforced). |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. |
 | `scripts/check-service-tunnel-acceptance-evidence.sh` | Plan 181/199 service-tunnel evidence integrity: 29 command-derived local rows plus two fail-closed remote qualification rows; no literal passes; pin/head/cleanliness and curl/SOCKS/jaraco gates (CI-enforced). |
 | `scripts/check-exploratory-tunnel-evidence.sh` | Exploratory tunnel evidence integrity: guarded local build/liveness rows flow through exit-code-gated helpers (CI-enforced). |
@@ -353,7 +354,7 @@ CI pass.
 
 | Job | OS | Steps |
 | --- | --- | --- |
-| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) → `check-service-tunnel-acceptance-evidence.sh` (Linux) |
+| **Quality** | ubuntu-latest + macos-latest (matrix, fail-fast: false) | Checkout → Rust 1.95.0 + rustfmt + clippy → `cargo fmt --all --check` → `cargo check --workspace` → `cargo check --workspace --all-targets` → `cargo test --workspace` → `cargo clippy --workspace --all-targets --all-features -- -D warnings` → `cargo doc` (with `-D warnings`) → `check-dependency-direction.sh` (both OS) → `check-runtime-boundaries.sh` (Linux) → `check-fixture-manifest.sh` (Linux) → `check-ntcp2-vectors.sh` (Linux) → `check-ssu2-vectors.sh` (Linux) → `check-ntcp2-interoperability.sh` (Linux) → `check-constrained-host-lane-boundary.sh` (Linux) → `check-sam-acceptance-evidence.sh` (Linux) → `check-ssu2-acceptance-evidence.sh` (Linux) → `check-i2cp-vectors.sh` (Linux) → `check-i2cp-acceptance-evidence.sh` (Linux) → `check-i2pcontrol-acceptance-evidence.sh` (Linux) → `check-service-tunnel-acceptance-evidence.sh` (Linux) |
 | **MSRV** | ubuntu-latest | Rust **1.88.0** → `cargo check --workspace --all-targets` |
 | **Dependency policy** | ubuntu-latest | Rust 1.95.0 → `cargo-deny check advisories bans sources` |
 
@@ -564,6 +565,7 @@ bash scripts/check-constrained-host-lane-boundary.sh
 bash scripts/check-sam-acceptance-evidence.sh
 bash scripts/check-ssu2-acceptance-evidence.sh
 bash scripts/check-i2cp-acceptance-evidence.sh
+bash scripts/check-i2pcontrol-acceptance-evidence.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh
 bash scripts/fuzz-smoke.sh                    # opt-in; requires cargo-fuzz + nightly
 ```
