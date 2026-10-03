@@ -13,7 +13,8 @@
 //!
 //! Phase 1 [`floodfill_prepare_against_i2pd`] binds the controlled identity on a
 //! fixed loopback port, runs the real Plan 283 controlled activation, and writes
-//! the installed `caps=f` RouterInfo plus the transport material into the attempt
+//! the installed `caps=fR` RouterInfo (peer-test-confirmed reachability,
+//! Plan 306 / ADR 0030) plus the transport material into the attempt
 //! state directory. The runner then seeds that exact RouterInfo into the
 //! reference client's `netDb` before the reference starts, so the reference's own
 //! known-floodfill selection sees i2pr. The identity and transport material are
@@ -268,7 +269,7 @@ fn bind() -> std::net::SocketAddr {
 }
 
 /// Builds the non-floodfill published RouterInfo the service starts from.
-/// Controlled activation replaces it atomically with the `caps=f` record.
+/// Controlled activation replaces it atomically with the `caps=fR` record.
 fn initial_router_info(persisted: &Persisted, addr: std::net::SocketAddr) -> Vec<u8> {
     let options = Mapping::from_entries(vec![
         ("host".to_string(), addr.ip().to_string()),
@@ -292,7 +293,7 @@ fn initial_router_info(persisted: &Persisted, addr: std::net::SocketAddr) -> Vec
     // publication (`router_i2np::generate_controlled_identity`): it carries
     // the same controlled declaration. The install guard compares netId
     // against the currently installed record, so a hand-rolled identity
-    // record without the declaration cannot install the later caps=f record
+    // record without the declaration cannot install the later caps=fR record
     // that has one, and the pinned reference would mark such a record
     // unreachable regardless.
     persisted
@@ -446,7 +447,7 @@ fn seed_replica(coordinator: &mut FloodfillCoordinator, info: &RouterInfo) -> Ro
 // -------------------------------------------------------------- phase 1
 
 /// Plan 278 phase 1: establish the stable controlled identity and publish the
-/// `caps=f` RouterInfo the reference client will be seeded with.
+/// `caps=fR` RouterInfo the reference client will be seeded with.
 #[tokio::test]
 #[ignore = "requires exact-pinned i2pd 2.61.0 lane environment"]
 async fn floodfill_prepare_against_i2pd() {

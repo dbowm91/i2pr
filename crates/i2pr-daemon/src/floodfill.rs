@@ -522,7 +522,9 @@ pub struct ControlledActivation {
     /// The opaque advertisement permit minted by the role
     /// controller. Thread it into withdrawal; it cannot be forged.
     pub permit: i2pr_netdb::FloodfillAdvertisementPermit,
-    /// The installed floodfill RouterInfo bytes (`caps=f`).
+    /// The installed floodfill RouterInfo bytes (`caps=fR`: the `R`
+    /// rides on the peer-test-confirmed reachability proof, Plan 306 /
+    /// ADR 0030).
     pub router_info: Vec<u8>,
     /// The above-floor publication material that opened activation.
     pub material: i2pr_runtime::Ssu2PublicationMaterial,
@@ -600,6 +602,13 @@ pub async fn activate_controlled(
             i2pr_runtime::ControlledPeerTestError::ExchangeNotConfirmed,
         ));
     }
+    // Plan 306 / ADR 0030: the Confirmed outcome just proved inbound
+    // SSU2 acceptance of our bound address by an independent reference,
+    // so `R` is truthful in controlled/loopback scope for this
+    // activation. The proof is minted here — the only non-test mint
+    // site, confined by `scripts/check-m12-floodfill-boundaries.sh` —
+    // and travels with the activation into the proof-gated builder.
+    let reachability_proof = i2pr_netdb::LoopbackReachabilityProof::attest_confirmed_peer_test();
     let material = service
         .publication_material(params.wall_now_ms)
         .map_err(ControlledActivationError::PublicationFailed)?;
@@ -614,6 +623,7 @@ pub async fn activate_controlled(
         bundle: params.bundle,
         snapshot,
         address: material.address.clone(),
+        reachability_proof: Some(reachability_proof),
         service,
         wall_now_ms: params.wall_now_ms,
     });
@@ -1100,6 +1110,8 @@ pub async fn activate_normal(
         bundle: params.bundle,
         snapshot,
         address: material.address.clone(),
+        // Normal path: no peer-test evidence, so no `R` (ADR 0030).
+        reachability_proof: None,
         service: params.handle.service(),
         wall_now_ms: params.readiness.wall_now_ms,
     });
@@ -1699,6 +1711,12 @@ struct ActivationInput<'a> {
     bundle: &'a i2pr_crypto::RouterIdentityBundle,
     snapshot: FloodfillEligibilitySnapshot,
     address: i2pr_proto::RouterAddress,
+    /// Peer-test-confirmed reachability proof (Plan 306, ADR 0030).
+    /// `Some` on the controlled path (where `activate_controlled`
+    /// minted it beside a `Confirmed` outcome), `None` on the normal
+    /// path, which stays `caps=f`. The option is the evidence switch:
+    /// `R` is supplied only when the decided evidence holds.
+    reachability_proof: Option<i2pr_netdb::LoopbackReachabilityProof>,
     service: &'a i2pr_runtime::Ssu2RuntimeService,
     wall_now_ms: u64,
 }
@@ -1725,20 +1743,41 @@ fn activation_tail(input: ActivationInput<'_>) -> Result<ActivationTail, Activat
         input.coordinator.fail_activation();
         ActivationTailError::Activation
     })?;
-    let built = i2pr_netdb::LocalRouterInfoBuilder::new(input.bundle)
-        .build_floodfill(
-            Date::from_millis(input.wall_now_ms),
-            controlled_router_options().map_err(|error| {
+    let built = match input.reachability_proof.as_ref() {
+        // Controlled path with peer-test-confirmed reachability:
+        // advertise `fR` (Plan 306, ADR 0030).
+        Some(proof) => i2pr_netdb::LocalRouterInfoBuilder::new(input.bundle)
+            .build_floodfill_reachable(
+                Date::from_millis(input.wall_now_ms),
+                controlled_router_options().map_err(|error| {
+                    input.coordinator.fail_activation();
+                    ActivationTailError::Build(error)
+                })?,
+                input.address.clone(),
+                &permit,
+                proof,
+            )
+            .map_err(|error| {
                 input.coordinator.fail_activation();
                 ActivationTailError::Build(error)
             })?,
-            input.address.clone(),
-            &permit,
-        )
-        .map_err(|error| {
-            input.coordinator.fail_activation();
-            ActivationTailError::Build(error)
-        })?;
+        // Normal path (or any future path without the decided
+        // evidence): `caps=f`, unchanged.
+        None => i2pr_netdb::LocalRouterInfoBuilder::new(input.bundle)
+            .build_floodfill(
+                Date::from_millis(input.wall_now_ms),
+                controlled_router_options().map_err(|error| {
+                    input.coordinator.fail_activation();
+                    ActivationTailError::Build(error)
+                })?,
+                input.address.clone(),
+                &permit,
+            )
+            .map_err(|error| {
+                input.coordinator.fail_activation();
+                ActivationTailError::Build(error)
+            })?,
+    };
     let encoded = built
         .encoded(MAX_CONTROLLED_ROUTER_INFO_BYTES)
         .map_err(|_| {
@@ -1760,7 +1799,7 @@ fn activation_tail(input: ActivationInput<'_>) -> Result<ActivationTail, Activat
         monotonic_ms: input.wall_now_ms,
     };
     if publish_local_router_info(input.coordinator, &encoded, &permit, time).is_err() {
-        // The f-RI is already installed on the runtime: install the
+        // The fR-RI is already installed on the runtime: install the
         // same-address non-f record (the permit-gated withdrawal form)
         // so a publish failure cannot leave a live advertisement behind
         // (Plan 283 invariant 6). Best-effort: shutdown racing it owns

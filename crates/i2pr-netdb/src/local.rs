@@ -16,7 +16,7 @@ use i2pr_proto::{Date, Mapping, RouterAddress, RouterInfo};
 use thiserror::Error;
 
 use crate::router_info::{RouterHash, RouterInfoValidationError, ValidatedRouterInfo, router_hash};
-use crate::{FloodfillAdvertisementPermit, is_qualified_ssu2_address};
+use crate::{FloodfillAdvertisementPermit, LoopbackReachabilityProof, is_qualified_ssu2_address};
 
 /// Errors raised by [`LocalRouterInfoBuilder`].
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -154,7 +154,40 @@ impl<'a> LocalRouterInfoBuilder<'a> {
         published: Date,
         options: Mapping,
         address: RouterAddress,
+        permit: &FloodfillAdvertisementPermit,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        self.build_floodfill_with_caps(published, options, address, permit, "f")
+    }
+
+    /// Builds a floodfill RouterInfo carrying `caps=fR` for a
+    /// peer-test-confirmed loopback address (Plan 306, ADR 0030).
+    ///
+    /// Admission is identical to [`Self::build_floodfill`] plus the
+    /// opaque [`LoopbackReachabilityProof`]: caller-supplied options
+    /// still cannot contain `R` (or any other forbidden letter) —
+    /// `validate_options` rejects them first — so the `R` is appended
+    /// only here, only beside proof of a confirmed controlled
+    /// peer-test exchange for the advertised address. Bandwidth tiers
+    /// and every other letter stay forbidden. Ordinary `build` and
+    /// the withdrawal form are unaffected.
+    pub fn build_floodfill_reachable(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
+        permit: &FloodfillAdvertisementPermit,
+        _proof: &LoopbackReachabilityProof,
+    ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
+        self.build_floodfill_with_caps(published, options, address, permit, "fR")
+    }
+
+    fn build_floodfill_with_caps(
+        &self,
+        published: Date,
+        options: Mapping,
+        address: RouterAddress,
         _permit: &FloodfillAdvertisementPermit,
+        caps_suffix: &str,
     ) -> Result<LocalRouterInfo, LocalRouterInfoError> {
         if !is_qualified_ssu2_address(&address) {
             return Err(LocalRouterInfoError::UnqualifiedFloodfillAddress);
@@ -168,7 +201,9 @@ impl<'a> LocalRouterInfoBuilder<'a> {
             .collect();
         let caps = options.get("caps").unwrap_or("");
         let mut floodfill_caps = caps.to_owned();
-        floodfill_caps.push('f');
+        for letter in caps_suffix.bytes() {
+            floodfill_caps.push(letter as char);
+        }
         entries.push(("caps".to_owned(), floodfill_caps));
         let options = Mapping::from_entries(entries)
             .map_err(|_| LocalRouterInfoError::InvalidMapping { context: "caps" })?;
@@ -485,6 +520,98 @@ mod tests {
             .unwrap();
         assert_eq!(local.router_info().options().get("caps"), Some("f"));
         assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    fn qualified_ssu2_test_address() -> RouterAddress {
+        let address_options = Mapping::from_entries(vec![
+            ("caps".into(), "4".into()),
+            ("host".into(), "127.0.0.1".into()),
+            ("i".into(), crate::base64::encode(&[2; 32]).unwrap()),
+            ("mtu".into(), "1280".into()),
+            ("port".into(), "1234".into()),
+            ("s".into(), crate::base64::encode(&[1; 32]).unwrap()),
+            ("v".into(), "2".into()),
+        ])
+        .unwrap();
+        RouterAddress::new(10, Date::from_millis(100), "SSU2".into(), address_options).unwrap()
+    }
+
+    /// Plan 306/ADR 0030: the proof-gated builder emits exactly `fR` —
+    /// the appended `R` is the only widening over the plain path.
+    #[test]
+    fn reachable_builder_emits_exactly_f_r_with_proof() {
+        let signer = bundle(0x407);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let address = qualified_ssu2_test_address();
+        let permit = active_role_permit();
+        let proof = LoopbackReachabilityProof::attest_confirmed_peer_test();
+        let local = builder
+            .build_floodfill_reachable(Date::from_millis(101), options, address, &permit, &proof)
+            .expect("reachable build");
+        assert_eq!(local.router_info().options().get("caps"), Some("fR"));
+        assert_eq!(local.router_info().addresses().len(), 1);
+    }
+
+    /// Plan 306/ADR 0030: the proof does not launder caller bytes. Any
+    /// forbidden letter in the input options — including `R` itself —
+    /// is rejected on both floodfill builders before anything is
+    /// appended, so tiers and all other letters stay forbidden.
+    #[test]
+    fn reachable_builder_rejects_smuggled_letters() {
+        for smuggled in ["R", "f", "L", "fR"] {
+            let signer = bundle(0x408);
+            let builder = LocalRouterInfoBuilder::new(&signer);
+            let options =
+                Mapping::from_entries(vec![("caps".to_owned(), smuggled.to_owned())]).unwrap();
+            let permit = active_role_permit();
+            let proof = LoopbackReachabilityProof::attest_confirmed_peer_test();
+            assert!(
+                matches!(
+                    builder.build_floodfill(
+                        Date::from_millis(101),
+                        options.clone(),
+                        qualified_ssu2_test_address(),
+                        &permit,
+                    ),
+                    Err(LocalRouterInfoError::InvalidMapping { .. })
+                ),
+                "plain builder must reject caps={smuggled}"
+            );
+            assert!(
+                matches!(
+                    builder.build_floodfill_reachable(
+                        Date::from_millis(101),
+                        options,
+                        qualified_ssu2_test_address(),
+                        &permit,
+                        &proof,
+                    ),
+                    Err(LocalRouterInfoError::InvalidMapping { .. })
+                ),
+                "reachable builder must reject caps={smuggled}"
+            );
+        }
+    }
+
+    /// Plan 306/ADR 0030: without proof there is no `R`. The
+    /// reachable builder requires the proof argument by type, so this
+    /// row pins the plain builder's output at exactly `f`.
+    #[test]
+    fn plain_builder_still_emits_f_only() {
+        let signer = bundle(0x409);
+        let builder = LocalRouterInfoBuilder::new(&signer);
+        let options = controlled_router_options().expect("controlled options");
+        let permit = active_role_permit();
+        let local = builder
+            .build_floodfill(
+                Date::from_millis(101),
+                options,
+                qualified_ssu2_test_address(),
+                &permit,
+            )
+            .expect("plain build");
+        assert_eq!(local.router_info().options().get("caps"), Some("f"));
     }
 
     #[test]

@@ -15,8 +15,10 @@
 //! Activation, health withdrawal, and RouterInfo generation rows (2, 11, 13)
 //! run against the controlled peer-test evidence driver (Plan 283): the
 //! wire-real peer-test exchange corroborates the third reachability class,
-//! so controlled activation can install and serve `caps=f`, withdraw it on
-//! health loss, and rotate the installed RouterInfo across handshakes.
+//! so controlled activation can install and serve `caps=fR` (the `R`
+//! rides on the Confirmed peer-test proof, Plan 306 / ADR 0030),
+//! withdraw it on health loss, and rotate the installed RouterInfo
+//! across handshakes.
 //! The default-off profile (row 14) is covered by coordinator unit tests.
 //! No external harness, no reference router, and no public advertisement
 //! are involved.
@@ -1137,7 +1139,11 @@ async fn activated_controlled_record_declares_net_id_and_router_version() {
         Some(CONTROLLED_ROUTER_VERSION),
         "controlled record must declare router.version or the reference marks it unreachable"
     );
-    assert_eq!(caps_of(&info), "f", "capability stays the reviewed f");
+    assert_eq!(
+        caps_of(&info),
+        "fR",
+        "capability stays the reviewed fR (peer-test-confirmed reachability, ADR 0030)"
+    );
     alice.shutdown().await;
 }
 
