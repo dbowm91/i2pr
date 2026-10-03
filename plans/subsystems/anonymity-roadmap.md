@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plans 296, 307, and 309 are closed. Plan 308 is independently blocked on the controlled ordinary-HTTP peer topology and three-family captures. Plan 310 remains the authoritative blocked record for the one-peer service-build/group-pool defect. Corrective Plan 314 is dependency-ready and owns the production multi-hop request, validated-NetDB selector, and deterministic three-hop cryptographic proof; Plan 315 is blocked on 314 and owns Destination-group pool integration. Plans 311 and 312 are now blocked on Plan 315 rather than requiring a rewritten Plan 310 record; Plan 313 remains blocked on Plan 312. Plans 297–305 remain historical stopped records. ADR 0030 establishes explicit Destination linkability domains, router-to-Destination unlinkability, separates HTTP evidence from hostile Streaming evidence, and targets pinned i2pd for Streaming convergence. This workstream remains parallel to M12/router-mainline development.
+Status: Plans 296, 307, 309, and 314 are closed. Plan 308 is independently blocked on the controlled ordinary-HTTP peer topology and three-family captures. Plan 310 remains the authoritative blocked record for the one-peer service-build/group-pool defect. Plan 314 passed its production multi-hop request, validated-NetDB selector, and deterministic three-hop cryptographic proof; Plan 315 is ready and owns Destination-group pool integration. Plans 311 and 312 remain blocked on Plan 315; Plan 313 remains blocked on Plan 312. Plans 297–305 remain historical stopped records. ADR 0030 establishes explicit Destination linkability domains, router-to-Destination unlinkability, separates HTTP evidence from hostile Streaming evidence, and targets pinned i2pd for Streaming convergence. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -92,8 +92,8 @@ The group is not linkable by design to the hosting RouterInfo.
   -> 308 HTTP ordinary-proxy differential [blocked: controlled topology]
   -> 309 Destination groups + service multiplexing [passed]
        -> 310 original multi-hop/pool plan [blocked historical record]
-            -> 314 multi-hop request + selector + deterministic 3-hop proof [ready corrective]
-                 -> 315 group-owned pool + Destination-operation integration [blocked on 314]
+  -> 314 multi-hop request + selector + deterministic 3-hop proof [passed corrective]
+                 -> 315 group-owned pool + Destination-operation integration [ready]
                       -> 311 startup/graceful lifecycle
                       -> 312 i2pd Streaming directional baseline
                            -> 313 i2pd Streaming convergence
@@ -102,7 +102,7 @@ passing 308 + 315 + 311 + 313
   -> future integrated anonymity successor to stopped Plan 301
 ~~~
 
-Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plan 314 is the dependency-ready corrective for its build-contract/selector half; Plan 315 follows for the group-pool/consumer half. Plans 311 and 312 may proceed independently after Plan 315 passes.
+Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plan 314 passed the build-contract/selector half; Plan 315 is now dependency-ready for the group-pool/consumer half. Plans 311 and 312 may proceed independently after Plan 315 passes.
 
 ## 7. Milestones
 
@@ -120,8 +120,8 @@ Plan 308 proceeded independently and remains blocked on HTTP topology evidence; 
 | 308 | blocked on controlled HTTP reference topology | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/308-status.md; capture tooling exists, but controlled ordinary Destination and three-family captures remain absent |
 | 309 | passed-destination-linkability-domain-service-group-composition | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/309-status.md; explicit group owner, persistence migration, and server-port composition passed |
 | 310 | blocked-service-product-has-no-bounded-multipath-candidate-owner | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | `plans/closure/anonymity/310-status.md`; immutable blocked record: one-peer request/provisioning path remains, with no group-owned multipath lifecycle |
-| 314 | in-progress-plan310-multihop-build-corrective | architecture/anonymity capability foundation | plans/implementation/anonymity/314-plan310-multihop-build-contract-and-deterministic-proof.md | ready; owns multi-hop request, validated-NetDB selector, exact selector-to-submission continuity, and deterministic real-crypto three-hop proof; no external topology gate |
-| 315 | blocked on 314 | architecture/anonymity capability | plans/implementation/anonymity/315-plan310-destination-group-pool-integration.md | owns canonical group pool, replenish/expiry, LeaseSet derivation, and lookup/publication/data consumers; passing satisfies remaining Plan 310 requirements |
+| 314 | passed-plan310-multihop-build-contract-and-deterministic-three-hop-proof | architecture/anonymity capability foundation | plans/implementation/anonymity/314-plan310-multihop-build-contract-and-deterministic-proof.md | plans/closure/anonymity/314-status.md; request, selector, continuity, and deterministic crypto proof passed; no external topology gate |
+| 315 | registered-plan310-destination-group-pool-integration-ready | architecture/anonymity capability | plans/implementation/anonymity/315-plan310-destination-group-pool-integration.md | ready after Plan 314's exact-three request and established-material contract; owns canonical group pool, replenish/expiry, LeaseSet derivation, and lookup/publication/data consumers |
 | 311 | blocked on 315 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | current dependency authority is Plan 315 corrective closure |
 | 312 | blocked on 315 | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | current dependency authority is Plan 315 corrective closure; external i2pd remains appropriate here |
 | 313 | blocked on 312 | convergence capability | plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md | future |
@@ -155,4 +155,4 @@ The workstream is complete only when direct service-boundary leaks are absent; H
 
 ## 12. Milestone status summary
 
-Plans 307 and 309 passed. Plan 308 remains independently blocked on ordinary HTTP topology evidence. Plan 310 remains an immutable blocked record at the service-product candidate/path/pool boundary. Plan 314 is ready as the narrowed multi-hop build/selector corrective; Plan 315 is blocked on 314 and owns group-pool/consumer integration. Plans 311 and 312 are blocked on Plan 315, and Plan 313 remains blocked on Plan 312. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
+Plans 307, 309, and 314 passed. Plan 308 remains independently blocked on ordinary HTTP topology evidence. Plan 310 remains an immutable blocked record at the service-product candidate/path/pool boundary. Plan 315 is ready for group-pool/consumer integration. Plans 311 and 312 are blocked on Plan 315, and Plan 313 remains blocked on Plan 312. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.
