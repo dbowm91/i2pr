@@ -375,6 +375,7 @@ async fn m10_remote_route_integration_through_deliver_outbound() {
         max_connections: 2,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: ServiceTimeouts::defaults(),
+        shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         http_options: None,
         socks5_options: None,
         irc_options: None,

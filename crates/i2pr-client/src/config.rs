@@ -125,6 +125,38 @@ impl DestinationConfig {
         .expect("balanced destination configuration is within every ceiling")
     }
 
+    /// Builds a configuration from validated service-tunnel shaping.
+    ///
+    /// Plan 292 projection: quantities drive the inbound/outbound pool
+    /// targets and the single shared hop length drives both directions
+    /// (mirroring the I2CP first-wins rule; the control boundary rejects
+    /// differing per-direction lengths). Every other field keeps the
+    /// [`Self::balanced`] default, and `minimum_usable_inbound` keeps
+    /// the I2CP precedent (`min(inbound, balanced minimum)` = 1), so
+    /// `(2, 2, 2)` reproduces [`Self::balanced`] exactly. Caller
+    /// ceilings (1..=6 quantities, 1..=3 length) sit inside the
+    /// destination ceilings, hence the expect.
+    pub fn from_service_shaping(
+        inbound_quantity: u8,
+        outbound_quantity: u8,
+        length_hops: u8,
+    ) -> Self {
+        Self::try_new(
+            u16::from(inbound_quantity),
+            u16::from(outbound_quantity),
+            1,
+            length_hops,
+            TunnelLifetime::DEFAULT_EXPLORATORY_SECONDS,
+            2,
+            8,
+            64,
+            128 * 1024,
+            DEFAULT_LEASE_PUBLICATION_MARGIN_SECONDS,
+            DEFAULT_LEASE_ROTATION_MARGIN_SECONDS,
+        )
+        .expect("service shaping ceilings sit inside destination ceilings")
+    }
+
     /// Builds a configuration after applying every documented ceiling.
     #[allow(clippy::too_many_arguments)]
     pub const fn try_new(
@@ -553,6 +585,22 @@ impl std::error::Error for DestinationConfigError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_shaping_projection_matches_balanced_default() {
+        // Plan 292: (2, 2, 2) reproduces balanced exactly; other
+        // in-bounds shaping projects quantity/length truthfully.
+        assert_eq!(
+            DestinationConfig::from_service_shaping(2, 2, 2),
+            DestinationConfig::balanced()
+        );
+        let shaped = DestinationConfig::from_service_shaping(4, 1, 3);
+        assert_eq!(shaped.inbound_target(), 4);
+        assert_eq!(shaped.outbound_target(), 1);
+        assert_eq!(shaped.minimum_usable_inbound(), 1);
+        assert_eq!(shaped.length_hops(), 3);
+        assert!(shaped.pool_config().is_ok());
+    }
 
     #[test]
     fn balanced_configuration_is_within_bounds() {

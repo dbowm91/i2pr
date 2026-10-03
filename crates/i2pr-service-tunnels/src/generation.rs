@@ -154,6 +154,13 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
     {
         return DiffClass::ReplaceDestination;
     }
+    if prev.shaping != next.shaping {
+        // Pool sizing changed: the destination runtime is constructed
+        // with its config, so shaping edits replace the destination
+        // runtime (pools rebuild under the same identity; active
+        // streams follow the existing replace drain path).
+        return DiffClass::ReplaceDestination;
+    }
     if prev.max_connections != next.max_connections
         || prev.max_buffered_bytes_per_direction != next.max_buffered_bytes_per_direction
         || prev.timeouts != next.timeouts
@@ -179,7 +186,9 @@ pub fn kind_string(kind: ServiceTunnelKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts};
+    use crate::config::{
+        DestinationPolicy, LocalListenerSpec, ServerTarget, ServiceTimeouts, TunnelShaping,
+    };
     use crate::destination::DestinationRef;
 
     mod replace_byte {
@@ -209,6 +218,7 @@ mod tests {
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -230,6 +240,7 @@ mod tests {
             max_connections: 4,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -243,6 +254,23 @@ mod tests {
         let prev = client_spec("alpha");
         let next = prev.clone();
         assert_eq!(diff_spec(&prev, &next), DiffClass::Unchanged);
+    }
+
+    #[test]
+    fn shaping_change_is_replace_destination() {
+        // Plan 292: pool sizing is baked into the destination
+        // runtime at construction, so any shaping edit replaces
+        // the destination (pools rebuild under the same identity).
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.shaping = TunnelShaping::try_new(4, 4, 2).expect("shaping");
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
+        let mut length_only = prev.clone();
+        length_only.shaping = TunnelShaping::try_new(2, 2, 3).expect("shaping");
+        assert_eq!(
+            diff_spec(&prev, &length_only),
+            DiffClass::ReplaceDestination
+        );
     }
 
     #[test]

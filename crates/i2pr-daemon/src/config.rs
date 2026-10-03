@@ -1892,6 +1892,7 @@ fn normalize_service_tunnels(
             max_connections,
             max_buffered_bytes_per_direction: max_buffered,
             timeouts,
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options,
             socks5_options,
             irc_options,

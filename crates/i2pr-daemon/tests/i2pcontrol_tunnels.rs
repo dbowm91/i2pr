@@ -927,3 +927,114 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
     .await;
     assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
 }
+
+/// Plan 292: shaping options travel the full control transaction.
+/// Create carries quantity/length intent, get echoes it, edit
+/// replaces the destination generation, and out-of-bound shaping
+/// fails before allocation.
+#[tokio::test]
+async fn tunnel_plan292_shaping_lifecycle_over_wire() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let b32 = format!("{}.b32.i2p", "a".repeat(52));
+    let port = distinct_port();
+
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({
+            "action": "create", "name": "shaped", "type": "client",
+            "options": {
+                "target_destination": b32,
+                "listen_port": port,
+                "tunnel_quantity": 4,
+                "tunnel_length": 3,
+            },
+        }),
+        2,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "shaped create succeeds: {response}"
+    );
+    let generation = response["result"]["generation"]
+        .as_u64()
+        .expect("generation");
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "shaped"}),
+        3,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["tunnel_quantity"],
+        serde_json::json!("4")
+    );
+    assert_eq!(
+        response["result"]["options"]["tunnel_length"],
+        serde_json::json!("3")
+    );
+
+    // Edit replaces the destination generation with new shaping.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "edit", "name": "shaped",
+            "options": {"inbound_quantity": 5, "outbound_quantity": 1}}),
+        4,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "shaping edit succeeds: {response}"
+    );
+    assert!(
+        response["result"]["generation"].as_u64().expect("gen") > generation
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "shaped"}),
+        5,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["inbound_quantity"],
+        serde_json::json!("5")
+    );
+
+    // Out-of-bound shaping fails before allocation.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "shaped-bad", "type": "client",
+        "options": {
+            "target_destination": b32,
+            "listen_port": distinct_port(),
+            "tunnel_quantity": 7,
+        }}),
+        6,
+    )
+    .await;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+    // Differing per-direction lengths fail instead of dropping one.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "shaped-split", "type": "client",
+        "options": {
+            "target_destination": b32,
+            "listen_port": distinct_port(),
+            "inbound_length": 1,
+            "outbound_length": 3,
+        }}),
+        7,
+    )
+    .await;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+}

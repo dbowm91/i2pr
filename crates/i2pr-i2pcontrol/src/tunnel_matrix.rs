@@ -327,3 +327,19 @@ pub fn find_cell(type_index: usize, option_index: usize) -> Option<MatrixCell> {
     }
     None
 }
+
+/// Looks up the disposition for a wire key on a type index.
+///
+/// Returns `None` for unknown keys or pairs outside the inventory
+/// mask. The daemon control boundary uses this to name the owning
+/// plan when rejecting blocked or corrective-pending keys.
+pub fn disposition_for(type_index: usize, option_name: &str) -> Option<CellDisposition> {
+    let mut option_index: usize = 0;
+    while option_index < TUNNEL_OPTIONS.len() {
+        if TUNNEL_OPTIONS[option_index].name == option_name {
+            return find_cell(type_index, option_index).map(|cell| cell.disposition);
+        }
+        option_index += 1;
+    }
+    None
+}

@@ -193,6 +193,10 @@ pub struct ServiceRuntime {
     /// (Plan 291). No TCP listener or target; UDP endpoints live
     /// in the spec options.
     is_streamr_server: bool,
+    /// Effective destination config this runtime was built with
+    /// (Plan 292 shaping projection of the spec; mirrors reuse it
+    /// so the registry matches the live pool sizing).
+    pub(crate) destination_config: DestinationConfig,
 }
 
 impl ServiceRuntime {
@@ -461,13 +465,15 @@ impl ServiceTunnelManager {
                 .runtime
                 .bridge
                 .with(|bridge| bridge.identity());
-            let mirror_dest_runtime =
-                DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                    .map_err(|error| {
-                        ServiceTunnelError::DestinationRuntime(format!(
-                            "mirror destination runtime for committed generation: {error}"
-                        ))
-                    })?;
+            let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                identity_arc,
+                staged_runtime.runtime.destination_config,
+            )
+            .map_err(|error| {
+                ServiceTunnelError::DestinationRuntime(format!(
+                    "mirror destination runtime for committed generation: {error}"
+                ))
+            })?;
             self.install_runtime(&staged_runtime.runtime, mirror_dest_runtime)?;
             ordered.push(Arc::clone(&staged_runtime.runtime));
         }
@@ -637,14 +643,16 @@ impl ServiceTunnelManager {
                 let bridge_data = self.bridge_data_for(prev_runtime)?;
                 new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
                 let identity_arc = prev_runtime.bridge.with(|bridge| bridge.identity());
-                let dest_runtime =
-                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                        .map_err(|error| {
-                            ServiceTunnelError::DestinationRuntime(format!(
-                                "{} unchanged destination runtime: {error}",
-                                spec.id.as_str()
-                            ))
-                        })?;
+                let dest_runtime = DestinationRuntime::with_shared_identity(
+                    identity_arc,
+                    prev_runtime.destination_config,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "{} unchanged destination runtime: {error}",
+                        spec.id.as_str()
+                    ))
+                })?;
                 if let Err(error) = new_destination_registry.insert(dest_runtime) {
                     return Err(ServiceTunnelError::DestinationRuntime(format!(
                         "{} unchanged destination registry insert: {error}",
@@ -794,14 +802,16 @@ impl ServiceTunnelManager {
             // instances that share the same identity.
             for runtime in new_runtimes.values() {
                 let identity_arc = runtime.bridge.with(|bridge| bridge.identity());
-                let mirror_dest_runtime =
-                    DestinationRuntime::with_shared_identity(identity_arc, self.destination_config)
-                        .map_err(|error| {
-                            ServiceTunnelError::DestinationRuntime(format!(
-                                "{} mirror destination runtime: {error}",
-                                runtime.spec_id
-                            ))
-                        })?;
+                let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                    identity_arc,
+                    runtime.destination_config,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "{} mirror destination runtime: {error}",
+                        runtime.spec_id
+                    ))
+                })?;
                 if let Err(error) = destination_registry.insert(mirror_dest_runtime) {
                     return Err(ServiceTunnelError::DestinationRuntime(format!(
                         "{} mirror destination registry insert: {error}",
@@ -2364,6 +2374,18 @@ impl ServiceTunnelManager {
         self.destination_config
     }
 
+    /// Projects one spec's shaping into its live destination config
+    /// (Plan 292). Unshaped specs reproduce
+    /// [`DestinationConfig::balanced`] exactly, so pre-292 behavior
+    /// is unchanged.
+    pub fn destination_config_for(spec: &i2pr_service_tunnels::ServiceTunnelSpec) -> DestinationConfig {
+        DestinationConfig::from_service_shaping(
+            spec.shaping.inbound_quantity,
+            spec.shaping.outbound_quantity,
+            spec.shaping.length_hops,
+        )
+    }
+
     /// Inserts one DestinationRuntime into the per-service registry.
     pub fn register_destination_runtime(
         &self,
@@ -2507,6 +2529,9 @@ impl ServiceTunnelManager {
         let is_connect_client = matches!(spec.kind, ServiceTunnelKind::ConnectClient);
         let is_socks_irc = matches!(spec.kind, ServiceTunnelKind::SocksIrc);
         let is_http_server = matches!(spec.kind, ServiceTunnelKind::HttpServer);
+        // Plan 292: the live pool sizing comes from the spec shaping,
+        // never the shared manager default.
+        let destination_config = Self::destination_config_for(spec);
         let runtime = Arc::new(ServiceRuntime {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
@@ -2530,10 +2555,11 @@ impl ServiceTunnelManager {
             is_http_bidir,
             is_streamr_client,
             is_streamr_server,
+            destination_config,
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
-            self.destination_config,
+            destination_config,
         )
         .map_err(|error| {
             ServiceTunnelError::DestinationRuntime(format!("destination runtime: {error}"))
@@ -4121,6 +4147,7 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4194,6 +4221,7 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4225,6 +4253,7 @@ mod plan202_routing_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4468,6 +4497,7 @@ mod plan206_remote_composition_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4654,6 +4684,7 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4721,6 +4752,7 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4831,6 +4863,7 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4911,6 +4944,7 @@ mod plan208_remote_route_integration_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5089,6 +5123,7 @@ mod plan210_real_service_destination_material_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5455,6 +5490,7 @@ mod plan212_router_backed_service_destination_tests {
             max_connections: 2,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5808,6 +5844,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5828,6 +5865,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5886,6 +5924,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -5906,6 +5945,7 @@ mod plan212_router_backed_service_destination_tests {
                 max_connections: 2,
                 max_buffered_bytes_per_direction: 65_536,
                 timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+                shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,

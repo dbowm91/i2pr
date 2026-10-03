@@ -101,6 +101,7 @@ fn http_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec
         max_connections: 4,
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),
+        shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         http_options: None,
         socks5_options: None,
         irc_options: None,

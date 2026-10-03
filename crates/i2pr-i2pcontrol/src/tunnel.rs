@@ -123,6 +123,25 @@ pub enum TunnelType {
 }
 
 impl TunnelType {
+    /// Canonical inventory index (bit position in applicability masks;
+    /// matches [`TUNNEL_TYPES`] order).
+    pub const fn canonical_index(self) -> usize {
+        match self {
+            Self::Client => 0,
+            Self::Server => 1,
+            Self::HttpClient => 2,
+            Self::Socks => 3,
+            Self::IrcClient => 4,
+            Self::IrcServer => 5,
+            Self::ConnectClient => 6,
+            Self::SocksIrc => 7,
+            Self::HttpServer => 8,
+            Self::HttpBidirServer => 9,
+            Self::StreamrClient => 10,
+            Self::StreamrServer => 11,
+        }
+    }
+
     /// Exact wire spelling.
     pub const fn name(self) -> &'static str {
         match self {

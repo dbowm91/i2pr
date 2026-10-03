@@ -521,6 +521,76 @@ impl ServiceTimeouts {
     }
 }
 
+/// Proposal 170 tunnel quantity ceiling (the pool allows more; the
+/// Proposal binds control-plane values to 1..=6).
+pub const MAX_TUNNEL_QUANTITY: u8 = 6;
+/// Proposal 170 tunnel length ceiling (0..=3 on the wire; 0 is
+/// rejected by service-destination policy, see [`TunnelShaping`]).
+pub const MAX_TUNNEL_LENGTH_HOPS: u8 = 3;
+
+/// Validated per-tunnel pool shaping (Plan 292).
+///
+/// `tunnel_quantity` is the symmetric default; `inbound_quantity` and
+/// `outbound_quantity` override per direction. `tunnel_length` is the
+/// symmetric default; per-direction lengths must agree because the
+/// pool uses a single hop length (the control boundary rejects
+/// differing per-direction lengths instead of silently dropping one).
+/// Length 0 (zero-hop) is rejected: service destinations run in
+/// `Remote` tunnel mode and the destination policy does not permit
+/// zero-hop service pools. Backup quantity and length variance have no
+/// pool primitive and belong to Plan 296.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TunnelShaping {
+    /// Inbound pool target (1..=6).
+    pub inbound_quantity: u8,
+    /// Outbound pool target (1..=6).
+    pub outbound_quantity: u8,
+    /// Shared pool hop length (1..=3).
+    pub length_hops: u8,
+}
+
+impl TunnelShaping {
+    /// Shaping that reproduces `DestinationConfig::balanced` exactly.
+    pub fn balanced() -> Self {
+        Self {
+            inbound_quantity: 2,
+            outbound_quantity: 2,
+            length_hops: 2,
+        }
+    }
+
+    /// Validates explicit shaping values.
+    pub fn try_new(
+        inbound_quantity: u8,
+        outbound_quantity: u8,
+        length_hops: u8,
+    ) -> Result<Self, ServiceTunnelError> {
+        if inbound_quantity == 0 || inbound_quantity > MAX_TUNNEL_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "inbound_quantity",
+                reason: "must be within 1..=6",
+            });
+        }
+        if outbound_quantity == 0 || outbound_quantity > MAX_TUNNEL_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "outbound_quantity",
+                reason: "must be within 1..=6",
+            });
+        }
+        if length_hops == 0 || length_hops > MAX_TUNNEL_LENGTH_HOPS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "length_hops",
+                reason: "must be within 1..=3 (zero-hop is not permitted for service destinations)",
+            });
+        }
+        Ok(Self {
+            inbound_quantity,
+            outbound_quantity,
+            length_hops,
+        })
+    }
+}
+
 /// One validated service-tunnel specification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceTunnelSpec {
@@ -546,6 +616,9 @@ pub struct ServiceTunnelSpec {
     pub max_buffered_bytes_per_direction: usize,
     /// Service deadlines.
     pub timeouts: ServiceTimeouts,
+    /// Pool shaping (length/quantity projection into the destination
+    /// tunnel pool). Defaults to [`TunnelShaping::balanced`].
+    pub shaping: TunnelShaping,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
     /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
@@ -581,6 +654,11 @@ impl ServiceTunnelSpec {
             });
         }
         self.timeouts.validate()?;
+        TunnelShaping::try_new(
+            self.shaping.inbound_quantity,
+            self.shaping.outbound_quantity,
+            self.shaping.length_hops,
+        )?;
         if self.targets.len() > MAX_CONFIGURED_TARGETS {
             return Err(ServiceTunnelError::ExceedsCeiling {
                 field: "targets",
@@ -958,6 +1036,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -968,6 +1047,33 @@ mod tests {
 
     fn canonical_b32() -> String {
         format!("{}.b32.i2p", "a".repeat(52))
+    }
+
+    #[test]
+    fn shaping_bounds_follow_proposal_ceilings() {
+        // Plan 292: quantity 1..=6, length 1..=3; zero-hop rejected.
+        let shaped = TunnelShaping::try_new(4, 5, 3).expect("shaping");
+        assert_eq!(shaped.inbound_quantity, 4);
+        assert_eq!(shaped.outbound_quantity, 5);
+        assert_eq!(shaped.length_hops, 3);
+        for (inbound, outbound, length) in [
+            (0, 2, 2),
+            (7, 2, 2),
+            (2, 0, 2),
+            (2, 7, 2),
+            (2, 2, 0),
+            (2, 2, 4),
+        ] {
+            assert!(
+                TunnelShaping::try_new(inbound, outbound, length).is_err(),
+                "shaping ({inbound}, {outbound}, {length}) must fail"
+            );
+        }
+        // Balanced shaping is the pre-292 default.
+        assert_eq!(
+            TunnelShaping::balanced(),
+            TunnelShaping::try_new(2, 2, 2).expect("balanced")
+        );
     }
 
     #[test]
@@ -1073,6 +1179,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1175,6 +1282,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1205,6 +1313,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
             irc_options: None,
@@ -1258,6 +1367,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1282,6 +1392,7 @@ mod tests {
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
             http_options: None,
             socks5_options: None,
             irc_options: None,

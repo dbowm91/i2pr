@@ -62,6 +62,7 @@ fn base_spec(id: &str, kind: ServiceTunnelKind) -> ServiceTunnelSpec {
         max_connections: 8,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: ServiceTimeouts::defaults(),
+        shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
