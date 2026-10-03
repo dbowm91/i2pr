@@ -614,7 +614,7 @@ const NORMAL_FLOODFILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// the same SSU2 handle; it never starts another transport or receiver.
 enum NormalSsu2Owner {
     Router(crate::router_i2np::Ssu2DaemonHandle),
-    Groups(crate::service_product::ServiceProduct),
+    Groups(Box<crate::service_product::ServiceProduct>),
 }
 
 impl NormalSsu2Owner {
@@ -654,7 +654,7 @@ impl NormalSsu2Owner {
         match self {
             Self::Router(handle) => handle.shutdown(),
             Self::Groups(product) => {
-                let _ = product.shutdown().await;
+                let _ = (*product).shutdown().await;
             }
         }
     }
@@ -1071,7 +1071,7 @@ fn register_ssu2_service(
                         )
                         .await
                         {
-                            Ok(product) => NormalSsu2Owner::Groups(product),
+                            Ok(product) => NormalSsu2Owner::Groups(Box::new(product)),
                             Err(error) => {
                                 let detail = i2pr_core::HealthDetail::new(format!(
                                     "Destination-group product failed before readiness: {error}"

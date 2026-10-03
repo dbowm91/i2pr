@@ -569,12 +569,34 @@ fn pop_startup_inbound(
     Some(inbound)
 }
 
+async fn wait_for_startup_inbound<F>(
+    poll_interval: Duration,
+    cancellation: &CancellationToken,
+    next_inbound: F,
+) -> Result<Option<Ssu2InboundI2np>, ServiceProductError>
+where
+    F: std::future::Future<Output = Option<Ssu2InboundI2np>>,
+{
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(ServiceProductError::Provisioning(
+            "Destination-group provisioning cancelled".to_owned(),
+        )),
+        result = tokio::time::timeout(poll_interval, next_inbound) => {
+            Ok(result.unwrap_or_default())
+        }
+    }
+}
+
 #[cfg(test)]
 mod startup_inbound_replay_tests {
-    use super::{MAX_STARTUP_REPLAY_BYTES, pop_startup_inbound, queue_startup_inbound};
+    use super::{
+        MAX_STARTUP_REPLAY_BYTES, pop_startup_inbound, queue_startup_inbound,
+        wait_for_startup_inbound,
+    };
     use std::collections::VecDeque;
+    use std::time::Duration;
 
-    use i2pr_runtime::Ssu2InboundI2np;
+    use i2pr_runtime::{CancellationToken, Ssu2InboundI2np};
     use i2pr_transport::{LinkId, PeerId};
 
     fn inbound(link_id: u64, payload: Vec<u8>) -> Ssu2InboundI2np {
@@ -620,6 +642,24 @@ mod startup_inbound_replay_tests {
         assert!(error.to_string().contains("replay bound exceeded"));
         assert!(bounded.is_empty());
         assert_eq!(bounded_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn startup_receive_is_interruptible_by_cancellation() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel(i2pr_core::CancellationReason::OperatorRequest);
+        let result = wait_for_startup_inbound(
+            Duration::from_secs(60),
+            &cancellation,
+            std::future::pending(),
+        )
+        .await;
+        assert!(
+            result
+                .expect_err("cancellation aborts startup")
+                .to_string()
+                .contains("cancelled")
+        );
     }
 }
 
@@ -1592,7 +1632,7 @@ impl ServiceProduct {
         if let Ok(routed) = self
             .inner
             .coordinator
-            .route_inbound_i2np(&inbound, wall_ms())
+            .route_inbound_i2np(inbound, wall_ms())
         {
             for outcome in routed.coordinator {
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
@@ -1730,13 +1770,13 @@ impl ServiceProduct {
             }
         }
         let bytes = &inbound.bytes;
-        let Ok(message) = decode_inbound_ssu2_i2np(&bytes) else {
+        let Ok(message) = decode_inbound_ssu2_i2np(bytes) else {
             return;
         };
         let cell = match message.body() {
             I2npBody::TunnelData(cell) => cell.clone(),
             I2npBody::Garlic(_) => {
-                self.handle_direct_garlic(&message, &bytes).await;
+                self.handle_direct_garlic(&message, bytes).await;
                 return;
             }
             _ => return,
@@ -2663,8 +2703,7 @@ async fn ensure_selected_peer_session(
             ServiceProductError::Provisioning("selected first-hop static key is invalid".to_owned())
         })?;
     let intro_key = i2pr_runtime::IntroKey::new(*target_material.2.as_bytes());
-    let address =
-        std::net::SocketAddr::new(target_material.0.ip().into(), target_material.0.port());
+    let address = std::net::SocketAddr::new(target_material.0.ip(), target_material.0.port());
     let target =
         crate::router_i2np::daemon_dial_target(router_hash, address, static_key, intro_key)?;
     ssu2_handle
@@ -2911,15 +2950,13 @@ async fn provision_all_service_router_material(
                 && ((need_outbound && outbound_binding.is_none())
                     || (need_inbound && !installed_inbound))
             {
-                let next = tokio::select! {
-                    _ = cancellation.cancelled() => {
-                        return Err(ServiceProductError::Provisioning(
-                            "Destination-group provisioning cancelled".to_owned(),
-                        ));
-                    }
-                    next = tokio::time::timeout(options.poll_interval, ssu2_handle.next_inbound()) => next,
-                };
-                let Ok(Some(inbound_msg)) = next else {
+                let Some(inbound_msg) = wait_for_startup_inbound(
+                    options.poll_interval,
+                    cancellation,
+                    ssu2_handle.next_inbound(),
+                )
+                .await?
+                else {
                     continue;
                 };
                 let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
