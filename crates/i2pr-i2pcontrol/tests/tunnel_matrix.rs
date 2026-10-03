@@ -32,7 +32,7 @@ fn matrix_covers_every_applicable_cell() {
         seen[cell.option_index][cell.type_index] = true;
     }
     for (option_index, option) in TUNNEL_OPTIONS.iter().enumerate() {
-        for type_index in 0..TUNNEL_TYPES.len() {
+        for (type_index, _) in TUNNEL_TYPES.iter().enumerate() {
             if option.applies_to(type_index) {
                 assert!(
                     seen[option_index][type_index],

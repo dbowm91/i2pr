@@ -706,6 +706,22 @@ pub struct ServiceTunnelSpec {
     /// Idle policy (Plan 292): deadline-gated close, pool rebuild,
     /// or pool reduction for quiet tunnels. Disabled by default.
     pub idle: IdlePolicy,
+    /// Inbound peer allow/deny policy (Plan 292). Only server kinds
+    /// may carry entries; every other kind must stay empty.
+    pub access: crate::access::ServerAccessPolicy,
+    /// Per-peer loopback source bind on server-to-target dials
+    /// (Plan 292 `unique_local_address`). When set, the server
+    /// dials its TCP target from a deterministic 127/8 address
+    /// derived from the peer hash instead of the default
+    /// wildcard source. Only the masked server kinds
+    /// (generic, HTTP server, bidirectional) may set it; the
+    /// option has no consuming dial for any other kind.
+    pub unique_local_address: bool,
+    /// HTTP server presentation policy (Plan 292
+    /// `address_helper` / `jump_list` gates). Only the HTTP
+    /// server kinds consume it; every other kind must carry
+    /// the default (both gates open).
+    pub http_policy: crate::http::HttpServerPolicy,
     /// HTTP-specific profile options. Mandatory for `HttpClient`
     /// and `HttpBidirServer` (client half) kinds; ignored otherwise.
     pub http_options: Option<crate::http::HttpClientOptions>,
@@ -1022,6 +1038,12 @@ impl ServiceTunnelSpec {
                         reason: "streamr-server requires the loopback UDP media source",
                     });
                 }
+                if options.remote_sink.is_some() {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "remote_sink applies to streamr-client only",
+                    });
+                }
             }
             _ => {
                 if self.streamr_options.is_some() {
@@ -1061,6 +1083,50 @@ impl ServiceTunnelSpec {
             self.idle.new_dest_on_idle,
             self.idle.reduce_on_idle,
         )?;
+        // Plan 292: only server kinds terminate inbound I2P streams,
+        // so only they may carry a peer policy.
+        if !self.access.is_empty()
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "access lists apply to server kinds only",
+            });
+        }
+        // Plan 292: the deterministic source bind consumes the
+        // server-to-target dial, which only the masked server
+        // kinds perform.
+        if self.unique_local_address
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "unique_local_address applies to server kinds only",
+            });
+        }
+        // Plan 292: the presentation gates consume the HTTP
+        // server filter, which only the HTTP server kinds run.
+        if self.http_policy != crate::http::HttpServerPolicy::default()
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "address_helper and jump_list apply to HTTP server kinds only",
+            });
+        }
         Ok(())
     }
 }
@@ -1155,6 +1221,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1171,13 +1240,18 @@ mod tests {
     fn streamr_with_interactive_profile_is_contradictory() {
         // Plan 292: Streamr kinds ride the datagram path, so the
         // interactive streaming bit must stay unset for them.
-        let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
-        spec.kind = ServiceTunnelKind::StreamrServer;
-        spec.listener = None;
-        spec.target = None;
-        spec.destination = None;
-        let mut streamr = crate::streamr::StreamrOptions::default();
-        streamr.local_udp = Some("127.0.0.1:5001".parse().expect("udp"));
+        let base = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
+        let mut spec = ServiceTunnelSpec {
+            kind: ServiceTunnelKind::StreamrServer,
+            listener: None,
+            target: None,
+            destination: None,
+            ..base
+        };
+        let streamr = crate::streamr::StreamrOptions {
+            local_udp: Some("127.0.0.1:5001".parse().expect("udp")),
+            ..crate::streamr::StreamrOptions::default()
+        };
         spec.streamr_options = Some(streamr);
         spec.streaming_interactive = true;
         assert!(spec.validate().is_err());
@@ -1346,6 +1420,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1451,6 +1528,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1484,6 +1564,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
             irc_options: None,
@@ -1540,6 +1623,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -1567,6 +1653,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,

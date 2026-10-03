@@ -77,10 +77,14 @@ pub use parser::{
 };
 pub use response::{
     ERROR_BAD_GATEWAY_BYTES_LEN, ERROR_BAD_REQUEST_BYTES_LEN, ERROR_FORBIDDEN_BYTES_LEN,
-    ERROR_GATEWAY_TIMEOUT_BYTES_LEN, build_error_response,
+    ERROR_GATEWAY_TIMEOUT_BYTES_LEN, build_error_response, proxy_auth_required,
 };
 pub use rewrite::{rewrite_headers, validate_authority_host};
-pub use server::{FilteredServerRequest, filter_server_request, filter_server_response};
+pub use server::{
+    FilteredServerRequest, HttpServerPolicy, PresentationClass, classify_presentation,
+    filter_server_request, filter_server_response,
+};
 pub use target::{
-    RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_request_target,
+    RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_origin_form,
+    parse_request_target,
 };

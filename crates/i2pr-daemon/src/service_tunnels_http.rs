@@ -40,8 +40,9 @@ use i2pr_crypto::OsRng;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
     ConnectClientOptions, DestinationRef, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits,
-    HttpRequestHead, RequestTarget, TargetKind, build_error_response, parse_authority_form,
-    parse_request_head, parse_request_target, rewrite_headers,
+    HttpRequestHead, ProxyCredentials, RequestTarget, TargetKind, build_error_response,
+    decode_basic_credentials, parse_authority_form, parse_request_head, parse_request_target,
+    proxy_auth_required, rewrite_headers,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -76,6 +77,9 @@ pub enum HttpConnectionOutcome {
     /// The configured destination was unknown and no I2P connect
     /// was attempted.
     BadGateway,
+    /// Proxy authentication failed (or was required but missing)
+    /// and a 407 challenge was emitted before close.
+    Unauthorized,
     /// The header read or connect deadline expired.
     TimedOut,
 }
@@ -406,6 +410,37 @@ pub async fn run_http_connection(
     .await
 }
 
+/// Enforces listener proxy authentication (Plan 292): verifies
+/// `Proxy-Authorization: Basic` against the tunnel credentials.
+/// Answers 407 and closes on any failure (missing, malformed, or
+/// wrong credentials answer identically); returns true when the
+/// request may proceed. The credential header is consumed at the
+/// edge: downstream rewrite strips it before any upstream byte.
+async fn enforce_proxy_auth(
+    stream: &mut TcpStream,
+    head: &HttpRequestHead,
+    auth: Option<&ProxyCredentials>,
+) -> bool {
+    let Some(credentials) = auth else {
+        return true;
+    };
+    let authorized = head
+        .headers
+        .iter()
+        .find(|entry| entry.name.as_str() == "proxy-authorization")
+        .and_then(|entry| decode_basic_credentials(&entry.value))
+        .map(|(user, pass)| credentials.verify(&user, &pass))
+        .unwrap_or(false);
+    if authorized {
+        return true;
+    }
+    let _ = stream
+        .write_all(&proxy_auth_required(credentials.realm()))
+        .await;
+    let _ = stream.shutdown().await;
+    false
+}
+
 async fn handle_connect(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -415,6 +450,12 @@ async fn handle_connect(
     head: HttpRequestHead,
     limits: HttpLimits,
 ) -> HttpConnectionOutcome {
+    // Plan 292: proxy authentication gates CONNECT before any
+    // target parsing or streaming (also covers the strict-CONNECT
+    // path, which adapts its options into this handler).
+    if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
+        return HttpConnectionOutcome::Unauthorized;
+    }
     let authority =
         match parse_authority_form(&head.line.target, limits.connect_authority_max_bytes) {
             Ok(value) => value,
@@ -533,6 +574,11 @@ async fn handle_proxy_request(
     initial_body: Vec<u8>,
     _limits: HttpLimits,
 ) -> HttpConnectionOutcome {
+    // Plan 292: proxy authentication gates plain-proxy requests the
+    // same way it gates CONNECT.
+    if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
+        return HttpConnectionOutcome::Unauthorized;
+    }
     let target = match parse_request_target(&head.line.target) {
         Ok(value) => value,
         Err(error) => {
@@ -797,6 +843,9 @@ pub async fn run_connect_only_connection(
         },
         destination_ports: std::collections::BTreeSet::new(),
         allowed_hosts: Vec::new(),
+        // Plan 292: the strict-CONNECT executor enforces the same
+        // credentials as the shared CONNECT handler.
+        proxy_auth: options.proxy_auth.clone(),
     };
     handle_connect(
         manager,

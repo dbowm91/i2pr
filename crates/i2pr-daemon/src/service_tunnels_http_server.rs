@@ -35,8 +35,8 @@ use i2pr_client::streaming::connection::ConnectionId;
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
-    HttpErrorKind, HttpLimits, build_error_response, filter_server_request, filter_server_response,
-    parse_request_head,
+    HttpErrorKind, HttpLimits, build_error_response, classify_presentation, filter_server_request,
+    filter_server_response, parse_origin_form, parse_request_head,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -68,6 +68,9 @@ pub enum HttpServerConnectionOutcome {
     /// Request head was malformed/filtered-out; a bounded error
     /// response was admitted best-effort.
     BadRequest,
+    /// Request presentation class is gated closed by the HTTP
+    /// server policy; a bounded 403 was admitted best-effort.
+    Forbidden,
     /// The local target could not be reached.
     BadGateway,
     /// A head/body read or admission deadline expired.
@@ -85,13 +88,21 @@ pub(crate) async fn run_http_server_connection(
     cancellation: CancellationToken,
 ) -> HttpServerConnectionOutcome {
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
-    let target_stream = match timeout(
+    let unique_local = manager.unique_local_for(&runtime.spec_id);
+    let dial = timeout(
         Duration::from_millis(connect_deadline),
-        TcpStream::connect(target),
+        crate::service_tunnels::dial_server_target(target, &peer.destination_hash, unique_local),
     )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
+    .await;
+    let target_stream = match dial {
+        Ok(Ok((stream, fell_back))) => {
+            if fell_back {
+                runtime
+                    .unique_local_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            stream
+        }
         Ok(Err(_)) | Err(_) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
             remove_streaming(manager.as_ref(), runtime.destination_id, connection_id);
@@ -105,7 +116,14 @@ pub(crate) async fn run_http_server_connection(
             connection_id,
             peer,
         ));
-    let outcome = drive_relay(target, target_stream, endpoint, &cancellation).await;
+    let outcome = drive_relay(
+        target,
+        target_stream,
+        endpoint,
+        manager.http_policy_for(&runtime.spec_id),
+        &cancellation,
+    )
+    .await;
     remove_streaming(manager.as_ref(), runtime.destination_id, connection_id);
     outcome
 }
@@ -115,6 +133,7 @@ async fn drive_relay(
     target: SocketAddr,
     target_stream: TcpStream,
     endpoint: Arc<dyn StreamPumpEndpoint>,
+    policy: i2pr_service_tunnels::HttpServerPolicy,
     cancellation: &CancellationToken,
 ) -> HttpServerConnectionOutcome {
     let limits = HttpLimits::defaults();
@@ -143,6 +162,26 @@ async fn drive_relay(
     // request body; carry them into the body forward.
     let mut body_prefix = head.initial_body_bytes.clone();
     body_prefix.extend_from_slice(&head_prefix);
+    // Plan 292: presentation gates run before the filter so a
+    // closed helper/jump class never reaches the local target.
+    // Only well-formed origin-form targets can match a class;
+    // anything else stays Ordinary and the filter below still
+    // rejects non-origin-form targets as before.
+    if head.line.target.starts_with('/')
+        && let Ok((path, query)) = parse_origin_form(&head.line.target)
+    {
+        let class = classify_presentation(&path, &query);
+        if !policy.admits(class) {
+            admit_error(
+                endpoint.as_ref(),
+                HttpErrorKind::PresentationRefused,
+                "presentation class gated closed",
+                cancellation,
+            )
+            .await;
+            return HttpServerConnectionOutcome::Forbidden;
+        }
+    }
     let filtered = match filter_server_request(&head, &target.to_string()) {
         Ok(value) => value,
         Err(error) => {

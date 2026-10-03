@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -60,7 +61,7 @@ use i2pr_storage::{
 use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
@@ -207,6 +208,16 @@ pub struct ServiceRuntime {
     /// Effective pool shaping this runtime was built with (the
     /// stored shaping unless a sweep reduction overrode it).
     pub(crate) effective_shaping: i2pr_service_tunnels::TunnelShaping,
+    /// Inbound peer allow/deny policy (Plan 292; cached at build so
+    /// accept paths never lock for policy).
+    pub(crate) access: i2pr_service_tunnels::ServerAccessPolicy,
+    /// Policy-denied inbound connections (Plan 292 evidence;
+    /// handshake failures keep using `failed_connects`).
+    pub(crate) access_denied: AtomicUsize,
+    /// Unique-local dials that fell back to the wildcard source
+    /// because the platform has no derived alias assigned (Plan
+    /// 292 evidence; the connection still succeeds).
+    pub(crate) unique_local_fallbacks: AtomicUsize,
 }
 
 impl ServiceRuntime {
@@ -2495,6 +2506,62 @@ impl ServiceTunnelManager {
             .map(|runtime| runtime.effective_shaping)
     }
 
+    /// Returns the number of server-side SYN rejections recorded for
+    /// one live runtime (allow/deny list evidence; missing runtime
+    /// reports zero).
+    pub fn access_denied_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.access_denied.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Unique-local dials that fell back to the wildcard source
+    /// for one live runtime (platform-alias evidence; missing
+    /// runtime reports zero).
+    pub fn unique_local_fallbacks_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.unique_local_fallbacks.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+    /// Reads one committed spec by service id (live view: edits
+    /// classified `MutableInPlace` apply to new connections and
+    /// requests without rebuilding the runtime).
+    fn committed_spec_for(&self, spec_id: &str) -> Option<i2pr_service_tunnels::ServiceTunnelSpec> {
+        self.committed_generation
+            .lock()
+            .expect("committed poisoned")
+            .as_ref()?
+            .committed_specs
+            .tunnels
+            .iter()
+            .find(|candidate| candidate.id.as_str() == spec_id)
+            .cloned()
+    }
+
+    /// Whether server-to-target dials for one service use the
+    /// per-peer loopback source bind (Plan 292
+    /// `unique_local_address`; missing spec means legacy dial).
+    pub fn unique_local_for(&self, spec_id: &str) -> bool {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.unique_local_address)
+            .unwrap_or(false)
+    }
+
+    /// HTTP server presentation policy for one service (Plan 292
+    /// `address_helper` / `jump_list`; missing spec keeps both
+    /// gates open, matching the spec default).
+    pub fn http_policy_for(&self, spec_id: &str) -> i2pr_service_tunnels::HttpServerPolicy {
+        self.committed_spec_for(spec_id)
+            .map(|spec| spec.http_policy)
+            .unwrap_or_default()
+    }
+
     /// One idle-sweep decision bound to a service id.
     ///
     /// Plan 292: the daemon control layer applies these through the
@@ -2749,6 +2816,9 @@ impl ServiceTunnelManager {
             last_activity_ms: AtomicU64::new(service_streaming_now_ms()),
             streamr_subscribers: AtomicUsize::new(0),
             effective_shaping: shaping,
+            access: spec.access.clone(),
+            access_denied: AtomicUsize::new(0),
+            unique_local_fallbacks: AtomicUsize::new(0),
         });
         let destination_runtime = DestinationRuntime::with_shared_identity(
             Arc::clone(&bridge_data.identity_arc),
@@ -3509,6 +3579,26 @@ pub(crate) async fn accept_server_syn(
     connection_id: ConnectionId,
 ) -> Option<(RemoteDestination, OwnedSemaphorePermit)> {
     let now_ms = service_streaming_now_ms();
+    // Plan 292: resolve the authenticated peer hash first so the
+    // access policy denies before any handshake bytes are admitted
+    // (no SYN response is queued for denied peers). Shared by the
+    // generic and HTTP server paths.
+    let peer_hash = manager
+        .with_destination_bridge(runtime.destination_id, |bridge| {
+            bridge
+                .receiver_streaming()
+                .get_connection(connection_id)
+                .map(|conn| *conn.peer_destination_hash())
+        })
+        .flatten();
+    let Some(peer_hash) = peer_hash else {
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    if !runtime.access.allows(&peer_hash) {
+        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
     // Plan 182: answer the SYN with the connection's real
     // authenticated peer metadata and real port tuple (SAM parity
     // with `sam.rs` accept). The previous code passed a zeroed peer
@@ -3618,6 +3708,45 @@ async fn handle_server_syn(
     });
 }
 
+/// Dials a server-side TCP target. With `unique_local` set, the
+/// socket binds a deterministic 127/8 source derived from the peer
+/// hash (Plan 292 `unique_local_address`) so the local target can
+/// distinguish callers by source address; otherwise the default
+/// wildcard source is used. The bind stays inside 127/8, so the
+/// loopback-only invariant holds either way.
+///
+/// Platforms without the derived alias assigned (macOS configures
+/// only 127.0.0.1) reject the bind with `AddrNotAvailable`; only
+/// that case falls back to the wildcard source (reported as
+/// `fell_back` so the runtime can count it). Any other bind
+/// failure fails the dial: a resource error must never masquerade
+/// as a policy fallback.
+pub(crate) async fn dial_server_target(
+    target: SocketAddr,
+    peer_hash: &[u8; 32],
+    unique_local: bool,
+) -> std::io::Result<(TcpStream, bool)> {
+    if !unique_local {
+        return TcpStream::connect(target)
+            .await
+            .map(|stream| (stream, false));
+    }
+    let source = SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::new(127, peer_hash[0], peer_hash[1], peer_hash[2])),
+        0,
+    );
+    let socket = TcpSocket::new_v4()?;
+    match socket.bind(source) {
+        Ok(()) => socket.connect(target).await.map(|stream| (stream, false)),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+            TcpStream::connect(target)
+                .await
+                .map(|stream| (stream, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn run_server_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
@@ -3627,13 +3756,21 @@ async fn run_server_connection(
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
-    let target_stream = match timeout(
+    let unique_local = manager.unique_local_for(&runtime.spec_id);
+    let dial = timeout(
         Duration::from_millis(connect_deadline),
-        TcpStream::connect(target),
+        dial_server_target(target, &peer.destination_hash, unique_local),
     )
-    .await
-    {
-        Ok(Ok(stream)) => stream,
+    .await;
+    let target_stream = match dial {
+        Ok(Ok((stream, fell_back))) => {
+            if fell_back {
+                runtime
+                    .unique_local_fallbacks
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            stream
+        }
         Ok(Err(error)) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
             return Err(Box::new(std::io::Error::other(format!(
@@ -4217,6 +4354,52 @@ mod plan202_routing_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn unique_local_dial_binds_deterministic_source() {
+        // Plan 292: the dial source is 127.<hash[0:3]> when the
+        // flag is set and the wildcard source otherwise. Whether
+        // the platform has the derived alias assigned is probed
+        // first: Linux binds the whole 127/8, while macOS only
+        // configures 127.0.0.1 and the dial must fall back to the
+        // wildcard source instead of failing the connection.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let target = listener.local_addr().expect("addr");
+        let hash = peer_hash(0xAB);
+        let probe =
+            tokio::net::TcpSocket::new_v4()
+                .expect("socket")
+                .bind(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0xAB, 0xAC, 0xAD)),
+                    0,
+                ));
+        let (stream, fell_back) = dial_server_target(target, &hash, true)
+            .await
+            .expect("unique-local dial");
+        if probe.is_ok() {
+            assert!(!fell_back, "bound source needs no fallback");
+            assert_eq!(
+                stream.local_addr().expect("local").ip().to_string(),
+                "127.171.172.173"
+            );
+        } else {
+            assert!(fell_back, "missing alias falls back");
+            assert_eq!(
+                stream.local_addr().expect("local").ip().to_string(),
+                "127.0.0.1"
+            );
+        }
+        let (stream, fell_back) = dial_server_target(target, &hash, false)
+            .await
+            .expect("wildcard dial");
+        assert!(!fell_back);
+        assert_eq!(
+            stream.local_addr().expect("local").ip().to_string(),
+            "127.0.0.1"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn routing_decision_starts_as_remote_unresolved() {
         let directory = temp_data_dir("plan202-routing");
         let manager = ServiceTunnelManager::new(ServiceTunnelManagerConfig {
@@ -4338,6 +4521,9 @@ mod plan202_routing_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4414,6 +4600,9 @@ mod plan202_routing_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4448,6 +4637,9 @@ mod plan202_routing_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4694,6 +4886,9 @@ mod plan206_remote_composition_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4883,6 +5078,9 @@ mod plan208_remote_route_integration_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -4953,6 +5151,9 @@ mod plan208_remote_route_integration_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5066,6 +5267,9 @@ mod plan208_remote_route_integration_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5149,6 +5353,9 @@ mod plan208_remote_route_integration_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5330,6 +5537,9 @@ mod plan210_real_service_destination_material_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -5699,6 +5909,9 @@ mod plan212_router_backed_service_destination_tests {
             shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -6055,6 +6268,9 @@ mod plan212_router_backed_service_destination_tests {
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
                 idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -6078,6 +6294,9 @@ mod plan212_router_backed_service_destination_tests {
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
                 idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -6139,6 +6358,9 @@ mod plan212_router_backed_service_destination_tests {
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
                 idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,
@@ -6162,6 +6384,9 @@ mod plan212_router_backed_service_destination_tests {
                 shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
                 streaming_interactive: false,
                 idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+                access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+                unique_local_address: false,
+                http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
                 http_options: None,
                 socks5_options: None,
                 irc_options: None,

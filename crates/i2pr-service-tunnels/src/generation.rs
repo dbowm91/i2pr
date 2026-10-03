@@ -161,6 +161,20 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         // streams follow the existing replace drain path).
         return DiffClass::ReplaceDestination;
     }
+    if prev.http_options != next.http_options
+        || prev.socks5_options != next.socks5_options
+        || prev.connect_options != next.connect_options
+        || prev.streamr_options != next.streamr_options
+        || prev.access != next.access
+    {
+        // Credential, cadence, and peer-policy edits rebuild: live
+        // listeners and loops capture their options at supervisor
+        // start, so stale credentials, cadence, or policies must
+        // never linger on a running runtime. (Side effect: profile
+        // tweaks in these structs now take effect via rebuild
+        // instead of waiting for a restart.)
+        return DiffClass::ReplaceDestination;
+    }
     if prev.streaming_interactive != next.streaming_interactive {
         // The streaming managers are constructed with their window
         // configuration, so profile edits replace the destination
@@ -170,16 +184,19 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
     if prev.max_connections != next.max_connections
         || prev.max_buffered_bytes_per_direction != next.max_buffered_bytes_per_direction
         || prev.timeouts != next.timeouts
-        || prev.http_options != next.http_options
-        || prev.socks5_options != next.socks5_options
         || prev.irc_options != next.irc_options
         || prev.idle != next.idle
+        || prev.unique_local_address != next.unique_local_address
+        || prev.http_policy != next.http_policy
     {
         // Resource/deadline/profile-only differences are safe to
         // swap in place; nothing has been wired that depends on
         // these values being immutable. Plan 292: the idle sweep
         // reads the committed spec each tick, so idle edits take
-        // effect without rebuilding the runtime.
+        // effect without rebuilding the runtime. The server
+        // target dial and the HTTP presentation filter likewise
+        // read the committed dial/presentation behavior per
+        // connection and per request.
         return DiffClass::MutableInPlace;
     }
     DiffClass::Unchanged
@@ -231,6 +248,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -255,6 +275,9 @@ mod tests {
             shaping: TunnelShaping::balanced(),
             streaming_interactive: false,
             idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
             irc_options: None,
@@ -314,6 +337,37 @@ mod tests {
         let mut next = prev.clone();
         next.max_connections = 8;
         assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn dial_and_presentation_changes_are_mutable_in_place() {
+        // Plan 292: the server target dial reads the committed
+        // unique-local flag per connection and the HTTP filter
+        // reads the committed presentation policy per request, so
+        // both edits take effect without rebuilding the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.unique_local_address = true;
+        assert_eq!(diff_spec(&prev, &next), DiffClass::MutableInPlace);
+        let mut gated = prev.clone();
+        gated.http_policy = crate::http::HttpServerPolicy {
+            address_helper: false,
+            jump_list: true,
+        };
+        assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn streamr_sink_change_is_replace_destination() {
+        // Plan 292: the subscriber loop captures its UDP sink at
+        // supervisor start, so sink edits rebuild the runtime.
+        let prev = client_spec("alpha");
+        let mut next = prev.clone();
+        next.streamr_options = Some(crate::streamr::StreamrOptions {
+            remote_sink: Some("127.0.0.1:5009".parse().expect("sink")),
+            ..crate::streamr::StreamrOptions::default()
+        });
+        assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
     }
 
     #[test]

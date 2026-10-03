@@ -31,6 +31,10 @@ pub enum GreetingOutcome {
     /// Greeting accepted; reply `05 00` (no-authentication) should
     /// be emitted and the parser advanced to the request stage.
     NoAuthentication,
+    /// Greeting offered username/password; the daemon must run the
+    /// RFC 1929 subnegotiation before the request stage. Only
+    /// reachable when the tunnel requires authentication.
+    UsernamePassword,
     /// Greeting offered no acceptable method; reply `05 ff`
     /// should be emitted and the daemon must close the socket
     /// after flushing the reply.
@@ -108,8 +112,71 @@ impl GreetingParser {
         // daemon forwards the remainder to the request parser.
         self.buffer.truncate(total);
         let methods = &self.buffer[2..total];
-        // Plan 177 §4: never silently accept `0x02` username/password
-        // just because the client offered it; require `0x00`.
+        self.select_method(methods, false)
+    }
+
+    /// Feeds bytes with authentication required (Plan 292): the
+    /// greeting must offer `0x02` username/password. Same
+    /// incremental and bounded contract as [`Self::advance`].
+    pub fn advance_auth(
+        &mut self,
+        bytes: &[u8],
+        limits: Socks5Limits,
+    ) -> Result<Option<(GreetingOutcome, usize)>, Socks5Error> {
+        let rejected = |kind, reason| Socks5Error::new(kind, reason);
+        if self.buffer.len() + bytes.len() > limits.greeting_max_bytes {
+            return Err(rejected(
+                Socks5ErrorKind::GreetingCeiling,
+                "greeting bytes exceed the ceiling",
+            ));
+        }
+        self.buffer.extend_from_slice(bytes);
+        if self.buffer.len() < 2 {
+            return Ok(None);
+        }
+        if self.buffer[0] != SOCKS_VERSION {
+            return Err(rejected(
+                Socks5ErrorKind::WrongVersion,
+                "greeting version must be 0x05",
+            ));
+        }
+        let nmethods = self.buffer[1] as usize;
+        if nmethods == 0 {
+            return Err(rejected(
+                Socks5ErrorKind::ZeroMethods,
+                "NMETHODS must be at least one",
+            ));
+        }
+        if nmethods > limits.method_count_max {
+            return Err(rejected(
+                Socks5ErrorKind::TooManyMethods,
+                "NMETHODS exceeds the configured ceiling",
+            ));
+        }
+        let total = 2 + nmethods;
+        if self.buffer.len() < total {
+            return Ok(None);
+        }
+        self.buffer.truncate(total);
+        let methods = &self.buffer[2..total];
+        self.select_method(methods, true)
+    }
+
+    /// Selects the greeting method: with authentication required,
+    /// only `0x02` is acceptable; otherwise only `0x00` (Plan 177
+    /// §4: never silently accept `0x02` just because offered).
+    fn select_method(
+        &self,
+        methods: &[u8],
+        auth_required: bool,
+    ) -> Result<Option<(GreetingOutcome, usize)>, Socks5Error> {
+        let total = 2 + methods.len();
+        if auth_required {
+            if methods.contains(&SOCKS5_METHOD_USER_PASS) {
+                return Ok(Some((GreetingOutcome::UsernamePassword, total)));
+            }
+            return Ok(Some((GreetingOutcome::NoAcceptableMethod, total)));
+        }
         if !methods.contains(&SOCKS5_METHOD_NO_AUTH) {
             // `0x02` is never accepted even when offered.
             let _ = SOCKS5_METHOD_USER_PASS;
@@ -157,6 +224,31 @@ mod tests {
             .expect("ok")
             .expect("terminal");
         assert_eq!(outcome, (GreetingOutcome::NoAuthentication, 5));
+    }
+
+    #[test]
+    fn auth_greeting_requires_user_pass_method() {
+        // Plan 292: with authentication required, `0x02` negotiates
+        // the RFC 1929 subnegotiation; `0x00`-only is refused.
+        let mut parser = GreetingParser::new();
+        let bytes = [
+            SOCKS_VERSION,
+            2,
+            SOCKS5_METHOD_NO_AUTH,
+            SOCKS5_METHOD_USER_PASS,
+        ];
+        let outcome = parser
+            .advance_auth(&bytes, limits())
+            .expect("ok")
+            .expect("terminal");
+        assert_eq!(outcome, (GreetingOutcome::UsernamePassword, 4));
+        let mut parser = GreetingParser::new();
+        let bytes = [SOCKS_VERSION, 1, SOCKS5_METHOD_NO_AUTH];
+        let outcome = parser
+            .advance_auth(&bytes, limits())
+            .expect("ok")
+            .expect("terminal");
+        assert_eq!(outcome, (GreetingOutcome::NoAcceptableMethod, 3));
     }
 
     #[test]

@@ -54,6 +54,8 @@ pub enum SocksIrcConnectionOutcome {
     Forbidden,
     /// Streaming connect or establishment failed.
     BadGateway,
+    /// Proxy authentication failed (or was required but missing).
+    AuthFailed,
     /// The connect deadline expired.
     TimedOut,
     /// The IRC filter loop observed a structural violation.
@@ -73,19 +75,25 @@ pub async fn run_socks_irc_connection(
     use crate::service_tunnels_socks5::Socks5ConnectionOutcome;
     let limits = Socks5Limits::defaults();
     let mut stream = stream;
-    let negotiation = match negotiate_socks_destination(&mut stream, limits).await {
-        Ok(value) => value,
-        Err(Socks5ConnectionOutcome::BadGreeting) => {
-            return SocksIrcConnectionOutcome::BadGreeting;
-        }
-        Err(Socks5ConnectionOutcome::BadRequest) => {
-            return SocksIrcConnectionOutcome::BadRequest;
-        }
-        Err(Socks5ConnectionOutcome::Forbidden) => {
-            return SocksIrcConnectionOutcome::Forbidden;
-        }
-        Err(_) => return SocksIrcConnectionOutcome::BadGateway,
-    };
+    let negotiation =
+        match negotiate_socks_destination(&mut stream, limits, socks_options.proxy_auth.as_ref())
+            .await
+        {
+            Ok(value) => value,
+            Err(Socks5ConnectionOutcome::BadGreeting) => {
+                return SocksIrcConnectionOutcome::BadGreeting;
+            }
+            Err(Socks5ConnectionOutcome::BadRequest) => {
+                return SocksIrcConnectionOutcome::BadRequest;
+            }
+            Err(Socks5ConnectionOutcome::Forbidden) => {
+                return SocksIrcConnectionOutcome::Forbidden;
+            }
+            Err(Socks5ConnectionOutcome::AuthFailed) => {
+                return SocksIrcConnectionOutcome::AuthFailed;
+            }
+            Err(_) => return SocksIrcConnectionOutcome::BadGateway,
+        };
     let destination = negotiation.destination;
     let leftover = negotiation.leftover;
     let via_socks4a = negotiation.via_socks4a;

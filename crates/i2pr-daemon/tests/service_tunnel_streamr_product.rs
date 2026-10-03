@@ -77,6 +77,9 @@ fn streamr_server_spec(id: &str, media_source: SocketAddr) -> ServiceTunnelSpec 
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
@@ -108,6 +111,9 @@ fn streamr_client_spec(
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
@@ -445,5 +451,61 @@ async fn streamr_siblings_are_isolated() {
             .await
             .is_none(),
         "pair B never sees pair A media"
+    );
+}
+
+/// Plan 292: a subscriber with a sink redirect delivers media to
+/// the redirect address; the un-redirected local target stays
+/// silent (the redirect replaces the target, it never duplicates
+/// to both).
+#[tokio::test(flavor = "current_thread")]
+async fn streamr_sink_redirect_replaces_media_target() {
+    let directory = temp_data_dir("streamr-sink");
+    let server_port = free_port();
+    let target_port = free_port();
+    let sink_port = free_port();
+    let server_udp: SocketAddr = format!("127.0.0.1:{server_port}").parse().expect("addr");
+    let media_target: SocketAddr = format!("127.0.0.1:{target_port}").parse().expect("addr");
+    let sink_addr: SocketAddr = format!("127.0.0.1:{sink_port}").parse().expect("addr");
+    let probe = build_manager(
+        directory.path(),
+        vec![streamr_server_spec("sink-pub", server_udp)],
+    );
+    probe.prepare().await.expect("probe prepare");
+    let server_b64 = probe
+        .service_destination_b64("sink-pub")
+        .expect("server b64");
+    drop(probe);
+    let mut client = streamr_client_spec("sink-sub", server_b64, media_target);
+    client
+        .streamr_options
+        .as_mut()
+        .expect("options")
+        .remote_sink = Some(sink_addr);
+    let manager = build_manager(
+        directory.path(),
+        vec![streamr_server_spec("sink-pub", server_udp), client],
+    );
+    // Both endpoints are bound so stray datagrams cannot hide:
+    // silence on the old target is observed, not assumed.
+    let silent = UdpSocket::bind(media_target)
+        .await
+        .expect("old target binds");
+    let player = UdpSocket::bind(sink_addr).await.expect("sink binds");
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let source = UdpSocket::bind("127.0.0.1:0").await.expect("source binds");
+    let media = media_bytes(256);
+    source
+        .send_to(&media, server_udp)
+        .await
+        .expect("media sends");
+    let received = recv_media(&player, Duration::from_secs(10))
+        .await
+        .expect("redirected media arrives");
+    assert_eq!(received, media, "redirect is byte-exact");
+    assert!(
+        recv_media(&silent, Duration::from_secs(2)).await.is_none(),
+        "un-redirected target stays silent"
     );
 }

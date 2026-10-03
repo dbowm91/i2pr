@@ -1047,3 +1047,232 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     .await;
     assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
 }
+
+/// Plan 292: the new option cells persist across a daemon restart
+/// with their effect intact, and accepted proxy plaintext never
+/// reaches the GET echo or the disk (only the marked verifier is
+/// stored).
+#[tokio::test]
+async fn tunnel_plan292_options_persist_over_wire() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let text = config_text(directory.path(), TEST_PASSWORD, "");
+    let config = Config::parse(&text).expect("config parses");
+    let target = std::net::TcpListener::bind("127.0.0.1:0").expect("target binds");
+    let target_port = target.local_addr().expect("target addr").port().to_string();
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    // Generic server with the deterministic source bind plus an
+    // inbound peer policy.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({
+            "action": "create", "name": "srv292", "type": "server",
+            "options": {
+                "target_host": "127.0.0.1",
+                "target_port": target_port,
+                "unique_local_address": "true",
+                "access_list": format!("{}.b32.i2p", "b".repeat(51) + "a"),
+                "black_list": format!("{}.b32.i2p", "c".repeat(51) + "a"),
+            },
+        }),
+        2,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "server create succeeds: {response}"
+    );
+    // HTTP server with both presentation gates closed.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({
+            "action": "create", "name": "web292", "type": "httpserver",
+            "options": {
+                "target_host": "127.0.0.1",
+                "target_port": target_port,
+                "address_helper": "false",
+                "jump_list": "false",
+            },
+        }),
+        3,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "httpserver create succeeds: {response}"
+    );
+    // Subscriber with a sink redirect and an interactive profile
+    // plus idle policy on a client for lifecycle coverage.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "create", "name": "sub292", "type": "streamrclient",
+        "options": {
+            "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
+            "local_udp_host": "127.0.0.1",
+            "local_udp_port": distinct_port(),
+            "remote_udp_host": "127.0.0.2",
+        }}),
+        4,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "subscriber create succeeds: {response}"
+    );
+    // SOCKS listener with accepted proxy credentials (plaintext
+    // must never be observable afterwards). Not started on load:
+    // the stopped definition still proves stored-verifier
+    // persistence without binding a listener the restarted
+    // instance would collide with.
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({
+            "action": "create", "name": "socks292", "type": "socks",
+            "options": {
+                "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
+                "listen_port": distinct_port(),
+                "proxy_username": "operator",
+                "proxy_password": "s3cret!",
+                "start_on_load": "false",
+            },
+        }),
+        5,
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "proxy create succeeds: {response}"
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "srv292"}),
+        6,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["unique_local_address"],
+        serde_json::json!("true")
+    );
+    assert!(
+        response["result"]["options"]["access_list"]
+            .as_str()
+            .expect("allow echo")
+            .contains('b')
+    );
+    let before = response["result"]["destination"]
+        .as_str()
+        .expect("b64")
+        .to_owned();
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "web292"}),
+        7,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["address_helper"],
+        serde_json::json!("false")
+    );
+    assert_eq!(
+        response["result"]["options"]["jump_list"],
+        serde_json::json!("false")
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "sub292"}),
+        8,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["remote_udp_host"],
+        serde_json::json!("127.0.0.2")
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "socks292"}),
+        9,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["proxy_password"],
+        serde_json::json!("[redacted]")
+    );
+    assert!(
+        !serde_json::to_string(&response["result"])
+            .expect("json")
+            .contains("s3cret!"),
+        "no plaintext in the GET echo"
+    );
+    // Restart over the same data directory: options persist and
+    // the server destination is stable (server tunnels bind no
+    // loopback TCP listener, so the previous instance's sockets
+    // cannot conflict; the stopped SOCKS definition below never
+    // binds either).
+    let config = Config::parse(&text).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "srv292"}),
+        10,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["unique_local_address"],
+        serde_json::json!("true")
+    );
+    assert_eq!(
+        response["result"]["destination"].as_str().expect("b64"),
+        before
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "web292"}),
+        11,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["jump_list"],
+        serde_json::json!("false")
+    );
+    let response = tunnel(
+        address,
+        &token,
+        serde_json::json!({"action": "get", "name": "sub292"}),
+        12,
+    )
+    .await;
+    assert_eq!(
+        response["result"]["options"]["remote_udp_host"],
+        serde_json::json!("127.0.0.2")
+    );
+    // No accepted plaintext reaches the disk: only the marked
+    // verifier may be stored.
+    let tunnels = directory.path().join("i2pcontrol").join("tunnels");
+    let entries = std::fs::read_dir(&tunnels).expect("tunnels dir");
+    let mut saw_verifier = false;
+    for entry in entries {
+        let entry = entry.expect("entry");
+        if entry.file_type().expect("type").is_file() {
+            let bytes = std::fs::read(entry.path()).expect("read");
+            assert!(
+                !bytes.windows(7).any(|window| window == b"s3cret!"),
+                "plaintext on disk: {}",
+                entry.file_name().to_string_lossy()
+            );
+            saw_verifier = saw_verifier || bytes.windows(7).any(|window| window == b"$i2pr1$");
+        }
+    }
+    assert!(saw_verifier, "marked verifier is stored");
+    drop(target);
+}

@@ -68,6 +68,9 @@ fn client_spec(destination: DestinationRef) -> ServiceTunnelSpec {
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,
         irc_options: None,
@@ -77,6 +80,13 @@ fn client_spec(destination: DestinationRef) -> ServiceTunnelSpec {
 }
 
 fn http_server_spec(target: SocketAddr) -> ServiceTunnelSpec {
+    http_server_spec_with_policy(target, i2pr_service_tunnels::HttpServerPolicy::default())
+}
+
+fn http_server_spec_with_policy(
+    target: SocketAddr,
+    policy: i2pr_service_tunnels::HttpServerPolicy,
+) -> ServiceTunnelSpec {
     ServiceTunnelSpec {
         id: ServiceTunnelId::parse("alpha-web").expect("id"),
         kind: ServiceTunnelKind::HttpServer,
@@ -92,6 +102,9 @@ fn http_server_spec(target: SocketAddr) -> ServiceTunnelSpec {
         shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
         streaming_interactive: false,
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+        access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+        unique_local_address: false,
+        http_policy: policy,
         http_options: None,
         socks5_options: None,
         irc_options: None,
@@ -222,10 +235,29 @@ async fn build_paired_manager(
     mpsc::UnboundedReceiver<ObservedRequest>,
     SocketAddr,
 ) {
+    build_paired_manager_with_policy(
+        data_dir,
+        response,
+        i2pr_service_tunnels::HttpServerPolicy::default(),
+    )
+    .await
+}
+
+/// Policy-parameterized paired manager (Plan 292 presentation
+/// gates); the probe and the committed server share the policy.
+async fn build_paired_manager_with_policy(
+    data_dir: &Path,
+    response: Vec<u8>,
+    policy: i2pr_service_tunnels::HttpServerPolicy,
+) -> (
+    Arc<ServiceTunnelManager>,
+    mpsc::UnboundedReceiver<ObservedRequest>,
+    SocketAddr,
+) {
     let (fixture_addr, observed_rx, _fixture) = start_http_fixture(response);
     let probe = build_manager(
         data_dir,
-        vec![http_server_spec(fixture_addr)],
+        vec![http_server_spec_with_policy(fixture_addr, policy)],
         StaticAliasTable::new(),
     );
     probe.prepare().await.expect("probe prepare");
@@ -236,7 +268,10 @@ async fn build_paired_manager(
     let destination = DestinationRef::ConfiguredDestination(server_b64);
     let manager = build_manager(
         data_dir,
-        vec![client_spec(destination), http_server_spec(fixture_addr)],
+        vec![
+            client_spec(destination),
+            http_server_spec_with_policy(fixture_addr, policy),
+        ],
         StaticAliasTable::new(),
     );
     (manager, observed_rx, fixture_addr)
@@ -552,4 +587,125 @@ async fn http_server_siblings_are_isolated() {
         let body = read_body_bounded(stream, &head).await;
         assert_eq!(body, b"hello");
     }
+}
+
+/// Plan 292: a closed helper gate refuses the helper class with
+/// 403 before the local target is touched, while the jump class
+/// and ordinary content still forward.
+#[tokio::test(flavor = "current_thread")]
+async fn http_server_closed_helper_gate_refuses() {
+    let directory = temp_data_dir("http-server-nohelper");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        address_helper: false,
+        jump_list: true,
+    };
+    let (manager, mut observed, _fixture) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    // Helper path: 403, and the fixture never sees the request.
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /addresshelper HTTP/1.1\r\nHost: example.i2p\r\n\r\n")
+        .await
+        .expect("write helper");
+    let head = read_head_bounded(&mut stream).await;
+    let text = String::from_utf8_lossy(&head);
+    assert!(
+        text.starts_with("HTTP/1.1 403 "),
+        "helper class refused: {text:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "refused request never reaches the target"
+    );
+    // Jump class still forwards under the open jump gate.
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /jump/example.i2p HTTP/1.1\r\nHost: example.i2p\r\n\r\n")
+        .await
+        .expect("write jump");
+    let head = read_head_bounded(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200 "),
+        "jump class forwards"
+    );
+    let request = next_observed(&mut observed).await;
+    assert!(
+        request
+            .head
+            .starts_with("GET /jump/example.i2p HTTP/1.1\r\n"),
+        "jump target preserved: {}",
+        request.head
+    );
+    // Ordinary content is unaffected by either gate.
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /index.html HTTP/1.1\r\nHost: example.i2p\r\n\r\n")
+        .await
+        .expect("write ordinary");
+    let head = read_head_bounded(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200 "),
+        "ordinary content forwards"
+    );
+}
+
+/// Plan 292: a closed jump gate refuses the jump class with 403
+/// before the local target is touched, while the helper class
+/// still forwards.
+#[tokio::test(flavor = "current_thread")]
+async fn http_server_closed_jump_gate_refuses() {
+    let directory = temp_data_dir("http-server-nojump");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        address_helper: true,
+        jump_list: false,
+    };
+    let (manager, mut observed, _fixture) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    // Jump query key: 403, and the fixture never sees the request.
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /?jump=example.i2p HTTP/1.1\r\nHost: example.i2p\r\n\r\n")
+        .await
+        .expect("write jump");
+    let head = read_head_bounded(&mut stream).await;
+    let text = String::from_utf8_lossy(&head);
+    assert!(
+        text.starts_with("HTTP/1.1 403 "),
+        "jump class refused: {text:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "refused request never reaches the target"
+    );
+    // Helper class still forwards under the open helper gate.
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /?i2paddresshelper=example.i2p HTTP/1.1\r\nHost: example.i2p\r\n\r\n")
+        .await
+        .expect("write helper");
+    let head = read_head_bounded(&mut stream).await;
+    assert!(
+        String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200 "),
+        "helper class forwards"
+    );
+    let request = next_observed(&mut observed).await;
+    assert!(
+        request
+            .head
+            .starts_with("GET /?i2paddresshelper=example.i2p HTTP/1.1\r\n"),
+        "helper target preserved: {}",
+        request.head
+    );
 }

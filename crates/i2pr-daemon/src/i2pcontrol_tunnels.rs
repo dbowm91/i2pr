@@ -47,8 +47,9 @@ use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
     MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_QUANTITY,
-    MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
-    ServiceTunnelSpec, TunnelShaping,
+    MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT, PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS,
+    PROXY_VERIFIER_MARKER, ProxyCredentials, ServerAccessPolicy, ServerTarget, ServiceTunnelId,
+    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping,
 };
 
 use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
@@ -758,6 +759,58 @@ fn parse_shaping_length(option: &str, value: &str) -> Result<u8, ControlError> {
     Ok(length)
 }
 
+/// Realm binding proxy credentials to their listener family
+/// (Plan 292): verifiers never cross families.
+fn proxy_realm_for_kind(kind: ServiceTunnelKind) -> &'static str {
+    match kind {
+        ServiceTunnelKind::ConnectClient => PROXY_AUTH_REALM_CONNECT,
+        ServiceTunnelKind::HttpClient => PROXY_AUTH_REALM_HTTP,
+        _ => PROXY_AUTH_REALM_SOCKS,
+    }
+}
+
+/// Builds listener proxy credentials from the two raw halves (Plan
+/// 292). Both halves are required together; a marked password
+/// round-trips through the stored verifier so untouched credentials
+/// survive edits, while fresh plaintext is hashed (never stored).
+fn proxy_credentials_for(
+    kind: ServiceTunnelKind,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<Option<ProxyCredentials>, ControlError> {
+    match (username, password) {
+        (Some(username), Some(password)) => {
+            let realm = proxy_realm_for_kind(kind);
+            if password.starts_with(PROXY_VERIFIER_MARKER) {
+                ProxyCredentials::from_stored(&username, &password, realm)
+                    .map(Some)
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: "proxy_password".to_owned(),
+                        reason: "stored proxy verifier is malformed",
+                    })
+            } else {
+                ProxyCredentials::new(&username, &password, realm)
+                    .map(Some)
+                    .map_err(|error| ControlError::InvalidOption {
+                        option: match error {
+                            i2pr_service_tunnels::ServiceTunnelError::ExceedsCeiling {
+                                field,
+                                ..
+                            } => field.to_owned(),
+                            _ => "proxy_password".to_owned(),
+                        },
+                        reason: "proxy credentials must be bounded and framed",
+                    })
+            }
+        }
+        (None, None) => Ok(None),
+        _ => Err(ControlError::InvalidOption {
+            option: "proxy_password".to_owned(),
+            reason: "proxy_username and proxy_password are both required",
+        }),
+    }
+}
+
 /// Parses a Proposal tunnel quantity (Plan 292 shaping: 1..=6).
 fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError> {
     let quantity = value
@@ -809,11 +862,27 @@ pub fn build_control_spec(
     let mut idle_close = false;
     let mut idle_new_dest = false;
     let mut idle_reduce = false;
+    // Plan 292 proxy authentication inputs (both halves required;
+    // plaintext is scrubbed to the marked verifier in normalize).
+    let mut proxy_username: Option<String> = None;
+    let mut proxy_password: Option<String> = None;
+    // Plan 292 access inputs (raw values per source key so failures
+    // name the offending key, never the value).
+    let mut access_allow_sources: Vec<(String, String)> = Vec::new();
+    let mut access_deny_sources: Vec<(String, String)> = Vec::new();
+    // Plan 292 server dial/presentation inputs (kind-gated at
+    // parse; defaults preserve the historical behavior).
+    let mut unique_local_address = false;
+    let mut http_policy = i2pr_service_tunnels::HttpServerPolicy::default();
     // Plan 291 Streamr inputs (validated per kind below; ranges
     // enforced by `StreamrOptions::validate` through the final
     // spec validation).
     let mut local_udp_host: Option<std::net::IpAddr> = None;
     let mut local_udp_port: Option<u16> = None;
+    // Plan 292 subscriber media-sink redirect (streamr-client
+    // only): the host media is sent to; the port comes from
+    // local_udp_port, exactly as the matrix owner states.
+    let mut remote_udp_host: Option<std::net::IpAddr> = None;
     let mut target_i2p_port: u16 = 0;
     let mut subscribe_interval_ms: Option<u64> = None;
     let mut subscription_expiry_ms: Option<u64> = None;
@@ -1065,6 +1134,68 @@ pub fn build_control_spec(
                     idle_reduce = true;
                 }
             }
+            // Plan 292: listener proxy authentication (proxy client
+            // kinds only; both halves required together, PR6 rule).
+            "proxy_username" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "proxy_username applies to proxy client kinds only",
+                    });
+                }
+                proxy_username = Some(value.clone());
+            }
+            "proxy_password" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "proxy_password applies to proxy client kinds only",
+                    });
+                }
+                proxy_password = Some(value.clone());
+            }
+            // Plan 292: inbound peer policy (server kinds only;
+            // access_list unions white_list, black_list denies).
+            "access_list" | "white_list" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "access lists apply to server kinds only",
+                    });
+                }
+                access_allow_sources.push((key.clone(), value.clone()));
+            }
+            "black_list" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "access lists apply to server kinds only",
+                    });
+                }
+                access_deny_sources.push((key.clone(), value.clone()));
+            }
             // Plan 291: Streamr UDP endpoints and cadence policy.
             // The loopback shape is enforced here; numeric ranges
             // are enforced by `StreamrOptions::validate` through
@@ -1111,6 +1242,26 @@ pub fn build_control_spec(
                                 reason: "local_udp_port must be 0..=65535",
                             })?,
                     );
+            }
+            "remote_udp_host" => {
+                if !matches!(kind, ServiceTunnelKind::StreamrClient) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "remote_udp_host applies to streamr-client only",
+                    });
+                }
+                let address: std::net::IpAddr =
+                    value.parse().map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "remote_udp_host must be an IP literal",
+                    })?;
+                if !address.is_loopback() {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "remote_udp_host must be loopback",
+                    });
+                }
+                remote_udp_host = Some(address);
             }
             "target_i2p_port" => {
                 if !matches!(kind, ServiceTunnelKind::StreamrClient) {
@@ -1198,6 +1349,44 @@ pub fn build_control_spec(
                             })?,
                     );
             }
+            "unique_local_address" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "unique_local_address applies to server kinds only",
+                    });
+                }
+                unique_local_address = parse_bool_option("unique_local_address", value)?;
+            }
+            "address_helper" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "address_helper applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.address_helper = parse_bool_option("address_helper", value)?;
+            }
+            "jump_list" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "jump_list applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.jump_list = parse_bool_option("jump_list", value)?;
+            }
             other => {
                 // Secret-classified keys are rejected here even though
                 // they never reach storage: belt and suspenders against
@@ -1220,13 +1409,13 @@ pub fn build_control_spec(
     // (re-checked by the final spec validation).
     let inbound_length = inbound_length.or(symmetric_length);
     let outbound_length = outbound_length.or(symmetric_length);
-    if let (Some(inbound), Some(outbound)) = (inbound_length, outbound_length) {
-        if inbound != outbound {
-            return Err(ControlError::ContradictoryOptions {
-                name: definition.name.clone(),
-                reason: "inbound_length and outbound_length differ; the pool uses a single hop length",
-            });
-        }
+    if let (Some(inbound), Some(outbound)) = (inbound_length, outbound_length)
+        && inbound != outbound
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "inbound_length and outbound_length differ; the pool uses a single hop length",
+        });
     }
     let shaping = TunnelShaping {
         inbound_quantity: inbound_quantity.or(symmetric_quantity).unwrap_or(2),
@@ -1247,6 +1436,30 @@ pub fn build_control_spec(
         new_dest_on_idle: idle_new_dest,
         reduce_on_idle: idle_reduce,
     };
+    // Plan 292: resolve proxy credentials and the access policy.
+    // Failures name the offending key, never the value.
+    let proxy_auth = proxy_credentials_for(kind, proxy_username, proxy_password)?;
+    let mut allow = Vec::new();
+    for (key, value) in &access_allow_sources {
+        let parsed = ServerAccessPolicy::parse(&[value.as_str()], &[]).map_err(|_| {
+            ControlError::InvalidOption {
+                option: key.clone(),
+                reason: "access entries must be canonical base32 destination hashes",
+            }
+        })?;
+        allow.extend(parsed.allow);
+    }
+    let mut deny = Vec::new();
+    for (key, value) in &access_deny_sources {
+        let parsed = ServerAccessPolicy::parse(&[], &[value.as_str()]).map_err(|_| {
+            ControlError::InvalidOption {
+                option: key.clone(),
+                reason: "access entries must be canonical base32 destination hashes",
+            }
+        })?;
+        deny.extend(parsed.deny);
+    }
+    let access = ServerAccessPolicy { allow, deny };
     let target = match kind {
         ServiceTunnelKind::GenericServer
         | ServiceTunnelKind::IrcServer
@@ -1298,27 +1511,34 @@ pub fn build_control_spec(
         }
     }
     let (http_options, socks5_options, irc_options, connect_options, streamr_options) = match kind {
-        ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer => (
+        ServiceTunnelKind::HttpClient => {
+            let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
+            options.proxy_auth = proxy_auth;
+            (Some(options), None, None, None, None)
+        }
+        ServiceTunnelKind::HttpBidirServer => (
             Some(i2pr_service_tunnels::HttpClientOptions::defaults()),
             None,
             None,
             None,
             None,
         ),
-        ServiceTunnelKind::Socks5Client => (
-            None,
-            Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
-            None,
-            None,
-            None,
-        ),
-        ServiceTunnelKind::SocksIrc => (
-            None,
-            Some(i2pr_service_tunnels::Socks5ClientOptions::defaults()),
-            Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
-            None,
-            None,
-        ),
+        ServiceTunnelKind::Socks5Client => {
+            let mut options = i2pr_service_tunnels::Socks5ClientOptions::defaults();
+            options.proxy_auth = proxy_auth;
+            (None, Some(options), None, None, None)
+        }
+        ServiceTunnelKind::SocksIrc => {
+            let mut socks = i2pr_service_tunnels::Socks5ClientOptions::defaults();
+            socks.proxy_auth = proxy_auth;
+            (
+                None,
+                Some(socks),
+                Some(i2pr_service_tunnels::IrcClientOptions::defaults()),
+                None,
+                None,
+            )
+        }
         ServiceTunnelKind::IrcClient => (
             None,
             None,
@@ -1326,13 +1546,11 @@ pub fn build_control_spec(
             None,
             None,
         ),
-        ServiceTunnelKind::ConnectClient => (
-            None,
-            None,
-            None,
-            Some(i2pr_service_tunnels::ConnectClientOptions::defaults()),
-            None,
-        ),
+        ServiceTunnelKind::ConnectClient => {
+            let mut options = i2pr_service_tunnels::ConnectClientOptions::defaults();
+            options.proxy_auth = proxy_auth;
+            (None, None, None, Some(options), None)
+        }
         // Plan 291: Streamr endpoints are explicit (no silent
         // default for where media enters or exits); cadence
         // policy defaults to the freeze and honors supplied
@@ -1348,6 +1566,16 @@ pub fn build_control_spec(
             };
             let options = i2pr_service_tunnels::StreamrOptions {
                 local_udp,
+                // Plan 292: the redirect host pairs with the
+                // local media port; the loopback shape was
+                // enforced at parse time and re-checked by
+                // spec validation.
+                remote_sink: match (kind, remote_udp_host, local_udp_port) {
+                    (ServiceTunnelKind::StreamrClient, Some(host), Some(port)) => {
+                        Some(std::net::SocketAddr::new(host, port))
+                    }
+                    _ => None,
+                },
                 target_i2p_port,
                 subscribe_interval_ms: subscribe_interval_ms
                     .unwrap_or(i2pr_service_tunnels::DEFAULT_SUBSCRIBE_INTERVAL_MS),
@@ -1377,6 +1605,9 @@ pub fn build_control_spec(
         shaping,
         streaming_interactive: profile_interactive,
         idle,
+        access,
+        unique_local_address,
+        http_policy,
         http_options,
         socks5_options,
         irc_options,
@@ -1446,14 +1677,46 @@ pub fn normalize_definition(
             )));
         }
     }
+    // Plan 292: scrub proxy plaintext before it can reach the
+    // definition mirror or the store: the persisted password is
+    // always the marked verifier. Both halves are required
+    // together; a marked value round-trips through the stored form
+    // so untouched credentials survive edits.
+    let mut persisted = options.clone();
+    match (
+        persisted.get("proxy_username"),
+        persisted.get("proxy_password"),
+    ) {
+        (Some(_), Some(_)) => {
+            let kind = map_tunnel_type(tunnel_type)?;
+            let username = persisted
+                .get("proxy_username")
+                .expect("username present")
+                .clone();
+            let password = persisted
+                .get("proxy_password")
+                .expect("password present")
+                .clone();
+            let credentials =
+                proxy_credentials_for(kind, Some(username), Some(password))?.expect("both given");
+            persisted.insert("proxy_password".to_owned(), credentials.stored_form());
+        }
+        (None, None) => {}
+        _ => {
+            return Err(ControlError::InvalidOption {
+                option: "proxy_password".to_owned(),
+                reason: "proxy_username and proxy_password are both required",
+            });
+        }
+    }
     let mut explicit_start_on_load = start_on_load;
-    if let Some(value) = options.get("start_on_load") {
+    if let Some(value) = persisted.get("start_on_load") {
         explicit_start_on_load = parse_bool_option("start_on_load", value)?;
     }
     let definition = ControlDefinition {
         name: name.to_owned(),
         tunnel_type,
-        options: options.clone(),
+        options: persisted,
         start_on_load: explicit_start_on_load,
     };
     // Validate the full mapping now, before any side effect. The
@@ -2170,6 +2433,20 @@ impl TunnelControlState {
             && (self.definition(target_name).is_some() || self.startup_name(target_name).is_some())
         {
             return Err(ControlError::NameCollision(target_name.to_owned()));
+        }
+        // Plan 292: changing the proxy username without
+        // re-supplying the password would silently bind the new
+        // name to the old verifier (one-way and undetectable
+        // later), so it fails explicitly here.
+        if prior.options.contains_key("proxy_password")
+            && request.options.contains_key("proxy_username")
+            && !request.options.contains_key("proxy_password")
+            && request.options.get("proxy_username") != prior.options.get("proxy_username")
+        {
+            return Err(ControlError::InvalidOption {
+                option: "proxy_username".to_owned(),
+                reason: "changing proxy_username requires proxy_password",
+            });
         }
         // Merge options over the prior definition, then normalize the
         // complete candidate before any side effect.
@@ -3044,6 +3321,188 @@ mod tests {
     }
 
     #[test]
+    fn plan292_streamr_sink_redirect_builds() {
+        use i2pr_service_tunnels::ServiceTunnelKind;
+        // Subscriber redirect: media goes to remote_udp_host
+        // paired with the local media port.
+        let mut options = BTreeMap::new();
+        options.insert(
+            "target_destination".to_owned(),
+            format!("{}.b32.i2p", "a".repeat(52)),
+        );
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5000".to_owned());
+        options.insert("remote_udp_host".to_owned(), "127.0.0.2".to_owned());
+        let definition = ControlDefinition {
+            name: "sinksub".to_owned(),
+            tunnel_type: TunnelType::StreamrClient,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("sink spec builds");
+        assert_eq!(spec.kind, ServiceTunnelKind::StreamrClient);
+        let sink = spec
+            .streamr_options
+            .expect("options")
+            .remote_sink
+            .expect("sink");
+        assert_eq!(sink.ip().to_string(), "127.0.0.2");
+        assert_eq!(sink.port(), 5000);
+        // Without the redirect the sink stays empty.
+        let mut options = BTreeMap::new();
+        options.insert(
+            "target_destination".to_owned(),
+            format!("{}.b32.i2p", "a".repeat(52)),
+        );
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5000".to_owned());
+        let definition = ControlDefinition {
+            name: "plainsub".to_owned(),
+            tunnel_type: TunnelType::StreamrClient,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("plain spec builds");
+        assert!(spec.streamr_options.expect("options").remote_sink.is_none());
+        // Non-loopback redirect fails naming the key, never the value.
+        let mut options = BTreeMap::new();
+        options.insert(
+            "target_destination".to_owned(),
+            format!("{}.b32.i2p", "a".repeat(52)),
+        );
+        options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+        options.insert("local_udp_port".to_owned(), "5000".to_owned());
+        options.insert("remote_udp_host".to_owned(), "192.0.2.1".to_owned());
+        let definition = ControlDefinition {
+            name: "badsink".to_owned(),
+            tunnel_type: TunnelType::StreamrClient,
+            options,
+            start_on_load: false,
+        };
+        let error = build_control_spec(&definition).expect_err("non-loopback fails");
+        assert!(
+            matches!(error, ControlError::InvalidOption { ref option, .. } if option == "remote_udp_host"),
+            "unexpected error: {error:?}"
+        );
+        // Publisher and non-Streamr kinds reject the redirect.
+        for tunnel_type in [TunnelType::StreamrServer, TunnelType::Client] {
+            let mut options = BTreeMap::new();
+            if tunnel_type == TunnelType::Client {
+                options.insert(
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                );
+                options.insert("listen_port".to_owned(), "0".to_owned());
+            } else {
+                options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+                options.insert("local_udp_port".to_owned(), "5001".to_owned());
+            }
+            options.insert("remote_udp_host".to_owned(), "127.0.0.2".to_owned());
+            let definition = ControlDefinition {
+                name: "xsink".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let error = build_control_spec(&definition).expect_err("cross-kind fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan292_server_dial_and_presentation_options_build() {
+        // unique_local_address lands on the masked server kinds.
+        for tunnel_type in [
+            TunnelType::Server,
+            TunnelType::HttpServer,
+            TunnelType::HttpBidirServer,
+        ] {
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert("unique_local_address".to_owned(), "true".to_owned());
+            let definition = ControlDefinition {
+                name: "uniq".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("unique-local builds");
+            assert!(spec.unique_local_address);
+        }
+        // Off-mask kinds reject it.
+        for tunnel_type in [TunnelType::Client, TunnelType::IrcServer, TunnelType::Socks] {
+            let mut options = if tunnel_type == TunnelType::IrcServer {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("unique_local_address".to_owned(), "true".to_owned());
+            let definition = ControlDefinition {
+                name: "uniqx".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let error = build_control_spec(&definition).expect_err("off-mask fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
+        // Presentation gates land on the HTTP server kinds only,
+        // with both gates open by default.
+        for tunnel_type in [TunnelType::HttpServer, TunnelType::HttpBidirServer] {
+            let options = server_options("127.0.0.1:9090");
+            let definition = ControlDefinition {
+                name: "pres".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("presentation builds");
+            assert_eq!(
+                spec.http_policy,
+                i2pr_service_tunnels::HttpServerPolicy::default()
+            );
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert("address_helper".to_owned(), "false".to_owned());
+            options.insert("jump_list".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "presclosed".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("closed gates build");
+            assert!(!spec.http_policy.address_helper);
+            assert!(!spec.http_policy.jump_list);
+        }
+        // Raw TCP servers and clients reject the presentation keys
+        // (no HTTP layer to gate).
+        for tunnel_type in [TunnelType::Server, TunnelType::Client] {
+            let mut options = if tunnel_type == TunnelType::Server {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("address_helper".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "presx".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let error = build_control_spec(&definition).expect_err("off-kind fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plan289_option_subset_has_real_effect() {
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 8180);
         options.insert("max_streams".to_owned(), "24".to_owned());
@@ -3093,7 +3552,20 @@ mod tests {
             options.insert(secret.to_owned(), "hunter2".to_owned());
             let error = normalize_definition("alpha", TunnelType::Client, &options, true)
                 .expect_err("secret rejected");
-            assert_eq!(error, ControlError::UnsupportedOption(secret.to_owned()));
+            if secret == "proxy_password" {
+                // Plan 292: the paired-halves check fires before
+                // the secret gate for a lone password half; both
+                // reject before storage and both name the key.
+                assert_eq!(
+                    error,
+                    ControlError::InvalidOption {
+                        option: "proxy_password".to_owned(),
+                        reason: "proxy_username and proxy_password are both required",
+                    }
+                );
+            } else {
+                assert_eq!(error, ControlError::UnsupportedOption(secret.to_owned()));
+            }
         }
         // Known-but-not-yet-supported options fail explicitly too,
         // naming the owning plan for blocked and corrective cells.
@@ -3420,6 +3892,197 @@ mod tests {
         };
         let spec = build_control_spec(&definition).expect("streamr idle builds");
         assert!(spec.idle.enabled());
+    }
+
+    #[test]
+    fn plan292_proxy_auth_parses_and_attaches() {
+        // Each proxy family accepts credentials and attaches them
+        // to its own options struct (verifiers, never plaintext).
+        let cases = [
+            (TunnelType::HttpClient, "http-proxy"),
+            (TunnelType::Socks, "socks-proxy"),
+            (TunnelType::ConnectClient, "connect-proxy"),
+            (TunnelType::SocksIrc, "socksirc-proxy"),
+        ];
+        for (tunnel_type, name) in cases {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert("proxy_username".to_owned(), "operator".to_owned());
+            options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            let definition = ControlDefinition {
+                name: name.to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("auth spec builds");
+            let attached = match tunnel_type {
+                TunnelType::HttpClient => {
+                    assert!(spec.socks5_options.is_none());
+                    spec.http_options.expect("http options").proxy_auth
+                }
+                TunnelType::ConnectClient => {
+                    spec.connect_options.expect("connect options").proxy_auth
+                }
+                _ => spec.socks5_options.expect("socks options").proxy_auth,
+            };
+            let credentials = attached.expect("credentials attached");
+            assert!(credentials.verify("operator", "s3cret!"));
+            assert!(!credentials.verify("operator", "wrong"));
+            // The definition mirror holds the marked verifier, never
+            // the password (what reaches the store).
+            let mut raw = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            raw.insert("proxy_username".to_owned(), "operator".to_owned());
+            raw.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            let stored = normalize_definition(&format!("{name}-stored"), tunnel_type, &raw, false)
+                .expect("normalize stores");
+            let persisted = stored.options.get("proxy_password").expect("persisted");
+            assert!(
+                persisted.starts_with(i2pr_service_tunnels::PROXY_VERIFIER_MARKER),
+                "marked verifier: {persisted}"
+            );
+            assert!(!persisted.contains("s3cret"));
+        }
+        // Either half alone fails (both required together).
+        for (key, value) in [
+            ("proxy_username", "operator"),
+            ("proxy_password", "s3cret!"),
+        ] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert(key.to_owned(), value.to_owned());
+            let error = normalize_definition("half", TunnelType::Socks, &options, false)
+                .expect_err("half credentials fail");
+            assert!(
+                matches!(error, ControlError::InvalidOption { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
+        // Proxy keys on non-proxy kinds fail (matrix not-applicable).
+        for tunnel_type in [
+            TunnelType::Client,
+            TunnelType::Server,
+            TunnelType::StreamrClient,
+        ] {
+            let mut options = if tunnel_type == TunnelType::Server {
+                server_options("127.0.0.1:9090")
+            } else if tunnel_type == TunnelType::StreamrClient {
+                let mut options = BTreeMap::new();
+                options.insert(
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                );
+                options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
+                options.insert("local_udp_port".to_owned(), "5001".to_owned());
+                options
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("proxy_username".to_owned(), "operator".to_owned());
+            options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            let error = normalize_definition("cross", tunnel_type, &options, false)
+                .expect_err("cross-kind auth fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan292_username_rotation_requires_password() {
+        // Changing the proxy username without re-supplying the
+        // password would silently bind the new name to the old
+        // verifier, so edit rejects it explicitly.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("proxy_username".to_owned(), "operator".to_owned());
+        options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+        block_on(control.create(&create_request("authrot", TunnelType::Socks, options)))
+            .expect("create with auth");
+        // Username-only rotation fails.
+        let mut rotation = BTreeMap::new();
+        rotation.insert("proxy_username".to_owned(), "renamed".to_owned());
+        let error = block_on(control.edit(&TunnelManagerRequest {
+            action: TunnelAction::Edit,
+            name: Some("authrot".to_owned()),
+            tunnel_type: None,
+            new_name: None,
+            options: rotation,
+        }))
+        .expect_err("rotation without password fails");
+        assert!(
+            matches!(error, ControlError::InvalidOption { .. }),
+            "unexpected error: {error:?}"
+        );
+        // Rotation with a fresh password succeeds.
+        let mut rotation = BTreeMap::new();
+        rotation.insert("proxy_username".to_owned(), "renamed".to_owned());
+        rotation.insert("proxy_password".to_owned(), "n3w-secret".to_owned());
+        block_on(control.edit(&TunnelManagerRequest {
+            action: TunnelAction::Edit,
+            name: Some("authrot".to_owned()),
+            tunnel_type: None,
+            new_name: None,
+            options: rotation,
+        }))
+        .expect("rotation with password succeeds");
+    }
+
+    #[test]
+    fn plan292_access_lists_parse_and_gate() {
+        let hash_a = format!("{}.b32.i2p", "a".repeat(52));
+        // NOTE: the distinct label char leads: the final char of a
+        // canonical 32-byte encoding must carry zero padding bits.
+        let hash_b = format!("b{}.b32.i2p", "a".repeat(51));
+        // access_list unions white_list into allow; black_list denies.
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("access_list".to_owned(), hash_a.clone());
+        options.insert("white_list".to_owned(), hash_b.clone());
+        options.insert("black_list".to_owned(), hash_a.clone());
+        let definition = ControlDefinition {
+            name: "acl".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("access spec builds");
+        assert_eq!(spec.access.allow.len(), 2);
+        assert_eq!(spec.access.deny.len(), 1);
+        // Non-hash entries fail naming the key, never the value.
+        for (key, value) in [
+            ("access_list", "example.i2p"),
+            ("white_list", "127.0.0.1"),
+            ("black_list", "not a hash"),
+        ] {
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert(key.to_owned(), value.to_owned());
+            let error = normalize_definition("aclbad", TunnelType::Server, &options, false)
+                .expect_err("bad entry fails");
+            assert!(
+                matches!(error, ControlError::InvalidOption { ref option, .. } if option == key),
+                "unexpected error: {error:?}"
+            );
+        }
+        // Access keys on non-server kinds fail (matrix
+        // not-applicable, including ircserver).
+        for tunnel_type in [TunnelType::Client, TunnelType::IrcServer, TunnelType::Socks] {
+            // NOTE: option shapes are kept valid for the kind so the
+            // failure proves the access gate (not a missing field):
+            // server-shaped for ircserver, client-shaped otherwise.
+            let mut options = if tunnel_type == TunnelType::IrcServer {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("black_list".to_owned(), hash_a.clone());
+            let error = normalize_definition("aclx", tunnel_type, &options, false)
+                .expect_err("cross-kind access fails");
+            assert!(
+                matches!(error, ControlError::ContradictoryOptions { .. }),
+                "unexpected error: {error:?}"
+            );
+        }
     }
 
     #[test]

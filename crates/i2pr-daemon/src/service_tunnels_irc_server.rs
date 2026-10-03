@@ -479,9 +479,17 @@ pub async fn run_irc_server_loop(
             // Plan 182: answer the SYN before waiting for
             // Established. Without the SYN response the handshake
             // can never complete; see `accept_irc_inbound_syn`.
-            if accept_irc_inbound_syn(manager, runtime, connection_id).is_none() {
+            let Some(peer) = accept_irc_inbound_syn(manager, runtime, connection_id) else {
                 debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc accept failed");
                 runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            // Plan 292: peer policy (structurally empty for IRC
+            // server kinds, which cannot carry access lists, but
+            // enforced uniformly so a validation gap can never
+            // silently admit).
+            if !runtime.access.allows(&peer.destination_hash) {
+                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
             debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc SYN answered");

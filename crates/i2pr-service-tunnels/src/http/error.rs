@@ -39,6 +39,9 @@ pub enum HttpErrorKind {
     /// non-`CONNECT` on `connect-client`, `CONNECT` on
     /// `http-server`).
     MethodNotAllowed,
+    /// Request presentation class is gated closed by the HTTP
+    /// server policy (Plan 292 `address_helper` / `jump_list`).
+    PresentationRefused,
     /// Total bytes buffered exceed the configured ceiling.
     BufferCeilingExceeded,
     /// Generated error response exceeds the configured ceiling.
@@ -68,6 +71,7 @@ impl HttpErrorKind {
             HttpErrorKind::SmugglingAmbiguity => (400, "Bad Request"),
             HttpErrorKind::UnsupportedConnectPort => (403, "Forbidden"),
             HttpErrorKind::MethodNotAllowed => (405, "Method Not Allowed"),
+            HttpErrorKind::PresentationRefused => (403, "Forbidden"),
             HttpErrorKind::BufferCeilingExceeded => (400, "Bad Request"),
             HttpErrorKind::ResponseCeilingExceeded => (500, "Internal Server Error"),
             HttpErrorKind::InvalidLimits => (500, "Internal Server Error"),

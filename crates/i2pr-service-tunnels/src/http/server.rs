@@ -40,6 +40,90 @@ use super::target::parse_origin_form;
 /// (`ip:port` text the daemon derives from the server target).
 pub const SERVER_AUTHORITY_MAX_BYTES: usize = 256;
 
+/// Presentation policy for the HTTP server profile (Plan 292
+/// `address_helper` / `jump_list`). Both gates restrict which
+/// request classes the server forwards to the local target; the
+/// defaults preserve the historical forward-everything behavior
+/// so enabling either gate only ever refuses more.
+///
+/// - `address_helper`: address-helper class requests (the
+///   `/addresshelper` path family and the `i2paddresshelper`
+///   query key) are forwarded when true, refused with 403 when
+///   false. The local webserver is never used as an
+///   addressbook oracle unless the operator opts in.
+/// - `jump_list`: jump class requests (the `/jump` path family
+///   and the `jump` query key) are forwarded when true, refused
+///   with 403 when false.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HttpServerPolicy {
+    /// Forward address-helper class requests.
+    pub address_helper: bool,
+    /// Forward jump class requests.
+    pub jump_list: bool,
+}
+
+impl Default for HttpServerPolicy {
+    fn default() -> Self {
+        Self {
+            address_helper: true,
+            jump_list: true,
+        }
+    }
+}
+
+impl HttpServerPolicy {
+    /// Whether a request class may be forwarded to the local
+    /// target under this policy.
+    pub const fn admits(self, class: PresentationClass) -> bool {
+        match class {
+            PresentationClass::Ordinary => true,
+            PresentationClass::Helper => self.address_helper,
+            PresentationClass::Jump => self.jump_list,
+        }
+    }
+}
+
+/// Presentation class of one origin-form server request target
+/// (Plan 292 `address_helper` / `jump_list` gates).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentationClass {
+    /// Ordinary site content: always forwarded.
+    Ordinary,
+    /// Address-helper class: the `/addresshelper` path family or
+    /// the `i2paddresshelper` query key. Forwarded only when the
+    /// policy opens the helper gate.
+    Helper,
+    /// Jump class: the `/jump` path family or the `jump` query
+    /// key. Forwarded only when the policy opens the jump gate.
+    Jump,
+}
+
+/// Classifies one origin-form request target. Path families win
+/// over query keys, and the helper class wins over jump when a
+/// target carries both markers; ordinary content never matches.
+pub fn classify_presentation(path: &str, query: &str) -> PresentationClass {
+    if path == "/addresshelper" || path.starts_with("/addresshelper/") {
+        return PresentationClass::Helper;
+    }
+    if path == "/jump" || path.starts_with("/jump/") {
+        return PresentationClass::Jump;
+    }
+    let mut jump_seen = false;
+    for pair in query.split('&') {
+        let key = pair.split('=').next().unwrap_or("").trim();
+        if key.eq_ignore_ascii_case("i2paddresshelper") {
+            return PresentationClass::Helper;
+        }
+        if key.eq_ignore_ascii_case("jump") {
+            jump_seen = true;
+        }
+    }
+    if jump_seen {
+        return PresentationClass::Jump;
+    }
+    PresentationClass::Ordinary
+}
+
 /// Filtered server-side request ready to forward to the local
 /// target.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -498,5 +582,84 @@ mod tests {
         assert!(filter_server_response(b"HTTP/1.1 99 OK\r\n\r\n").is_err());
         assert!(filter_server_response(b"HTTP/2 200 OK\r\n\r\n").is_err());
         assert!(filter_server_response(b"HTTP/1.1 200\r\n\r\n").is_err());
+    }
+
+    #[test]
+    fn presentation_classes_match_exactly() {
+        use super::{HttpServerPolicy, PresentationClass, classify_presentation};
+        // Ordinary content never matches, including near-miss
+        // paths and unrelated query keys.
+        for (path, query) in [
+            ("/", ""),
+            ("/index.html", ""),
+            ("/addresshelperish", ""),
+            ("/jumpstart", ""),
+            ("/Jump/X", ""),
+            ("/page", "jumped=1&helper=2"),
+            ("/page", "JUMPING=1"),
+        ] {
+            assert_eq!(
+                classify_presentation(path, query),
+                PresentationClass::Ordinary,
+                "{path}?{query}"
+            );
+        }
+        // Helper class: path family and query key (case-insensitive).
+        for (path, query) in [
+            ("/addresshelper", ""),
+            ("/addresshelper/", ""),
+            ("/addresshelper/add", "host=x.i2p"),
+            ("/page", "i2paddresshelper=x.i2p"),
+            ("/page", "a=1&I2PADDRESSHELPER=x.i2p"),
+        ] {
+            assert_eq!(
+                classify_presentation(path, query),
+                PresentationClass::Helper,
+                "{path}?{query}"
+            );
+        }
+        // Jump class: path family and query key (case-insensitive).
+        for (path, query) in [
+            ("/jump", ""),
+            ("/jump/", ""),
+            ("/jump/x.i2p", ""),
+            ("/page", "jump=x.i2p"),
+            ("/page", "a=1&JUMP=x.i2p"),
+        ] {
+            assert_eq!(
+                classify_presentation(path, query),
+                PresentationClass::Jump,
+                "{path}?{query}"
+            );
+        }
+        // Helper wins when both markers are present.
+        assert_eq!(
+            classify_presentation("/addresshelper/x", "jump=y"),
+            PresentationClass::Helper
+        );
+        assert_eq!(
+            classify_presentation("/page", "jump=y&i2paddresshelper=z"),
+            PresentationClass::Helper
+        );
+        // Policy defaults open both gates; closing one refuses
+        // only its class.
+        let open = HttpServerPolicy::default();
+        assert!(open.admits(PresentationClass::Ordinary));
+        assert!(open.admits(PresentationClass::Helper));
+        assert!(open.admits(PresentationClass::Jump));
+        let no_helper = HttpServerPolicy {
+            address_helper: false,
+            jump_list: true,
+        };
+        assert!(no_helper.admits(PresentationClass::Ordinary));
+        assert!(!no_helper.admits(PresentationClass::Helper));
+        assert!(no_helper.admits(PresentationClass::Jump));
+        let no_jump = HttpServerPolicy {
+            address_helper: true,
+            jump_list: false,
+        };
+        assert!(no_jump.admits(PresentationClass::Ordinary));
+        assert!(no_jump.admits(PresentationClass::Helper));
+        assert!(!no_jump.admits(PresentationClass::Jump));
     }
 }

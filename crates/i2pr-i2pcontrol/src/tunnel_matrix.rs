@@ -155,7 +155,7 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         // 14 inbound_length / 15 outbound_length / 16 inbound_quantity /
         // 17 outbound_quantity: per-direction pool projection; differing
         // per-direction lengths are rejected (single length_hops).
-        14 | 15 | 16 | 17 => CellDisposition::Apply {
+        14..=17 => CellDisposition::Apply {
             owner: "ServiceTunnelSpec.shaping into DestinationConfig projection",
         },
         // 18 profile / 19 interactive: interactive selects the small-window
@@ -175,7 +175,7 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         // 21 idle_timeout / 22 close_on_idle / 23 new_dest_on_idle /
         // 24 reduce_on_idle: manager idle sweep (milliseconds deadline;
         // flags require a timeout and vice versa).
-        21 | 22 | 23 | 24 => CellDisposition::Apply {
+        21..=24 => CellDisposition::Apply {
             owner: "ServiceTunnelManager idle sweep (last-activity deadline)",
         },
         // 25 max_streams: concurrent stream ceiling.
@@ -189,7 +189,7 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         },
         // 28 access_list / 29 white_list / 30 black_list: inbound peer
         // destination-hash filter (access_list unions white_list).
-        28 | 29 | 30 => CellDisposition::Apply {
+        28..=30 => CellDisposition::Apply {
             owner: "server inbound peer allow/deny filter",
         },
         // 31 address_helper / 32 jump_list: HTTP presentation policy gates;
@@ -219,7 +219,7 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         },
         // 36 streamr_subscribe_interval / 37 streamr_expiry /
         // 38 streamr_max_subscribers / 39 streamr_payload_limit.
-        36 | 37 | 38 | 39 => CellDisposition::Apply {
+        36..=39 => CellDisposition::Apply {
             owner: "StreamrOptions subscribe and fanout bounds",
         },
         // 40 sig_type: algorithm-agile destination identity (Plan 293).
@@ -229,7 +229,7 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         },
         // 41 encrypt_lease_set / 42 leaseset_password /
         // 43 leaseset_blinding_secret / 44 leaseset_client_auth.
-        41 | 42 | 43 | 44 => CellDisposition::BlockedPrimitive {
+        41..=44 => CellDisposition::BlockedPrimitive {
             plan: 293,
             primitive: "encrypted/blinded LeaseSet security and client authorization",
         },
@@ -318,12 +318,10 @@ pub fn find_cell(type_index: usize, option_index: usize) -> Option<MatrixCell> {
     if !TUNNEL_OPTIONS[option_index].applies_to(type_index) {
         return None;
     }
-    for cell in MATRIX {
-        if cell.type_index == type_index && cell.option_index == option_index {
-            return Some(cell);
-        }
-    }
-    None
+    MATRIX
+        .iter()
+        .find(|cell| cell.type_index == type_index && cell.option_index == option_index)
+        .copied()
 }
 
 /// Looks up the disposition for a wire key on a type index.

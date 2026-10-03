@@ -60,6 +60,11 @@ pub struct StreamrOptions {
     /// (client half). Direction follows the kind; the name is
     /// router-centric and matches the control inventory mask.
     pub local_udp: Option<SocketAddr>,
+    /// Subscriber media-sink redirect (client half only; Plan 292
+    /// `remote_udp_host`). When set, the subscriber sends media to
+    /// this address instead of `local_udp`, and binds this host
+    /// with an ephemeral port. Loopback-confined like `local_udp`.
+    pub remote_sink: Option<SocketAddr>,
     /// I2P destination port carried on subscribe/media packets.
     pub target_i2p_port: u16,
     /// Steady subscribe refresh interval in milliseconds (client
@@ -78,6 +83,7 @@ impl Default for StreamrOptions {
     fn default() -> Self {
         Self {
             local_udp: None,
+            remote_sink: None,
             target_i2p_port: DEFAULT_STREAMR_I2P_PORT,
             subscribe_interval_ms: DEFAULT_SUBSCRIBE_INTERVAL_MS,
             subscription_expiry_ms: DEFAULT_SUBSCRIPTION_EXPIRY_MS,
@@ -118,7 +124,7 @@ impl StreamrOptions {
                 reason: "must be within 1..=1200",
             });
         }
-        for endpoint in [self.local_udp] {
+        for endpoint in [self.local_udp, self.remote_sink] {
             if let Some(addr) = endpoint
                 && !addr.ip().is_loopback()
             {
@@ -150,6 +156,11 @@ mod tests {
     fn non_loopback_udp_is_rejected() {
         let options = StreamrOptions {
             local_udp: Some("192.0.2.1:5000".parse().expect("addr")),
+            ..StreamrOptions::default()
+        };
+        assert!(options.validate().is_err());
+        let options = StreamrOptions {
+            remote_sink: Some("192.0.2.1:5000".parse().expect("addr")),
             ..StreamrOptions::default()
         };
         assert!(options.validate().is_err());

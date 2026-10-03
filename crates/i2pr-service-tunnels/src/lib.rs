@@ -47,6 +47,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod access;
+pub mod auth;
 pub mod config;
 pub mod connect;
 pub mod destination;
@@ -59,6 +61,12 @@ pub mod irc;
 pub mod socks5;
 pub mod streamr;
 
+pub use access::{MAX_ACCESS_LIST_ENTRIES, ServerAccessPolicy};
+pub use auth::{
+    MAX_PROXY_PASSWORD_LEN, MAX_PROXY_USERNAME_LEN, PROXY_AUTH_REALM_CONNECT,
+    PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,
+    decode_basic_credentials,
+};
 pub use config::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, IdlePolicy, LocalListenerSpec,
     MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
@@ -76,10 +84,11 @@ pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
 pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
 pub use http::{
     FilteredServerRequest, HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind,
-    HttpLimits, HttpRequestHead, ParseError, PrivacyPolicy, RequestLine, RequestTarget, TargetKind,
-    TargetParseError, UserAgentPolicy, build_error_response, filter_server_request,
-    filter_server_response, parse_authority_form, parse_request_head, parse_request_target,
-    rewrite_headers,
+    HttpLimits, HttpRequestHead, HttpServerPolicy, ParseError, PresentationClass, PrivacyPolicy,
+    RequestLine, RequestTarget, TargetKind, TargetParseError, UserAgentPolicy,
+    build_error_response, classify_presentation, filter_server_request, filter_server_response,
+    parse_authority_form, parse_origin_form, parse_request_head, parse_request_target,
+    proxy_auth_required, rewrite_headers,
 };
 pub use idle::{IdleSweepAction, idle_decision};
 pub use irc::{

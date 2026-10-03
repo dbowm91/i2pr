@@ -331,12 +331,25 @@ pub async fn run_streamr_client_loop(
     let options = spec.streamr_options.ok_or_else(|| {
         ServiceTunnelError::InvalidConfig("streamr-client missing streamr_options".to_owned())
     })?;
-    let remote_udp = options.local_udp.ok_or_else(|| {
+    let local_udp = options.local_udp.ok_or_else(|| {
         ServiceTunnelError::InvalidConfig("streamr-client missing loopback UDP target".to_owned())
     })?;
-    if !remote_udp.ip().is_loopback() {
+    if !local_udp.ip().is_loopback() {
         return Err(ServiceTunnelError::InvalidConfig(
             "streamr-client UDP target must be loopback".to_owned(),
+        ));
+    }
+    // Plan 292: a configured sink redirect receives the media
+    // instead of the local target; the socket binds the local
+    // media host with an ephemeral port either way
+    // (loopback-confined; validated at the spec boundary).
+    let remote_udp = options
+        .remote_sink
+        .or(Some(local_udp))
+        .expect("local UDP set");
+    if !remote_udp.ip().is_loopback() {
+        return Err(ServiceTunnelError::InvalidConfig(
+            "streamr-client UDP sink must be loopback".to_owned(),
         ));
     }
     let destination_ref = spec.destination.clone().ok_or_else(|| {
@@ -347,10 +360,11 @@ pub async fn run_streamr_client_loop(
             "streamr-client producer destination does not resolve".to_owned(),
         )
     })?;
-    // The UDP socket is send-only (media toward the local target);
-    // its bound port anchors the subscribe `fromPort` (Java
-    // `UDPSink` parity).
-    let socket = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+    // The UDP socket is send-only (media toward the sink); its
+    // bound port anchors the subscribe `fromPort` (Java `UDPSink`
+    // parity). The bind host follows the configured local media
+    // host so multi-home loopback setups keep working.
+    let socket = UdpSocket::bind(SocketAddr::new(local_udp.ip(), 0))
         .await
         .map_err(|error| ServiceTunnelError::Bind(format!("streamr-client UDP bind: {error}")))?;
     let from_port = socket.local_addr().map(|addr| addr.port()).unwrap_or(0);

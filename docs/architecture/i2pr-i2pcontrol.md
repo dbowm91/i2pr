@@ -28,6 +28,7 @@ transport internals.
 | `client_services` | `client_services.rs` | Exact 6-service inventory + constant/map classification | `ClientService`, `CLIENT_SERVICES` |
 | `address_book` | `address_book.rs` | 4 book types, 6 fields, 13 `SetConfig` keys + path/inert classification | `BookType`, `AddressBookField`, `BOOK_TYPES`, `ADDRESS_BOOK_FIELDS`, `SET_CONFIG_KEYS` |
 | `tunnel` | `tunnel.rs` | 7 actions, 12 types (all with Plan 291 backends), 6 statuses, name validation | `TunnelAction`, `TunnelType`, `TunnelStatus`, `TUNNEL_ACTIONS`, `TUNNEL_TYPES` |
+| `tunnel_matrix` | `tunnel_matrix.rs` | Plan 292 exact type×option disposition matrix (336 applicable cells: 227 apply with named owners, 37 not-applicable, 30 blocked on Plan 293, 39 corrective on Plan 296, 3 corrective on Plan 297) | `CellDisposition`, `MatrixCell`, `MATRIX`, `APPLY_CELLS`, `NOT_APPLICABLE_CELLS`, `BLOCKED_293_CELLS`, `CORRECTIVE_296_CELLS`, `CORRECTIVE_297_CELLS`, `find_cell` |
 | `tunnel_options` | `tunnel_options.rs` | 46 options with value types, sensitivity (4 secret), plan ownership | `TunnelOption`, `TUNNEL_OPTIONS`, `SECRET_OPTIONS`, `OptionSensitivity`, `OptionValueType` |
 | `tunnel_request` | `tunnel_request.rs` | Plan 289: closed TunnelManager request envelope (action/name/type/new_name/options rules, frozen-universe option keys, scalar-only values) | `TunnelManagerRequest`, `TunnelRequestError`, `decode_tunnel_request` |
 | `auth` | `auth.rs` | API-1 vocabulary: ceilings (32 B / 1 day / 1024 / 256) + six error codes | `AuthErrorCode`, `TOKEN_BYTES`, `TOKEN_LIFETIME_SECS`, `MAX_LIVE_TOKENS`, `MAX_PRESENTED_TOKEN_LEN` |
@@ -77,7 +78,8 @@ on this crate (enforced by `scripts/check-dependency-direction.sh`).
 `tests/contract.rs`: exact inventories, deterministic parsing, typed
 literal failures, max/max+1 bounds, secret classification, matrix
 mirror + availability census, Plan 289 envelope rules, Plan 290
-ten-backend count, Plan 291 twelve-backend count.
+ten-backend count, Plan 291 twelve-backend count, Plan 292
+disposition census (227/37/30/39/3).
 
 ## Distinctive design choices
 

@@ -32,6 +32,10 @@ pub struct ConnectClientOptions {
     /// Allowed CONNECT target ports. Empty set is rejected at
     /// validation; port 443 is the default.
     pub connect_allowed_ports: BTreeSet<u16>,
+    /// Listener proxy authentication (Plan 292). When set, the
+    /// listener answers unauthenticated CONNECT requests with 407;
+    /// when unset, the listener stays open (pre-292 behavior).
+    pub proxy_auth: Option<crate::auth::ProxyCredentials>,
 }
 
 impl ConnectClientOptions {
@@ -70,6 +74,7 @@ impl Default for ConnectClientOptions {
         ports.insert(CONNECT_DEFAULT_PORT);
         Self {
             connect_allowed_ports: ports,
+            proxy_auth: None,
         }
     }
 }
@@ -90,6 +95,7 @@ mod tests {
     fn empty_port_set_rejected() {
         let options = ConnectClientOptions {
             connect_allowed_ports: BTreeSet::new(),
+            proxy_auth: None,
         };
         assert!(options.validate().is_err());
     }
@@ -98,6 +104,7 @@ mod tests {
     fn oversized_port_set_rejected() {
         let options = ConnectClientOptions {
             connect_allowed_ports: (1..=(CONNECT_OPTIONS_MAX_PORTS as u16 + 1)).collect(),
+            proxy_auth: None,
         };
         assert!(options.validate().is_err());
     }
