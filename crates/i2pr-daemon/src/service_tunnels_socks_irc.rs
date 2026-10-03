@@ -265,7 +265,7 @@ pub async fn run_socks_irc_loop(
     );
     let socks_options = spec.socks5_options.clone().unwrap_or_default();
     let irc_options = spec.irc_options.clone().unwrap_or_default();
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;

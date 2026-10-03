@@ -632,7 +632,7 @@ pub async fn run_http_server_loop(
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;
     let port = runtime.server_streaming_port.unwrap_or(0_u16);
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     loop {
         tokio::select! {
             biased;

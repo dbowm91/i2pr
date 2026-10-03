@@ -150,6 +150,8 @@ pub struct ServiceRuntime {
     pub kind: ServiceTunnelKind,
     /// Cancel token for the per-service supervisor loop.
     cancellation: CancellationToken,
+    /// Separate signal that stops new admissions while accepted work drains.
+    admission_cancellation: CancellationToken,
     /// Whether the per-service supervisor loop has stopped.
     stopped: Arc<AtomicBool>,
     /// Per-service connection count.
@@ -234,13 +236,8 @@ pub struct ServiceRuntime {
 }
 
 impl ServiceRuntime {
-    /// Clones the per-service supervisor cancellation token.
-    ///
-    /// Plan 289: profile supervisor loops observe this token so drained
-    /// runtimes stop accepting promptly instead of holding their
-    /// listeners until scope shutdown.
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.cancellation.clone()
+    pub(crate) fn admission_cancellation_token(&self) -> CancellationToken {
+        self.admission_cancellation.clone()
     }
 
     /// Records activity at `now_ms` (monotonic maximum; concurrent
@@ -918,6 +915,9 @@ impl ServiceTunnelManager {
                 }
                 if let Some(runtime) = prev.runtimes.get(&entry.id) {
                     let _ = runtime
+                        .admission_cancellation
+                        .cancel(i2pr_core::CancellationReason::ParentScope);
+                    let _ = runtime
                         .cancellation
                         .cancel(i2pr_core::CancellationReason::ParentScope);
                     previous_active_draining = previous_active_draining.saturating_add(1);
@@ -1274,6 +1274,9 @@ impl ServiceTunnelManager {
         };
         for (_, runtime) in runtimes.iter() {
             let _ = runtime
+                .admission_cancellation
+                .cancel(i2pr_core::CancellationReason::ParentScope);
+            let _ = runtime
                 .cancellation
                 .cancel(i2pr_core::CancellationReason::ParentScope);
         }
@@ -1286,6 +1289,35 @@ impl ServiceTunnelManager {
                 let _ = token.cancel(i2pr_core::CancellationReason::ParentScope);
             }
         }
+    }
+
+    /// Stops admission across the committed service generation while keeping
+    /// the runtime and router delivery path alive for existing connections.
+    pub(crate) fn stop_admission(&self) {
+        if let Ok(runtimes) = self.runtimes.lock() {
+            for runtime in runtimes.values() {
+                let _ = runtime
+                    .admission_cancellation
+                    .cancel(i2pr_core::CancellationReason::OperatorRequest);
+            }
+        }
+    }
+
+    /// Returns the active application connection count for the committed
+    /// generation, saturating if accounting overflows.
+    pub(crate) fn aggregate_active_connections(&self) -> usize {
+        self.runtimes
+            .lock()
+            .map(|runtimes| {
+                runtimes.values().fold(0_usize, |total, runtime| {
+                    let connections = runtime.active_connections.load(Ordering::Acquire);
+                    let streamr_subscribers = runtime.streamr_subscribers.load(Ordering::Acquire);
+                    total
+                        .saturating_add(connections)
+                        .saturating_add(streamr_subscribers)
+                })
+            })
+            .unwrap_or(usize::MAX)
     }
 
     /// Returns the public service destination base64 for one service.
@@ -3296,6 +3328,7 @@ impl ServiceTunnelManager {
             spec_id: spec.id.as_str().to_owned(),
             kind: spec.kind,
             cancellation: CancellationToken::new(),
+            admission_cancellation: CancellationToken::new(),
             stopped: Arc::clone(&stopped),
             active_connections: Arc::clone(&active_connections),
             failed_connects: Arc::clone(&failed_connects),
@@ -3964,7 +3997,7 @@ async fn run_client_loop(
             // Plan 289: park on both tokens. A drained runtime must
             // unpark here too, or the parked task would hold its
             // listener past removal.
-            let drain_cancel = runtime.cancellation_token();
+            let drain_cancel = runtime.admission_cancellation_token();
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => {}
@@ -3982,7 +4015,7 @@ async fn run_client_loop(
             // leaves the committed generation; without this branch the
             // supervisor task (which owns a runtime clone) would hold
             // its listener indefinitely.
-            _ = runtime.cancellation.cancelled() => break,
+            _ = runtime.admission_cancellation.cancelled() => break,
             accept = listener.accept() => accept,
         };
         let (stream, _peer) = match accept {
@@ -4065,7 +4098,7 @@ async fn run_server_loop(
             _ = cancellation.cancelled() => break,
             // Plan 289: see the client accept loop above; drained
             // server runtimes stop polling promptly.
-            _ = runtime.cancellation.cancelled() => break,
+            _ = runtime.admission_cancellation.cancelled() => break,
             _ = ticker.tick() => {}
         }
         let mut accepted_ids = Vec::new();
@@ -6676,6 +6709,27 @@ mod plan210_real_service_destination_material_tests {
             })
             .expect("manager builds"),
         )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn graceful_admission_stop_preserves_runtime_until_hard_shutdown() {
+        let directory = temp_data_dir("plan316-admission-stop");
+        let manager = make_manager_with_one_server(directory.path(), "server");
+        let runtimes = manager.prepare().await.expect("prepare service runtime");
+        let runtime = runtimes.first().expect("one runtime");
+        runtime.active_connections.store(2, Ordering::Release);
+        runtime.streamr_subscribers.store(3, Ordering::Release);
+
+        manager.stop_admission();
+        assert!(runtime.admission_cancellation.is_cancelled());
+        assert!(
+            !runtime.cancellation.is_cancelled(),
+            "admission stop must leave active delivery and connection work alive"
+        );
+        assert_eq!(manager.aggregate_active_connections(), 5);
+
+        manager.shutdown().await;
+        assert!(runtime.cancellation.is_cancelled());
     }
 
     fn make_backend_with_router_delivery(port: u16) -> Arc<RemoteDestinationBackend> {

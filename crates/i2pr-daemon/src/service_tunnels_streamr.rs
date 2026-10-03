@@ -140,7 +140,7 @@ async fn drive_streamr_server(
     options: &StreamrOptions,
     cancellation: &CancellationToken,
 ) -> StreamrLoopOutcome {
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     let mut subscribers: HashMap<SubscriberKey, u64> = HashMap::new();
     let mut chunk = [0_u8; UDP_READ_CHUNK];
     let mut ticker = tokio::time::interval(STREAMR_POLL);
@@ -417,7 +417,7 @@ async fn drive_streamr_client(drive: &ClientDrive<'_>) -> StreamrLoopOutcome {
     let remote_udp = drive.remote_udp;
     let from_port = drive.from_port;
     let cancellation = &drive.cancellation;
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     let mut ticker = tokio::time::interval(STREAMR_POLL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ticker.tick().await;

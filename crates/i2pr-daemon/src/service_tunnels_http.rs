@@ -721,7 +721,7 @@ pub async fn run_http_client_loop(
         "http client tunnel bound loopback listener"
     );
     let options = spec.http_options.clone().unwrap_or_default();
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
@@ -894,7 +894,7 @@ pub async fn run_connect_client_loop(
         "connect client tunnel bound loopback listener"
     );
     let options = spec.connect_options.clone().unwrap_or_default();
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;

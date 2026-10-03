@@ -420,6 +420,7 @@ mod normal_daemon_owner_tests {
             token,
             Vec::new(),
             RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
         )
         .await;
         assert!(matches!(
@@ -538,6 +539,9 @@ struct ProductInner {
     options: ServiceProductOptions,
     startup_inbound: VecDeque<Ssu2InboundI2np>,
     startup_inbound_bytes: usize,
+    lifecycle: crate::service_lifecycle::ServiceLifecycleController,
+    retirement: Option<crate::service_lifecycle::RetirementState>,
+    lifecycle_clock_origin: tokio::time::Instant,
 }
 
 fn queue_startup_inbound(
@@ -931,6 +935,13 @@ impl ServiceProduct {
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
+                lifecycle: {
+                    let lifecycle = crate::service_lifecycle::ServiceLifecycleController::new();
+                    lifecycle.set_status(crate::service_lifecycle::LifecycleStatus::Active);
+                    lifecycle
+                },
+                retirement: None,
+                lifecycle_clock_origin: tokio::time::Instant::now(),
             },
             scope,
             token,
@@ -950,6 +961,7 @@ impl ServiceProduct {
         token: CancellationToken,
         router_infos: Vec<i2pr_netdb::ValidatedRouterInfo>,
         store_config: RouterInfoStoreConfig,
+        lifecycle: crate::service_lifecycle::ServiceLifecycleController,
     ) -> Result<Self, ServiceProductError> {
         if !spec.ssu2_bind.ip().is_loopback() || spec.ssu2_bind.port() == 0 {
             token.cancel(i2pr_core::CancellationReason::OperatorRequest);
@@ -1094,6 +1106,7 @@ impl ServiceProduct {
             let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
             return Err(ServiceProductError::ManagerBuild(error.to_string()));
         }
+        lifecycle.set_status(crate::service_lifecycle::LifecycleStatus::Active);
         let service_generation_id = manager.committed_generation_id();
         Ok(Self {
             manager,
@@ -1112,6 +1125,9 @@ impl ServiceProduct {
                 options: spec.options,
                 startup_inbound,
                 startup_inbound_bytes,
+                lifecycle: lifecycle.clone(),
+                retirement: None,
+                lifecycle_clock_origin: tokio::time::Instant::now(),
             },
             scope,
             token,
@@ -1281,6 +1297,76 @@ impl ServiceProduct {
         now_ms: u64,
     ) -> Result<(), ServiceProductError> {
         let now_seconds = now_ms / 1000;
+        let monotonic_ms = self
+            .inner
+            .lifecycle_clock_origin
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        if self.inner.lifecycle.command() == crate::service_lifecycle::LifecycleCommand::Hard {
+            if let Some(retirement) = self.inner.retirement {
+                let hard_stopped = retirement.hard_stop();
+                self.inner
+                    .lifecycle
+                    .set_status(hard_stopped.status(monotonic_ms));
+            }
+            self.inner.lifecycle.request_hard();
+            return Ok(());
+        }
+        if self.inner.lifecycle.command() == crate::service_lifecycle::LifecycleCommand::Graceful
+            && self.inner.retirement.is_none()
+        {
+            self.manager.stop_admission();
+            for destination_id in self.inner.destination_ids.iter().copied() {
+                let _ = self
+                    .inner
+                    .coordinator
+                    .cancel_destination_builds(destination_id);
+            }
+            let published_lease_expiry_wall_ms = self
+                .inner
+                .destination_ids
+                .iter()
+                .filter_map(|destination_id| {
+                    self.manager
+                        .with_destination_runtime(*destination_id, |destination| {
+                            destination
+                                .inbound_lease_sources(now_seconds)
+                                .iter()
+                                .map(|source| source.tunnel_expires_seconds())
+                                .max()
+                        })
+                        .flatten()
+                })
+                .max()
+                .map(|expires_seconds| expires_seconds.saturating_mul(1000));
+            let published_lease_expiry_ms = published_lease_expiry_wall_ms
+                .map(|expiry_ms| monotonic_ms.saturating_add(expiry_ms.saturating_sub(now_ms)));
+            self.inner.retirement = Some(crate::service_lifecycle::RetirementState::begin(
+                monotonic_ms,
+                published_lease_expiry_ms,
+                self.manager.aggregate_active_connections(),
+            ));
+            self.inner.publication_pending.clear();
+            self.inner.publication_retry_after.clear();
+        }
+        if let Some(retirement) = self.inner.retirement {
+            let retirement =
+                retirement.advance(monotonic_ms, self.manager.aggregate_active_connections());
+            self.inner.retirement = Some(retirement);
+            self.inner
+                .lifecycle
+                .set_status(retirement.status(monotonic_ms));
+            if matches!(
+                retirement,
+                crate::service_lifecycle::RetirementState::Drained
+                    | crate::service_lifecycle::RetirementState::HardCapReached
+                    | crate::service_lifecycle::RetirementState::HardStopped
+            ) {
+                return Ok(());
+            }
+        }
+        let retiring = self.inner.retirement.is_some();
         let current_generation = self.manager.committed_generation_id();
         if current_generation != self.inner.service_generation_id {
             for destination_id in self.inner.destination_ids.iter().copied() {
@@ -1394,6 +1480,12 @@ impl ServiceProduct {
                             bridge.remove_router_outbound_pool_slot(slot)
                         });
                 }
+            }
+            if retiring {
+                // Existing published leases and data-plane registrations age
+                // out naturally. Do not refresh publication or replace pool
+                // material after the group has entered Retiring.
+                continue;
             }
             let inbound_receive_ids: Vec<u32> = inbound_registrations
                 .iter()
@@ -1629,10 +1721,11 @@ impl ServiceProduct {
     /// documented by the fallback still succeeding; both forms are
     /// accepted without a third decoder implementation.
     pub(crate) async fn process_inbound(&mut self, inbound: &Ssu2InboundI2np) {
-        if let Ok(routed) = self
-            .inner
-            .coordinator
-            .route_inbound_i2np(inbound, wall_ms())
+        if self.inner.retirement.is_none()
+            && let Ok(routed) = self
+                .inner
+                .coordinator
+                .route_inbound_i2np(inbound, wall_ms())
         {
             for outcome in routed.coordinator {
                 if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } =
@@ -2800,7 +2893,9 @@ async fn provision_all_service_router_material(
             })?;
         let mut outbound_roles = Vec::with_capacity(usize::from(outbound_target));
         let mut inbound_receive_ids = Vec::with_capacity(usize::from(inbound_target));
+        let mut pending_outbound = Vec::with_capacity(usize::from(outbound_target));
         for build_index in 0..inbound_target.max(outbound_target) {
+            let need_inbound = build_index < inbound_target;
             let outbound_candidates = if build_index < outbound_target {
                 Some(select_destination_path_os(&candidates)?)
             } else {
@@ -2825,7 +2920,8 @@ async fn provision_all_service_router_material(
                     )));
                 }
             }
-            let bridge = ShortBuildI2npBridge::new();
+            let inbound_bridge = ShortBuildI2npBridge::new();
+            let outbound_bridge = ShortBuildI2npBridge::new();
             let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
                 ServiceProductError::Provisioning(
                     "operating-system randomness unavailable".to_owned(),
@@ -2894,7 +2990,7 @@ async fn provision_all_service_router_material(
             let inbound_creator = TunnelId::new(ib_creator).map_err(|_| {
                 ServiceProductError::Provisioning(format!("{spec_id}: bad inbound creator id"))
             })?;
-            let outbound = outbound_peers.map(|peers| DestinationBuildRequest {
+            let mut outbound = outbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
                 direction: BuildDirection::Outbound,
                 peers,
@@ -2903,19 +2999,8 @@ async fn provision_all_service_router_material(
                 outbound_reply_router: Some(peer.local_hash),
                 originator_hash: None,
             });
-            if let Some(outbound) = outbound {
-                coordinator
-                    .submit_destination(
-                        outbound,
-                        &delivery,
-                        &bridge,
-                        BridgeHeader::ShortTransport {
-                            message_id: message_base | 0x01,
-                            expiration_seconds: wall_secs().saturating_add(60) as u32,
-                        },
-                        &mut rng,
-                    )
-                    .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            if let Some(outbound) = outbound.take() {
+                pending_outbound.push((outbound, outbound_bridge, message_base | 0x01));
             }
             let inbound = inbound_peers.map(|peers| DestinationBuildRequest {
                 destination_id: runtime.destination_id,
@@ -2931,7 +3016,7 @@ async fn provision_all_service_router_material(
                     .submit_destination(
                         inbound,
                         &delivery,
-                        &bridge,
+                        &inbound_bridge,
                         BridgeHeader::ShortTransport {
                             message_id: message_base | 0x02,
                             expiration_seconds: wall_secs().saturating_add(60) as u32,
@@ -2941,14 +3026,11 @@ async fn provision_all_service_router_material(
                     .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
             }
             // Wait for both installs.
-            let mut outbound_binding: Option<ActivatedDestinationBinding> = None;
             let mut installed_inbound = false;
-            let need_outbound = build_index < outbound_target;
-            let need_inbound = build_index < inbound_target;
             let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
-            while tokio::time::Instant::now() < install_deadline
-                && ((need_outbound && outbound_binding.is_none())
-                    || (need_inbound && !installed_inbound))
+            while need_inbound
+                && !installed_inbound
+                && tokio::time::Instant::now() < install_deadline
             {
                 let Some(inbound_msg) = wait_for_startup_inbound(
                     options.poll_interval,
@@ -2978,7 +3060,12 @@ async fn provision_all_service_router_material(
                                     .to_owned(),
                             ));
                         }
-                        let binding = register_destination_material(
+                        if direction != BuildDirection::Inbound {
+                            return Err(ServiceProductError::Provisioning(
+                                "inbound startup received a non-inbound build result".to_owned(),
+                            ));
+                        }
+                        let _binding = register_destination_material(
                             manager,
                             coordinator,
                             destination_id,
@@ -2986,37 +3073,12 @@ async fn provision_all_service_router_material(
                             direction,
                             wall_secs(),
                         )?;
-                        match direction {
-                            BuildDirection::Outbound => outbound_binding = Some(binding),
-                            BuildDirection::Inbound => installed_inbound = true,
-                        }
+                        installed_inbound = true;
                     }
                 }
             }
-            if need_outbound && outbound_binding.is_none() {
-                return Err(ServiceProductError::OutboundBuildMissing);
-            }
             if need_inbound && !installed_inbound {
                 return Err(ServiceProductError::InboundBuildMissing);
-            }
-            // Transfer each outbound secret role to the service bridge while
-            // retaining its public registration in the group's canonical pool.
-            if let Some(outbound_binding) = outbound_binding {
-                let gateway_role = coordinator
-                    .registry_mut()
-                    .remove_outbound(outbound_binding.role_slot)
-                    .ok_or_else(|| {
-                        ServiceProductError::Provisioning(format!(
-                            "{spec_id}: outbound role missing"
-                        ))
-                    })?;
-                outbound_roles.push((
-                    outbound_binding.pool_slot,
-                    i2pr_client::DestinationOutboundRole::from_role(
-                        gateway_role,
-                        outbound_binding.expires_at_ms,
-                    ),
-                ));
             }
             // The inbound creator id is the exact receive id registered by the
             // established material. Resolve it directly; never infer ownership
@@ -3054,6 +3116,91 @@ async fn provision_all_service_router_material(
             return Err(ServiceProductError::Provisioning(format!(
                 "{spec_id}: group pool is below its usable inbound minimum"
             )));
+        }
+        let delivery = ssu2_handle.delivery().clone();
+        if !pending_outbound.is_empty()
+            && !crate::service_lifecycle::wait_for_outbound_pool_start(cancellation).await
+        {
+            return Err(ServiceProductError::Provisioning(
+                "startup cancelled before outbound pool start".to_owned(),
+            ));
+        }
+        for (outbound, bridge, message_id) in pending_outbound {
+            let mut rng = ChaCha8Rng::try_from_os_rng().map_err(|_| {
+                ServiceProductError::Provisioning(
+                    "operating-system randomness unavailable".to_owned(),
+                )
+            })?;
+            coordinator
+                .submit_destination(
+                    outbound,
+                    &delivery,
+                    &bridge,
+                    BridgeHeader::ShortTransport {
+                        message_id,
+                        expiration_seconds: wall_secs().saturating_add(60) as u32,
+                    },
+                    &mut rng,
+                )
+                .map_err(|error| ServiceProductError::Provisioning(error.to_string()))?;
+            let install_deadline = tokio::time::Instant::now() + options.i2pd_accept_timeout;
+            let mut binding = None;
+            while binding.is_none() && tokio::time::Instant::now() < install_deadline {
+                let Some(inbound_msg) = wait_for_startup_inbound(
+                    options.poll_interval,
+                    cancellation,
+                    ssu2_handle.next_inbound(),
+                )
+                .await?
+                else {
+                    continue;
+                };
+                let routed = coordinator.route_inbound_i2np(&inbound_msg, wall_ms());
+                queue_startup_inbound(startup_inbound, startup_inbound_bytes, inbound_msg)?;
+                let Ok(routed) = routed else {
+                    continue;
+                };
+                for outcome in routed.coordinator {
+                    let BuildCoordinatorOutcome::DestinationEstablished {
+                        attempt_id,
+                        destination_id,
+                        direction,
+                        ..
+                    } = outcome
+                    else {
+                        continue;
+                    };
+                    if destination_id != runtime.destination_id
+                        || direction != BuildDirection::Outbound
+                    {
+                        return Err(ServiceProductError::Provisioning(
+                            "outbound-first startup received a mismatched build result".to_owned(),
+                        ));
+                    }
+                    binding = Some(register_destination_material(
+                        manager,
+                        coordinator,
+                        destination_id,
+                        attempt_id,
+                        direction,
+                        wall_secs(),
+                    )?);
+                }
+            }
+            let binding = binding.ok_or(ServiceProductError::OutboundBuildMissing)?;
+            let gateway_role = coordinator
+                .registry_mut()
+                .remove_outbound(binding.role_slot)
+                .ok_or_else(|| {
+                    ServiceProductError::Provisioning(format!("{spec_id}: outbound role missing"))
+                })?;
+            outbound_roles.push((
+                binding.pool_slot,
+                i2pr_client::DestinationOutboundRole::from_role(
+                    gateway_role,
+                    binding.expires_at_ms,
+                ),
+            ));
         }
         let inbound_expires_at_ms = lease_sources
             .iter()

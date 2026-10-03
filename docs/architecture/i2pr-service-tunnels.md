@@ -931,6 +931,27 @@ readiness signal are delayed until every enabled group meets its usable-pool
 threshold. This local composition does not qualify external reachability or
 anonymity properties.
 
+### Plan 316 graceful service-group retirement
+
+The normal daemon's first shutdown signal enters a service-group drain before
+the supervisor's root cancellation. `ServiceTunnelManager::stop_admission`
+cancels each runtime's separate admission token; existing connection tasks keep
+the service cancellation token and router delivery path until the drain ends.
+The group product stops build replacement and LeaseSet refresh, continues
+dispatching inbound delivery, and lets published leases and their tunnel roles
+expire. Retirement completes when the latest published inbound lease expiry
+has passed and tracked application connections reach zero. A local 11-minute
+hard cap bounds the wait. A second signal or fatal supervisor failure skips
+this phase and cancels the supervisor immediately. The product lifecycle
+status carries only phase and coarse remaining-time bucket values.
+
+Startup provisions an inbound path first, waits for it to install, then waits
+one second before submitting the initial outbound path. The normal group
+readiness gate still requires the configured minimum usable inbound pool before
+application supervisors begin. Java I2P's corresponding ordering is reference
+behavior; this bounded i2pr timing policy does not claim Java-equivalent
+anonymity or application fingerprinting behavior.
+
 ## Cross-references
 
 - Plans 173 (roadmap authority), 174 (foundation),

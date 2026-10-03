@@ -62,6 +62,15 @@ missing peers, bad selected-peer address material, failed builds, cancellation,
 or insufficient usable pools fail startup before application listeners accept.
 This is a local product composition boundary and makes no public-network or
 anonymity claim.
+Plan 316 gives that owner a bounded shutdown phase: the first signal stops new
+service admission and group-pool replacement/publication refresh while the
+existing SSU2 dispatcher and service delivery remain alive. The drain ends when
+published inbound leases have expired and tracked service connections reach
+zero, or at the 11-minute hard cap. A second signal upgrades to immediate
+supervisor shutdown; startup-time signals and supervisor failures bypass the
+drain. The one-second outbound startup delay begins after the first inbound
+lease is usable. Status contains only a lifecycle phase and coarse remaining
+time bucket.
 Plan 190 isolates and corrects the inbound NetDB reply-path
 metadata defect that left 5/7 destination rows blocked after the
 Plan 188 installs (typed public `InboundGatewayRoute` in
@@ -802,7 +811,7 @@ the row count matches the filesystem:
 | `src/addressbook.rs` | Plan 294 canonical AddressBook runtime owner: `[addressbook]` config, current/backup/import activation rule, transactional mutations with rollback, generation persistence, shared resolver cell, bounded refresh queue + diagnostic artifact, snapshot-artifact import, cadence worker driver | `AddressBookManager`, `AddressBookSubsystemConfig`, `SharedAddressBook`, `AddressBookManagerError`, `IngestReport` |
 | `src/control_sources.rs` | Plan 295 control-plane source owners: bounded redacted `LogRing` (INFO+, secret markers, 256 entries, 192 B lines) with the `tracing` layer feed, explicit `BanLedger` attesting the empty set, rolling `ControlMetrics` (O(1) tick over registered transport counters, bandwidth pair, `ssu2.*` rates, build outcomes) | `LogRing`, `LogRingLayer`, `BanLedger`, `ControlMetrics`, `MAX_LOG_RING_ENTRIES`, `MAX_LOG_LINE_BYTES`, `MAX_CONTROL_RATES` |
 | `src/service_tunnels_tls.rs` | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
-| `src/service_tunnels.rs` | M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle; Plan 309 gives each shared group one persistent/ephemeral identity, Streaming bridge, and registry owner while retaining per-service listeners and server-port dispatch; Plan 289 adds the drained-runtime prompt-stop path (`ServiceRuntime::cancellation_token` observed by client/server accept and resolve-park loops) and the committed-generation spec lookup so control-reconciled runtimes resolve without a construction-config rewrite; Plan 290 adds the composed-family dispatch (`is_connect_client`/`is_socks_irc`/`is_http_server`/`is_http_bidir`), shared `poll_streaming_accept`/`accept_server_syn`, and the server-side `ServicePumpEndpoint` direction; Plan 292 adds the pre-SYN access gate with `access_denied` counting, the per-peer deterministic source dial (`dial_server_target`) with counted `AddrNotAvailable` fallback, the 5 s idle sweeper with close/rebuild/reduce transactions, and live committed-spec readers for in-place edits; Plan 294 adds the canonical address-book step on static-alias miss (aliases win; hits decode through the existing local/remote machinery); Plan 296 adds multihoming target selection (per-connection round-robin over the committed target list with sequential failover inside the overall connect deadline, rotation counter advances only for multihomed specs) and the reply-bundling sweep (consecutive same-remote groups bundle into one reply with per-index counters, committed flag read per sweep); Plan 297 adds the `use_ssl` server TLS dial (verified TLS under the installed policy with typed counted failures and per-connection committed reads, `ServerTargetStream` plaintext/TLS union over the generic pump) | `ServiceTunnelManager`, `DestinationGroupRuntime`, `register_service_tunnel_manager`, `set_addressbook_handle` |
+| `src/service_tunnels.rs` | M10 `ServiceTunnelManager` with explicit Destination-group ownership and per-service listener lifecycle; Plan 309 gives each shared group one persistent/ephemeral identity, Streaming bridge, and registry owner while retaining per-service listeners and server-port dispatch; Plans 289 and 316 separate runtime cancellation from admission cancellation so per-generation removal or graceful router retirement can stop new accepts while existing connections retain their cancellation token and the committed-generation spec lookup so control-reconciled runtimes resolve without a construction-config rewrite; Plan 290 adds the composed-family dispatch (`is_connect_client`/`is_socks_irc`/`is_http_server`/`is_http_bidir`), shared `poll_streaming_accept`/`accept_server_syn`, and the server-side `ServicePumpEndpoint` direction; Plan 292 adds the pre-SYN access gate with `access_denied` counting, the per-peer deterministic source dial (`dial_server_target`) with counted `AddrNotAvailable` fallback, the 5 s idle sweeper with close/rebuild/reduce transactions, and live committed-spec readers for in-place edits; Plan 294 adds the canonical address-book step on static-alias miss (aliases win; hits decode through the existing local/remote machinery); Plan 296 adds multihoming target selection (per-connection round-robin over the committed target list with sequential failover inside the overall connect deadline, rotation counter advances only for multihomed specs) and the reply-bundling sweep (consecutive same-remote groups bundle into one reply with per-index counters, committed flag read per sweep); Plan 297 adds the `use_ssl` server TLS dial (verified TLS under the installed policy with typed counted failures and per-connection committed reads, `ServerTargetStream` plaintext/TLS union over the generic pump) | `ServiceTunnelManager`, `DestinationGroupRuntime`, `register_service_tunnel_manager`, `set_addressbook_handle` |
 | `src/service_tunnels_http.rs` | HTTP proxy executor (one loopback listener per `http-client` spec); Plan 290 adds the strict-CONNECT client executor (`run_connect_only_connection`, `run_connect_client_loop`) and the shared SOCKS version-peek negotiator reused by SOCKS-IRc; Plan 292 adds guarded-listener proxy authentication (407 challenge, verifier-only options) | HTTP executor types |
 | `src/service_tunnels_socks5.rs` | SOCKS5 executor (one loopback listener per `socks5-client` spec); Plan 290 shares the version-peek negotiator and rejection helpers with SOCKS-IRc; Plan 292 adds guarded-listener RFC 1929 authentication (`05 02` + subnegotiation, no-auth refused, SOCKS4a rejected without downgrade) | SOCKS5 executor types |
 | `src/service_tunnels_irc_client.rs` | IRC client executor (one loopback listener per `irc-client` spec); Plan 290 extends the filtered loop with `initial_inbound` for the SOCKS-to-IRC handoff | IRC client executor types |
@@ -981,13 +990,17 @@ execute(cli: Cli) -> Result<CommandOutcome, DaemonError>
    g. return a sanitized `BootstrapReport`.
 3. Build the service graph via `build_daemon_graph(&config)`.
 4. Create the `Supervisor` with the graph.
-5. Register a ctrl-c handler that triggers graceful shutdown.
-6. Run the supervisor loop until shutdown or failure.
+5. Run the supervisor alongside the signal owner. The first signal starts
+   Plan 316 group retirement when groups are active; startup-time signals and a
+   second signal request immediate supervisor shutdown.
+6. Keep the normal SSU2 owner active through the bounded service-group drain,
+   then cancel the supervisor and join its service scopes.
 
 NTCP2 is excluded from the service graph under current authority.
-The graph contains a `lifecycle` service that waits for the
-shutdown signal and a `netdb-bootstrap` service that observes the
-supervisor's cancellation token.
+The graph contains a `lifecycle` service that observes supervisor
+cancellation and a `netdb-bootstrap` service that observes the same
+token. The signal owner lives in `run_daemon` so it can wait for service
+retirement before cancelling that token.
 
 `bootstrap_daemon(&config, now_seconds, offline_reseed_path)` is
 the Plan 106 synchronous pipeline. The function returns both the

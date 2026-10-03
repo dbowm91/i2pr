@@ -30,6 +30,7 @@ pub mod router_i2np;
 pub mod sam;
 pub mod service_delivery;
 pub mod service_generation;
+mod service_lifecycle;
 pub mod service_product;
 pub mod service_tunnels;
 pub mod service_tunnels_http;
@@ -169,7 +170,8 @@ pub fn build_daemon_graph_with_inspection(
     config: &Config,
 ) -> Result<(i2pr_runtime::ServiceGraph, Arc<InspectionHandles>), DaemonError> {
     let inspection = Arc::new(InspectionHandles::from_config(config));
-    let graph = build_daemon_graph_inner(config, &inspection, None)?;
+    let lifecycle = crate::service_lifecycle::ServiceLifecycleController::new();
+    let graph = build_daemon_graph_inner(config, &inspection, None, lifecycle)?;
     Ok((graph, inspection))
 }
 
@@ -178,6 +180,7 @@ fn build_daemon_graph_inner(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
     bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+    service_lifecycle: crate::service_lifecycle::ServiceLifecycleController,
 ) -> Result<i2pr_runtime::ServiceGraph, DaemonError> {
     let has_enabled_service_tunnels = config
         .service_tunnels
@@ -185,6 +188,9 @@ fn build_daemon_graph_inner(
         .tunnels
         .iter()
         .any(|tunnel| tunnel.enabled);
+    if !has_enabled_service_tunnels {
+        service_lifecycle.set_status(crate::service_lifecycle::LifecycleStatus::NoGroups);
+    }
     if has_enabled_service_tunnels && bootstrap.is_none() {
         return Err(DaemonError::RuntimeSupervisorFailed(
             "enabled service tunnels require the normal-daemon Destination-group provider, which is not active"
@@ -212,14 +218,16 @@ fn build_daemon_graph_inner(
             DaemonError::RuntimeSupervisorFailed(format!("failed to create service graph: {e}"))
         })?;
 
+    let group_lifecycle = service_lifecycle.clone();
     let lifecycle_name = ServiceName::new("lifecycle").expect("valid service name");
     builder
         .register(ServiceSpec::new(
             lifecycle_name,
             ServiceClassification::Essential,
-            |_ctx| {
-                Box::pin(async {
-                    tokio::signal::ctrl_c().await.ok();
+            move |ctx| {
+                let cancellation = ctx.cancellation().clone();
+                Box::pin(async move {
+                    cancellation.cancelled().await;
                     i2pr_runtime::ServiceResult::RequestedShutdown
                 })
             },
@@ -312,7 +320,14 @@ fn build_daemon_graph_inner(
     }
 
     if config.ssu2.enabled {
-        register_ssu2_service(&mut builder, config, inspection, &addressbook, bootstrap)?;
+        register_ssu2_service(
+            &mut builder,
+            config,
+            inspection,
+            &addressbook,
+            bootstrap,
+            group_lifecycle,
+        )?;
     }
 
     builder
@@ -780,6 +795,7 @@ fn register_ssu2_service(
     inspection: &Arc<InspectionHandles>,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
     bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
+    group_lifecycle: crate::service_lifecycle::ServiceLifecycleController,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
@@ -808,6 +824,7 @@ fn register_ssu2_service(
                 let service_tunnels = service_tunnels.clone();
                 let bootstrap = bootstrap.clone();
                 let addressbook = Arc::clone(&addressbook);
+                let group_lifecycle = group_lifecycle.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -1068,6 +1085,7 @@ fn register_ssu2_service(
                             token.clone(),
                             router_infos,
                             router_info_store_config,
+                            group_lifecycle.clone(),
                         )
                         .await
                         {
@@ -1286,8 +1304,13 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
     );
 
     let inspection = Arc::new(InspectionHandles::from_config(&config));
-    let graph =
-        build_daemon_graph_inner(&config, &inspection, Some(Arc::clone(&bootstrap_handle)))?;
+    let service_lifecycle = crate::service_lifecycle::ServiceLifecycleController::new();
+    let graph = build_daemon_graph_inner(
+        &config,
+        &inspection,
+        Some(Arc::clone(&bootstrap_handle)),
+        service_lifecycle.clone(),
+    )?;
     // Publish the local router hash for the Plan 288 inspection plane.
     // The hash is public RouterInfo material; no secret crosses into the
     // control plane. When bootstrap built no local RouterInfo the row
@@ -1313,15 +1336,41 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         })?;
 
     let handle = supervisor.handle();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        handle.shutdown(i2pr_runtime::ShutdownReason::Requested);
-    });
-
-    let report = supervisor
-        .run()
-        .await
-        .map_err(|e| DaemonError::RuntimeSupervisorFailed(format!("supervisor failed: {e}")))?;
+    let mut supervisor_run = Box::pin(supervisor.run());
+    let report = 'running: loop {
+        tokio::select! {
+            result = &mut supervisor_run => {
+                break 'running result.map_err(|e| {
+                    DaemonError::RuntimeSupervisorFailed(format!("supervisor failed: {e}"))
+                })?;
+            }
+            signal = tokio::signal::ctrl_c() => {
+                if signal.is_ok()
+                    && service_lifecycle.status()
+                        == crate::service_lifecycle::LifecycleStatus::Active
+                {
+                    service_lifecycle.request_graceful();
+                    tokio::select! {
+                        result = &mut supervisor_run => {
+                            break 'running result.map_err(|e| {
+                                DaemonError::RuntimeSupervisorFailed(format!("supervisor failed: {e}"))
+                            })?;
+                        }
+                        _ = tokio::signal::ctrl_c() => {
+                            service_lifecycle.request_hard();
+                            handle.shutdown(i2pr_runtime::ShutdownReason::Signal);
+                        }
+                        _ = service_lifecycle.wait_for_terminal_status() => {
+                            handle.shutdown(i2pr_runtime::ShutdownReason::Requested);
+                        }
+                    }
+                } else {
+                    service_lifecycle.request_hard();
+                    handle.shutdown(i2pr_runtime::ShutdownReason::Requested);
+                }
+            }
+        }
+    };
 
     if !report.was_graceful() {
         return Err(DaemonError::RuntimeShutdownTimeout);
@@ -1522,8 +1571,13 @@ mod tests {
             config.reseed.clone(),
         )));
         let inspection = Arc::new(InspectionHandles::from_config(&config));
-        let error = build_daemon_graph_inner(&config, &inspection, Some(bootstrap))
-            .expect_err("individual enabled tunnel must honor the subsystem switch");
+        let error = build_daemon_graph_inner(
+            &config,
+            &inspection,
+            Some(bootstrap),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
+        )
+        .expect_err("individual enabled tunnel must honor the subsystem switch");
         assert!(matches!(
             error,
             DaemonError::RuntimeSupervisorFailed(message)
@@ -1545,8 +1599,13 @@ mod tests {
             config.reseed.clone(),
         )));
         let inspection = Arc::new(InspectionHandles::from_config(&config));
-        let graph = build_daemon_graph_inner(&config, &inspection, Some(bootstrap))
-            .expect("normal graph accepts enabled groups with their production provider");
+        let graph = build_daemon_graph_inner(
+            &config,
+            &inspection,
+            Some(bootstrap),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
+        )
+        .expect("normal graph accepts enabled groups with their production provider");
         assert!(
             graph
                 .startup_order()

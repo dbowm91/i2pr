@@ -916,7 +916,7 @@ pub async fn run_socks5_client_loop(
         "socks5 client tunnel bound loopback listener"
     );
     let options = spec.socks5_options.clone().unwrap_or_default();
-    let drain_cancel = runtime.cancellation_token();
+    let drain_cancel = runtime.admission_cancellation_token();
     loop {
         let accept = tokio::select! {
             biased;
