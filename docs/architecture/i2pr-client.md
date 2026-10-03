@@ -90,7 +90,10 @@ the outbound queue, and re-exports `deliver`, `LocalDeliverySender`,
 `LocalDeliveryError` from the `i2pr-client` crate root. The SAM
 bridge in `i2pr-daemon` consumes this seam through the new
 `bridge_to_peer` function and never retains the Plan 138
-`CapturedOutbound` test queue.
+`CapturedOutbound` test queue. Plan 296 adds `deliver_batched`
+(same-remote batches as one bundled reply with per-index reports
+and no-double-send fallback, also re-exported) sharing the
+request-decode, drive, and streaming-drain pieces with `deliver`.
 
 Plan 144 extends the local delivery seam with a dual-streaming-manager
 routing rule. `LocalDeliveryReceiver` gains a `canonical_streaming:
@@ -336,14 +339,15 @@ crates/i2pr-client/
 │   ├── lib.rs            facade and re-exports
 │   ├── config.rs         DestinationConfig, RegistryConfig, bounded defaults
 │   ├── identity.rs       DestinationIdentity, DestinationId (non-Clone secret owner)
-│   ├── pool.rs           DestinationTunnelPool wrapping BoundedTunnelPool
+│   ├── pool.rs           DestinationTunnelPool wrapping BoundedTunnelPool; Plan 296 adds standby accounting (effective base-plus-backup targets, standby promotion counting on failure/expiry loss, registration bounded at the effective target)
 │   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
 │   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
 │   ├── session.rs        Plan 126/127 EciesSessionManager, EciesSessionConfig, PlannedOutboundForm, classify + bound NS/NSR/ES producers
 │   ├── lease_selection.rs Plan 122 LeaseSelector / LeaseSelectionPolicy / SelectedLease
-│   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2
-│   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError
+│   ├── routing.rs        Plan 122/127 DestinationRouting, OutboundRequest, compose_outbound_delivery, OutboundDeliveryPlan, install_remote_lease_set2; Plan 296 adds the bundled-reply composer sharing the clove bytes and Garlic carrier
+│   ├── bundle.rs         Plan 296 garlic reply-bundling primitive: ReplyBundling policy, BundleError, multi-data-clove reply encoder (at most four cloves under the payload ceiling)
+│   ├── dispatch.rs       Plan 122/127 DestinationDispatcher, bound-NS LS2 sender binding, InboundDispatchOutcome / InboundDispatchError; Plan 296 routes every non-LeaseSet2 data clove with atomic all-or-nothing admission and a FIFO application queue matching BoundedPayloadQueue
 │   ├── streaming/        Plan 125/128/129 Streaming core (`mod`, `manager`, `connection`, `config`, `send_window`, `recv_window`, `retransmit`, `congestion`, `local_delivery`, `events`, `errors`, `clock`, `transport`, `testing`): StreamingManager, StreamingConnection, signed SYN / CLOSE / RESET, RFC 1952 gzip envelope, poll_retransmits, drain_delivered
 │   ├── streaming_adapter.rs Plan 129 combined outbound/inbound StreamingDestinationAdapter (TransportSendRequest -> compose_outbound_delivery; recovered I2NP Data -> gzip -> protocol-6 dispatch); Plan 291 adds the `DatagramReceived` outcome carrying decoded 17/18 payloads to the destination datagram manager
 │   ├── datagram.rs       Plan 291 runtime-neutral repliable-datagram substrate: DatagramManager, Datagram1 framing + Ed25519 sender authentication, raw payloads, bounded send/receive queues, typed errors

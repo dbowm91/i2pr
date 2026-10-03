@@ -1109,8 +1109,7 @@ pub fn build_control_spec(
                         option: key.clone(),
                         reason: "tunnel variance must be an integer within -2..=+2",
                     })?;
-                if variance < -MAX_TUNNEL_LENGTH_VARIANCE
-                    || variance > MAX_TUNNEL_LENGTH_VARIANCE
+                if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&variance)
                 {
                     return Err(ControlError::InvalidOption {
                         option: key.clone(),
@@ -3820,10 +3819,7 @@ mod tests {
             );
         }
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
-        options.insert(
-            "sig_type".to_owned(),
-            "EDDSA_SHA512_ED25519".to_owned(),
-        );
+        options.insert("sig_type".to_owned(), "EDDSA_SHA512_ED25519".to_owned());
         let error = normalize_definition("bad", TunnelType::Client, &options, false)
             .expect_err("sig_type rejected");
         assert!(
@@ -3859,9 +3855,8 @@ mod tests {
         for (key, value) in [("tunnel_backup_quantity", "2"), ("tunnel_variance", "-1")] {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert(key.to_owned(), value.to_owned());
-            let definition =
-                normalize_definition("shp296", TunnelType::Client, &options, false)
-                    .expect("296 shaping admitted");
+            let definition = normalize_definition("shp296", TunnelType::Client, &options, false)
+                .expect("296 shaping admitted");
             let spec = build_control_spec(&definition).expect("296 shaping builds");
             if key == "tunnel_backup_quantity" {
                 assert_eq!(spec.shaping.backup_quantity, 2);
@@ -3873,12 +3868,10 @@ mod tests {
         options.insert("tunnel_backup_quantity".to_owned(), "2".to_owned());
         options.insert("inbound_quantity".to_owned(), "4".to_owned());
         options.insert("outbound_quantity".to_owned(), "4".to_owned());
-        let definition =
-            normalize_definition("shp296b", TunnelType::Client, &options, false)
-                .expect("296 shaping admitted");
+        let definition = normalize_definition("shp296b", TunnelType::Client, &options, false)
+            .expect("296 shaping admitted");
         let spec = build_control_spec(&definition).expect("296 shaping builds");
-        let projected =
-            crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec);
+        let projected = crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec);
         assert_eq!(projected.backup_quantity(), 2);
         assert_eq!(projected.effective_inbound_target(), 6);
         assert_eq!(projected.effective_outbound_target(), 6);
@@ -3922,9 +3915,8 @@ mod tests {
                 client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
             };
             options.insert("reply_bundling".to_owned(), "true".to_owned());
-            let definition =
-                normalize_definition("bnd296", tunnel_type, &options, false)
-                    .expect("bundling admitted");
+            let definition = normalize_definition("bnd296", tunnel_type, &options, false)
+                .expect("bundling admitted");
             let spec = build_control_spec(&definition).expect("bundling builds");
             assert!(spec.reply_bundling);
             assert!(

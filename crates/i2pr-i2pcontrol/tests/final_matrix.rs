@@ -53,8 +53,9 @@ fn plan295_final_public_contract_census() {
     assert_eq!(TUNNEL_TYPES.len(), 12);
     assert_eq!(TUNNEL_OPTIONS.len(), 46);
 
-    // Type-by-option cells: 227 apply + 37 not-applicable + 30
-    // explicit incompatibilities (Plan 293) + 39 corrective-296 +
+    // Type-by-option cells: 266 apply + 37 not-applicable + 30
+    // explicit incompatibilities (Plan 293) + 0 corrective-296
+    // (Plan 296 closed every residual into an apply owner) +
     // 3 corrective-297.
     let mut apply = 0;
     let mut not_applicable = 0;
@@ -74,10 +75,10 @@ fn plan295_final_public_contract_census() {
         }
     }
     assert_eq!(MATRIX.len(), 336);
-    assert_eq!(apply, 227);
+    assert_eq!(apply, 266);
     assert_eq!(not_applicable, 37);
     assert_eq!(incompatible, 30);
-    assert_eq!(corrective_296, 39);
+    assert_eq!(corrective_296, 0);
     assert_eq!(corrective_297, 3);
     assert_eq!(
         apply + not_applicable + incompatible + corrective_296 + corrective_297,

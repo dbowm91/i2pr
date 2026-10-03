@@ -379,7 +379,7 @@ fn drive_to_dispatch<R: CryptoRng + RngCore>(
     // 2. Drive the synthetic OBEP hop to recover the post-OBEP
     //    action (authenticated-router-link-bypassed local seam).
     let action = synthesise_obep_action(
-        &plan,
+        plan,
         sender.outbound,
         outbound_hop0_hash,
         outbound_hop1_hash,
@@ -510,10 +510,7 @@ fn drain_all_to_streaming(
     }
     let local_destination_hash_bytes: [u8; 32] = *sender.identity.id().as_hash().as_bytes();
     let mut fed = Vec::new();
-    while let Some(payload) = receiver
-        .dispatcher
-        .pop_payload(receiver.identity.id())
-    {
+    while let Some(payload) = receiver.dispatcher.pop_payload(receiver.identity.id()) {
         fed.push(feed_one_payload(
             payload.bytes().to_vec(),
             sender,
@@ -705,22 +702,22 @@ pub fn deliver_batched<R: CryptoRng + RngCore>(
             Err(_) => decode_failed.push(index),
         }
     }
-    if uniform_remote && outbound_requests.len() >= 2 && bundling.is_enabled() {
-        if let Some(remote_hash) = remote
-            && let Ok(plan) = compose_bundled_reply_delivery(
-                sender.routing,
-                sender.session,
-                sender.outbound,
-                sender.identity.id(),
-                sender.identity.static_secret_bytes(),
-                remote_hash,
-                &outbound_requests,
-                bundling,
-                sender.now_seconds,
-                sender.now_ms,
-                rng,
-            )
-        {
+    if uniform_remote && outbound_requests.len() >= 2 && bundling.is_enabled()
+        && let Some(remote_hash) = remote
+        && let Ok(plan) = compose_bundled_reply_delivery(
+            sender.routing,
+            sender.session,
+            sender.outbound,
+            sender.identity.id(),
+            sender.identity.static_secret_bytes(),
+            remote_hash,
+            &outbound_requests,
+            bundling,
+            sender.now_seconds,
+            sender.now_ms,
+            rng,
+        )
+    {
             let mut report = BatchedDeliveryReport::default();
             match drive_to_dispatch(
                 &plan,
@@ -764,7 +761,6 @@ pub fn deliver_batched<R: CryptoRng + RngCore>(
                 }
             }
             return BatchedAttempt::Bundled(report);
-        }
     }
     BatchedAttempt::Singles { decode_failed }
 }
@@ -872,8 +868,7 @@ mod tests {
     use crate::streaming::config::StreamingConfig;
     use i2pr_proto::streaming::{ClientPayload, encode_client_payload};
     use i2pr_tunnel::{
-        EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection,
-        TunnelPeer,
+        EstablishedHop, EstablishedNextHop, EstablishedRole, LayerKeys, TunnelDirection, TunnelPeer,
     };
 
     const NOW_SECONDS: u32 = 5_200;
@@ -979,9 +974,10 @@ mod tests {
         fn new(seed: u64) -> Self {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             let identity = DestinationIdentity::generate(&mut rng).expect("identity");
-            let mut pool =
-                crate::pool::DestinationTunnelPool::new(crate::config::DestinationConfig::balanced())
-                    .expect("pool");
+            let mut pool = crate::pool::DestinationTunnelPool::new(
+                crate::config::DestinationConfig::balanced(),
+            )
+            .expect("pool");
             pool.register_inbound(
                 inbound_tunnel(seed).into_extracted(),
                 u64::from(NOW_SECONDS),
@@ -1063,11 +1059,7 @@ mod tests {
 
     /// Drives the receiver's bound New Session into the sender so the
     /// sender holds a sealable reply context (the NSR form).
-    fn handshake_ns_for_sender(
-        sender: &mut Fixture,
-        receiver: &mut Fixture,
-        rng: &mut ChaCha8Rng,
-    ) {
+    fn handshake_ns_for_sender(sender: &mut Fixture, receiver: &mut Fixture, rng: &mut ChaCha8Rng) {
         let first = crate::session::encode_new_session_payload(
             NOW_SECONDS,
             &crate::session::local_clove(NOW_SECONDS, 1, vec![0xCC; 8]),
@@ -1176,9 +1168,7 @@ mod tests {
             }
             BatchedAttempt::Singles { .. } => panic!("enabled policy must bundle"),
         }
-        let first = receiver
-            .datagrams
-            .drain_received();
+        let first = receiver.datagrams.drain_received();
         assert_eq!(first.len(), 2, "both bundled payloads feed datagrams");
         assert_eq!(first[0].payload, b"batched-first-payload");
         assert_eq!(first[1].payload, b"batched-second-payload");

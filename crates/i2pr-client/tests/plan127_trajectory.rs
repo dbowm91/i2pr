@@ -1483,9 +1483,8 @@ fn plan_127_malformed_remote_does_not_poison_valid_session() {
     // decode intact and in order.
     let mut decoded = Vec::new();
     while let Some(queued) = side_b.dispatcher.pop_payload(side_b.identity.id()) {
-        let message =
-            I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
-                .expect("dec");
+        let message = I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+            .expect("dec");
         match message.body() {
             I2npBody::Data(body) => {
                 let envelope = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())

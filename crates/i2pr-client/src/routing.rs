@@ -50,9 +50,7 @@ use i2pr_tunnel::{
 };
 use rand_core::{CryptoRng, RngCore, TryRngCore};
 
-use crate::bundle::{
-    BundleError, ReplyBundling, encode_bundled_reply_payload,
-};
+use crate::bundle::{BundleError, ReplyBundling, encode_bundled_reply_payload};
 use crate::identity::DestinationId;
 use crate::lease_selection::{
     LeaseSelectionError, LeaseSelectionPolicy, LeaseSelector, SelectedLease,
@@ -1012,8 +1010,7 @@ pub fn compose_bundled_reply_delivery<R: CryptoRng + RngCore>(
         }
         cloves.push(clove);
     }
-    let payload_bytes =
-        encode_bundled_reply_payload(now_seconds, &cloves, bundling.max_cloves())?;
+    let payload_bytes = encode_bundled_reply_payload(now_seconds, &cloves, bundling.max_cloves())?;
     seal_wrap_and_forward(
         session,
         outbound,

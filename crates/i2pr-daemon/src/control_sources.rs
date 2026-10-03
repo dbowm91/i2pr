@@ -398,9 +398,7 @@ impl ControlMetrics {
             let secs = delta.as_secs_f64();
             // `partial_cmp` keeps the NaN guard explicit: a
             // non-positive or incomparable interval yields no rates.
-            if secs.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater)
-                || !state.observed
-            {
+            if secs.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) || !state.observed {
                 return;
             }
             // Per-second rates from cumulative deltas against the

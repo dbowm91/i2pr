@@ -158,9 +158,8 @@ mod tests {
         // Plan 296: N payloads encode to one DateTime-led sequence
         // carrying N data cloves, decodable by the shared path.
         let cloves = [data_clove(1), data_clove(2), data_clove(3)];
-        let bytes =
-            encode_bundled_reply_payload(1_000, &cloves, MAX_BUNDLED_DATA_CLOVES as u8)
-                .expect("bundle");
+        let bytes = encode_bundled_reply_payload(1_000, &cloves, MAX_BUNDLED_DATA_CLOVES as u8)
+            .expect("bundle");
         let sequence =
             EciesPayloadSequence::decode(&bytes, bytes.len(), false).expect("decode bundle");
         let data = sequence
@@ -177,7 +176,8 @@ mod tests {
     }
 
     #[test]
-    fn bundled_reply_rejects_empty_oversize_and_overcount() {        assert!(matches!(
+    fn bundled_reply_rejects_empty_oversize_and_overcount() {
+        assert!(matches!(
             encode_bundled_reply_payload(1_000, &[], 4),
             Err(BundleError::EmptyBundle)
         ));
@@ -190,7 +190,10 @@ mod tests {
         ];
         assert!(matches!(
             encode_bundled_reply_payload(1_000, &five, 4),
-            Err(BundleError::TooManyCloves { actual: 5, maximum: 4 })
+            Err(BundleError::TooManyCloves {
+                actual: 5,
+                maximum: 4
+            })
         ));
         let huge = [GarlicCloveBlock {
             delivery: i2pr_proto::GarlicDelivery::Local,
@@ -221,9 +224,8 @@ mod tests {
         let mut alice_session = EciesSessionManager::new(EciesSessionConfig::balanced());
         let mut bob_session = EciesSessionManager::new(EciesSessionConfig::balanced());
         let now_seconds = 1_000_000u32;
-        let first_payload =
-            crate::session::encode_new_session_payload(now_seconds, &data_clove(9))
-                .expect("first payload");
+        let first_payload = crate::session::encode_new_session_payload(now_seconds, &data_clove(9))
+            .expect("first payload");
         let outbound = alice_session
             .encrypt_to_remote(
                 DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xA1; 32])),
@@ -292,9 +294,8 @@ mod tests {
                 corners.now_seconds,
             )
             .expect("alice accepts reply");
-        let sequence =
-            EciesPayloadSequence::decode(&opened.payload, opened.payload.len(), false)
-                .expect("decode reply payload");
+        let sequence = EciesPayloadSequence::decode(&opened.payload, opened.payload.len(), false)
+            .expect("decode reply payload");
         let data = sequence
             .blocks()
             .iter()
@@ -316,8 +317,7 @@ mod tests {
         // five-clove envelope is rejected before any partial queue
         // effect.
         use i2pr_proto::{
-            Date, DeferredPayload, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE,
-            OpaqueMessageBody,
+            Date, DeferredPayload, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, OpaqueMessageBody,
         };
         let (mut corners, mut rng) = handshake();
         let cloves = [data_clove(7), data_clove(8)];

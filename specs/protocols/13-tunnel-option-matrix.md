@@ -22,7 +22,7 @@ explicit i2pr interpretations below.
 
 336 applicable cells (sum of inventory mask populations):
 
-- `APPLY_CELLS = 227`: a named runtime/persistence owner consumes
+- `APPLY_CELLS = 266`: a named runtime/persistence owner consumes
   the key for the kind. The owner string names the consuming
   struct/field/sweep, never a storage mirror.
 - `NOT_APPLICABLE_CELLS = 37`: the kind has no consuming layer for
@@ -36,8 +36,9 @@ explicit i2pr interpretations below.
   ordinary i2pr behavior. Determinations and evidence live in
   `specs/protocols/14-tunnel-deep-option-determinations.md`; Plan
   295 carries the limitations into the final support claim.
-- `CORRECTIVE_296_CELLS = 39` (pool backup-quantity/variance,
-  multihoming, reply bundling) and `CORRECTIVE_297_CELLS = 3`
+- `CORRECTIVE_296_CELLS = 0` (Plan 296 closed every residual into a
+  named apply owner: pool backup-quantity/variance, multihoming
+  target selection, reply bundling) and `CORRECTIVE_297_CELLS = 3`
   (server `use_ssl` local TLS identity). Rejected keys name the
   limitation or owning plan; nothing is accepted inertly.
 
@@ -62,8 +63,78 @@ and reproduces `DestinationConfig::balanced()`. Shaping edits
 replace the destination runtime (pools rebuild under the same
 identity; active streams follow the replace drain path).
 
-Backup quantity and variance have no pool primitive: they are
-`CorrectivePending` owned by Plan 296, never Apply.
+### Standby (`tunnel_backup_quantity`) and variance (`tunnel_variance`)
+
+Plan 296 owners. `tunnel_backup_quantity` (Proposal bound 0..=3)
+holds that many extra tunnels ready beyond each per-direction
+quantity target: the pool maximums become the effective targets
+(base plus backup) while usability still keys on the base target,
+established tunnels past the base count as standby, and standby
+promotes automatically when a base tunnel fails or expires (counted
+for evidence). Failures still count toward the replacement
+threshold even when standby covers them; build budgets are
+unchanged. Each direction's quantity plus backup must fit the pool
+directional maximum of 8 — oversums fail as `ContradictoryOptions`,
+never clamped.
+
+`tunnel_variance` (Proposal bound −2..=+2, a radius: the sign
+carries no direction) randomizes each build's hop length around the
+configured length, floored and ceiled at the pool hop policy
+(1..=8). Randomness is caller-supplied: production passes CSPRNG
+bytes and unit paths inject fixed bytes; the sampler never touches
+ambient RNG. Backup/variance edits ride the shaping struct, so
+they replace the destination runtime like every shaping edit.
+
+### Targets and multihoming
+
+The Proposal inventory carries no multi-target selection key:
+`target_host`/`target_port` (server TCP target) and
+`target_destination` (client I2P destination) are singular.
+Daemon TOML configuration supports a `targets` list (<= 8,
+loopback/`unix:`) with first-target fallback at runtime, but
+that is configuration-layer failover, not a control wire key.
+
+Plan 296 resolves `multihoming` (server kinds: generic, HTTP
+server, bidirectional) as documented target selection — the only
+semantic, with no session reply-info flag introduced and no silent
+reinterpretation: when set, each inbound connection dials a
+round-robin-selected target with sequential failover instead of
+the first target only. Every dial attempt shares the connection's
+overall connect deadline (refused targets fail over fast; an
+unresponsive target consumes the deadline, preserving the existing
+timeout semantic); only an all-target failure counts a failed
+connect. The flag requires at least two configured targets (fewer
+is a `ContradictoryOptions` error, never inert) and loopback-TCP
+targets only (Unix targets are rejected with the flag). Unset keeps
+first-target failover. Multihoming edits are `MutableInPlace` (the
+dial reads the committed flag and target list per connection).
+
+The control surface carries a singular target and no multi-target
+wire key exists, so `multihoming=true` through I2PControl always
+meets the two-target minimum as a named contradiction; the
+dial-selection owner serves multi-target specs built through other
+surfaces.
+
+### Reply bundling (`reply_bundling`)
+
+Plan 296 owner, all kinds. When set, the outbound delivery path
+may carry multiple same-remote application payloads as multiple
+data cloves in one New Session Reply garlic message (at most four
+data cloves, bounded by the destination payload ceiling); unset
+keeps one payload per garlic message. Only the reply form bundles:
+fresh bound New Sessions keep their mandatory LeaseSet2 bundle and
+Existing Session traffic keeps its lean single-clove form.
+
+Inbound, every non-LeaseSet2 data clove routes in wire order with
+all-or-nothing admission (pre-count cap, uniform-target and queue
+capacity pre-checks run before the first push). The outbound sweep
+groups consecutive same-remote requests and bundles runs of two or
+more when the destination's policy enables it, reporting per-index
+delivery with no retry of sealed bundles (re-sending would
+duplicate application bytes); refused bundles, disabled policies,
+single requests, and mixed remotes all take the single path.
+Bundling-flag edits are `MutableInPlace` (the sweep reads the
+committed flag per sweep).
 
 ### Profile (`profile`, `interactive`)
 
@@ -169,19 +240,6 @@ ephemeral port and sends media to
 Streamr endpoint. Publisher and non-Streamr kinds reject the
 key. Sink edits replace the destination runtime (the loop
 captures its sink at supervisor start).
-
-### Targets and multihoming
-
-The Proposal inventory carries no multi-target selection key:
-`target_host`/`target_port` (server TCP target) and
-`target_destination` (client I2P destination) are singular.
-Daemon TOML configuration supports a `targets` list (<= 8,
-loopback/`unix:`) with first-target fallback at runtime, but
-that is configuration-layer failover, not a control wire key,
-and session multihoming (reply-info/target-selection
-primitive) is `CorrectivePending` owned by Plan 296. There is
-no dead control key to remove and nothing for Plan 292 to
-implement here.
 
 ## Sensitivity
 

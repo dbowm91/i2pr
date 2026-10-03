@@ -300,11 +300,10 @@ impl DestinationTunnelPool {
         }
         let inbound_lost = inbound_before.saturating_sub(self.inner.inbound_len());
         let outbound_lost = outbound_before.saturating_sub(self.inner.outbound_len());
-        self.standby_promotions = self
-            .standby_promotions
-            .saturating_add((inbound_lost.min(standby_in_before) as u64).saturating_add(
-                outbound_lost.min(standby_out_before) as u64,
-            ));
+        self.standby_promotions = self.standby_promotions.saturating_add(
+            (inbound_lost.min(standby_in_before) as u64)
+                .saturating_add(outbound_lost.min(standby_out_before) as u64),
+        );
         evicted
     }
 
@@ -677,7 +676,8 @@ mod tests {
     #[test]
     fn build_failures_are_bounded_and_reset_on_success() {
         let config =
-            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 2, 64, 1024, 60, 120).expect("config");
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 2, 64, 1024, 60, 120)
+                .expect("config");
         let mut pool = DestinationTunnelPool::new(config).expect("pool");
         assert_eq!(
             pool.note_build_failure(),
@@ -716,10 +716,9 @@ mod tests {
         // inbound tunnels; failing base tunnels promotes standby
         // (usability on the base target preserved) while failures
         // still count toward the replacement threshold.
-        let config = DestinationConfig::try_new(
-            2, 2, 1, 2, 2, 0, false, 600, 2, 8, 64, 1024, 60, 120,
-        )
-        .expect("config");
+        let config =
+            DestinationConfig::try_new(2, 2, 1, 2, 2, 0, false, 600, 2, 8, 64, 1024, 60, 120)
+                .expect("config");
         let mut pool = DestinationTunnelPool::new(config).expect("pool");
         for seed in [31, 32, 33, 34] {
             pool.register_inbound(established_inbound(seed), 0)
@@ -764,10 +763,9 @@ mod tests {
     fn standby_expiry_promotes_and_release_resets() {
         // Plan 296: expiry promotes like failure; release_all
         // returns the pool (and the promotion counter) to baseline.
-        let config = DestinationConfig::try_new(
-            2, 2, 1, 2, 1, 0, false, 600, 2, 8, 64, 1024, 60, 120,
-        )
-        .expect("config");
+        let config =
+            DestinationConfig::try_new(2, 2, 1, 2, 1, 0, false, 600, 2, 8, 64, 1024, 60, 120)
+                .expect("config");
         let mut pool = DestinationTunnelPool::new(config).expect("pool");
         for seed in [41, 42, 43] {
             pool.register_inbound(established_inbound(seed), 0)

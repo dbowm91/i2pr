@@ -48,10 +48,10 @@ fn matrix_covers_every_applicable_cell() {
 
 #[test]
 fn disposition_census_is_exact() {
-    assert_eq!(APPLY_CELLS, 227);
+    assert_eq!(APPLY_CELLS, 266);
     assert_eq!(NOT_APPLICABLE_CELLS, 37);
     assert_eq!(INCOMPATIBLE_CELLS, 30);
-    assert_eq!(CORRECTIVE_296_CELLS, 39);
+    assert_eq!(CORRECTIVE_296_CELLS, 0);
     assert_eq!(CORRECTIVE_297_CELLS, 3);
     assert_eq!(
         APPLY_CELLS
@@ -166,10 +166,25 @@ fn spot_dispositions_match_plan_record() {
         find_cell(11, 41).expect("encrypt cell").disposition,
         CellDisposition::ExplicitIncompatibility { .. }
     ));
-    // (client, reply_bundling) -> Plan 296 garlic primitive.
+    // (client, reply_bundling) -> Plan 296 garlic bundling owner.
     assert!(matches!(
         find_cell(0, 35).expect("reply cell").disposition,
-        CellDisposition::CorrectivePending { plan: 296, .. }
+        CellDisposition::Apply { .. }
+    ));
+    // (server, multihoming) -> Plan 296 target-selection owner.
+    assert!(matches!(
+        find_cell(1, 34).expect("multihoming cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    // (client, tunnel_backup_quantity) -> Plan 296 standby owner.
+    assert!(matches!(
+        find_cell(0, 12).expect("backup cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    // (client, tunnel_variance) -> Plan 296 sampler owner.
+    assert!(matches!(
+        find_cell(0, 13).expect("variance cell").disposition,
+        CellDisposition::Apply { .. }
     ));
     // (httpclient, use_outproxy_plugin) -> Plan 293 provider semantics.
     assert!(matches!(

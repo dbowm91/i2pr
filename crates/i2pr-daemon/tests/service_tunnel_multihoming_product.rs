@@ -88,10 +88,7 @@ fn multihomed_server_spec(
         enabled: true,
         listener: None,
         target: Some(ServerTarget::LoopbackTcp(first)),
-        targets: rest
-            .into_iter()
-            .map(ServerTarget::LoopbackTcp)
-            .collect(),
+        targets: rest.into_iter().map(ServerTarget::LoopbackTcp).collect(),
         destination: None,
         policy: DestinationPolicy::Dedicated,
         max_connections: 4,
@@ -113,11 +110,7 @@ fn multihomed_server_spec(
     }
 }
 
-async fn probe_server_b64(
-    data_dir: &Path,
-    spec: ServiceTunnelSpec,
-    server_id: &str,
-) -> String {
+async fn probe_server_b64(data_dir: &Path, spec: ServiceTunnelSpec, server_id: &str) -> String {
     let probe = build_manager(data_dir, vec![spec], StaticAliasTable::new());
     probe.prepare().await.expect("server probe");
     probe
@@ -125,9 +118,7 @@ async fn probe_server_b64(
         .expect("server b64")
 }
 
-async fn start_supervisors(
-    manager: &Arc<ServiceTunnelManager>,
-) -> (ChildScope, CancellationToken) {
+async fn start_supervisors(manager: &Arc<ServiceTunnelManager>) -> (ChildScope, CancellationToken) {
     let runtimes = manager.prepare().await.expect("prepare");
     let cancel = CancellationToken::new();
     let scope = ChildScope::for_test(&cancel, ChildFailurePolicy::FailParent);
@@ -189,20 +180,14 @@ async fn roundtrip(listener: SocketAddr, payload: &[u8]) {
     let _ = stream.shutdown().await;
 }
 
-async fn expect_arrival(
-    seen: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
-    which: &str,
-) {
+async fn expect_arrival(seen: &mut tokio::sync::mpsc::UnboundedReceiver<()>, which: &str) {
     tokio::time::timeout(Duration::from_secs(10), seen.recv())
         .await
         .unwrap_or_else(|_| panic!("{which} arrival missing"))
         .expect("arrival");
 }
 
-async fn expect_no_arrival(
-    seen: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
-    which: &str,
-) {
+async fn expect_no_arrival(seen: &mut tokio::sync::mpsc::UnboundedReceiver<()>, which: &str) {
     assert!(
         tokio::time::timeout(Duration::from_millis(500), seen.recv())
             .await

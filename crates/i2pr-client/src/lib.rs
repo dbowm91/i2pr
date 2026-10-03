@@ -28,8 +28,8 @@
 
 #![forbid(unsafe_code)]
 
-pub mod config;
 pub mod bundle;
+pub mod config;
 pub mod datagram;
 pub mod dispatch;
 pub mod identity;
@@ -44,18 +44,18 @@ pub mod streaming;
 pub mod streaming_adapter;
 pub mod testing;
 
+pub use bundle::{
+    BundleError, MAX_BUNDLED_DATA_CLOVES, ReplyBundling, encode_bundled_reply_payload,
+};
 pub use config::{
     DEFAULT_LEASE_PUBLICATION_MARGIN_SECONDS, DEFAULT_LEASE_ROTATION_MARGIN_SECONDS,
     DestinationConfig, DestinationConfigError, DestinationTunnelMode, LocalRouterContext,
-    MAX_AGGREGATE_COMMAND_QUEUE_DEPTH, MAX_DESTINATION_BUILD_CONCURRENCY,
-    MAX_DESTINATION_FAILURE_THRESHOLD, MAX_DESTINATION_INBOUND, MAX_DESTINATION_OUTBOUND,
-    MAX_DESTINATION_BACKUP_QUANTITY, MAX_DESTINATION_LENGTH_VARIANCE,
+    MAX_AGGREGATE_COMMAND_QUEUE_DEPTH, MAX_DESTINATION_BACKUP_QUANTITY,
+    MAX_DESTINATION_BUILD_CONCURRENCY, MAX_DESTINATION_FAILURE_THRESHOLD, MAX_DESTINATION_INBOUND,
+    MAX_DESTINATION_LENGTH_VARIANCE, MAX_DESTINATION_OUTBOUND,
     MAX_LEASE_PUBLICATION_MARGIN_SECONDS, MAX_LEASE_ROTATION_MARGIN_SECONDS,
     MAX_LOCAL_DESTINATIONS, MAX_PENDING_DESTINATION_BYTES, MAX_PENDING_DESTINATION_MESSAGES,
     RegistryConfig,
-};
-pub use bundle::{
-    BundleError, MAX_BUNDLED_DATA_CLOVES, ReplyBundling, encode_bundled_reply_payload,
 };
 pub use datagram::{
     DATAGRAM1_PROTOCOL, DatagramCounters, DatagramError, DatagramManager, DatagramReceiveEvent,

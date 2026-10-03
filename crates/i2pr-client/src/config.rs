@@ -241,6 +241,9 @@ impl DestinationConfig {
                 maximum: MAX_DESTINATION_BACKUP_QUANTITY,
             });
         }
+        // `contains` is not const-compatible; the explicit
+        // comparisons keep `try_new` const.
+        #[allow(clippy::manual_range_contains)]
         if length_variance < -MAX_DESTINATION_LENGTH_VARIANCE
             || length_variance > MAX_DESTINATION_LENGTH_VARIANCE
         {
@@ -857,24 +860,18 @@ mod tests {
             })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 3, 2, 0, 0, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 3, 2, 0, 0, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::MinimumUsableExceedsTarget {
                 minimum: 3,
                 target: 2,
             })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 1, 2, 0, 0, false, 600, 2, 8, 0, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 8, 0, 1024, 60, 120),
             Err(DestinationConfigError::ZeroPendingMessages)
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 1, 2, 0, 0, false, 60, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 60, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::PublicationMarginExceedsLifetime {
                 margin: 60,
                 lifetime: 60,
@@ -890,30 +887,22 @@ mod tests {
         // and neither direction's base plus backup may exceed the
         // directional pool maximum (never clamped).
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 1, 2, 4, 0, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 1, 2, 4, 0, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::BackupExceedsMaximum {
                 actual: 4,
                 maximum: MAX_DESTINATION_BACKUP_QUANTITY,
             })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 1, 2, 0, 3, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 3, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::VarianceOutOfRange { actual: 3 })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 2, 1, 2, 0, -3, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 2, 1, 2, 0, -3, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::VarianceOutOfRange { actual: -3 })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                6, 2, 1, 2, 3, 0, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(6, 2, 1, 2, 3, 0, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::StandbyExceedsMaximum {
                 direction: "inbound",
                 effective: 9,
@@ -921,9 +910,7 @@ mod tests {
             })
         );
         assert_eq!(
-            DestinationConfig::try_new(
-                2, 6, 1, 2, 3, 0, false, 600, 2, 8, 64, 1024, 60, 120
-            ),
+            DestinationConfig::try_new(2, 6, 1, 2, 3, 0, false, 600, 2, 8, 64, 1024, 60, 120),
             Err(DestinationConfigError::StandbyExceedsMaximum {
                 direction: "outbound",
                 effective: 9,
@@ -931,10 +918,8 @@ mod tests {
             })
         );
         // Boundary sums fit exactly.
-        let edge = DestinationConfig::try_new(
-            6, 5, 1, 2, 2, 2, true, 600, 2, 8, 64, 1024, 60, 120,
-        )
-        .expect("boundary standby fits");
+        let edge = DestinationConfig::try_new(6, 5, 1, 2, 2, 2, true, 600, 2, 8, 64, 1024, 60, 120)
+            .expect("boundary standby fits");
         assert_eq!(edge.effective_inbound_target(), 8);
         assert_eq!(edge.effective_outbound_target(), 7);
         assert!(edge.pool_config().is_ok());

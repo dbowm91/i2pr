@@ -1044,7 +1044,8 @@ mod tests {
     #[test]
     fn build_failure_degrades_not_panics_and_is_bounded() {
         let config =
-            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 2, 64, 1024, 60, 120).expect("config");
+            DestinationConfig::try_new(2, 2, 1, 2, 0, 0, false, 600, 2, 2, 64, 1024, 60, 120)
+                .expect("config");
         let mut rng = ChaCha8Rng::seed_from_u64(5);
         let identity = DestinationIdentity::generate(&mut rng).expect("identity");
         let mut runtime = DestinationRuntime::new(identity, config).expect("runtime");

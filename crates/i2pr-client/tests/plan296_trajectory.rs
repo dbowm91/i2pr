@@ -18,11 +18,8 @@ use i2pr_client::{
     OutboundRequest, ReplyBundling, build_signed_lease_set2, compose_bundled_reply_delivery,
     compose_outbound_delivery,
 };
-use i2pr_crypto::X25519_KEY_LENGTH;
 use i2pr_netdb::ValidatedLeaseSet2;
-use i2pr_proto::{
-    Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, TunnelGatewayMessage,
-};
+use i2pr_proto::{Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, TunnelGatewayMessage};
 use i2pr_tunnel::{
     DuplicateWindow, EstablishedHop, EstablishedNextHop, EstablishedRole, EstablishedTunnel,
     InboundGatewayRole, InboundParticipantRole, LayerKeys, LocalInboundEndpointRole,
@@ -219,10 +216,6 @@ impl Side {
         *self.identity.id().as_hash().as_bytes()
     }
 
-    fn static_public(&self) -> [u8; X25519_KEY_LENGTH] {
-        self.identity.static_public_bytes()
-    }
-
     fn remote_hash(&self) -> i2pr_netdb::DestinationHash {
         i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(self.hash_bytes()))
     }
@@ -344,8 +337,15 @@ fn feed_action(receiver: &mut Side, action: &RouterDeliveryAction) -> Vec<u8> {
 }
 
 fn request_for(payload: &[u8], lease_set2: Option<i2pr_proto::LeaseSet2>) -> OutboundRequest {
-    OutboundRequest::new(6, 0x12A0, 0x12B0, payload, u64::from(NOW_SECONDS) * 1_000, lease_set2)
-        .expect("outbound request")
+    OutboundRequest::new(
+        6,
+        0x12A0,
+        0x12B0,
+        payload,
+        u64::from(NOW_SECONDS) * 1_000,
+        lease_set2,
+    )
+    .expect("outbound request")
 }
 
 /// Drives side A's bound New Session into side B and returns B's
@@ -371,11 +371,8 @@ fn handshake_a_to_b(a: &mut Side, b: &mut Side, rng_seed: u64) {
     let envelope =
         I2npMessage::decode_standard(&recovered, MAX_I2NP_PAYLOAD_SIZE).expect("decode carrier");
     assert!(matches!(envelope.body(), I2npBody::Garlic(_)));
-    match b.dispatch(&envelope) {
-        InboundDispatchOutcome::Rejected(error) => {
-            panic!("bound new session must dispatch, got {error:?}")
-        }
-        _ => {}
+    if let InboundDispatchOutcome::Rejected(error) = b.dispatch(&envelope) {
+        panic!("bound new session must dispatch, got {error:?}");
     }
 }
 
@@ -512,7 +509,10 @@ fn plan296_bundled_reply_gating_is_typed() {
             START_MS,
             &mut rng,
         ),
-        Err(BundleError::TooManyCloves { actual: 5, maximum: 4 })
+        Err(BundleError::TooManyCloves {
+            actual: 5,
+            maximum: 4
+        })
     ));
     // Complete the pairing with a single reply: the session is now
     // an Existing Session, which never bundles.

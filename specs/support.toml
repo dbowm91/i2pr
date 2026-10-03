@@ -1834,3 +1834,33 @@ evidence = [
     "plans/closure/i2pcontrol-proposal-170/295-status.md",
 ]
 advertised = false
+
+[[surface]]
+id = "prop170.pool-shaping-and-bundling-residuals"
+protocol = "i2pcontrol"
+structure = "proposal-170-standby-variance-multihoming-bundling-owners"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 296 closed the 39 Plan 292 residual cells into named apply owners (matrix now 266 apply, 37 not-applicable, 30 incompatible, 0 corrective-296, 3 corrective-297): tunnel_backup_quantity (0..=3 standby held ready per direction, effective pool targets, promotion counted on failure/expiry, per-direction pool-maximum sum check) and tunnel_variance (-2..=+2 per-build hop sampling within the pool hop policy, injected randomness) through TunnelShaping into DestinationConfig and the destination pool; multihoming as documented target selection (round-robin server dial with sequential failover, two-target minimum, server kinds only, Unix targets rejected); reply_bundling as garlic multi-data-clove New Session Replies composed by the delivery owner, routed atomically inbound, and batched by the outbound sweep with per-index reports and no-double-send fallback. The control surface carries a singular target, so multihoming=true via control always meets the two-target minimum as a named contradiction; the dial-selection owner serves multi-target specs. No new wire keys."
+evidence = [
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/tunnel_matrix.rs",
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-service-tunnels/src/generation.rs",
+    "crates/i2pr-client/src/config.rs",
+    "crates/i2pr-client/src/pool.rs",
+    "crates/i2pr-client/src/bundle.rs",
+    "crates/i2pr-client/src/routing.rs",
+    "crates/i2pr-client/src/dispatch.rs",
+    "crates/i2pr-client/src/streaming/local_delivery.rs",
+    "crates/i2pr-client/tests/plan296_trajectory.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_server.rs",
+    "crates/i2pr-daemon/src/service_tunnels_http_bidir.rs",
+    "crates/i2pr-daemon/src/sam/streams.rs",
+    "crates/i2pr-daemon/tests/service_tunnel_multihoming_product.rs",
+    "plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md",
+    "plans/closure/i2pcontrol-proposal-170/296-status.md",
+]
+advertised = false

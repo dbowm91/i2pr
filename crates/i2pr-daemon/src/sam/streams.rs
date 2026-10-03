@@ -27,17 +27,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use i2pr_client::bundle::ReplyBundling;
 use i2pr_client::streaming::config::StreamingConfig;
 use i2pr_client::streaming::manager::StreamingManager;
 use i2pr_client::streaming::transport::TransportSendRequest;
 use i2pr_client::{
-    BatchedAttempt, DestinationDispatcher, DestinationId,
-    DestinationIdentity, DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig,
-    EciesSessionConfig, EciesSessionManager, LeaseSetError, LocalDeliveryError,
-    LocalDeliveryOutcome, LocalDeliveryReceiver, LocalDeliverySender,
-    StreamingDestinationAdapter, deliver, deliver_batched,
+    BatchedAttempt, DestinationDispatcher, DestinationId, DestinationIdentity,
+    DestinationOutboundRole, DestinationRouting, DestinationRoutingConfig, EciesSessionConfig,
+    EciesSessionManager, LeaseSetError, LocalDeliveryError, LocalDeliveryOutcome,
+    LocalDeliveryReceiver, LocalDeliverySender, StreamingDestinationAdapter, deliver,
+    deliver_batched,
 };
-use i2pr_client::bundle::ReplyBundling;
 use i2pr_crypto::OsRng;
 use i2pr_netdb::LeaseSet2Store;
 use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};

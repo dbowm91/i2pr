@@ -27,9 +27,10 @@
 //!   limitation; omitting it selects the ordinary i2pr behavior. Plan 295
 //!   carries these limitations into the final support claim.
 //! - [`CellDisposition::CorrectivePending`]: applicable, but the required
-//!   primitive needs a new corrective plan (296: pool shaping residuals,
-//!   multihoming, reply bundling; 297: local TLS identity). The plan
-//!   number is the owning corrective.
+//!   primitive needs a new corrective plan (297: local TLS identity).
+//!   The plan number is the owning corrective. Plan 296 closed its
+//!   pool-shaping, multihoming, and reply-bundling residuals into
+//!   apply owners; only the 297 cells remain corrective.
 //!
 //! Semantic grounding: Proposal 170 revision 2026-05-20 plus the Java
 //! PR6 `TunnelManager` reference (`ClientTunnelCreator` management,
@@ -152,10 +153,13 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         10 | 11 => CellDisposition::Apply {
             owner: "ServiceTunnelSpec.shaping into DestinationConfig projection",
         },
-        // 12 tunnel_backup_quantity / 13 tunnel_variance: no pool primitive.
-        12 | 13 => CellDisposition::CorrectivePending {
-            plan: 296,
-            reason: "pool backup-quantity and length-variance semantics",
+        // 12 tunnel_backup_quantity / 13 tunnel_variance: Plan 296
+        // standby and sampler owners. Backup raises each direction's
+        // effective pool target (standby held ready, usability on the
+        // base target); variance samples each build's hop length
+        // within the pool hop policy.
+        12 | 13 => CellDisposition::Apply {
+            owner: "TunnelShaping backup/variance into DestinationConfig standby and sampler",
         },
         // 14 inbound_length / 15 outbound_length / 16 inbound_quantity /
         // 17 outbound_quantity: per-direction pool projection; differing
@@ -212,15 +216,22 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         33 => CellDisposition::Apply {
             owner: "per-peer loopback source bind (server target dial)",
         },
-        // 34 multihoming: session reply-info primitive absent.
-        34 => CellDisposition::CorrectivePending {
-            plan: 296,
-            reason: "multihoming reply-info and target-selection primitive",
+        // 34 multihoming: Plan 296 target-selection owner. The flag
+        // selects across the configured server target list per
+        // connection (round-robin with sequential failover) instead
+        // of the first target only; it requires two configured
+        // targets. No session reply-info flag is introduced: the
+        // single documented semantic is target selection.
+        34 => CellDisposition::Apply {
+            owner: "ServiceTunnelSpec.multihoming into server dial target selection",
         },
-        // 35 reply_bundling: no garlic reply-bundling primitive.
-        35 => CellDisposition::CorrectivePending {
-            plan: 296,
-            reason: "garlic reply-bundling primitive",
+        // 35 reply_bundling: Plan 296 garlic reply-bundling owner.
+        // The destination delivery path may carry multiple
+        // same-remote application payloads as multiple data cloves
+        // in one New Session Reply; unset keeps one payload per
+        // garlic message.
+        35 => CellDisposition::Apply {
+            owner: "DestinationConfig reply_bundling into bundled-reply delivery",
         },
         // 36 streamr_subscribe_interval / 37 streamr_expiry /
         // 38 streamr_max_subscribers / 39 streamr_payload_limit.
@@ -355,6 +366,7 @@ pub const NOT_APPLICABLE_CELLS: usize = count_not_applicable();
 /// limitation carried by Plan 295.
 pub const INCOMPATIBLE_CELLS: usize = count_incompatible();
 /// Plan 296 residual cells (pool shaping, multihoming, reply bundling).
+/// Closed: every residual now has a named apply owner.
 pub const CORRECTIVE_296_CELLS: usize = count_corrective(296);
 /// Plan 297 residual cells (local TLS identity).
 pub const CORRECTIVE_297_CELLS: usize = count_corrective(297);

@@ -618,8 +618,7 @@ impl TunnelShaping {
                 reason: "must be within 0..=3",
             });
         }
-        if length_variance < -MAX_TUNNEL_LENGTH_VARIANCE
-            || length_variance > MAX_TUNNEL_LENGTH_VARIANCE
+        if !(-MAX_TUNNEL_LENGTH_VARIANCE..=MAX_TUNNEL_LENGTH_VARIANCE).contains(&length_variance)
         {
             return Err(ServiceTunnelError::ExceedsCeiling {
                 field: "length_variance",
@@ -1462,8 +1461,12 @@ mod tests {
             kind: ServiceTunnelKind::GenericServer,
             enabled: false,
             listener: None,
-            target: Some(ServerTarget::LoopbackTcp("127.0.0.1:8080".parse().expect("addr"))),
-            targets: vec![ServerTarget::LoopbackTcp("127.0.0.1:8081".parse().expect("addr"))],
+            target: Some(ServerTarget::LoopbackTcp(
+                "127.0.0.1:8080".parse().expect("addr"),
+            )),
+            targets: vec![ServerTarget::LoopbackTcp(
+                "127.0.0.1:8081".parse().expect("addr"),
+            )],
             destination: None,
             policy: DestinationPolicy::Dedicated,
             max_connections: 16,

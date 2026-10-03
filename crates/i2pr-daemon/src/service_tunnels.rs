@@ -77,8 +77,6 @@ use crate::sam::streams::{
     InboundTunnelFactory, SamDestinationBridge, SamDestinationHandle, SamDestinations,
     bridge_to_peer, bridge_to_peer_batched,
 };
-use i2pr_client::bundle::ReplyBundling;
-use i2pr_client::streaming::local_delivery::BatchedAttempt;
 use crate::sam::streams::{
     RouterDestinationNetworkState, RouterInboundDispatchReport, RouterNetworkSummary,
 };
@@ -89,6 +87,8 @@ use crate::service_tunnels_http::run_http_client_loop;
 use crate::service_tunnels_irc_client::run_irc_client_loop;
 use crate::service_tunnels_irc_server::run_irc_server_loop;
 use crate::service_tunnels_socks5::run_socks5_client_loop;
+use i2pr_client::bundle::ReplyBundling;
+use i2pr_client::streaming::local_delivery::BatchedAttempt;
 
 /// Process-local monotonic clock used for Streaming deadlines.
 pub fn service_streaming_now_ms() -> u64 {
@@ -1654,7 +1654,7 @@ impl ServiceTunnelManager {
                 Err(error) => {
                     debug!(error = %error, "service local peer LeaseSet2 validation failed");
                     counters.delivery_failed = counters.delivery_failed.saturating_add(1);
-                    self.terminate_failed_delivery(destination_id, &request);
+                    self.terminate_failed_delivery(destination_id, request);
                     continue;
                 }
             };
@@ -2631,8 +2631,7 @@ impl ServiceTunnelManager {
     pub fn destination_config_for(
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
     ) -> DestinationConfig {
-        Self::destination_config_for_shaping(&spec.shaping)
-            .with_reply_bundling(spec.reply_bundling)
+        Self::destination_config_for_shaping(&spec.shaping).with_reply_bundling(spec.reply_bundling)
     }
 
     /// Projects explicit shaping into a destination config.
@@ -2785,8 +2784,9 @@ impl ServiceTunnelManager {
     /// cannot change. Unix targets never appear (spec validation
     /// rejects multihoming with Unix targets).
     pub fn server_dial_targets_for(&self, runtime: &ServiceRuntime) -> Vec<SocketAddr> {
-        if self.multihoming_for(&runtime.spec_id) {
-            if let Some(spec) = self.committed_spec_for(&runtime.spec_id) {
+        if self.multihoming_for(&runtime.spec_id)
+            && let Some(spec) = self.committed_spec_for(&runtime.spec_id)
+        {
                 let mut targets = Vec::new();
                 if let Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(addr)) = spec.target {
                     targets.push(addr);
@@ -2798,16 +2798,13 @@ impl ServiceTunnelManager {
                 }
                 if targets.len() >= 2 {
                     let sequence = runtime.multihoming_next.fetch_add(1, Ordering::Relaxed);
-                    let start = i2pr_service_tunnels::multihoming_start_index(
-                        sequence,
-                        targets.len(),
-                    );
+                    let start =
+                        i2pr_service_tunnels::multihoming_start_index(sequence, targets.len());
                     let mut rotated = Vec::with_capacity(targets.len());
                     rotated.extend_from_slice(&targets[start..]);
                     rotated.extend_from_slice(&targets[..start]);
                     return rotated;
                 }
-            }
         }
         runtime.server_target.into_iter().collect()
     }
@@ -7621,7 +7618,10 @@ mod plan296_sweep_policy_tests {
         }
     }
 
-    fn manager_for(specs: Vec<ServiceTunnelSpec>, data_dir: &std::path::Path) -> Arc<ServiceTunnelManager> {
+    fn manager_for(
+        specs: Vec<ServiceTunnelSpec>,
+        data_dir: &std::path::Path,
+    ) -> Arc<ServiceTunnelManager> {
         Arc::new(
             ServiceTunnelManager::new(ServiceTunnelManagerConfig {
                 data_dir: data_dir.to_path_buf(),
@@ -7658,8 +7658,7 @@ mod plan296_sweep_policy_tests {
                 runtime.spec_id
             );
         }
-        let foreign =
-            DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xFE; 32]));
+        let foreign = DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xFE; 32]));
         assert!(!manager.reply_bundling_for_destination(foreign));
     }
 
