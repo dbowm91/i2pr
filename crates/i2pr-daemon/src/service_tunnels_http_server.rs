@@ -82,7 +82,7 @@ pub enum HttpServerConnectionOutcome {
 pub(crate) async fn run_http_server_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
-    target: SocketAddr,
+    dial_targets: Vec<SocketAddr>,
     connection_id: ConnectionId,
     peer: RemoteDestination,
     cancellation: CancellationToken,
@@ -91,17 +91,21 @@ pub(crate) async fn run_http_server_connection(
     let unique_local = manager.unique_local_for(&runtime.spec_id);
     let dial = timeout(
         Duration::from_millis(connect_deadline),
-        crate::service_tunnels::dial_server_target(target, &peer.destination_hash, unique_local),
+        crate::service_tunnels::dial_server_targets(
+            &dial_targets,
+            &peer.destination_hash,
+            unique_local,
+        ),
     )
     .await;
-    let target_stream = match dial {
-        Ok(Ok((stream, fell_back))) => {
+    let (target_stream, used_target) = match dial {
+        Ok(Ok((stream, used, fell_back))) => {
             if fell_back {
                 runtime
                     .unique_local_fallbacks
                     .fetch_add(1, Ordering::Relaxed);
             }
-            stream
+            (stream, used)
         }
         Ok(Err(_)) | Err(_) => {
             runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
@@ -117,7 +121,7 @@ pub(crate) async fn run_http_server_connection(
             peer,
         ));
     let outcome = drive_relay(
-        target,
+        used_target,
         target_stream,
         endpoint,
         manager.http_policy_for(&runtime.spec_id),
@@ -532,7 +536,6 @@ fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 
 async fn handle_http_server_syn(
     manager: &Arc<ServiceTunnelManager>,
     runtime: &Arc<ServiceRuntime>,
-    target: SocketAddr,
     connection_id: ConnectionId,
     cancellation: &CancellationToken,
 ) {
@@ -544,11 +547,14 @@ async fn handle_http_server_syn(
     let runtime_for_task = Arc::clone(runtime);
     let cancellation_for_task = cancellation.clone();
     let spec_id_for_log = runtime.spec_id.clone();
+    // Plan 296: resolve the ordered dial targets per connection so
+    // multihoming rotation advances once per accepted SYN.
+    let dial_targets = manager.server_dial_targets_for(runtime);
     tokio::spawn(async move {
         let outcome = run_http_server_connection(
             manager_for_task,
             runtime_for_task.clone(),
-            target,
+            dial_targets,
             connection_id,
             peer,
             cancellation_for_task,
@@ -605,8 +611,7 @@ pub async fn run_http_server_loop(
             _ = ticker.tick() => {}
         }
         for connection_id in poll_streaming_accept(manager, runtime, port) {
-            handle_http_server_syn(manager, runtime, target_socket, connection_id, cancellation)
-                .await;
+            handle_http_server_syn(manager, runtime, connection_id, cancellation).await;
         }
     }
     Ok(())

@@ -648,6 +648,20 @@ impl TunnelShaping {
     }
 }
 
+/// Round-robin dial start for one multihomed server connection
+/// (Plan 296): the `connection_sequence`-th connection starts at
+/// `sequence % target_count`, then fails over sequentially. The
+/// daemon owns the per-runtime monotonic sequence counter; this
+/// helper pins the rotation contract. An empty list selects 0
+/// (callers guarantee non-empty; the dial fails closed with no
+/// targets).
+pub fn multihoming_start_index(connection_sequence: usize, target_count: usize) -> usize {
+    if target_count == 0 {
+        return 0;
+    }
+    connection_sequence % target_count
+}
+
 /// Minimum idle deadline in milliseconds (Plan 292).
 pub const MIN_IDLE_TIMEOUT_MS: u64 = 1_000;
 /// Maximum idle deadline in milliseconds (24 hours).
@@ -1230,6 +1244,20 @@ impl ServiceTunnelSpec {
                     reason: "multihoming requires at least two configured targets",
                 });
             }
+            // Multihoming selection dials loopback TCP in order;
+            // Unix-domain targets have no TCP dial, so they cannot
+            // take part in selection.
+            let unix_target = matches!(self.target, Some(ServerTarget::UnixPath(_)))
+                || self
+                    .targets
+                    .iter()
+                    .any(|target| matches!(target, ServerTarget::UnixPath(_)));
+            if unix_target {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "multihoming requires loopback-TCP targets",
+                });
+            }
         }
         Ok(())
     }
@@ -1459,10 +1487,26 @@ mod tests {
         // A single target leaves nothing to select across.
         server.targets.clear();
         assert!(server.validate().is_err());
+        // Unix targets cannot take part in TCP selection.
+        server.targets = vec![ServerTarget::UnixPath("/tmp/mh.sock".to_owned())];
+        assert!(server.validate().is_err());
         // Client kinds never dial a server target.
         let mut client = client_spec("mh-client", "127.0.0.1:7070", "example.i2p");
         client.multihoming = true;
         assert!(client.validate().is_err());
+    }
+
+    #[test]
+    fn multihoming_selection_rotates_in_order() {
+        // Plan 296: the rotation contract is sequence modulo
+        // target count; an empty list selects 0 and fails closed
+        // at the dial.
+        assert_eq!(multihoming_start_index(0, 3), 0);
+        assert_eq!(multihoming_start_index(1, 3), 1);
+        assert_eq!(multihoming_start_index(2, 3), 2);
+        assert_eq!(multihoming_start_index(3, 3), 0);
+        assert_eq!(multihoming_start_index(4, 1), 0);
+        assert_eq!(multihoming_start_index(7, 0), 0);
     }
 
     #[test]

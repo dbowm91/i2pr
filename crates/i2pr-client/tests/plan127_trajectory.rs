@@ -1477,18 +1477,25 @@ fn plan_127_malformed_remote_does_not_poison_valid_session() {
     assert_eq!(plan.encrypted_message.form_name(), "existing-session");
     let recovered = seam_deliver(&side_a, &mut side_b, &plan);
     expect_processed_ok(side_b.dispatch(&recovered_envelope(recovered)));
-    let queued = side_b
-        .dispatcher
-        .pop_payload(side_b.identity.id())
-        .expect("payload after malformed input");
-    let message =
-        I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE).expect("dec");
-    match message.body() {
-        I2npBody::Data(body) => {
-            let decoded = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
-                .expect("decode I2CP Data body");
-            assert_eq!(decoded.payload, b"still-alive");
+    // Plan 296: the dispatcher queue is FIFO (oldest first), so the
+    // handshake-era "bootstrap-a" payload queued during
+    // `establish_pair` drains before the fresh payload. Both must
+    // decode intact and in order.
+    let mut decoded = Vec::new();
+    while let Some(queued) = side_b.dispatcher.pop_payload(side_b.identity.id()) {
+        let message =
+            I2npMessage::decode_short_transport(queued.bytes(), MAX_I2NP_PAYLOAD_SIZE)
+                .expect("dec");
+        match message.body() {
+            I2npBody::Data(body) => {
+                let envelope = i2pr_proto::decode_i2cp_data_body(body.payload.as_bytes())
+                    .expect("decode I2CP Data body");
+                decoded.push(envelope.payload);
+            }
+            other => panic!("payload must be Data, got {other:?}"),
         }
-        other => panic!("payload must be Data, got {other:?}"),
     }
+    assert_eq!(decoded.len(), 2);
+    assert_eq!(decoded[0], b"bootstrap-a");
+    assert_eq!(decoded[1], b"still-alive");
 }

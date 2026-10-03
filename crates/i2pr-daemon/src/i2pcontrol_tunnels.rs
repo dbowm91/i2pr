@@ -46,10 +46,12 @@ use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
-    MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_QUANTITY,
-    MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT, PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS,
-    PROXY_VERIFIER_MARKER, ProxyCredentials, ServerAccessPolicy, ServerTarget, ServiceTunnelId,
-    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping,
+    MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS,
+    MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE,
+    MAX_TUNNEL_QUANTITY, MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT, PROXY_AUTH_REALM_HTTP,
+    PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials, ServerAccessPolicy,
+    ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
+    TunnelShaping,
 };
 
 use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
@@ -127,6 +129,18 @@ pub const SUPPORTED_292_OPTIONS: [&str; 21] = [
     "jump_list",
     "unique_local_address",
     "remote_udp_host",
+];
+/// Plan 296 residual option keys with real owners: pool
+/// backup/variance shaping, server multihoming target selection,
+/// and garlic reply bundling. Membership admits a key to
+/// definitions; each key additionally needs a `build_control_spec`
+/// owner arm (the `other` arm still rejects ownerless keys before
+/// any allocation).
+pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
+    "tunnel_backup_quantity",
+    "tunnel_variance",
+    "multihoming",
+    "reply_bundling",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -830,11 +844,12 @@ fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError>
 
 /// Builds a validated [`ServiceTunnelSpec`] from a control definition.
 ///
-/// Only options with a real owner are accepted (Plans 289, 291, and
-/// the Plan 292 shaping slice so far); every other supplied option
-/// fails as unsupported (never accepted inertly). Secret-classified
-/// options are rejected even though the subset contains none, so a
-/// future subset extension cannot silently persist secrets.
+/// Only options with a real owner are accepted (Plans 289, 291, the
+/// Plan 292 option slice, and the Plan 296 residual slice); every
+/// other supplied option fails as unsupported (never accepted
+/// inertly). Secret-classified options are rejected even though the
+/// subset contains none, so a future subset extension cannot silently
+/// persist secrets.
 pub fn build_control_spec(
     definition: &ControlDefinition,
 ) -> Result<ServiceTunnelSpec, ControlError> {
@@ -855,6 +870,11 @@ pub fn build_control_spec(
     let mut outbound_length: Option<u8> = None;
     let mut inbound_quantity: Option<u8> = None;
     let mut outbound_quantity: Option<u8> = None;
+    // Plan 296 standby/variance inputs (ranges enforced per key at
+    // parse time; the per-direction pool-maximum sum check runs at
+    // spec validation through `TunnelShaping::try_new`).
+    let mut backup_quantity: Option<u8> = None;
+    let mut length_variance: Option<i8> = None;
     // Plan 292 profile selection (OR-combined effective bit).
     let mut profile_interactive = false;
     // Plan 292 idle inputs (pairing enforced at build time).
@@ -873,6 +893,11 @@ pub fn build_control_spec(
     // Plan 292 server dial/presentation inputs (kind-gated at
     // parse; defaults preserve the historical behavior).
     let mut unique_local_address = false;
+    // Plan 296 delivery inputs: multihoming is kind-gated at parse
+    // like the other server dial options; reply bundling applies to
+    // every kind. Defaults preserve the historical behavior.
+    let mut multihoming = false;
+    let mut reply_bundling = false;
     let mut http_policy = i2pr_service_tunnels::HttpServerPolicy::default();
     // Plan 291 Streamr inputs (validated per kind below; ranges
     // enforced by `StreamrOptions::validate` through the final
@@ -1059,6 +1084,40 @@ pub fn build_control_spec(
             }
             "outbound_quantity" => {
                 outbound_quantity = Some(parse_shaping_quantity(key, value)?);
+            }
+            // Plan 296: standby quantity (Proposal bound 0..=3) and
+            // per-build length variance (Proposal bound -2..=+2).
+            "tunnel_backup_quantity" => {
+                let backup = value
+                    .parse::<u8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "tunnel backup quantity must be an integer within 0..=3",
+                    })?;
+                if backup > MAX_TUNNEL_BACKUP_QUANTITY {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "tunnel backup quantity must be within 0..=3",
+                    });
+                }
+                backup_quantity = Some(backup);
+            }
+            "tunnel_variance" => {
+                let variance = value
+                    .parse::<i8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "tunnel variance must be an integer within -2..=+2",
+                    })?;
+                if variance < -MAX_TUNNEL_LENGTH_VARIANCE
+                    || variance > MAX_TUNNEL_LENGTH_VARIANCE
+                {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "tunnel variance must be within -2..=+2",
+                    });
+                }
+                length_variance = Some(variance);
             }
             // Plan 292: streaming profile. Only "interactive" is
             // special (PR6 reference: it constrains the streaming
@@ -1363,6 +1422,26 @@ pub fn build_control_spec(
                 }
                 unique_local_address = parse_bool_option("unique_local_address", value)?;
             }
+            // Plan 296: multihoming consumes the server dial target
+            // list (server kinds only); reply bundling applies to
+            // every kind through the destination delivery path.
+            "multihoming" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "multihoming applies to server kinds only",
+                    });
+                }
+                multihoming = parse_bool_option("multihoming", value)?;
+            }
+            "reply_bundling" => {
+                reply_bundling = parse_bool_option("reply_bundling", value)?;
+            }
             "address_helper" => {
                 if !matches!(
                     kind,
@@ -1421,7 +1500,26 @@ pub fn build_control_spec(
         inbound_quantity: inbound_quantity.or(symmetric_quantity).unwrap_or(2),
         outbound_quantity: outbound_quantity.or(symmetric_quantity).unwrap_or(2),
         length_hops: inbound_length.or(outbound_length).unwrap_or(2),
+        backup_quantity: backup_quantity.unwrap_or(0),
+        length_variance: length_variance.unwrap_or(0),
     };
+    // Plan 296: each direction's quantity plus backup must fit the
+    // pool directional maximum (checked again by spec validation;
+    // named here so the failure cites the option pair).
+    if shaping
+        .inbound_quantity
+        .saturating_add(shaping.backup_quantity)
+        > MAX_EFFECTIVE_DIRECTION_TUNNELS
+        || shaping
+            .outbound_quantity
+            .saturating_add(shaping.backup_quantity)
+            > MAX_EFFECTIVE_DIRECTION_TUNNELS
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "quantity plus tunnel_backup_quantity exceeds the pool directional maximum of 8",
+        });
+    }
     // Plan 292: resolve the idle policy. Flags without a deadline
     // take the documented default; a deadline without flags flows
     // to spec validation, which rejects it as inert with the
@@ -1460,6 +1558,19 @@ pub fn build_control_spec(
         deny.extend(parsed.deny);
     }
     let access = ServerAccessPolicy { allow, deny };
+    // Plan 296: multihoming needs two configured targets, but the
+    // control surface carries a singular target (no multi-target
+    // wire key exists and none may be added here). The key parses
+    // through its real owner arm and kind gate above; the
+    // two-target minimum rejects it here with a named reason while
+    // the dial-selection owner serves multi-target specs built
+    // through other surfaces.
+    if multihoming {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "multihoming requires at least two configured targets",
+        });
+    }
     let target = match kind {
         ServiceTunnelKind::GenericServer
         | ServiceTunnelKind::IrcServer
@@ -1607,8 +1718,8 @@ pub fn build_control_spec(
         idle,
         access,
         unique_local_address,
-        multihoming: false,
-        reply_bundling: false,
+        multihoming,
+        reply_bundling,
         http_policy,
         http_options,
         socks5_options,
@@ -1674,6 +1785,7 @@ pub fn normalize_definition(
         if !SUPPORTED_289_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_291_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_292_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_296_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -3573,12 +3685,7 @@ mod tests {
         }
         // Known-but-not-yet-supported options fail explicitly too,
         // naming the owning plan for blocked and corrective cells.
-        for key in [
-            "outproxy",
-            "description",
-            "leaseset_type",
-            "tunnel_backup_quantity",
-        ] {
+        for key in ["outproxy", "description", "leaseset_type"] {
             if i2pr_i2pcontrol::tunnel_options::find_option(key).is_err() {
                 continue;
             }
@@ -3697,24 +3804,33 @@ mod tests {
                 "unexpected error for {key}={value}: {error:?}"
             );
         }
-        // Residuals name their limitation (in-mask kinds only): 296/297
-        // corrective reasons name the owning plan, 293 deep primitives
-        // name the determination and its Plan 295 carriage.
-        for (key, value) in [
-            ("tunnel_backup_quantity", "x"),
-            ("tunnel_variance", "x"),
-            ("sig_type", "EDDSA_SHA512_ED25519"),
-        ] {
+        // Residuals name their limitation (in-mask kinds only): 293
+        // deep primitives name the determination and its Plan 295
+        // carriage. Plan 296 residuals now apply (tested below), so
+        // malformed values fail as invalid options, never as
+        // unsupported.
+        for (key, value) in [("tunnel_backup_quantity", "x"), ("tunnel_variance", "x")] {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert(key.to_owned(), value.to_owned());
             let error = normalize_definition("bad", TunnelType::Client, &options, false)
-                .expect_err("residual rejected");
+                .expect_err("malformed residual rejected");
             assert!(
-                matches!(&error, ControlError::UnsupportedOption(message)
-                    if message.contains("Plan 296") || message.contains("Plan 293 determination")),
+                matches!(&error, ControlError::InvalidOption { .. }),
                 "unexpected error for {key}: {error:?}"
             );
         }
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert(
+            "sig_type".to_owned(),
+            "EDDSA_SHA512_ED25519".to_owned(),
+        );
+        let error = normalize_definition("bad", TunnelType::Client, &options, false)
+            .expect_err("sig_type rejected");
+        assert!(
+            matches!(&error, ControlError::UnsupportedOption(message)
+                if message.contains("Plan 293 determination")),
+            "unexpected error: {error:?}"
+        );
         // Outproxy provider residual on an in-mask proxy kind.
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
         options.insert(
@@ -3736,6 +3852,127 @@ mod tests {
         assert!(
             matches!(&error, ControlError::UnsupportedOption(message) if message.contains("Plan 297")),
             "unexpected error: {error:?}"
+        );
+        // Plan 296: backup quantity and length variance apply to
+        // shaping with Proposal bounds; the pool-maximum sum check
+        // rejects contradictory combinations.
+        for (key, value) in [("tunnel_backup_quantity", "2"), ("tunnel_variance", "-1")] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert(key.to_owned(), value.to_owned());
+            let definition =
+                normalize_definition("shp296", TunnelType::Client, &options, false)
+                    .expect("296 shaping admitted");
+            let spec = build_control_spec(&definition).expect("296 shaping builds");
+            if key == "tunnel_backup_quantity" {
+                assert_eq!(spec.shaping.backup_quantity, 2);
+            } else {
+                assert_eq!(spec.shaping.length_variance, -1);
+            }
+        }
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("tunnel_backup_quantity".to_owned(), "2".to_owned());
+        options.insert("inbound_quantity".to_owned(), "4".to_owned());
+        options.insert("outbound_quantity".to_owned(), "4".to_owned());
+        let definition =
+            normalize_definition("shp296b", TunnelType::Client, &options, false)
+                .expect("296 shaping admitted");
+        let spec = build_control_spec(&definition).expect("296 shaping builds");
+        let projected =
+            crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec);
+        assert_eq!(projected.backup_quantity(), 2);
+        assert_eq!(projected.effective_inbound_target(), 6);
+        assert_eq!(projected.effective_outbound_target(), 6);
+        assert!(projected.pool_config().is_ok());
+        // Bounds and contradictions name the key.
+        for (key, value) in [
+            ("tunnel_backup_quantity", "4"),
+            ("tunnel_backup_quantity", "-1"),
+            ("tunnel_variance", "3"),
+            ("tunnel_variance", "-3"),
+            ("tunnel_variance", "x"),
+        ] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert(key.to_owned(), value.to_owned());
+            let error = normalize_definition("bad", TunnelType::Client, &options, false)
+                .and_then(|definition| build_control_spec(&definition))
+                .expect_err("296 bound rejected");
+            assert!(
+                matches!(&error, ControlError::InvalidOption { option, .. } if option == key),
+                "unexpected error for {key}={value}: {error:?}"
+            );
+        }
+        // Quantity plus backup past the pool directional maximum is
+        // contradictory, never clamped.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("tunnel_quantity".to_owned(), "6".to_owned());
+        options.insert("tunnel_backup_quantity".to_owned(), "3".to_owned());
+        let error = normalize_definition("bad", TunnelType::Client, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("oversum rejected");
+        assert!(
+            matches!(&error, ControlError::ContradictoryOptions { .. }),
+            "unexpected error: {error:?}"
+        );
+        // Plan 296: reply bundling applies to every kind through
+        // the destination delivery flag.
+        for tunnel_type in [TunnelType::Client, TunnelType::Server] {
+            let mut options = if tunnel_type == TunnelType::Server {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("reply_bundling".to_owned(), "true".to_owned());
+            let definition =
+                normalize_definition("bnd296", tunnel_type, &options, false)
+                    .expect("bundling admitted");
+            let spec = build_control_spec(&definition).expect("bundling builds");
+            assert!(spec.reply_bundling);
+            assert!(
+                crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec)
+                    .reply_bundling()
+            );
+        }
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("reply_bundling".to_owned(), "maybe".to_owned());
+        let error = normalize_definition("bad", TunnelType::Client, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("malformed bundling rejected");
+        assert!(
+            matches!(&error, ControlError::InvalidOption { option, .. } if option == "reply_bundling"),
+            "unexpected error: {error:?}"
+        );
+        // Plan 296: multihoming parses on server kinds but needs two
+        // configured targets; the control surface carries a singular
+        // target, so the two-target minimum rejects it here while
+        // the dial-selection owner serves multi-target specs.
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("multihoming".to_owned(), "true".to_owned());
+        let error = normalize_definition("mhsrv", TunnelType::Server, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("single-target multihoming rejected");
+        assert!(
+            matches!(&error, ControlError::ContradictoryOptions { reason, .. } if reason.contains("two configured targets")),
+            "unexpected error: {error:?}"
+        );
+        // Client kinds never dial a server target.
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("multihoming".to_owned(), "true".to_owned());
+        let error = normalize_definition("mhcli", TunnelType::Client, &options, false)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect_err("client multihoming rejected");
+        assert!(
+            matches!(&error, ControlError::ContradictoryOptions { .. }),
+            "unexpected error: {error:?}"
+        );
+        // Plan 296: the service-tunnels pool-maximum mirror equals
+        // the destination directional ceilings it shadows.
+        assert_eq!(
+            u16::from(MAX_EFFECTIVE_DIRECTION_TUNNELS),
+            i2pr_client::MAX_DESTINATION_INBOUND
+        );
+        assert_eq!(
+            u16::from(MAX_EFFECTIVE_DIRECTION_TUNNELS),
+            i2pr_client::MAX_DESTINATION_OUTBOUND
         );
         // Shaping applies to Streamr kinds too (uniform pool sizing).
         let mut options = BTreeMap::new();

@@ -94,6 +94,8 @@ fn server_spec(id: &str, target: SocketAddr, unique_local_address: bool) -> Serv
         idle: i2pr_service_tunnels::IdlePolicy::disabled(),
         access: ServerAccessPolicy::default(),
         unique_local_address,
+        multihoming: false,
+        reply_bundling: false,
         http_policy: HttpServerPolicy::default(),
         http_options: None,
         socks5_options: None,

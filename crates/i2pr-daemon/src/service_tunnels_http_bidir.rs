@@ -90,14 +90,7 @@ pub async fn run_http_bidir_loop(
             }
             _ = ticker.tick() => {
                 for connection_id in poll_streaming_accept(manager, runtime, port) {
-                    handle_bidir_server_syn(
-                        manager,
-                        runtime,
-                        target_socket,
-                        connection_id,
-                        cancellation,
-                    )
-                    .await;
+                    handle_bidir_server_syn(manager, runtime, connection_id, cancellation).await;
                 }
             }
         }
@@ -176,7 +169,6 @@ async fn handle_bidir_client_accept(
 async fn handle_bidir_server_syn(
     manager: &Arc<ServiceTunnelManager>,
     runtime: &Arc<ServiceRuntime>,
-    target: std::net::SocketAddr,
     connection_id: i2pr_client::streaming::connection::ConnectionId,
     cancellation: &CancellationToken,
 ) {
@@ -188,11 +180,14 @@ async fn handle_bidir_server_syn(
     let runtime_for_task = Arc::clone(runtime);
     let cancellation_for_task = cancellation.clone();
     let spec_id_for_log = runtime.spec_id.clone();
+    // Plan 296: resolve the ordered dial targets per connection so
+    // multihoming rotation advances once per accepted SYN.
+    let dial_targets = manager.server_dial_targets_for(runtime);
     tokio::spawn(async move {
         let outcome = run_http_server_connection(
             manager_for_task,
             runtime_for_task.clone(),
-            target,
+            dial_targets,
             connection_id,
             peer,
             cancellation_for_task,
