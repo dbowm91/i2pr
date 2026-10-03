@@ -102,7 +102,7 @@ passing 308 + 315 + 311 + 313
   -> future integrated anonymity successor to stopped Plan 301
 ~~~
 
-Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plan 314 passed the build-contract/selector half; Plan 315 is now dependency-ready for the group-pool/consumer half. Plans 311 and 312 may proceed independently after Plan 315 passes.
+Plan 308 proceeded independently and remains blocked on HTTP topology evidence; Plan 309 passed independently of it. Plan 310 remains an immutable blocked record. Plan 314 passed the build-contract/selector half, satisfying Plan 315's final hard dependency. Plan 315 is active for the group-pool/consumer half; Plans 311 and 312 remain blocked until it passes.
 
 ## 7. Milestones
 
