@@ -527,8 +527,20 @@ pub const MAX_TUNNEL_QUANTITY: u8 = 6;
 /// Proposal 170 tunnel length ceiling (0..=3 on the wire; 0 is
 /// rejected by service-destination policy, see [`TunnelShaping`]).
 pub const MAX_TUNNEL_LENGTH_HOPS: u8 = 3;
+/// Proposal 170 backup-quantity ceiling (Plan 296): 0..=3 standby
+/// tunnels held ready beyond the per-direction quantity target.
+pub const MAX_TUNNEL_BACKUP_QUANTITY: u8 = 3;
+/// Proposal 170 length-variance bound (Plan 296): per-build hop
+/// adjustment sampled uniformly from `-variance..=+variance`.
+pub const MAX_TUNNEL_LENGTH_VARIANCE: i8 = 2;
+/// Directional pool maximum mirrored from the destination tunnel
+/// pool ceiling (Plan 296): a per-direction quantity plus backup
+/// may not exceed the tunnels the pool can hold. The destination
+/// crate owns the authoritative ceiling; the daemon cross-checks
+/// equality in its shaping tests so the mirror cannot drift.
+pub const MAX_EFFECTIVE_DIRECTION_TUNNELS: u8 = 8;
 
-/// Validated per-tunnel pool shaping (Plan 292).
+/// Validated per-tunnel pool shaping (Plan 292, extended by Plan 296).
 ///
 /// `tunnel_quantity` is the symmetric default; `inbound_quantity` and
 /// `outbound_quantity` override per direction. `tunnel_length` is the
@@ -537,8 +549,17 @@ pub const MAX_TUNNEL_LENGTH_HOPS: u8 = 3;
 /// differing per-direction lengths instead of silently dropping one).
 /// Length 0 (zero-hop) is rejected: service destinations run in
 /// `Remote` tunnel mode and the destination policy does not permit
-/// zero-hop service pools. Backup quantity and length variance have no
-/// pool primitive and belong to Plan 296.
+/// zero-hop service pools.
+///
+/// Plan 296: `backup_quantity` (0..=3) holds that many extra tunnels
+/// ready beyond each per-direction quantity target; established
+/// tunnels past the base target count as standby and promote
+/// automatically when a base tunnel fails. The per-direction
+/// effective target (`quantity + backup`) may not exceed
+/// [`MAX_EFFECTIVE_DIRECTION_TUNNELS`]. `length_variance` (-2..=+2)
+/// randomizes each build's hop length around the configured length
+/// within the pool hop policy (see the destination crate's build
+/// sampler); 0 disables variance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TunnelShaping {
     /// Inbound pool target (1..=6).
@@ -547,6 +568,10 @@ pub struct TunnelShaping {
     pub outbound_quantity: u8,
     /// Shared pool hop length (1..=3).
     pub length_hops: u8,
+    /// Standby tunnels held ready per direction (0..=3).
+    pub backup_quantity: u8,
+    /// Per-build hop-length variance (-2..=+2).
+    pub length_variance: i8,
 }
 
 impl TunnelShaping {
@@ -556,6 +581,8 @@ impl TunnelShaping {
             inbound_quantity: 2,
             outbound_quantity: 2,
             length_hops: 2,
+            backup_quantity: 0,
+            length_variance: 0,
         }
     }
 
@@ -564,6 +591,8 @@ impl TunnelShaping {
         inbound_quantity: u8,
         outbound_quantity: u8,
         length_hops: u8,
+        backup_quantity: u8,
+        length_variance: i8,
     ) -> Result<Self, ServiceTunnelError> {
         if inbound_quantity == 0 || inbound_quantity > MAX_TUNNEL_QUANTITY {
             return Err(ServiceTunnelError::ExceedsCeiling {
@@ -583,10 +612,38 @@ impl TunnelShaping {
                 reason: "must be within 1..=3 (zero-hop is not permitted for service destinations)",
             });
         }
+        if backup_quantity > MAX_TUNNEL_BACKUP_QUANTITY {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "must be within 0..=3",
+            });
+        }
+        if length_variance < -MAX_TUNNEL_LENGTH_VARIANCE
+            || length_variance > MAX_TUNNEL_LENGTH_VARIANCE
+        {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "length_variance",
+                reason: "must be within -2..=+2",
+            });
+        }
+        if inbound_quantity.saturating_add(backup_quantity) > MAX_EFFECTIVE_DIRECTION_TUNNELS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "inbound quantity plus backup exceeds the pool directional maximum of 8",
+            });
+        }
+        if outbound_quantity.saturating_add(backup_quantity) > MAX_EFFECTIVE_DIRECTION_TUNNELS {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "backup_quantity",
+                reason: "outbound quantity plus backup exceeds the pool directional maximum of 8",
+            });
+        }
         Ok(Self {
             inbound_quantity,
             outbound_quantity,
             length_hops,
+            backup_quantity,
+            length_variance,
         })
     }
 }
@@ -717,6 +774,22 @@ pub struct ServiceTunnelSpec {
     /// (generic, HTTP server, bidirectional) may set it; the
     /// option has no consuming dial for any other kind.
     pub unique_local_address: bool,
+    /// Server target selection across the configured target list
+    /// (Plan 296 `multihoming`). When set, each inbound connection
+    /// dials a round-robin-selected target with sequential failover
+    /// instead of the first target only; the flag requires at
+    /// least two configured targets. Unset keeps first-target
+    /// failover (configuration-layer fallback, no wire key).
+    /// Only the masked server kinds (generic, HTTP server,
+    /// bidirectional) may set it.
+    pub multihoming: bool,
+    /// Garlic reply bundling on the destination delivery path
+    /// (Plan 296 `reply_bundling`). When set, the outbound sweep
+    /// may carry multiple same-remote application payloads as
+    /// multiple data cloves in one New Session Reply garlic
+    /// message. Unset keeps one payload per garlic message. All
+    /// kinds may set it.
+    pub reply_bundling: bool,
     /// HTTP server presentation policy (Plan 292
     /// `address_helper` / `jump_list` gates). Only the HTTP
     /// server kinds consume it; every other kind must carry
@@ -761,6 +834,8 @@ impl ServiceTunnelSpec {
             self.shaping.inbound_quantity,
             self.shaping.outbound_quantity,
             self.shaping.length_hops,
+            self.shaping.backup_quantity,
+            self.shaping.length_variance,
         )?;
         if self.targets.len() > MAX_CONFIGURED_TARGETS {
             return Err(ServiceTunnelError::ExceedsCeiling {
@@ -1127,6 +1202,35 @@ impl ServiceTunnelSpec {
                 reason: "address_helper and jump_list apply to HTTP server kinds only",
             });
         }
+        // Plan 296: multihoming consumes the server-to-target
+        // dial target list, which only the masked server kinds
+        // perform. The flag additionally requires at least two
+        // configured targets: with a single target there is
+        // nothing to select across, so accepting it would be
+        // inert (never accepted inertly).
+        if self.multihoming
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "multihoming applies to server kinds only",
+            });
+        }
+        if self.multihoming {
+            let target_count =
+                usize::from(self.target.is_some()).saturating_add(self.targets.len());
+            if target_count < 2 {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id,
+                    reason: "multihoming requires at least two configured targets",
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -1223,6 +1327,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1262,10 +1368,14 @@ mod tests {
     #[test]
     fn shaping_bounds_follow_proposal_ceilings() {
         // Plan 292: quantity 1..=6, length 1..=3; zero-hop rejected.
-        let shaped = TunnelShaping::try_new(4, 5, 3).expect("shaping");
+        // Plan 296: backup 0..=3, variance -2..=+2, and each
+        // direction's quantity plus backup fits the pool maximum.
+        let shaped = TunnelShaping::try_new(4, 5, 3, 0, 0).expect("shaping");
         assert_eq!(shaped.inbound_quantity, 4);
         assert_eq!(shaped.outbound_quantity, 5);
         assert_eq!(shaped.length_hops, 3);
+        assert_eq!(shaped.backup_quantity, 0);
+        assert_eq!(shaped.length_variance, 0);
         for (inbound, outbound, length) in [
             (0, 2, 2),
             (7, 2, 2),
@@ -1275,15 +1385,84 @@ mod tests {
             (2, 2, 4),
         ] {
             assert!(
-                TunnelShaping::try_new(inbound, outbound, length).is_err(),
+                TunnelShaping::try_new(inbound, outbound, length, 0, 0).is_err(),
                 "shaping ({inbound}, {outbound}, {length}) must fail"
             );
         }
         // Balanced shaping is the pre-292 default.
         assert_eq!(
             TunnelShaping::balanced(),
-            TunnelShaping::try_new(2, 2, 2).expect("balanced")
+            TunnelShaping::try_new(2, 2, 2, 0, 0).expect("balanced")
         );
+    }
+
+    #[test]
+    fn shaping_backup_and_variance_bounds() {
+        // Plan 296: Proposal bounds bind (backup 0..=3, variance
+        // -2..=+2); per-direction quantity plus backup fits the
+        // pool directional maximum of 8.
+        let shaped = TunnelShaping::try_new(2, 3, 2, 3, -2).expect("shaping");
+        assert_eq!(shaped.backup_quantity, 3);
+        assert_eq!(shaped.length_variance, -2);
+        let shaped = TunnelShaping::try_new(6, 6, 3, 2, 2).expect("shaping");
+        assert_eq!(shaped.backup_quantity, 2);
+        assert_eq!(shaped.length_variance, 2);
+        for (inbound, outbound, backup, variance) in [
+            (2, 2, 4, 0),
+            (2, 2, u8::MAX, 0),
+            (6, 6, 3, 0),
+            (6, 2, 3, 0),
+            (2, 6, 3, 0),
+            (2, 2, 0, 3),
+            (2, 2, 0, -3),
+            (2, 2, 0, i8::MAX),
+            (2, 2, 0, i8::MIN),
+        ] {
+            assert!(
+                TunnelShaping::try_new(inbound, outbound, 2, backup, variance).is_err(),
+                "shaping backup {backup} variance {variance} must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn multihoming_needs_server_kind_and_two_targets() {
+        // Plan 296: multihoming consumes the server dial target
+        // list; client kinds and single-target servers reject it.
+        let mut server = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse("mh-server").expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp("127.0.0.1:8080".parse().expect("addr"))),
+            targets: vec![ServerTarget::LoopbackTcp("127.0.0.1:8081".parse().expect("addr"))],
+            destination: None,
+            policy: DestinationPolicy::Dedicated,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            shaping: TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: IdlePolicy::disabled(),
+            access: crate::access::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: true,
+            reply_bundling: false,
+            http_policy: crate::http::HttpServerPolicy::default(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        };
+        assert!(server.validate().is_ok());
+        // A single target leaves nothing to select across.
+        server.targets.clear();
+        assert!(server.validate().is_err());
+        // Client kinds never dial a server target.
+        let mut client = client_spec("mh-client", "127.0.0.1:7070", "example.i2p");
+        client.multihoming = true;
+        assert!(client.validate().is_err());
     }
 
     #[test]
@@ -1422,6 +1601,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1530,6 +1711,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1566,6 +1749,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: Some(crate::http::HttpClientOptions::default()),
             socks5_options: None,
@@ -1625,6 +1810,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -1655,6 +1842,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,

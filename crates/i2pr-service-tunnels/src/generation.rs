@@ -188,6 +188,8 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         || prev.idle != next.idle
         || prev.unique_local_address != next.unique_local_address
         || prev.http_policy != next.http_policy
+        || prev.multihoming != next.multihoming
+        || prev.reply_bundling != next.reply_bundling
     {
         // Resource/deadline/profile-only differences are safe to
         // swap in place; nothing has been wired that depends on
@@ -196,7 +198,11 @@ pub fn diff_spec(prev: &ServiceTunnelSpec, next: &ServiceTunnelSpec) -> DiffClas
         // effect without rebuilding the runtime. The server
         // target dial and the HTTP presentation filter likewise
         // read the committed dial/presentation behavior per
-        // connection and per request.
+        // connection and per request. Plan 296: multihoming target
+        // selection reads the committed flag and target list per
+        // connection, and the outbound sweep reads the committed
+        // reply-bundling flag per sweep, so both edits take effect
+        // without rebuilding the runtime.
         return DiffClass::MutableInPlace;
     }
     DiffClass::Unchanged
@@ -250,6 +256,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -277,6 +285,8 @@ mod tests {
             idle: IdlePolicy::disabled(),
             access: crate::access::ServerAccessPolicy::default(),
             unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
             http_policy: crate::http::HttpServerPolicy::default(),
             http_options: None,
             socks5_options: None,
@@ -300,10 +310,10 @@ mod tests {
         // the destination (pools rebuild under the same identity).
         let prev = client_spec("alpha");
         let mut next = prev.clone();
-        next.shaping = TunnelShaping::try_new(4, 4, 2).expect("shaping");
+        next.shaping = TunnelShaping::try_new(4, 4, 2, 0, 0).expect("shaping");
         assert_eq!(diff_spec(&prev, &next), DiffClass::ReplaceDestination);
         let mut length_only = prev.clone();
-        length_only.shaping = TunnelShaping::try_new(2, 2, 3).expect("shaping");
+        length_only.shaping = TunnelShaping::try_new(2, 2, 3, 0, 0).expect("shaping");
         assert_eq!(
             diff_spec(&prev, &length_only),
             DiffClass::ReplaceDestination
@@ -355,6 +365,24 @@ mod tests {
             jump_list: true,
         };
         assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);
+    }
+
+    #[test]
+    fn shaping_and_delivery_flag_edits_classify() {
+        // Plan 296: backup/variance ride the shaping struct (any
+        // shaping edit replaces the destination); multihoming and
+        // reply bundling read the committed spec per
+        // connection/sweep, so those edits are mutable in place.
+        let prev = client_spec("alpha");
+        let mut shaped = prev.clone();
+        shaped.shaping = TunnelShaping::try_new(2, 2, 2, 1, 1).expect("shaping");
+        assert_eq!(diff_spec(&prev, &shaped), DiffClass::ReplaceDestination);
+        let mut multi = prev.clone();
+        multi.multihoming = true;
+        assert_eq!(diff_spec(&prev, &multi), DiffClass::MutableInPlace);
+        let mut bundled = prev.clone();
+        bundled.reply_bundling = true;
+        assert_eq!(diff_spec(&prev, &bundled), DiffClass::MutableInPlace);
     }
 
     #[test]
