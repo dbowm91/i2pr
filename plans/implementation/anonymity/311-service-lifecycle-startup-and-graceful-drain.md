@@ -2,7 +2,7 @@
 
 Status at registration: **blocked-on-plan310**
 
-Current dependency authority: **blocked-on-plan315**. Plan 310 remains an immutable blocked record; Plans 314–315 are its registered corrective sequence, and Plan 315 must pass before this plan executes.
+Current dependency authority: **ready-after-plan315**. Plan 310 remains an immutable blocked record; Plans 314–315 are its registered corrective sequence, and Plan 315 passed.
 
 Classification: anonymity lifecycle capability + shutdown correctness.
 
