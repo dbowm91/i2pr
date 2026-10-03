@@ -114,7 +114,7 @@ Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may pro
 | 305 | stopped | retained owner/reference audit | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | plans/closure/anonymity/305-status.md |
 | 307 | passed-service-boundary-router-unlinkability-and-input-sanitation | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | plans/closure/anonymity/307-status.md |
 | 308 | in progress | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 304 artifacts and ADR 0030 satisfy other dependencies |
-| 309 | ready | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 305 audit and ADR 0030 satisfy other dependencies |
+| 309 | in progress | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 305 audit and ADR 0030 satisfy other dependencies |
 | 310 | blocked on 309 | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | future |
 | 311 | blocked on 310 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | future |
 | 312 | blocked on 310 | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | future |
