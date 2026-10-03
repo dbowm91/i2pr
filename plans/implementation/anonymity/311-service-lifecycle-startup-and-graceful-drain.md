@@ -17,7 +17,8 @@ At Java I2P 2.13.0 commit `9134f808337b401e8e53c73734c81fab04280c9d`:
 - I2PTunnel is configured with `delay=-1`; `LoadClientAppsJob` waits until the router reaches `RUNNING` before launch.
 - Newly-created client inbound pools start before outbound pools, with outbound delayed one second.
 - `TunnelPool` uses a ten-minute tunnel lifetime.
-- `Router.shutdownGracefully()` documents a zero-to-eleven-minute graceful shutdown and waits on last participating-tunnel expiration plus clock fudge.
+- `Router.shutdownGracefully()` documents a zero-to-eleven-minute router-level graceful shutdown and waits on last participating transit-tunnel expiration plus clock fudge.
+- `TunnelControllerGroup` is a shutdown task, so I2PTunnel teardown occurs later during final shutdown rather than when graceful shutdown is first requested.
 
 These are lifecycle references, not proof of Java's anonymity intent.
 
@@ -53,7 +54,7 @@ Out of scope: indefinite padding, global timing resistance, transport shutdown r
    - keep transport/tunnel machinery alive for already-published server leases and existing streams;
    - retire as leases/tunnels expire naturally;
    - force final group teardown at a hard maximum of eleven minutes.
-6. Target a normal ten-minute tunnel-lifetime drain while allowing earlier completion when no published/active group state remains.
+6. As an i2pr policy choice, target at most one normal ten-minute I2P tunnel lifetime for service-group retirement while allowing earlier completion when no published/active group state remains. Do not describe this as a Java service-tunnel timer.
 7. Keep hard shutdown and fatal-security shutdown separate; they bypass the long drain.
 8. Add local-only status using coarse lifecycle/remaining-time buckets without peer or Destination identity.
 
@@ -79,7 +80,7 @@ Run full workspace/clippy/docs floor plus runtime/daemon/client/tunnel/service l
 
 ## 12. Documentation updates
 
-Document graceful versus hard semantics, the ten-minute normal tunnel lifetime and eleven-minute hard ceiling, and that lifecycle smoothing reduces simple uptime correlation but does not defeat a global timing adversary.
+Document graceful versus hard semantics, the source distinction between Java's router-level 0–11 minute graceful wait and i2pr's proposed at-most-one-tunnel-lifetime service retirement, and that lifecycle smoothing reduces simple uptime correlation but does not defeat a global timing adversary.
 
 ## 13. Acceptance criteria
 

@@ -1,7 +1,7 @@
 # ADR 0030: Destination linkability domains, service lifecycle separation, and i2pd Streaming convergence
 
 - Status: Accepted
-- Date: 2026-10-02
+- Date: 2026-10-03
 - Decision owner: repository maintainer
 - Related: ADR 0029, M10 service tunnels, Destinations/Streaming, Plans 296–305
 - Supersedes in part: ADR 0029 §5; narrows ADR 0029 §§3 and 6 for future anonymity work
@@ -23,7 +23,8 @@ Exact-pinned Java I2P 2.13.0 source also establishes useful lifecycle reference 
 - `LoadClientAppsJob` interprets negative delay as waiting until the router reaches `RUNNING`, polling at one-second intervals;
 - `TunnelPoolManager::buildTunnels` starts a newly-created client inbound pool first and schedules the outbound pool one second later;
 - `TunnelPool` defines a ten-minute tunnel lifetime;
-- `Router.shutdownGracefully()` documents a zero-to-eleven-minute graceful shutdown and derives remaining time from participating-tunnel expiration plus clock fudge.
+- `Router.shutdownGracefully()` documents a zero-to-eleven-minute router-level graceful shutdown and derives remaining time from participating transit-tunnel expiration plus clock fudge;
+- `TunnelControllerGroup` is registered as a shutdown task, so I2PTunnel teardown occurs later in the final shutdown sequence rather than at graceful-shutdown request time.
 
 These facts inform lifecycle design but do not prove that Java implements a dedicated service-uptime anonymity defense. i2pr will preserve the security goal without overstating reference intent.
 
@@ -77,9 +78,9 @@ Activation waits for router operational readiness and usable Destination tunnel 
 
 Graceful router shutdown has a service-drain phase distinct from per-connection shutdown. During graceful drain, the router stops creating replacement service tunnels and stops refreshing service publication as appropriate, while already-published leases/tunnels may age out naturally. The network stack remains alive long enough to service that bounded drain.
 
-The compatibility target is one normal tunnel lifetime, with a hard ceiling no greater than the Java reference's documented eleven-minute graceful window. Immediate/hard shutdown remains available.
+For i2pr, the initial service-group retirement design targets at most one normal I2P tunnel lifetime, with a hard ceiling no greater than the Java reference's documented eleven-minute router-level graceful window. This is an i2pr policy choice informed by I2P tunnel lifetime and Java shutdown behavior, not a claim that Java has a fixed ten-minute service-tunnel privacy timer. Immediate/hard shutdown remains available.
 
-Exact startup hold and drain defaults are fixed by implementation plans from source-locked reference behavior and deterministic lifecycle tests. They must not be guessed from a single constant.
+Exact startup and retirement defaults are fixed by implementation evidence and deterministic lifecycle tests. They must not be guessed from a single constant.
 
 ### 7. Streaming fingerprint convergence targets i2pd
 
