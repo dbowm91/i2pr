@@ -163,6 +163,11 @@ impl LogRing {
             .unwrap_or(0)
     }
 
+    /// Whether the ring currently retains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// The severity gate label (documents [`RING_MAX_VERBOSITY`]).
     pub fn verbosity_gate(&self) -> &'static str {
         RING_MAX_VERBOSITY
@@ -337,7 +342,15 @@ impl ControlMetrics {
             }),
         }
     }
+}
 
+impl Default for ControlMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ControlMetrics {
     /// Registers cumulative transport counters (SSU2 bytes/datagrams).
     /// Coverage is exactly the registered sources: local
     /// loopback/destination traffic that bypasses the transport
@@ -383,7 +396,11 @@ impl ControlMetrics {
                 return;
             };
             let secs = delta.as_secs_f64();
-            if !(secs > 0.0) || !state.observed {
+            // `partial_cmp` keeps the NaN guard explicit: a
+            // non-positive or incomparable interval yields no rates.
+            if secs.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater)
+                || !state.observed
+            {
                 return;
             }
             // Per-second rates from cumulative deltas against the
