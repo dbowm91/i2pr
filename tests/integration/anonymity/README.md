@@ -5,6 +5,12 @@ Plan 298 defines the normalized, identity-free trace format in
 `streaming-scenarios.toml`. Exact source authorities are in
 `references.lock.toml`.
 
+Plan 304 adds an Ubuntu-only preflight (`bash
+scripts/interop/anonymity/preflight-ubuntu.sh`) and the topology/corpus
+contracts in `topology.toml` and `http-corpus.toml`. Reference sources and
+artifacts are built only in ignored `target/interop`; record their hashes with
+`scripts/interop/anonymity/record-reference-manifest.py`.
+
 The schema retains direction, 10 ms relative-time buckets, flags, payload
 length only, sequence/ACK deltas, retransmission ordinal, advertised packet
 size/window/choke state, and a bounded terminal category. It excludes packet
@@ -17,3 +23,9 @@ The fixed matrix is a scenario contract. A row is not executed evidence until
 an exact-pinned router run emits a validated trace. Existing M6 Streaming
 interoperability evidence is not a substitute for these hostile-Destination
 fingerprint scenarios.
+
+The controlled hostile-Destination topology remains unqualified until all
+three family runners produce HTTP and Streaming smoke rows. Stock Java and
+i2pd Streaming APIs expose application streams, not the server packet response
+boundary required to control ACK/loss stimuli; their existing application
+lanes must not be counted as Plan 304 evidence.

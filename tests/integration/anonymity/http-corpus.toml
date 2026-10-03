@@ -1,0 +1,36 @@
+schema = 1
+deadline_ms = 30000
+
+[[request]]
+name = "origin-get"
+method = "GET"
+target_form = "origin"
+path = "/p304/origin"
+
+[[request]]
+name = "absolute-alias-get"
+method = "GET"
+target_form = "absolute"
+authority = "fixture.i2p"
+path = "/p304/absolute"
+
+[[request]]
+name = "small-post"
+method = "POST"
+target_form = "origin"
+path = "/p304/post"
+body = "i2pr-plan-304-synthetic-body-v1"
+
+[headers]
+user_agent = "Plan304 synthetic client"
+accept = "text/plain"
+accept_language = "en"
+accept_encoding = "identity"
+client_hints = "sec-ch-ua=synthetic"
+fetch_metadata = "sec-fetch-mode=cors"
+priority = "u=1"
+upgrade_insecure_requests = "1"
+referer_from = "fixture-only"
+via_forwarded = "fixture-only"
+custom = "X-Plan304: synthetic"
+connection = "close"
