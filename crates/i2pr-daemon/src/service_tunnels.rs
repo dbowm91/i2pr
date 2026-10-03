@@ -52,8 +52,8 @@ use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::{Destination, LeaseSet2};
 use i2pr_runtime::{CancellationToken, ChildScope};
 use i2pr_service_tunnels::{
-    DestinationRef, DiffClass, ServerTarget, ServiceDiff, ServiceTunnelKind, ServiceTunnelSet,
-    StaticAliasTable, diff_sets,
+    DestinationGroupKey, DestinationGroupSpec, DestinationRef, DiffClass, ServerTarget,
+    ServiceDiff, ServiceTunnelKind, ServiceTunnelSet, StaticAliasTable, diff_sets,
 };
 use i2pr_storage::{
     ServiceDestinationRecord, ServiceDestinationStorageError, ServiceDestinationStore,
@@ -158,6 +158,9 @@ pub struct ServiceRuntime {
     pub(crate) failed_connects: Arc<AtomicUsize>,
     /// Bridge handle shared by the supervisor and the per-service connection pump.
     bridge: SamDestinationHandle,
+    /// Authoritative owner shared by every member of the explicit
+    /// Destination linkability group.
+    group: Arc<DestinationGroupRuntime>,
     /// The destination id used for this service.
     pub(crate) destination_id: DestinationId,
     /// Listener for client tunnels (loopback TCP).
@@ -266,6 +269,55 @@ impl ServiceRuntime {
     pub(crate) fn connection_finished_now(&self) {
         self.connection_finished(service_streaming_now_ms());
     }
+}
+
+/// One authoritative identity, Streaming bridge, and lifecycle owner
+/// for all service specifications that intentionally share a group.
+pub(crate) struct DestinationGroupRuntime {
+    key: DestinationGroupKey,
+    member_ids: Vec<String>,
+    persistent: bool,
+    identity: Arc<DestinationIdentity>,
+    bridge: SamDestinationHandle,
+    destination_id: DestinationId,
+}
+
+impl std::fmt::Debug for DestinationGroupRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DestinationGroupRuntime")
+            .field("key", &self.key)
+            .field("member_count", &self.member_ids.len())
+            .field("persistent", &self.persistent)
+            .field("destination_id", &self.destination_id)
+            .finish_non_exhaustive()
+    }
+}
+
+fn register_group_in_generation(
+    group: &Arc<DestinationGroupRuntime>,
+    registered: &mut std::collections::HashSet<DestinationId>,
+    sam_destinations: &mut SamDestinations,
+    registry: &mut DestinationRegistry,
+    config: DestinationConfig,
+) -> Result<(), ServiceTunnelError> {
+    if !registered.insert(group.destination_id) {
+        return Ok(());
+    }
+    sam_destinations.install_handle(group.destination_id, group.bridge.clone());
+    let runtime = DestinationRuntime::with_shared_identity(Arc::clone(&group.identity), config)
+        .map_err(|error| {
+            ServiceTunnelError::DestinationRuntime(format!("group destination runtime: {error}"))
+        })?;
+    registry.insert(runtime).map(|_| ()).map_err(|error| {
+        ServiceTunnelError::DestinationRuntime(format!(
+            "group destination registry insert: {error}"
+        ))
+    })
+}
+
+struct StagedDestinationGroup {
+    runtime: Arc<DestinationGroupRuntime>,
 }
 
 impl std::fmt::Debug for ServiceRuntime {
@@ -483,6 +535,7 @@ impl ServiceTunnelManager {
         let mut active_client = 0_usize;
         let mut active_server = 0_usize;
         let mut active_service_destinations = 0_usize;
+        let mut destination_ids = std::collections::HashSet::new();
         let mut pending_connects = 0_usize;
         let mut buffered_bytes_accounted = 0_u64;
         let mut failed_connects_total = 0_u64;
@@ -491,7 +544,9 @@ impl ServiceTunnelManager {
             if !runtime.stopped.load(Ordering::Acquire) {
                 ready_services = ready_services.saturating_add(1);
             }
-            active_service_destinations = active_service_destinations.saturating_add(1);
+            if destination_ids.insert(runtime.destination_id) {
+                active_service_destinations = active_service_destinations.saturating_add(1);
+            }
             let active = runtime.active_connections.load(Ordering::Acquire);
             if runtime.is_server {
                 active_server = active_server.saturating_add(active);
@@ -527,16 +582,47 @@ impl ServiceTunnelManager {
     /// calls without an intervening [`Self::reconcile`] return the
     /// already-prepared generation and never rotate it.
     pub async fn prepare(self: &Arc<Self>) -> Result<Vec<Arc<ServiceRuntime>>, ServiceTunnelError> {
+        if let Some(generation) = self
+            .committed_generation
+            .lock()
+            .expect("committed poisoned")
+            .as_ref()
+        {
+            return Ok(generation.runtimes.values().cloned().collect());
+        }
         // Build every enabled runtime. We stage them in a local map
         // first so that a failure in any single `build_service_runtime`
         // call leaves the manager state untouched.
         let specs = self.config.specs.tunnels.clone();
+        let group_specs: HashMap<DestinationGroupKey, DestinationGroupSpec> = self
+            .config
+            .specs
+            .destination_groups()
+            .into_iter()
+            .map(|group| (group.key.clone(), group))
+            .collect();
+        for group in group_specs.values().filter(|group| group.persistent) {
+            if group.members.iter().any(|member| {
+                specs
+                    .iter()
+                    .any(|spec| spec.id == *member && spec.kind.is_client())
+            }) {
+                warn!(
+                    group = ?group.key,
+                    members = group.members.len(),
+                    "persistent Destination group includes client activity and is intentionally linkable to its server Destination"
+                );
+            }
+        }
+        let mut group_states = HashMap::new();
         let mut staged: HashMap<String, StagedRuntime> = HashMap::new();
         for spec in &specs {
             if !spec.enabled {
                 continue;
             }
-            let staged_runtime = self.build_service_runtime(spec).await?;
+            let staged_runtime = self
+                .build_service_runtime(spec, &group_specs, &mut group_states)
+                .await?;
             staged.insert(spec.id.as_str().to_owned(), staged_runtime);
         }
         // Seed the committed generation. We only do this once; later
@@ -546,13 +632,18 @@ impl ServiceTunnelManager {
             .lock()
             .expect("committed poisoned");
         if committed.is_some() {
-            return Ok(staged.into_values().map(|s| s.runtime).collect());
+            return Ok(committed
+                .as_ref()
+                .map(|generation| generation.runtimes.values().cloned().collect())
+                .unwrap_or_default());
         }
         let generation_id = self.generation_ids.allocate();
         // Install the staged runtimes into the manager-level shared
         // handles. This is the single transition from staged ->
         // committed for the prepare path.
         let mut ordered: Vec<Arc<ServiceRuntime>> = Vec::with_capacity(staged.len());
+        let mut generation_destinations = std::collections::HashSet::new();
+        let mut generation_sam_destinations = SamDestinations::new();
         let mut committed_destination_registry = DestinationRegistry::new(
             RegistryConfig::try_new(u16::try_from(staged.len().max(1)).unwrap_or(u16::MAX), 1024)
                 .map_err(|error| {
@@ -561,37 +652,44 @@ impl ServiceTunnelManager {
                 ))
             })?,
         );
-        // We can't keep a `HashMap<String, StagedRuntime>` and a
-        // parallel iteration over it because we need to consume
-        // the destination runtimes one by one. Drain into a
-        // Vec<(id, StagedRuntime)> so we can iterate by value.
         let staged_entries: Vec<(String, StagedRuntime)> = staged.into_iter().collect();
         for (id, staged_runtime) in staged_entries.into_iter() {
-            // Build the per-generation registry first by consuming
-            // the staged destination runtime. We then rebuild a
-            // fresh destination runtime for the manager-level
-            // mirror via the shared identity.
-            committed_destination_registry
-                .insert(staged_runtime.destination_runtime)
+            let group = &staged_runtime.runtime.group;
+            if generation_destinations.insert(group.destination_id) {
+                generation_sam_destinations
+                    .install_handle(group.destination_id, group.bridge.clone());
+                let generation_runtime = DestinationRuntime::with_shared_identity(
+                    Arc::clone(&group.identity),
+                    self.destination_config,
+                )
                 .map_err(|error| {
                     ServiceTunnelError::DestinationRuntime(format!(
-                        "{id} committed destination registry insert: {error}"
+                        "{id} group destination runtime: {error}"
                     ))
                 })?;
-            let identity_arc = staged_runtime
-                .runtime
-                .bridge
-                .with(|bridge| bridge.identity());
-            let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
-                identity_arc,
-                staged_runtime.runtime.destination_config,
-            )
-            .map_err(|error| {
-                ServiceTunnelError::DestinationRuntime(format!(
-                    "mirror destination runtime for committed generation: {error}"
-                ))
-            })?;
-            self.install_runtime(&staged_runtime.runtime, mirror_dest_runtime)?;
+                committed_destination_registry
+                    .insert(generation_runtime)
+                    .map_err(|error| {
+                        ServiceTunnelError::DestinationRuntime(format!(
+                            "{id} committed group registry insert: {error}"
+                        ))
+                    })?;
+                let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
+                    Arc::clone(&group.identity),
+                    self.destination_config,
+                )
+                .map_err(|error| {
+                    ServiceTunnelError::DestinationRuntime(format!(
+                        "mirror group destination runtime: {error}"
+                    ))
+                })?;
+                self.install_runtime(&staged_runtime.runtime, mirror_dest_runtime)?;
+            } else {
+                self.runtimes
+                    .lock()
+                    .expect("runtimes poisoned")
+                    .insert(id, Arc::clone(&staged_runtime.runtime));
+            }
             ordered.push(Arc::clone(&staged_runtime.runtime));
         }
         let runtimes_map: HashMap<String, Arc<ServiceRuntime>> = ordered
@@ -602,7 +700,7 @@ impl ServiceTunnelManager {
             generation_id,
             committed_specs: self.config.specs.clone(),
             runtimes: runtimes_map,
-            sam_destinations: SamDestinations::new(),
+            sam_destinations: generation_sam_destinations,
             destination_registry: committed_destination_registry,
             counters: GenerationCounters::default(),
         };
@@ -660,6 +758,25 @@ impl ServiceTunnelManager {
         // Step 3: stage every Add / Replace* spec. MutableInPlace and
         // Unchanged entries require no staging work.
         let mut staged: HashMap<String, StagedRuntime> = HashMap::new();
+        let group_specs: HashMap<DestinationGroupKey, DestinationGroupSpec> = candidate
+            .destination_groups()
+            .into_iter()
+            .map(|group| (group.key.clone(), group))
+            .collect();
+        for group in group_specs.values().filter(|group| group.persistent) {
+            if group.members.iter().any(|member| {
+                candidate_specs
+                    .iter()
+                    .any(|spec| spec.id == *member && spec.kind.is_client())
+            }) {
+                warn!(
+                    group = ?group.key,
+                    members = group.members.len(),
+                    "persistent Destination group includes client activity and is intentionally linkable to its server Destination"
+                );
+            }
+        }
+        let mut group_states = HashMap::new();
         for entry in &diff {
             match entry.class {
                 DiffClass::Add | DiffClass::ReplaceListener | DiffClass::ReplaceDestination => {
@@ -669,12 +786,15 @@ impl ServiceTunnelManager {
                             entry.id, entry.class
                         ))
                     })?;
-                    let runtime = self.build_service_runtime(spec).await.map_err(|error| {
-                        ServiceTunnelError::InvalidConfig(format!(
-                            "staging {} for {:?} failed: {error}",
-                            entry.id, entry.class
-                        ))
-                    })?;
+                    let runtime = self
+                        .build_service_runtime(spec, &group_specs, &mut group_states)
+                        .await
+                        .map_err(|error| {
+                            ServiceTunnelError::InvalidConfig(format!(
+                                "staging {} for {:?} failed: {error}",
+                                entry.id, entry.class
+                            ))
+                        })?;
                     staged.insert(entry.id.clone(), runtime);
                 }
                 DiffClass::Unchanged | DiffClass::MutableInPlace | DiffClass::Remove => {
@@ -722,12 +842,10 @@ impl ServiceTunnelManager {
                 ))
             })?,
         );
-        // Build the new committed map. Staged (Add/Replace*) entries
-        // own their destination runtime instances which we move
-        // out of the staged map into the per-generation registry.
-        // Unchanged/MutableInPlace entries copy the existing
-        // committed runtime + destination so identity preservation
-        // survives a no-op reconcile.
+        // Build one registry entry per Destination group. Each service
+        // runtime contributes its group owner, but the registry and bridge
+        // map must never duplicate group state.
+        let mut registered_groups = std::collections::HashSet::new();
         let committed_guard = self
             .committed_generation
             .lock()
@@ -737,17 +855,15 @@ impl ServiceTunnelManager {
                 continue;
             }
             if let Some(existing) = staged.remove(spec.id.as_str()) {
-                // Install the staged bridge into the new generation's
-                // sam_destinations so the cross-tunnel local-delivery
-                // path can resolve against the new committed set.
-                let bridge_data = self.bridge_data_for(&existing.runtime)?;
-                new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
-                if let Err(error) = new_destination_registry.insert(existing.destination_runtime) {
-                    return Err(ServiceTunnelError::DestinationRuntime(format!(
-                        "staged destination registry insert failed: {error}"
-                    )));
-                }
-                new_runtimes.insert(spec.id.as_str().to_owned(), existing.runtime);
+                let runtime = existing.runtime;
+                register_group_in_generation(
+                    &runtime.group,
+                    &mut registered_groups,
+                    &mut new_sam_destinations,
+                    &mut new_destination_registry,
+                    self.destination_config,
+                )?;
+                new_runtimes.insert(spec.id.as_str().to_owned(), runtime);
                 continue;
             }
             // Unchanged / MutableInPlace: clone the existing runtime
@@ -757,25 +873,13 @@ impl ServiceTunnelManager {
             if let Some(prev_gen) = committed_guard.as_ref()
                 && let Some(prev_runtime) = prev_gen.runtimes.get(spec.id.as_str())
             {
-                let bridge_data = self.bridge_data_for(prev_runtime)?;
-                new_sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
-                let identity_arc = prev_runtime.bridge.with(|bridge| bridge.identity());
-                let dest_runtime = DestinationRuntime::with_shared_identity(
-                    identity_arc,
-                    prev_runtime.destination_config,
-                )
-                .map_err(|error| {
-                    ServiceTunnelError::DestinationRuntime(format!(
-                        "{} unchanged destination runtime: {error}",
-                        spec.id.as_str()
-                    ))
-                })?;
-                if let Err(error) = new_destination_registry.insert(dest_runtime) {
-                    return Err(ServiceTunnelError::DestinationRuntime(format!(
-                        "{} unchanged destination registry insert: {error}",
-                        spec.id.as_str()
-                    )));
-                }
+                register_group_in_generation(
+                    &prev_runtime.group,
+                    &mut registered_groups,
+                    &mut new_sam_destinations,
+                    &mut new_destination_registry,
+                    self.destination_config,
+                )?;
                 new_runtimes.insert(spec.id.as_str().to_owned(), Arc::clone(prev_runtime));
             }
         }
@@ -891,9 +995,12 @@ impl ServiceTunnelManager {
                 .lock()
                 .expect("sam destinations poisoned");
             *sam_destinations = SamDestinations::new();
+            let mut seen = std::collections::HashSet::new();
             for runtime in new_runtimes.values() {
-                let bridge_data = self.bridge_data_for(runtime)?;
-                sam_destinations.install_handle(bridge_data.destination_id, bridge_data.bridge);
+                if seen.insert(runtime.group.destination_id) {
+                    sam_destinations
+                        .install_handle(runtime.group.destination_id, runtime.group.bridge.clone());
+                }
             }
         }
         {
@@ -917,11 +1024,14 @@ impl ServiceTunnelManager {
             // is not `Clone`, so the per-generation registry and the
             // manager-mirror registry hold independent runtime
             // instances that share the same identity.
+            let mut seen = std::collections::HashSet::new();
             for runtime in new_runtimes.values() {
-                let identity_arc = runtime.bridge.with(|bridge| bridge.identity());
+                if !seen.insert(runtime.group.destination_id) {
+                    continue;
+                }
                 let mirror_dest_runtime = DestinationRuntime::with_shared_identity(
-                    identity_arc,
-                    runtime.destination_config,
+                    Arc::clone(&runtime.group.identity),
+                    self.destination_config,
                 )
                 .map_err(|error| {
                     ServiceTunnelError::DestinationRuntime(format!(
@@ -938,20 +1048,6 @@ impl ServiceTunnelManager {
             }
         }
         Ok(())
-    }
-
-    /// Helper: extract the bridge handle from a staged
-    /// `ServiceRuntime` for the reconcile commit path. Destination
-    /// runtimes live in their own staged map so this method does
-    /// not have to clone them.
-    fn bridge_data_for(
-        &self,
-        runtime: &ServiceRuntime,
-    ) -> Result<CommittedBridgeData, ServiceTunnelError> {
-        Ok(CommittedBridgeData {
-            destination_id: runtime.destination_id,
-            bridge: runtime.bridge.clone(),
-        })
     }
 
     /// Returns the committed generation id, if any.
@@ -2991,6 +3087,8 @@ impl ServiceTunnelManager {
     async fn build_service_runtime(
         self: &Arc<Self>,
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+        group_specs: &HashMap<DestinationGroupKey, DestinationGroupSpec>,
+        group_states: &mut HashMap<DestinationGroupKey, StagedDestinationGroup>,
     ) -> Result<StagedRuntime, ServiceTunnelError> {
         let id_owned = spec.id.as_str().to_owned();
         // Plan 297: server TLS needs the daemon's explicit
@@ -3001,6 +3099,43 @@ impl ServiceTunnelManager {
                 "{id_owned} use_ssl requires a daemon TLS policy"
             )));
         }
+        let group_key = spec.policy.group_key(&spec.id);
+        if !group_states.contains_key(&group_key) {
+            let group_spec = group_specs.get(&group_key).ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig(format!(
+                    "{id_owned} Destination group missing from validated composition"
+                ))
+            })?;
+            let bridge_data = self.create_bridge_for_group(spec, group_spec).await?;
+            let bridge = SamDestinationBridge::with_shared_identity(
+                Arc::clone(&bridge_data.identity_arc),
+                bridge_data.lease_set2,
+                bridge_data.outbound_role,
+                bridge_data.now_seconds,
+                Self::streaming_config_for(spec),
+            );
+            let handle = SamDestinationHandle::new(bridge);
+            handle.install_inbound_tunnel_factory(Arc::clone(&bridge_data.inbound_tunnel_factory));
+            let group = Arc::new(DestinationGroupRuntime {
+                key: group_key.clone(),
+                member_ids: group_spec
+                    .members
+                    .iter()
+                    .map(|member| member.as_str().to_owned())
+                    .collect(),
+                persistent: group_spec.persistent,
+                identity: Arc::clone(&bridge_data.identity_arc),
+                bridge: handle,
+                destination_id: bridge_data.destination_id,
+            });
+            group_states.insert(group_key.clone(), StagedDestinationGroup { runtime: group });
+        }
+        let group = Arc::clone(
+            &group_states
+                .get(&group_key)
+                .expect("Destination group staged")
+                .runtime,
+        );
         let is_server = matches!(
             spec.kind,
             ServiceTunnelKind::GenericServer
@@ -3014,24 +3149,7 @@ impl ServiceTunnelManager {
         // listeners or targets.
         let is_streamr_client = matches!(spec.kind, ServiceTunnelKind::StreamrClient);
         let is_streamr_server = matches!(spec.kind, ServiceTunnelKind::StreamrServer);
-        let bridge_data = self.create_bridge_for_spec(spec).await?;
-        // Plan 292: the interactive profile selects constrained
-        // streaming windows for both bridge managers; every other
-        // spec keeps the balanced defaults.
         let streaming_config = Self::streaming_config_for(spec);
-        let bridge = SamDestinationBridge::with_shared_identity(
-            Arc::clone(&bridge_data.identity_arc),
-            bridge_data.lease_set2,
-            bridge_data.outbound_role,
-            bridge_data.now_seconds,
-            streaming_config,
-        );
-        let handle = SamDestinationHandle::new(bridge);
-        // Plan 182: install the fabric inbound-tunnel factory so the
-        // Plan 129 local seam can build the peer inbound tunnel for
-        // every delivery. Without this every sweep counts
-        // `missing_factory` and no SYN ever reaches a co-owned peer.
-        handle.install_inbound_tunnel_factory(Arc::clone(&bridge_data.inbound_tunnel_factory));
         // Plan 182: server tunnels listen on the wildcard Streaming
         // port 0, matching the proven SAM convention (connect with
         // local/remote port 0 on every client path). The previous
@@ -3047,12 +3165,14 @@ impl ServiceTunnelManager {
         // so the polled server loop below observes them through
         // the same tested accept path as local traffic).
         let server_streaming_port = if (is_server || is_http_bidir) && !is_streamr_server {
-            Some(0_u16)
+            Some(spec.inbound_port.unwrap_or(0))
         } else {
             None
         };
         if let Some(port) = server_streaming_port {
-            let outcome_result = handle.with(|bridge| bridge.receiver_streaming_mut().listen(port));
+            let outcome_result = group
+                .bridge
+                .with(|bridge| bridge.receiver_streaming_mut().listen(port));
             let effective: ListenerOutcome = match outcome_result {
                 Ok(value) => value,
                 Err(_) => ListenerOutcome::BacklogFull,
@@ -3123,8 +3243,9 @@ impl ServiceTunnelManager {
             stopped: Arc::clone(&stopped),
             active_connections: Arc::clone(&active_connections),
             failed_connects: Arc::clone(&failed_connects),
-            bridge: handle,
-            destination_id: bridge_data.destination_id,
+            bridge: group.bridge.clone(),
+            group: Arc::clone(&group),
+            destination_id: group.destination_id,
             client_listener,
             server_target,
             server_streaming_port,
@@ -3150,17 +3271,7 @@ impl ServiceTunnelManager {
             tls_handshakes_ok: AtomicUsize::new(0),
             tls_handshakes_failed: AtomicUsize::new(0),
         });
-        let destination_runtime = DestinationRuntime::with_shared_identity(
-            Arc::clone(&bridge_data.identity_arc),
-            destination_config,
-        )
-        .map_err(|error| {
-            ServiceTunnelError::DestinationRuntime(format!("destination runtime: {error}"))
-        })?;
-        Ok(StagedRuntime {
-            runtime,
-            destination_runtime,
-        })
+        Ok(StagedRuntime { runtime })
     }
 
     /// Installs one staged [`ServiceRuntime`] into the manager's
@@ -3206,31 +3317,32 @@ impl ServiceTunnelManager {
         Ok(())
     }
 
-    async fn create_bridge_for_spec(
+    async fn create_bridge_for_group(
         &self,
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+        group_spec: &DestinationGroupSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
-        // Plan 290: the HTTP server and bidirectional profiles join
-        // the persistent-identity branch: their server halves
-        // publish one stable destination across restarts and
-        // no-op/target-only transitions. Plan 291: the Streamr
-        // publisher joins them (subscribers address it across
-        // restarts); the Streamr subscriber stays ephemeral like
-        // Java's keyless consumer.
-        let identity = if matches!(
-            spec.kind,
-            ServiceTunnelKind::GenericServer
-                | ServiceTunnelKind::IrcServer
-                | ServiceTunnelKind::HttpServer
-                | ServiceTunnelKind::HttpBidirServer
-                | ServiceTunnelKind::StreamrServer
-        ) {
-            let store =
-                ServiceDestinationStore::for_service(&self.config.data_dir, spec.id.as_str())
-                    .map_err(ServiceTunnelError::Storage)?;
+        let identity = if group_spec.persistent {
+            let group_name = match &group_spec.key {
+                DestinationGroupKey::Dedicated(id) => id.as_str(),
+                DestinationGroupKey::Explicit(id) => id.as_str(),
+            };
+            let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
+                .map_err(ServiceTunnelError::Storage)?;
+            let legacy = match &group_spec.key {
+                DestinationGroupKey::Dedicated(id) => Some(
+                    ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
+                        .map_err(ServiceTunnelError::Storage)?,
+                ),
+                DestinationGroupKey::Explicit(_) => None,
+            };
             let record: ServiceDestinationRecord = if store.exists() {
                 store.load().map_err(ServiceTunnelError::Storage)?
+            } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
+                store
+                    .migrate_from(&legacy)
+                    .map_err(ServiceTunnelError::Storage)?
             } else {
                 let mut rng = OsRng;
                 store
@@ -3619,11 +3731,6 @@ pub struct GenerationSnapshot {
 /// generation's per-generation directory. Destination runtimes live
 /// in their own staged map (Plan 180 §4 step 4) so this struct
 /// does not need to carry them.
-struct CommittedBridgeData {
-    destination_id: DestinationId,
-    bridge: SamDestinationHandle,
-}
-
 /// Plan 208 §B — typed composition outcome for one remote send.
 /// `cells` retains the raw `OBGWRouterDelivery` set the adapter
 /// produced (useful for diagnostics); `dispatch` is the bounded
@@ -3635,15 +3742,11 @@ struct RemoteCompositionOutcome {
     dispatch: Option<crate::outbound_lookup::OutboundLookupDispatch>,
 }
 
-/// Plan 180 §4 staging pair. `build_service_runtime` returns one of
-/// these so the caller can install the runtime into the manager's
-/// shared handles and consume the destination runtime into the
-/// registry (which is not `Clone`).
+/// Plan 180 §4 per-service staging wrapper. Destination state is owned
+/// by the shared group runtime and registered once per group.
 pub struct StagedRuntime {
     /// The staged service runtime handle.
     pub runtime: Arc<ServiceRuntime>,
-    /// The destination runtime that backs the staged runtime.
-    pub destination_runtime: DestinationRuntime,
 }
 
 /// Runs one per-service supervisor loop.
@@ -4834,8 +4937,9 @@ pub fn register_service_tunnel_manager(
 mod plan202_routing_tests {
     use super::*;
     use i2pr_service_tunnels::{
-        DestinationPolicy, DestinationRef, LocalListenerSpec, ServerTarget, ServiceTimeouts,
-        ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, StaticAliasTable,
+        DestinationGroupId, DestinationPolicy, DestinationRef, LocalListenerSpec, ServerTarget,
+        ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
+        StaticAliasTable,
     };
 
     fn temp_data_dir(name: &str) -> tempfile::TempDir {
@@ -4858,6 +4962,230 @@ mod plan202_routing_tests {
             *item = byte.wrapping_add(index as u8);
         }
         out
+    }
+
+    fn group_server(id: &str, group: &str, port: u16) -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse(id).expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(ServerTarget::LoopbackTcp(
+                "127.0.0.1:9".parse().expect("target"),
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::SharedGroup(
+                DestinationGroupId::parse(group).expect("group"),
+            ),
+            inbound_port: Some(port),
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }
+    }
+
+    fn group_client(
+        id: &str,
+        group: &str,
+        kind: ServiceTunnelKind,
+        listener: &str,
+    ) -> ServiceTunnelSpec {
+        let mut spec = ServiceTunnelSpec {
+            id: ServiceTunnelId::parse(id).expect("id"),
+            kind,
+            enabled: true,
+            listener: Some(LocalListenerSpec::parse_socket(listener).expect("listener")),
+            target: None,
+            targets: Vec::new(),
+            destination: Some(
+                DestinationRef::parse(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b32.i2p",
+                )
+                .expect("destination"),
+            ),
+            policy: DestinationPolicy::SharedGroup(
+                DestinationGroupId::parse(group).expect("group"),
+            ),
+            inbound_port: None,
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        };
+        match kind {
+            ServiceTunnelKind::HttpClient => {
+                spec.http_options = Some(i2pr_service_tunnels::HttpClientOptions::defaults());
+            }
+            ServiceTunnelKind::Socks5Client => {
+                spec.socks5_options = Some(i2pr_service_tunnels::Socks5ClientOptions::defaults());
+            }
+            ServiceTunnelKind::IrcClient => {
+                spec.irc_options = Some(i2pr_service_tunnels::IrcClientOptions::defaults());
+            }
+            _ => {}
+        }
+        spec
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_and_socks_services_can_share_one_ephemeral_group() {
+        let directory = temp_data_dir("plan309-shared-clients");
+        let mut dedicated_http = group_client(
+            "dedicated-http",
+            "unused-group",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.4:0",
+        );
+        dedicated_http.policy = DestinationPolicy::Dedicated;
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 8,
+                per_service_connection_ceiling: 4,
+                specs: Arc::new(ServiceTunnelSet {
+                    tunnels: vec![
+                        group_client(
+                            "http",
+                            "clients",
+                            ServiceTunnelKind::HttpClient,
+                            "127.0.0.1:0",
+                        ),
+                        group_client(
+                            "socks",
+                            "clients",
+                            ServiceTunnelKind::Socks5Client,
+                            "127.0.0.2:0",
+                        ),
+                        group_client(
+                            "http-second",
+                            "clients",
+                            ServiceTunnelKind::HttpClient,
+                            "127.0.0.3:0",
+                        ),
+                        dedicated_http,
+                    ],
+                }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare clients");
+        assert_eq!(runtimes.len(), 4);
+        let destinations: HashMap<&str, DestinationId> = runtimes
+            .iter()
+            .map(|runtime| (runtime.spec_id.as_str(), runtime.destination_id))
+            .collect();
+        assert_eq!(destinations["http"], destinations["socks"]);
+        assert_eq!(destinations["http"], destinations["http-second"]);
+        assert_ne!(destinations["http"], destinations["dedicated-http"]);
+        assert_eq!(manager.snapshot().active_service_destinations, 2);
+        assert!(
+            !ServiceDestinationStore::for_group(directory.path(), "clients")
+                .expect("group store")
+                .exists()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shared_server_group_has_one_persistent_destination_and_two_ports() {
+        let directory = temp_data_dir("plan309-shared-server");
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![
+                group_server("web", "public", 8080),
+                group_server("irc", "public", 6667),
+            ],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
+        let runtimes = manager.prepare().await.expect("prepare shared group");
+        assert_eq!(runtimes.len(), 2);
+        assert_eq!(runtimes[0].destination_id, runtimes[1].destination_id);
+        assert_eq!(manager.snapshot().active_service_destinations, 1);
+        assert!(
+            ServiceDestinationStore::for_group(directory.path(), "public")
+                .expect("group store")
+                .exists()
+        );
+        let first_id = runtimes[0].destination_id;
+        drop(runtimes);
+        drop(manager);
+
+        let restarted = build_manager();
+        let restarted_runtimes = restarted.prepare().await.expect("restart");
+        assert_eq!(restarted_runtimes[0].destination_id, first_id);
+        assert_eq!(restarted_runtimes[1].destination_id, first_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn adding_shared_group_member_replaces_members_atomically() {
+        let directory = temp_data_dir("plan309-group-reconcile");
+        let initial_specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![group_server("web", "public", 8080)],
+        });
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 8,
+                per_service_connection_ceiling: 4,
+                specs: initial_specs,
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager"),
+        );
+        let old = manager.prepare().await.expect("prepare");
+        let old_destination = old[0].destination_id;
+        let candidate = Arc::new(ServiceTunnelSet {
+            tunnels: vec![
+                group_server("web", "public", 8080),
+                group_server("irc", "public", 6667),
+            ],
+        });
+        let outcome = manager
+            .reconcile(candidate, Duration::from_secs(1))
+            .await
+            .expect("reconcile");
+        assert_eq!(outcome.diff.len(), 2);
+        assert!(
+            outcome
+                .diff
+                .iter()
+                .all(|entry| entry.class == DiffClass::ReplaceDestination
+                    || entry.class == DiffClass::Add)
+        );
+        let current = manager
+            .committed_generation
+            .lock()
+            .expect("generation lock")
+            .as_ref()
+            .expect("committed")
+            .runtimes
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(current.len(), 2);
+        assert!(
+            current
+                .iter()
+                .all(|runtime| runtime.destination_id == old_destination)
+        );
+        assert_eq!(manager.snapshot().active_service_destinations, 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

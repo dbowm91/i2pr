@@ -29,7 +29,9 @@
 
 #![forbid(unsafe_code)]
 
-use crate::config::{ServiceTunnelKind, ServiceTunnelSpec};
+use std::collections::HashMap;
+
+use crate::config::{DestinationGroupKey, ServiceTunnelKind, ServiceTunnelSpec};
 
 /// Typed classification of how one service spec differs from a
 /// prior committed generation.
@@ -92,6 +94,8 @@ pub fn diff_sets(
     committed: &[ServiceTunnelSpec],
     candidate: &[ServiceTunnelSpec],
 ) -> Vec<ServiceDiff> {
+    let previous_groups = group_members(committed);
+    let candidate_groups = group_members(candidate);
     let mut out = Vec::with_capacity(committed.len() + candidate.len());
     let mut committed_by_id: std::collections::HashMap<&str, &ServiceTunnelSpec> =
         std::collections::HashMap::with_capacity(committed.len());
@@ -107,7 +111,15 @@ pub fn diff_sets(
                 next: Some(next_spec.clone()),
             }),
             Some(prev) => {
-                let class = diff_spec(prev, next_spec);
+                let group_key = next_spec.policy.group_key(&next_spec.id);
+                let old_group_key = prev.policy.group_key(&prev.id);
+                let group_changed = old_group_key != group_key
+                    || previous_groups.get(&old_group_key) != candidate_groups.get(&group_key);
+                let class = if group_changed {
+                    DiffClass::ReplaceDestination
+                } else {
+                    diff_spec(prev, next_spec)
+                };
                 out.push(ServiceDiff {
                     id,
                     class,
@@ -124,6 +136,20 @@ pub fn diff_sets(
         });
     }
     out
+}
+
+fn group_members(specs: &[ServiceTunnelSpec]) -> HashMap<DestinationGroupKey, Vec<String>> {
+    let mut groups = HashMap::<DestinationGroupKey, Vec<String>>::new();
+    for spec in specs {
+        groups
+            .entry(spec.policy.group_key(&spec.id))
+            .or_default()
+            .push(spec.id.as_str().to_owned());
+    }
+    for members in groups.values_mut() {
+        members.sort();
+    }
+    groups
 }
 
 /// Classifies a single spec change. Public so unit tests can
@@ -453,6 +479,30 @@ mod tests {
         assert_eq!(diff.len(), 1);
         assert_eq!(diff[0].class, DiffClass::Add);
         assert_eq!(diff[0].id, "alpha");
+    }
+
+    #[test]
+    fn adding_group_member_replaces_existing_group_owner_atomically() {
+        let mut first = client_spec("alpha");
+        let group = crate::config::DestinationGroupId::parse("shared").expect("group");
+        first.policy = DestinationPolicy::SharedGroup(group.clone());
+        let mut second = client_spec("beta");
+        second.policy = DestinationPolicy::SharedGroup(group);
+        let diff = diff_sets(std::slice::from_ref(&first), &[first.clone(), second]);
+        assert_eq!(diff[0].class, DiffClass::ReplaceDestination);
+        assert_eq!(diff[1].class, DiffClass::Add);
+    }
+
+    #[test]
+    fn removing_group_member_replaces_remaining_group_owner_atomically() {
+        let group = crate::config::DestinationGroupId::parse("shared").expect("group");
+        let mut first = client_spec("alpha");
+        first.policy = DestinationPolicy::SharedGroup(group.clone());
+        let mut second = client_spec("beta");
+        second.policy = DestinationPolicy::SharedGroup(group);
+        let diff = diff_sets(&[first, second], &[client_spec("alpha")]);
+        assert_eq!(diff[0].class, DiffClass::ReplaceDestination);
+        assert_eq!(diff[1].class, DiffClass::Remove);
     }
 
     #[test]
