@@ -993,9 +993,7 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
         response.get("error").is_none(),
         "shaping edit succeeds: {response}"
     );
-    assert!(
-        response["result"]["generation"].as_u64().expect("gen") > generation
-    );
+    assert!(response["result"]["generation"].as_u64().expect("gen") > generation);
     let response = tunnel(
         address,
         &token,

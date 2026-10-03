@@ -5,11 +5,11 @@
 //! disposition census so no option silently disappears and no residual
 //! hides outside the named owner plans (293, 296, 297).
 
-use i2pr_i2pcontrol::tunnel_matrix::{
-    APPLY_CELLS, BLOCKED_293_CELLS, CORRECTIVE_296_CELLS, CORRECTIVE_297_CELLS,
-    MATRIX, MATRIX_CELLS, NOT_APPLICABLE_CELLS, CellDisposition, find_cell,
-};
 use i2pr_i2pcontrol::tunnel::TUNNEL_TYPES;
+use i2pr_i2pcontrol::tunnel_matrix::{
+    APPLY_CELLS, BLOCKED_293_CELLS, CORRECTIVE_296_CELLS, CORRECTIVE_297_CELLS, CellDisposition,
+    MATRIX, MATRIX_CELLS, NOT_APPLICABLE_CELLS, find_cell,
+};
 use i2pr_i2pcontrol::tunnel_options::TUNNEL_OPTIONS;
 
 #[test]
@@ -27,8 +27,7 @@ fn matrix_covers_every_applicable_cell() {
         assert!(
             !seen[cell.option_index][cell.type_index],
             "duplicate cell ({}, {})",
-            cell.type_index,
-            cell.option_index
+            cell.type_index, cell.option_index
         );
         seen[cell.option_index][cell.type_index] = true;
     }

@@ -1484,9 +1484,7 @@ fn plan_129_non_protocol_six_client_payload_never_reaches_streaming() {
     // changed; the Plan 129 invariant (streaming untouched) holds.
     match outcome {
         InboundStreamingOutcome::DatagramReceived {
-            protocol,
-            payload,
-            ..
+            protocol, payload, ..
         } => {
             assert_eq!(protocol, 17);
             assert_eq!(payload, b"future-datagram");

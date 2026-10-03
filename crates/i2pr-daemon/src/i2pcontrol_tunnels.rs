@@ -742,10 +742,12 @@ fn parse_bool_option(option: &str, value: &str) -> Result<bool, ControlError> {
 /// Length 0 is rejected: service destinations run in Remote tunnel
 /// mode and the destination policy does not permit zero-hop pools.
 fn parse_shaping_length(option: &str, value: &str) -> Result<u8, ControlError> {
-    let length = value.parse::<u8>().map_err(|_| ControlError::InvalidOption {
-        option: option.to_owned(),
-        reason: "tunnel length must be an integer within 1..=3",
-    })?;
+    let length = value
+        .parse::<u8>()
+        .map_err(|_| ControlError::InvalidOption {
+            option: option.to_owned(),
+            reason: "tunnel length must be an integer within 1..=3",
+        })?;
     if length == 0 || length > MAX_TUNNEL_LENGTH_HOPS {
         return Err(ControlError::InvalidOption {
             option: option.to_owned(),
@@ -2950,8 +2952,7 @@ mod tests {
         assert_eq!(spec.shaping.inbound_quantity, 4);
         assert_eq!(spec.shaping.outbound_quantity, 4);
         assert_eq!(spec.shaping.length_hops, 3);
-        let projected =
-            crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec);
+        let projected = crate::service_tunnels::ServiceTunnelManager::destination_config_for(&spec);
         assert_eq!(projected.inbound_target(), 4);
         assert_eq!(projected.outbound_target(), 4);
         assert_eq!(projected.length_hops(), 3);

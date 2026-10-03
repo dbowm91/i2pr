@@ -253,9 +253,7 @@ const fn build_matrix() -> [MatrixCell; MATRIX_CELLS] {
     let mut out = [MatrixCell {
         type_index: 0,
         option_index: 0,
-        disposition: CellDisposition::NotApplicable {
-            reason: "unfilled",
-        },
+        disposition: CellDisposition::NotApplicable { reason: "unfilled" },
     }; MATRIX_CELLS];
     let mut at: usize = 0;
     let mut option_index: usize = 0;

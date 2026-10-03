@@ -2378,7 +2378,9 @@ impl ServiceTunnelManager {
     /// (Plan 292). Unshaped specs reproduce
     /// [`DestinationConfig::balanced`] exactly, so pre-292 behavior
     /// is unchanged.
-    pub fn destination_config_for(spec: &i2pr_service_tunnels::ServiceTunnelSpec) -> DestinationConfig {
+    pub fn destination_config_for(
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+    ) -> DestinationConfig {
         DestinationConfig::from_service_shaping(
             spec.shaping.inbound_quantity,
             spec.shaping.outbound_quantity,
