@@ -238,6 +238,37 @@ fn build_daemon_graph_inner(
     ));
     inspection.publish_addressbook(addressbook.shared());
 
+    // Plan 295: install the control-plane source owners and attest the
+    // static rows. Live rows (log ring, metrics, SSU2) are read per
+    // request; rows with no owner in this graph attest empty at
+    // composition (the owners were consulted: none exist in the
+    // default graph), never fabricated.
+    inspection.publish_log_ring(crate::control_sources::LogRing::global());
+    inspection.publish_metrics(Arc::new(crate::control_sources::ControlMetrics::new()));
+    let bans = crate::control_sources::BanLedger::new();
+    if inspection.publish_bans(bans.attested()).is_err() {
+        tracing::warn!("ban attestation rejected");
+    }
+    if inspection
+        .publish_netdb(
+            Vec::new(),
+            Vec::new(),
+            crate::i2pcontrol_inspection::FloodfillMode::Disabled,
+        )
+        .is_err()
+    {
+        tracing::warn!("netdb attestation rejected");
+    }
+    if inspection
+        .publish_transport(Vec::new(), Vec::new(), "loopback-only", Vec::new())
+        .is_err()
+    {
+        tracing::warn!("transport attestation rejected");
+    }
+    if inspection.publish_tunnels(0, 0, 0, 0).is_err() {
+        tracing::warn!("tunnel attestation rejected");
+    }
+
     if config.sam.enabled {
         register_sam_service(&mut builder, config, inspection, &addressbook)?;
     }
@@ -255,7 +286,7 @@ fn build_daemon_graph_inner(
     }
 
     if config.ssu2.enabled {
-        register_ssu2_service(&mut builder, config)?;
+        register_ssu2_service(&mut builder, config, inspection)?;
     }
 
     builder
@@ -558,6 +589,7 @@ fn register_addressbook_refresh_service(
 fn register_ssu2_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     config: &Config,
+    inspection: &Arc<InspectionHandles>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
@@ -566,6 +598,7 @@ fn register_ssu2_service(
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
     let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
+    let inspection = Arc::clone(inspection);
     builder
         .register(ServiceSpec::new(
             ssu2_name,
@@ -573,6 +606,7 @@ fn register_ssu2_service(
             move |ctx| {
                 let ssu2_config = ssu2_config.clone();
                 let data_dir = data_dir.clone();
+                let inspection = Arc::clone(&inspection);
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -689,6 +723,11 @@ fn register_ssu2_service(
                             );
                         }
                     };
+                    // Plan 295: publish the cloned runtime service so
+                    // the inspection plane reads session/error
+                    // snapshots and primes the metrics windows without
+                    // touching the pump path.
+                    inspection.publish_ssu2(handle.service().clone());
                     // Central dispatcher pump: no task per message, no
                     // unbounded retention. Outcomes are classified and
                     // dropped; Plan 185/186 own the live tunnel/NetDB

@@ -870,12 +870,28 @@ fn unpublished_295(row: &i2pr_i2pcontrol::SourceRow) -> InspectionGap {
 }
 
 /// Reads the published rolling metrics, when installed.
+///
+/// When the SSU2 service registered, its cumulative counters prime
+/// the windows first, so bandwidth/rate rows reflect transport
+/// traffic. Coverage is exactly the registered counters (local
+/// loopback/destination traffic bypassing them is not counted; the
+/// dossier records the boundary).
 fn metrics_owner(handles: &InspectionHandles) -> Option<Arc<ControlMetrics>> {
-    handles
+    let metrics = handles
         .metrics_live
         .lock()
         .ok()
-        .and_then(|live| live.clone())
+        .and_then(|live| live.clone())?;
+    if let Some(service) = ssu2_service(handles) {
+        let snapshot = service.snapshot();
+        metrics.observe_transport(
+            snapshot.i2np_received,
+            snapshot.i2np_sent,
+            snapshot.datagrams_received,
+            snapshot.datagrams_sent,
+        );
+    }
+    Some(metrics)
 }
 
 /// Reads the published SSU2 runtime service, when the SSU2 service
