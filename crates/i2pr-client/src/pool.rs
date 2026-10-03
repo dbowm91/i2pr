@@ -9,9 +9,10 @@
 //! path.
 
 use i2pr_proto::Hash;
+use i2pr_tunnel::pool::ActivationError;
 use i2pr_tunnel::{
-    BoundedTunnelPool, EstablishedMaterial, LocalZeroHopInbound, LocalZeroHopOutbound,
-    RegisterError, RegisterOutcome, TunnelDirection, TunnelSlot, TunnelState,
+    BoundedTunnelPool, EstablishedMaterial, EstablishedTunnel, LocalZeroHopInbound,
+    LocalZeroHopOutbound, RegisterError, RegisterOutcome, TunnelDirection, TunnelSlot, TunnelState,
 };
 
 use crate::config::{DestinationConfig, DestinationConfigError};
@@ -512,6 +513,39 @@ impl DestinationTunnelPool {
         sources
     }
 
+    /// Returns the active remote outbound registrations in stable slot order.
+    pub fn outbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
+        self.inner.outbound_registrations()
+    }
+
+    /// Returns active remote inbound registrations in stable slot order.
+    pub fn inbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
+        self.inner.inbound_registrations()
+    }
+
+    /// Returns one remote pool registration by slot.
+    pub fn registration(&self, slot: TunnelSlot) -> Option<&i2pr_tunnel::TunnelRegistration> {
+        self.inner.registration(slot)
+    }
+
+    /// Returns established material until it has been transferred to the
+    /// data-plane role owner.
+    pub fn established(&self, slot: TunnelSlot) -> Option<&EstablishedMaterial> {
+        self.inner.established(slot)
+    }
+
+    /// Returns public routing metadata for one registered remote slot.
+    pub fn routing(&self, slot: TunnelSlot) -> Option<&i2pr_tunnel::pool::PublicTunnelRouting> {
+        self.inner.routing(slot)
+    }
+
+    /// Transfers one registered tunnel's secret material to its data-plane
+    /// role owner while retaining this pool's registration and routing facts.
+    /// The slot remains the authoritative capacity, expiry, and LeaseSet owner.
+    pub fn activate(&mut self, slot: TunnelSlot) -> Result<EstablishedTunnel, ActivationError> {
+        self.inner.activate(slot)
+    }
+
     /// Releases every pool registration, returning the number of slots
     /// dropped. Established material is zeroized by its own `Drop` impl.
     /// Zero-hop entries return to baseline.
@@ -811,5 +845,31 @@ mod tests {
         let replacement = pool.inbound_lease_sources(10)[0];
         assert_ne!(replacement.slot(), original.slot());
         assert_ne!(replacement.gateway(), original.gateway());
+    }
+
+    #[test]
+    fn group_pool_holds_two_inbound_and_outbound_paths_then_expires_them() {
+        let mut pool = pool();
+        for seed in 31..33 {
+            pool.register_inbound(established_inbound(seed), 0)
+                .expect("register inbound target slot");
+            pool.register_outbound(established_outbound(seed + 10), 0)
+                .expect("register outbound target slot");
+        }
+        assert_eq!(pool.inbound_registrations().len(), 2);
+        assert_eq!(pool.outbound_registrations().len(), 2);
+        assert_eq!(pool.inbound_lease_sources(0).len(), 2);
+
+        assert!(pool.register_inbound(established_inbound(99), 0).is_err());
+        assert!(
+            pool.register_outbound(established_outbound(100), 0)
+                .is_err()
+        );
+
+        let evicted = pool.advance_time(u64::from(pool.config().tunnel_lifetime_seconds()));
+        assert_eq!(evicted.len(), 4);
+        assert!(pool.inbound_registrations().is_empty());
+        assert!(pool.outbound_registrations().is_empty());
+        assert!(pool.inbound_lease_sources(u64::MAX).is_empty());
     }
 }

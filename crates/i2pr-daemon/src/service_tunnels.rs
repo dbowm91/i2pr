@@ -1058,6 +1058,54 @@ impl ServiceTunnelManager {
             .and_then(|guard| guard.as_ref().map(|g| g.generation_id))
     }
 
+    /// Returns one current ServiceRuntime for a Destination group. Shared
+    /// members resolve to the same Destination id; the first current member
+    /// is the canonical inbound-owner dispatch target for that group.
+    pub fn service_runtime_for_destination(
+        &self,
+        destination_id: DestinationId,
+    ) -> Option<Arc<ServiceRuntime>> {
+        self.committed_generation
+            .lock()
+            .ok()?
+            .as_ref()?
+            .runtimes
+            .values()
+            .find(|runtime| runtime.destination_id == destination_id)
+            .cloned()
+    }
+
+    /// Returns one current runtime for each committed Destination group.
+    pub fn destination_group_runtimes(&self) -> Vec<Arc<ServiceRuntime>> {
+        let Ok(guard) = self.committed_generation.lock() else {
+            return Vec::new();
+        };
+        let Some(generation) = guard.as_ref() else {
+            return Vec::new();
+        };
+        let mut destination_ids = std::collections::HashSet::new();
+        generation
+            .runtimes
+            .values()
+            .filter(|runtime| destination_ids.insert(runtime.destination_id))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether any committed service member in one Destination group is a
+    /// server profile and therefore requires local LeaseSet publication.
+    pub fn destination_group_has_server(&self, destination_id: DestinationId) -> bool {
+        let Ok(guard) = self.committed_generation.lock() else {
+            return false;
+        };
+        guard.as_ref().is_some_and(|generation| {
+            generation
+                .runtimes
+                .values()
+                .any(|runtime| runtime.destination_id == destination_id && runtime.is_server)
+        })
+    }
+
     /// Returns the number of currently draining generations.
     pub fn draining_generation_count(&self) -> usize {
         self.draining_generations
@@ -1464,6 +1512,21 @@ impl ServiceTunnelManager {
             .lock()
             .expect("sam destinations poisoned");
         guard.get(destination_id).map(|handle| handle.with(closure))
+    }
+
+    /// Runs `closure` against the Destination runtime registered for one
+    /// group. Shared service members resolve to the same Destination id and
+    /// therefore the same canonical tunnel pool.
+    pub fn with_destination_runtime<R>(
+        &self,
+        destination_id: DestinationId,
+        closure: impl FnOnce(&mut DestinationRuntime) -> R,
+    ) -> Option<R> {
+        let mut guard = self
+            .destination_registry
+            .lock()
+            .expect("destination registry poisoned");
+        guard.get_mut(&destination_id).map(closure)
     }
 
     /// Returns (or lazily creates) the outbound-signal [`Notify`]
@@ -5145,6 +5208,20 @@ mod plan202_routing_tests {
         let runtimes = manager.prepare().await.expect("prepare shared group");
         assert_eq!(runtimes.len(), 2);
         assert_eq!(runtimes[0].destination_id, runtimes[1].destination_id);
+        let first_pool = manager
+            .with_destination_runtime(runtimes[0].destination_id, |runtime| {
+                runtime.pool() as *const _ as usize
+            })
+            .expect("group runtime");
+        let second_pool = manager
+            .with_destination_runtime(runtimes[1].destination_id, |runtime| {
+                runtime.pool() as *const _ as usize
+            })
+            .expect("shared group runtime");
+        assert_eq!(
+            first_pool, second_pool,
+            "members must observe one group pool"
+        );
         assert_eq!(manager.snapshot().active_service_destinations, 1);
         assert!(
             ServiceDestinationStore::for_group(directory.path(), "public")
@@ -5159,6 +5236,42 @@ mod plan202_routing_tests {
         let restarted_runtimes = restarted.prepare().await.expect("restart");
         assert_eq!(restarted_runtimes[0].destination_id, first_id);
         assert_eq!(restarted_runtimes[1].destination_id, first_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn distinct_destination_groups_have_distinct_canonical_pools() {
+        let directory = temp_data_dir("plan315-distinct-pools");
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![
+                group_server("web", "public", 8080),
+                group_server("irc", "ops", 6667),
+            ],
+        });
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 8,
+                per_service_connection_ceiling: 4,
+                specs,
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare groups");
+        assert_eq!(runtimes.len(), 2);
+        assert_ne!(runtimes[0].destination_id, runtimes[1].destination_id);
+        let first_pool = manager
+            .with_destination_runtime(runtimes[0].destination_id, |runtime| {
+                runtime.pool() as *const _ as usize
+            })
+            .expect("first group runtime");
+        let second_pool = manager
+            .with_destination_runtime(runtimes[1].destination_id, |runtime| {
+                runtime.pool() as *const _ as usize
+            })
+            .expect("second group runtime");
+        assert_ne!(first_pool, second_pool, "groups must not share pool state");
+        assert_eq!(manager.snapshot().active_service_destinations, 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -7018,6 +7131,54 @@ mod plan212_router_backed_service_destination_tests {
         )
     }
 
+    fn test_router_material_with_group_roles(
+        manager: &ServiceTunnelManager,
+        destination_id: DestinationId,
+        now_ms: u64,
+    ) -> RouterDestinationNetworkState {
+        let (identity, now_seconds) = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                (bridge.identity(), 1_700_000_000_u32)
+            })
+            .expect("bridge must exist");
+        let inbound_slot = i2pr_tunnel::pool::TunnelSlot::from_raw(31);
+        let inbound = InboundLeaseSource::from_parts(
+            inbound_slot,
+            i2pr_proto::Hash::from_bytes([0xD2; 32]),
+            0x9231,
+            u64::from(now_seconds) + 600,
+            u64::from(now_seconds) + 540,
+        );
+        let lease_set = build_signed_lease_set2(&identity, &[inbound], now_seconds)
+            .expect("group LeaseSet builds");
+        let validated = ValidatedLeaseSet2::from_lease_set2(
+            lease_set.clone(),
+            Some(identity.id().as_netdb_key()),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .expect("group LeaseSet validates");
+        RouterDestinationNetworkState::new_with_outbound_roles(
+            destination_id,
+            DestinationRouting::new(DestinationRoutingConfig::balanced()),
+            EciesSessionManager::new(EciesSessionConfig::balanced()),
+            vec![
+                (
+                    i2pr_tunnel::pool::TunnelSlot::from_raw(41),
+                    test_outbound_role(0x7141, now_ms + 600_000),
+                ),
+                (
+                    i2pr_tunnel::pool::TunnelSlot::from_raw(42),
+                    test_outbound_role(0x7142, now_ms + 600_000),
+                ),
+            ],
+            lease_set,
+            validated,
+            vec![0x9231],
+            now_ms + 600_000,
+            (u64::from(now_seconds) + 600) * 1000,
+        )
+    }
+
     fn test_now_ms() -> u64 {
         1_700_000_000_000_u64
     }
@@ -7039,6 +7200,64 @@ mod plan212_router_backed_service_destination_tests {
             .service_router_network_summary(destination_id)
             .expect("summary exists");
         assert_eq!(summary.inbound_receive_count, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan315_group_role_projection_rotates_and_removes_by_pool_slot() {
+        let directory = temp_data_dir("plan315-group-role-slots");
+        let manager = make_manager_with_one_server(directory.path(), "plan315-group-slots");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material_with_group_roles(&manager, destination_id, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("group pool projections install");
+
+        let selected =
+            manager
+                .with_destination_bridge(destination_id, |bridge| {
+                    let first = bridge
+                        .router_outbound_role_ref(now_ms)
+                        .expect("first pool role")
+                        .role()
+                        .established()
+                        .creator_tunnel_id()
+                        .get();
+                    let second = bridge
+                        .router_outbound_role_ref(now_ms)
+                        .expect("second pool role")
+                        .role()
+                        .established()
+                        .creator_tunnel_id()
+                        .get();
+                    assert_ne!(first, second);
+                    assert!(bridge.remove_router_outbound_pool_slot(
+                        i2pr_tunnel::pool::TunnelSlot::from_raw(41)
+                    ));
+                    assert!(!bridge.remove_router_outbound_pool_slot(
+                        i2pr_tunnel::pool::TunnelSlot::from_raw(41)
+                    ));
+                    bridge
+                        .router_outbound_role_ref(now_ms)
+                        .expect("remaining pool role")
+                        .role()
+                        .established()
+                        .creator_tunnel_id()
+                        .get()
+                })
+                .expect("group bridge");
+        assert_eq!(selected, 0x7142);
+
+        let changed = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                assert!(bridge.append_router_inbound_receive(0x9232).is_ok());
+                assert!(bridge.append_router_inbound_receive(0x9232).is_err());
+                assert!(bridge.remove_router_inbound_receive(0x9231));
+                bridge.router_inbound_receive_ids()
+            })
+            .expect("group bridge");
+        assert_eq!(changed, vec![0x9232]);
     }
 
     /// Plan 212 §17.2 — mismatched identity fails.

@@ -513,6 +513,20 @@ impl DestinationRuntime {
         Ok(slot)
     }
 
+    /// Activates material from this Destination's canonical pool for its
+    /// data-plane role owner. The pool keeps the registration and public
+    /// routing metadata so expiry and LeaseSet derivation remain group-owned.
+    pub fn activate_tunnel(
+        &mut self,
+        slot: TunnelSlot,
+        now_seconds: u64,
+    ) -> Result<i2pr_tunnel::EstablishedTunnel, DestinationRuntimeError> {
+        self.reject_when_stopping()?;
+        let tunnel = self.pool.activate(slot)?;
+        self.transition_from_tunnels(now_seconds);
+        Ok(tunnel)
+    }
+
     /// Registers the Plan 172 local zero-hop inbound/outbound pair for a
     /// client-owned localhost destination.
     ///
@@ -583,9 +597,46 @@ impl DestinationRuntime {
         disposition
     }
 
+    /// Removes one failed active pool entry and accounts the failure against
+    /// this Destination's bounded replacement threshold.
+    pub fn mark_tunnel_failed(&mut self, slot: TunnelSlot) -> bool {
+        let removed = self.pool.mark_failed(slot);
+        if removed && self.state == DestinationState::Usable {
+            self.state = DestinationState::Degraded;
+        }
+        removed
+    }
+
+    /// Unconditionally removes a pool registration, releasing its retained
+    /// material. Used to roll back a failed data-plane activation transaction.
+    pub fn remove_tunnel(&mut self, slot: TunnelSlot) -> bool {
+        self.pool.remove(slot)
+    }
+
     /// Returns the currently usable inbound lease sources.
     pub fn inbound_lease_sources(&self, now_seconds: u64) -> Vec<InboundLeaseSource> {
         self.pool.inbound_lease_sources(now_seconds)
+    }
+
+    /// Returns the remote inbound registrations retained by this
+    /// Destination's canonical pool.
+    pub fn inbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
+        self.pool.inbound_registrations()
+    }
+
+    /// Returns the remote outbound registrations retained by this
+    /// Destination's canonical pool.
+    pub fn outbound_registrations(&self) -> Vec<i2pr_tunnel::TunnelRegistration> {
+        self.pool.outbound_registrations()
+    }
+
+    /// Returns one registered tunnel's non-secret metadata by canonical
+    /// pool slot.
+    pub fn tunnel_registration(
+        &self,
+        slot: i2pr_tunnel::pool::TunnelSlot,
+    ) -> Option<&i2pr_tunnel::TunnelRegistration> {
+        self.pool.registration(slot)
     }
 
     /// Advances the destination's deterministic view of time: expires tunnels,
@@ -960,6 +1011,9 @@ pub enum DestinationRuntimeError {
     /// The destination tunnel pool rejected the operation.
     #[error("destination pool rejected: {0}")]
     Pool(#[from] DestinationPoolError),
+    /// The registered tunnel's one-shot material was unavailable for activation.
+    #[error("destination tunnel activation rejected: {0}")]
+    Activation(#[from] i2pr_tunnel::pool::ActivationError),
     /// The LeaseSet2 lifecycle rejected the operation.
     #[error("destination lease set rejected: {0}")]
     LeaseSet(#[from] LeaseSetError),
@@ -992,6 +1046,21 @@ mod tests {
             .expect("outbound");
         runtime.refresh_lease_set(now).expect("refresh");
         runtime
+    }
+
+    #[test]
+    fn pool_activation_keeps_group_registration_and_inbound_lease_source() {
+        let mut runtime = runtime(31_515);
+        let slot = runtime
+            .admit_inbound(established_inbound(31_516), 1_000)
+            .expect("register inbound material");
+        let activated = runtime
+            .activate_tunnel(slot, 1_001)
+            .expect("activate from canonical pool");
+        assert_eq!(activated.direction(), i2pr_tunnel::TunnelDirection::Inbound);
+        assert!(runtime.pool().registration(slot).is_some());
+        assert_eq!(runtime.inbound_lease_sources(1_001).len(), 1);
+        assert!(runtime.pool().established(slot).is_none());
     }
 
     #[test]

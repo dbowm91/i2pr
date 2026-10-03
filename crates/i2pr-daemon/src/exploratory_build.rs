@@ -71,6 +71,7 @@ use rand_core::{CryptoRng, RngCore};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use i2pr_client::DestinationId;
 use i2pr_tunnel::bridge::{BridgeHeader, ShortBuildI2npBridge};
 use i2pr_tunnel::build_crypto::GARLIC_REPLY_TAG_LEN;
 use i2pr_tunnel::config::ExploratoryPoolConfig;
@@ -97,6 +98,8 @@ use crate::router_i2np::{
 /// for loopback-only operation and matches the canonical I2P
 /// per-router build concurrency ceiling.
 pub const MAX_PENDING_BUILDS: usize = 16;
+/// Maximum established Destination materials awaiting owner registration.
+pub const MAX_DESTINATION_HANDOFFS: usize = MAX_PENDING_BUILDS;
 /// Maximum lifetime a tunnel is allowed to claim. Mirrors
 /// [`i2pr_tunnel::identity::TunnelLifetime::MAX_LIFETIME_SECONDS`].
 pub const MAX_EXPLORATORY_LIFETIME_SECONDS: u32 = TunnelLifetime::MAX_LIFETIME_SECONDS;
@@ -251,6 +254,9 @@ impl fmt::Debug for BuildRequest {
 /// from the one-peer exploratory request and must contain exactly three hops.
 #[derive(Clone)]
 pub struct DestinationBuildRequest {
+    /// Group Destination whose canonical pool will receive established
+    /// material. This is a local owner key and is never sent on the wire.
+    pub destination_id: DestinationId,
     /// Direction this build is for.
     pub direction: BuildDirection,
     /// Ordered remote hop material selected by the Destination peer selector.
@@ -288,6 +294,7 @@ struct BuildPathRequest {
     message_id: u32,
     outbound_reply_router: Option<Hash>,
     originator_hash: Option<Hash>,
+    destination_id: Option<DestinationId>,
 }
 
 impl From<BuildRequest> for BuildPathRequest {
@@ -299,6 +306,7 @@ impl From<BuildRequest> for BuildPathRequest {
             message_id: request.message_id,
             outbound_reply_router: request.outbound_reply_router,
             originator_hash: request.originator_hash,
+            destination_id: None,
         }
     }
 }
@@ -312,6 +320,7 @@ impl From<DestinationBuildRequest> for BuildPathRequest {
             message_id: request.message_id,
             outbound_reply_router: request.outbound_reply_router,
             originator_hash: request.originator_hash,
+            destination_id: Some(request.destination_id),
         }
     }
 }
@@ -331,6 +340,39 @@ pub enum BuildCoordinatorOutcome {
         /// Hop count the established tunnel carries.
         hop_count: usize,
         /// Direction that succeeded.
+        direction: BuildDirection,
+    },
+    /// A qualified Destination build reached Established and its one-shot
+    /// material is waiting for registration by the owning group runtime.
+    DestinationEstablished {
+        /// Attempt id used to take the bounded material handoff.
+        attempt_id: BuildAttemptId,
+        /// Owning group Destination id.
+        destination_id: DestinationId,
+        /// Hop count proven by the completed build.
+        hop_count: usize,
+        /// Direction that succeeded.
+        direction: BuildDirection,
+    },
+    /// The owning group did not take the bounded established-material handoff.
+    DestinationHandoffRejected {
+        /// Direction that failed.
+        direction: BuildDirection,
+    },
+    /// A group-owned Destination build reached a terminal failure. Keeping
+    /// the owner id on this summary lets the owning pool account failures
+    /// without exposing peer or payload details.
+    DestinationBuildFailed {
+        /// Owning group Destination.
+        destination_id: DestinationId,
+        /// Direction that failed.
+        direction: BuildDirection,
+    },
+    /// A group-owned Destination build was cancelled by generation removal.
+    DestinationBuildCancelled {
+        /// Owning group Destination.
+        destination_id: DestinationId,
+        /// Direction cancelled.
         direction: BuildDirection,
     },
     /// The build reached `Established` but the pool rejected the
@@ -423,6 +465,10 @@ impl BuildCoordinatorOutcome {
             | Self::Cancelled { direction, .. }
             | Self::InvalidReply { direction, .. }
             | Self::DeliveryFailed { direction, .. }
+            | Self::DestinationEstablished { direction, .. }
+            | Self::DestinationHandoffRejected { direction, .. }
+            | Self::DestinationBuildFailed { direction, .. }
+            | Self::DestinationBuildCancelled { direction, .. }
             | Self::InvalidPath { direction, .. }
             | Self::CoordinatorRejected { direction, .. } => *direction,
         }
@@ -481,7 +527,9 @@ pub struct BuildCoordinatorCounters {
 /// a terminal outcome.
 #[allow(dead_code)]
 struct PendingBuild {
+    attempt_id: BuildAttemptId,
     direction: BuildDirection,
+    destination_id: Option<DestinationId>,
     /// Outbound peer hash (the receiving router). The coordinator
     /// matches inbound replies whose authenticated peer equals
     /// this value.
@@ -510,8 +558,10 @@ pub struct ExploratoryBuildCoordinator {
     pool: ExploratoryPool,
     registry: DataPlaneRegistry,
     pending: BTreeMap<BuildAttemptId, PendingBuild>,
+    established_handoffs: BTreeMap<BuildAttemptId, i2pr_tunnel::EstablishedMaterial>,
     next_attempt_id: u64,
     next_creator_tunnel_id: u32,
+    next_destination_role_slot: u32,
     counters: BuildCoordinatorCounters,
     failure_threshold: u16,
     lifetime_seconds: u32,
@@ -534,8 +584,10 @@ impl ExploratoryBuildCoordinator {
             pool: ExploratoryPool::new(pool_config),
             registry: DataPlaneRegistry::new(registry_capacity),
             pending: BTreeMap::new(),
+            established_handoffs: BTreeMap::new(),
             next_attempt_id: INITIAL_ATTEMPT_ID,
             next_creator_tunnel_id: INITIAL_CREATOR_TUNNEL_ID,
+            next_destination_role_slot: 0x8000_0000,
             counters: BuildCoordinatorCounters::default(),
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
             lifetime_seconds: DEFAULT_EXPLORATORY_LIFETIME_SECONDS,
@@ -597,9 +649,115 @@ impl ExploratoryBuildCoordinator {
         self.pool.outbound_len()
     }
 
+    /// Takes the one-shot established material waiting for registration by
+    /// its owning Destination runtime.
+    pub fn take_destination_material(
+        &mut self,
+        attempt_id: BuildAttemptId,
+    ) -> Option<i2pr_tunnel::EstablishedMaterial> {
+        self.established_handoffs.remove(&attempt_id)
+    }
+
+    /// Activates a tunnel whose registration and secret material are owned by
+    /// one Destination runtime. The returned role slot is a bounded router
+    /// data-plane handle and is intentionally distinct from the pool slot.
+    pub fn activate_destination_tunnel(
+        &mut self,
+        direction: BuildDirection,
+        tunnel: i2pr_tunnel::EstablishedTunnel,
+        now_seconds: u64,
+    ) -> Result<TunnelSlot, BuildCoordinatorError> {
+        let raw_slot = self.next_destination_role_slot;
+        self.next_destination_role_slot =
+            raw_slot
+                .checked_add(1)
+                .ok_or(BuildCoordinatorError::Coordinator(
+                    "Destination role slot space exhausted",
+                ))?;
+        let slot = TunnelSlot::from_raw(raw_slot);
+        let expires_at_ms = now_seconds
+            .saturating_add(u64::from(self.lifetime_seconds))
+            .saturating_mul(1000);
+        match direction {
+            BuildDirection::Outbound => self
+                .registry
+                .activate_outbound(slot, tunnel, expires_at_ms)
+                .map(|_| ())
+                .map_err(|_| {
+                    BuildCoordinatorError::Coordinator(
+                        "Destination outbound role registry rejected activation",
+                    )
+                })?,
+            BuildDirection::Inbound => self
+                .registry
+                .activate_inbound(
+                    slot,
+                    tunnel,
+                    REASSEMBLER_CAPACITY,
+                    REASSEMBLER_AGGREGATE_BYTES,
+                    REASSEMBLER_EXPIRY_MS,
+                    now_seconds.saturating_mul(1000),
+                    expires_at_ms,
+                )
+                .map(|_| ())
+                .map_err(|_| {
+                    BuildCoordinatorError::Coordinator(
+                        "Destination inbound role registry rejected activation",
+                    )
+                })?,
+        }
+        self.counters.installed = self.counters.installed.saturating_add(1);
+        Ok(slot)
+    }
+
     /// Returns the bounded number of pending builds.
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Returns the bounded number of pending builds for one group
+    /// Destination.
+    pub fn pending_destination_len(&self, destination_id: DestinationId) -> usize {
+        self.pending
+            .values()
+            .filter(|pending| pending.destination_id == Some(destination_id))
+            .count()
+    }
+
+    /// Returns the bounded number of pending builds for one group
+    /// Destination and direction. Replenishment uses this alongside live
+    /// registrations so overlapping ticks cannot overshoot either target.
+    pub fn pending_destination_direction_len(
+        &self,
+        destination_id: DestinationId,
+        direction: BuildDirection,
+    ) -> usize {
+        self.pending
+            .values()
+            .filter(|pending| {
+                pending.destination_id == Some(destination_id) && pending.direction == direction
+            })
+            .count()
+    }
+
+    /// Cancels all pending attempts owned by one group Destination. The
+    /// global table is capped, so this scan is bounded by
+    /// `MAX_PENDING_BUILDS`.
+    pub fn cancel_destination_builds(
+        &mut self,
+        destination_id: DestinationId,
+    ) -> Vec<BuildCoordinatorOutcome> {
+        let attempts: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(attempt_id, pending)| {
+                (pending.destination_id == Some(destination_id)).then_some(*attempt_id)
+            })
+            .collect();
+        attempts
+            .into_iter()
+            .filter_map(|attempt_id| self.cancel(attempt_id))
+            .collect()
     }
 
     /// Returns a snapshot of the pool registrations for one
@@ -726,6 +884,13 @@ impl ExploratoryBuildCoordinator {
     where
         R: CryptoRng + RngCore,
     {
+        if request.destination_id.is_some()
+            && self.established_handoffs.len() >= MAX_DESTINATION_HANDOFFS
+        {
+            return Err(BuildCoordinatorError::Coordinator(
+                "Destination material handoff table is full",
+            ));
+        }
         if self.paused {
             return Err(BuildCoordinatorError::Coordinator(
                 "coordinator is paused after consecutive failures",
@@ -815,7 +980,9 @@ impl ExploratoryBuildCoordinator {
         self.counters.outbound_builds = self.counters.outbound_builds.saturating_add(1);
         if !accepted {
             self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
-            self.record_failure();
+            if request.destination_id.is_none() {
+                self.record_failure();
+            }
             return Ok(SubmitResult::Rejected {
                 direction,
                 attempt_id,
@@ -839,7 +1006,9 @@ impl ExploratoryBuildCoordinator {
             None => (None, None),
         };
         let pending = PendingBuild {
+            attempt_id,
             direction,
+            destination_id: request.destination_id,
             target_peer,
             deadline_ms,
             message_id: request.message_id,
@@ -1095,6 +1264,8 @@ impl ExploratoryBuildCoordinator {
             None => return Vec::new(),
         };
         let mut pending = pending;
+        let destination_id = pending.destination_id;
+        let direction = pending.direction;
         let event_result = pending.state.handle_event(BuildEvent::BuildReply {
             reply: Zeroizing::new(reply_payload),
         });
@@ -1102,20 +1273,32 @@ impl ExploratoryBuildCoordinator {
             Ok(Some(outcome)) => outcome,
             Ok(None) => {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-                return vec![BuildCoordinatorOutcome::InvalidReply {
-                    direction: pending.direction,
-                    reason: "state machine did not reach terminal",
-                }];
+                return scope_destination_terminal(
+                    destination_id,
+                    direction,
+                    vec![BuildCoordinatorOutcome::InvalidReply {
+                        direction,
+                        reason: "state machine did not reach terminal",
+                    }],
+                );
             }
             Err(_) => {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-                return vec![BuildCoordinatorOutcome::InvalidReply {
-                    direction: pending.direction,
-                    reason: "state machine rejected the reply",
-                }];
+                return scope_destination_terminal(
+                    destination_id,
+                    direction,
+                    vec![BuildCoordinatorOutcome::InvalidReply {
+                        direction,
+                        reason: "state machine rejected the reply",
+                    }],
+                );
             }
         };
-        self.finalize_attempt(pending, outcome)
+        scope_destination_terminal(
+            destination_id,
+            direction,
+            self.finalize_attempt(pending, outcome),
+        )
     }
 
     fn finalize_attempt(
@@ -1147,7 +1330,7 @@ impl ExploratoryBuildCoordinator {
                 reply_code,
             } => {
                 self.counters.hop_rejections = self.counters.hop_rejections.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::HopRejected {
                     direction: pending.direction,
                     hop_index,
@@ -1156,7 +1339,7 @@ impl ExploratoryBuildCoordinator {
             }
             ShortBuildOutcome::TimedOut => {
                 self.counters.timeouts = self.counters.timeouts.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::TimedOut {
                     direction: pending.direction,
                 }]
@@ -1169,7 +1352,7 @@ impl ExploratoryBuildCoordinator {
             }
             ShortBuildOutcome::InvalidReply => {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::InvalidReply {
                     direction: pending.direction,
                     reason: "multi-record reply rejected",
@@ -1177,7 +1360,7 @@ impl ExploratoryBuildCoordinator {
             }
             ShortBuildOutcome::CryptoFailed => {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::InvalidReply {
                     direction: pending.direction,
                     reason: "cryptography primitive failed",
@@ -1185,7 +1368,7 @@ impl ExploratoryBuildCoordinator {
             }
             ShortBuildOutcome::DeliveryFailed => {
                 self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 vec![BuildCoordinatorOutcome::DeliveryFailed {
                     direction: pending.direction,
                     delivery: RouterDeliveryOutcome::Cancelled,
@@ -1202,6 +1385,20 @@ impl ExploratoryBuildCoordinator {
         let now_seconds = self.now_ms / 1000;
         let direction = pending.direction;
         let hop_count = material.hops().len();
+        if let Some(destination_id) = pending.destination_id {
+            if self.established_handoffs.len() >= MAX_DESTINATION_HANDOFFS {
+                self.record_attempt_failure(pending.destination_id);
+                return vec![BuildCoordinatorOutcome::DestinationHandoffRejected { direction }];
+            }
+            let attempt_id = pending.attempt_id;
+            self.established_handoffs.insert(attempt_id, material);
+            return vec![BuildCoordinatorOutcome::DestinationEstablished {
+                attempt_id,
+                destination_id,
+                hop_count,
+                direction,
+            }];
+        }
         let outcome = match direction {
             BuildDirection::Inbound => self
                 .pool
@@ -1215,12 +1412,12 @@ impl ExploratoryBuildCoordinator {
             Ok(RegisterOutcome::Duplicate { slot }) => slot,
             Err(RegisterError::Full { kind, .. }) => {
                 self.counters.delivery_failures = self.counters.delivery_failures.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 return vec![BuildCoordinatorOutcome::PoolRejected { direction, kind }];
             }
             Err(RegisterError::Invalid(error)) => {
                 self.counters.invalid_replies = self.counters.invalid_replies.saturating_add(1);
-                self.record_failure();
+                self.record_attempt_failure(pending.destination_id);
                 return vec![BuildCoordinatorOutcome::InvalidRegistration {
                     direction,
                     reason: registration_error_reason(error),
@@ -1241,6 +1438,7 @@ impl ExploratoryBuildCoordinator {
         self.pool
             .mark_established(slot)
             .expect("slot was just inserted");
+        self.paused = false;
         // The pool now owns the EstablishedMaterial; we activate
         // the role in the registry by extracting the tunnel through
         // the canonical activation seam. The pool entry keeps the
@@ -1315,10 +1513,14 @@ impl ExploratoryBuildCoordinator {
         for id in expired {
             if let Some(pending) = self.pending.remove(&id) {
                 self.counters.timeouts = self.counters.timeouts.saturating_add(1);
-                self.record_failure();
-                outcomes.push(BuildCoordinatorOutcome::TimedOut {
-                    direction: pending.direction,
-                });
+                self.record_attempt_failure(pending.destination_id);
+                outcomes.extend(scope_destination_terminal(
+                    pending.destination_id,
+                    pending.direction,
+                    vec![BuildCoordinatorOutcome::TimedOut {
+                        direction: pending.direction,
+                    }],
+                ));
             }
         }
         outcomes
@@ -1336,7 +1538,7 @@ impl ExploratoryBuildCoordinator {
             },
             other => map_terminal(other, pending.direction),
         };
-        Some(terminal)
+        scope_destination_terminal(pending.destination_id, pending.direction, vec![terminal]).pop()
     }
 
     /// Removes one slot from both the pool and the registry,
@@ -1353,7 +1555,13 @@ impl ExploratoryBuildCoordinator {
     }
 
     fn record_failure(&mut self) {
-        self.paused = self.pool.consecutive_failures() >= self.failure_threshold;
+        self.paused = self.pool.note_build_failure() >= self.failure_threshold;
+    }
+
+    fn record_attempt_failure(&mut self, destination_id: Option<DestinationId>) {
+        if destination_id.is_none() {
+            self.record_failure();
+        }
     }
 }
 
@@ -1563,6 +1771,40 @@ fn map_terminal(outcome: ShortBuildOutcome, direction: BuildDirection) -> BuildC
     }
 }
 
+fn scope_destination_terminal(
+    destination_id: Option<DestinationId>,
+    direction: BuildDirection,
+    outcomes: Vec<BuildCoordinatorOutcome>,
+) -> Vec<BuildCoordinatorOutcome> {
+    let Some(destination_id) = destination_id else {
+        return outcomes;
+    };
+    if outcomes.iter().any(|outcome| {
+        matches!(
+            outcome,
+            BuildCoordinatorOutcome::DestinationEstablished { .. }
+        )
+    }) {
+        return outcomes;
+    }
+    if outcomes.iter().any(|outcome| {
+        matches!(
+            outcome,
+            BuildCoordinatorOutcome::Cancelled { .. }
+                | BuildCoordinatorOutcome::DestinationBuildCancelled { .. }
+        )
+    }) {
+        return vec![BuildCoordinatorOutcome::DestinationBuildCancelled {
+            destination_id,
+            direction,
+        }];
+    }
+    vec![BuildCoordinatorOutcome::DestinationBuildFailed {
+        destination_id,
+        direction,
+    }]
+}
+
 fn registration_error_reason(error: i2pr_tunnel::pool::RegistrationError) -> &'static str {
     match error {
         i2pr_tunnel::pool::RegistrationError::EmptyHopList => "empty hop list",
@@ -1643,6 +1885,48 @@ mod tests {
     }
 
     #[test]
+    fn destination_build_failures_are_scoped_and_do_not_pause_exploratory_pool() {
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.failure_threshold = 1;
+        let destination_id = DestinationId::from_hash(Hash::from_bytes([0x31; 32]));
+        coordinator.record_attempt_failure(Some(destination_id));
+        assert!(!coordinator.is_paused());
+        coordinator.record_attempt_failure(None);
+        assert!(coordinator.is_paused());
+
+        let failed = scope_destination_terminal(
+            Some(destination_id),
+            BuildDirection::Inbound,
+            vec![BuildCoordinatorOutcome::HopRejected {
+                direction: BuildDirection::Inbound,
+                hop_index: 1,
+                response_code: 1,
+            }],
+        );
+        assert!(matches!(
+            failed.as_slice(),
+            [BuildCoordinatorOutcome::DestinationBuildFailed {
+                destination_id: failed_id,
+                direction: BuildDirection::Inbound,
+            }] if *failed_id == destination_id
+        ));
+        let cancelled = scope_destination_terminal(
+            Some(destination_id),
+            BuildDirection::Outbound,
+            vec![BuildCoordinatorOutcome::Cancelled {
+                direction: BuildDirection::Outbound,
+            }],
+        );
+        assert!(matches!(
+            cancelled.as_slice(),
+            [BuildCoordinatorOutcome::DestinationBuildCancelled {
+                destination_id: cancelled_id,
+                direction: BuildDirection::Outbound,
+            }] if *cancelled_id == destination_id
+        ));
+    }
+
+    #[test]
     fn selected_destination_order_is_preserved_into_shared_short_build_path() {
         let candidates = vec![
             crate::destination_peers::test_candidate(701, "family-a", "10.1.1.1", 1201),
@@ -1673,6 +1957,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let request = DestinationBuildRequest {
+            destination_id: DestinationId::from_hash(Hash::from_bytes([0x70; 32])),
             direction: BuildDirection::Outbound,
             peers,
             creator_tunnel_id: TunnelId::new(0x7010).expect("creator"),

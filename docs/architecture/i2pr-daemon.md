@@ -425,6 +425,19 @@ see `plans/closure/service-tunnels/212-status.md` for the superseding corrective
   server SYN-ACK bridge-mirror fallback in
   `route_outbound_remote_request`).
 
+  Plan 315 is active after Plan 314 passed. Remote `DestinationGroupRuntime`
+  instances resolve to one `DestinationRuntime` in the manager's
+  `DestinationRegistry`; this runtime's `DestinationTunnelPool` retains the
+  authoritative group registrations. The Plan 314 build owner hands established
+  material to that runtime, and startup fills configured inbound/outbound
+  targets in bounded pairs. LeaseSets come from the runtime's current usable
+  inbound leases. The product poll advances pools, drops expired data-plane
+  roles and receive owners, refreshes group LeaseSets/publication, and submits
+  target-deficit builds through the same bounded coordinator. The bridge holds
+  activated role projections keyed to group pool slots; exploratory router
+  pools remain separate. Plan 315 deterministic lifecycle and consumer tests
+  remain the closure gate; no live multi-router result is claimed here.
+
 ## Purpose
 
 `i2pr-daemon` is the top of the dependency graph — it sees every

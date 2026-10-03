@@ -426,6 +426,15 @@ impl ExploratoryPool {
         self.paused
     }
 
+    /// Records one failed exploratory build without removing an existing
+    /// tunnel. Reaching the configured threshold pauses future builds until
+    /// a successful tunnel resets the consecutive-failure count.
+    pub fn note_build_failure(&mut self) -> u16 {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.paused = self.consecutive_failures >= self.config.failure_threshold();
+        self.consecutive_failures
+    }
+
     /// Returns the current inbound registrations in insertion order.
     pub fn inbound_registrations(&self) -> Vec<TunnelRegistration> {
         self.inbound
@@ -1024,6 +1033,25 @@ mod tests {
         assert_eq!(pool.consecutive_failures(), 0);
         pool.mark_failed(slot).expect("removed");
         assert_eq!(pool.consecutive_failures(), 1);
+        assert!(!pool.is_paused());
+    }
+
+    #[test]
+    fn explicit_build_failures_pause_and_success_resets_the_counter() {
+        let config = ExploratoryPoolConfig::try_new(2, 2, 2, 600, 2, 2).expect("config");
+        let mut pool = ExploratoryPool::new(config);
+        assert_eq!(pool.note_build_failure(), 1);
+        assert!(!pool.is_paused());
+        assert_eq!(pool.note_build_failure(), 2);
+        assert!(pool.is_paused());
+
+        let id = TunnelId::new(0x1000).expect("nonzero");
+        let slot = match pool.register_inbound(id, vec![peer(1)], 0).expect("insert") {
+            RegisterOutcome::Inserted { slot, .. } => slot,
+            _ => unreachable!(),
+        };
+        pool.mark_established(slot).expect("established");
+        assert_eq!(pool.consecutive_failures(), 0);
         assert!(!pool.is_paused());
     }
 

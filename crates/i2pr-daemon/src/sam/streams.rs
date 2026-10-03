@@ -43,7 +43,7 @@ use i2pr_netdb::LeaseSet2Store;
 use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
 use i2pr_proto::Hash;
 use i2pr_proto::LeaseSet2;
-use i2pr_tunnel::{EstablishedTunnel, TunnelId};
+use i2pr_tunnel::{EstablishedTunnel, TunnelId, pool::TunnelSlot};
 use rand_core::{CryptoRng, RngCore, UnwrapMut};
 
 use crate::sam::SamServiceError;
@@ -128,13 +128,22 @@ pub struct RouterDestinationNetworkState {
     destination_id: DestinationId,
     routing: DestinationRouting,
     session_manager: EciesSessionManager,
-    outbound_role: DestinationOutboundRole,
+    outbound_roles: Vec<GroupOutboundRole>,
+    next_outbound_role: usize,
     lease_set2: LeaseSet2,
     #[allow(dead_code)]
     validated_lease_set2: ValidatedLeaseSet2,
     inbound_receive_ids: Vec<u32>,
     outbound_expires_at_ms: u64,
     inbound_expires_at_ms: u64,
+}
+
+/// Secret-bearing data-plane projection bound to its canonical group pool
+/// registration. The group pool owns membership and public routing metadata;
+/// this projection owns the activated role needed by composition.
+struct GroupOutboundRole {
+    pool_slot: TunnelSlot,
+    role: DestinationOutboundRole,
 }
 
 impl std::fmt::Debug for RouterDestinationNetworkState {
@@ -155,6 +164,7 @@ impl RouterDestinationNetworkState {
     /// constructor only bundles the state and checks identity
     /// consistency at install time (see
     /// [`SamDestinationBridge::install_router_network_state`]).
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         destination_id: DestinationId,
@@ -171,7 +181,43 @@ impl RouterDestinationNetworkState {
             destination_id,
             routing,
             session_manager,
-            outbound_role,
+            outbound_roles: vec![GroupOutboundRole {
+                pool_slot: TunnelSlot::from_raw(0),
+                role: outbound_role,
+            }],
+            next_outbound_role: 0,
+            lease_set2,
+            validated_lease_set2,
+            inbound_receive_ids,
+            outbound_expires_at_ms,
+            inbound_expires_at_ms,
+        }
+    }
+
+    /// Builds router-backed state with every usable outbound role owned by
+    /// the same Destination group. The caller derives both role collections
+    /// from that group's canonical pool registrations.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_outbound_roles(
+        destination_id: DestinationId,
+        routing: DestinationRouting,
+        session_manager: EciesSessionManager,
+        outbound_roles: Vec<(TunnelSlot, DestinationOutboundRole)>,
+        lease_set2: LeaseSet2,
+        validated_lease_set2: ValidatedLeaseSet2,
+        inbound_receive_ids: Vec<u32>,
+        outbound_expires_at_ms: u64,
+        inbound_expires_at_ms: u64,
+    ) -> Self {
+        Self {
+            destination_id,
+            routing,
+            session_manager,
+            outbound_roles: outbound_roles
+                .into_iter()
+                .map(|(pool_slot, role)| GroupOutboundRole { pool_slot, role })
+                .collect(),
+            next_outbound_role: 0,
             lease_set2,
             validated_lease_set2,
             inbound_receive_ids,
@@ -183,7 +229,10 @@ impl RouterDestinationNetworkState {
     /// Returns true when either the outbound or inbound material is
     /// expired relative to `now_ms`.
     pub(crate) fn is_expired(&self, now_ms: u64) -> bool {
-        now_ms >= self.outbound_expires_at_ms || now_ms >= self.inbound_expires_at_ms
+        self.outbound_roles
+            .iter()
+            .all(|binding| binding.role.expires_at_ms() <= now_ms)
+            || now_ms >= self.inbound_expires_at_ms
     }
 }
 
@@ -767,6 +816,112 @@ impl SamDestinationBridge {
             .unwrap_or_default()
     }
 
+    /// Removes the activated outbound role belonging to one evicted
+    /// canonical group pool slot. Dropping the role releases its secrets.
+    pub(crate) fn remove_router_outbound_pool_slot(&mut self, pool_slot: TunnelSlot) -> bool {
+        let Some(state) = self.router_network.as_mut() else {
+            return false;
+        };
+        let before = state.outbound_roles.len();
+        state
+            .outbound_roles
+            .retain(|binding| binding.pool_slot != pool_slot);
+        if state.outbound_roles.is_empty() {
+            state.next_outbound_role = 0;
+        } else {
+            state.next_outbound_role %= state.outbound_roles.len();
+        }
+        state.outbound_expires_at_ms = state
+            .outbound_roles
+            .iter()
+            .map(|binding| binding.role.expires_at_ms())
+            .max()
+            .unwrap_or(0);
+        state.outbound_roles.len() != before
+    }
+
+    /// Removes the router receive id for an evicted group inbound pool
+    /// entry. Owner-table removal is performed by `ServiceTunnelManager`.
+    pub(crate) fn remove_router_inbound_receive(&mut self, receive_id: u32) -> bool {
+        let Some(state) = self.router_network.as_mut() else {
+            return false;
+        };
+        let before = state.inbound_receive_ids.len();
+        state.inbound_receive_ids.retain(|id| *id != receive_id);
+        state.inbound_receive_ids.len() != before
+    }
+
+    /// Adds an outbound data-plane projection for a newly registered pool
+    /// slot. Duplicate slots fail closed.
+    pub(crate) fn append_router_outbound_role(
+        &mut self,
+        pool_slot: TunnelSlot,
+        role: DestinationOutboundRole,
+    ) -> Result<(), String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed".to_owned())?;
+        if state
+            .outbound_roles
+            .iter()
+            .any(|binding| binding.pool_slot == pool_slot)
+        {
+            return Err("outbound pool slot already has a data-plane role".to_owned());
+        }
+        state.outbound_expires_at_ms = state.outbound_expires_at_ms.max(role.expires_at_ms());
+        state
+            .outbound_roles
+            .push(GroupOutboundRole { pool_slot, role });
+        Ok(())
+    }
+
+    /// Adds an inbound receive id after its established material has entered
+    /// the canonical pool and inbound dispatch registry.
+    pub(crate) fn append_router_inbound_receive(&mut self, receive_id: u32) -> Result<(), String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed".to_owned())?;
+        if state.inbound_receive_ids.contains(&receive_id) {
+            return Err("inbound receive id already belongs to the group".to_owned());
+        }
+        state.inbound_receive_ids.push(receive_id);
+        Ok(())
+    }
+
+    /// Replaces the signed group LeaseSet and current receive-owner projection
+    /// after the canonical pool advances. A below-minimum pool is made
+    /// immediately unusable by setting its inbound deadline to `now_ms`.
+    pub(crate) fn refresh_router_pool_snapshot(
+        &mut self,
+        lease_set2: Option<(LeaseSet2, ValidatedLeaseSet2)>,
+        inbound_receive_ids: Vec<u32>,
+        inbound_expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let state = self
+            .router_network
+            .as_mut()
+            .ok_or_else(|| "router-backed network state not installed".to_owned())?;
+        if let Some((lease_set2, validated)) = lease_set2 {
+            let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+            ValidatedLeaseSet2::from_lease_set2(
+                lease_set2.clone(),
+                Some(self.identity.id().as_netdb_key()),
+                LeaseSet2ValidationContext::new(now_seconds),
+            )
+            .map_err(|error| format!("refreshed router LS2 validation failed: {error:?}"))?;
+            state.lease_set2 = lease_set2;
+            state.validated_lease_set2 = validated;
+            state.inbound_expires_at_ms = inbound_expires_at_ms;
+        } else {
+            state.inbound_expires_at_ms = now_ms;
+        }
+        state.inbound_receive_ids = inbound_receive_ids;
+        Ok(())
+    }
+
     /// Plan 212 §13 — clones the router-backed signed LS2 for
     /// server-side publication. Returns `None` when no
     /// router-backed state is installed. The LS2 is public
@@ -783,10 +938,20 @@ impl SamDestinationBridge {
     /// no router-backed state is installed. The borrow never moves
     /// the role; installation ownership stays with the service
     /// runtime.
-    pub(crate) fn router_outbound_role_ref(&self) -> Option<&DestinationOutboundRole> {
-        self.router_network
-            .as_ref()
-            .map(|state| &state.outbound_role)
+    pub(crate) fn router_outbound_role_ref(
+        &mut self,
+        now_ms: u64,
+    ) -> Option<&DestinationOutboundRole> {
+        let state = self.router_network.as_mut()?;
+        let count = state.outbound_roles.len();
+        for offset in 0..count {
+            let index = (state.next_outbound_role + offset) % count;
+            if state.outbound_roles[index].role.expires_at_ms() > now_ms {
+                state.next_outbound_role = (index + 1) % count;
+                return state.outbound_roles.get(index).map(|binding| &binding.role);
+            }
+        }
+        None
     }
 
     /// Plan 212 §11 — installs a validated remote LeaseSet2 into
@@ -863,7 +1028,19 @@ impl SamDestinationBridge {
         let mut rng = UnwrapMut(&mut os_rng);
         let routing = &state.routing;
         let session = &mut state.session_manager;
-        let outbound = &state.outbound_role;
+        let count = state.outbound_roles.len();
+        if count == 0 {
+            return Err("router-backed outbound pool is empty (NoTunnelMaterial)".to_owned());
+        }
+        let selected = (0..count).find_map(|offset| {
+            let index = (state.next_outbound_role + offset) % count;
+            (state.outbound_roles[index].role.expires_at_ms() > now_ms).then_some(index)
+        });
+        let Some(selected) = selected else {
+            return Err("router-backed outbound pool is expired (NoTunnelMaterial)".to_owned());
+        };
+        state.next_outbound_role = (selected + 1) % count;
+        let outbound = &state.outbound_roles[selected].role;
         StreamingDestinationAdapter::send(
             request,
             routing,
