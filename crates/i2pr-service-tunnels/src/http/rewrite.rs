@@ -81,15 +81,10 @@ pub fn rewrite_headers(
             drop = true;
         }
         // Privacy rewrite.
+        if is_proxy_or_forwarding_metadata(name) {
+            drop = true;
+        }
         match name {
-            "via"
-            | "forwarded"
-            | "x-forwarded-for"
-            | "x-forwarded-host"
-            | "x-forwarded-proto"
-            | "proxy-authorization" => {
-                drop = true;
-            }
             "referer" if privacy.strip_referer => {
                 drop = true;
             }
@@ -154,6 +149,18 @@ pub fn rewrite_headers(
         }
     }
     output
+}
+
+fn is_proxy_or_forwarding_metadata(name: &str) -> bool {
+    matches!(
+        name,
+        "via"
+            | "forwarded"
+            | "proxy-authorization"
+            | "proxy-authenticate"
+            | "x-real-ip"
+            | "x-client-ip"
+    ) || name.starts_with("x-forwarded-")
 }
 
 #[cfg(test)]
@@ -283,7 +290,11 @@ mod tests {
             "x-forwarded-for",
             "x-forwarded-host",
             "x-forwarded-proto",
+            "x-forwarded-client-cert",
             "proxy-authorization",
+            "proxy-authenticate",
+            "x-real-ip",
+            "x-client-ip",
             "referer",
             "from",
         ] {
@@ -343,11 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_host_uniqueness_left_to_parser() {
-        // The parser is responsible for rejecting duplicate
-        // conflicting Host headers. Rewrite here preserves the
-        // first host occurrence when multiple equal entries are
-        // present, otherwise replaces with the canonical target.
+    fn duplicate_host_is_collapsed_for_defensive_direct_callers() {
         let headers = vec![entry("Host", "example.i2p"), entry("Host", "example.i2p")];
         let rewritten = rewrite_headers(
             &headers,

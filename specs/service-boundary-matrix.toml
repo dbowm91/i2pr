@@ -1,0 +1,66 @@
+schema_version = 1
+purpose = "Plan 307 inventory of current application-facing service boundaries. This is an implementation invariant, not an anonymity claim."
+forbidden_router_local_sources = [
+  "router hash or RouterInfo",
+  "transport address or local hostname/IP",
+  "i2pr release/build identity",
+  "filesystem path",
+  "user-local Destination alias",
+  "raw internal error text",
+]
+
+[[boundary]]
+service = "http-client"
+direction = "local-client-to-remote-destination"
+peer_input = ["HTTP request line", "HTTP headers", "opaque request body"]
+synthesized = ["canonical Host", "Connection: close", "configured User-Agent policy"]
+pass_through = ["request body after bounded head parsing", "allowed end-to-end headers"]
+forbidden = ["Via", "Forwarded", "X-Forwarded-*", "Proxy-*", "router-local sources"]
+
+[[boundary]]
+service = "http-connect"
+direction = "local-client-to-remote-destination"
+peer_input = ["CONNECT authority", "opaque tunneled bytes"]
+synthesized = ["fixed 2xx response", "fixed bounded protocol error"]
+pass_through = ["opaque tunneled bytes after setup"]
+forbidden = ["proxy identity headers", "router-local sources", "raw error text"]
+
+[[boundary]]
+service = "socks5-client"
+direction = "local-client-to-remote-destination"
+peer_input = ["SOCKS5 greeting", "SOCKS5 request", "opaque stream bytes"]
+synthesized = ["fixed SOCKS5 method and reply bytes"]
+pass_through = ["opaque stream bytes after setup"]
+forbidden = ["implementation strings", "local target text", "router-local sources"]
+
+[[boundary]]
+service = "generic-client"
+direction = "local-client-to-remote-destination"
+peer_input = ["opaque stream bytes"]
+synthesized = []
+pass_through = ["opaque stream bytes"]
+forbidden = ["added application framing", "router-local sources"]
+
+[[boundary]]
+service = "generic-server"
+direction = "remote-destination-to-loopback-backend"
+peer_input = ["opaque stream bytes"]
+synthesized = []
+pass_through = ["opaque stream bytes"]
+forbidden = ["added application framing", "router-local sources"]
+
+[[boundary]]
+service = "irc-client"
+direction = "local-client-to-remote-destination"
+peer_input = ["IRC lines and tags"]
+synthesized = ["configured safe USER hostname", "configured safe QUIT/PART reason"]
+pass_through = ["allow-listed bounded IRC commands and arguments"]
+forbidden = ["control/delimiter injection", "router-local sources"]
+
+[[boundary]]
+service = "irc-server"
+direction = "remote-destination-to-loopback-backend"
+peer_input = ["IRC registration and bounded lines"]
+synthesized = ["safe projected authenticated peer Destination hostname", "fixed registration numerics"]
+pass_through = ["policy-approved IRC lines"]
+forbidden = ["router identity substitution", "control/delimiter injection", "raw error text"]

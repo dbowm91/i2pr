@@ -411,16 +411,10 @@ fn enforce_host_uniqueness(headers: &[HeaderEntry]) -> Result<(), ParseError> {
         }
     }
     if host_values.len() > 1 {
-        let mut iter = host_values.iter();
-        let first = iter.next().expect("at least two");
-        for value in iter {
-            if *value != *first {
-                return Err(rejected(
-                    HttpErrorKind::MalformedHeaders,
-                    "duplicate Host authority does not match",
-                ));
-            }
-        }
+        return Err(rejected(
+            HttpErrorKind::MalformedHeaders,
+            "duplicate Host authority is rejected",
+        ));
     }
     Ok(())
 }
@@ -507,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_host() {
+    fn rejects_duplicate_host_even_when_equal() {
         let bytes =
             b"GET http://example.i2p/ HTTP/1.1\r\nHost: example.i2p\r\nHost: other.i2p\r\n\r\n";
         assert!(parse(bytes).is_err());
