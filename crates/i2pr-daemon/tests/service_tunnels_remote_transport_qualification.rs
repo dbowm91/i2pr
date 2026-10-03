@@ -483,6 +483,7 @@ async fn m10_remote_destination_streaming_composition_through_manager() {
         targets: Vec::new(),
         destination: None,
         policy: DestinationPolicy::Dedicated,
+        inbound_port: None,
         max_connections: 2,
         max_buffered_bytes_per_direction: 65_536,
         timeouts: ServiceTimeouts::defaults(),

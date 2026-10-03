@@ -101,6 +101,7 @@ fn irc_server_spec(target_socket: SocketAddr) -> ServiceTunnelSpec {
         targets: Vec::new(),
         destination: None,
         policy: DPolicy::Dedicated,
+        inbound_port: None,
         max_connections: 4,
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),

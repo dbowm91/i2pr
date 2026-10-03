@@ -108,6 +108,7 @@ fn irc_client_spec(target_b32: &str, listener: SocketAddr) -> ServiceTunnelSpec 
         targets: Vec::new(),
         destination: Some(DestinationRef::parse(target_b32).expect("destination")),
         policy: DPolicy::Dedicated,
+        inbound_port: None,
         max_connections: 4,
         max_buffered_bytes_per_direction: 65536,
         timeouts: ServiceTimeouts::defaults(),

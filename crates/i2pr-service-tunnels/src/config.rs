@@ -118,11 +118,11 @@ impl ServiceTunnelId {
     }
 }
 
-/// A validated shared client group identifier.
+/// A validated Destination linkability-domain identifier.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct ServiceClientGroupId(String);
+pub struct DestinationGroupId(String);
 
-impl ServiceClientGroupId {
+impl DestinationGroupId {
     /// Parses and validates one group identifier.
     pub fn parse(value: &str) -> Result<Self, ServiceTunnelError> {
         ServiceTunnelId::parse(value)
@@ -140,6 +140,10 @@ impl ServiceClientGroupId {
         &self.0
     }
 }
+
+/// Compatibility name for configurations and callers that used
+/// the original client-only group concept.
+pub type ServiceClientGroupId = DestinationGroupId;
 
 /// Typed service tunnel kinds for Milestone 10.
 ///
@@ -256,21 +260,62 @@ impl ServiceTunnelKind {
 
 /// Destination ownership policy for one service.
 ///
-/// `Dedicated` creates one destination/pool per service. A shared
-/// client destination is only possible through an explicit bounded
-/// `SharedClientGroup`; sharing is never implicit.
+/// `Dedicated` creates an implicit unique group. `SharedGroup` names
+/// an explicit linkability domain that may include client and server
+/// services. Sharing is never inferred from service kind or capacity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DestinationPolicy {
     /// One destination/pool per service.
     Dedicated,
-    /// Shared named client destination group.
+    /// Legacy client-only group spelling, retained for source compatibility.
     SharedClientGroup(ServiceClientGroupId),
+    /// Shared named Destination linkability domain.
+    SharedGroup(DestinationGroupId),
+}
+
+/// Collision-free key for an implicit dedicated group or an
+/// explicitly configured linkability domain.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub enum DestinationGroupKey {
+    /// Backwards-compatible one-service group created by `Dedicated`.
+    Dedicated(ServiceTunnelId),
+    /// Explicitly shared linkability domain.
+    Explicit(DestinationGroupId),
+}
+
+/// Resolved, runtime-neutral Destination-group composition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DestinationGroupSpec {
+    /// Collision-free group owner key.
+    pub key: DestinationGroupKey,
+    /// Services intentionally attached to this Destination.
+    pub members: Vec<ServiceTunnelId>,
+    /// Whether Destination identity must persist across restart.
+    pub persistent: bool,
 }
 
 impl DestinationPolicy {
     /// Returns `true` for the dedicated policy.
     pub fn is_dedicated(&self) -> bool {
         matches!(self, Self::Dedicated)
+    }
+
+    /// Returns the explicit Destination-group identity when present.
+    pub fn group_id(&self, service_id: &ServiceTunnelId) -> DestinationGroupId {
+        match self {
+            Self::Dedicated => DestinationGroupId(service_id.as_str().to_owned()),
+            Self::SharedClientGroup(id) | Self::SharedGroup(id) => id.clone(),
+        }
+    }
+
+    /// Returns the collision-free group owner key for a service.
+    pub fn group_key(&self, service_id: &ServiceTunnelId) -> DestinationGroupKey {
+        match self {
+            Self::Dedicated => DestinationGroupKey::Dedicated(service_id.clone()),
+            Self::SharedClientGroup(id) | Self::SharedGroup(id) => {
+                DestinationGroupKey::Explicit(id.clone())
+            }
+        }
     }
 }
 
@@ -757,6 +802,9 @@ pub struct ServiceTunnelSpec {
     pub destination: Option<DestinationRef>,
     /// Destination ownership policy.
     pub policy: DestinationPolicy,
+    /// I2P destination port for a shared server service. Dedicated
+    /// servers default to the wildcard port 0 for compatibility.
+    pub inbound_port: Option<u16>,
     /// Per-service active-connection ceiling.
     pub max_connections: usize,
     /// Per-direction buffered-byte ceiling.
@@ -913,10 +961,14 @@ impl ServiceTunnelSpec {
                         reason: "server service kinds must not carry a remote destination reference",
                     });
                 }
-                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                let explicit_group = matches!(
+                    self.policy,
+                    DestinationPolicy::SharedClientGroup(_) | DestinationPolicy::SharedGroup(_)
+                );
+                if explicit_group && self.inbound_port.is_none_or(|port| port == 0) {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
-                        reason: "server service kinds require a dedicated destination",
+                        reason: "shared server services require a non-zero inbound_port",
                     });
                 }
             }
@@ -1016,6 +1068,12 @@ impl ServiceTunnelSpec {
                     });
                 }
             }
+        }
+        if self.kind.is_client() && self.inbound_port.is_some() {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: self.id.as_str().to_owned(),
+                reason: "inbound_port is only valid for server services",
+            });
         }
         // Plan 176 + Plan 290: http-client and the http-bidir-server
         // client half must carry HTTP profile options; non-HTTP
@@ -1324,6 +1382,7 @@ impl ServiceTunnelSet {
         }
         let mut ids = std::collections::HashSet::new();
         let mut listeners = std::collections::HashSet::new();
+        let mut server_ports = std::collections::HashSet::new();
         for spec in &self.tunnels {
             if !ids.insert(spec.id.as_str().to_owned()) {
                 return Err(ServiceTunnelError::DuplicateId {
@@ -1331,6 +1390,17 @@ impl ServiceTunnelSet {
                 });
             }
             spec.validate()?;
+            if spec.kind.is_server()
+                && let Some(port) = spec.inbound_port
+                && let DestinationPolicy::SharedClientGroup(group)
+                | DestinationPolicy::SharedGroup(group) = &spec.policy
+                && !server_ports.insert((group.as_str().to_owned(), port))
+            {
+                return Err(ServiceTunnelError::ContradictoryOptions {
+                    id: spec.id.as_str().to_owned(),
+                    reason: "server inbound_port must be unique within a Destination group",
+                });
+            }
             if let Some(listener) = spec.listener
                 && !listeners.insert(listener.socket())
             {
@@ -1348,6 +1418,26 @@ impl ServiceTunnelSet {
             });
         }
         Ok(())
+    }
+
+    /// Resolves configured services into explicit Destination-group
+    /// owners. A group is persistent when any member is a server.
+    pub fn destination_groups(&self) -> Vec<DestinationGroupSpec> {
+        let mut groups =
+            std::collections::BTreeMap::<DestinationGroupKey, DestinationGroupSpec>::new();
+        for service in &self.tunnels {
+            let key = service.policy.group_key(&service.id);
+            let group = groups
+                .entry(key.clone())
+                .or_insert_with(|| DestinationGroupSpec {
+                    key,
+                    members: Vec::new(),
+                    persistent: false,
+                });
+            group.members.push(service.id.clone());
+            group.persistent |= service.kind.is_server();
+        }
+        groups.into_values().collect()
     }
 
     /// Returns the number of configured services.
@@ -1384,6 +1474,32 @@ mod tests {
             targets: Vec::new(),
             destination: Some(DestinationRef::parse(destination).expect("destination")),
             policy: DestinationPolicy::Dedicated,
+            inbound_port: None,
+            max_connections: 16,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: ServiceTimeouts::defaults(),
+            http_options: None,
+            socks5_options: None,
+            irc_options: None,
+        }
+    }
+
+    fn server_spec(
+        id: &str,
+        target: &str,
+        group: DestinationGroupId,
+        inbound_port: u16,
+    ) -> ServiceTunnelSpec {
+        ServiceTunnelSpec {
+            id: ServiceTunnelId::parse(id).expect("id"),
+            kind: ServiceTunnelKind::GenericServer,
+            enabled: false,
+            listener: None,
+            target: Some(ServerTarget::parse(target).expect("target")),
+            targets: Vec::new(),
+            destination: None,
+            policy: DestinationPolicy::SharedGroup(group),
+            inbound_port: Some(inbound_port),
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -1684,6 +1800,63 @@ mod tests {
     }
 
     #[test]
+    fn explicit_groups_share_across_clients_and_persist_if_any_member_is_server() {
+        let group = DestinationGroupId::parse("shared").expect("group");
+        let mut http = client_spec("http-one", "127.0.0.1:8081", &canonical_b32());
+        http.kind = ServiceTunnelKind::HttpClient;
+        http.http_options = Some(crate::http::HttpClientOptions::defaults());
+        http.policy = DestinationPolicy::SharedGroup(group.clone());
+        let mut socks = client_spec("socks-one", "127.0.0.1:8082", &canonical_b32());
+        socks.kind = ServiceTunnelKind::Socks5Client;
+        socks.socks5_options = Some(crate::socks5::Socks5ClientOptions::defaults());
+        socks.policy = DestinationPolicy::SharedGroup(group.clone());
+        let server = server_spec("server-one", "127.0.0.1:8083", group.clone(), 80);
+        let second_server = server_spec("server-two", "127.0.0.1:8084", group, 81);
+        let set = ServiceTunnelSet {
+            tunnels: vec![http, socks, server, second_server],
+        };
+        set.validate().expect("mixed explicit group is intentional");
+        let groups = set.destination_groups();
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].persistent);
+        assert_eq!(
+            groups[0]
+                .members
+                .iter()
+                .map(ServiceTunnelId::as_str)
+                .collect::<Vec<_>>(),
+            vec!["http-one", "socks-one", "server-one", "server-two"]
+        );
+    }
+
+    #[test]
+    fn shared_server_destination_ports_must_be_unique() {
+        let group = DestinationGroupId::parse("shared").expect("group");
+        let first = server_spec("server-one", "127.0.0.1:8083", group.clone(), 80);
+        let second = server_spec("server-two", "127.0.0.1:8084", group, 80);
+        let set = ServiceTunnelSet {
+            tunnels: vec![first, second],
+        };
+        assert!(matches!(
+            set.validate(),
+            Err(ServiceTunnelError::ContradictoryOptions { .. })
+        ));
+    }
+
+    #[test]
+    fn dedicated_same_kind_services_get_distinct_implicit_groups() {
+        let first = client_spec("http-one", "127.0.0.1:8081", &canonical_b32());
+        let second = client_spec("http-two", "127.0.0.1:8082", &canonical_b32());
+        let set = ServiceTunnelSet {
+            tunnels: vec![first, second],
+        };
+        let groups = set.destination_groups();
+        assert_eq!(groups.len(), 2);
+        assert_ne!(groups[0].key, groups[1].key);
+        assert!(groups.iter().all(|group| !group.persistent));
+    }
+
+    #[test]
     fn non_loopback_listener_rejected() {
         assert!(LocalListenerSpec::parse_socket("0.0.0.0:8080").is_err());
         assert!(LocalListenerSpec::parse_socket("192.168.1.10:8080").is_err());
@@ -1704,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn contradictory_options_rejected() {
+    fn contradictory_options_rejected_and_server_groups_allowed() {
         // Client without destination.
         let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
         spec.destination = None;
@@ -1713,7 +1886,7 @@ mod tests {
         let mut spec = client_spec("alpha", "127.0.0.1:8080", &canonical_b32());
         spec.target = Some(ServerTarget::parse("127.0.0.1:9090").expect("target"));
         assert!(spec.validate().is_err());
-        // Server with shared policy.
+        // Server services may intentionally share a Destination group.
         let server = ServiceTunnelSpec {
             id: ServiceTunnelId::parse("srv").expect("id"),
             kind: ServiceTunnelKind::GenericServer,
@@ -1722,9 +1895,10 @@ mod tests {
             target: Some(ServerTarget::parse("127.0.0.1:9090").expect("target")),
             targets: Vec::new(),
             destination: None,
-            policy: DestinationPolicy::SharedClientGroup(
-                ServiceClientGroupId::parse("group").expect("group"),
+            policy: DestinationPolicy::SharedGroup(
+                DestinationGroupId::parse("group").expect("group"),
             ),
+            inbound_port: Some(9090),
             max_connections: 16,
             max_buffered_bytes_per_direction: 65_536,
             timeouts: ServiceTimeouts::defaults(),
@@ -1743,7 +1917,7 @@ mod tests {
             connect_options: None,
             streamr_options: None,
         };
-        assert!(server.validate().is_err());
+        assert!(server.validate().is_ok());
     }
 
     #[test]

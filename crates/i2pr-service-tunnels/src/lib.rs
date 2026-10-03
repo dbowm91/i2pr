@@ -68,7 +68,8 @@ pub use auth::{
     decode_basic_credentials,
 };
 pub use config::{
-    DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, IdlePolicy, LocalListenerSpec,
+    DestinationGroupId, DestinationGroupKey, DestinationGroupSpec, DEFAULT_IDLE_TIMEOUT_MS,
+    DestinationPolicy, IdlePolicy, LocalListenerSpec,
     MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
     MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS, MAX_EFFECTIVE_DIRECTION_TUNNELS,
     MAX_GROUP_ID_LEN, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS,
