@@ -503,6 +503,13 @@ mod tests {
     #[test]
     fn rejects_duplicate_host_even_when_equal() {
         let bytes =
+            b"GET http://example.i2p/ HTTP/1.1\r\nHost: example.i2p\r\nHost: example.i2p\r\n\r\n";
+        assert!(parse(bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_host_when_conflicting() {
+        let bytes =
             b"GET http://example.i2p/ HTTP/1.1\r\nHost: example.i2p\r\nHost: other.i2p\r\n\r\n";
         assert!(parse(bytes).is_err());
     }
