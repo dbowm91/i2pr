@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 closed. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plan 307 is dependency-ready; Plans 308–313 are registered behind the new dependency graph. This workstream remains parallel to M12/router-mainline development.
+Status: Plan 296 and Plan 307 are closed. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plans 308 and 309 are dependency-ready; Plans 310–313 remain behind the group-pool, lifecycle, and Streaming evidence gates. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -112,9 +112,9 @@ Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may pro
 | 301 | stopped | historical integration gate | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
 | 304 | stopped | retained Ubuntu/reference foundation | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | plans/closure/anonymity/304-status.md |
 | 305 | stopped | retained owner/reference audit | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | plans/closure/anonymity/305-status.md |
-| 307 | ready | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | future |
-| 308 | blocked on 307 | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | future |
-| 309 | blocked on 307 | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | future |
+| 307 | passed-service-boundary-router-unlinkability-and-input-sanitation | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | plans/closure/anonymity/307-status.md |
+| 308 | ready | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 304 artifacts and ADR 0030 satisfy other dependencies |
+| 309 | ready | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | plans/closure/anonymity/307-status.md unblocks; retained Plan 305 audit and ADR 0030 satisfy other dependencies |
 | 310 | blocked on 309 | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | future |
 | 311 | blocked on 310 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | future |
 | 312 | blocked on 310 | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | future |
