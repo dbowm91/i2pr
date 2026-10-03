@@ -1,6 +1,6 @@
 # Anonymity and Implementation-Neutrality Roadmap
 
-Status: Plan 296 closed; Plans 297 and 298 stopped at external capture-topology gates; Plan 299 stopped without Plan 298 differential evidence; Plan 300 stopped at target-isolation/path-diversity owner gaps; Plan 301 stopped pending predecessor qualification. This workstream is parallel to M12/router-mainline development and does not gate router feature progression.
+Status: Plan 296 closed. Plans 297–305 remain historical stopped records. ADR 0030 corrects the future model: Destination groups are explicit linkability domains, router-to-Destination unlinkability is the primary invariant, HTTP evidence is separated from hostile Streaming evidence, and Streaming convergence targets pinned i2pd. Plan 307 is dependency-ready; Plans 308–313 are registered behind the new dependency graph. This workstream remains parallel to M12/router-mainline development.
 
 Long-term references:
 - GUARDRAILS.md
@@ -8,142 +8,145 @@ Long-term references:
 - specs/support.toml
 - docs/security-model.md
 - docs/adr/0029-anonymity-boundaries-and-profile-convergence.md
+- docs/adr/0030-destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md
 - plans/subsystems/service-tunnels-roadmap.md
 - plans/subsystems/destination-streaming-roadmap.md
-- plans/subsystems/exploratory-tunnels-roadmap.md
 - plans/subsystems/netdb-roadmap.md
 
-Reference pins at registration:
+Reference pins:
 - i2pd 2.61.0 commit 635b013a612ff47278ef02acf8580a28e10e26c5.
 - Java I2P 2.13.0 commit 9134f808337b401e8e53c73734c81fab04280c9d.
-- Existing i2pr M10 product authority: Plan 215.
-- Existing mixed-router i2pd progression authority: Plan 193.
+- Plan 215 remains M10 service product authority.
+- Plan 193 remains retained i2pd Streaming interoperability authority for its historical scope.
 
 ## 1. Purpose and ownership boundary
 
-This workstream prevents i2pr-specific implementation identity from leaking or becoming unnecessarily classifiable across service/Destination anonymity boundaries, then qualifies lower-layer observable profiles that a hostile Destination or network participant can measure.
+Prevent service traffic from identifying or correlating its hosting router while allowing intentional application-level linkage through explicit Destination groups.
 
-It does not own the router feature roadmap. Existing subsystem owners remain authoritative: i2pr-service-tunnels owns runtime-neutral application policies, i2pr-client owns Destination/Streaming behavior, i2pr-tunnel owns tunnel/path primitives, i2pr-netdb owns provenance/namespace policy, and i2pr-daemon owns runtime composition/listeners.
+A Destination is allowed to identify several services because the user chose that group. The router identity is not part of that group. Application/service crates own parsing/presentation policy; i2pr-client owns Destination/Streaming state; i2pr-netdb supplies validated peer facts; i2pr-daemon owns group/runtime composition; i2pr-tunnel owns final wire/path validation.
 
 ## 2. Work classification
 
-Plan 296 is invariant + immediate corrective capability: remove direct router branding/local-alias leakage and establish the leak-regression harness.
-
-Plan 297 is application-profile capability/evidence: converge HTTP behavior on pinned deployed I2P proxy behavior without combinatorial defaults or randomization.
-
-Plan 298 is infrastructure/evidence only: build a hostile-Destination Streaming fingerprint harness and freeze observable Java/i2pd baselines before tuning production behavior.
-
-Plan 299 is capability/corrective: use Plan 298 evidence to converge i2pr's observable Streaming profile on one coherent compatibility target.
-
-Plan 300 is invariant/capability/evidence: harden Destination isolation plus tunnel/path diversity and qualify locally testable router-to-Destination unlinkability properties.
-
-Plan 301 is evidence/closure/polish: integrate all dimensions into a machine-checked anonymity qualification matrix and update documentation only to the exact proven scope.
+- Plan 296: passed direct branding/local-alias corrective.
+- Plans 297–305: retained stopped evidence from the superseded planning model.
+- Plan 307: immediate router-unlinkability and input-sanitation invariant.
+- Plan 308: HTTP ordinary-proxy differential evidence/convergence.
+- Plan 309: Destination-group composition and service multiplexing.
+- Plan 310: real group-owned multi-hop pools and peer selection.
+- Plan 311: startup separation and graceful retirement lifecycle.
+- Plan 312: i2pd-only directional Streaming baseline.
+- Plan 313: evidence-driven i2pd Streaming convergence.
 
 ## 3. Non-goals
 
-This workstream does not claim production anonymity, global passive-adversary resistance, resistance to arbitrary timing analysis, or Tor Browser equivalence. It does not MITM TLS, normalize arbitrary encrypted application protocols, spoof another router's product/version, falsify RouterInfo protocol capability/version fields, make randomization the primary fingerprint defense, or add parallel Destination/NetDB/tunnel runtimes. It does not block M12 or later mainline plans.
+No production-anonymity claim, Tor Browser equivalence, global passive-adversary resistance, arbitrary application fingerprint normalization, TLS MITM, or unlimited resource allocation. Intentional services within one Destination group are explicitly linkable.
 
 ## 4. Current state
 
-At registration the audit found:
-- HTTP defaults replace User-Agent with `i2pr/0.1`;
-- HTTP Host rewriting can use caller-local alias text instead of resolved Destination B32;
-- local CONNECT success includes `Proxy-Agent: i2pr`;
-- IRC's optional stable reason replacement uses `i2pr`;
-- deterministic lowercase HTTP header serialization/order/connection behavior may remain distinguishable after literal branding is removed;
-- browser/locale/platform headers are not comprehensively normalized;
-- generic and SOCKS/CONNECT forwarding do not intentionally inject router metadata but necessarily pass application fingerprints such as TLS behavior;
-- service client destinations default to dedicated identities, sharing is explicit;
-- Destination identity/key shape is intentionally compatible with deployed I2P families;
-- NetDB provenance/namespace separation and tunnel-routed client lookup/publication are strong unlinkability foundations;
-- current Streaming contains observable defaults that differ from reference/documented behavior but lacks active black-box equivalence evidence;
-- the service-Destination client tunnel profile is shorter than the common documented three-hop client-tunnel default;
-- path-selection diversity is not yet a separately qualified anonymity contract.
+Plan 296 removed known direct client-boundary leaks. Plan 304 retained an Ubuntu preflight/reference cache but over-coupled HTTP and hostile Streaming. Plan 305 correctly discovered that the production service path still has one service-owned Destination and one-peer build requests, but its mandatory per-target identity rule is superseded by ADR 0030.
 
-The global security model correctly retains the anonymity/privacy non-claim.
+Current code still needs:
+- systematic server/client sanitation coverage;
+- general Destination-group ownership;
+- explicit server port multiplexing;
+- real multi-hop service paths rather than config-only three-hop intent;
+- lifecycle separation between router process and service availability;
+- a practical Streaming fingerprint target.
 
 ## 5. Target architecture
 
 ~~~text
-local application
-     |
-service-tunnel profile
-     |  no router branding / local alias leakage
-     v
-client Destination identity owner
-     |  dedicated or explicitly isolated
-Streaming / Garlic
-     |  qualified observable compatibility profile
-client tunnel pool
-     |  qualified path/diversity policy
+router identity / router transport plane
+        |
+        | MUST NOT become service identity
+        v
+DestinationGroup owner
+  identity + LeaseSet + inbound/outbound pools
+  lifecycle + publication + delivery + budgets
+        |
+        +-- HTTP client #1
+        +-- HTTP client #2
+        +-- SOCKS client
+        +-- IRC client
+        +-- server port 80 -> backend A
+        +-- server port 443 -> backend B
+        |
+        v
+3-hop group-owned client tunnels
+        |
+        v
 I2P network
-     |
-hostile remote Destination / observer
-~~~
 
-Evidence flows back into a machine-readable qualification matrix. No individual layer promotes itself to a broad anonymity claim.
+Services in one group are intentionally linkable to each other.
+The group is not linkable by design to the hosting RouterInfo.
+~~~
 
 ## 6. Dependency graph
 
 ~~~text
-296 service-boundary invariant + direct leak correction
-  -> 297 HTTP profile convergence
-  -> 298 Streaming differential fingerprint harness
-       -> 299 Streaming profile convergence
-  -> 300 Destination/path isolation + diversity qualification
+296 passed
 
-297 + 299 + 300
-  -> 301 integrated anonymity evidence and scoped claim gate
+307 service-boundary router unlinkability + sanitation [ready]
+  -> 308 HTTP ordinary-proxy differential [blocked on 307]
+  -> 309 Destination groups + service multiplexing [blocked on 307]
+       -> 310 group-owned multi-hop pools + selector
+            -> 311 startup/graceful lifecycle
+            -> 312 i2pd Streaming directional baseline
+                 -> 313 i2pd Streaming convergence
+
+passing 308 + 310 + 311 + 313
+  -> future integrated anonymity successor to stopped Plan 301
 ~~~
 
-Plans 297, 298, and 300 may execute concurrently once Plan 296 is closed.
+Plans 308 and 309 may proceed independently after 307. Plans 311 and 312 may proceed independently after 310.
 
 ## 7. Milestones
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 296 | closed (`passed-anonymity-service-boundary-implementation-neutrality-and-leak-regression`) | invariant/corrective capability | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | plans/closure/anonymity/296-status.md |
-| 297 | stopped (`stopped-http-differential-capture-needs-controlled-three-router-topology`) | capability/evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | plans/closure/anonymity/297-status.md |
-| 298 | stopped (`stopped-three-family-hostile-destination-capture-runners-unavailable`) | infrastructure/evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | plans/closure/anonymity/298-status.md |
-| 299 | stopped (`stopped-no-plan-298-differential-evidence`) | capability/corrective | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | plans/closure/anonymity/299-status.md |
-| 300 | stopped (`stopped-target-isolation-and-reference-diversity-owner-gap`) | invariant/capability/evidence | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
-| 301 | stopped (`stopped-predecessor-qualification-evidence-incomplete`) | evidence/closure/polish | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
+| 296 | closed | invariant/corrective | plans/implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md | plans/closure/anonymity/296-status.md |
+| 297 | stopped | historical HTTP evidence | plans/implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md | plans/closure/anonymity/297-status.md |
+| 298 | stopped | historical Streaming evidence | plans/implementation/anonymity/298-streaming-active-fingerprint-differential-harness.md | plans/closure/anonymity/298-status.md |
+| 299 | stopped | historical Streaming convergence | plans/implementation/anonymity/299-streaming-observable-profile-convergence.md | plans/closure/anonymity/299-status.md |
+| 300 | stopped | historical target/path qualification | plans/implementation/anonymity/300-destination-isolation-and-tunnel-path-anonymity-qualification.md | plans/closure/anonymity/300-status.md |
+| 301 | stopped | historical integration gate | plans/implementation/anonymity/301-integrated-anonymity-evidence-and-scoped-claim-gate.md | plans/closure/anonymity/301-status.md |
+| 304 | stopped | retained Ubuntu/reference foundation | plans/implementation/anonymity/304-ubuntu-controlled-reference-topology-and-capture-foundation.md | plans/closure/anonymity/304-status.md |
+| 305 | stopped | retained owner/reference audit | plans/implementation/anonymity/305-target-scoped-destination-and-peer-diversity-ownership.md | plans/closure/anonymity/305-status.md |
+| 307 | ready | invariant/corrective | plans/implementation/anonymity/307-service-boundary-router-unlinkability-and-input-sanitation.md | future |
+| 308 | blocked on 307 | evidence/capability | plans/implementation/anonymity/308-http-proxy-differential-without-hostile-streaming-control.md | future |
+| 309 | blocked on 307 | architecture/capability | plans/implementation/anonymity/309-destination-linkability-domains-and-service-group-composition.md | future |
+| 310 | blocked on 309 | architecture/anonymity capability | plans/implementation/anonymity/310-destination-group-multihop-pool-and-peer-selection.md | future |
+| 311 | blocked on 310 | lifecycle/anonymity capability | plans/implementation/anonymity/311-service-lifecycle-startup-and-graceful-drain.md | future |
+| 312 | blocked on 310 | evidence infrastructure | plans/implementation/anonymity/312-i2pd-streaming-directional-fingerprint-baseline.md | future |
+| 313 | blocked on 312 | convergence capability | plans/implementation/anonymity/313-i2pd-streaming-profile-convergence.md | future |
 
 ## 8. Cross-cutting requirements
 
-- No router-synthesized service-boundary bytes may disclose i2pr product/release/build identity or user-local naming state.
-- Resolved Destination identity, not caller alias text, governs remote B32 presentation.
-- Dedicated Destination identity remains default; sharing is explicit and linkable.
-- Do not weaken NetDB namespace/provenance separation or tunnel-routed client lookup/publication.
-- Do not weaken runtime budgets, cancellation, task ownership, secret redaction, or dependency direction.
-- Differential evidence uses sanitized metadata/counts/hashes only; never raw payloads/private identities.
-- Reference behavior is measured on exact pins before it becomes a compatibility target.
-- No production tuning is justified solely by source-code constants.
-- Randomization is not authorized by this roadmap.
-- Protocol-required RouterInfo fields remain truthful.
+- No router-synthesized service bytes expose router identity or router-local state.
+- Destination sharing is explicit; implicit sharing under resource pressure is forbidden.
+- Multiple same-kind services are valid within hard ceilings.
+- Server services may share one persistent group on distinct I2P ports.
+- Client/server sharing in one persistent group is allowed but explicitly linkable.
+- Group identity keys are independent of router keys.
+- Service lookup/publication/data uses group tunnels.
+- Real path length must match the configured qualified profile.
+- Service lifecycle smoothing is bounded and never blocks hard security shutdown.
+- Streaming qualification targets one coherent i2pd profile, not a Java/i2pd hybrid.
 
 ## 9. Verification strategy
 
-Plan 296 establishes transcript-negative/static checks. Plan 297 adds pinned HTTP differential captures. Plan 298 adds hostile-Destination Streaming stimuli and sanitized traces. Plan 300 adds deterministic identity/path-diversity fixtures plus composed client lookup/publication assertions. Plan 301 composes retained evidence and checks documentation claims.
+Plan 307 uses transcript/static/parser negative tests. Plan 308 uses ordinary HTTP captures on Ubuntu. Plans 309/310 use deterministic composition/path tests and later mixed-router evidence where necessary. Plan 311 uses manual-time lifecycle tests. Plan 312 uses directional i2pd black-box traces with an i2pr-controlled opposite endpoint. Plan 313 reruns the same evidence after narrow tuning.
 
-External lanes are environment-gated, exact-pin/source-locked, fail-closed, and emit only sanitized committed evidence. Missing reference routers are unexecuted, never a pass. Routine workspace verification remains mandatory.
+External lanes remain exact-pin/source-locked, fail-closed, bounded, and sanitized. Missing reference execution is unexecuted, never a pass.
 
 ## 10. Risks and decision points
 
-The principal risk is replacing a literal version leak with a subtler unique fingerprint. A custom user agent, unusual missing-header set, random serialization, unique Streaming constant combination, or nonstandard path profile can all partition the anonymity set.
-
-A second risk is overclaiming: an HTTP proxy can remove router-added identifiers but cannot hide a browser/TLS/application fingerprint carried through an opaque stream.
-
-A third risk is availability pressure silently weakening isolation/path diversity. Any fallback that violates a registered anonymity floor is explicit, bounded, locally observable, and excluded from the qualified profile.
-
-Reference drift requires an explicit reconciliation pass rather than silent retuning.
+The largest risk is accidental router linkage through service composition rather than literal headers. A second risk is making deliberate Destination sharing appear unsafe and driving unnecessary identity churn. A third is implementing "three-hop" only in configuration while production still constructs one-hop paths. Lifecycle smoothing must not keep a compromised/failed transport alive merely to preserve availability.
 
 ## 11. Completion definition
 
-This workstream is complete only when direct i2pr branding/local alias leakage is absent from qualified remote transcripts; HTTP's default privacy profile is reference-derived and differentially qualified; Streaming active-probe behavior has a retained baseline and selected convergent profile; Destination sharing/target isolation and tunnel/path diversity satisfy registered gates; NetDB namespace/tunneled client behavior remains protected; a machine-readable matrix distinguishes proven/unproven/out-of-scope dimensions; and docs/security-model.md states only the scoped properties justified by executed evidence.
-
-No broad production-anonymity, browser-anonymity, or global-traffic-analysis claim is introduced.
+The workstream is complete only when direct service-boundary leaks are absent; HTTP's qualified profile has retained evidence; Destination groups intentionally compose multiple services without router identity reuse; production group pools build real qualified paths; lifecycle availability is decoupled from immediate process edges; i2pr Streaming matches pinned i2pd on registered observable dimensions; and a fresh integrated evidence plan states only those scoped properties.
 
 ## 12. Milestone status summary
 
-Plan 296 is closed. Plan 297 is stopped until controlled Java/i2pd HTTP proxy captures exist. Plan 298 has bounded local schema/scenario fixtures but is stopped because hostile-Destination three-family runners/captures are absent; Plan 299 therefore remains stopped without differential evidence. Plan 300 implemented repeated-router rejection and a source-derived three-hop service profile, then stopped because multi-target HTTP/SOCKS identity isolation and candidate-diversity/degraded-path ownership are unresolved. Plan 301 is stopped until Plans 297, 299, and 300 pass. This workstream does not gate M12 and authorizes no broad anonymity claim.
+Plan 307 is the only dependency-ready anonymity handoff at registration. Plans 308–313 are registered in the graph above. Plans 297–305 remain immutable stopped history. No mainline/M12 readiness or production-anonymity claim changes.

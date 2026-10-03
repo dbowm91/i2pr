@@ -1,9 +1,13 @@
 # ADR 0029: Anonymity boundaries, implementation neutrality, and profile convergence
 
-- Status: Accepted
+- Status: Accepted; partially superseded by ADR 0030
 - Date: 2026-10-02
 - Decision owner: repository maintainer
-- Related: GUARDRAILS.md, specs/CONFORMANCE.md, docs/security-model.md, ADR 0001, ADR 0026, M10 service tunnels, Destinations/Streaming, Plans 296–301
+- Related: GUARDRAILS.md, specs/CONFORMANCE.md, docs/security-model.md, ADR 0001, ADR 0026, ADR 0030, M10 service tunnels, Destinations/Streaming, Plans 296–301
+
+## Supersession note
+
+ADR 0030 supersedes §5's mandatory target-level identity-isolation requirement and the corresponding rejected alternative against shared client Destinations. Explicit Destination groups are now valid, intentional linkability domains. ADR 0030 also narrows the future Streaming target in §§3/6 to a coherent pinned-i2pd compatibility profile. All other service-boundary neutrality, canonical naming, non-randomization, protocol-metadata, and evidence-gating decisions in this ADR remain active.
 
 ## Context
 

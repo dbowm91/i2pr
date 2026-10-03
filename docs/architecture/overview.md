@@ -424,7 +424,8 @@ not weaken the script.
   `check-streaming-tunnel-evidence.sh`,
   `check-m6-mixed-router-acceptance-evidence.sh`,
   `check-m6-mixed-router-acceptance-evidence.sh` companion
-  `check-m6-final-closure-evidence.sh` (manual gate) — evidence
+  `check-m6-final-closure-evidence.sh` (manual gate),
+  `check-m12-floodfill-qualification-evidence.sh` — evidence
   integrity: no literal unconditional `passed` rows; every counted
   row flows through exit-code/evidence-key-gated helpers.
 - `check-ntcp2-interoperability.sh`,

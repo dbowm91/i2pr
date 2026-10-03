@@ -1,28 +1,42 @@
 //! Plan 278 — exact-pinned i2pd 2.61.0 controlled floodfill qualification driver.
 //!
-//! Two fail-closed phases, both `#[ignore]`-gated and selected explicitly with
-//! `--ignored --exact`. Ordinary workspace runs compile and skip them; an
-//! explicit selection without the required environment panics (never skips,
-//! never succeeds early).
+//! Extended by Plan 279 with the exact-pinned Java I2P 2.13.0 second-family
+//! lane. Both lanes drive the same production inbound/dispatch/delivery path
+//! (`handle_authenticated_i2np` + `deliver_floodfill_effect_with_dial`) so
+//! every matrix row is produced by unmodified i2pr code responding to
+//! unmodified reference traffic over real authenticated SSU2 sessions.
+//!
+//! Two fail-closed phases per lane, all `#[ignore]`-gated and selected
+//! explicitly with `--ignored --exact`. Ordinary workspace runs compile and
+//! skip them; an explicit selection without the required environment panics
+//! (never skips, never succeeds early).
 //!
 //! Phase 1 [`floodfill_prepare_against_i2pd`] binds the controlled identity on a
 //! fixed loopback port, runs the real Plan 283 controlled activation, and writes
-//! the installed `caps=f` RouterInfo plus the transport material into the attempt
+//! the installed `caps=fR` RouterInfo (peer-test-confirmed reachability,
+//! Plan 306 / ADR 0030) plus the transport material into the attempt
 //! state directory. The runner then seeds that exact RouterInfo into the
-//! reference client's `netDb` before the reference starts, so i2pd's own
+//! reference client's `netDb` before the reference starts, so the reference's own
 //! known-floodfill selection sees i2pr. The identity and transport material are
-//! reloaded (never regenerated) by phase 2, so the published RouterInfo stays
-//! valid across both phases.
+//! reloaded (never regenerated) by later phases, so the published RouterInfo stays
+//! valid across all of them. The prepare phase is reference-agnostic and shared
+//! by both lanes.
 //!
-//! Phase 2 [`floodfill_qualify_against_i2pd`] reloads the same identity, binds the
+//! Phase 2 (i2pd: [`floodfill_qualify_against_i2pd`], Java:
+//! [`floodfill_qualify_against_java`]) reloads the same identity, binds the
 //! same port, re-runs controlled activation against live reference peers, and
-//! drives the production inbound/dispatch/delivery path
-//! (`handle_authenticated_i2np` + `deliver_floodfill_effect_with_dial`) so every
-//! matrix row is produced by unmodified i2pr code responding to unmodified
-//! i2pd traffic over real authenticated SSU2 sessions.
+//! drives the matrix.
 //!
-//! Evidence is sanitized: counts, digests, lengths, and categorical outcomes
-//! only. No private key, raw I2NP payload, or router key file is ever written.
+//! Phase 3 (Java lane: [`floodfill_withdraw_against_java`]) reloads the same
+//! identity once more and proves health withdrawal: a loss snapshot stops
+//! admission, the same qualified address is reinstalled without `caps=f`,
+//! and the role reaches Disabled.
+//!
+//! Reference RouterInfos reach the driver through `FLOODFILL_REF_*`
+//! environment variables, falling back to the historical `I2PD_*` names
+//! the i2pd lane exports. Evidence is sanitized: counts, digests, lengths,
+//! and categorical outcomes only. No private key, raw I2NP payload, or
+//! router key file is ever written.
 
 #![forbid(unsafe_code)]
 
@@ -54,6 +68,12 @@ use rand_core::{OsRng, TryRngCore};
 const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_RECORD_AGE_MS: u64 = 3_600_000;
+/// Plan 279 §3 publisher rendezvous: the stock Java publisher needs a
+/// live floodfill for its own exploration before its client session (and
+/// LeaseSet) exists, so the Java lane creates the lane destination only
+/// after P signals live. Coarse bound for the whole handshake; the
+/// runner fails first on its own tighter polls.
+const PUBLISHER_SYNC_TIMEOUT: Duration = Duration::from_secs(600);
 const MAINTENANCE_PERIOD: Duration = Duration::from_secs(30);
 const MAINTENANCE_BATCH: usize = 256;
 
@@ -63,6 +83,16 @@ fn env_value(name: &str) -> String {
     match std::env::var(name) {
         Ok(value) if !value.is_empty() => value,
         _ => panic!("missing required env {name}"),
+    }
+}
+
+/// Reads a reference-router input, preferring the lane-neutral
+/// `FLOODFILL_REF_*` name and falling back to the historical i2pd
+/// lane's `I2PD_*` name so the proven lane needs no change.
+fn ref_env_value(primary: &str, legacy: &str) -> String {
+    match std::env::var(primary) {
+        Ok(value) if !value.is_empty() => value,
+        _ => env_value(legacy),
     }
 }
 
@@ -239,7 +269,7 @@ fn bind() -> std::net::SocketAddr {
 }
 
 /// Builds the non-floodfill published RouterInfo the service starts from.
-/// Controlled activation replaces it atomically with the `caps=f` record.
+/// Controlled activation replaces it atomically with the `caps=fR` record.
 fn initial_router_info(persisted: &Persisted, addr: std::net::SocketAddr) -> Vec<u8> {
     let options = Mapping::from_entries(vec![
         ("host".to_string(), addr.ip().to_string()),
@@ -263,7 +293,7 @@ fn initial_router_info(persisted: &Persisted, addr: std::net::SocketAddr) -> Vec
     // publication (`router_i2np::generate_controlled_identity`): it carries
     // the same controlled declaration. The install guard compares netId
     // against the currently installed record, so a hand-rolled identity
-    // record without the declaration cannot install the later caps=f record
+    // record without the declaration cannot install the later caps=fR record
     // that has one, and the pinned reference would mark such a record
     // unreachable regardless.
     persisted
@@ -417,7 +447,7 @@ fn seed_replica(coordinator: &mut FloodfillCoordinator, info: &RouterInfo) -> Ro
 // -------------------------------------------------------------- phase 1
 
 /// Plan 278 phase 1: establish the stable controlled identity and publish the
-/// `caps=f` RouterInfo the reference client will be seeded with.
+/// `caps=fR` RouterInfo the reference client will be seeded with.
 #[tokio::test]
 #[ignore = "requires exact-pinned i2pd 2.61.0 lane environment"]
 async fn floodfill_prepare_against_i2pd() {
@@ -501,6 +531,16 @@ struct Observed {
     maintenance_examined: u64,
     role_state: String,
     queue_full: u64,
+    // Plan 302 §12.2 observability: insert-outcome class per accepted store
+    // plus whether the service offered a replication candidate. Counts and
+    // category labels only; no payloads, no keys.
+    store_insert_outcomes: Vec<String>,
+    replication_offered: u64,
+    replication_absent: u64,
+    // Plan 279 §3 observability: stored-record family per accepted store,
+    // as the `RecordId` type discriminant (0 RouterInfo, 1 LeaseSet,
+    // 3 LeaseSet2, 7 MetaLeaseSet). Discriminants only; no keys.
+    store_family_types: Vec<u8>,
 }
 
 type Shared = std::sync::Arc<std::sync::Mutex<Observed>>;
@@ -542,9 +582,20 @@ async fn run_owner(
                         Ok(i2pr_daemon::floodfill::FloodfillDispatchOutcome::Store(
                             effect,
                         )) => match effect {
-                            i2pr_netdb::FloodfillStoreEffect::Stored { acknowledgement, .. } => {
-                                let _ = acknowledgement;
+                            i2pr_netdb::FloodfillStoreEffect::Stored {
+                                record,
+                                outcome,
+                                replication,
+                                ..
+                            } => {
                                 guard.store_accepted += 1;
+                                guard.store_insert_outcomes.push(insert_outcome_label(*outcome));
+                                guard.store_family_types.push(record.record_type());
+                                if replication.is_some() {
+                                    guard.replication_offered += 1;
+                                } else {
+                                    guard.replication_absent += 1;
+                                }
                             }
                             other => guard
                                 .store_rejected
@@ -622,6 +673,19 @@ async fn run_owner(
     }
 }
 
+/// Categorical insert-outcome label for Plan 302 §12.2 observability.
+/// Variants only; no payloads, no keys.
+fn insert_outcome_label(outcome: i2pr_netdb::ServerInsertOutcome) -> String {
+    match outcome {
+        i2pr_netdb::ServerInsertOutcome::Inserted => "inserted".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Replaced => "replaced".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Idempotent => "idempotent".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Conflict => "conflict".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::Stale => "stale".to_owned(),
+        i2pr_netdb::ServerInsertOutcome::CapacityExceeded => "capacity".to_owned(),
+    }
+}
+
 fn rejection_label(effect: &i2pr_netdb::FloodfillStoreEffect) -> String {
     match effect {
         i2pr_netdb::FloodfillStoreEffect::Disabled => "disabled".to_owned(),
@@ -677,10 +741,11 @@ fn observed_slot() -> Shared {
     })
 }
 
-/// Plan 278 phase 2: the qualification matrix against live exact-pinned i2pd.
-#[tokio::test]
-#[ignore = "requires exact-pinned i2pd 2.61.0 lane environment"]
-async fn floodfill_qualify_against_i2pd() {
+/// Plan 278 phase 2 / Plan 279 Java phase 2: the shared qualification
+/// matrix against live exact-pinned reference peers. The two lane
+/// wrappers below select it by name; the body is identical so both
+/// families face the same rows.
+async fn qualify_matrix() {
     let observed: Shared = std::sync::Arc::new(std::sync::Mutex::new(Observed::default()));
     CURRENT.with(|slot| *slot.borrow_mut() = Some(observed.clone()));
 
@@ -692,17 +757,32 @@ async fn floodfill_qualify_against_i2pd() {
     );
 
     // Matrix A/C/F references: two stock floodfill peers plus one stock client.
+    // Plan 303 §3: only the two floodfill peers are seeded as replication
+    // targets and lookup fixtures. The reference client (C) is deliberately
+    // NOT seeded so its first publication inserts (rather than re-states) and
+    // offers a replication candidate for matrix F. C's record exists in the
+    // NetDB from matrix A onward via its own publisher store, and the matrix
+    // C/E waits below already run after A completes.
     let floodfill_a = load_reference(
-        &env_value("I2PD_FLOODFILL_A_ROUTER_INFO"),
-        &env_value("I2PD_FLOODFILL_A_ENDPOINT"),
+        &ref_env_value(
+            "FLOODFILL_REF_A_ROUTER_INFO",
+            "I2PD_FLOODFILL_A_ROUTER_INFO",
+        ),
+        &ref_env_value("FLOODFILL_REF_A_ENDPOINT", "I2PD_FLOODFILL_A_ENDPOINT"),
     );
     let floodfill_b = load_reference(
-        &env_value("I2PD_FLOODFILL_B_ROUTER_INFO"),
-        &env_value("I2PD_FLOODFILL_B_ENDPOINT"),
+        &ref_env_value(
+            "FLOODFILL_REF_B_ROUTER_INFO",
+            "I2PD_FLOODFILL_B_ROUTER_INFO",
+        ),
+        &ref_env_value("FLOODFILL_REF_B_ENDPOINT", "I2PD_FLOODFILL_B_ENDPOINT"),
     );
     let client = load_reference(
-        &env_value("I2PD_FLOODFILL_C_ROUTER_INFO"),
-        &env_value("I2PD_FLOODFILL_C_ENDPOINT"),
+        &ref_env_value(
+            "FLOODFILL_REF_C_ROUTER_INFO",
+            "I2PD_FLOODFILL_C_ROUTER_INFO",
+        ),
+        &ref_env_value("FLOODFILL_REF_C_ENDPOINT", "I2PD_FLOODFILL_C_ENDPOINT"),
     );
     let client_hash = *i2pr_netdb::router_hash(client.router_identity())
         .expect("client hash")
@@ -712,8 +792,7 @@ async fn floodfill_qualify_against_i2pd() {
     let mut coordinator = new_coordinator(local);
     seed_replica(&mut coordinator, &floodfill_a);
     seed_replica(&mut coordinator, &floodfill_b);
-    seed_replica(&mut coordinator, &client);
-    record("replication-targets-seeded", "count=3");
+    record("replication-targets-seeded", "count=2");
 
     let _activation = activate(&live, &mut coordinator, &persisted).await;
     record("controlled-activation-completed", "peer-test-confirmed");
@@ -732,6 +811,35 @@ async fn floodfill_qualify_against_i2pd() {
         probe_tx,
     ));
     let _ = tokio::time::timeout(POLL_INTERVAL, probe_rx).await;
+
+    // ---- Plan 279 §3 publisher rendezvous --------------------------------
+    // The stock Java publisher needs a live floodfill for its own
+    // exploration before its client session (and LeaseSet) exists, so the
+    // Java lane creates the lane destination only after P signals live.
+    // The runner watches for `p-live`, establishes the lane destination
+    // against live P, then writes `publisher-ready`; matrix A starts
+    // after that. Opt-in via `FLOODFILL_PUBLISHER_SYNC=1` so the proven
+    // i2pd lane (which needs no rendezvous) is byte-identical. Missing
+    // marker at the deadline panics: no marker, no matrix.
+    if std::env::var("FLOODFILL_PUBLISHER_SYNC").as_deref() == Ok("1") {
+        let sync_dir = state_dir().join("publisher-sync");
+        std::fs::create_dir_all(&sync_dir).expect("publisher sync dir");
+        std::fs::write(sync_dir.join("p-live"), b"p-live\n").expect("p-live marker");
+        record("publisher-rendezvous-live", "p-live-signalled");
+        let ready = sync_dir.join("publisher-ready");
+        let deadline = tokio::time::Instant::now() + PUBLISHER_SYNC_TIMEOUT;
+        loop {
+            if ready.exists() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reference publisher never became ready"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+        record("publisher-rendezvous-ready", "publisher-ready-observed");
+    }
 
     // ---- matrix A: publisher store + acknowledgement --------------------
     let stored = wait_for("publisher store from reference client", |seen| {
@@ -760,6 +868,23 @@ async fn floodfill_qualify_against_i2pd() {
         acked.store_ack_failed.is_empty(),
         "acknowledgement delivery failures: {:?}",
         acked.store_ack_failed
+    );
+    // Plan 302 §12.2: recorded right after matrix A so the outcome class and
+    // the offered/absent split survive even if matrix F later stops the lane.
+    record(
+        "publisher-store-insert-outcome",
+        &format!(
+            "outcome={:?} replication_offered={} replication_absent={}",
+            acked.store_insert_outcomes, acked.replication_offered, acked.replication_absent
+        ),
+    );
+    // Plan 279 §3: stored-record families observed so far (type
+    // discriminants only). Recorded early for the same reason.
+    let mut early_families = acked.store_family_types.clone();
+    early_families.sort_unstable();
+    record(
+        "store-record-families",
+        &format!("types={early_families:?}"),
     );
 
     // ---- matrix C/E: lookup hit, miss, exploration -----------------------
@@ -814,6 +939,16 @@ async fn floodfill_qualify_against_i2pd() {
         "replication-tunnel-fallback-absent",
         "zero-token-direct-only",
     );
+    // Plan 279 §3: final stored-record family census for the lane
+    // (type discriminants only: 0 RouterInfo, 1 LeaseSet, 3
+    // LeaseSet2, 7 MetaLeaseSet).
+    let census = share(&observed).clone();
+    let mut families = census.store_family_types.clone();
+    families.sort_unstable();
+    record(
+        "store-record-families-final",
+        &format!("types={families:?}"),
+    );
 
     // ---- teardown: bounded cancel ---------------------------------------
     cancel.cancel(CancellationReason::OperatorRequest);
@@ -831,6 +966,127 @@ async fn floodfill_qualify_against_i2pd() {
         ),
     );
     record("queue-full-drops", &format!("count={}", drained.queue_full));
+}
+
+/// Plan 278 phase 2 entry point: selects the shared matrix for the
+/// exact-pinned i2pd lane.
+#[tokio::test]
+#[ignore = "requires exact-pinned i2pd 2.61.0 lane environment"]
+async fn floodfill_qualify_against_i2pd() {
+    qualify_matrix().await;
+}
+
+/// Plan 279 phase 2 entry point: selects the shared matrix for the
+/// exact-pinned Java I2P 2.13.0 second-family lane.
+#[tokio::test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 floodfill lane environment"]
+async fn floodfill_qualify_against_java() {
+    qualify_matrix().await;
+}
+
+/// Plan 279 phase 3: health withdrawal against the Java lane.
+///
+/// Reloads the same controlled identity, re-activates against the
+/// live Java peers, then drives a real eligibility loss through the
+/// production withdrawal composition: admission stops, the same
+/// qualified address is reinstalled without `caps=f`, and the role
+/// reaches Disabled.
+#[tokio::test]
+#[ignore = "requires exact-pinned Java I2P 2.13.0 floodfill lane environment"]
+async fn floodfill_withdraw_against_java() {
+    let persisted = load_or_create();
+    let local = persisted.bundle.identity().hash().expect("identity hash");
+    record(
+        "controlled-identity-reused",
+        &i2p_b64_encode(local.as_bytes()),
+    );
+
+    let floodfill_a = load_reference(
+        &ref_env_value(
+            "FLOODFILL_REF_A_ROUTER_INFO",
+            "I2PD_FLOODFILL_A_ROUTER_INFO",
+        ),
+        &ref_env_value("FLOODFILL_REF_A_ENDPOINT", "I2PD_FLOODFILL_A_ENDPOINT"),
+    );
+    let floodfill_b = load_reference(
+        &ref_env_value(
+            "FLOODFILL_REF_B_ROUTER_INFO",
+            "I2PD_FLOODFILL_B_ROUTER_INFO",
+        ),
+        &ref_env_value("FLOODFILL_REF_B_ENDPOINT", "I2PD_FLOODFILL_B_ENDPOINT"),
+    );
+
+    let live = start(&persisted).await;
+    let mut coordinator = new_coordinator(local);
+    seed_replica(&mut coordinator, &floodfill_a);
+    seed_replica(&mut coordinator, &floodfill_b);
+    record("replication-targets-seeded", "count=2");
+
+    let activation = activate(&live, &mut coordinator, &persisted).await;
+    record("controlled-activation-completed", "peer-test-confirmed");
+    record(
+        "role-active-after-activation",
+        &format!("{:?}", coordinator.role_state()),
+    );
+
+    // Eligibility loss: resource headroom lapses while every other
+    // signal holds.
+    let mut loss = base_eligibility();
+    loss.resource_headroom = false;
+    i2pr_daemon::floodfill::withdraw_controlled(
+        i2pr_daemon::floodfill::ControlledWithdrawalParams {
+            handle: &live.handle,
+            coordinator: &mut coordinator,
+            bundle: &persisted.bundle,
+            permit: &activation.permit,
+            address: activation.material.address.clone(),
+            snapshot: loss,
+            wall_now_ms: wall_ms(),
+            drain_timeout: Duration::from_secs(30),
+            max_record_age_ms: MAX_RECORD_AGE_MS,
+            cancellation: &CancellationToken::new(),
+        },
+    )
+    .await
+    .expect("controlled withdrawal completes");
+    assert_eq!(
+        coordinator.role_state(),
+        i2pr_netdb::FloodfillRoleState::Disabled
+    );
+    record("role-disabled-after-withdraw", "disabled");
+
+    // The reinstalled record keeps the qualified address without `f`.
+    let installed = live
+        .handle
+        .service()
+        .installed_local_router_info()
+        .expect("installed RouterInfo present");
+    let decoded = i2pr_proto::RouterInfo::decode(&installed, 64 * 1024)
+        .expect("decode withdrawal RouterInfo");
+    let caps = decoded.capabilities().expect("capabilities");
+    assert!(
+        caps.as_ref()
+            .is_none_or(|caps| !caps.as_str().contains('f')),
+        "withdrawal must not advertise f"
+    );
+    record("withdrawal-nonf-republished", "caps-without-f");
+
+    live.shutdown().await;
+}
+
+/// Plan 279 lane tooling: prints the i2p-base64 ident hash of the
+/// RouterInfo file at `$FLOODFILL_IDENT_OF` as `IDENT_B64=<hash>` so the
+/// runner can seed reference netDb file layouts. Test-only, `#[ignore]`-
+/// gated and fail-closed like every other entry here; it satisfies no
+/// matrix row and writes no evidence.
+#[test]
+#[ignore = "test-only ident printer for the floodfill lanes"]
+fn floodfill_ident_of() {
+    let path = env_value("FLOODFILL_IDENT_OF");
+    let raw = std::fs::read(&path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+    let (hash, _) =
+        verify_reference_router_info(&raw).unwrap_or_else(|error| panic!("{path}: {error:?}"));
+    println!("IDENT_B64={}", i2p_b64_encode(hash.as_bytes()));
 }
 
 // ------------------------------------------------------- diagnostic probe

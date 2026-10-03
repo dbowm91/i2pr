@@ -71,8 +71,10 @@ fi
 
 # Controlled floodfill construction stays inside the daemon floodfill owner:
 # only floodfill.rs may reference the permit-gated builder or the
-# explicit-bind qualification recording.
-if rg -n --glob '!floodfill.rs' 'build_floodfill|note_explicit_bind_for_controlled_qualification' "$root/crates/i2pr-daemon/src"; then
+# explicit-bind qualification recording. `build_floodfill` matches the
+# plain, withdrawal, and reachable builders by substring; the
+# reachability-proof mint is named separately and gated the same way.
+if rg -n --glob '!floodfill.rs' 'build_floodfill|note_explicit_bind_for_controlled_qualification|attest_confirmed_peer_test' "$root/crates/i2pr-daemon/src"; then
   echo "floodfill construction authority must stay inside the daemon floodfill owner" >&2
   exit 1
 fi
@@ -89,6 +91,20 @@ rg -q 'pub async fn withdraw_controlled' "$daemon"
 # Plan 283: the withdrawal RouterInfo builder is permit-gated.
 if ! rg -q -U 'pub fn build_floodfill_withdrawal\([^)]*FloodfillAdvertisementPermit' "$netdb/local.rs"; then
   echo "withdrawal RouterInfo builder must require the advertisement permit" >&2
+  exit 1
+fi
+
+# Plan 306 / ADR 0030: the reachable (`fR`) builder requires both the
+# role permit and the peer-test-confirmed reachability proof, so `R`
+# can only be appended beside the decided evidence. The normal path
+# carries no proof and stays `caps=f`.
+if ! rg -q -U 'pub fn build_floodfill_reachable\([^)]*FloodfillAdvertisementPermit[^)]*LoopbackReachabilityProof' "$netdb/local.rs"; then
+  echo "reachable RouterInfo builder must require the permit and the reachability proof" >&2
+  exit 1
+fi
+rg -q 'reachability_proof: None' "$daemon"
+if rg -n 'attest_confirmed_peer_test' "$root/crates/i2pr-daemon/src/config.rs"; then
+  echo "normal config must not mint reachability proof authority" >&2
   exit 1
 fi
 

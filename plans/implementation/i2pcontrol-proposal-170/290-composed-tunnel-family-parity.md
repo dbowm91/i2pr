@@ -73,3 +73,10 @@ Run the existing M10 suite unchanged to prove no regression of current service k
 Plan 290 closes when connectclient, socksirc, httpserver, and httpbidirserver are real bounded backends under the existing ServiceTunnelManager, the ordinary socks profile has the required pinned protocol parity, and all lifecycle actions from Plan 289 work on them.
 
 At closure, ten of the twelve Proposal tunnel families must have real backends. The two Streamr families remain exclusively Plan 291 scope.
+
+
+## ADR 0030 anonymity boundary note
+
+Every new tunnel family in this plan composes over the canonical Destination-group owner from anonymity Plans 309/310. Multiple server families may intentionally share one persistent Destination when their I2P inbound ports are distinct. Multiple client families may intentionally share a client Destination group.
+
+HTTP server and bidirectional HTTP server defaults must not inject hosting-router identity, RouterInfo hash/version, transport address, local hostname/path, or i2pr build identity into backend-facing headers. Any backend header identifying the remote client Destination is opt-in, bounded, spoof-resistant, and clearly distinct from router identity. Plan 307's service-boundary checker/invariants apply to these future families.

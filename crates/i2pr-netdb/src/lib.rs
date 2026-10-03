@@ -42,7 +42,7 @@ pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filenam
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
 pub use floodfill_role::{
     FloodfillAdvertisementPermit, FloodfillEligibilitySnapshot, FloodfillRoleController,
-    FloodfillRoleEffect, FloodfillRoleState, is_qualified_ssu2_address,
+    FloodfillRoleEffect, FloodfillRoleState, LoopbackReachabilityProof, is_qualified_ssu2_address,
 };
 pub use floodfill_service::{
     FloodfillAck, FloodfillIngress, FloodfillLookupEffect, FloodfillReplyIntent, FloodfillRole,

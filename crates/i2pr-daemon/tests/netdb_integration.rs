@@ -156,6 +156,8 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             enabled: false,
             state_dir: data_dir.join("addressbook"),
         },
+        floodfill: i2pr_daemon::config::FloodfillConfig { enabled: false },
+        source_path: None,
     }
 }
 

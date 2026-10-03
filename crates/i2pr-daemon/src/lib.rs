@@ -578,6 +578,118 @@ fn register_addressbook_refresh_service(
         })?;
     Ok(())
 }
+/// Bounded Plan 279 normal-path evaluation period.
+const NORMAL_FLOODFILL_EVALUATION_PERIOD: Duration = Duration::from_secs(30);
+/// Serving-NetDB record age ceiling for the normal path (mirrors the
+/// controlled coordinator default).
+const NORMAL_FLOODFILL_MAX_RECORD_AGE_MS: u64 = 60 * 60 * 1000;
+/// Bounded drain for one normal withdrawal.
+const NORMAL_FLOODFILL_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs one bounded Plan 279 evaluation tick for the router-owned
+/// floodfill state: re-reads operator intent, gathers live signals,
+/// evaluates, and applies the resulting step. Status output is
+/// categorical (requested intent, effective role, reason labels); no
+/// peer identifiers, addresses, or key material are logged.
+async fn run_floodfill_evaluation(
+    state: &mut crate::floodfill::FloodfillServiceState,
+    handle: &crate::router_i2np::Ssu2DaemonHandle,
+    bundle: &RouterIdentityBundle,
+    data_dir: &std::path::Path,
+    config_path: Option<&std::path::Path>,
+    cancellation: &i2pr_runtime::CancellationToken,
+) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0);
+    if let Some(path) = config_path {
+        // The file is a few kilobytes and this runs every 30 s; a
+        // blocking read keeps the daemon's Tokio feature surface
+        // unchanged.
+        match std::fs::read_to_string(path) {
+            Ok(text) => match state.refresh_intent(&text) {
+                Ok(true) => tracing::info!(
+                    requested = state.intent(),
+                    "floodfill operator intent changed; next tick applies it"
+                ),
+                Ok(false) => {}
+                Err(_) => tracing::warn!(
+                    "floodfill config re-read failed to parse; keeping previous intent"
+                ),
+            },
+            Err(_) => {
+                tracing::warn!("floodfill config re-read failed to read; keeping previous intent")
+            }
+        }
+    }
+    let material = handle.service().publication_material(now_ms).ok();
+    let _ = state.maintenance_tick(
+        now_ms,
+        NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
+        crate::floodfill::MAX_FLOODFILL_MAINTENANCE_BATCH,
+    );
+    let readiness = crate::floodfill::NormalReadiness {
+        material: material.as_ref(),
+        wall_now_ms: now_ms,
+        // The serving NetDB is constructed with the state and the
+        // persistent cache passed revalidation in the bootstrap
+        // pipeline before the supervisor started.
+        netdb_ready: true,
+        storage_ready: std::fs::metadata(data_dir).is_ok(),
+        // This tick just ran the maintenance batch above.
+        maintenance_ready: true,
+        resource_headroom: state.check_headroom(),
+        clock_sane: crate::floodfill::is_sane_wall_ms(now_ms),
+        supervision_healthy: !cancellation.is_cancelled(),
+    };
+    match state.evaluate(&readiness) {
+        crate::floodfill::FloodfillServiceStep::Idle => {}
+        crate::floodfill::FloodfillServiceStep::Activate => {
+            match state
+                .apply_activation(handle, bundle, &readiness, cancellation)
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    requested = true,
+                    role = "Active",
+                    "normal floodfill activated"
+                ),
+                Err(error) => tracing::warn!(
+                    requested = true,
+                    role = "Failed",
+                    reason = %error,
+                    "normal floodfill activation failed closed"
+                ),
+            }
+        }
+        crate::floodfill::FloodfillServiceStep::Withdraw => {
+            match state
+                .apply_withdrawal(
+                    handle,
+                    bundle,
+                    now_ms,
+                    NORMAL_FLOODFILL_DRAIN_TIMEOUT,
+                    NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
+                    cancellation,
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    requested = state.intent(),
+                    role = "Disabled",
+                    "normal floodfill withdrew"
+                ),
+                Err(error) => tracing::warn!(
+                    requested = state.intent(),
+                    reason = %error,
+                    "normal floodfill withdrawal failed; role stays Draining for retry"
+                ),
+            }
+        }
+    }
+}
+
 /// Registers the supervised loopback SSU2 router service in the
 /// supplied builder. Plan 184 owns the first daemon activation of
 /// the existing SSU2 runtime under the strict controlled profile
@@ -599,6 +711,8 @@ fn register_ssu2_service(
     use crate::transit_owner::controlled_transit_disabled_probe;
     let ssu2_config = config.ssu2.clone();
     let data_dir = config.router.data_dir.clone();
+    let floodfill_enabled = config.floodfill.enabled;
+    let floodfill_config_path = config.source_path.clone();
     let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
     let inspection = Arc::clone(inspection);
     builder
@@ -609,6 +723,7 @@ fn register_ssu2_service(
                 let ssu2_config = ssu2_config.clone();
                 let data_dir = data_dir.clone();
                 let inspection = Arc::clone(&inspection);
+                let floodfill_config_path = floodfill_config_path.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 Box::pin(async move {
@@ -734,6 +849,65 @@ fn register_ssu2_service(
                     // unbounded retention. Outcomes are classified and
                     // dropped; Plan 185/186 own the live tunnel/NetDB
                     // hooks. Cancellation drains orderly.
+                    //
+                    // Plan 279: when the operator opts into normal
+                    // floodfill, the router service additionally owns a
+                    // FloodfillServiceState next to the socket. The
+                    // role starts Disabled with an empty serving NetDB
+                    // and evaluates upward from there on a bounded
+                    // tick; inbound control traffic routes through the
+                    // coordinator only while the role is Active,
+                    // otherwise the dispatcher below owns the message
+                    // exactly as before. On a loopback-only tree the
+                    // address gate keeps the role Disabled by
+                    // construction, so the branch is inert there.
+                    let local_hash = match bundle.identity().hash() {
+                        Ok(hash) => hash,
+                        Err(error) => {
+                            let detail = i2pr_core::HealthDetail::new(format!(
+                                "floodfill local hash unavailable: {error}"
+                            ))
+                            .ok();
+                            return i2pr_runtime::ServiceResult::Failed(
+                                i2pr_core::ServiceFailure::new(
+                                    i2pr_core::ServiceFailureCategory::InvalidState,
+                                    detail,
+                                ),
+                            );
+                        }
+                    };
+                    let mut floodfill = if floodfill_enabled {
+                        match crate::floodfill::FloodfillServiceState::new(local_hash, true) {
+                            Ok(state) => {
+                                tracing::info!(
+                                    requested = true,
+                                    role = "Disabled",
+                                    "normal floodfill opted in; evaluating eligibility"
+                                );
+                                Some(state)
+                            }
+                            Err(error) => {
+                                let detail = i2pr_core::HealthDetail::new(format!(
+                                    "floodfill service state failed: {error:?}"
+                                ))
+                                .ok();
+                                return i2pr_runtime::ServiceResult::Failed(
+                                    i2pr_core::ServiceFailure::new(
+                                        i2pr_core::ServiceFailureCategory::InvalidState,
+                                        detail,
+                                    ),
+                                );
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let mut evaluation = tokio::time::interval(
+                        NORMAL_FLOODFILL_EVALUATION_PERIOD,
+                    );
+                    evaluation
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let pump_started = tokio::time::Instant::now();
                     let token = cancellation.clone();
                     loop {
                         tokio::select! {
@@ -750,20 +924,61 @@ fn register_ssu2_service(
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
                                     .unwrap_or(0);
-                                // Bounded dispatch: success and failure
-                                // both release the inbound bytes with the
-                                // call frame. Unsupported bodies are an
-                                // explicit disposition, not an error.
-                                // Controlled transit stays disabled in
-                                // ordinary product profiles: the live
-                                // transit owner is consulted only as a
-                                // disabled probe so the production
-                                // caller references the live-owner
-                                // module without dispatching.
-                                if let Ok(outcome) =
-                                    dispatch_router_i2np(&inbound, now_ms)
-                                {
-                                    let _ = controlled_transit_disabled_probe(&outcome);
+                                let mut served = false;
+                                if let Some(state) = floodfill.as_mut() {
+                                    let time = i2pr_netdb::FloodfillTime {
+                                        wall_ms: now_ms,
+                                        monotonic_ms: pump_started
+                                            .elapsed()
+                                            .as_millis()
+                                            .min(u128::from(u64::MAX))
+                                            as u64,
+                                    };
+                                    match state.handle_inbound(&inbound, time) {
+                                        Ok(crate::floodfill::FloodfillDispatchOutcome::Ignored(_)) => {}
+                                        Ok(_) => {
+                                            state
+                                                .drain_effects(
+                                                    &handle,
+                                                    now_ms,
+                                                    NORMAL_FLOODFILL_MAX_RECORD_AGE_MS,
+                                                    &token,
+                                                )
+                                                .await;
+                                            served = true;
+                                        }
+                                        Err(_) => {}
+                                    }
+                                }
+                                if !served {
+                                    // Bounded dispatch: success and failure
+                                    // both release the inbound bytes with the
+                                    // call frame. Unsupported bodies are an
+                                    // explicit disposition, not an error.
+                                    // Controlled transit stays disabled in
+                                    // ordinary product profiles: the live
+                                    // transit owner is consulted only as a
+                                    // disabled probe so the production
+                                    // caller references the live-owner
+                                    // module without dispatching.
+                                    if let Ok(outcome) =
+                                        dispatch_router_i2np(&inbound, now_ms)
+                                    {
+                                        let _ = controlled_transit_disabled_probe(&outcome);
+                                    }
+                                }
+                            }
+                            _ = evaluation.tick() => {
+                                if let Some(state) = floodfill.as_mut() {
+                                    run_floodfill_evaluation(
+                                        state,
+                                        &handle,
+                                        &bundle,
+                                        &data_dir,
+                                        floodfill_config_path.as_deref(),
+                                        &token,
+                                    )
+                                    .await;
                                 }
                             }
                         }

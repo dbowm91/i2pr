@@ -128,3 +128,10 @@ Required tests:
 Plan 289 closes when the seven lifecycle actions are real over one M10 ServiceTunnelManager for the six existing families, durable state is recoverable, ownership provenance is enforced, and unsupported Proposal families fail before resource allocation.
 
 Plans 290 and 291 become ready in parallel after closure.
+
+
+## ADR 0030 integration note
+
+This blocked plan must consume, not redefine, the Destination-group owner registered by anonymity Plan 309. TunnelManager lifecycle actions operate on service definitions plus explicit Destination-group references. Dedicated service configuration is shorthand for an implicit group; explicit groups may be shared across several client services or server services.
+
+The control plane must not create one hidden Destination per controlled service when the persisted definition references a shared group. Group persistence, server-port uniqueness, linkability warnings, and graceful lifecycle state remain owned by the canonical service/anonymity implementation. TunnelManager exposes and mutates those definitions transactionally.

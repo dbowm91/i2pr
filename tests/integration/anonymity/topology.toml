@@ -1,0 +1,30 @@
+schema = 1
+plan = 304
+network = "loopback-only"
+external_reseed = false
+public_i2p_participation = false
+evidence_schema = "streaming-fingerprint-tsv-v1"
+http_corpus = "http-corpus.toml"
+streaming_scenarios = "streaming-scenarios.toml"
+
+[fixture]
+destination = "controlled-fixture"
+identity_lifetime = "one-evidence-set"
+capture_alias = "<FIXTURE_B32>"
+
+[families.i2pr]
+reference = "current-worktree-head"
+datadir = "fresh-per-run"
+runner = "scripts/interop/anonymity/run-family-smoke.sh"
+
+[families.i2pd]
+version = "2.61.0"
+commit = "635b013a612ff47278ef02acf8580a28e10e26c5"
+datadir = "fresh-per-run"
+runner = "scripts/interop/anonymity/run-family-smoke.sh"
+
+[families.java_i2p]
+version = "2.13.0"
+commit = "9134f808337b401e8e53c73734c81fab04280c9d"
+datadir = "fresh-per-run"
+runner = "scripts/interop/anonymity/run-family-smoke.sh"

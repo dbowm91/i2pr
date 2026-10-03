@@ -141,8 +141,10 @@ missing requirement. Do not grow an open-ended external harness chain.
 | 278 | stopped | stopped-m12-reference-client-rejects-the-controlled-routerinfo-before-any-matrix-row | plans/implementation/floodfill/278-m12-i2pd-controlled-qualification.md | plans/closure/floodfill/278-status.md |
 | 284 | ready | registered-m12-controlled-publication-reference-acceptance-corrective |
 | 285 | retained | retained-m12-peer-testing-implemented-and-declared-pending-mixed-router-evidence | plans/implementation/floodfill/285-m12-peer-testing-i2np-surface-and-version-declaration.md | future |
-| 302 | ready | registered-m12-floodfill-reply-wire-form-and-replication-corrective | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | future |
-| 279 | blocked | registered-m12-full-advertisement-blocked-on-plan278 | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | future |
+| 302 | passed | passed-m12-floodfill-reply-wire-form-and-replication-answered | plans/implementation/floodfill/302-m12-floodfill-reply-wire-form-and-replication-corrective.md | plans/closure/floodfill/302-status.md |
+| 303 | passed | passed-m12-matrix-execution-with-unseeded-publisher-trigger | plans/implementation/floodfill/303-m12-matrix-execution-with-unseeded-publisher-trigger.md | plans/closure/floodfill/303-status.md |
+| 279 | stopped | stopped-m12-java-never-initiates-to-caps-f-only-controlled-ri | plans/implementation/floodfill/279-m12-second-family-qualification-and-activation.md | plans/closure/floodfill/279-status.md |
+| 306 | stopped | stopped-m12-java-requires-bandwidth-tier-beyond-reviewed-fR | plans/implementation/floodfill/306-m12-loopback-reachability-caps-and-java-requalification.md | plans/closure/floodfill/306-status.md |
 | 280 | stopped | stopped-no-acceptable-maintained-i2p-red25519-provider | plans/implementation/floodfill/280-m12-red25519-provider-qualification.md | plans/closure/floodfill/280-status.md |
 | 281 | passed | passed-m12-record-floor-corrected-type5-deferred | plans/implementation/floodfill/281-m12-encrypted-leaseset-floor-correction.md | plans/closure/floodfill/281-status.md |
 
@@ -166,7 +168,7 @@ missing requirement. Do not grow an open-ended external harness chain.
 - Floodfill work is lower priority than router-owned/client work and participates in global
   resource governance.
 - caps=f follows readiness and health; configuration alone cannot create advertisement.
-- Broad normal-daemon advertisement remains unavailable until Plan 279 satisfies ADR 0026.
+- Broad normal-daemon advertisement remains unavailable until the second-family gate passes (Plans 279 and 306 stopped; reopen needs a truthful bandwidth-class design).
 
 ## 9. Verification strategy
 
@@ -241,14 +243,42 @@ pinned to that surface by a test that fails if the claim outruns the implementat
 closes **retained**: the `specs/CONFORMANCE.md` mixed-router step is unmet and needs one
 bounded exact-pinned external attempt, so Plan 278 is unblocked to `ready` but no external
 row is claimed.
-Plan 279 remains blocked; Plan 280 remains stopped pending a separately reviewed
+Plan 279 stopped after three frozen-budget Java attempts at the caps-gated
+initiation boundary (see `plans/closure/floodfill/279-status.md`); Plan 280
+remains stopped pending a separately reviewed
 I2P-compatible Red25519 provider.
 
 The post-284/285 bounded attempt ran and spent Plan 278's frozen budget. It closed both
 admission gates live (the reference client loads the controlled record as its only
 floodfill, publishes to i2pr, 18 lookups flow) but stopped at matrix F on two findings
-(278-status §11–§12, owned by ready Plan 302): every floodfill reply is dropped by the
-reference as expired because `encode_standard` writes the 16-byte standard header while
+(278-status §11–§12, owned by Plan 302): every floodfill reply is dropped by the
+reference as expired because the old encoder wrote the 16-byte standard header while
 the SSU2 session layer reads the 9-byte short-transport form (proven wire defect), and
 no `DirectFlood` was planned for the accepted store (open: idempotent insert vs empty
 plan). Zero matrix rows claimed.
+
+Plan 302 passed on head `389846f`: the outer floodfill encoding is now
+short-transport (inner clove stays standard), and the single fresh-budget attempt
+proves it live — the reference logs `Publishing confirmed`, zero expired drops
+for i2pr-sent messages, lookup record answers consumed (hits 0→2). The §12.2
+question is answered both locally and live: the publisher store is an idempotent
+re-publication of the seeded client key (`outcome=["idempotent"]`,
+`replication_offered=0`), so no replication is offered by design. Matrix F is
+structurally unpassable while the lane seeds the publisher key; ready Plan 303
+owns the single trigger change (seed A/B only) plus matrix A–I execution.
+Plan 279 executed after the Plan 303 pass and stopped as recorded above.
+
+Plan 303 passed on head `c069e6c`: with the single lane change (seed A/B
+only, driver-only diff), the one fresh-budget attempt passes all 10 matrix
+rows — the publisher store inserts with replication offered, 4 zero-token
+direct replica stores land, the reference confirms the publish with zero
+expired drops, and all 7 lookups are answered. The one-family (i2pd 2.61.0)
+controlled matrix is closed. Plan 279 executed its three frozen-budget Java
+attempts and stopped at the publisher rendezvous on all three (stock Java
+loads, verifies, and floodfill-lists the controlled RI but never initiates
+transport to it); its lane, rendezvous, relay mesh, census, withdrawal, and
+evidence checker are retained. Plan 306 decided the reachability caps
+(ADR 0030), requalified i2pd on the fR record, and stopped at the
+bandwidth-tier selection boundary (no executable in-bounds next step;
+reopen needs a truthful bandwidth-class design). Plan 278 stays
+stopped as history.

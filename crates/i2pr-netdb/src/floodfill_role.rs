@@ -161,6 +161,36 @@ impl std::fmt::Debug for FloodfillAdvertisementPermit {
     }
 }
 
+/// Opaque proof that a controlled peer-test exchange confirmed inbound
+/// reachability of the advertised bound address (Plan 306, ADR 0030).
+///
+/// The token carries no evidence itself: only the controlled activation
+/// owner may mint it, and only beside a
+/// `ControlledPeerTestOutcome::Confirmed` for the exact bound address
+/// being advertised (mint site confined by
+/// `scripts/check-m12-floodfill-boundaries.sh`, mirroring the
+/// advertisement permit). Unit tests mint it freely to prove the
+/// builder's admission shape.
+#[derive(Clone)]
+pub struct LoopbackReachabilityProof {
+    _sealed: (),
+}
+
+impl LoopbackReachabilityProof {
+    /// Attests a confirmed controlled peer-test exchange for the
+    /// advertised bound address. Callers outside the controlled
+    /// activation owner must not call this (boundary-script-gated).
+    pub fn attest_confirmed_peer_test() -> Self {
+        Self { _sealed: () }
+    }
+}
+
+impl std::fmt::Debug for LoopbackReachabilityProof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoopbackReachabilityProof(..)")
+    }
+}
+
 /// Validates the final RouterAddress style at the typed advertisement boundary.
 pub fn is_qualified_ssu2_address(address: &RouterAddress) -> bool {
     if address.transport_style() != "SSU2" {
