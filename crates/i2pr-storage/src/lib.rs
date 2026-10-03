@@ -1,7 +1,7 @@
 //! Permission-hardened persistence for the local router identity,
-//! Plan 175 persistent service destinations, and the bounded
-//! raw-byte cache seam used by the Plan 104 NetDB composition
-//! owner.
+//! Plan 175 persistent service destinations, the Plan 294 address-book
+//! generation adapter, and the bounded raw-byte cache seam used by the
+//! Plan 104 NetDB composition owner.
 //!
 //! The identity format is intentionally independent of Rust layout and serde.
 //! Version 2 stores the two private seeds, their derived public keys,
@@ -29,6 +29,12 @@ use rand_core::TryCryptoRng;
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+pub mod address_book_generation;
+pub use address_book_generation::{
+    ADDRESSBOOK_BACKUP_FILE_NAME, ADDRESSBOOK_CURRENT_FILE_NAME, ADDRESSBOOK_STATE_SUBDIR,
+    MAX_ADDRESSBOOK_GENERATION_FILE_SIZE, AddressBookGenerationStore,
+    AddressBookGenerationStorageError,
+};
 pub mod service_destination;
 pub use service_destination::{
     MAX_SERVICE_DESTINATION_FILE_SIZE, SERVICE_DESTINATION_FILE_NAME,
