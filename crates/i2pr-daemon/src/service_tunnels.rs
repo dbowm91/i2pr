@@ -7260,6 +7260,95 @@ mod plan212_router_backed_service_destination_tests {
         assert_eq!(changed, vec![0x9232]);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn plan315_pool_snapshot_uses_only_current_inbound_leases_and_fails_closed_below_minimum()
+    {
+        let directory = temp_data_dir("plan315-pool-lease-snapshot");
+        let manager = make_manager_with_one_server(directory.path(), "plan315-pool-snapshot");
+        let runtimes = manager.prepare().await.expect("prepare");
+        let destination_id = runtimes[0].destination_id;
+        let now_ms = test_now_ms();
+        let material = test_router_material(&manager, destination_id, 0x7151, 0x9251, now_ms);
+        manager
+            .install_service_router_material(destination_id, material, now_ms)
+            .expect("install initial group snapshot");
+
+        let (identity, now_seconds) = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                (
+                    bridge.identity(),
+                    u32::try_from(now_ms / 1000).expect("time"),
+                )
+            })
+            .expect("group bridge");
+        let expires_at = u64::from(now_seconds).saturating_add(600);
+        let sources = [
+            InboundLeaseSource::from_parts(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(51),
+                i2pr_proto::Hash::from_bytes([0xD5; 32]),
+                0x9251,
+                expires_at,
+                expires_at.saturating_sub(60),
+            ),
+            InboundLeaseSource::from_parts(
+                i2pr_tunnel::pool::TunnelSlot::from_raw(52),
+                i2pr_proto::Hash::from_bytes([0xD6; 32]),
+                0x9252,
+                expires_at,
+                expires_at.saturating_sub(60),
+            ),
+        ];
+        let lease_set = build_signed_lease_set2(&identity, &sources, now_seconds)
+            .expect("two current pool sources produce a signed LeaseSet");
+        let validated = ValidatedLeaseSet2::from_lease_set2(
+            lease_set.clone(),
+            Some(identity.id().as_netdb_key()),
+            LeaseSet2ValidationContext::new(now_seconds),
+        )
+        .expect("signed group LeaseSet validates");
+        manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.refresh_router_pool_snapshot(
+                    Some((lease_set, validated)),
+                    vec![0x9251, 0x9252],
+                    expires_at.saturating_mul(1000),
+                    now_ms,
+                )
+            })
+            .expect("group bridge")
+            .expect("current pool snapshot installs");
+
+        let current = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                (
+                    bridge.router_ls2_for_publication(),
+                    bridge.router_inbound_receive_ids(),
+                    bridge.has_router_network_state(now_ms),
+                )
+            })
+            .expect("group bridge");
+        assert_eq!(current.0.expect("current LS2").leases().len(), 2);
+        assert_eq!(current.1, vec![0x9251, 0x9252]);
+        assert!(current.2, "usable group material remains available");
+
+        manager
+            .with_destination_bridge(destination_id, |bridge| {
+                bridge.refresh_router_pool_snapshot(None, Vec::new(), now_ms, now_ms)
+            })
+            .expect("group bridge")
+            .expect("below-minimum snapshot is recorded");
+        let unavailable = manager
+            .with_destination_bridge(destination_id, |bridge| {
+                (
+                    bridge.has_router_network_state(now_ms.saturating_add(1)),
+                    bridge.router_inbound_receive_ids(),
+                )
+            })
+            .expect("group bridge");
+        assert!(!unavailable.0, "below-minimum pool fails closed");
+        assert!(unavailable.1.is_empty(), "no stale inbound owner survives");
+    }
+
     /// Plan 212 §17.2 — mismatched identity fails.
     #[tokio::test(flavor = "current_thread")]
     async fn plan212_install_rejects_mismatched_identity() {

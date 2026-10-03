@@ -1927,6 +1927,92 @@ mod tests {
     }
 
     #[test]
+    fn destination_pending_builds_are_counted_by_direction_and_cancelled_by_owner() {
+        fn pending(
+            destination_id: DestinationId,
+            direction: BuildDirection,
+            attempt_raw: u64,
+        ) -> PendingBuild {
+            let peers = (0..3)
+                .map(|index| PeerBuildMaterial {
+                    router_hash: Hash::from_bytes([0x40 + index; 32]),
+                    static_encryption_key: [0x50 + index; 32],
+                    receive_tunnel: TunnelId::new(0x7400 + index as u32).expect("receive"),
+                    next_tunnel: TunnelId::new(0x7500 + index as u32).expect("next"),
+                    role: match (direction, index) {
+                        (BuildDirection::Outbound, 2) => HopRole::OutboundEndpoint,
+                        (BuildDirection::Inbound, 0) => HopRole::InboundGateway,
+                        _ => HopRole::Participant,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let request = DestinationBuildRequest {
+                destination_id,
+                direction,
+                peers,
+                creator_tunnel_id: TunnelId::new(0x7600 + attempt_raw as u32).expect("creator"),
+                message_id: 0x7700 + attempt_raw as u32,
+                outbound_reply_router: (direction == BuildDirection::Outbound)
+                    .then_some(Hash::from_bytes([0x78; 32])),
+                originator_hash: (direction == BuildDirection::Inbound)
+                    .then_some(Hash::from_bytes([0x79; 32])),
+            };
+            let path_request = BuildPathRequest::from(request);
+            let attempt_id = BuildAttemptId::new(attempt_raw);
+            let path = short_build_path(&path_request, attempt_id, 1_000);
+            let target_peer = PeerId::from_hash(path.hops[0].router_hash());
+            let message_id = path.next_message_id;
+            PendingBuild {
+                attempt_id,
+                direction,
+                destination_id: Some(destination_id),
+                target_peer,
+                deadline_ms: 60_000,
+                message_id,
+                next_tunnel: TunnelId::new(0x7A00 + attempt_raw as u32).expect("next tunnel"),
+                garlic_key: None,
+                garlic_tag: None,
+                state: ShortBuildStateMachine::new(path, 60_000),
+            }
+        }
+
+        let group_a = DestinationId::from_hash(Hash::from_bytes([0x31; 32]));
+        let group_b = DestinationId::from_hash(Hash::from_bytes([0x32; 32]));
+        let mut coordinator = ExploratoryBuildCoordinator::new(ExploratoryPoolConfig::balanced());
+        coordinator.pending.insert(
+            BuildAttemptId::new(1),
+            pending(group_a, BuildDirection::Inbound, 1),
+        );
+        coordinator.pending.insert(
+            BuildAttemptId::new(2),
+            pending(group_a, BuildDirection::Outbound, 2),
+        );
+        coordinator.pending.insert(
+            BuildAttemptId::new(3),
+            pending(group_b, BuildDirection::Inbound, 3),
+        );
+
+        assert_eq!(coordinator.pending_destination_len(group_a), 2);
+        assert_eq!(
+            coordinator.pending_destination_direction_len(group_a, BuildDirection::Inbound),
+            1
+        );
+        assert_eq!(
+            coordinator.pending_destination_direction_len(group_a, BuildDirection::Outbound),
+            1
+        );
+        let cancelled = coordinator.cancel_destination_builds(group_a);
+        assert_eq!(cancelled.len(), 2);
+        assert_eq!(coordinator.pending_len(), 1);
+        assert_eq!(coordinator.pending_destination_len(group_b), 1);
+        assert!(cancelled.iter().all(|outcome| matches!(
+            outcome,
+            BuildCoordinatorOutcome::DestinationBuildCancelled { destination_id, .. }
+                if *destination_id == group_a
+        )));
+    }
+
+    #[test]
     fn selected_destination_order_is_preserved_into_shared_short_build_path() {
         let candidates = vec![
             crate::destination_peers::test_candidate(701, "family-a", "10.1.1.1", 1201),
