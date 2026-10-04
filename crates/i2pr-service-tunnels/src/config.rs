@@ -49,6 +49,10 @@ pub const MAX_WRITE_TIMEOUT_MS: u64 = 600_000;
 pub const MIN_SHUTDOWN_TIMEOUT_MS: u64 = 1_000;
 /// Maximum shutdown deadline in milliseconds.
 pub const MAX_SHUTDOWN_TIMEOUT_MS: u64 = 30_000;
+/// Proposal 170's active `ConnectDelay` default, selected by its boolean.
+pub const DEFAULT_STREAMING_CONNECT_DELAY_MS: u64 = 500;
+/// Hard bound for a deferred Streaming connect before an empty SYN is sent.
+pub const MAX_STREAMING_CONNECT_DELAY_MS: u64 = 5_000;
 
 /// A validated service tunnel identifier.
 ///
@@ -541,6 +545,9 @@ pub struct ServiceTimeouts {
     pub write_timeout_ms: u64,
     /// Shutdown/drain deadline in milliseconds.
     pub shutdown_timeout_ms: u64,
+    /// Optional deferred-connect delay for generic client tunnels.
+    /// `None` means initiate the SYN immediately.
+    pub streaming_connect_delay_ms: Option<u64>,
 }
 
 impl ServiceTimeouts {
@@ -551,6 +558,7 @@ impl ServiceTimeouts {
             read_timeout_ms: 60_000,
             write_timeout_ms: 60_000,
             shutdown_timeout_ms: 5_000,
+            streaming_connect_delay_ms: None,
         }
     }
 
@@ -579,6 +587,15 @@ impl ServiceTimeouts {
             return Err(ServiceTunnelError::ExceedsCeiling {
                 field: "shutdown_timeout_ms",
                 reason: "must be within 1000..=30000",
+            });
+        }
+        if self
+            .streaming_connect_delay_ms
+            .is_some_and(|delay| delay == 0 || delay > MAX_STREAMING_CONNECT_DELAY_MS)
+        {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "streaming_connect_delay_ms",
+                reason: "must be within 1..=5000 or absent",
             });
         }
         Ok(self)
@@ -977,6 +994,14 @@ impl ServiceTunnelSpec {
             });
         }
         self.timeouts.validate()?;
+        if self.timeouts.streaming_connect_delay_ms.is_some()
+            && self.kind != ServiceTunnelKind::GenericClient
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: self.id.as_str().to_owned(),
+                reason: "streaming connect delay applies to generic client tunnels only",
+            });
+        }
         TunnelShaping::try_new(
             self.shaping.inbound_quantity,
             self.shaping.outbound_quantity,

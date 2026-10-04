@@ -916,6 +916,36 @@ pub fn install_packet_signature(
     Ok(offset)
 }
 
+/// Installs a Streaming signature into its decoded absolute wire
+/// location. Unlike [`install_packet_signature`], this supports packets
+/// with payload after the option block (for example an initial SYN that
+/// carries application bytes).
+#[allow(clippy::result_large_err)]
+pub fn install_packet_signature_at(
+    wire: &mut [u8],
+    location: SignatureLocation,
+    signature: &[u8],
+) -> Result<usize, StreamingPacketError> {
+    if signature.is_empty() || signature.len() != location.length {
+        return Err(StreamingPacketError::SignatureLengthMismatch {
+            expected: location.length,
+            actual: signature.len(),
+        });
+    }
+    let end = location
+        .offset
+        .checked_add(location.length)
+        .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+    if end > wire.len() {
+        return Err(StreamingPacketError::Truncated);
+    }
+    if wire[location.offset..end].iter().any(|byte| *byte != 0) {
+        return Err(StreamingPacketError::SignatureInvalid);
+    }
+    wire[location.offset..end].copy_from_slice(signature);
+    Ok(location.offset)
+}
+
 /// Builder input for [`encode_streaming_packet`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamingPacketBuilder {

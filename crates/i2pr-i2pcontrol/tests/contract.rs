@@ -972,6 +972,7 @@ fn plan289_tunnel_request_envelope_rules() {
         "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
         "Profile": "interactive", "AllowUserAgent": true,
         "AllowReferer": false, "AllowAccept": false, "AllowInternalSSL": true,
+        "ConnectDelay": true,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -1018,6 +1019,10 @@ fn plan289_tunnel_request_envelope_rules() {
             .options
             .get("allow_internal_ssl")
             .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("connect_delay").map(String::as_str),
         Some("true")
     );
     let idle_options = decode_tunnel_request(&params(serde_json::json!({

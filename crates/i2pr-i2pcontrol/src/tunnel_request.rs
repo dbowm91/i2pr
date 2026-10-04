@@ -121,6 +121,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Shared" => Some("shared"),
         "PersistentClientKey" => Some("persistent_client_key"),
         "NewDest" => Some("new_dest"),
+        "ConnectDelay" => Some("connect_delay"),
         "AccessOption" => Some("access_option"),
         "JumpList" => Some("jump_list"),
         "TargetHost" | "Host" => Some("target_host"),
@@ -336,6 +337,7 @@ pub fn decode_tunnel_request(
                         | "AllowReferer"
                         | "AllowAccept"
                         | "AllowInternalSSL"
+                        | "ConnectDelay"
                         | "BlockUserAgents"
                         | "BlockAccessInProxies"
                         | "BlockReferers"
@@ -348,6 +350,7 @@ pub fn decode_tunnel_request(
                         "AllowReferer" => "allow_referer",
                         "AllowAccept" => "allow_accept",
                         "AllowInternalSSL" => "allow_internal_ssl",
+                        "ConnectDelay" => "connect_delay",
                         "BlockUserAgents" => "block_user_agents",
                         "BlockAccessInProxies" => "block_access_in_proxies",
                         _ => "block_referers",

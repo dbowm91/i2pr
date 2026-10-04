@@ -61,6 +61,7 @@ use i2pr_storage::{
 use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
@@ -4521,10 +4522,30 @@ async fn run_client_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
     target: ClientTarget,
-    stream: TcpStream,
+    mut stream: TcpStream,
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
+    let connect_delay_ms = lookup_streaming_connect_delay(&manager, &runtime.spec_id);
+    let mut initial_payload = Vec::new();
+    if let Some(delay_ms) = connect_delay_ms {
+        let mut buffer = vec![0u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)];
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
+        while initial_payload.len() < buffer.len() {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match timeout(remaining, stream.read(&mut buffer[initial_payload.len()..])).await {
+                Ok(Ok(0)) => break,
+                Ok(Ok(count)) => initial_payload.extend_from_slice(
+                    &buffer[initial_payload.len()..initial_payload.len() + count],
+                ),
+                Ok(Err(error)) => return Err(Box::new(error)),
+                Err(_) => break,
+            }
+        }
+    }
     let identity_arc =
         manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity());
     let Some(identity_arc) = identity_arc else {
@@ -4537,12 +4558,13 @@ async fn run_client_connection(
         let mut os_rng = OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
         manager.with_destination_bridge(runtime.destination_id, |bridge| {
-            bridge.streaming_mut().connect(
+            bridge.streaming_mut().connect_with_initial_payload(
                 identity_arc.as_ref(),
                 &target.remote,
                 0,
                 0,
                 DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                &initial_payload,
                 service_streaming_now_ms(),
                 &mut rng,
             )
@@ -4651,6 +4673,16 @@ fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 
         .find(|spec| spec.id.as_str() == spec_id)
         .map(|spec| spec.timeouts.connect_timeout_ms)
         .unwrap_or(10_000)
+}
+
+fn lookup_streaming_connect_delay(manager: &ServiceTunnelManager, spec_id: &str) -> Option<u64> {
+    manager
+        .config()
+        .specs
+        .tunnels
+        .iter()
+        .find(|spec| spec.id.as_str() == spec_id)
+        .and_then(|spec| spec.timeouts.streaming_connect_delay_ms)
 }
 
 /// Streaming pump endpoint adapted to one service-tunnel destination.

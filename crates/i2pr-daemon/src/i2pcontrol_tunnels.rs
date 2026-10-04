@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 18] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 19] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -168,6 +168,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 18] = [
     "persistent_client_key",
     "access_option",
     "new_dest",
+    "connect_delay",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -925,6 +926,7 @@ pub fn build_control_spec(
     let mut persistent_client_key = false;
     let mut persistent_client_key_declared: Option<bool> = None;
     let mut proposal_new_dest: Option<u8> = None;
+    let mut connect_delay = false;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -1027,6 +1029,15 @@ pub fn build_control_spec(
                     });
                 }
                 proposal_new_dest = Some(mode);
+            }
+            "connect_delay" => {
+                if kind != ServiceTunnelKind::GenericClient {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "ConnectDelay applies to generic client tunnels only",
+                    });
+                }
+                connect_delay = parse_bool_option(key, value)?;
             }
             "description" => {
                 // Description is control-plane metadata: its authoritative
@@ -2122,6 +2133,11 @@ pub fn build_control_spec(
         }
         _ => (None, None, None, None, None),
     };
+    let mut timeouts = i2pr_service_tunnels::ServiceTimeouts::defaults();
+    if connect_delay {
+        timeouts.streaming_connect_delay_ms =
+            Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS);
+    }
     let spec = ServiceTunnelSpec {
         id,
         kind,
@@ -2145,7 +2161,7 @@ pub fn build_control_spec(
         inbound_port: None,
         max_connections,
         max_buffered_bytes_per_direction: 65_536,
-        timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+        timeouts,
         shaping,
         streaming_interactive: profile_interactive,
         idle,
@@ -4092,6 +4108,35 @@ mod tests {
             };
             assert!(build_control_spec(&definition).is_err());
         }
+    }
+
+    #[test]
+    fn plan323_connect_delay_has_bounded_generic_client_owner() {
+        let definition = ControlDefinition {
+            name: "delayed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("connect_delay".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("generic client spec");
+        assert_eq!(
+            spec.timeouts.streaming_connect_delay_ms,
+            Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS)
+        );
+
+        let invalid = ControlDefinition {
+            name: "delayed-http".to_owned(),
+            tunnel_type: TunnelType::HttpClient,
+            options: BTreeMap::from([("connect_delay".to_owned(), "true".to_owned())]),
+            start_on_load: false,
+        };
+        assert!(build_control_spec(&invalid).is_err());
     }
 
     #[test]
