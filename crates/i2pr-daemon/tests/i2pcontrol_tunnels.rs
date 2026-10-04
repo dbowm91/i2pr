@@ -343,7 +343,10 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         info["rawConfig"]["description"],
         serde_json::json!("I2PControl managed test tunnel")
     );
-    assert_eq!(info["rawConfig"]["maxConcurrentConns"], serde_json::json!(24));
+    assert_eq!(
+        info["rawConfig"]["maxConcurrentConns"],
+        serde_json::json!(24)
+    );
     assert_eq!(info["persistentClientKey"], serde_json::json!(false));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
     assert!(

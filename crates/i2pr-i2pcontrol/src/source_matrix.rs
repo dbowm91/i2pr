@@ -237,8 +237,7 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("differential_corpus_against_production_composition"),
         ),
-        "i2p.router.net.tunnels.successrate"
-        | "i2p.router.net.tunnels.totalsuccessrate" => (
+        "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate" => (
             "ControlMetrics tunnel-build outcomes",
             "latest interval ratio / cumulative ratio; unavailable until attempted > 0",
             0,

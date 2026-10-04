@@ -432,8 +432,7 @@ impl ControlMetrics {
                 return;
             }
             if attempted_delta > 0 && succeeded_delta <= attempted_delta {
-                state.recent_success_rate =
-                    Some(succeeded_delta as f64 / attempted_delta as f64);
+                state.recent_success_rate = Some(succeeded_delta as f64 / attempted_delta as f64);
             }
             if !state.observed {
                 return;

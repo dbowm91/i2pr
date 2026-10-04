@@ -1297,8 +1297,7 @@ impl I2pControlServiceState {
             }
             if matches!(
                 field.key,
-                "i2p.router.net.tunnels.successrate"
-                    | "i2p.router.net.tunnels.totalsuccessrate"
+                "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate"
             ) {
                 match crate::i2pcontrol_inspection::proposal_tunnel_success_rate(
                     field.key,
@@ -1321,9 +1320,7 @@ impl I2pControlServiceState {
                 }
             }
             if field.key == "i2p.router.net.tunnels.queue" {
-                match crate::i2pcontrol_inspection::proposal_tunnel_queue_depth(
-                    &self.inspection,
-                ) {
+                match crate::i2pcontrol_inspection::proposal_tunnel_queue_depth(&self.inspection) {
                     Ok(value) => {
                         result.insert(field.key.to_owned(), value);
                         continue;

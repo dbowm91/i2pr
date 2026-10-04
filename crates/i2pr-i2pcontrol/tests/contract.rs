@@ -1110,7 +1110,10 @@ fn plan289_tunnel_request_envelope_rules() {
     })))
     .expect("MaxConcurrentConns has a bounded service admission owner");
     assert_eq!(
-        max_concurrent.options.get("max_streams").map(String::as_str),
+        max_concurrent
+            .options
+            .get("max_streams")
+            .map(String::as_str),
         Some("24")
     );
     let proxy_auth = decode_tunnel_request(&params(serde_json::json!({
@@ -1127,7 +1130,9 @@ fn plan289_tunnel_request_envelope_rules() {
             "Action": "create", "Name": "a", "Type": "server",
             "MaxConcurrentConns": "24",
         }))),
-        Err(TunnelRequestError::BadValue("MaxConcurrentConns".to_owned()))
+        Err(TunnelRequestError::BadValue(
+            "MaxConcurrentConns".to_owned()
+        ))
     );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
