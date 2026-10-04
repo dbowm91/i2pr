@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plan 329 dependency-ready. Plans 330–335 registered behind the dependency graph.
+Status: Plan 329 passed. Plan 330 is ready; Plans 331–335 remain registered behind the dependency graph.
 
 Parent roadmap:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
@@ -116,8 +116,8 @@ No custom field/bignum/curve formulas are permitted.
 
 | Plan | State | Purpose |
 |---|---|---|
-| 329 | ready | provenance/reference correction and exact algorithm/vector freeze |
-| 330 | blocked on 329 | independent Rust Red25519 construction |
+| 329 | passed | provenance/reference correction and exact algorithm/vector freeze (closure: `plans/closure/i2pcontrol-proposal-170/329-status.md`) |
+| 330 | ready | independent Rust Red25519 construction |
 | 331 | blocked on 330 | independent vectors + Java/i2pd + post-freeze Emissary differential |
 | 332 | blocked on 331 | type-5 ELS2 format/publication/lookup + lookup secret/B33 |
 | 333 | blocked on 332 | PSK and DH/X25519 client authorization |

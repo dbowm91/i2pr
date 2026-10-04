@@ -56,3 +56,20 @@ No Rust vectors or malformed-input tests ran because no candidate reached the co
 ## Dependency audit and roadmap disposition
 
 Plan 325 is closed as blocked under its explicit no-provider outcome. Plan 326 remains blocked on Plans 323, 324, and this unsatisfied provider gate. Plan 328 remains blocked through 326 (as well as 322 and 327). No plan became newly eligible from this closure. Independent Plans 321 and 323 remain active/ready respectively; 324 and 327 remain blocked on 323. No full Proposal 170 conformance claim is supported.
+
+## Successor note (Plan 329, 2026-10-04)
+
+The provider survey above remains historically true and is not rewritten: no maintained
+third-party Rust package implements the I2P Red25519 operation set. It is, however, no longer the
+only architectural path available to this repository.
+
+Plan 329 narrows the Emissary provenance exception (ADR 0028 §7 as amended) and freezes an
+independent-implementation path: i2pr composes the I2P Red25519 scheme itself over the maintained
+`curve25519-dalek` curve arithmetic, from the normative I2P specification, with Java I2P and i2pd as
+readable ambiguity/interoperability references and Emissary restricted to a post-freeze behavioral
+oracle. Plans 330–335 carry that path; Plan 331 is the plan that qualifies the provider and, on
+pass, supersedes this record for forward architecture only.
+
+Authority:
+[`specs/references/red25519-clean-room-freeze.md`](../../../specs/references/red25519-clean-room-freeze.md),
+[`specs/references/red25519-algorithm-worksheet.md`](../../../specs/references/red25519-algorithm-worksheet.md).

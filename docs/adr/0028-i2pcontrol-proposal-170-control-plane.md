@@ -70,6 +70,28 @@ Fork-specific Proposal 170 / I2PControl source in eggstack/emissary may be reuse
 
 This decision does not select a repository-wide i2pr license.
 
+#### Amendment (Plan 329, 2026-10-04): cryptographic implementation is excluded from the reuse exception
+
+The exception above covers Proposal 170 **administrative, control-plane, and protocol/domain** code
+only. It does **not** cover the Emissary Red25519 or Encrypted LeaseSet2 cryptographic
+implementation, and no such code may be copied, translated, transliterated, adapted, or used as
+implementation text.
+
+- Red25519/ELS2 code in i2pr is an independent implementation written from the normative I2P
+  specifications over a reviewed curve library, with Java I2P and i2pd as readable
+  ambiguity/interoperability references only.
+- Emissary may be invoked only as a **post-implementation behavioral oracle**, and only after the
+  i2pr implementation commit under test is frozen. Its Red25519/ELS2 source stays unread even
+  then; a plan that needs to read it is out of bounds and must be re-registered.
+- No fixture may be derived from reading Emissary internals.
+
+Authority: Plan 329, the frozen clean-room record
+[`specs/references/red25519-clean-room-freeze.md`](../../specs/references/red25519-clean-room-freeze.md)
+and worksheet
+[`specs/references/red25519-algorithm-worksheet.md`](../../specs/references/red25519-algorithm-worksheet.md).
+This amendment narrows §7; it does not rewrite it, and it does not alter Plan 286's historical
+classification of the fork paths that are unaffected.
+
 ### 8. Conformance is multidimensional
 
 Every Proposal 170 capability is classified independently across at least:

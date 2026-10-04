@@ -54,6 +54,7 @@ prohibited from direct import.
 | `i2pcontrol/http/*` + `i2pcontrol/filters/*` (proxy/filter policy) | R | Policy donor for Plan 290/292 shared primitives; Emissary supervisors excluded. |
 | `i2pcontrol/streamr/*` + datagram substrate | R | Substrate-behavior donor for Plan 291 under i2pr destination ownership. |
 | `i2pcontrol/*yosemite*`, session/supervisor backends | X | Yosemite-specific runtime; prohibited. |
+| Any Emissary Red25519 / Encrypted LeaseSet2 cryptographic implementation (blinding, Red25519 sign/verify, ELS2 layer framing/derivation, b33 codec) | X | **Excluded by Plan 329 from the ADR 0028 §7 reuse exception.** Readable-reference and reuse classification for cryptographic code is `reference/test-only`: behavioral oracle use after an implementation freeze, never source adoption. See [`specs/references/red25519-clean-room-freeze.md`](../../specs/references/red25519-clean-room-freeze.md) §5. |
 | Any non-`i2pcontrol` upstream/fork path | X | Unrelated code; prohibited under this exception. |
 
 Applicable source notices from reused files must be preserved alongside

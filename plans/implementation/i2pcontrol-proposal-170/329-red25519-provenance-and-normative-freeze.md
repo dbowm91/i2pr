@@ -1,6 +1,8 @@
 # Plan 329 — Red25519 provenance boundary and normative algorithm freeze
 
-Status: **registered-red25519-clean-room-authority-corrective**
+Status: **passed-red25519-provenance-boundary-and-normative-freeze**
+
+Closure record: `plans/closure/i2pcontrol-proposal-170/329-status.md`.
 
 Classification: provenance/security corrective + specification freeze. No production crypto code.
 

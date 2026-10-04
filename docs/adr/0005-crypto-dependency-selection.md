@@ -54,3 +54,32 @@ receive their own review rather than expanding this into a provider plugin.
 Review on a major-version update, a new primitive, a changed default feature,
 an MSRV change, a security advisory, or a requirement to support legacy or
 hybrid algorithms.
+
+## Amendment (Plan 329, 2026-10-04): intended direct `curve25519-dalek` dependency
+
+Reviewed and accepted for use by Plan 330, not yet added as a dependency at Plan 329 time.
+Full review: [`specs/references/red25519-clean-room-freeze.md`](../../specs/references/red25519-clean-room-freeze.md) §4.
+
+`curve25519-dalek 4.1.3` is already present in `Cargo.lock` through `ed25519-dalek` and
+`x25519-dalek`, so adopting it as a direct `i2pr-crypto` dependency causes no version churn. It
+owns low-level curve arithmetic only: wide scalar reduction, canonical scalar decoding, compressed
+Edwards point decoding/encoding, basepoint and variable-base multiplication, point addition, and
+cofactor/small-order/torsion predicates. i2pr will own only the I2P Red25519 scheme composition
+(domain separation, `HStar`, alpha derivation, re-randomization, sign/verify composition) and typed
+bounds, error, and zeroization semantics.
+
+Conditions on the adoption, all carried into the Plan 330 requirement set:
+
+- declared centrally in the workspace manifest with `default-features = false` plus only the
+  features actually compiled (`group` and the precomputed basepoint table; not `group-bits`, not
+  `legacy_compatibility`);
+- `#![forbid(unsafe_code)]` in `i2pr-crypto` continues to hold, and no dalek `unsafe` surface is
+  exposed to the workspace;
+- variable-time dalek entry points are permitted only where every operand is public;
+- MSRV 1.60.0 is below the workspace MSRV 1.88; license is MIT OR Apache-2.0, already covered by the
+  existing `cargo deny` allowlist;
+- no second curve crate may be introduced for this purpose. Any future need for a different curve
+  API is a review trigger for this ADR, not an ad-hoc dependency.
+
+The independent-implementation policy of Plan 329 is unaffected by this amendment: composing a
+reviewed curve library is required, and a local field/scalar/point implementation is prohibited.

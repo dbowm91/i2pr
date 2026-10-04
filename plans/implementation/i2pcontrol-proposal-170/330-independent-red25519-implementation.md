@@ -1,6 +1,6 @@
 # Plan 330 — Independent I2P Red25519 implementation over curve25519-dalek
 
-Status: **registered-red25519-independent-implementation-blocked-on-plan329**
+Status: **ready-independent-red25519-implementation**
 
 Classification: cryptographic protocol implementation.
 
