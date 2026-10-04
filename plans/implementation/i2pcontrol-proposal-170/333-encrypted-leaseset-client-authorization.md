@@ -1,6 +1,8 @@
 # Plan 333 — Encrypted LeaseSet2 PSK and DH client authorization
 
-Status: **registered-encrypted-ls2-client-auth-blocked-on-plan332**
+Status: **passed-encrypted-leaseset-client-authorization-psk-and-dh**
+
+Closure: [`plans/closure/i2pcontrol-proposal-170/333-status.md`](../../closure/i2pcontrol-proposal-170/333-status.md)
 
 Classification: cryptographic protocol + secret lifecycle.
 

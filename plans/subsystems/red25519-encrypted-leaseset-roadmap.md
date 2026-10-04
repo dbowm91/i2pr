@@ -1,6 +1,7 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329, 330, 331, and 336 passed. Plan 332 is ready; Plans 333–335 remain blocked behind it.
+Status: Plans 329, 330, 331, 332, 333, and 336 passed. Plan 334 is ready; Plan 335 remains blocked
+behind it.
 
 Parent roadmap:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
@@ -120,8 +121,8 @@ No custom field/bignum/curve formulas are permitted.
 | 330 | passed | independent Rust Red25519 construction (closure: `plans/closure/i2pcontrol-proposal-170/330-status.md`) |
 | 331 | passed | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
-| 333 | ready | PSK and DH/X25519 client authorization |
-| 334 | blocked on 333 | exact Proposal 170 mode/field mapping |
+| 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
+| 334 | ready | exact Proposal 170 mode/field mapping |
 | 335 | blocked on 334 | live interop and successor reclosure for blocked Plan 326 |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |
 
@@ -133,7 +134,9 @@ This branch is complete only when:
 - Emissary black-box differential agrees after the implementation freeze (achieved in Plan 331: byte-identical alpha, blinded keys, storage keys, and signatures);
 - DatabaseStore type 5 is a first-class validated/publishable/lookup record;
 - B33/blinded address behavior is interoperable;
-- lookup-secret, PSK and DH client authorization work end-to-end;
+- lookup-secret, PSK and DH client authorization work end-to-end (achieved in Plans 332 and 333:
+  lookup secret in the foundation, both authorization schemes byte-identical to Emissary in both
+  directions after the `f525578` freeze);
 - every Proposal 170 encrypted-LeaseSet control mode has a real owner or a spec-grounded explicit
   disposition;
 - external publication/lookup succeeds against at least one independent router implementation;
