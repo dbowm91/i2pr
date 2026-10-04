@@ -1233,6 +1233,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_news_accepts_signed_gzip_feed() {
+        use std::io::Write;
+
+        let identity = signed_news_identity();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_path = write_test_certificate(directory.path(), &identity.certificate_der);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(VALID_ATOM.as_bytes()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let body = signed_news_container(
+            &identity,
+            "router-news",
+            NEWS_CONTENT_TYPE,
+            NEWS_FILE_TYPE_GZIP_XML,
+            &compressed,
+        );
+        let manager = NewsManager::new(
+            news_test_config(directory.path(), certificate_path),
+            directory.path().to_owned(),
+            Arc::new(ResponseFetcher::one(response(
+                200,
+                body,
+                Some("\"gzip-v1\""),
+            ))),
+        );
+
+        assert_eq!(manager.refresh_once().await, NewsRefreshResult::Updated);
+        assert!(
+            manager
+                .snapshot(now_unix_seconds())
+                .expect("signed gzip feed is published")
+                .rendered
+                .contains("Router & network")
+        );
+    }
+
+    #[tokio::test]
     async fn authenticated_news_rejects_wrong_signer_signature_and_file_type() {
         let identity = signed_news_identity();
         let directory = tempfile::tempdir().unwrap();
