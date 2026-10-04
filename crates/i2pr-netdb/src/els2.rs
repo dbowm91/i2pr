@@ -29,6 +29,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::els2_auth::{
+    AuthBlock, Els2AuthError, Els2AuthScheme, Els2ClientAuth, recover_auth_cookie,
+};
 pub use i2pr_crypto::red25519::LookupSecret;
 use i2pr_crypto::red25519::{
     BLINDED_SIGNING_KEY_TYPE, BlindedPrivateScalar, BlindingDay, BlindingScalar, PUBLIC_KEY_LENGTH,
@@ -37,8 +40,8 @@ use i2pr_crypto::red25519::{
     generate_alpha,
 };
 use i2pr_crypto::{
-    CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, CryptoError, LayerCipherKey, chacha20_xor_layer,
-    hkdf_sha256_extract_and_expand,
+    CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, ChachaError, CryptoError, LayerCipherKey,
+    chacha20_xor_layer, chacha20_xor_layer_owned, hkdf_sha256_extract_and_expand,
 };
 use i2pr_proto::{
     ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE, ENCRYPTED_LEASE_SET2_MAX_EXPIRES_OFFSET,
@@ -109,6 +112,8 @@ pub const MAX_ELS2_RECORD_LENGTH: usize = MAX_ELS2_OUTER_CIPHERTEXT_LENGTH + 128
 pub const MAX_ELS2_AUTH_CLIENTS: usize = 255;
 /// Encoded length of one `authClient` entry: an 8-byte id and a 32-byte cookie.
 pub const ELS2_AUTH_CLIENT_LENGTH: usize = 40;
+/// Layer-1 flags for the no-authorization form.
+pub const ELS2_LAYER1_FLAGS_NO_AUTH: u8 = 0;
 
 /// Errors produced by the encrypted LeaseSet2 layer and blinding surfaces.
 #[derive(Debug, Error)]
@@ -174,6 +179,25 @@ pub enum Els2Error {
         /// The offending reserved-bit mask.
         mask: u8,
     },
+    /// The layer-1 flag byte named no recognized authorization scheme.
+    #[error(
+        "encrypted LeaseSet2 layer-1 flags {flags:#04x} name no recognized authorization scheme"
+    )]
+    UnrecognizedLayer1Flags {
+        /// The layer-1 flags byte.
+        flags: u8,
+    },
+    /// The flags byte, the authorization data, and the cookie disagreed.
+    #[error(
+        "encrypted LeaseSet2 layer-1 flags {flags:#04x} disagree with the supplied authorization data"
+    )]
+    InconsistentLayer1Authorization {
+        /// The layer-1 flags byte.
+        flags: u8,
+    },
+    /// A per-client authorization step failed.
+    #[error(transparent)]
+    Auth(#[from] Els2AuthError),
     /// The inner record type was neither 3 nor 7.
     #[error("encrypted LeaseSet2 inner store type {code} is neither 3 nor 7")]
     UnsupportedInnerStoreType {
@@ -342,6 +366,110 @@ pub fn encrypt_no_auth_outer_ciphertext(
     outer_salt: &[u8; ELS2_SALT_LENGTH],
     inner_salt: &[u8; ELS2_SALT_LENGTH],
 ) -> Result<Vec<u8>, Els2Error> {
+    encrypt_outer_ciphertext(
+        credentials,
+        published_seconds,
+        inner_store_type,
+        inner_record,
+        Layer1Authorization::none(),
+        outer_salt,
+        inner_salt,
+    )
+}
+
+/// The layer-1 authorization inputs for one publication.
+///
+/// These three values must agree with each other: the flags byte says whether
+/// authorization is on and which scheme it is, `data` is the serialized block
+/// that follows that byte, and `cookie` is the value prepended to the layer-2
+/// key input. A caller that disagrees with itself produces a record no client
+/// can open — or worse, one that opens with the wrong key — so the agreement is
+/// checked in [`Layer1Authorization::new`] rather than trusted at the point of
+/// use. Grouping them also means the encrypt entry point cannot be called with
+/// the block and the cookie transposed.
+///
+/// [`Layer1Authorization::none`] is the ordinary case: no per-client bit, no
+/// block, and no cookie.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Layer1Authorization<'a> {
+    flags: u8,
+    data: &'a [u8],
+    cookie: Option<&'a [u8; 32]>,
+}
+
+impl<'a> Layer1Authorization<'a> {
+    /// Builds the no-authorization form.
+    pub const fn none() -> Self {
+        Self {
+            flags: ELS2_LAYER1_FLAGS_NO_AUTH,
+            data: &[],
+            cookie: None,
+        }
+    }
+
+    /// Builds the authorized form, checking that the three values agree.
+    pub fn new(flags: u8, data: &'a [u8], cookie: &'a [u8; 32]) -> Result<Self, Els2Error> {
+        if flags & ELS2_LAYER1_RESERVED_MASK != 0 {
+            return Err(Els2Error::Layer1ReservedFlags {
+                mask: flags & ELS2_LAYER1_RESERVED_MASK,
+            });
+        }
+        if flags & ELS2_LAYER1_FLAG_PER_CLIENT == 0 {
+            return Err(Els2Error::InconsistentLayer1Authorization { flags });
+        }
+        // salt-or-ephemeral (32) plus the client count (2) is the minimum a
+        // block with at least one client can be.
+        if data.len() < 34 {
+            return Err(Els2Error::LayerTooShort {
+                layer: "authorization",
+                actual: data.len(),
+                minimum: 34,
+            });
+        }
+        Ok(Self {
+            flags,
+            data,
+            cookie: Some(cookie),
+        })
+    }
+
+    /// Returns the layer-1 flags byte.
+    pub const fn flags(&self) -> u8 {
+        self.flags
+    }
+
+    /// Returns the serialized authorization block.
+    pub const fn data(&self) -> &'a [u8] {
+        self.data
+    }
+
+    /// Returns the per-generation cookie, when authorization is on.
+    pub const fn cookie(&self) -> Option<&'a [u8; 32]> {
+        self.cookie
+    }
+
+    /// Returns whether the record requests per-client authorization.
+    pub const fn is_authorized(&self) -> bool {
+        self.flags & ELS2_LAYER1_FLAG_PER_CLIENT != 0
+    }
+}
+
+/// Encrypts an inner payload into an outer ciphertext with an explicit layer-1
+/// authorization block.
+///
+/// This is the general form the no-authorization function above delegates to.
+pub fn encrypt_outer_ciphertext(
+    credentials: &Els2Credentials,
+    published_seconds: u32,
+    inner_store_type: u8,
+    inner_record: &[u8],
+    authorization: Layer1Authorization<'_>,
+    outer_salt: &[u8; ELS2_SALT_LENGTH],
+    inner_salt: &[u8; ELS2_SALT_LENGTH],
+) -> Result<Vec<u8>, Els2Error> {
+    let layer1_flags = authorization.flags;
+    let auth_data = authorization.data;
+    let auth_cookie = authorization.cookie;
     if inner_record.is_empty() {
         return Err(Els2Error::TooLarge {
             what: "inner record",
@@ -364,63 +492,53 @@ pub fn encrypt_no_auth_outer_ciphertext(
             code: inner_store_type,
         });
     }
+    // The flags/data/cookie agreement is already established by
+    // `Layer1Authorization::new`, so there is nothing left to re-check here.
 
     let mut layer2_plaintext = Vec::with_capacity(inner_record.len() + 1);
     layer2_plaintext.push(inner_store_type);
     layer2_plaintext.extend_from_slice(inner_record);
 
-    let mut inner_input = Vec::with_capacity(32 + 4);
+    let mut inner_input = Vec::with_capacity(4 + 68);
+    if let Some(cookie) = auth_cookie {
+        inner_input.extend_from_slice(cookie);
+    }
     inner_input.extend_from_slice(credentials.subcredential());
     inner_input.extend_from_slice(&published_be32(published_seconds));
     let inner_keys = derive_layer_keys(inner_salt, &inner_input, ELS2_LAYER2_HKDF_INFO)?;
 
-    let mut inner_ciphertext = Vec::with_capacity(ELS2_SALT_LENGTH + layer2_plaintext.len());
+    let encrypted_inner =
+        chacha20_xor_layer_owned(&inner_keys.key, &inner_keys.nonce, &layer2_plaintext)
+            .map_err(chacha_error)?;
+    let mut inner_ciphertext = Vec::with_capacity(ELS2_SALT_LENGTH + encrypted_inner.len());
     inner_ciphertext.extend_from_slice(inner_salt);
-    inner_ciphertext.extend_from_slice(&layer2_plaintext);
-    chacha20_xor_layer(
-        &inner_keys.key,
-        &inner_keys.nonce,
-        &mut inner_ciphertext[ELS2_SALT_LENGTH..],
-    )
-    .map_err(|error| {
-        Els2Error::Codec(i2pr_proto::CodecError::InvalidFieldValue {
-            offset: 0,
-            context: match error {
-                i2pr_crypto::ChachaError::InvalidLength { .. } => {
-                    "encrypted LeaseSet2 layer-2 stream"
-                }
-            },
-        })
-    })?;
+    inner_ciphertext.extend_from_slice(&encrypted_inner);
 
-    let mut layer1_plaintext = Vec::with_capacity(1 + inner_ciphertext.len());
-    layer1_plaintext.push(0); // no per-client authorization
+    let mut layer1_plaintext = Vec::with_capacity(1 + auth_data.len() + inner_ciphertext.len());
+    layer1_plaintext.push(layer1_flags);
+    layer1_plaintext.extend_from_slice(auth_data);
     layer1_plaintext.extend_from_slice(&inner_ciphertext);
 
-    let mut outer_input = Vec::with_capacity(32 + 4);
+    let mut outer_input = Vec::with_capacity(36);
     outer_input.extend_from_slice(credentials.subcredential());
     outer_input.extend_from_slice(&published_be32(published_seconds));
     let outer_keys = derive_layer_keys(outer_salt, &outer_input, ELS2_LAYER1_HKDF_INFO)?;
 
-    let mut outer_ciphertext = Vec::with_capacity(ELS2_SALT_LENGTH + layer1_plaintext.len());
+    let encrypted_outer =
+        chacha20_xor_layer_owned(&outer_keys.key, &outer_keys.nonce, &layer1_plaintext)
+            .map_err(chacha_error)?;
+    let mut outer_ciphertext = Vec::with_capacity(ELS2_SALT_LENGTH + encrypted_outer.len());
     outer_ciphertext.extend_from_slice(outer_salt);
-    outer_ciphertext.extend_from_slice(&layer1_plaintext);
-    chacha20_xor_layer(
-        &outer_keys.key,
-        &outer_keys.nonce,
-        &mut outer_ciphertext[ELS2_SALT_LENGTH..],
-    )
-    .map_err(|error| {
-        Els2Error::Codec(i2pr_proto::CodecError::InvalidFieldValue {
-            offset: 0,
-            context: match error {
-                i2pr_crypto::ChachaError::InvalidLength { .. } => {
-                    "encrypted LeaseSet2 layer-1 stream"
-                }
-            },
-        })
-    })?;
+    outer_ciphertext.extend_from_slice(&encrypted_outer);
     Ok(outer_ciphertext)
+}
+
+fn chacha_error(error: ChachaError) -> Els2Error {
+    let _ = error;
+    Els2Error::Codec(i2pr_proto::CodecError::InvalidFieldValue {
+        offset: 0,
+        context: "encrypted LeaseSet2 layer stream",
+    })
 }
 
 /// The decrypted payload of a no-client-authorization encrypted LeaseSet2.
@@ -492,6 +610,22 @@ pub fn decrypt_no_auth_outer_ciphertext(
     published_seconds: u32,
     outer_ciphertext: &[u8],
 ) -> Result<DecryptedEls2, Els2Error> {
+    decrypt_outer_ciphertext(credentials, published_seconds, outer_ciphertext, None)
+}
+
+/// Decrypts an outer ciphertext, optionally using a client authorization
+/// credential to recover the `authCookie` that the layer-2 key needs.
+///
+/// With `client = None` a record that requests per-client authorization is
+/// rejected as [`Els2Error::ClientAuthorizationRequired`]: the layer-1 key is
+/// derivable without a credential, so silently decrypting a record the caller is
+/// not authorized for would be the worst possible failure mode here.
+pub fn decrypt_outer_ciphertext(
+    credentials: &Els2Credentials,
+    published_seconds: u32,
+    outer_ciphertext: &[u8],
+    client: Option<&Els2ClientAuth<'_>>,
+) -> Result<DecryptedEls2, Els2Error> {
     if outer_ciphertext.len() < ELS2_SALT_LENGTH + 1 {
         return Err(Els2Error::LayerTooShort {
             layer: "outer",
@@ -515,18 +649,8 @@ pub fn decrypt_no_auth_outer_ciphertext(
     let outer_keys = derive_layer_keys(&outer_salt, &outer_input, ELS2_LAYER1_HKDF_INFO)?;
 
     let mut layer1_plaintext = outer_ciphertext[ELS2_SALT_LENGTH..].to_vec();
-    chacha20_xor_layer(&outer_keys.key, &outer_keys.nonce, &mut layer1_plaintext).map_err(
-        |error| {
-            Els2Error::Codec(i2pr_proto::CodecError::InvalidFieldValue {
-                offset: 0,
-                context: match error {
-                    i2pr_crypto::ChachaError::InvalidLength { .. } => {
-                        "encrypted LeaseSet2 layer-1 stream"
-                    }
-                },
-            })
-        },
-    )?;
+    chacha20_xor_layer(&outer_keys.key, &outer_keys.nonce, &mut layer1_plaintext)
+        .map_err(chacha_error)?;
 
     let layer1_flags = layer1_plaintext[0];
     if layer1_flags & ELS2_LAYER1_RESERVED_MASK != 0 {
@@ -534,13 +658,49 @@ pub fn decrypt_no_auth_outer_ciphertext(
             mask: layer1_flags & ELS2_LAYER1_RESERVED_MASK,
         });
     }
-    if layer1_flags & ELS2_LAYER1_FLAG_PER_CLIENT != 0 {
-        return Err(Els2Error::ClientAuthorizationRequired {
+    // `auth_data_len` is the length of the serialized authorization block, which
+    // is zero when the record does not request per-client authorization. It is
+    // carried out of the branch above so the inner-ciphertext offset is computed
+    // from the same value that was parsed, rather than by re-reading the client
+    // count a second time and hoping the two agree.
+    let (auth_cookie, auth_data_len) = if layer1_flags & ELS2_LAYER1_FLAG_PER_CLIENT == 0 {
+        (None, 0_usize)
+    } else {
+        let scheme =
+            Els2AuthScheme::from_flags(layer1_flags).ok_or(Els2Error::UnrecognizedLayer1Flags {
+                flags: layer1_flags,
+            })?;
+        let client = client.ok_or(Els2Error::ClientAuthorizationRequired {
             flags: layer1_flags,
-        });
-    }
+        })?;
+        // The authorization data is a prefix of variable length, so it is parsed
+        // by locating the inner salt from the declared client count rather than
+        // by scanning: the entries are fixed-size and the count is explicit.
+        let declared = read_auth_client_count(&layer1_plaintext, layer1_flags)?;
+        let auth_data_len = 34 + declared * ELS2_AUTH_CLIENT_LENGTH;
+        if layer1_plaintext.len() < 1 + auth_data_len + ELS2_SALT_LENGTH + 1 {
+            return Err(Els2Error::LayerTooShort {
+                layer: "authorization",
+                actual: layer1_plaintext.len().saturating_sub(1),
+                minimum: auth_data_len,
+            });
+        }
+        let block = AuthBlock::decode(scheme, &layer1_plaintext[1..1 + auth_data_len])
+            .map_err(Els2Error::Auth)?;
+        let cookie = recover_auth_cookie(
+            &block,
+            credentials.subcredential(),
+            published_seconds,
+            client,
+        )
+        .map_err(Els2Error::Auth)?;
+        (Some(cookie), auth_data_len)
+    };
 
-    let inner_ciphertext = &layer1_plaintext[1..];
+    // The inner ciphertext starts after the layer-1 flags byte and, when
+    // present, after the authorization block.
+    let inner_offset = 1 + auth_data_len;
+    let inner_ciphertext = &layer1_plaintext[inner_offset..];
     if inner_ciphertext.len() < ELS2_SALT_LENGTH + 1 {
         return Err(Els2Error::LayerTooShort {
             layer: "inner",
@@ -551,33 +711,36 @@ pub fn decrypt_no_auth_outer_ciphertext(
     let inner_salt: [u8; 32] = inner_ciphertext[..ELS2_SALT_LENGTH]
         .try_into()
         .expect("inner ciphertext is at least one salt long");
-    let mut inner_input = Vec::with_capacity(36);
+    let mut inner_input = Vec::with_capacity(4 + 68);
+    if let Some(cookie) = &auth_cookie {
+        inner_input.extend_from_slice(cookie.as_bytes());
+    }
     inner_input.extend_from_slice(credentials.subcredential());
     inner_input.extend_from_slice(&published_be32(published_seconds));
     let inner_keys = derive_layer_keys(&inner_salt, &inner_input, ELS2_LAYER2_HKDF_INFO)?;
 
-    let mut layer2_plaintext = inner_ciphertext[ELS2_SALT_LENGTH..].to_vec();
-    chacha20_xor_layer(&inner_keys.key, &inner_keys.nonce, &mut layer2_plaintext).map_err(
-        |error| {
-            Els2Error::Codec(i2pr_proto::CodecError::InvalidFieldValue {
-                offset: 0,
-                context: match error {
-                    i2pr_crypto::ChachaError::InvalidLength { .. } => {
-                        "encrypted LeaseSet2 layer-2 stream"
-                    }
-                },
-            })
-        },
-    )?;
+    let decrypted = chacha20_xor_layer_owned(
+        &inner_keys.key,
+        &inner_keys.nonce,
+        &inner_ciphertext[ELS2_SALT_LENGTH..],
+    )
+    .map_err(chacha_error)?;
 
-    let store_type = layer2_plaintext[0];
+    if decrypted.is_empty() {
+        return Err(Els2Error::LayerTooShort {
+            layer: "inner",
+            actual: 0,
+            minimum: 1,
+        });
+    }
+    let store_type = decrypted[0];
     let (inner_published, inner_expires) = match store_type {
         INNER_LEASE_SET2_STORE_TYPE => {
-            let inner = LeaseSet2::decode(&layer2_plaintext[1..], MAX_COMMON_STRUCTURE_SIZE)?;
+            let inner = LeaseSet2::decode(&decrypted[1..], MAX_COMMON_STRUCTURE_SIZE)?;
             (inner.published_seconds(), inner.expires_seconds())
         }
         INNER_META_LEASE_SET2_STORE_TYPE => {
-            let inner = MetaLeaseSet::decode(&layer2_plaintext[1..], MAX_COMMON_STRUCTURE_SIZE)?;
+            let inner = MetaLeaseSet::decode(&decrypted[1..], MAX_COMMON_STRUCTURE_SIZE)?;
             (
                 inner.header().published_seconds(),
                 inner.header().expires_seconds(),
@@ -593,8 +756,31 @@ pub fn decrypt_no_auth_outer_ciphertext(
         store_type,
         published_seconds: inner_published,
         expires_seconds: inner_expires,
-        payload: layer2_plaintext[1..].to_vec(),
+        payload: decrypted[1..].to_vec(),
     })
+}
+
+/// Reads the declared client count from a layer-1 plaintext.
+fn read_auth_client_count(layer1_plaintext: &[u8], flags: u8) -> Result<usize, Els2Error> {
+    if layer1_plaintext.len() < 35 {
+        return Err(Els2Error::LayerTooShort {
+            layer: "authorization",
+            actual: layer1_plaintext.len().saturating_sub(1),
+            minimum: 34,
+        });
+    }
+    let count = usize::from(u16::from_be_bytes([
+        layer1_plaintext[33],
+        layer1_plaintext[34],
+    ]));
+    if count > MAX_ELS2_AUTH_CLIENTS {
+        return Err(Els2Error::Auth(Els2AuthError::TooManyClients {
+            actual: count,
+            maximum: MAX_ELS2_AUTH_CLIENTS,
+        }));
+    }
+    let _ = flags;
+    Ok(count)
 }
 
 /// The DHT storage key of a type-5 record.

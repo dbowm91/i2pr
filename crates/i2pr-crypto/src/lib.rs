@@ -26,15 +26,25 @@ use i2pr_proto::{
     Mapping, MetaLeaseSet, PublicKey, ReplySecret, RouterAddress, RouterIdentity, RouterInfo,
     SignatureValue, SigningKeyType, SigningPublicKey,
 };
-use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
-use zeroize::{Zeroize, Zeroizing};
+pub use zeroize::Zeroize;
 
 /// Operating-system-backed randomness for explicit production injection.
 pub use rand_core::OsRng;
+
+/// The random-source seam that protocol key generation takes.
+///
+/// Re-exported so a downstream crypto-owning crate can inject a caller-supplied
+/// CSPRNG without taking a direct `rand_core` dependency, which keeps the
+/// dependency allowlist of the crates below this one unchanged.
+pub use rand_core::TryCryptoRng;
+
+/// The erase-on-drop buffer type, re-exported for the same reason as
+/// [`TryCryptoRng`] above.
+pub use zeroize::Zeroizing;
 
 pub mod chacha;
 pub mod ecies;

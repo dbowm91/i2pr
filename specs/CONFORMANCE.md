@@ -276,7 +276,8 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
 - **Not accepted on the wire, not advertised, not live-verified.** No `specs/support.toml` entry
   exists, no daemon configuration exposes it, and no publication driver sends or fetches a type-5
   record. `i2pr-client` *builds* the `DatabaseStoreMessage`; the daemon still has nothing that
-  publishes it. Per-client authorization (PSK and DH) is not implemented and is Plan 333.
+  publishes it. Per-client authorization is implemented (see below) but remains unreachable from
+  any daemon configuration.
 - **Known interop limitation, unchanged and still decisive.** The type-11 signature divergence
   recorded above means an i2pr-signed type-5 record is unverifiable by `i2pd` and Java I2P. Live
   interoperability is Plan 335 and is expected to be blocked on that until a follow-up plan changes
@@ -288,6 +289,51 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
   `specs/references/red25519-algorithm-worksheet.md` §14.14.
 
 Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`).
+
+### Encrypted LeaseSet2 per-client authorization status
+
+Plan 333 adds both standard authorization modes on top of the Plan 332 foundation. Authorization is
+strictly additive: the no-authorization path still delegates to the same general
+encrypt/decrypt functions, and the Plan 332 differential fixture remains valid unchanged. Its
+status is:
+
+- **Both schemes implemented and both reachable end to end.** `i2pr_netdb::els2_auth` implements
+  the PSK and X25519 derivations, the bounded authorization block, constant-time identifier
+  matching, and the typed failure vocabulary. `i2pr-client` publishes authorized records and
+  resolves them with a credential. Every authorized client of one record reads the same inner
+  LeaseSet2, under both schemes.
+- **Authorization is not an integrity layer, and is not claimed to be.** Each layer is a raw
+  ChaCha20 stream with no tag; the Red25519 signature over the layer-0 region is what detects a
+  tamper, and it is verified before any decryption. A flipped ciphertext byte is therefore rejected
+  as `InvalidSignature`, not as an authorization failure. See worksheet §14.15 and §14.16–§14.22.
+- **Bounded and fail-closed.** The client set is non-empty and capped at 255; capacity 255 is
+  exercised and 256 is refused. Duplicate identifiers are rejected at block build rather than
+  merged. Entry order carries no meaning: recovery scans every entry and compares in constant time.
+  A publication that cannot draw a fresh cookie, salt, or ephemeral key fails rather than
+  substituting a predictable value.
+- **Refusals are typed and deliberately uninformative.** A missing credential and a wrong credential
+  are *different* errors, because only the first is fixable by presenting some authorized key. A
+  wrong key and a key that was never configured produce the same error text, so nothing about a
+  guess leaks. See worksheet §14.21.
+- **Secrets are typed, role-tagged, and non-copyable.** `PskClientKey`, `AuthCookie`, and
+  `Els2ClientAuthSecret` are zeroizing, are not `Clone`, and have redacted `Debug`. The four
+  authorization roles are distinguished, and persistence is a reversible role-tagged encoding that
+  is explicitly not a wire format, a configuration serialization, or a password verifier. At-rest
+  encryption remains the storage layer's responsibility and is **not** claimed.
+- **An authorized service's address declares the requirement.** `B32_FLAG_REQUIRES_CLIENT_KEY` is
+  set at publication and preserved through resolution, so a prospective client learns it needs a
+  credential before it fetches anything. A resolver built for such an address refuses the
+  unauthenticated path. See worksheet §14.20.
+- **Still not accepted on the wire, not advertised, not live-verified.** Nothing changed about
+  daemon wiring: no `specs/support.toml` entry, no configuration surface, no publication driver.
+  Proposal 170 field mapping is Plan 334.
+- **Cross-implementation authorization is unproven.** The plan's evidence list asks for
+  publication/decryption against Java I2P and `i2pd` "where supported". No Java I2P build was
+  provisioned and the type-11 signature divergence blocks a meaningful live comparison regardless,
+  so this row is **not** claimed. The post-freeze Emissary differential covers the Plan 332
+  no-authorization construction only; authorization was compared structurally, not byte-for-byte.
+
+Authority: Plan 333 (`plans/closure/i2pcontrol-proposal-170/333-status.md`).
 
 ## Interoperability matrix
 

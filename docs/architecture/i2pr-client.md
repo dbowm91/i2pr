@@ -341,7 +341,7 @@ crates/i2pr-client/
 │   ├── identity.rs       DestinationIdentity, DestinationId (non-Clone secret owner)
 │   ├── pool.rs           DestinationTunnelPool wrapping BoundedTunnelPool; Plan 296 adds standby accounting (effective base-plus-backup targets, standby promotion counting on failure/expiry loss, registration bounded at the effective target)
 │   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
-│   ├── encrypted_leaseset.rs Plan 332 encrypted-LeaseSet2 client halves: EncryptedLeaseSet2Publisher (owner-only, builds and signs the no-authorization type-5 record and its DatabaseStore hand-off) and EncryptedLeaseSet2Resolver (lookup-only, derives the daily blinded key from a b33 address and returns the decrypted inner LeaseSet2 as one value)
+│   ├── encrypted_leaseset.rs Plan 332 encrypted-LeaseSet2 client halves: EncryptedLeaseSet2Publisher (owner-only, builds and signs the no-authorization type-5 record and its DatabaseStore hand-off) and EncryptedLeaseSet2Resolver (lookup-only, derives the daily blinded key from a b33 address and returns the decrypted inner LeaseSet2 as one value). Plan 333 adds `build_authorized_record`/`build_authorized_database_store`, `resolve_with_auth`, `generate_client_dh_keypair`, and `authorized_address` (which sets B32_FLAG_REQUIRES_CLIENT_KEY); `EncryptedLeaseSet2Resolver::new_authorized` accepts such an address while `::new` refuses it
 │   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
 │   ├── session.rs        Plan 126/127 EciesSessionManager, EciesSessionConfig, PlannedOutboundForm, classify + bound NS/NSR/ES producers

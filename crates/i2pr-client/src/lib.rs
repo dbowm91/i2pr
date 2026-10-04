@@ -69,7 +69,8 @@ pub use dispatch::{
 };
 pub use encrypted_leaseset::{
     EncryptedLeaseSet2Publisher, EncryptedLeaseSet2Resolver, EncryptedLeaseSetError,
-    ResolvedEncryptedService, owner_scalar_from_seed,
+    GenerationAuthCookie, ResolvedEncryptedService, ServerPsk, authorization_scheme,
+    generate_client_dh_keypair, owner_scalar_from_seed,
 };
 pub use identity::{
     DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE, DESTINATION_LEGACY_PADDING_LENGTH,

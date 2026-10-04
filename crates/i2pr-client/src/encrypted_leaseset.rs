@@ -32,9 +32,10 @@ use core::fmt;
 use i2pr_crypto::red25519::{BlindingDay, Red25519PrivateScalar, Red25519PublicKey, sign};
 use i2pr_netdb::{
     BlindedStorageKey, BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DecryptedEls2,
-    DestinationHash, Els2Error, Els2ValidationError, LeaseSet2ValidationContext,
+    DestinationHash, Els2AuthError, Els2Error, Els2ValidationError, LeaseSet2ValidationContext,
     LeaseSet2ValidationError, OwnerBlinding, ValidatedEncryptedLeaseSet2, ValidatedLeaseSet2,
-    decrypt_no_auth_outer_ciphertext, encrypt_no_auth_outer_ciphertext,
+    decrypt_no_auth_outer_ciphertext, decrypt_outer_ciphertext, encrypt_no_auth_outer_ciphertext,
+    encrypt_outer_ciphertext,
 };
 use i2pr_proto::{
     B32_BLINDED_SIGTYPE, B32_UNBLINDED_SIGTYPE_ED25519, B32_UNBLINDED_SIGTYPE_RED25519,
@@ -78,6 +79,29 @@ pub enum EncryptedLeaseSetError {
     /// A type-5 validation or layer-crypto step failed.
     #[error(transparent)]
     Els2(#[from] Els2Error),
+    /// The record requires per-client authorization and the caller supplied no
+    /// credential at all. Distinct from [`Self::NotAuthorized`] only in that
+    /// the caller can fix it by presenting *some* authorized credential.
+    #[error(
+        "encrypted-service address requires per-client authorization but no client credential was supplied"
+    )]
+    CredentialNotSupplied,
+    /// Per-client authorization rejected the supplied credential, or the
+    /// authorization block was malformed or inconsistent.
+    ///
+    /// The reason is a bounded, non-secret description. It never names a
+    /// client, a key, or a cookie, and it deliberately does not distinguish a
+    /// missing key from a wrong one: a caller that could tell them apart would
+    /// learn how close a guess was, and there is nothing actionable in the
+    /// difference.
+    #[error("encrypted-service address refused the supplied client credential: {reason}")]
+    NotAuthorized {
+        /// A bounded, non-secret description of the refusal.
+        reason: String,
+    },
+    /// A client-authorization derivation step failed.
+    #[error(transparent)]
+    Auth(#[from] Els2AuthError),
     /// A type-5 validation step failed.
     #[error(transparent)]
     Els2Validation(#[from] Els2ValidationError),
@@ -166,6 +190,28 @@ impl<'a> EncryptedLeaseSet2Publisher<'a> {
             *identity.unblinded_public_key().as_bytes(),
             requires_blinding_secret,
             false,
+        )
+        .map_err(EncryptedLeaseSetError::Address)
+    }
+
+    /// Builds the address for a service that requires per-client authorization.
+    ///
+    /// This is the address an authorized service publishes, and it differs from
+    /// [`Self::address`] in exactly one bit: `B32_FLAG_REQUIRES_CLIENT_KEY` is
+    /// set, which tells a prospective client before it fetches anything that it
+    /// will need a credential. A resolver built for this address refuses the
+    /// unauthenticated [`EncryptedLeaseSet2Resolver::resolve`] path.
+    pub fn authorized_address(
+        &self,
+        requires_blinding_secret: bool,
+    ) -> Result<EncryptedServiceAddress, EncryptedLeaseSetError> {
+        let identity = self.schedule.identity();
+        EncryptedServiceAddress::new(
+            identity.unblinded_sigtype().code(),
+            B32_BLINDED_SIGTYPE,
+            *identity.unblinded_public_key().as_bytes(),
+            requires_blinding_secret,
+            true,
         )
         .map_err(EncryptedLeaseSetError::Address)
     }
@@ -311,6 +357,37 @@ impl EncryptedLeaseSet2Resolver {
         if address.requires_client_key() {
             return Err(EncryptedLeaseSetError::ClientAuthorizationRequired);
         }
+        Self::build(address, secret, false)
+    }
+
+    /// Builds a resolver for an address that declares per-client authorization.
+    ///
+    /// This is the constructor an authorized service's address needs. The
+    /// credential is deliberately *not* taken here: an address says which
+    /// services require a key, not which key this particular caller holds, and
+    /// the same resolver may be pointed at several services with different
+    /// client keys. The credential is supplied per resolution in
+    /// [`Self::resolve_with_auth`].
+    ///
+    /// [`Self::resolve`] on such a resolver fails with
+    /// [`EncryptedLeaseSetError::CredentialNotSupplied`] rather than attempting
+    /// an unauthenticated decryption.
+    pub fn new_authorized(
+        address: &EncryptedServiceAddress,
+        secret: Option<&str>,
+    ) -> Result<Self, EncryptedLeaseSetError> {
+        Self::build(address, secret, address.requires_client_key())
+    }
+
+    /// Shared constructor: the address is validated immediately, because a
+    /// wrong-length, non-canonical, or unsupported address is a construction
+    /// error rather than a lookup miss, and the two mean very different things
+    /// to a user.
+    fn build(
+        address: &EncryptedServiceAddress,
+        secret: Option<&str>,
+        requires_client_key: bool,
+    ) -> Result<Self, EncryptedLeaseSetError> {
         let unblinded_sigtype = if address.unblinded_sigtype() == B32_UNBLINDED_SIGTYPE_RED25519 {
             i2pr_proto::SigningKeyType::RedDsaSha512Ed25519
         } else if address.unblinded_sigtype() == B32_UNBLINDED_SIGTYPE_ED25519 {
@@ -329,7 +406,6 @@ impl EncryptedLeaseSet2Resolver {
             .map_err(|_| EncryptedLeaseSetError::InvalidPublicKey)?;
         let identity = BlindingIdentity::new(public_key, unblinded_sigtype, secret)
             .map_err(EncryptedLeaseSetError::Els2)?;
-        let requires_client_key = address.requires_client_key();
         Ok(Self {
             schedule: BlindingSchedule::new(identity, BlindingScheduleConfig::default()),
             requires_client_key,
@@ -388,7 +464,7 @@ impl EncryptedLeaseSet2Resolver {
         now_seconds: u32,
     ) -> Result<ResolvedEncryptedService, EncryptedLeaseSetError> {
         if self.requires_client_key {
-            return Err(EncryptedLeaseSetError::ClientAuthorizationRequired);
+            return Err(EncryptedLeaseSetError::CredentialNotSupplied);
         }
         let daily = self.schedule.current(now_seconds)?;
         if record.storage_key() != daily.storage_key() {
@@ -427,6 +503,10 @@ impl EncryptedLeaseSet2Resolver {
     }
 
     /// Returns the address this resolver was built for.
+    ///
+    /// The per-client-authorization flag is carried through, so a resolved
+    /// service reports the same address a caller would have looked up rather
+    /// than one that silently understates its access control.
     fn address(&self) -> EncryptedServiceAddress {
         let identity = self.schedule.identity();
         EncryptedServiceAddress::new(
@@ -434,7 +514,7 @@ impl EncryptedLeaseSet2Resolver {
             B32_BLINDED_SIGTYPE,
             *identity.unblinded_public_key().as_bytes(),
             false,
-            false,
+            self.requires_client_key,
         )
         .expect("an identity built from a validated address re-encodes")
     }
@@ -463,5 +543,214 @@ pub fn owner_scalar_from_seed(seed: &[u8; 32]) -> Red25519PrivateScalar {
 /// The MetaLeaseSet inner store type, re-exported for callers that publish one.
 pub const ELS2_INNER_META_STORE_TYPE: u8 = INNER_META_LEASE_SET2_STORE_TYPE;
 
-#[cfg(test)]
-mod tests {}
+// --- Plan 333: per-client authorization ------------------------------------------------------
+
+use i2pr_crypto::X25519PrivateKey;
+use i2pr_netdb::{
+    AuthBlock, AuthCookie, Els2AuthScheme, Els2AuthorizationServerConfig, Els2ClientAuth,
+    draw_generation_secrets,
+};
+
+impl<'a> EncryptedLeaseSet2Publisher<'a> {
+    /// Builds and signs a type-5 record that only the configured clients can open.
+    ///
+    /// The generation secrets — the `authCookie` and, for the Diffie-Hellman
+    /// scheme, the ephemeral keypair — are drawn here, per generation, and
+    /// dropped when the record is built. Nothing about them is stored, so a
+    /// restart cannot reuse a previous generation's cookie.
+    ///
+    /// The resulting record names the authorized client count in the clear, which
+    /// is the privacy property the specification asks for: a passive observer sees
+    /// *how many* clients are subscribed without learning which.
+    pub fn build_authorized_record<R: rand_core::TryCryptoRng + ?Sized>(
+        &self,
+        authorization: &Els2AuthorizationServerConfig,
+        inner: &i2pr_proto::LeaseSet2,
+        now_seconds: u32,
+        expires_seconds: u32,
+        rng: &mut R,
+    ) -> Result<EncryptedLeaseSet2, EncryptedLeaseSetError> {
+        let published_seconds = inner.published_seconds();
+        let owner: OwnerBlinding =
+            self.schedule
+                .owner_blinding(now_seconds)
+                .map_err(|error| match error {
+                    Els2Error::Blinding(_) => EncryptedLeaseSetError::NotAnOwner,
+                    other => EncryptedLeaseSetError::Els2(other),
+                })?;
+        let daily = *owner.daily();
+        let credentials = self
+            .schedule
+            .identity()
+            .credentials_for(daily.blinded_public_key());
+
+        let (cookie, esk) = draw_generation_secrets(rng).map_err(EncryptedLeaseSetError::Auth)?;
+        let block: AuthBlock = authorization
+            .build_block(
+                &cookie,
+                credentials.subcredential(),
+                published_seconds,
+                Some(&esk),
+                rng,
+            )
+            .map_err(EncryptedLeaseSetError::Auth)?;
+        drop(esk);
+        let auth_data = block
+            .encode_to_vec()
+            .map_err(EncryptedLeaseSetError::Auth)?;
+        let layer1_flags = block.scheme().to_flags();
+
+        let boundary = i2pr_netdb::next_utc_day_boundary_seconds(published_seconds);
+        let expires_offset =
+            i2pr_netdb::day_bound_expiry_offset(published_seconds, expires_seconds, boundary);
+
+        let inner_bytes = inner.encode_to_vec(MAX_COMMON_STRUCTURE_SIZE)?;
+        let mut outer_salt = [0_u8; i2pr_netdb::ELS2_SALT_LENGTH];
+        let mut inner_salt = [0_u8; i2pr_netdb::ELS2_SALT_LENGTH];
+        fill_random(&mut outer_salt, rng)?;
+        fill_random(&mut inner_salt, rng)?;
+        let authorization =
+            i2pr_netdb::Layer1Authorization::new(layer1_flags, &auth_data, cookie.as_bytes())?;
+        let outer_ciphertext = encrypt_outer_ciphertext(
+            &credentials,
+            published_seconds,
+            INNER_LEASE_SET2_STORE_TYPE,
+            &inner_bytes,
+            authorization,
+            &outer_salt,
+            &inner_salt,
+        )?;
+
+        let probe = EncryptedLeaseSet2::new(
+            ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
+            daily.blinded_public_key().as_bytes().to_vec(),
+            published_seconds,
+            expires_offset,
+            None,
+            outer_ciphertext,
+            vec![0_u8; 64],
+        )?;
+        let signature = sign(owner.blinded_private_key(), probe.signed_bytes(), rng)
+            .map_err(|_| EncryptedLeaseSetError::RandomnessUnavailable)?;
+        EncryptedLeaseSet2::new(
+            ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
+            daily.blinded_public_key().as_bytes().to_vec(),
+            published_seconds,
+            expires_offset,
+            None,
+            probe.outer_ciphertext().to_vec(),
+            signature.as_bytes().to_vec(),
+        )
+        .map_err(EncryptedLeaseSetError::Codec)
+    }
+
+    /// Builds the authorized signed record and its `DatabaseStore` hand-off.
+    pub fn build_authorized_database_store<R: rand_core::TryCryptoRng + ?Sized>(
+        &self,
+        authorization: &Els2AuthorizationServerConfig,
+        inner: &i2pr_proto::LeaseSet2,
+        now_seconds: u32,
+        expires_seconds: u32,
+        rng: &mut R,
+    ) -> Result<(BlindedStorageKey, DatabaseStoreMessage), EncryptedLeaseSetError> {
+        let record =
+            self.build_authorized_record(authorization, inner, now_seconds, expires_seconds, rng)?;
+        let key = BlindedStorageKey::from_hash(i2pr_crypto::red25519::blinded_storage_key(
+            &Red25519PublicKey::decode(record.blinded_public_key())
+                .map_err(|_| EncryptedLeaseSetError::InvalidPublicKey)?,
+        ));
+        let message = DatabaseStoreMessage {
+            key: *key.as_hash(),
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: DatabaseStoreData::EncryptedLeaseSet(Box::new(record)),
+        };
+        Ok((key, message))
+    }
+}
+
+impl EncryptedLeaseSet2Resolver {
+    /// Resolves a record using a per-client authorization credential.
+    ///
+    /// The credential is checked against the record's own storage key first, and
+    /// then against the layer-1 authorization block. An unauthorized client gets
+    /// [`EncryptedLeaseSetError::NotAuthorized`] rather than a decryption
+    /// failure, because the two are genuinely different situations and collapsing
+    /// them would hide a configuration mistake.
+    pub fn resolve_with_auth(
+        &mut self,
+        record: &ValidatedEncryptedLeaseSet2,
+        now_seconds: u32,
+        credential: &Els2ClientAuth<'_>,
+    ) -> Result<ResolvedEncryptedService, EncryptedLeaseSetError> {
+        let daily = self.schedule.current(now_seconds)?;
+        if record.storage_key() != daily.storage_key() {
+            return Err(EncryptedLeaseSetError::Els2Validation(
+                i2pr_netdb::Els2ValidationError::StorageKeyMismatch,
+            ));
+        }
+        let credentials = self
+            .schedule
+            .identity()
+            .credentials_for(daily.blinded_public_key());
+        let decrypted: DecryptedEls2 = decrypt_outer_ciphertext(
+            &credentials,
+            record.published_seconds(),
+            record.record().outer_ciphertext(),
+            Some(credential),
+        )
+        .map_err(|error| match error {
+            Els2Error::Auth(inner) => EncryptedLeaseSetError::NotAuthorized {
+                reason: inner.to_string(),
+            },
+            Els2Error::ClientAuthorizationRequired { .. } => {
+                EncryptedLeaseSetError::CredentialNotSupplied
+            }
+            other => EncryptedLeaseSetError::Els2(other),
+        })?;
+        if decrypted.store_type() != INNER_LEASE_SET2_STORE_TYPE {
+            return Err(EncryptedLeaseSetError::UnexpectedInnerStoreType);
+        }
+        let inner = decrypted.into_lease_set2(MAX_COMMON_STRUCTURE_SIZE)?;
+        let destination_hash = inner.key_hash()?;
+        i2pr_netdb::ValidatedLeaseSet2::from_lease_set2(
+            inner.clone(),
+            Some(i2pr_netdb::DestinationHash::from_hash(destination_hash)),
+            i2pr_netdb::LeaseSet2ValidationContext::new(now_seconds),
+        )?;
+        Ok(ResolvedEncryptedService {
+            address: self.address(),
+            daily_blinding: daily,
+            inner,
+        })
+    }
+}
+
+/// Generates a client Diffie-Hellman keypair for one authorized client.
+///
+/// The private half is returned to the caller for storage; the public half is
+/// what the server configures. Returning them together is deliberate: a client
+/// that has the public half without the private half cannot read anything, and a
+/// server that is handed the private half would be able to read everything.
+pub fn generate_client_dh_keypair<R: rand_core::TryCryptoRng + ?Sized>(
+    rng: &mut R,
+) -> Result<(X25519PrivateKey, i2pr_netdb::AuthClientPublicKey), Els2AuthError> {
+    let private =
+        X25519PrivateKey::generate(rng).map_err(|_| Els2AuthError::RandomnessUnavailable)?;
+    let public = i2pr_netdb::AuthClientPublicKey::from_bytes(private.public_bytes());
+    Ok((private, public))
+}
+
+/// Returns the scheme a server configuration publishes.
+pub const fn authorization_scheme(authorization: &Els2AuthorizationServerConfig) -> Els2AuthScheme {
+    authorization.scheme()
+}
+
+/// Convenience alias so a caller can name a server pre-shared key without
+/// importing the authorization module directly.
+pub type ServerPsk = i2pr_netdb::PskClientKey;
+
+/// Convenience alias for the per-generation cookie type, for a control surface
+/// that wants to hold one across a publication.
+pub type GenerationAuthCookie = AuthCookie;

@@ -19,6 +19,16 @@
 mod base64;
 mod databaselookup;
 mod els2;
+mod els2_auth;
+pub use els2_auth::{
+    AuthBlock, AuthClientEntry, AuthClientMaterial, AuthClientPublicKey, AuthCookie, ClientName,
+    ELS2_AUTH_CLIENT_ID_LENGTH, ELS2_AUTH_COOKIE_LENGTH, ELS2_AUTH_OKM_LENGTH,
+    ELS2_DH_AUTH_HKDF_INFO, ELS2_DH_AUTH_KEY_TYPE_CODE, ELS2_PSK_AUTH_HKDF_INFO, Els2AuthError,
+    Els2AuthScheme, Els2AuthSecretRole, Els2AuthorizationServerConfig, Els2ClientAuth,
+    Els2ClientAuthSecret, MAX_ELS2_CLIENT_NAME_LENGTH, PskClientKey, build_dh_block,
+    build_psk_block, dh_client_material, draw_generation_secrets, psk_client_material,
+    recover_auth_cookie,
+};
 mod floodfill_role;
 mod floodfill_service;
 mod lease_set;
@@ -49,10 +59,11 @@ pub use els2::{
     ELS2_LAYER1_SCHEME_PSK, ELS2_LAYER1_SCHEME_SHIFT, ELS2_LAYER2_HKDF_INFO, ELS2_SALT_LENGTH,
     ELS2_SUBCREDENTIAL_PERSONALIZATION, Els2Credentials, Els2Error, Els2InsertOutcome, Els2Store,
     Els2StoreConfig, Els2StoreStats, Els2ValidationContext, Els2ValidationError,
-    Els2ValidationPolicy, LookupSecret, MAX_ELS2_AUTH_CLIENTS, MAX_ELS2_INNER_LEASE_SET_LENGTH,
-    MAX_ELS2_OUTER_CIPHERTEXT_LENGTH, MAX_ELS2_RECORD_LENGTH, OwnerBlinding,
-    ValidatedEncryptedLeaseSet2, day_bound_expiry_offset, decrypt_no_auth_outer_ciphertext,
-    derive_els2_credentials, encrypt_no_auth_outer_ciphertext, next_utc_day_boundary_seconds,
+    Els2ValidationPolicy, Layer1Authorization, LookupSecret, MAX_ELS2_AUTH_CLIENTS,
+    MAX_ELS2_INNER_LEASE_SET_LENGTH, MAX_ELS2_OUTER_CIPHERTEXT_LENGTH, MAX_ELS2_RECORD_LENGTH,
+    OwnerBlinding, ValidatedEncryptedLeaseSet2, day_bound_expiry_offset,
+    decrypt_no_auth_outer_ciphertext, decrypt_outer_ciphertext, derive_els2_credentials,
+    encrypt_no_auth_outer_ciphertext, encrypt_outer_ciphertext, next_utc_day_boundary_seconds,
     unblinded_scalar_from_ed25519_seed, utc_blinding_day,
 };
 pub use floodfill_role::{

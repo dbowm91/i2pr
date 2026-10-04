@@ -1,7 +1,8 @@
 # Red25519 and Encrypted LeaseSet2 algorithm worksheet (Plan 329)
 
 Status: frozen 2026-10-04; §2, §5, and §14 amended by Plan 330 with the two findings recorded in
-§14.8 and §14.9. Written from the normative sources pinned in
+§14.8 and §14.9. §14.10–§14.15 amended by Plan 332, and §14.16–§14.23 added by Plan 333. Written
+from the normative sources pinned in
 [`red25519-clean-room-freeze.md`](red25519-clean-room-freeze.md) §1, with ambiguities resolved
 against the pinned readable references in §2 of that file and recorded in §14 here.
 
@@ -453,6 +454,67 @@ change, and never a log line containing key, secret, salt, or plaintext.
     layer-0 region. A flipped ciphertext byte corrupts the plaintext, and whether the corruption
     still parses depends on where it lands. Integrity is therefore asserted at the signature and at
     the inner LeaseSet2's own signature, not at the layer. **[spec]**
+16. **The authorization HKDF reuses the §14.1 slicing, and `authInput` is 68 bytes for both
+    schemes** (found while implementing Plan 333). Both schemes expand to a 52-byte OKF and slice it
+    identically — `key = okm[0..32]`, `iv = okm[32..44]`, `clientID = okm[44..52]` — so §14.1's
+    resolution of the specification's inconsistent `[0:31]/[32:43]/[44:51]` applies here unchanged.
+    `authInput` is `psk_i || subcredential || published_be32` for PSK and
+    `sharedSecret || cpk_i || subcredential || published_be32` for DH, both exactly 68 bytes. The
+    DH salt is the server's ephemeral public key, not a separate random salt. **[compat]**
+17. **The client's own public key is inside the DH derivation, which is what stops key
+    substitution** (found while implementing Plan 333). A DH client derives
+    `clientID_i` from `sharedSecret || cpk_i || subcredential || published`, where `cpk_i` is the
+    *client's own* published public key. A client that keeps its private key but substitutes a
+    different public key therefore derives a different `clientID` and fails to match its own entry.
+    The consequence is worth stating: the server cannot be tricked into authorizing one key under
+    another client's identity, and a client cannot claim a co-client's authorization. **[spec]**
+18. **Duplicate `clientID` values are rejected, not merged** (found while implementing Plan 333). Two
+    configured clients can collide if they are configured with the same key. Merging them would
+    silently drop a client from the count, and because the count is what a passive observer sees,
+    a merge would also make the observable count disagree with the real one. The block build fails
+    closed on a collision instead. **[spec]**
+19. **The client count is in the clear and the entry order is not meaningful** (found while
+    implementing Plan 333). The declared client count is a 2-byte big-endian field in the layer-1
+    plaintext, which is encrypted under the layer-1 key but derivable by anyone who can decrypt
+    that layer — which is everyone, since the layer-1 key needs no credential. It is followed by
+    fixed-size 40-byte entries, so the block's total length is `34 + count × 40`. A passive
+    observer learns *how many* clients are subscribed and nothing about which, which is the
+    property §11 asks for. Because the entries are fixed size, the block's length is derived from
+    the count rather than by scanning, and entry order carries no meaning: recovery examines every
+    entry, compares the identifier in constant time, and takes the first match. The order is
+    randomized per publication when more than one client is configured, and a failing random source
+    leaves the order as-is rather than aborting an otherwise valid publication. **[spec]**
+20. **An authorized service's address must declare `B32_FLAG_REQUIRES_CLIENT_KEY`** (found while
+    implementing Plan 333). The layer-1 flags byte already refuses a record whose credential is
+    absent, but that check happens *after* a fetch. The address is what a prospective client reads
+    first, and without this flag an authorized service is indistinguishable from an open one until
+    the client has already pulled the record. The flag is therefore set at publication and
+    preserved through resolution, and a resolver built for such an address refuses the
+    unauthenticated path outright rather than discovering the requirement at decrypt time. **[spec]**
+21. **A missing credential and a wrong credential are different errors** (found while implementing
+    Plan 333). A client that supplies *no* credential gets a distinct, actionable error, because
+    presenting any authorized key would fix it. A client that supplies a *wrong* one gets a refusal
+    that is deliberately indistinguishable from presenting a key that was never configured: the
+    identifier comparison is constant time and the error text carries no distance information, so
+    an attacker learns nothing about how close a guess was. **[spec]**
+22. **The four authorization secrets are 32 bytes each and are not interchangeable** (found while
+    implementing Plan 333). Server PSK, server-side DH client public key, client PSK, and client DH
+    private key are all 32 bytes. They are therefore carried with an explicit role tag, and a
+    persistence layer that mixed them up would store a private key where a public one belongs.
+    Persistence is a reversible, role-tagged 33-byte encoding that is explicitly *not* a wire
+    format, a configuration serialization, or a password verifier: the protocol needs the secret on
+    every publication, so a one-way verifier would be useless, and at-rest encryption remains the
+    storage layer's responsibility and is not claimed here. **[spec]**
+23. **The client-count bound is a policy cap, not a format limit, and the two references disagree**
+    (found while implementing Plan 333). The wire format carries a 2-byte count, so the format
+    permits up to 65 535 entries. i2pr bounds publication at 255, chosen so the count field and the
+    entry array stay well inside a single bounded allocation; the pinned Emissary reference caps at
+    99 for both schemes. Neither bound is derived from the specification, and they are not
+    compatible at the top of the range: a record i2pr considers publishable at 200 clients is one
+    Emissary refuses to parse. i2pr's bound is the looser one, which is the safer direction for a
+    publisher and the more permissive one for a receiver. Any future work that reconciles the two
+    must treat this as a policy decision, not a bug, and must not silently lower i2pr's bound to
+    match a reference. **[compat]**
 
 ## 15. Ownership boundary of the future module
 
