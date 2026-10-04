@@ -1016,7 +1016,7 @@ impl I2pControlServiceState {
             AddressBookRequest::Subscriptions { urls } => {
                 match manager.replace_subscriptions(&urls) {
                     Ok(true) => {
-                        manager.run_queued_refreshes(
+                        manager.request_refresh(
                             i2pr_addressbook::RefreshReason::SubscriptionsReplaced,
                         );
                         Self::addressbook_success(id, "subscriptions replaced")
@@ -1069,7 +1069,9 @@ impl I2pControlServiceState {
     ) -> (serde_json::Value, Duration) {
         use crate::addressbook::AddressBookManagerError as ManagerError;
         match error {
-            ManagerError::Inactive | ManagerError::StoreUnavailable => (
+            ManagerError::Inactive
+            | ManagerError::StoreUnavailable
+            | ManagerError::ArtifactUnavailable => (
                 error_envelope(
                     id,
                     JsonRpcErrorCode::InternalError.code(),
@@ -1196,7 +1198,12 @@ impl I2pControlServiceState {
         // Control-plane uptime in whole seconds (truncating, saturating).
         let uptime_secs = now_ms / 1000;
         let mut result = serde_json::Map::with_capacity(selection.len());
+        let mut clear_logs = false;
         for field in selection {
+            if field.key == "i2p.router.logs.clear" {
+                clear_logs = true;
+                continue;
+            }
             if field.key == "i2p.router.uptime" {
                 result.insert(field.key.to_owned(), serde_json::Value::from(now_ms));
                 continue;
@@ -1240,6 +1247,24 @@ impl I2pControlServiceState {
                     );
                 }
             }
+        }
+        // Defer the side effect until every requested value has resolved,
+        // so a mixed selection cannot partially mutate on an error.
+        if clear_logs {
+            if self.inspection.clear_logs().is_none() {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InternalError.code(),
+                        "RouterInfo selector source is unavailable",
+                    ),
+                    Duration::ZERO,
+                );
+            }
+            result.insert(
+                "i2p.router.logs.clear".to_owned(),
+                serde_json::Value::String("success".to_owned()),
+            );
         }
         (
             success_envelope(id, serde_json::Value::Object(result)),

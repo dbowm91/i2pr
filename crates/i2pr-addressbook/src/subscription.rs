@@ -2,9 +2,8 @@
 //!
 //! `SetSubscriptions` replaces the complete source set. URLs are
 //! HTTP/HTTPS only (bounded host, no credentials); the fetch itself is
-//! daemon-composed and currently has no downloader owner, so refresh
-//! attempts report unavailable until one exists. Body ingestion is the
-//! live, tested half: `hostname=destination` lines (`#` comments and
+//! daemon-composed through the loopback-proxy capability. Body ingestion
+//! accepts `hostname=destination` lines (`#` comments and
 //! blanks skipped), every line validated, any invalid line failing the
 //! whole body, duplicates resolved last-wins.
 
@@ -30,6 +29,32 @@ pub const MAX_SUBSCRIPTION_LINE_LEN: usize = 8192;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SubscriptionSet {
     urls: Vec<String>,
+}
+
+/// Conditional HTTP validators and parsed entries retained for one
+/// configured subscription. Entries and validators share the owning
+/// generation so a 304 cannot refer to missing or newer content.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SubscriptionSource {
+    /// Last completely validated body, as canonical hostname entries.
+    pub entries: BTreeMap<Hostname, String>,
+    /// HTTP ETag value, if supplied by the source.
+    pub etag: Option<String>,
+    /// HTTP Last-Modified value, if supplied by the source.
+    pub last_modified: Option<String>,
+}
+
+/// Maximum accepted validator value length.
+pub const MAX_SUBSCRIPTION_VALIDATOR_LEN: usize = 1024;
+
+/// Validates a conditional validator before persisting or sending it.
+pub fn validate_subscription_validator(value: &str) -> Result<(), AddressBookError> {
+    if value.len() > MAX_SUBSCRIPTION_VALIDATOR_LEN
+        || value.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+    {
+        return Err(AddressBookError::InvalidConfigValue);
+    }
+    Ok(())
 }
 
 impl SubscriptionSet {

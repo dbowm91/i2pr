@@ -1,6 +1,6 @@
 # Plan 322 — Canonical RouterInfo source completion and signed-news owner
 
-Status: **registered-prop170-routerinfo-canonical-source-completion-blocked-on-plan321**
+Status: **in-progress-prop170-routerinfo-canonical-source-completion**
 
 Classification: capability + observability + signed-content integration.
 

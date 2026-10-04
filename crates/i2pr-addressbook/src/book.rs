@@ -13,7 +13,7 @@ use crate::destination_text::validate_destination_text;
 use crate::error::AddressBookError;
 use crate::generation::MAX_ENTRIES_PER_BOOK;
 use crate::hostname::{Hostname, parse_hostname};
-use crate::subscription::SubscriptionSet;
+use crate::subscription::{SubscriptionSet, SubscriptionSource};
 
 /// One of the four administrative books, in lookup-precedence order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,6 +110,7 @@ pub enum EntryOutcome {
 pub struct AddressBook {
     books: [BTreeMap<Hostname, String>; 4],
     subscribed: BTreeMap<Hostname, String>,
+    subscription_sources: BTreeMap<String, SubscriptionSource>,
     subscriptions: SubscriptionSet,
     config: AddressBookConfig,
     revision: u64,
@@ -121,6 +122,7 @@ impl AddressBook {
         Self {
             books: Default::default(),
             subscribed: BTreeMap::new(),
+            subscription_sources: BTreeMap::new(),
             subscriptions: SubscriptionSet::new(),
             config: AddressBookConfig::default(),
             revision: 0,
@@ -188,6 +190,11 @@ impl AddressBook {
         &self.subscriptions
     }
 
+    /// Parsed entries and conditional HTTP metadata per configured URL.
+    pub fn subscription_sources(&self) -> &BTreeMap<String, SubscriptionSource> {
+        &self.subscription_sources
+    }
+
     /// Current configuration.
     pub fn config(&self) -> &AddressBookConfig {
         &self.config
@@ -214,6 +221,21 @@ impl Default for AddressBook {
     }
 }
 
+fn merge_subscription_sources(
+    subscriptions: &SubscriptionSet,
+    sources: &BTreeMap<String, SubscriptionSource>,
+) -> BTreeMap<Hostname, String> {
+    let mut merged = BTreeMap::new();
+    for url in subscriptions.urls() {
+        if let Some(source) = sources.get(url) {
+            for (hostname, destination) in &source.entries {
+                merged.insert(hostname.clone(), destination.clone());
+            }
+        }
+    }
+    merged
+}
+
 /// Administrative mutation handle: the only path that changes
 /// committed address-book state.
 pub struct AddressBookControl<'a> {
@@ -221,6 +243,11 @@ pub struct AddressBookControl<'a> {
 }
 
 impl AddressBookControl<'_> {
+    /// Derived subscription entries for generation validation.
+    pub(crate) fn derived_entries(&self) -> &BTreeMap<Hostname, String> {
+        &self.inner.subscribed
+    }
+
     /// Applies one entry mutation atomically: the hostname and (when
     /// present) destination validate fully before any state changes.
     /// A present delete flag selects deletion even with a false-ish
@@ -270,7 +297,15 @@ impl AddressBookControl<'_> {
         let next = SubscriptionSet::checked(urls)?;
         let changed = next != self.inner.subscriptions;
         if changed {
+            let configured = next.urls().to_vec();
             self.inner.subscriptions = next;
+            self.inner
+                .subscription_sources
+                .retain(|url, _| configured.contains(url));
+            self.inner.subscribed = merge_subscription_sources(
+                &self.inner.subscriptions,
+                &self.inner.subscription_sources,
+            );
             self.inner.bump_revision();
         }
         Ok(changed)
@@ -283,9 +318,60 @@ impl AddressBookControl<'_> {
         &mut self,
         entries: BTreeMap<Hostname, String>,
     ) -> Result<bool, AddressBookError> {
+        if entries.len() > MAX_ENTRIES_PER_BOOK {
+            return Err(AddressBookError::ListOverBound);
+        }
+        for destination in entries.values() {
+            validate_destination_text(destination)?;
+        }
         let changed = entries != self.inner.subscribed;
         if changed {
             self.inner.subscribed = entries;
+            self.inner.subscription_sources.clear();
+            self.inner.bump_revision();
+        }
+        Ok(changed)
+    }
+
+    /// Replaces parsed subscription sources and validators atomically.
+    /// URL order defines merge precedence; later sources win.
+    pub fn replace_subscription_sources(
+        &mut self,
+        sources: BTreeMap<String, SubscriptionSource>,
+    ) -> Result<bool, AddressBookError> {
+        if sources.len() != self.inner.subscriptions.urls().len()
+            || self
+                .inner
+                .subscriptions
+                .urls()
+                .iter()
+                .any(|url| !sources.contains_key(url))
+        {
+            return Err(AddressBookError::InvalidSubscription);
+        }
+        for source in sources.values() {
+            if source.entries.len() > MAX_ENTRIES_PER_BOOK {
+                return Err(AddressBookError::ListOverBound);
+            }
+            if let Some(etag) = &source.etag {
+                crate::subscription::validate_subscription_validator(etag)?;
+            }
+            if let Some(last_modified) = &source.last_modified {
+                crate::subscription::validate_subscription_validator(last_modified)?;
+            }
+            for destination in source.entries.values() {
+                validate_destination_text(destination)?;
+            }
+        }
+        let derived = merge_subscription_sources(&self.inner.subscriptions, &sources);
+        if derived.len() > MAX_ENTRIES_PER_BOOK {
+            return Err(AddressBookError::ListOverBound);
+        }
+        let changed =
+            sources != self.inner.subscription_sources || derived != self.inner.subscribed;
+        if changed {
+            self.inner.subscription_sources = sources;
+            self.inner.subscribed = derived;
             self.inner.bump_revision();
         }
         Ok(changed)

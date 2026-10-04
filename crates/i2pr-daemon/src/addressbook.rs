@@ -26,7 +26,9 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use i2pr_addressbook::{
     AddressBook, AddressBookResolver, AddressBookSnapshot, EntryMutation, RefreshDiagnostic,
@@ -41,6 +43,7 @@ pub const MAX_SNAPSHOT_ARTIFACT_BYTES: usize = 8_000_000;
 pub const MAX_DIAGNOSTIC_ARTIFACT_BYTES: u64 = 65_536;
 /// Retained tail when the diagnostic artifact is truncated.
 pub const DIAGNOSTIC_ARTIFACT_RETAIN_BYTES: u64 = 32_768;
+static PUBLISHED_ARTIFACT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Validated `[addressbook]` subsystem configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +107,8 @@ pub enum AddressBookManagerError {
     Inactive,
     /// Generation persistence failed (detail is traced, not returned).
     StoreUnavailable,
+    /// Published AddressBook artifact could not be updated atomically.
+    ArtifactUnavailable,
     /// The mutation itself was rejected.
     Rejected(i2pr_addressbook::AddressBookError),
 }
@@ -113,6 +118,7 @@ impl core::fmt::Display for AddressBookManagerError {
         match self {
             Self::Inactive => formatter.write_str("address-book subsystem is not active"),
             Self::StoreUnavailable => formatter.write_str("address-book generation store failed"),
+            Self::ArtifactUnavailable => formatter.write_str("address-book artifact update failed"),
             Self::Rejected(error) => write!(formatter, "address-book request rejected: {error}"),
         }
     }
@@ -132,6 +138,7 @@ pub struct AddressBookManager {
     store: AddressBookGenerationStore,
     state: Mutex<ManagerState>,
     shared: SharedAddressBook,
+    refresh_notify: tokio::sync::Notify,
 }
 
 impl std::fmt::Debug for AddressBookManager {
@@ -161,6 +168,7 @@ impl AddressBookManager {
                     activation_error: None,
                 }),
                 shared,
+                refresh_notify: tokio::sync::Notify::new(),
             };
         }
         let mut manager = Self {
@@ -173,8 +181,12 @@ impl AddressBookManager {
                 activation_error: None,
             }),
             shared,
+            refresh_notify: tokio::sync::Notify::new(),
         };
-        match manager.load_or_import() {
+        match manager
+            .load_or_import()
+            .and_then(|()| manager.reconcile_publication())
+        {
             Ok(()) => manager.publish_snapshot(),
             Err(reason) => manager.deactivate_with(reason),
         }
@@ -235,6 +247,33 @@ impl AddressBookManager {
             state.active = true;
             state.activation_error = None;
         }
+    }
+
+    /// Rebuilds the configured published snapshot from the authoritative
+    /// router book at startup before exposing the resolver.
+    fn reconcile_publication(&self) -> Result<(), &'static str> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "address-book state unavailable")?;
+        let changed = state.addressbook.control().sync_published_from_router();
+        if !state.addressbook.config().should_publish {
+            return Ok(());
+        }
+        let artifact = state.addressbook.config().book_artifacts[3].clone();
+        write_confined_artifact(
+            &self.config.state_dir,
+            &artifact,
+            &published_artifact_bytes(&state.addressbook),
+        )
+        .map_err(|_| "published artifact unavailable")?;
+        if changed {
+            let bytes = encode_generation(&state.addressbook);
+            self.store
+                .publish(&bytes)
+                .map_err(|_| "published generation unavailable")?;
+        }
+        Ok(())
     }
 
     fn publish_snapshot(&self) {
@@ -363,6 +402,16 @@ impl AddressBookManager {
             .and_then(|mut state| state.refresh.finish_active())
     }
 
+    /// Releases a worker's claimed queue slot after cancellation. Any
+    /// coalesced newest set remains active and is available to a later
+    /// owner without losing the bounded queue state.
+    pub fn release_refresh_after_cancel(&self) {
+        let promoted = self.refresh_finished();
+        if promoted.is_some() {
+            self.refresh_notify.notify_one();
+        }
+    }
+
     /// Enqueues the committed subscription set for refresh. Returns
     /// `true` when the queue was idle and the caller should drain,
     /// `false` when the set coalesced (or the subsystem is down).
@@ -373,6 +422,17 @@ impl AddressBookManager {
         };
         let subscriptions = state.addressbook.subscriptions().clone();
         state.refresh.push(subscriptions, reason)
+    }
+
+    /// Queues the newest configured set and wakes the supervised owner.
+    pub fn request_refresh(&self, reason: RefreshReason) {
+        let _ = self.enqueue_current_for_refresh(reason);
+        self.refresh_notify.notify_one();
+    }
+
+    /// Waits until a refresh request wakes the daemon-owned fetch worker.
+    pub async fn refresh_requested(&self) {
+        self.refresh_notify.notified().await;
     }
 
     /// Takes the queued set for immediate fetching, if any.
@@ -386,13 +446,192 @@ impl AddressBookManager {
     /// Runs the queued refresh chain to idle: every attempt records
     /// its diagnostic to the bounded artifact.
     pub fn run_queued_refreshes(&self, reason: RefreshReason) {
-        if !self.enqueue_current_for_refresh(reason) && self.take_refresh_work().is_none() {
-            return;
-        }
+        let _ = self.enqueue_current_for_refresh(reason);
         while let Some(_set) = self.take_refresh_work() {
             let diagnostic = self.run_refresh_once(reason);
             self.record_diagnostic(&diagnostic);
             let _ = self.refresh_finished();
+        }
+    }
+
+    /// Drains queued subscription generations through the configured
+    /// loopback eepProxy. Each entire URL set is parsed and committed as
+    /// one generation; any failure preserves the previous resolver view.
+    pub async fn run_queued_fetches(&self, reason: RefreshReason) {
+        while let Some(set) = self.take_refresh_work() {
+            let diagnostic = self.refresh_subscription_set(&set, reason).await;
+            self.record_diagnostic(&diagnostic);
+            let _ = self.refresh_finished();
+        }
+    }
+
+    async fn refresh_subscription_set(
+        &self,
+        set: &i2pr_addressbook::SubscriptionSet,
+        reason: RefreshReason,
+    ) -> RefreshDiagnostic {
+        use i2pr_addressbook::{RefreshOutcome, SubscriptionSource};
+
+        let (active, current_set, proxy_host, proxy_port, timeout_secs, previous) = self
+            .state
+            .lock()
+            .ok()
+            .map(|state| {
+                (
+                    state.active,
+                    state.addressbook.subscriptions().clone(),
+                    state.addressbook.config().proxy_host.clone(),
+                    state.addressbook.config().proxy_port,
+                    state.addressbook.config().lookup_timeout_secs,
+                    state.addressbook.subscription_sources().clone(),
+                )
+            })
+            .unwrap_or((
+                false,
+                i2pr_addressbook::SubscriptionSet::new(),
+                None,
+                None,
+                30,
+                BTreeMap::new(),
+            ));
+        let url_count = set.urls().len();
+        if !active {
+            return RefreshDiagnostic {
+                reason,
+                outcome: RefreshOutcome::DownloaderUnavailable,
+                url_count,
+            };
+        }
+        if current_set != *set {
+            return RefreshDiagnostic {
+                reason,
+                outcome: RefreshOutcome::FetchFailed,
+                url_count,
+            };
+        }
+        if !set.urls().is_empty() && (proxy_host.is_none() || proxy_port.is_none()) {
+            return RefreshDiagnostic {
+                reason,
+                outcome: RefreshOutcome::DownloaderUnavailable,
+                url_count,
+            };
+        }
+
+        let fetch_result = tokio::time::timeout(Duration::from_secs(300), async {
+            use crate::addressbook_fetch::BoundedContentFetcher;
+            let fetcher = crate::addressbook_fetch::LoopbackProxyFetcher {
+                host: proxy_host.clone().unwrap_or_default(),
+                port: proxy_port.unwrap_or_default(),
+            };
+            let mut sources = BTreeMap::<String, SubscriptionSource>::new();
+            let mut ingested = 0usize;
+            for url in set.urls() {
+                let prior = previous.get(url);
+                let response = {
+                    let mut response = fetcher
+                        .fetch(
+                            url,
+                            prior.and_then(|source| source.etag.as_deref()),
+                            prior.and_then(|source| source.last_modified.as_deref()),
+                            Duration::from_secs(timeout_secs),
+                        )
+                        .await;
+                    if matches!(
+                        response,
+                        Err(crate::addressbook_fetch::FetchError::Unavailable)
+                    ) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        response = fetcher
+                            .fetch(
+                                url,
+                                prior.and_then(|source| source.etag.as_deref()),
+                                prior.and_then(|source| source.last_modified.as_deref()),
+                                Duration::from_secs(timeout_secs),
+                            )
+                            .await;
+                    }
+                    response
+                };
+                let response = match response {
+                    Ok(response) => response,
+                    Err(_) => return Err(RefreshOutcome::FetchFailed),
+                };
+                let source = match response.status {
+                    304 => {
+                        let Some(mut source) = prior.cloned() else {
+                            return Err(RefreshOutcome::FetchFailed);
+                        };
+                        if response.etag.is_some() {
+                            source.etag = response.etag;
+                        }
+                        if response.last_modified.is_some() {
+                            source.last_modified = response.last_modified;
+                        }
+                        source
+                    }
+                    200 => {
+                        let entries = ingest_subscription_body(&response.body)
+                            .map_err(|_| RefreshOutcome::IngestRejected)?;
+                        ingested = ingested.saturating_add(entries.len());
+                        SubscriptionSource {
+                            entries,
+                            etag: response.etag,
+                            last_modified: response.last_modified,
+                        }
+                    }
+                    _ => return Err(RefreshOutcome::FetchFailed),
+                };
+                sources.insert(url.clone(), source);
+            }
+            Ok::<_, RefreshOutcome>((sources, ingested))
+        })
+        .await;
+
+        let (sources, ingested) = match fetch_result {
+            Err(_) => {
+                return RefreshDiagnostic {
+                    reason,
+                    outcome: RefreshOutcome::FetchFailed,
+                    url_count,
+                };
+            }
+            Ok(Err(outcome)) => {
+                return RefreshDiagnostic {
+                    reason,
+                    outcome,
+                    url_count,
+                };
+            }
+            Ok(Ok(result)) => result,
+        };
+
+        match self.transact(|book| {
+            if book.subscriptions() != set {
+                return Err(i2pr_addressbook::AddressBookError::InvalidSubscription);
+            }
+            book.control().replace_subscription_sources(sources)
+        }) {
+            Ok(changed) => {
+                let derived_count = self
+                    .state
+                    .lock()
+                    .ok()
+                    .map(|state| state.addressbook.subscribed_len())
+                    .unwrap_or(ingested);
+                RefreshDiagnostic {
+                    reason,
+                    outcome: RefreshOutcome::Committed {
+                        ingested: derived_count,
+                        changed,
+                    },
+                    url_count,
+                }
+            }
+            Err(_) => RefreshDiagnostic {
+                reason,
+                outcome: RefreshOutcome::FetchFailed,
+                url_count,
+            },
         }
     }
 
@@ -456,8 +695,39 @@ impl AddressBookManager {
         let rollback = state.addressbook.clone();
         let output = f(&mut state.addressbook).map_err(AddressBookManagerError::Rejected)?;
         let _ = state.addressbook.control().sync_published_from_router();
+        let published_path = state.addressbook.config().book_artifacts[3].clone();
+        let should_publish = state.addressbook.config().should_publish;
+        let prior_artifact = if should_publish {
+            match read_confined_artifact(&self.config.state_dir.join(&published_path)) {
+                Ok(prior) => prior,
+                Err(()) => {
+                    state.addressbook = rollback;
+                    return Err(AddressBookManagerError::ArtifactUnavailable);
+                }
+            }
+        } else {
+            None
+        };
+        if should_publish
+            && write_confined_artifact(
+                &self.config.state_dir,
+                &published_path,
+                &published_artifact_bytes(&state.addressbook),
+            )
+            .is_err()
+        {
+            state.addressbook = rollback;
+            return Err(AddressBookManagerError::ArtifactUnavailable);
+        }
         let bytes = encode_generation(&state.addressbook);
         if self.store.publish(&bytes).is_err() {
+            if should_publish {
+                let _ = restore_confined_artifact(
+                    &self.config.state_dir,
+                    &published_path,
+                    prior_artifact.as_deref(),
+                );
+            }
             state.addressbook = rollback;
             return Err(AddressBookManagerError::StoreUnavailable);
         }
@@ -482,6 +752,96 @@ fn rendered_book(book: &AddressBook, kind: i2pr_addressbook::BookKind) -> Vec<(S
         .into_iter()
         .map(|(name, destination)| (name.as_str().to_owned(), destination))
         .collect()
+}
+
+fn published_artifact_bytes(book: &AddressBook) -> Vec<u8> {
+    let entries: BTreeMap<String, String> = book
+        .list(i2pr_addressbook::BookKind::Router)
+        .into_iter()
+        .map(|(hostname, destination)| (hostname.as_str().to_owned(), destination))
+        .collect();
+    serde_json::to_vec(&entries).expect("validated address-book entries serialize")
+}
+
+fn read_confined_artifact(path: &Path) -> Result<Option<Vec<u8>>, ()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_SNAPSHOT_ARTIFACT_BYTES as u64
+    {
+        return Err(());
+    }
+    fs::read(path).map(Some).map_err(|_| ())
+}
+
+/// Atomically replaces one flat logical artifact beneath the address-book
+/// root. Existing symlinks, directories, and special files fail closed.
+fn write_confined_artifact(state_dir: &Path, name: &str, bytes: &[u8]) -> Result<(), ()> {
+    if name.is_empty()
+        || name.len() > i2pr_addressbook::MAX_CONFIG_PATH_LEN
+        || name.contains('/')
+        || name.contains('\\')
+        || name.starts_with('.')
+        || bytes.len() > MAX_SNAPSHOT_ARTIFACT_BYTES
+    {
+        return Err(());
+    }
+    let root_metadata = fs::symlink_metadata(state_dir).map_err(|_| ())?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(());
+    }
+    let path = state_dir.join(name);
+    if read_confined_artifact(&path).is_err() {
+        return Err(());
+    }
+    let nonce = PUBLISHED_ARTIFACT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = state_dir.join(format!(".tmp-published-{}-{nonce}", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary).map_err(|_| ())?;
+    file.write_all(bytes).map_err(|_| ())?;
+    file.sync_all().map_err(|_| ())?;
+    drop(file);
+    if read_confined_artifact(&path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(());
+    }
+    if fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(());
+    }
+    fs::File::open(state_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| ())
+}
+
+fn restore_confined_artifact(state_dir: &Path, name: &str, prior: Option<&[u8]>) -> Result<(), ()> {
+    let path = state_dir.join(name);
+    match prior {
+        Some(bytes) => write_confined_artifact(state_dir, name, bytes),
+        None => {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    return Err(());
+                }
+                Ok(_) => fs::remove_file(&path).map_err(|_| ())?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Err(()),
+            }
+            fs::File::open(state_dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| ())
+        }
+    }
 }
 
 /// Whether `level` records `outcome` in the artifact.
@@ -611,6 +971,39 @@ mod tests {
         let mut bytes = vec![0u8; 384];
         bytes.extend_from_slice(&[5u8, 0, 4, 0, 7, 0, 4]);
         i2pr_api::sam::base64::encode(&bytes)
+    }
+
+    async fn read_proxy_request(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+        let mut request = Vec::new();
+        let mut chunk = [0; 1024];
+        loop {
+            let count = stream.read(&mut chunk).await.expect("read request");
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("HTTP request is ASCII")
+    }
+
+    async fn write_proxy_response(
+        stream: &mut tokio::net::TcpStream,
+        status: &str,
+        body: &[u8],
+        etag: &str,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let header = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: {etag}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes()).await.expect("header");
+        stream.write_all(body).await.expect("body");
+        stream.shutdown().await.expect("close");
     }
 
     fn entry(
@@ -918,6 +1311,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["router.i2p"]
         );
+        let artifact_path = directory.path().join("addressbook/published.json");
+        let published_artifact: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(&artifact_path).expect("published artifact"))
+                .expect("published JSON");
+        assert_eq!(
+            published_artifact
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["router.i2p"]
+        );
         manager
             .apply_entry(entry(
                 i2pr_addressbook::BookKind::Router,
@@ -928,6 +1332,7 @@ mod tests {
             .expect("update router book");
         let published = manager.books_view().expect("books");
         assert_eq!(published[3].len(), 2);
+        let before_disable = fs::read(&artifact_path).expect("updated published artifact");
         manager
             .apply_config(&BTreeMap::from([(
                 "should_publish".to_owned(),
@@ -943,6 +1348,140 @@ mod tests {
             ))
             .expect("router change");
         assert_eq!(manager.books_view().expect("books")[3].len(), 2);
+        assert_eq!(
+            fs::read(&artifact_path).expect("published artifact unchanged"),
+            before_disable
+        );
+        drop(manager);
+        let reloaded = AddressBookManager::activate(enabled_config(directory.path()));
+        assert!(reloaded.is_active());
+        assert_eq!(
+            fs::read(&artifact_path).expect("reconciled artifact"),
+            before_disable
+        );
+    }
+
+    #[test]
+    fn startup_repairs_published_artifact_from_committed_generation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let config = enabled_config(directory.path());
+        let manager = AddressBookManager::activate(config.clone());
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Router,
+                "router.i2p",
+                Some(destination_text()),
+                false,
+            ))
+            .expect("router entry");
+        manager
+            .apply_config(&BTreeMap::from([(
+                "should_publish".to_owned(),
+                "true".to_owned(),
+            )]))
+            .expect("enable publishing");
+        let artifact = config.state_dir.join("published.json");
+        fs::write(&artifact, b"{}").expect("corrupt artifact");
+        drop(manager);
+        let restored = AddressBookManager::activate(config);
+        assert!(restored.is_active());
+        let entries: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(artifact).expect("repaired artifact"))
+                .expect("published JSON");
+        assert_eq!(
+            entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["router.i2p"]
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_refresh_uses_validators_and_commits_whole_generations() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("proxy fixture");
+        let port = listener.local_addr().expect("proxy address").port();
+        let destination = destination_text();
+        let first_body = format!("stable.i2p={destination}\nold.i2p={destination}\n");
+        let changed_body = format!("stable.i2p={destination}\nnew.i2p={destination}\n");
+        let proxy = tokio::spawn(async move {
+            // Initial generation: two complete bodies.
+            for (path, body, etag) in [
+                ("one.i2p", first_body.as_bytes().to_vec(), "\"v1\""),
+                ("two.i2p", first_body.as_bytes().to_vec(), "\"v2\""),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept initial");
+                let request = read_proxy_request(&mut stream).await;
+                assert!(request.contains(path));
+                assert!(!request.contains("If-None-Match"));
+                write_proxy_response(&mut stream, "200 OK", &body, etag).await;
+            }
+            // One URL changes, then the second source is corrupt. Neither
+            // the entries nor the first URL's newer ETag may commit.
+            for (path, body, etag) in [
+                ("one.i2p", changed_body.into_bytes(), "\"v3\""),
+                ("two.i2p", b"bad.i2p=not-a-destination\n".to_vec(), "\"v2\""),
+            ] {
+                let (mut stream, _) = listener.accept().await.expect("accept failed refresh");
+                let request = read_proxy_request(&mut stream).await;
+                assert!(request.contains(path));
+                assert!(request.contains("If-None-Match:"));
+                write_proxy_response(&mut stream, "200 OK", &body, etag).await;
+            }
+            // The failed batch left both committed validators untouched.
+            for (path, etag) in [("one.i2p", "\"v1\""), ("two.i2p", "\"v2\"")] {
+                let (mut stream, _) = listener.accept().await.expect("accept conditional");
+                let request = read_proxy_request(&mut stream).await;
+                assert!(request.contains(path));
+                assert!(request.contains(&format!("If-None-Match: {etag}")));
+                let response = format!(
+                    "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nConnection: close\r\n\r\n"
+                );
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(response.as_bytes()).await.expect("304");
+                stream.shutdown().await.expect("close 304");
+            }
+        });
+
+        manager
+            .apply_config(&BTreeMap::from([
+                ("proxy_host".to_owned(), "127.0.0.1".to_owned()),
+                ("proxy_port".to_owned(), port.to_string()),
+                ("lookup_timeout".to_owned(), "2".to_owned()),
+            ]))
+            .expect("proxy config");
+        let urls = vec![
+            "http://one.i2p/hosts.txt".to_owned(),
+            "http://two.i2p/hosts.txt".to_owned(),
+        ];
+        manager.replace_subscriptions(&urls).expect("subscriptions");
+
+        manager.request_refresh(RefreshReason::SubscriptionsReplaced);
+        manager
+            .run_queued_fetches(RefreshReason::SubscriptionsReplaced)
+            .await;
+        let committed_revision = manager.revision().expect("active revision");
+        assert!(manager.shared().lookup("stable.i2p").is_some());
+        assert!(manager.shared().lookup("old.i2p").is_some());
+
+        manager.request_refresh(RefreshReason::Manual);
+        manager.run_queued_fetches(RefreshReason::Manual).await;
+        assert_eq!(manager.revision(), Some(committed_revision));
+        assert!(manager.shared().lookup("old.i2p").is_some());
+        assert!(manager.shared().lookup("new.i2p").is_none());
+
+        manager.request_refresh(RefreshReason::Manual);
+        manager.run_queued_fetches(RefreshReason::Manual).await;
+        assert!(manager.shared().lookup("old.i2p").is_some());
+        assert!(manager.shared().lookup("new.i2p").is_none());
+        proxy.await.expect("proxy fixture task");
+
+        let restored = AddressBookManager::activate(enabled_config(directory.path()));
+        assert!(restored.is_active());
+        assert!(restored.shared().lookup("stable.i2p").is_some());
+        assert!(restored.shared().lookup("old.i2p").is_some());
+        assert!(restored.shared().lookup("new.i2p").is_none());
     }
 
     #[test]

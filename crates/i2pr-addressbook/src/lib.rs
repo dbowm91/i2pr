@@ -48,6 +48,7 @@ pub use refresh::{RefreshDiagnostic, RefreshOutcome, RefreshQueue, RefreshReason
 pub use resolver::{AddressBookResolver, AddressBookSnapshot};
 pub use subscription::{
     MAX_SUBSCRIBED_ENTRIES, MAX_SUBSCRIPTION_BODY_BYTES, MAX_SUBSCRIPTION_LINE_LEN,
-    MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS, SubscriptionSet, ingest_subscription_body,
-    validate_subscription_url,
+    MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS, MAX_SUBSCRIPTION_VALIDATOR_LEN,
+    SubscriptionSet, SubscriptionSource, ingest_subscription_body, validate_subscription_url,
+    validate_subscription_validator,
 };

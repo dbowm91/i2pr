@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use i2pr_daemon::config::Config;
 use i2pr_daemon::i2pcontrol::I2pControlServiceState;
-use i2pr_daemon::i2pcontrol_inspection::InspectionHandles;
+use i2pr_daemon::i2pcontrol_inspection::{InspectionHandles, ServiceEndpoint};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -419,6 +419,44 @@ async fn router_info_unavailable_fails_whole_without_partial() {
         );
         assert!(response.get("result").is_none(), "no partial for {key}");
     }
+}
+
+#[tokio::test]
+async fn authenticated_router_info_logs_clear_clears_ring_and_returns_success() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let ring = Arc::new(i2pr_daemon::control_sources::LogRing::new());
+    ring.record("INFO", "daemon", "before clear");
+    inspection.publish_log_ring(Arc::clone(&ring));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {"Token": token, "i2p.router.logs.clear": null},
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["result"]["i2p.router.logs.clear"], "success");
+    assert!(ring.is_empty());
 }
 
 #[tokio::test]

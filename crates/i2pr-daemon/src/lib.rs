@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod addressbook;
+mod addressbook_fetch;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
@@ -572,12 +573,10 @@ fn register_i2pcontrol_service(
         })?;
     Ok(())
 }
-/// Registers the Plan 294 subscription-refresh worker. The worker
-/// wakes once per committed refresh interval and drains the bounded
-/// queue through the manager (attempt, diagnostic artifact, promote).
-/// With no downloader owner composed, attempts report unavailable;
-/// the cadence, queue discipline, and artifact remain live and
-/// tested. Cancellation stops the worker between wakes.
+/// Registers the Plan 321 subscription-refresh worker. The manager owns
+/// queue state and the narrow fetch capability; the daemon service owns
+/// cadence and cancellation. Dropping an in-flight fetch cancels its
+/// socket operation and releases the queue's active slot.
 fn register_addressbook_refresh_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
@@ -600,9 +599,25 @@ fn register_addressbook_refresh_service(
                         tokio::select! {
                             _ = cancellation.cancelled() => break,
                             _ = tokio::time::sleep(Duration::from_secs(hours * 3600)) => {
-                                manager.run_queued_refreshes(
-                                    i2pr_addressbook::RefreshReason::IntervalElapsed,
-                                );
+                                let reason = i2pr_addressbook::RefreshReason::IntervalElapsed;
+                                let _ = manager.enqueue_current_for_refresh(reason);
+                                tokio::select! {
+                                    _ = cancellation.cancelled() => {
+                                        manager.release_refresh_after_cancel();
+                                        break;
+                                    },
+                                    _ = manager.run_queued_fetches(reason) => {}
+                                }
+                            }
+                            _ = manager.refresh_requested() => {
+                                let reason = i2pr_addressbook::RefreshReason::SubscriptionsReplaced;
+                                tokio::select! {
+                                    _ = cancellation.cancelled() => {
+                                        manager.release_refresh_after_cancel();
+                                        break;
+                                    },
+                                    _ = manager.run_queued_fetches(reason) => {}
+                                }
                             }
                         }
                     }

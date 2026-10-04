@@ -27,7 +27,7 @@
 //! - `max_entries`: per-book entry ceiling, 1..=[`MAX_ENTRIES_PER_BOOK`].
 //!   Enforced on mutation, import, and configuration tightening.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::AddressBookError;
 use crate::generation::MAX_ENTRIES_PER_BOOK;
@@ -366,6 +366,17 @@ impl AddressBookConfig {
                 }
                 ConfigKey::Etags => next.etags_artifact = confined_path(value)?,
                 ConfigKey::LastModified => next.last_modified_artifact = confined_path(value)?,
+            }
+        }
+        let mut paths = BTreeSet::new();
+        for path in next.book_artifacts.iter().chain([
+            &next.subscriptions_artifact,
+            &next.log_file,
+            &next.etags_artifact,
+            &next.last_modified_artifact,
+        ]) {
+            if !paths.insert(path) {
+                return Err(AddressBookError::InvalidConfigValue);
             }
         }
         Ok(next)

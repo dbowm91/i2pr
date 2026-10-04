@@ -378,6 +378,17 @@ impl InspectionHandles {
         }
     }
 
+    /// Clears the retained redacted ring through its owning lock.
+    /// Ordinary tracing output and cumulative eviction diagnostics are
+    /// unaffected. `None` means the owner was not published.
+    pub fn clear_logs(&self) -> Option<bool> {
+        self.log_live
+            .lock()
+            .ok()
+            .and_then(|live| live.clone())
+            .map(|ring| ring.clear())
+    }
+
     /// Publishes the rolling control metrics (called once by the
     /// composition root).
     pub fn publish_metrics(&self, metrics: Arc<ControlMetrics>) {

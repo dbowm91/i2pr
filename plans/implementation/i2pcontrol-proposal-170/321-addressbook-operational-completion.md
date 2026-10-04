@@ -1,6 +1,6 @@
 # Plan 321 — Canonical AddressBook configuration, subscription fetch, and publication semantics
 
-Status: **in-progress-prop170-addressbook-operational-completion**
+Status: **passed-prop170-addressbook-operational-completion** — see [`plans/closure/i2pcontrol-proposal-170/321-status.md`](../../closure/i2pcontrol-proposal-170/321-status.md).
 
 Classification: capability + daemon I/O composition.
 

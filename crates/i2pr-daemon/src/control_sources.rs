@@ -168,6 +168,15 @@ impl LogRing {
         self.len() == 0
     }
 
+    /// Clears retained redacted records atomically. The cumulative
+    /// eviction counter is intentionally preserved across operator clears.
+    pub fn clear(&self) -> bool {
+        self.entries
+            .lock()
+            .map(|mut entries| entries.clear())
+            .is_ok()
+    }
+
     /// The severity gate label (`INFO` and above; see `RING_MAX_VERBOSITY`).
     pub fn verbosity_gate(&self) -> &'static str {
         RING_MAX_VERBOSITY
@@ -525,6 +534,20 @@ mod tests {
         // (entry cap times line cap plus JSON envelope slack).
         let worst_case = lines.iter().map(|line| line.wire().len()).sum::<usize>();
         assert!(worst_case <= 65536, "snapshot bytes: {worst_case}");
+    }
+
+    #[test]
+    fn ring_clear_is_atomic_and_preserves_monotonic_drop_count() {
+        let ring = LogRing::new();
+        for index in 0..MAX_LOG_RING_ENTRIES + 1 {
+            ring.record("INFO", "daemon", &format!("event {index}"));
+        }
+        assert_eq!(ring.snapshot().1, 1);
+        assert!(ring.clear());
+        assert!(ring.is_empty());
+        assert_eq!(ring.snapshot().1, 1);
+        ring.record("INFO", "daemon", "after clear");
+        assert_eq!(ring.snapshot().0[0].message, "after clear");
     }
 
     #[test]
