@@ -234,7 +234,7 @@ Current continuation graph:
 
     322 + 326 + 327 -> 328 live external full-conformance gate
 
-Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed Rust provider currently matches I2P Red25519. Plans 321, 323, and 324 have passed; Plans 322, 326, and 327 are closed blocked on their recorded missing owners/dependencies; Plan 328 is closed blocked because its required plans cannot pass. No active Proposal 170 continuation plan remains, and the unqualified full Proposal 170 claim is not made.
+Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed packaged Rust provider matched I2P Red25519. Plans 321, 323, and 324 passed; Plans 322, 326, and 327 closed blocked on their recorded missing owners/dependencies; Plan 328 closed blocked because its required plans could not pass. Plans 329–335 now supersede only the forward Red25519/Encrypted-LeaseSet architecture: Plan 329 is ready and establishes a clean-room/spec-first path over maintained curve primitives, Java/i2pd readable references, and Emissary black-box-only differential. The unqualified full Proposal 170 claim is still not made.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
@@ -250,3 +250,35 @@ Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's p
 | 328 | blocked | live external conformance gate | plans/implementation/i2pcontrol-proposal-170/328-live-external-full-conformance-gate.md | plans/closure/i2pcontrol-proposal-170/328-status.md (`blocked-prop170-full-conformance-gate-awaiting-322-326-327`) |
 
 The term full-proposal-conformant is reserved for a passing Plan 328 against its re-frozen Proposal revision. The 286–297 closure remains qualified-profile-closed and is not relabeled.
+
+
+## 14. Red25519 / Encrypted LeaseSet2 clean-room successor (Plans 329–335)
+
+Detailed authority: `plans/subsystems/red25519-encrypted-leaseset-roadmap.md`.
+
+Historical Plans 325 and 326 remain closed blocked and are not rewritten. Their forward architecture
+is superseded by Plans 329–335 because the project will independently implement the I2P-specific
+Red25519 construction over maintained curve arithmetic rather than wait for a packaged Red25519
+crate.
+
+Reference boundary:
+- I2P specifications are normative.
+- Java I2P and i2pd may be read as interoperability/ambiguity references.
+- Emissary Red25519/ELS2 source is excluded from direct reuse for this branch.
+- Emissary may be used only after implementation freeze as a black-box differential oracle.
+
+Current graph:
+
+```text
+329 provenance/reference correction + spec freeze
+  -> 330 independent Red25519 implementation
+       -> 331 independent qualification
+            -> 332 type-5 ELS2 foundation
+                 -> 333 PSK/DH client auth
+                      -> 334 Proposal 170 mode mapping
+                           -> 335 live ELS2 interoperability/reclosure
+```
+
+Plan 335 resolves only the encrypted-LeaseSet branch. A future full-Proposal gate still requires
+successor work for blocked Plan 322 production transit/IPv6 sources and blocked Plan 327
+I2P-routed outproxy/secret ownership.
