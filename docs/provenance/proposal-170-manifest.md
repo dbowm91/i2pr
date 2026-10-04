@@ -9,12 +9,30 @@ all other Emissary/upstream code remains under the normal
 
 | Artifact | Pin | Recorded |
 |---|---|---|
-| Proposal 170 (I2PControl Expansion, Open) | revision 2026-05-20 | roadmap §long-term references |
+| Proposal 170 (I2PControl Expansion, Open) | revision 2026-05-20, source text SHA-256 `f13ae00b886c5e72131bc5d5b138a371148d1faa6899a119a1dacb65a555e7dc` | roadmap §long-term references; hash verified in-repo by Plan 334 |
 | Base I2PControl API version 1 documentation | site update 2026-07-10 | roadmap §long-term references |
 | eggstack/emissary fork master | `6885a945d25a5ae61bc68191d27c5816bc3df4c9` | ADR 0028 |
 | eepnet/emissary upstream master | `9b43484a21d5a1291c4881cdae62a36c527f8c0f` | ADR 0028 |
 | Java I2PControl Proposal 170 PR 6 head | `45bb593000408071dd376b78848fdc246dccd964` | ADR 0028 |
 | PurpleI2P/i2pd (adopted/base behavior) | openssl head `2d57d3f6783efbfebde6c5b03f29e6c231a84d6b` | ADR 0028 / roadmap |
+
+### Proposal text hash, verified locally
+
+Plan 334 retrieved `https://i2p.net/proposals/170-i2pcontrol-expansion.txt`
+read-only on 2026-10-04 (19 010 bytes) and computed the SHA-256 locally:
+`f13ae00b886c5e72131bc5d5b138a371148d1faa6899a119a1dacb65a555e7dc`. That matches
+the value independently recorded in the reference project's M161 gate closure,
+so the Proposal text is unchanged between the two reads and the pin above is now
+anchored to bytes rather than to a revision date.
+
+Reading the retrieved text directly — rather than through any reference
+implementation's summary — establishes the finding that governs
+[`specs/references/proposal-170-encryptleaseset-mode-mapping.md`](../../specs/references/proposal-170-encryptleaseset-mode-mapping.md):
+the Proposal lists the ten `EncryptLeaseSet` strings and the two companion
+parameter names, and supplies **no per-mode property table, no wire types, and
+no schemas**. The mode mapping is therefore a derivation against the I2P
+specifications the Proposal defers to, and the reasoning is recorded in full
+rather than inherited.
 
 If a pin moved before execution, the rows above stay as research
 provenance and the newer pin is added explicitly; history is never
