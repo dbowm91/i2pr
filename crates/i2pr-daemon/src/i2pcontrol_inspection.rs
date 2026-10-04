@@ -984,12 +984,12 @@ pub(crate) fn proposal_empty_tunnel_projection(
         owner_plan: "322",
         owner: "per-direction and per-tunnel inspection snapshot",
     };
-    let value = router_info_result(selector, handles, 0).map_err(|_| gap.clone())?;
+    let value = router_info_result(selector, handles, 0).map_err(|_| gap)?;
     let count = value
         .as_array()
         .and_then(|items| items.first())
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| gap.clone())?;
+        .ok_or(gap)?;
     if count != 0 {
         return Err(gap);
     }

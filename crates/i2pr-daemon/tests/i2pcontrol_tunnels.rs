@@ -306,10 +306,11 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         address,
         &token,
         serde_json::json!({
-            "Action":"create", "Name":"canonical", "Type":"client",
+            "Action":"create", "Name":"canonical", "Type":"httpclient",
             "TargetDestination":b32, "Port":port, "ReachableBy":"127.0.0.1",
             "Description":"I2PControl managed test tunnel", "MaxConcurrentConns":24,
-            "Close":true, "Reduce":true, "Profile":"interactive"
+            "Close":true, "Reduce":true, "Profile":"interactive",
+            "AllowUserAgent":true, "AllowReferer":true, "AllowAccept":false
         }),
         2,
     )
@@ -341,7 +342,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     assert_eq!(info["status"], serde_json::json!("running"));
     assert_eq!(info["targetDestination"], serde_json::json!(b32));
     assert_eq!(info["rawConfig"]["name"], serde_json::json!("canonical"));
-    assert_eq!(info["rawConfig"]["type"], serde_json::json!("client"));
+    assert_eq!(info["rawConfig"]["type"], serde_json::json!("httpclient"));
     assert_eq!(info["rawConfig"]["port"], serde_json::json!(port));
     assert_eq!(
         info["rawConfig"]["reachableBy"],
@@ -361,6 +362,9 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         info["rawConfig"]["profile"],
         serde_json::json!("interactive")
     );
+    assert_eq!(info["rawConfig"]["allowUserAgent"], serde_json::json!(true));
+    assert_eq!(info["rawConfig"]["allowReferer"], serde_json::json!(true));
+    assert_eq!(info["rawConfig"]["allowAccept"], serde_json::json!(false));
     assert_eq!(info["persistentClientKey"], serde_json::json!(false));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
     assert!(

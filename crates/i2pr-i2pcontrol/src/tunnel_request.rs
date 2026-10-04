@@ -125,6 +125,9 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Description" => Some("description"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
+        "AllowUserAgent" => Some("allow_user_agent"),
+        "AllowReferer" => Some("allow_referer"),
+        "AllowAccept" => Some("allow_accept"),
         "MultiHoming" => Some("multihoming"),
         // These canonical Proposal controls already have bounded idle
         // lifecycle owners in the service-tunnel runtime.
@@ -269,6 +272,19 @@ pub fn decode_tunnel_request(
                         .as_bool()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     options.insert("proxy_auth".to_owned(), enabled.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if matches!(key, "AllowUserAgent" | "AllowReferer" | "AllowAccept") {
+                    let enabled = value
+                        .as_bool()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    let internal = match key {
+                        "AllowUserAgent" => "allow_user_agent",
+                        "AllowReferer" => "allow_referer",
+                        _ => "allow_accept",
+                    };
+                    options.insert(internal.to_owned(), enabled.to_string());
                     options_seen = true;
                     continue;
                 }

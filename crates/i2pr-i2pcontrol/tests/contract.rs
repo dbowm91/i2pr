@@ -951,7 +951,8 @@ fn plan289_tunnel_request_envelope_rules() {
     let request = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "alpha", "Type": "httpclient",
         "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
-        "Profile": "interactive",
+        "Profile": "interactive", "AllowUserAgent": true,
+        "AllowReferer": false, "AllowAccept": false,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -975,6 +976,18 @@ fn plan289_tunnel_request_envelope_rules() {
     assert_eq!(
         request.options.get("profile").map(String::as_str),
         Some("interactive")
+    );
+    assert_eq!(
+        request.options.get("allow_user_agent").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("allow_referer").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        request.options.get("allow_accept").map(String::as_str),
+        Some("false")
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({

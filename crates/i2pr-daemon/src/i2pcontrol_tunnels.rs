@@ -149,7 +149,13 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 2] = ["description", "proxy_auth"];
+pub const SUPPORTED_323_OPTIONS: [&str; 5] = [
+    "description",
+    "proxy_auth",
+    "allow_user_agent",
+    "allow_referer",
+    "allow_accept",
+];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -895,6 +901,9 @@ pub fn build_control_spec(
     let mut proxy_username: Option<String> = None;
     let mut proxy_password: Option<String> = None;
     let mut proxy_auth_declared: Option<bool> = None;
+    let mut allow_user_agent: Option<bool> = None;
+    let mut allow_referer: Option<bool> = None;
+    let mut allow_accept: Option<bool> = None;
     // Plan 292 access inputs (raw values per source key so failures
     // name the offending key, never the value).
     let mut access_allow_sources: Vec<(String, String)> = Vec::new();
@@ -936,6 +945,29 @@ pub fn build_control_spec(
                         option: key.clone(),
                         reason: "description exceeds the Proposal string ceiling",
                     });
+                }
+            }
+            "allow_user_agent" | "allow_referer" | "allow_accept" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "HTTP request filters apply to HTTP client families only",
+                    });
+                }
+                let enabled = value
+                    .parse::<bool>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "HTTP filter must be a boolean",
+                    })?;
+                match key.as_str() {
+                    "allow_user_agent" => allow_user_agent = Some(enabled),
+                    "allow_referer" => allow_referer = Some(enabled),
+                    "allow_accept" => allow_accept = Some(enabled),
+                    _ => unreachable!(),
                 }
             }
             "target_destination" => {
@@ -1590,13 +1622,13 @@ pub fn build_control_spec(
     };
     // Plan 292: resolve proxy credentials and the access policy.
     // Failures name the offending key, never the value.
-    if let Some(enabled) = proxy_auth_declared {
-        if enabled != (proxy_username.is_some() && proxy_password.is_some()) {
-            return Err(ControlError::ContradictoryOptions {
-                name: definition.name.clone(),
-                reason: "ProxyAuth must match the complete ProxyUsername/ProxyPassword pair",
-            });
-        }
+    if let Some(enabled) = proxy_auth_declared
+        && enabled != (proxy_username.is_some() && proxy_password.is_some())
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "ProxyAuth must match the complete ProxyUsername/ProxyPassword pair",
+        });
     }
     let proxy_auth = proxy_credentials_for(kind, proxy_username, proxy_password)?;
     let mut allow = Vec::new();
@@ -1687,15 +1719,24 @@ pub fn build_control_spec(
         ServiceTunnelKind::HttpClient => {
             let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
             options.proxy_auth = proxy_auth;
+            apply_proposal_http_filters(
+                &mut options,
+                allow_user_agent,
+                allow_referer,
+                allow_accept,
+            );
             (Some(options), None, None, None, None)
         }
-        ServiceTunnelKind::HttpBidirServer => (
-            Some(i2pr_service_tunnels::HttpClientOptions::defaults()),
-            None,
-            None,
-            None,
-            None,
-        ),
+        ServiceTunnelKind::HttpBidirServer => {
+            let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
+            apply_proposal_http_filters(
+                &mut options,
+                allow_user_agent,
+                allow_referer,
+                allow_accept,
+            );
+            (Some(options), None, None, None, None)
+        }
         ServiceTunnelKind::Socks5Client => {
             let mut options = i2pr_service_tunnels::Socks5ClientOptions::defaults();
             options.proxy_auth = proxy_auth;
@@ -1811,6 +1852,27 @@ fn static_spec_reason(error: i2pr_service_tunnels::ServiceTunnelError) -> &'stat
         E::InvalidDestinationRef { .. } => "invalid destination reference",
         E::InvalidId { .. } => "invalid service id",
         _ => "spec validation failed",
+    }
+}
+
+fn apply_proposal_http_filters(
+    options: &mut i2pr_service_tunnels::HttpClientOptions,
+    allow_user_agent: Option<bool>,
+    allow_referer: Option<bool>,
+    allow_accept: Option<bool>,
+) {
+    if let Some(allow) = allow_user_agent {
+        options.privacy.user_agent = if allow {
+            i2pr_service_tunnels::UserAgentPolicy::Keep
+        } else {
+            i2pr_service_tunnels::UserAgentPolicy::ReplaceStable
+        };
+    }
+    if let Some(allow) = allow_referer {
+        options.privacy.strip_referer = !allow;
+    }
+    if let Some(allow) = allow_accept {
+        options.privacy.allow_accept = allow;
     }
 }
 
@@ -3961,6 +4023,33 @@ mod tests {
             recovered.definitions[0].options.get("description"),
             Some(&description.to_owned())
         );
+    }
+
+    #[test]
+    fn plan323_http_request_filters_have_a_real_http_client_owner() {
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("allow_user_agent".to_owned(), "true".to_owned());
+        options.insert("allow_referer".to_owned(), "true".to_owned());
+        options.insert("allow_accept".to_owned(), "false".to_owned());
+        let definition =
+            normalize_definition("http-filters", TunnelType::HttpClient, &options, false)
+                .expect("Proposal filter fields are supported");
+        let spec = build_control_spec(&definition).expect("HTTP client owner consumes filters");
+        let privacy = &spec.http_options.as_ref().expect("HTTP options").privacy;
+        assert_eq!(
+            privacy.user_agent,
+            i2pr_service_tunnels::UserAgentPolicy::Keep
+        );
+        assert!(!privacy.strip_referer);
+        assert!(!privacy.allow_accept);
+
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "b".repeat(52)), 0);
+        incompatible.insert("allow_referer".to_owned(), "true".to_owned());
+        assert!(matches!(
+            normalize_definition("socks-filter", TunnelType::Socks, &incompatible, false)
+                .and_then(|definition| build_control_spec(&definition)),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
     }
 
     #[test]

@@ -74,6 +74,9 @@ pub struct PrivacyPolicy {
     pub strip_referer: bool,
     /// Strip `From` before forwarding.
     pub strip_from: bool,
+    /// Forward the caller's `Accept` header. Disabled by the
+    /// Proposal 170 `AllowAccept` control filter.
+    pub allow_accept: bool,
     /// Allowed CONNECT target ports (canonical HTTPS plus any
     /// additional explicit I2P destination ports configured for the
     /// tunnel). Empty set is rejected at validation; port 443 is
@@ -90,6 +93,7 @@ impl Default for PrivacyPolicy {
             user_agent: UserAgentPolicy::ReplaceStable,
             strip_referer: true,
             strip_from: true,
+            allow_accept: true,
             connect_allowed_ports: ports,
         }
     }
