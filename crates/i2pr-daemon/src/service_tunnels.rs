@@ -5150,7 +5150,7 @@ mod plan202_routing_tests {
             "dedicated-http",
             "unused-group",
             ServiceTunnelKind::HttpClient,
-            "127.0.0.4:0",
+            "127.0.0.1:0",
         );
         dedicated_http.policy = DestinationPolicy::Dedicated;
         let specs = Arc::new(ServiceTunnelSet {
@@ -5165,19 +5165,19 @@ mod plan202_routing_tests {
                     "socks",
                     "clients",
                     ServiceTunnelKind::Socks5Client,
-                    "127.0.0.2:0",
+                    "127.0.0.1:0",
                 ),
                 group_client(
                     "http-second",
                     "clients",
                     ServiceTunnelKind::HttpClient,
-                    "127.0.0.3:0",
+                    "127.0.0.1:0",
                 ),
                 group_client(
                     "socks-second",
                     "clients",
                     ServiceTunnelKind::Socks5Client,
-                    "127.0.0.5:0",
+                    "127.0.0.1:0",
                 ),
                 dedicated_http,
             ],
