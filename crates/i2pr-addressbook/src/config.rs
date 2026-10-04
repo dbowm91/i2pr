@@ -74,6 +74,12 @@ pub enum ConfigKey {
     LookupTimeout,
     /// Per-book entry ceiling.
     MaxEntries,
+    /// Whether the eligible router address book is regenerated for publication.
+    ShouldPublish,
+    /// ETag validator artifact.
+    Etags,
+    /// Last-Modified validator artifact.
+    LastModified,
 }
 
 impl ConfigKey {
@@ -93,6 +99,9 @@ impl ConfigKey {
             Self::LogLevel => "log_level",
             Self::LookupTimeout => "lookup_timeout",
             Self::MaxEntries => "max_entries",
+            Self::ShouldPublish => "should_publish",
+            Self::Etags => "etags",
+            Self::LastModified => "last_modified",
         }
     }
 
@@ -126,6 +135,9 @@ pub fn parse_config_key(name: &str) -> Result<ConfigKey, AddressBookError> {
         "log_level" => Ok(ConfigKey::LogLevel),
         "lookup_timeout" => Ok(ConfigKey::LookupTimeout),
         "max_entries" => Ok(ConfigKey::MaxEntries),
+        "should_publish" => Ok(ConfigKey::ShouldPublish),
+        "etags" => Ok(ConfigKey::Etags),
+        "last_modified" => Ok(ConfigKey::LastModified),
         _ => Err(AddressBookError::UnknownConfigKey),
     }
 }
@@ -194,6 +206,12 @@ pub struct AddressBookConfig {
     pub lookup_timeout_secs: u64,
     /// Per-book entry ceiling.
     pub max_entries: usize,
+    /// Whether a published-book artifact is regenerated after refresh.
+    pub should_publish: bool,
+    /// Logical artifact name for subscription ETag validators.
+    pub etags_artifact: String,
+    /// Logical artifact name for subscription Last-Modified validators.
+    pub last_modified_artifact: String,
 }
 
 impl Default for AddressBookConfig {
@@ -214,6 +232,9 @@ impl Default for AddressBookConfig {
             log_level: LogLevel::Warn,
             lookup_timeout_secs: 30,
             max_entries: MAX_ENTRIES_PER_BOOK,
+            should_publish: false,
+            etags_artifact: "subscriptions.etags".to_owned(),
+            last_modified_artifact: "subscriptions.last-modified".to_owned(),
         }
     }
 }
@@ -237,6 +258,9 @@ impl AddressBookConfig {
             "log_level",
             "lookup_timeout",
             "max_entries",
+            "should_publish",
+            "etags",
+            "last_modified",
         ];
         let values = [
             self.book_artifacts[0].clone(),
@@ -254,6 +278,9 @@ impl AddressBookConfig {
             self.log_level.name().to_owned(),
             self.lookup_timeout_secs.to_string(),
             self.max_entries.to_string(),
+            self.should_publish.to_string(),
+            self.etags_artifact.clone(),
+            self.last_modified_artifact.clone(),
         ];
         for (key, value) in keys.into_iter().zip(values) {
             map.insert(key.to_owned(), value);
@@ -328,6 +355,15 @@ impl AddressBookConfig {
                     let ceiling = parse_ranged_u64(value, 1, MAX_ENTRIES_PER_BOOK as u64)?;
                     next.max_entries = ceiling as usize;
                 }
+                ConfigKey::ShouldPublish => {
+                    next.should_publish = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err(AddressBookError::InvalidConfigValue),
+                    };
+                }
+                ConfigKey::Etags => next.etags_artifact = confined_path(value)?,
+                ConfigKey::LastModified => next.last_modified_artifact = confined_path(value)?,
             }
         }
         Ok(next)

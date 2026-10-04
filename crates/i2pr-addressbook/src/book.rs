@@ -291,6 +291,23 @@ impl AddressBookControl<'_> {
         Ok(changed)
     }
 
+    /// Regenerates the published book from router-book entries when
+    /// `should_publish` is enabled. Local and private books are never
+    /// included. Returns whether the published projection changed.
+    pub fn sync_published_from_router(&mut self) -> bool {
+        if !self.inner.config.should_publish {
+            return false;
+        }
+        let router = self.inner.books[BookKind::Router.precedence_index()].clone();
+        let published_index = BookKind::Published.precedence_index();
+        if self.inner.books[published_index] == router {
+            return false;
+        }
+        self.inner.books[published_index] = router;
+        self.inner.bump_revision();
+        true
+    }
+
     /// Applies a whole `SetConfig` map atomically: every key parses
     /// and every value validates before the swap. Unknown keys fail
     /// the request with the configuration untouched.

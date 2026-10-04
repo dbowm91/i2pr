@@ -48,6 +48,19 @@ struct ConfigShape {
     log_level: String,
     lookup_timeout_secs: u64,
     max_entries: usize,
+    #[serde(default)]
+    should_publish: bool,
+    #[serde(default = "default_etags_artifact")]
+    etags_artifact: String,
+    #[serde(default = "default_last_modified_artifact")]
+    last_modified_artifact: String,
+}
+
+fn default_etags_artifact() -> String {
+    "subscriptions.etags".to_owned()
+}
+fn default_last_modified_artifact() -> String {
+    "subscriptions.last-modified".to_owned()
 }
 
 impl ConfigShape {
@@ -63,6 +76,9 @@ impl ConfigShape {
             log_level: config.log_level.name().to_owned(),
             lookup_timeout_secs: config.lookup_timeout_secs,
             max_entries: config.max_entries,
+            should_publish: config.should_publish,
+            etags_artifact: config.etags_artifact.clone(),
+            last_modified_artifact: config.last_modified_artifact.clone(),
         }
     }
 }
@@ -136,6 +152,9 @@ pub fn decode_generation(bytes: &[u8]) -> Result<AddressBook, AddressBookError> 
                 shape.config.lookup_timeout_secs.to_string(),
             ),
             ("max_entries", shape.config.max_entries.to_string()),
+            ("should_publish", shape.config.should_publish.to_string()),
+            ("etags", shape.config.etags_artifact.clone()),
+            ("last_modified", shape.config.last_modified_artifact.clone()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))

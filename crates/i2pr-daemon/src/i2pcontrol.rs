@@ -1025,26 +1025,11 @@ impl I2pControlServiceState {
                     Err(error) => Self::addressbook_manager_error(id, &error),
                 }
             }
-            AddressBookRequest::Config { entries } => {
-                if ["should_publish", "etags", "last_modified"]
-                    .iter()
-                    .any(|key| entries.contains_key(*key))
-                {
-                    return (
-                        error_envelope(
-                            id,
-                            JsonRpcErrorCode::InternalError.code(),
-                            "AddressBook config field owner is unavailable (Plan 321)",
-                        ),
-                        Duration::ZERO,
-                    );
-                }
-                match manager.apply_config(&entries) {
-                    Ok(true) => Self::addressbook_success(id, "config applied"),
-                    Ok(false) => Self::addressbook_success(id, "config unchanged"),
-                    Err(error) => Self::addressbook_manager_error(id, &error),
-                }
-            }
+            AddressBookRequest::Config { entries } => match manager.apply_config(&entries) {
+                Ok(true) => Self::addressbook_success(id, "config applied"),
+                Ok(false) => Self::addressbook_success(id, "config unchanged"),
+                Err(error) => Self::addressbook_manager_error(id, &error),
+            },
         }
     }
 

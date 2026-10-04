@@ -455,6 +455,7 @@ impl AddressBookManager {
         }
         let rollback = state.addressbook.clone();
         let output = f(&mut state.addressbook).map_err(AddressBookManagerError::Rejected)?;
+        let _ = state.addressbook.control().sync_published_from_router();
         let bytes = encode_generation(&state.addressbook);
         if self.store.publish(&bytes).is_err() {
             state.addressbook = rollback;
@@ -885,6 +886,63 @@ mod tests {
         // Failed tightening leaves the committed config untouched.
         let (_, config) = manager.config_view().expect("config");
         assert_eq!(config["max_entries"], "1");
+    }
+
+    #[test]
+    fn should_publish_projects_router_entries_but_excludes_local_and_private() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let manager = AddressBookManager::activate(enabled_config(directory.path()));
+        let destination = destination_text();
+        for (book, hostname) in [
+            (i2pr_addressbook::BookKind::Router, "router.i2p"),
+            (i2pr_addressbook::BookKind::Local, "local.i2p"),
+            (i2pr_addressbook::BookKind::Private, "private.i2p"),
+        ] {
+            manager
+                .apply_entry(entry(book, hostname, Some(destination.clone()), false))
+                .expect("insert");
+        }
+        let before = manager.books_view().expect("books");
+        assert!(before[3].is_empty());
+        manager
+            .apply_config(&BTreeMap::from([(
+                "should_publish".to_owned(),
+                "true".to_owned(),
+            )]))
+            .expect("enable publishing");
+        let published = manager.books_view().expect("books");
+        assert_eq!(
+            published[3]
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["router.i2p"]
+        );
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Router,
+                "next.i2p",
+                Some(destination),
+                false,
+            ))
+            .expect("update router book");
+        let published = manager.books_view().expect("books");
+        assert_eq!(published[3].len(), 2);
+        manager
+            .apply_config(&BTreeMap::from([(
+                "should_publish".to_owned(),
+                "false".to_owned(),
+            )]))
+            .expect("disable publishing");
+        manager
+            .apply_entry(entry(
+                i2pr_addressbook::BookKind::Router,
+                "later.i2p",
+                Some(destination_text()),
+                false,
+            ))
+            .expect("router change");
+        assert_eq!(manager.books_view().expect("books")[3].len(), 2);
     }
 
     #[test]

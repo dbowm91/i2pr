@@ -596,15 +596,33 @@ fn addressbook_subscriptions_value(
     Ok(value)
 }
 
-/// Renders the committed thirteen-key configuration map.
+/// Renders the committed canonical Proposal 170 thirteen-key map.
 fn addressbook_config_value(
     handles: &InspectionHandles,
     row: &i2pr_i2pcontrol::SourceRow,
 ) -> Result<serde_json::Value, InspectionGap> {
     let snapshot = addressbook_cells(handles, row)?;
-    let mut map = serde_json::Map::with_capacity(snapshot.config_entries().len());
-    for (key, value) in snapshot.config_entries() {
-        map.insert(key.clone(), serde_json::Value::String(value.clone()));
+    let internal = snapshot.config_entries();
+    let mapping = [
+        ("subscriptions", "subscriptions"),
+        ("update_delay", "refresh_interval"),
+        ("published_addressbook", "published_book"),
+        ("router_addressbook", "router_book"),
+        ("local_addressbook", "local_book"),
+        ("private_addressbook", "private_book"),
+        ("proxy_port", "proxy_port"),
+        ("proxy_host", "proxy_host"),
+        ("should_publish", "should_publish"),
+        ("etags", "etags"),
+        ("last_modified", "last_modified"),
+        ("log", "log_file"),
+        ("theme", "theme"),
+    ];
+    let mut map = serde_json::Map::with_capacity(mapping.len());
+    for (wire, owner) in mapping {
+        if let Some(value) = internal.get(owner) {
+            map.insert(wire.to_owned(), serde_json::Value::String(value.clone()));
+        }
     }
     Ok(serde_json::Value::Object(map))
 }

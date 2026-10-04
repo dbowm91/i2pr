@@ -27,6 +27,8 @@ fn config_key_inventory_matches_in_order() {
     let mut rendered_keys: Vec<&str> = rendered.keys().map(String::as_str).collect();
     rendered_keys.sort_unstable();
     let expected = [
+        "etags",
+        "last_modified",
         "local_book",
         "log_file",
         "log_level",
@@ -38,6 +40,7 @@ fn config_key_inventory_matches_in_order() {
         "published_book",
         "refresh_interval",
         "router_book",
+        "should_publish",
         "subscriptions",
         "theme",
     ];
