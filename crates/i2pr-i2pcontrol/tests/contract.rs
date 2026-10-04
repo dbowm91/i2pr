@@ -988,6 +988,11 @@ fn plan289_tunnel_request_envelope_rules() {
         Some("true")
     );
     assert_eq!(
+        request.options.get("close_time").map(String::as_str),
+        Some("30"),
+        "Proposal Close defaults to the pinned 30-minute idle deadline"
+    );
+    assert_eq!(
         request.options.get("reduce_on_idle").map(String::as_str),
         Some("false")
     );
@@ -1006,6 +1011,43 @@ fn plan289_tunnel_request_envelope_rules() {
     assert_eq!(
         request.options.get("allow_accept").map(String::as_str),
         Some("false")
+    );
+    let idle_options = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "idle-client", "Type": "client",
+        "TargetDestination": "example.b32.i2p", "Reduce": true,
+        "ReduceCount": 3, "ReduceTime": 12, "Close": true, "CloseTime": 45,
+    })))
+    .expect("explicit Proposal idle values decode");
+    assert_eq!(
+        idle_options.options.get("reduce_count").map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        idle_options.options.get("reduce_time").map(String::as_str),
+        Some("12")
+    );
+    assert_eq!(
+        idle_options.options.get("close_time").map(String::as_str),
+        Some("45")
+    );
+    let reduce_defaults = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "reduce-client", "Type": "client",
+        "TargetDestination": "example.b32.i2p", "Reduce": true,
+    })))
+    .expect("Proposal Reduce defaults decode");
+    assert_eq!(
+        reduce_defaults
+            .options
+            .get("reduce_count")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        reduce_defaults
+            .options
+            .get("reduce_time")
+            .map(String::as_str),
+        Some("20")
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({

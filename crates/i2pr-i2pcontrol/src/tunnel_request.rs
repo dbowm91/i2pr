@@ -132,7 +132,10 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         // These canonical Proposal controls already have bounded idle
         // lifecycle owners in the service-tunnel runtime.
         "Close" => Some("close_on_idle"),
+        "CloseTime" => Some("close_time"),
         "Reduce" => Some("reduce_on_idle"),
+        "ReduceCount" => Some("reduce_count"),
+        "ReduceTime" => Some("reduce_time"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),
@@ -264,6 +267,19 @@ pub fn decode_tunnel_request(
                         .as_u64()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     options.insert("max_streams".to_owned(), value.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if matches!(key, "CloseTime" | "ReduceTime" | "ReduceCount") {
+                    let value = value
+                        .as_u64()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    let internal = match key {
+                        "CloseTime" => "close_time",
+                        "ReduceTime" => "reduce_time",
+                        _ => "reduce_count",
+                    };
+                    options.insert(internal.to_owned(), value.to_string());
                     options_seen = true;
                     continue;
                 }
@@ -401,6 +417,30 @@ pub fn decode_tunnel_request(
     }
     if let Some(option) = unavailable_option {
         return Err(TunnelRequestError::UnavailableOption(option));
+    }
+    if matches!(action, TunnelAction::Create | TunnelAction::Edit) {
+        if options
+            .get("close_on_idle")
+            .is_some_and(|value| value == "true")
+        {
+            options
+                .entry("close_time".to_owned())
+                .or_insert_with(|| "30".to_owned());
+        }
+        if options
+            .get("reduce_on_idle")
+            .is_some_and(|value| value == "true")
+        {
+            options
+                .entry("reduce_time".to_owned())
+                .or_insert_with(|| "20".to_owned());
+            options
+                .entry("reduce_count".to_owned())
+                .or_insert_with(|| "1".to_owned());
+        }
+        if options.len() > MAX_OPTIONS_PER_TUNNEL {
+            return Err(TunnelRequestError::TooManyOptions);
+        }
     }
     Ok(TunnelManagerRequest {
         action,

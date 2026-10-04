@@ -712,6 +712,9 @@ pub const MAX_IDLE_TIMEOUT_MS: u64 = 86_400_000;
 /// Default idle deadline applied when idle action flags are set
 /// without an explicit timeout (10 minutes, documented i2pr policy).
 pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 600_000;
+/// Proposal 170 idle times are expressed in minutes and allow up to
+/// 9999 minutes (converted to milliseconds at the control boundary).
+pub const MAX_PROPOSAL_IDLE_TIMEOUT_MS: u64 = 9999 * 60 * 1000;
 
 /// Validated per-tunnel idle policy (Plan 292).
 ///
@@ -732,6 +735,15 @@ pub struct IdlePolicy {
     /// Halve pool targets toward one once idle past the deadline
     /// (runtime-only; a restart restores the stored shaping).
     pub reduce_on_idle: bool,
+    /// Proposal-specific close deadline in milliseconds. `None` uses
+    /// `timeout_ms`; zero means close as soon as the tunnel is idle.
+    pub close_timeout_ms: Option<u64>,
+    /// Proposal-specific reduce deadline in milliseconds. `None` uses
+    /// `timeout_ms`; zero means reduce as soon as the tunnel is idle.
+    pub reduce_timeout_ms: Option<u64>,
+    /// Number of tunnels removed from each pool on idle reduction. `None`
+    /// retains the legacy bounded halving policy.
+    pub reduce_count: Option<u8>,
 }
 
 impl IdlePolicy {
@@ -742,6 +754,9 @@ impl IdlePolicy {
             close_on_idle: false,
             new_dest_on_idle: false,
             reduce_on_idle: false,
+            close_timeout_ms: None,
+            reduce_timeout_ms: None,
+            reduce_count: None,
         }
     }
 
@@ -774,12 +789,55 @@ impl IdlePolicy {
             close_on_idle,
             new_dest_on_idle,
             reduce_on_idle,
+            close_timeout_ms: None,
+            reduce_timeout_ms: None,
+            reduce_count: None,
         })
+    }
+
+    /// Validates both the legacy idle timeout and Proposal-specific
+    /// per-action parameters. Proposal times are allowed to be zero and
+    /// reach 9999 minutes, matching the wire contract.
+    pub fn validate(self) -> Result<Self, ServiceTunnelError> {
+        Self::try_new(
+            self.timeout_ms,
+            self.close_on_idle,
+            self.new_dest_on_idle,
+            self.reduce_on_idle,
+        )?;
+        if let Some(timeout) = self.close_timeout_ms
+            && (!self.close_on_idle || timeout > MAX_PROPOSAL_IDLE_TIMEOUT_MS)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "close_time requires close_on_idle and must not exceed 9999 minutes",
+            });
+        }
+        if let Some(timeout) = self.reduce_timeout_ms
+            && (!self.reduce_on_idle || timeout > MAX_PROPOSAL_IDLE_TIMEOUT_MS)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "reduce_time requires reduce_on_idle and must not exceed 9999 minutes",
+            });
+        }
+        if self.reduce_count.is_some_and(|_| !self.reduce_on_idle)
+            || self.reduce_count.is_some_and(|count| count > 9)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "reduce_count requires reduce_on_idle and must be within 0..=9",
+            });
+        }
+        Ok(self)
     }
 
     /// Whether the sweep considers this policy.
     pub fn enabled(self) -> bool {
-        self.timeout_ms.is_some()
+        (self.timeout_ms.is_some()
+            || self.close_timeout_ms.is_some()
+            || self.reduce_timeout_ms.is_some())
+            && (self.close_on_idle || self.new_dest_on_idle || self.reduce_on_idle)
     }
 }
 
@@ -1224,7 +1282,9 @@ impl ServiceTunnelSpec {
         }
         // Plan 292: a deadline with no action is inert; name the
         // service (the constructor cannot).
-        if self.idle.timeout_ms.is_some()
+        if (self.idle.timeout_ms.is_some()
+            || self.idle.close_timeout_ms.is_some()
+            || self.idle.reduce_timeout_ms.is_some())
             && !(self.idle.close_on_idle || self.idle.new_dest_on_idle || self.idle.reduce_on_idle)
         {
             return Err(ServiceTunnelError::ContradictoryOptions {
@@ -1232,12 +1292,7 @@ impl ServiceTunnelSpec {
                 reason: "idle_timeout without an idle action is inert",
             });
         }
-        IdlePolicy::try_new(
-            self.idle.timeout_ms,
-            self.idle.close_on_idle,
-            self.idle.new_dest_on_idle,
-            self.idle.reduce_on_idle,
-        )?;
+        self.idle.validate()?;
         // Plan 292: only server kinds terminate inbound I2P streams,
         // so only they may carry a peer policy.
         if !self.access.is_empty()
@@ -1749,6 +1804,9 @@ mod tests {
             close_on_idle: false,
             new_dest_on_idle: false,
             reduce_on_idle: false,
+            close_timeout_ms: None,
+            reduce_timeout_ms: None,
+            reduce_count: None,
         };
         assert!(spec.validate().is_err());
         spec.idle = IdlePolicy::try_new(Some(60_000), false, true, false).expect("idle");

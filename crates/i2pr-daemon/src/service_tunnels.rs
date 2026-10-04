@@ -3105,9 +3105,16 @@ impl ServiceTunnelManager {
             };
             if action == IdleSweepAction::ReducePools {
                 let effective = runtime.effective_shaping;
+                let reduce_quantity = |quantity: u8| {
+                    if let Some(count) = spec.idle.reduce_count {
+                        quantity.saturating_sub(count).max(1)
+                    } else {
+                        (quantity / 2).max(1)
+                    }
+                };
                 let reduced = i2pr_service_tunnels::TunnelShaping {
-                    inbound_quantity: (effective.inbound_quantity / 2).max(1),
-                    outbound_quantity: (effective.outbound_quantity / 2).max(1),
+                    inbound_quantity: reduce_quantity(effective.inbound_quantity),
+                    outbound_quantity: reduce_quantity(effective.outbound_quantity),
                     length_hops: effective.length_hops,
                     backup_quantity: effective.backup_quantity,
                     length_variance: effective.length_variance,

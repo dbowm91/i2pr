@@ -19,7 +19,7 @@ pub enum IdleSweepAction {
     /// (ephemeral client identities follow the existing
     /// restart-regeneration behavior).
     RebuildPools,
-    /// Halve pool targets toward one via a runtime-only override
+    /// Reduce pool targets toward one via a runtime-only override
     /// (a restart restores the stored shaping).
     ReducePools,
 }
@@ -36,20 +36,19 @@ pub fn idle_decision(
     last_activity_ms: u64,
     now_ms: u64,
 ) -> Option<IdleSweepAction> {
-    let timeout = policy.timeout_ms?;
     if active_connections > 0 || streamr_subscribers > 0 {
         return None;
     }
-    if now_ms.saturating_sub(last_activity_ms) < timeout {
-        return None;
-    }
-    if policy.close_on_idle {
+    let idle_ms = now_ms.saturating_sub(last_activity_ms);
+    let close_timeout = policy.close_timeout_ms.or(policy.timeout_ms);
+    let reduce_timeout = policy.reduce_timeout_ms.or(policy.timeout_ms);
+    if policy.close_on_idle && close_timeout.is_some_and(|timeout| idle_ms >= timeout) {
         return Some(IdleSweepAction::Close);
     }
-    if policy.new_dest_on_idle {
+    if policy.new_dest_on_idle && policy.timeout_ms.is_some_and(|timeout| idle_ms >= timeout) {
         return Some(IdleSweepAction::RebuildPools);
     }
-    if policy.reduce_on_idle {
+    if policy.reduce_on_idle && reduce_timeout.is_some_and(|timeout| idle_ms >= timeout) {
         return Some(IdleSweepAction::ReducePools);
     }
     None
@@ -66,6 +65,9 @@ mod tests {
             close_on_idle: close,
             new_dest_on_idle: new_dest,
             reduce_on_idle: reduce,
+            close_timeout_ms: None,
+            reduce_timeout_ms: None,
+            reduce_count: None,
         }
     }
 
@@ -115,6 +117,28 @@ mod tests {
         assert_eq!(
             idle_decision(&rebuild, 0, 0, 0, 5_000),
             Some(IdleSweepAction::RebuildPools)
+        );
+    }
+
+    #[test]
+    fn proposal_action_deadlines_are_independent_and_allow_zero() {
+        let mut configured = policy(None, true, false, true);
+        configured.close_timeout_ms = Some(30 * 60 * 1000);
+        configured.reduce_timeout_ms = Some(20 * 60 * 1000);
+        configured.reduce_count = Some(1);
+        assert_eq!(
+            idle_decision(&configured, 0, 0, 0, 20 * 60 * 1000),
+            Some(IdleSweepAction::ReducePools)
+        );
+        assert_eq!(
+            idle_decision(&configured, 0, 0, 0, 30 * 60 * 1000),
+            Some(IdleSweepAction::Close)
+        );
+
+        configured.close_timeout_ms = Some(0);
+        assert_eq!(
+            idle_decision(&configured, 0, 0, 0, 0),
+            Some(IdleSweepAction::Close)
         );
     }
 

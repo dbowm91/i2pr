@@ -149,12 +149,15 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 5] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 8] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
     "allow_referer",
     "allow_accept",
+    "close_time",
+    "reduce_time",
+    "reduce_count",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -896,6 +899,9 @@ pub fn build_control_spec(
     let mut idle_close = false;
     let mut idle_new_dest = false;
     let mut idle_reduce = false;
+    let mut idle_close_timeout_ms: Option<u64> = None;
+    let mut idle_reduce_timeout_ms: Option<u64> = None;
+    let mut idle_reduce_count: Option<u8> = None;
     // Plan 292 proxy authentication inputs (both halves required;
     // plaintext is scrubbed to the marked verifier in normalize).
     let mut proxy_username: Option<String> = None;
@@ -1246,6 +1252,65 @@ pub fn build_control_spec(
                     idle_reduce = true;
                 }
             }
+            "close_time" => {
+                let minutes = value
+                    .parse::<u64>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "CloseTime must be an integer number of minutes",
+                    })?;
+                let timeout =
+                    minutes
+                        .checked_mul(60_000)
+                        .ok_or_else(|| ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "CloseTime exceeds the bounded idle deadline",
+                        })?;
+                if minutes > 9_999 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "CloseTime must be within 0..=9999 minutes",
+                    });
+                }
+                idle_close_timeout_ms = Some(timeout);
+            }
+            "reduce_time" => {
+                let minutes = value
+                    .parse::<u64>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceTime must be an integer number of minutes",
+                    })?;
+                let timeout =
+                    minutes
+                        .checked_mul(60_000)
+                        .ok_or_else(|| ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "ReduceTime exceeds the bounded idle deadline",
+                        })?;
+                if minutes > 9_999 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceTime must be within 0..=9999 minutes",
+                    });
+                }
+                idle_reduce_timeout_ms = Some(timeout);
+            }
+            "reduce_count" => {
+                let count = value
+                    .parse::<u8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceCount must be within 0..=9",
+                    })?;
+                if count > 9 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceCount must be within 0..=9",
+                    });
+                }
+                idle_reduce_count = Some(count);
+            }
             // Plan 292: listener proxy authentication (proxy client
             // kinds only; both halves required together, PR6 rule).
             "proxy_username" => {
@@ -1564,6 +1629,18 @@ pub fn build_control_spec(
             }
         }
     }
+    if idle_close_timeout_ms.is_some() && !idle_close {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "CloseTime requires Close:true",
+        });
+    }
+    if (idle_reduce_timeout_ms.is_some() || idle_reduce_count.is_some()) && !idle_reduce {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "ReduceTime and ReduceCount require Reduce:true",
+        });
+    }
     // Per-kind required-field completion with real defaults.
     // Server targets require both halves explicitly: no silent default
     // for where tunneled traffic exits.
@@ -1610,15 +1687,24 @@ pub fn build_control_spec(
     // take the documented default; a deadline without flags flows
     // to spec validation, which rejects it as inert with the
     // service id. Ranges were enforced per key at parse time.
-    let idle_timeout_ms = match (idle_timeout_ms, idle_close || idle_new_dest || idle_reduce) {
-        (None, true) => Some(DEFAULT_IDLE_TIMEOUT_MS),
-        (timeout, _) => timeout,
+    let has_proposal_idle_time =
+        idle_close_timeout_ms.is_some() || idle_reduce_timeout_ms.is_some();
+    let idle_timeout_ms = match (
+        idle_timeout_ms,
+        idle_close || idle_new_dest || idle_reduce,
+        has_proposal_idle_time,
+    ) {
+        (None, true, false) => Some(DEFAULT_IDLE_TIMEOUT_MS),
+        (timeout, _, _) => timeout,
     };
     let idle = i2pr_service_tunnels::IdlePolicy {
         timeout_ms: idle_timeout_ms,
         close_on_idle: idle_close,
         new_dest_on_idle: idle_new_dest,
         reduce_on_idle: idle_reduce,
+        close_timeout_ms: idle_close_timeout_ms,
+        reduce_timeout_ms: idle_reduce_timeout_ms,
+        reduce_count: idle_reduce_count,
     };
     // Plan 292: resolve proxy credentials and the access policy.
     // Failures name the offending key, never the value.
@@ -4940,6 +5026,37 @@ mod tests {
         let applied = block_on(control.idle_sweep_once(now));
         assert!(applied.is_empty(), "floor holds: {applied:?}");
         assert!(control.is_running("idlereduce"));
+    }
+
+    #[test]
+    fn plan323_idle_controls_use_independent_time_and_reduce_count() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("tunnel_quantity".to_owned(), "4".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        options.insert("close_time".to_owned(), "30".to_owned());
+        options.insert("reduce_on_idle".to_owned(), "true".to_owned());
+        options.insert("reduce_time".to_owned(), "20".to_owned());
+        options.insert("reduce_count".to_owned(), "1".to_owned());
+        block_on(control.create(&create_request("proposalidle", TunnelType::Client, options)))
+            .expect("create runs");
+
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        let reduced = block_on(control.idle_sweep_once(base + 1_200_000));
+        assert_eq!(reduced.len(), 1, "reduce deadline: {reduced:?}");
+        assert_eq!(reduced[0].action, "reduce-pools");
+        let shaping = control
+            .manager
+            .effective_shaping_for("proposalidle")
+            .unwrap();
+        assert_eq!(shaping.inbound_quantity, 3);
+        assert_eq!(shaping.outbound_quantity, 3);
+        assert!(control.is_running("proposalidle"));
+
+        // The pure service-tunnels test covers the independent close deadline;
+        // this runtime assertion pins the Proposal-specific decrement effect.
     }
 
     #[test]
