@@ -1,5 +1,7 @@
-//! Plan 288 machine-readable source matrix: one row per exact Proposal 170
-//! RouterInfo selector (30) and ClientServicesInfo service (6).
+//! Plan 288 machine-readable legacy-source matrix: one row per normalized
+//! RouterInfo selector (30) and ClientServicesInfo service (6). Plan 322's
+//! canonical Proposal additions are inventoried separately by
+//! [`proposal_router_info_source_matrix`].
 //!
 //! Each row records the wire key, return type, authoritative owner
 //! subsystem, snapshot method, cardinality/encoded-byte ceiling,
@@ -35,6 +37,7 @@
 //! recorded here.
 
 use crate::client_services::{CLIENT_SERVICES, ClientService};
+use crate::proposal_wire::{PROPOSAL_ROUTER_INFO_FIELDS, ProposalValueType};
 use crate::router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
 
 /// Availability state of one matrix row.
@@ -97,6 +100,197 @@ pub struct SourceRow {
     pub availability: SourceAvailability,
     /// Fixture/test identifier proving the row.
     pub test_id: &'static str,
+}
+
+/// Source and availability status for one canonical Proposal 170
+/// RouterInfo addition. `evidence_test` is absent until a source-specific
+/// test proves the row; missing evidence is represented rather than
+/// replaced with a test that only checks the inventory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProposalSourceRow {
+    /// Exact canonical Proposal key.
+    pub key: &'static str,
+    /// Proposal-declared JSON type.
+    pub value_type: ProposalValueType,
+    /// Authoritative subsystem or explicit pending owner.
+    pub owner: &'static str,
+    /// Bounded snapshot/read method.
+    pub snapshot: &'static str,
+    /// Maximum collection cardinality (zero for scalar values).
+    pub max_items: usize,
+    /// Maximum encoded bytes for the individual value.
+    pub max_bytes: usize,
+    /// Sensitivity and redaction rule.
+    pub sensitivity: &'static str,
+    /// Freshness semantics.
+    pub freshness: &'static str,
+    /// Current source availability.
+    pub availability: SourceAvailability,
+    /// Test proving this source row, when implemented.
+    pub evidence_test: Option<&'static str>,
+}
+
+/// Current source authority for all 43 canonical RouterInfo additions.
+/// This is generated in Proposal order so inventory and source coverage
+/// cannot silently drift apart. Rows without a source remain explicitly
+/// unavailable and carry no fabricated evidence identifier.
+pub fn proposal_router_info_source_matrix() -> Vec<ProposalSourceRow> {
+    PROPOSAL_ROUTER_INFO_FIELDS
+        .iter()
+        .map(|field| proposal_source_row(field.key, field.value_type))
+        .collect()
+}
+
+fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> ProposalSourceRow {
+    let list = matches!(
+        value_type,
+        ProposalValueType::StringList
+            | ProposalValueType::ObjectList
+            | ProposalValueType::NestedObject
+    );
+    let (
+        owner,
+        snapshot,
+        max_items,
+        max_bytes,
+        sensitivity,
+        freshness,
+        availability,
+        evidence_test,
+    ) = match key {
+        "i2p.router.id" => (
+            "bootstrap identity",
+            "published RouterHash snapshot",
+            0,
+            64,
+            "public router hash",
+            "published at bootstrap",
+            SourceAvailability::PermittedNeutral {
+                reason: "Proposal permits null before identity publication",
+            },
+            Some("router_info_hash_gated_then_published_over_wire"),
+        ),
+        "i2p.router.clockskew" => (
+            "clock-skew observer",
+            "no peer-skew sample is currently collected",
+            0,
+            8,
+            "public aggregate",
+            "null until an observation exists",
+            SourceAvailability::PermittedNeutral {
+                reason: "Proposal permits null when no peer-skew sample exists",
+            },
+            Some("router_info_proposal_selection_over_wire"),
+        ),
+        "i2p.router.info" => (
+            "local RouterInfo publisher",
+            "no serialized local RouterInfo is published",
+            0,
+            1_048_576,
+            "public router information",
+            "null until locally serialized RouterInfo is published",
+            SourceAvailability::PermittedNeutral {
+                reason: "Proposal permits null when no local RouterInfo is available",
+            },
+            Some("batch_isolation_with_inspection"),
+        ),
+        "i2p.router.logs" => (
+            "daemon LogRing",
+            "bounded redacted ring snapshot",
+            256,
+            65_536,
+            "messages redacted before retention",
+            "snapshot at request time",
+            SourceAvailability::Available,
+            Some("authenticated_router_info_logs_clear_clears_ring_and_returns_success"),
+        ),
+        "i2p.router.logs.clear" => (
+            "daemon LogRing",
+            "authenticated atomic ring clear",
+            0,
+            16,
+            "mutation; no log content returned",
+            "immediate at request time",
+            SourceAvailability::Available,
+            Some("authenticated_router_info_logs_clear_clears_ring_and_returns_success"),
+        ),
+        "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes" => (
+            "SSU2 runtime counters",
+            "ControlMetrics cumulative I2NP byte totals",
+            0,
+            20,
+            "aggregate transport counters",
+            "latest registered SSU2 sample; excludes uncovered transports",
+            SourceAvailability::PublishedGated {
+                owner: "SSU2 cumulative byte counters",
+                owner_plan: "322",
+            },
+            Some("canonical_transport_totals_are_served_from_published_metrics"),
+        ),
+        "i2p.router.netdb.peers" | "i2p.router.netdb.peers.list" => (
+            "NetDB inspection snapshot",
+            "bounded known-peer hash snapshot",
+            1024,
+            65_536,
+            "public router hashes",
+            "latest published NetDB snapshot",
+            SourceAvailability::Available,
+            Some("differential_corpus_against_production_composition"),
+        ),
+        "i2p.router.netdb.activepeers.list" => (
+            "NetDB inspection snapshot",
+            "bounded active-peer hash snapshot",
+            1024,
+            65_536,
+            "public router hashes",
+            "latest published NetDB snapshot",
+            SourceAvailability::Available,
+            Some("differential_corpus_against_production_composition"),
+        ),
+        "i2p.router.addressbook.private.list"
+        | "i2p.router.addressbook.local.list"
+        | "i2p.router.addressbook.router.list"
+        | "i2p.router.addressbook.published.list"
+        | "i2p.router.addressbook.subscriptions"
+        | "i2p.router.addressbook.config" => (
+            "Plan 321 AddressBookManager",
+            "committed generation snapshot",
+            1024,
+            4_500_000,
+            "private/local names and destinations; bounded serialized values",
+            "one committed AddressBook generation",
+            SourceAvailability::PublishedGated {
+                owner: "active AddressBookManager",
+                owner_plan: "321",
+            },
+            Some("plan294_addressbook_method_drives_the_canonical_owner"),
+        ),
+        _ => (
+            "Plan 322 source not implemented",
+            "no authoritative bounded snapshot is wired",
+            if list { 1024 } else { 0 },
+            if list { 1_048_576 } else { 128 },
+            "not available until a truthful owner is established",
+            "unavailable",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no authoritative source is wired; zero/empty would be fabricated",
+            },
+            None,
+        ),
+    };
+    ProposalSourceRow {
+        key,
+        value_type,
+        owner,
+        snapshot,
+        max_items,
+        max_bytes,
+        sensitivity,
+        freshness,
+        availability,
+        evidence_test,
+    }
 }
 
 /// Exact RouterInfo source matrix in canonical selector order (30 rows).

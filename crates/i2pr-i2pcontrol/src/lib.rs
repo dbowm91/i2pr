@@ -81,9 +81,9 @@ pub use proposal_wire::{
 };
 pub use router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
 pub use source_matrix::{
-    CLIENT_SERVICES_SOURCE_MATRIX, ROUTER_INFO_SOURCE_MATRIX, SOURCE_MATRIX_NEUTRAL_COUNT,
-    SourceAvailability, SourceRow, matrix_mirrors_inventories, selector_index, service_index,
-    service_row, source_row,
+    CLIENT_SERVICES_SOURCE_MATRIX, ProposalSourceRow, ROUTER_INFO_SOURCE_MATRIX,
+    SOURCE_MATRIX_NEUTRAL_COUNT, SourceAvailability, SourceRow, matrix_mirrors_inventories,
+    proposal_router_info_source_matrix, selector_index, service_index, service_row, source_row,
 };
 pub use tunnel::{TUNNEL_ACTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus, TunnelType};
 pub use tunnel_options::{

@@ -840,6 +840,78 @@ fn plan288_source_matrix_mirrors_frozen_inventories() {
 }
 
 #[test]
+fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
+    use std::collections::BTreeSet;
+
+    use i2pr_i2pcontrol::{
+        PROPOSAL_ROUTER_INFO_FIELDS, SourceAvailability, proposal_router_info_source_matrix,
+    };
+
+    let rows = proposal_router_info_source_matrix();
+    assert_eq!(rows.len(), 43);
+    assert_eq!(
+        rows.iter().map(|row| row.key).collect::<Vec<_>>(),
+        PROPOSAL_ROUTER_INFO_FIELDS
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>()
+    );
+    let keys = rows.iter().map(|row| row.key).collect::<BTreeSet<_>>();
+    assert_eq!(keys.len(), 43, "canonical Proposal keys are unique");
+    for row in &rows {
+        assert!(!row.owner.is_empty(), "{} owner", row.key);
+        assert!(!row.snapshot.is_empty(), "{} snapshot", row.key);
+        assert!(!row.sensitivity.is_empty(), "{} sensitivity", row.key);
+        assert!(!row.freshness.is_empty(), "{} freshness", row.key);
+        assert!(row.max_bytes > 0, "{} byte ceiling", row.key);
+        match row.availability {
+            SourceAvailability::Unavailable { reason, .. } => {
+                assert!(
+                    row.evidence_test.is_none(),
+                    "{} has no source test",
+                    row.key
+                );
+                assert!(!reason.is_empty(), "{} unavailable reason", row.key);
+            }
+            SourceAvailability::PublishedGated { .. }
+            | SourceAvailability::PermittedNeutral { .. }
+            | SourceAvailability::Available => {
+                assert!(row.evidence_test.is_some(), "{} source evidence", row.key);
+            }
+        }
+    }
+    assert!(matches!(
+        rows.iter()
+            .find(|row| row.key == "i2p.router.news")
+            .unwrap()
+            .availability,
+        SourceAvailability::Unavailable {
+            owner_plan: "322",
+            ..
+        }
+    ));
+    for key in [
+        "i2p.router.net.total.received.bytes",
+        "i2p.router.net.total.sent.bytes",
+    ] {
+        assert!(matches!(
+            rows.iter().find(|row| row.key == key).unwrap().availability,
+            SourceAvailability::PublishedGated {
+                owner_plan: "322",
+                ..
+            }
+        ));
+    }
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
+            .count(),
+        27,
+        "unimplemented canonical fields remain explicit gaps"
+    );
+}
+
+#[test]
 fn plan289_tunnel_request_envelope_rules() {
     use i2pr_i2pcontrol::{TunnelAction, TunnelRequestError, TunnelType, decode_tunnel_request};
 
