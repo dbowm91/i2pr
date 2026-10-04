@@ -1,6 +1,6 @@
 # Plan 325 — I2P Red25519 provider qualification prerequisite
 
-Status: **registered-prop170-red25519-provider-qualification-blocked-on-plan320**
+Status: **registered-prop170-red25519-provider-qualification-ready**
 
 Classification: cryptographic dependency qualification. No encrypted-LeaseSet capability is authorized unless this plan passes.
 

@@ -1,6 +1,6 @@
 # Plan 321 — Canonical AddressBook configuration, subscription fetch, and publication semantics
 
-Status: **registered-prop170-addressbook-operational-completion-blocked-on-plan320**
+Status: **in-progress-prop170-addressbook-operational-completion**
 
 Classification: capability + daemon I/O composition.
 

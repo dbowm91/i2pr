@@ -1,6 +1,6 @@
 # Plan 320 — Exact Proposal 170 canonical wire-contract reconciliation
 
-Status: **in-progress-prop170-canonical-wire-reconciliation**
+Status: **passed-prop170-canonical-wire-contract-reconciliation**
 
 Classification: protocol contract corrective. This plan changes the public control-plane contract but does not add deep router capabilities.
 
@@ -104,3 +104,13 @@ RawConfig must never leak secret options even if reference implementations do.
 Plan 320 passes only when the default I2PControl endpoint accepts and emits the exact pinned Proposal 170 wire contract and no documentation calls the prior normalized inventory canonical.
 
 Closure unblocks Plans 321, 323, and 325.
+
+## Closure
+
+Closed as `passed-prop170-canonical-wire-contract-reconciliation` in
+[`plans/closure/i2pcontrol-proposal-170/320-status.md`](../../closure/i2pcontrol-proposal-170/320-status.md).
+The exact Proposal examples and pinned Java/Emissary overlap observations are
+frozen in
+[`crates/i2pr-daemon/tests/fixtures/i2pcontrol-proposal-170-examples.json`](../../../crates/i2pr-daemon/tests/fixtures/i2pcontrol-proposal-170-examples.json).
+This is a canonical-wire closure only; operational source gaps and live
+cross-router conformance remain owned by Plans 321–328.

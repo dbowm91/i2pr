@@ -1,6 +1,6 @@
 # Plan 323 — Canonical TunnelManager envelope and non-deep option parity
 
-Status: **registered-prop170-tunnelmanager-canonical-parity-blocked-on-plan320**
+Status: **registered-prop170-tunnelmanager-canonical-parity-ready**
 
 Classification: capability + protocol reconciliation.
 
