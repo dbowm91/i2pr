@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
-use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
+use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
     MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS,
@@ -148,6 +148,8 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// arm below consumes it (the `other` arm still rejects ownerless
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
+/// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
+pub const SUPPORTED_323_OPTIONS: [&str; 1] = ["description"];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -178,7 +180,7 @@ pub struct ControlDefinition {
     pub name: String,
     /// Proposal tunnel type.
     pub tunnel_type: TunnelType,
-    /// Normalized option map (289 subset only).
+    /// Normalized runtime options plus bounded TunnelManager metadata.
     pub options: BTreeMap<String, String>,
     /// Persisted start-at-startup intent (distinct from running state).
     pub start_on_load: bool,
@@ -924,6 +926,17 @@ pub fn build_control_spec(
     let mut payload_limit_bytes: Option<usize> = None;
     for (key, value) in &definition.options {
         match key.as_str() {
+            "description" => {
+                // Description is control-plane metadata: its authoritative
+                // owner is the durable definition and canonical TunnelManager
+                // Get projection, not the M10 traffic specification.
+                if value.len() > MAX_OPTION_VALUE_LEN {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "description exceeds the Proposal string ceiling",
+                    });
+                }
+            }
             "target_destination" => {
                 if !matches!(
                     kind,
@@ -1814,6 +1827,7 @@ pub fn normalize_definition(
             && !SUPPORTED_292_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_296_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_297_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_323_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -3897,6 +3911,32 @@ mod tests {
         assert!(!debug.contains("example.i2p"), "values redacted: {debug}");
         assert!(!debug.contains("8180"), "values redacted: {debug}");
         assert!(debug.contains("alpha"), "name present: {debug}");
+    }
+
+    #[test]
+    fn plan323_description_is_bounded_owned_and_survives_generation_reload() {
+        let description = "Managed HTTP client";
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("description".to_owned(), description.to_owned());
+        let definition = normalize_definition("described", TunnelType::Client, &options, false)
+            .expect("description uses the control metadata owner");
+        assert_eq!(
+            definition.options.get("description"),
+            Some(&description.to_owned())
+        );
+        let spec = build_control_spec(&definition).expect("description does not alter routing");
+        assert!(spec.destination.is_some());
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let definitions = BTreeMap::from([(definition.name.clone(), definition)]);
+        let generation = store.stage(&definitions).expect("generation stages");
+        store.publish(generation).expect("generation publishes");
+        let recovered = store.load().expect("generation recovers");
+        assert_eq!(
+            recovered.definitions[0].options.get("description"),
+            Some(&description.to_owned())
+        );
     }
 
     #[test]

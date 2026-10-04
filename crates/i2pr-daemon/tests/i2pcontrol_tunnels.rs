@@ -307,7 +307,8 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         &token,
         serde_json::json!({
             "Action":"create", "Name":"canonical", "Type":"client",
-            "TargetDestination":b32, "Port":port, "ReachableBy":"127.0.0.1"
+            "TargetDestination":b32, "Port":port, "ReachableBy":"127.0.0.1",
+            "Description":"I2PControl managed test tunnel"
         }),
         2,
     )
@@ -337,6 +338,10 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     assert_eq!(
         info["rawConfig"]["reachableBy"],
         serde_json::json!("127.0.0.1")
+    );
+    assert_eq!(
+        info["rawConfig"]["description"],
+        serde_json::json!("I2PControl managed test tunnel")
     );
     assert_eq!(info["persistentClientKey"], serde_json::json!(false));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
@@ -371,7 +376,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     let unsupported = tunnel_raw(
         address,
         &token,
-        serde_json::json!({"Action":"create","Name":"unowned","Type":"client","Description":"valid but not yet owned"}),
+        serde_json::json!({"Action":"create","Name":"unowned","Type":"client","Shared":true}),
         9,
     )
     .await;

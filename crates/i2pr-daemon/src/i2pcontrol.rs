@@ -1828,6 +1828,7 @@ fn proposal_tunnel_option_name(key: &str) -> Option<String> {
     let explicit = match key {
         "listen_host" => Some("ReachableBy"),
         "listen_port" => Some("Port"),
+        "description" => Some("Description"),
         "unique_local_address" => Some("UniqueLocalAddressPerClient"),
         "multihoming" => Some("MultiHoming"),
         _ => None,

@@ -122,6 +122,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "TargetPort" => Some("target_port"),
         "Port" => Some("listen_port"),
         "ReachableBy" => Some("listen_host"),
+        "Description" => Some("description"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),
@@ -222,11 +223,31 @@ pub fn decode_tunnel_request(
                 if crate::proposal_wire::proposal_tunnel_value_type(key).is_none() {
                     return Err(TunnelRequestError::UnknownKey(truncated_key(key)));
                 }
+                if matches!(
+                    crate::proposal_wire::proposal_tunnel_value_type(key),
+                    Some(crate::proposal_wire::ProposalTunnelValueType::String)
+                ) && value
+                    .as_str()
+                    .is_some_and(|text| text.len() > MAX_OPTION_VALUE_LEN)
+                {
+                    return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+                }
                 crate::proposal_wire::validate_proposal_tunnel_value(key, value)
                     .map_err(|_| TunnelRequestError::BadValue(key.to_owned()))?;
                 let alias = canonical_wire_alias(key);
                 if !seen_aliases.insert(alias) {
                     return Err(TunnelRequestError::DuplicateAlias(alias.to_owned()));
+                }
+                if key == "Description" {
+                    let text = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if text.len() > MAX_OPTION_VALUE_LEN {
+                        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+                    }
+                    options.insert("description".to_owned(), text.to_owned());
+                    options_seen = true;
+                    continue;
                 }
                 let Some(option_key) = canonical_option(key) else {
                     unavailable_option.get_or_insert_with(|| key.to_owned());

@@ -1095,14 +1095,21 @@ fn plan289_tunnel_request_envelope_rules() {
         }))),
         Err(TunnelRequestError::UnexpectedField("name"))
     );
+    let description = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "Description": "valid Proposal field",
+    })))
+    .expect("Description has a typed control-plane metadata owner");
+    assert_eq!(
+        description.options.get("description").map(String::as_str),
+        Some("valid Proposal field")
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
-            "Description": "valid Proposal field",
+            "Description": "x".repeat(4097),
         }))),
-        Err(TunnelRequestError::UnavailableOption(
-            "Description".to_owned()
-        ))
+        Err(TunnelRequestError::ValueOverBound("Description".to_owned()))
     );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
