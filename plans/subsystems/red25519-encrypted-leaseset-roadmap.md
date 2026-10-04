@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329 and 330 passed. Plan 331 is ready; Plans 332–335 remain registered behind the dependency graph.
+Status: Plans 329 and 330 passed. Plan 331 is blocked on a reference signature-transcript divergence and unexecutable Emissary/Java lanes, which keeps Plans 332–335 blocked. Plan 336 (conformance decision plus deferred lanes) is ready.
 
 Parent roadmap:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
@@ -118,17 +118,18 @@ No custom field/bignum/curve formulas are permitted.
 |---|---|---|
 | 329 | passed | provenance/reference correction and exact algorithm/vector freeze (closure: `plans/closure/i2pcontrol-proposal-170/329-status.md`) |
 | 330 | passed | independent Rust Red25519 construction (closure: `plans/closure/i2pcontrol-proposal-170/330-status.md`) |
-| 331 | ready | independent vectors + Java/i2pd + post-freeze Emissary differential |
+| 331 | blocked | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
 | 332 | blocked on 331 | type-5 ELS2 format/publication/lookup + lookup secret/B33 |
 | 333 | blocked on 332 | PSK and DH/X25519 client authorization |
 | 334 | blocked on 333 | exact Proposal 170 mode/field mapping |
 | 335 | blocked on 334 | live interop and successor reclosure for blocked Plan 326 |
+| 336 | ready | Red25519 transcript conformance decision + deferred Java/Emissary/i2pd-live lanes |
 
 ## 7. Completion boundary
 
 This branch is complete only when:
 - the Red25519 primitive passes all official vectors and independent negative tests;
-- Java and i2pd accept/produce compatible blinded keys/signatures where applicable;
+- Java and i2pd accept/produce compatible blinded keys/signatures where applicable (currently blocked: the pinned references agree on blinded keys and storage keys but not on the specified signature transcript — Plans 331/336);
 - Emissary black-box differential agrees after the implementation freeze;
 - DatabaseStore type 5 is a first-class validated/publishable/lookup record;
 - B33/blinded address behavior is interoperable;

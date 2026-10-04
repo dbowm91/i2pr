@@ -1,0 +1,79 @@
+{
+  "schema": "i2pr-red25519-i2pd-differential/1",
+  "provenance": {
+    "reference": "PurpleI2P/i2pd",
+    "revision": "2c694149fa6996eaeb23e378d5f83c9d3232c22f",
+    "reference_files": [
+      "libi2pd/Blinding.cpp",
+      "libi2pd/Blinding.h",
+      "libi2pd/Ed25519.cpp",
+      "libi2pd/LeaseSet.cpp",
+      "libi2pd/Identity.h",
+      "libi2pd/Signature.h"
+    ],
+    "harness": "tools/i2pd-red25519-oracle.cpp",
+    "build": "g++ -std=c++23 -O1 -Ilibi2pd -o i2pd-red25519-oracle tools/i2pd-red25519-oracle.cpp libi2pd.a -lssl -lcrypto -lz -lboost_system -lboost_program_options -lpthread",
+    "generated_on": "2026-10-04",
+    "independence": "the reference library is linked unmodified; no i2pd source is copied into i2pr",
+    "license": "reference output only; BSD3 reference is not redistributed as code",
+    "freeze_record": "specs/references/red25519-clean-room-freeze.md"
+  },
+  "cases": [
+    {
+      "unblinded_sigtype": 7,
+      "unblinded_public_key": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "unblinded_private_seed": "0101010101010101010101010101010101010101010101010101010101010101",
+      "day": "20251015",
+      "blinded_public_key": "d581f97c36c718b4a8270ac8cb8a8ffe6cbe66a0983d587c9ce868c05262c637",
+      "blinded_private_key": "d76a9e48851444537a014ebe40d99b518e8bb1f109192708f63a2d2c68e1a20b",
+      "storage_key": "0f341c35e71ffe78d269bcb7e990eb13890ca42e21f470f6786ba173a98e9718",
+      "b33_address": "6bab3cui4poxicprsx6vfwznhs5f24wkm4e36hmucin7g5eiag2a6324",
+      "blinded_sigtype": 11,
+      "signed_message": "6932707220706c616e2033333120646966666572656e7469616c00",
+      "signature": "c56e0c6303c93b954a1a6546c4c1f1f9cf1459f55b3d677ea2d14f30c3c97936e5c0dd468c75d78802306e408c0b26fa453bde1beedf8c6d40a972e868ee6806",
+      "reference_signature_verified": true
+    },
+    {
+      "unblinded_sigtype": 7,
+      "unblinded_public_key": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "unblinded_private_seed": "0202020202020202020202020202020202020202020202020202020202020202",
+      "day": "20251016",
+      "blinded_public_key": "d3864631a64910845a3cfaf6e0a5e1d10a7ed84901a9a65e1745c631a3448aa6",
+      "blinded_private_key": "427ec3f49d7b338c96d1f2a3c3de164cf37af78dae39a33f39e5734497aee100",
+      "storage_key": "e993792f91a2abccb271115b8da9b25825d755615042038416501b8e68387f5d",
+      "b33_address": "jwa3lajzo4hkq7ixl5lkgvdgyngh5tglrwfjdnhog6rf35qploh4tm4u",
+      "blinded_sigtype": 11,
+      "signed_message": "6932707220706c616e2033333120646966666572656e7469616c00",
+      "signature": "215addf6c97b155119154a8b3f7bc85039c1ca5c86bd66ebe7e44e2e88f81832311d8e4a80b8f286ddc9e3d5f5ad44e2e9be32a4b287e0f9e05a6f10bf1d4100",
+      "reference_signature_verified": true
+    },
+    {
+      "unblinded_sigtype": 7,
+      "unblinded_public_key": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "unblinded_private_seed": "0303030303030303030303030303030303030303030303030303030303030303",
+      "day": "20240229",
+      "blinded_public_key": "0905d100a614d68e35c135465b7f845a8aea3991b3431a167140d1874a802236",
+      "blinded_private_key": "5f3708b8e03412e10892a624df657a275a1de06fdad2b245a778bce93a942c03",
+      "storage_key": "c460cdaddcb1e3e2a0f885f9b55820eceb66da6982beb72c24ce5e25638dac48",
+      "b33_address": "hufmj3kjfddcruocy3vosazysbmzkyjjlettuxdd7e3dnqkgcswion6r",
+      "blinded_sigtype": 11,
+      "signed_message": "6932707220706c616e2033333120646966666572656e7469616c00",
+      "signature": "917eeb81159f8700959089340a62d35267347cee3037c65cae36d920828d1416a48bf577198919b6640e95a56fbf0fe8f7b619054586c160415aa8ba73c40e07",
+      "reference_signature_verified": true
+    },
+    {
+      "unblinded_sigtype": 7,
+      "unblinded_public_key": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+      "unblinded_private_seed": "0808080808080808080808080808080808080808080808080808080808080808",
+      "day": "19700101",
+      "blinded_public_key": "c227ff5b6c70916754dd1d3b948ab12033ce2569d93fceb95042a7362c4be055",
+      "blinded_private_key": "78827da5e0e359b264e38aac5c94d265360e04fc1ba77f9376d9dd631d874e0c",
+      "storage_key": "b430518589c9218565eac2746ce603a10b86203bb9dcec93814ad986867d1d06",
+      "b33_address": "4zxlue4y6ywg2gsfpri3u2sll4632l3j7sutefrbrxejs7sbnpix3e6k",
+      "blinded_sigtype": 11,
+      "signed_message": "6932707220706c616e2033333120646966666572656e7469616c00",
+      "signature": "2f96dd7ebbf109f528584487b425c94aabd3dfe7170f9c4f4d805f0adcb06fb6ecd348bf9820f2f9c9ff95f9e3dd41fd031490b3be56148b036a47377d8e010f",
+      "reference_signature_verified": true
+    }
+  ]
+}
