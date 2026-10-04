@@ -24,8 +24,6 @@ use std::fmt;
 
 use i2pr_proto::{MAX_COMMON_STRUCTURE_SIZE, RouterInfo};
 use thiserror::Error;
-use x509_parser::prelude::*;
-use x509_parser::public_key::PublicKey;
 
 use crate::router_info::{ValidatedRouterInfo, ValidationContext, router_hash};
 
@@ -758,45 +756,31 @@ pub fn trust_signer_from_certificate(
     not_before: u64,
     not_after: u64,
 ) -> Result<TrustedSigner, ReseedTrustError> {
-    let (_, certificate) = X509Certificate::from_der(&certificate_der)
-        .map_err(|_| ReseedTrustError::CertificateParse)?;
-    let (spki, cert_not_before_i, cert_not_after_i) = {
-        let tbs = &certificate.tbs_certificate;
-        (
-            &tbs.subject_pki,
-            certificate.validity.not_before.timestamp(),
-            certificate.validity.not_after.timestamp(),
-        )
-    };
-    let algorithm_oid = spki.algorithm.algorithm.to_id_string();
-    let public_key = match spki.parsed() {
-        Ok(key) => key,
-        Err(_) => {
-            return Err(ReseedTrustError::UnsupportedKeyType { algorithm_oid });
-        }
-    };
-    let rsa_pubkey = match public_key {
-        PublicKey::RSA(rsa) => rsa,
-        _ => {
-            return Err(ReseedTrustError::UnsupportedKeyType { algorithm_oid });
-        }
-    };
-    let modulus = rsa_pubkey.modulus.to_vec();
-    let exponent = rsa_pubkey.exponent.to_vec();
-    let cert_not_before = u64::try_from(cert_not_before_i).unwrap_or(0);
-    let cert_not_after = u64::try_from(cert_not_after_i).unwrap_or(0);
-    if not_before < cert_not_before || not_after > cert_not_after {
+    let rsa = i2pr_su3::rsa_signer_from_certificate(signer_id.as_str(), &certificate_der).map_err(
+        |error| match error {
+            i2pr_su3::Su3Error::CertificateParse => ReseedTrustError::CertificateParse,
+            i2pr_su3::Su3Error::UnsupportedKeyType(algorithm_oid) => {
+                ReseedTrustError::UnsupportedKeyType { algorithm_oid }
+            }
+            i2pr_su3::Su3Error::CertificateValidity => ReseedTrustError::CertificateNotValid {
+                not_before: 0,
+                not_after: 0,
+            },
+            _ => ReseedTrustError::CertificateParse,
+        },
+    )?;
+    if not_before < rsa.not_before || not_after > rsa.not_after || not_after < not_before {
         return Err(ReseedTrustError::CertificateNotValid {
-            not_before: cert_not_before,
-            not_after: cert_not_after,
+            not_before: rsa.not_before,
+            not_after: rsa.not_after,
         });
     }
     Ok(TrustedSigner {
         signer_id,
         certificate_der,
         signature_type,
-        modulus,
-        exponent,
+        modulus: rsa.modulus,
+        exponent: rsa.exponent,
         not_before,
         not_after,
     })
@@ -855,7 +839,7 @@ pub fn verify_su3_with_signers(
             expected: expected_signature_len,
         });
     }
-    verify_rsa_sha512_signature(signed, signature, trusted)
+    verify_rsa_sha512_signature(input, signed, signature, trusted, now_seconds)
         .map_err(|_| ReseedParseError::SignatureInvalid)?;
     verify_su3_archive(
         &input[parsed.content_offset..parsed.content_offset + parsed.content_length],
@@ -908,7 +892,7 @@ pub fn verify_su3(
             accepted: Vec::new(),
         });
     }
-    verify_rsa_sha512_signature(signed, signature, signer)
+    verify_rsa_sha512_signature(input, signed, signature, signer, now_seconds)
         .map_err(|_| ReseedParseError::SignatureInvalid)?;
     verify_su3_archive(
         &input[parsed.content_offset..parsed.content_offset + parsed.content_length],
@@ -918,41 +902,34 @@ pub fn verify_su3(
 }
 
 fn verify_rsa_sha512_signature(
+    input: &[u8],
     signed: &[u8],
     signature: &[u8],
     signer: &TrustedSigner,
+    now_seconds: u64,
 ) -> Result<(), ReseedParseError> {
-    use sad_rsa::pkcs1v15::{Signature, VerifyingKey};
-    use sad_rsa::sha2::Sha512;
-    use sad_rsa::signature::Verifier;
-
-    // sad-rsa's `RsaPublicKey::new` accepts `BoxedUint` (a
-    // fixed-precision heap integer from `crypto-bigint`) rather than
-    // `num-bigint::BigUint`. Convert with the bit-precision the modulus
-    // bytes already encode.
-    let modulus_bits = (signer.modulus.len() as u32).checked_mul(8).unwrap_or(0);
-    let exponent_bits = (signer.exponent.len() as u32).checked_mul(8).unwrap_or(0);
-    let n = match sad_rsa::BoxedUint::from_be_slice(&signer.modulus, modulus_bits) {
-        Ok(n) => n,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
+    let generic = i2pr_su3::RsaSha512Signer {
+        signer_id: signer.signer_id.as_str().to_owned(),
+        modulus: signer.modulus.clone(),
+        exponent: signer.exponent.clone(),
+        not_before: signer.not_before,
+        not_after: signer.not_after,
     };
-    let e = match sad_rsa::BoxedUint::from_be_slice(&signer.exponent, exponent_bits) {
-        Ok(e) => e,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    let key = match sad_rsa::RsaPublicKey::new(n, e) {
-        Ok(key) => key,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    let verifying_key = VerifyingKey::<Sha512>::new(key);
-    let signature_obj = match Signature::try_from(signature) {
-        Ok(s) => s,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    if verifying_key.verify(signed, &signature_obj).is_err() {
+    let framing = i2pr_su3::parse(input, i2pr_su3::Su3Limits::default())
+        .map_err(|_| ReseedParseError::SignatureInvalid)?;
+    if framing
+        .signed_bytes(input)
+        .map_err(|_| ReseedParseError::SignatureInvalid)?
+        != signed
+        || framing
+            .signature(input)
+            .map_err(|_| ReseedParseError::SignatureInvalid)?
+            != signature
+    {
         return Err(ReseedParseError::SignatureInvalid);
     }
-    Ok(())
+    i2pr_su3::verify_rsa_sha512(input, &framing, &generic, now_seconds)
+        .map_err(|_| ReseedParseError::SignatureInvalid)
 }
 
 /// Verifies the inner ZIP archive against the Plan 104 limits and

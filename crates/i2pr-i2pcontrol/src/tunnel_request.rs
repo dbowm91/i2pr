@@ -1,27 +1,27 @@
 //! Plan 289 TunnelManager request envelope: exact wire shape for the
 //! seven lifecycle actions.
 //!
-//! Wire form (named params beside `Token`):
-//! - `action`: required, exact [`TunnelAction`] spelling;
-//! - `name`: required for every action except `get` (absent `name` on
-//!   `get` selects all summaries); validated by
+//! Wire form (named params beside `Token`) uses the canonical Proposal
+//! names `Action`, `Name`, `Type`, `NewName`, and option fields at the
+//! top level. The previous lowercase envelope and nested `options` map
+//! are not accepted on the default endpoint.
+//! - `Action`: required, exact [`TunnelAction`] spelling;
+//! - `Name`: required for every named operation, including `get`;
+//!   validated by
 //!   [`crate::tunnel::validate_tunnel_name`];
-//! - `type`: required for `create`, forbidden otherwise (tunnel types
+//! - `Type`: required for `create`, forbidden otherwise (tunnel types
 //!   are immutable after creation; rename travels as `new_name` on
 //!   `edit`, preserving the pinned seven-action vocabulary instead of
 //!   inventing a rename action);
-//! - `new_name`: allowed only on `edit` (validated like `name`);
-//! - `options`: allowed only on `create`/`edit`; a bounded map whose
-//!   keys must belong to the frozen 46-option universe ([`find_option`]
-//!   rejects unknown keys, [`ContractError::CaseMismatch`] preserved) and
-//!   whose values are strings, integers, or booleans normalized to
-//!   strings (null/array/object rejected).
+//! - `NewName`: allowed only on `edit` (validated like `Name`);
+//! - option fields are top-level and mapped through an explicit canonical
+//!   alias table into existing typed domain option names.
 //!
-//! `edit` requires `new_name` or at least one option; otherwise there is
+//! `edit` requires `NewName` or at least one option; otherwise there is
 //! nothing to change. Unknown top-level keys are rejected: the envelope
 //! is closed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::errors::ContractError;
 use crate::limits::{MAX_OPTION_NAME_LEN, MAX_OPTION_VALUE_LEN, MAX_OPTIONS_PER_TUNNEL};
@@ -29,11 +29,13 @@ use crate::tunnel::{TunnelAction, TunnelType, validate_tunnel_name};
 use crate::tunnel_options::find_option;
 
 /// Decoded TunnelManager request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct TunnelManagerRequest {
     /// Lifecycle action.
     pub action: TunnelAction,
-    /// Tunnel name (absent only for whole-inventory `get`).
+    /// Apply start/stop/restart to the complete control-owned set.
+    pub all: bool,
+    /// Tunnel name (absent only for an `All` lifecycle operation).
     pub name: Option<String>,
     /// Tunnel type (`create` only).
     pub tunnel_type: Option<TunnelType>,
@@ -41,6 +43,20 @@ pub struct TunnelManagerRequest {
     pub new_name: Option<String>,
     /// Options map (`create`/`edit` only, normalized values).
     pub options: BTreeMap<String, String>,
+}
+
+impl core::fmt::Debug for TunnelManagerRequest {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("TunnelManagerRequest")
+            .field("action", &self.action)
+            .field("all", &self.all)
+            .field("name", &self.name)
+            .field("tunnel_type", &self.tunnel_type)
+            .field("new_name", &self.new_name)
+            .field("option_keys", &self.options.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Envelope rejection.
@@ -67,7 +83,16 @@ pub enum TunnelRequestError {
     TooManyOptions,
     /// An unknown top-level key.
     UnknownKey(String),
-    /// `edit` carried neither `new_name` nor options.
+    /// Two aliases named the same domain option.
+    DuplicateAlias(String),
+    /// Proposal field is valid, but its owner is registered to a later plan.
+    UnavailableOption(String),
+    /// Proposal field is explicitly rejected because no safe typed owner
+    /// or bounded allowlist exists for its arbitrary contents.
+    RejectedOption(String),
+    /// `All` selected a capability not implemented by the current owner.
+    AllUnavailable,
+    /// `edit` carried neither `NewName` nor options.
     NothingToChange,
 }
 
@@ -87,18 +112,151 @@ impl core::fmt::Display for TunnelRequestError {
             Self::TooManyOptions => write!(formatter, "options map over ceiling"),
             Self::UnknownKey(key) => write!(formatter, "unknown TunnelManager field {key}"),
             Self::NothingToChange => write!(formatter, "edit requires new_name or options"),
+            Self::DuplicateAlias(_) => write!(formatter, "duplicate TunnelManager aliases"),
+            Self::UnavailableOption(_) => write!(formatter, "TunnelManager field is unavailable"),
+            Self::RejectedOption(key) => {
+                write!(
+                    formatter,
+                    "TunnelManager option {key} has no safe typed allowlist"
+                )
+            }
+            Self::AllUnavailable => write!(formatter, "All action is not available"),
         }
     }
 }
 
-/// Returns the string form of a JSON scalar option value.
-fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
-    match value {
-        serde_json::Value::String(text) => Ok(text.clone()),
-        serde_json::Value::Number(number) => Ok(number.to_string()),
-        serde_json::Value::Bool(flag) => Ok(flag.to_string()),
-        _ => Err(TunnelRequestError::BadValue(key.to_owned())),
+fn canonical_option(key: &str) -> Option<&'static str> {
+    match key {
+        "Shared" => Some("shared"),
+        "PersistentClientKey" => Some("persistent_client_key"),
+        "PrivKeyFile" => Some("priv_key_file"),
+        "NewDest" => Some("new_dest"),
+        "ConnectDelay" => Some("connect_delay"),
+        "DelayOpen" => Some("delay_open"),
+        "SigType" => Some("sig_type"),
+        "EncType" => Some("enc_type"),
+        "AccessOption" => Some("access_option"),
+        "FilterFilePath" => Some("filter_file_path"),
+        "JumpList" => Some("jump_list"),
+        "TargetHost" | "Host" => Some("target_host"),
+        "TargetPort" => Some("target_port"),
+        "Port" => Some("listen_port"),
+        "ReachableBy" => Some("listen_host"),
+        "Description" => Some("description"),
+        "WebsiteHostname" | "SpoofedHost" => Some("spoofed_host"),
+        "BlockReferers" => Some("block_referers"),
+        "BlockUserAgents" => Some("block_user_agents"),
+        "BlockAccessInProxies" => Some("block_access_in_proxies"),
+        "UserAgents" => Some("user_agents"),
+        "MaxConcurrentConns" => Some("max_streams"),
+        "ClientPerMinute" => Some("client_per_minute"),
+        "ClientPerHour" => Some("client_per_hour"),
+        "ClientPerDay" => Some("client_per_day"),
+        "TotalInPerMinute" => Some("total_in_per_minute"),
+        "TotalInPerHour" => Some("total_in_per_hour"),
+        "TotalInPerDay" => Some("total_in_per_day"),
+        "PostLimit" => Some("post_limit"),
+        "PostLimitTime" => Some("post_limit_time"),
+        "PerClientPeriod" => Some("per_client_period"),
+        "TotalPeriod" => Some("total_period"),
+        "TotalBanTime" => Some("total_ban_time"),
+        "ProxyAuth" => Some("proxy_auth"),
+        "AllowUserAgent" => Some("allow_user_agent"),
+        "AllowReferer" => Some("allow_referer"),
+        "AllowAccept" => Some("allow_accept"),
+        "AllowInternalSSL" => Some("allow_internal_ssl"),
+        "MultiHoming" => Some("multihoming"),
+        // These canonical Proposal controls already have bounded idle
+        // lifecycle owners in the service-tunnel runtime.
+        "Close" => Some("close_on_idle"),
+        "CloseTime" => Some("close_time"),
+        "Reduce" => Some("reduce_on_idle"),
+        "ReduceCount" => Some("reduce_count"),
+        "ReduceTime" => Some("reduce_time"),
+        "TargetDestination" | "Destination" => Some("target_destination"),
+        "UseSSL" => Some("use_ssl"),
+        "UniqueLocalAddressPerClient" => Some("unique_local_address"),
+        _ => crate::tunnel_options::TUNNEL_OPTIONS
+            .iter()
+            .find(|option| pascal_option_name(option.name) == key)
+            .map(|option| option.name),
     }
+}
+
+fn pascal_option_name(key: &str) -> String {
+    let mut output = String::with_capacity(key.len());
+    let mut uppercase = true;
+    for character in key.chars() {
+        if character == '_' {
+            uppercase = true;
+        } else if uppercase {
+            output.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
+    let value_type = if matches!(key, "shared" | "persistent_client_key") {
+        crate::tunnel_options::OptionValueType::Boolean
+    } else if matches!(
+        key,
+        "client_per_minute"
+            | "client_per_hour"
+            | "client_per_day"
+            | "total_in_per_minute"
+            | "total_in_per_hour"
+            | "total_in_per_day"
+            | "post_limit"
+            | "post_limit_time"
+            | "per_client_period"
+            | "total_period"
+            | "total_ban_time"
+    ) {
+        crate::tunnel_options::OptionValueType::Integer
+    } else if matches!(
+        key,
+        "filter_file_path" | "priv_key_file" | "sig_type" | "enc_type"
+    ) {
+        crate::tunnel_options::OptionValueType::String
+    } else {
+        find_option(key)
+            .map_err(TunnelRequestError::BadOption)?
+            .value_type
+    };
+    let text = match (value_type, value) {
+        (crate::tunnel_options::OptionValueType::String, serde_json::Value::String(text)) => {
+            text.clone()
+        }
+        (crate::tunnel_options::OptionValueType::Integer, serde_json::Value::Number(number))
+            if number.is_i64() || number.is_u64() =>
+        {
+            number.to_string()
+        }
+        (crate::tunnel_options::OptionValueType::Boolean, serde_json::Value::Bool(flag)) => {
+            flag.to_string()
+        }
+        _ => return Err(TunnelRequestError::BadValue(key.to_owned())),
+    };
+    if text.len() > MAX_OPTION_VALUE_LEN {
+        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+    }
+    if key == "priv_key_file" && !valid_priv_key_file_reference(&text) {
+        return Err(TunnelRequestError::BadValue(key.to_owned()));
+    }
+    Ok(text)
+}
+
+fn valid_priv_key_file_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
 }
 
 /// Decodes and validates one TunnelManager param map (without `Token`,
@@ -112,54 +270,247 @@ pub fn decode_tunnel_request(
     let mut new_name: Option<String> = None;
     let mut options: BTreeMap<String, String> = BTreeMap::new();
     let mut options_seen = false;
+    let mut all = false;
+    let mut unavailable_option = None;
+    let mut seen_aliases = BTreeSet::new();
 
     for (key, value) in params {
         match key.as_str() {
             "Token" => continue,
-            "action" => {
+            "Action" => {
                 let text = value
                     .as_str()
                     .ok_or(TunnelRequestError::BadAction(ContractError::Malformed))?;
                 action = Some(TunnelAction::parse(text).map_err(TunnelRequestError::BadAction)?);
             }
-            "name" => {
+            "Name" => {
                 let text = value.as_str().ok_or(TunnelRequestError::BadName)?;
                 validate_tunnel_name(text).map_err(|_| TunnelRequestError::BadName)?;
                 name = Some(text.to_owned());
             }
-            "type" => {
+            "Type" => {
                 let text = value
                     .as_str()
                     .ok_or(TunnelRequestError::BadType(ContractError::Malformed))?;
                 tunnel_type = Some(TunnelType::parse(text).map_err(TunnelRequestError::BadType)?);
             }
-            "new_name" => {
+            "NewName" => {
                 let text = value.as_str().ok_or(TunnelRequestError::BadName)?;
                 validate_tunnel_name(text).map_err(|_| TunnelRequestError::BadName)?;
                 new_name = Some(text.to_owned());
             }
-            "options" => {
-                let map = value
-                    .as_object()
-                    .ok_or(TunnelRequestError::BadOption(ContractError::Malformed))?;
-                if map.len() > MAX_OPTIONS_PER_TUNNEL {
-                    return Err(TunnelRequestError::TooManyOptions);
+            "All" => {
+                all = value
+                    .as_bool()
+                    .ok_or(TunnelRequestError::BadValue("All".to_owned()))?;
+            }
+            key => {
+                if key.len() > MAX_OPTION_NAME_LEN {
+                    return Err(TunnelRequestError::BadOption(ContractError::OverBound));
                 }
-                for (option_key, option_value) in map {
-                    if option_key.len() > MAX_OPTION_NAME_LEN {
-                        return Err(TunnelRequestError::BadOption(ContractError::OverBound));
-                    }
-                    find_option(option_key).map_err(TunnelRequestError::BadOption)?;
-                    let text = scalar_string(option_key, option_value)?;
+                if crate::proposal_wire::proposal_tunnel_value_type(key).is_none() {
+                    return Err(TunnelRequestError::UnknownKey(truncated_key(key)));
+                }
+                if matches!(
+                    crate::proposal_wire::proposal_tunnel_value_type(key),
+                    Some(crate::proposal_wire::ProposalTunnelValueType::String)
+                ) && value
+                    .as_str()
+                    .is_some_and(|text| text.len() > MAX_OPTION_VALUE_LEN)
+                {
+                    return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+                }
+                crate::proposal_wire::validate_proposal_tunnel_value(key, value)
+                    .map_err(|_| TunnelRequestError::BadValue(key.to_owned()))?;
+                let alias = canonical_wire_alias(key);
+                if !seen_aliases.insert(alias) {
+                    return Err(TunnelRequestError::DuplicateAlias(alias.to_owned()));
+                }
+                if key == "Description" {
+                    let text = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     if text.len() > MAX_OPTION_VALUE_LEN {
-                        return Err(TunnelRequestError::ValueOverBound(option_key.clone()));
+                        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
                     }
-                    options.insert(option_key.clone(), text);
+                    options.insert("description".to_owned(), text.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if matches!(key, "WebsiteHostname" | "SpoofedHost") {
+                    let host = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if host.len() > MAX_OPTION_VALUE_LEN {
+                        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+                    }
+                    options.insert("spoofed_host".to_owned(), host.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "MaxConcurrentConns" {
+                    let value = value
+                        .as_u64()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("max_streams".to_owned(), value.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "NewDest" {
+                    let mode = value
+                        .as_u64()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("new_dest".to_owned(), mode.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if matches!(key, "CloseTime" | "ReduceTime" | "ReduceCount") {
+                    let value = value
+                        .as_u64()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    let internal = match key {
+                        "CloseTime" => "close_time",
+                        "ReduceTime" => "reduce_time",
+                        _ => "reduce_count",
+                    };
+                    options.insert(internal.to_owned(), value.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "ProxyAuth" {
+                    let enabled = value
+                        .as_bool()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("proxy_auth".to_owned(), enabled.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if matches!(
+                    key,
+                    "AllowUserAgent"
+                        | "AllowReferer"
+                        | "AllowAccept"
+                        | "AllowInternalSSL"
+                        | "ConnectDelay"
+                        | "DelayOpen"
+                        | "BlockUserAgents"
+                        | "BlockAccessInProxies"
+                        | "BlockReferers"
+                ) {
+                    let enabled = value
+                        .as_bool()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    let internal = match key {
+                        "AllowUserAgent" => "allow_user_agent",
+                        "AllowReferer" => "allow_referer",
+                        "AllowAccept" => "allow_accept",
+                        "AllowInternalSSL" => "allow_internal_ssl",
+                        "ConnectDelay" => "connect_delay",
+                        "DelayOpen" => "delay_open",
+                        "BlockUserAgents" => "block_user_agents",
+                        "BlockAccessInProxies" => "block_access_in_proxies",
+                        _ => "block_referers",
+                    };
+                    options.insert(internal.to_owned(), enabled.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "UserAgents" {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("user_agents".to_owned(), value.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "AccessOption" {
+                    let mode = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if mode != "allow" && mode != "deny" {
+                        return Err(TunnelRequestError::BadValue(key.to_owned()));
+                    }
+                    options.insert("access_option".to_owned(), mode.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "JumpList" {
+                    let enabled = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if enabled != "true" && enabled != "false" {
+                        return Err(TunnelRequestError::BadValue(key.to_owned()));
+                    }
+                    options.insert("jump_list".to_owned(), enabled.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                let Some(option_key) = canonical_option(key) else {
+                    if key == "CustomOptions" {
+                        return Err(TunnelRequestError::RejectedOption(key.to_owned()));
+                    }
+                    unavailable_option.get_or_insert_with(|| key.to_owned());
+                    options_seen = true;
+                    continue;
+                };
+                let option_value_type = if matches!(option_key, "shared" | "persistent_client_key")
+                {
+                    // Proposal 170 controls extend the frozen Plan
+                    // 286 option table under Plan 323.
+                    crate::tunnel_options::OptionValueType::Boolean
+                } else if matches!(
+                    option_key,
+                    "filter_file_path" | "priv_key_file" | "sig_type" | "enc_type"
+                ) {
+                    crate::tunnel_options::OptionValueType::String
+                } else if matches!(
+                    option_key,
+                    "client_per_minute"
+                        | "client_per_hour"
+                        | "client_per_day"
+                        | "total_in_per_minute"
+                        | "total_in_per_hour"
+                        | "total_in_per_day"
+                        | "post_limit"
+                        | "post_limit_time"
+                        | "per_client_period"
+                        | "total_period"
+                        | "total_ban_time"
+                ) {
+                    crate::tunnel_options::OptionValueType::Integer
+                } else {
+                    find_option(option_key)
+                        .map_err(TunnelRequestError::BadOption)?
+                        .value_type
+                };
+                let wire_type = crate::proposal_wire::proposal_tunnel_value_type(key)
+                    .expect("Proposal field type was checked");
+                let adapter_type_matches = matches!(
+                    (wire_type, option_value_type),
+                    (
+                        crate::proposal_wire::ProposalTunnelValueType::String,
+                        crate::tunnel_options::OptionValueType::String
+                    ) | (
+                        crate::proposal_wire::ProposalTunnelValueType::Integer,
+                        crate::tunnel_options::OptionValueType::Integer
+                    ) | (
+                        crate::proposal_wire::ProposalTunnelValueType::Boolean,
+                        crate::tunnel_options::OptionValueType::Boolean
+                    )
+                );
+                if !adapter_type_matches {
+                    unavailable_option.get_or_insert_with(|| key.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                let text = scalar_string(option_key, value)?;
+                if options.insert(option_key.to_owned(), text).is_some() {
+                    return Err(TunnelRequestError::DuplicateAlias(option_key.to_owned()));
                 }
                 options_seen = true;
-            }
-            _ => {
-                return Err(TunnelRequestError::UnknownKey(truncated_key(key)));
+                if options.len() > MAX_OPTIONS_PER_TUNNEL {
+                    return Err(TunnelRequestError::TooManyOptions);
+                }
             }
         }
     }
@@ -167,6 +518,12 @@ pub fn decode_tunnel_request(
     let action = action.ok_or(TunnelRequestError::MissingField("action"))?;
     match action {
         TunnelAction::Get => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
+            if name.is_none() {
+                return Err(TunnelRequestError::MissingField("name"));
+            }
             if tunnel_type.is_some() {
                 return Err(TunnelRequestError::UnexpectedField("type"));
             }
@@ -178,6 +535,9 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Create => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
             let _ = name
                 .as_ref()
                 .ok_or(TunnelRequestError::MissingField("name"))?;
@@ -189,6 +549,9 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Edit => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
             if name.is_none() {
                 return Err(TunnelRequestError::MissingField("name"));
             }
@@ -200,7 +563,18 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Delete | TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart => {
-            if name.is_none() {
+            if all
+                && !matches!(
+                    action,
+                    TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart
+                )
+            {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
+            if all && name.is_some() {
+                return Err(TunnelRequestError::UnexpectedField("name"));
+            }
+            if !all && name.is_none() {
                 return Err(TunnelRequestError::MissingField("name"));
             }
             if tunnel_type.is_some() {
@@ -214,13 +588,55 @@ pub fn decode_tunnel_request(
             }
         }
     }
+    if let Some(option) = unavailable_option {
+        return Err(TunnelRequestError::UnavailableOption(option));
+    }
+    if matches!(action, TunnelAction::Create | TunnelAction::Edit) {
+        if options
+            .get("close_on_idle")
+            .is_some_and(|value| value == "true")
+        {
+            options
+                .entry("close_time".to_owned())
+                .or_insert_with(|| "30".to_owned());
+        }
+        if options
+            .get("reduce_on_idle")
+            .is_some_and(|value| value == "true")
+        {
+            options
+                .entry("reduce_time".to_owned())
+                .or_insert_with(|| "20".to_owned());
+            options
+                .entry("reduce_count".to_owned())
+                .or_insert_with(|| "1".to_owned());
+        }
+        if options.len() > MAX_OPTIONS_PER_TUNNEL {
+            return Err(TunnelRequestError::TooManyOptions);
+        }
+    }
     Ok(TunnelManagerRequest {
         action,
+        all,
         name,
         tunnel_type,
         new_name,
         options,
     })
+}
+
+fn canonical_wire_alias(key: &str) -> &'static str {
+    match key {
+        "MaxConcurrentConns" => "MaxConcurrentConns",
+        "TargetHost" | "Host" => "TargetHost",
+        "TargetDestination" | "Destination" => "TargetDestination",
+        "WebsiteHostname" | "SpoofedHost" => "WebsiteHostname",
+        _ => crate::proposal_wire::PROPOSAL_TUNNEL_MANAGER_FIELDS
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == key)
+            .unwrap_or("invalid"),
+    }
 }
 
 /// Truncates an unknown key for error reporting (bounded diagnostics).

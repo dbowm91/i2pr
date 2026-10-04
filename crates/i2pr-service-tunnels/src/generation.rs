@@ -397,9 +397,16 @@ mod tests {
         let mut gated = prev.clone();
         gated.http_policy = crate::http::HttpServerPolicy {
             address_helper: false,
-            jump_list: true,
+            ..crate::http::HttpServerPolicy::default()
         };
         assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);
+        let mut host_override = prev.clone();
+        host_override.http_policy.spoofed_host = Some("site.example.i2p".to_owned());
+        assert_eq!(
+            diff_spec(&prev, &host_override),
+            DiffClass::MutableInPlace,
+            "per-connection HTTP host policy updates without destination churn"
+        );
     }
 
     #[test]

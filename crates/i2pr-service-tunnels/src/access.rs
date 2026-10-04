@@ -15,9 +15,178 @@
 
 use crate::destination::B32_SUFFIX;
 use crate::errors::ServiceTunnelError;
+use std::collections::BTreeMap;
 
 /// Maximum entries in one allow/deny list.
 pub const MAX_ACCESS_LIST_ENTRIES: usize = 64;
+/// Maximum distinct peers retained by the bounded inbound-rate owner.
+pub const MAX_RATE_LIMIT_PEERS: usize = 4096;
+const RATE_WINDOWS_MS: [u64; 3] = [60_000, 3_600_000, 86_400_000];
+const MAX_PROPOSAL_RATE: u32 = 100_000;
+
+/// Proposal server connection-rate limits. Zero disables a limit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ServerConnectionRateLimits {
+    /// Maximum accepted connections per peer per minute.
+    pub client_per_minute: u32,
+    /// Maximum accepted connections per peer per hour.
+    pub client_per_hour: u32,
+    /// Maximum accepted connections per peer per day.
+    pub client_per_day: u32,
+    /// Maximum accepted connections across all peers per minute.
+    pub total_per_minute: u32,
+    /// Maximum accepted connections across all peers per hour.
+    pub total_per_hour: u32,
+    /// Maximum accepted connections across all peers per day.
+    pub total_per_day: u32,
+}
+
+impl ServerConnectionRateLimits {
+    /// Whether any peer or aggregate rate is configured.
+    pub fn enabled(self) -> bool {
+        self.client_per_minute != 0
+            || self.client_per_hour != 0
+            || self.client_per_day != 0
+            || self.total_per_minute != 0
+            || self.total_per_hour != 0
+            || self.total_per_day != 0
+    }
+
+    /// Rejects direct specs outside the Proposal's bounded integer range.
+    pub fn validate(self) -> Result<Self, ServiceTunnelError> {
+        if self
+            .as_array()
+            .iter()
+            .any(|value| *value > MAX_PROPOSAL_RATE)
+        {
+            return Err(ServiceTunnelError::ExceedsCeiling {
+                field: "server_connection_rate",
+                reason: "server connection rate exceeds 100000",
+            });
+        }
+        Ok(self)
+    }
+
+    fn as_array(self) -> [u32; 6] {
+        [
+            self.client_per_minute,
+            self.client_per_hour,
+            self.client_per_day,
+            self.total_per_minute,
+            self.total_per_hour,
+            self.total_per_day,
+        ]
+    }
+
+    fn client_limits(self) -> [u32; 3] {
+        [
+            self.client_per_minute,
+            self.client_per_hour,
+            self.client_per_day,
+        ]
+    }
+
+    fn total_limits(self) -> [u32; 3] {
+        [
+            self.total_per_minute,
+            self.total_per_hour,
+            self.total_per_day,
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WindowCounter {
+    epoch: u64,
+    count: u32,
+}
+
+/// Bounded fixed-window accounting for authenticated inbound server peers.
+/// The caller supplies process-monotonic milliseconds and serializes calls.
+#[derive(Debug)]
+pub struct ServerConnectionRateLimiter {
+    limits: ServerConnectionRateLimits,
+    total: [WindowCounter; 3],
+    peers: BTreeMap<[u8; 32], [WindowCounter; 3]>,
+}
+
+impl ServerConnectionRateLimiter {
+    /// Creates a fresh limiter for one service generation.
+    pub fn new(limits: ServerConnectionRateLimits) -> Self {
+        Self {
+            limits,
+            total: [WindowCounter::default(); 3],
+            peers: BTreeMap::new(),
+        }
+    }
+
+    /// Reserves one admission if every configured peer and total window allows it.
+    /// At peer-table capacity, expired records are reclaimed; an unseen peer is
+    /// rejected if the bounded table is still full.
+    pub fn admit(&mut self, peer: [u8; 32], now_ms: u64) -> bool {
+        if !self.limits.enabled() {
+            return true;
+        }
+        let epochs = RATE_WINDOWS_MS.map(|window| now_ms / window);
+        let client_limits = self.limits.client_limits();
+        let total_limits = self.limits.total_limits();
+        if !within_limits(&self.total, &epochs, &total_limits) {
+            return false;
+        }
+
+        if client_limits.iter().any(|limit| *limit != 0) && !self.peers.contains_key(&peer) {
+            if self.peers.len() >= MAX_RATE_LIMIT_PEERS {
+                self.peers.retain(|_, counters| {
+                    counters.iter().enumerate().any(|(index, counter)| {
+                        client_limits[index] != 0 && counter.epoch == epochs[index]
+                    })
+                });
+            }
+            if self.peers.len() >= MAX_RATE_LIMIT_PEERS {
+                return false;
+            }
+        }
+        let peer_counters = self.peers.get(&peer).copied().unwrap_or_default();
+        if !within_limits(&peer_counters, &epochs, &client_limits) {
+            return false;
+        }
+
+        increment_windows(&mut self.total, &epochs, &total_limits);
+        if client_limits.iter().any(|limit| *limit != 0) {
+            let counters = self.peers.entry(peer).or_default();
+            increment_windows(counters, &epochs, &client_limits);
+        }
+        true
+    }
+
+    /// Number of currently retained peer records, exposed for boundedness tests.
+    pub fn tracked_peers(&self) -> usize {
+        self.peers.len()
+    }
+}
+
+fn within_limits(counters: &[WindowCounter; 3], epochs: &[u64; 3], limits: &[u32; 3]) -> bool {
+    (0..3).all(|index| {
+        limits[index] == 0
+            || counters[index].epoch != epochs[index]
+            || counters[index].count < limits[index]
+    })
+}
+
+fn increment_windows(counters: &mut [WindowCounter; 3], epochs: &[u64; 3], limits: &[u32; 3]) {
+    for index in 0..3 {
+        if limits[index] == 0 {
+            continue;
+        }
+        if counters[index].epoch != epochs[index] {
+            counters[index] = WindowCounter {
+                epoch: epochs[index],
+                count: 0,
+            };
+        }
+        counters[index].count = counters[index].count.saturating_add(1);
+    }
+}
 
 /// Inbound peer destination-hash policy for server tunnels.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -26,6 +195,8 @@ pub struct ServerAccessPolicy {
     pub allow: Vec<[u8; 32]>,
     /// Denied peer hashes (`black_list`).
     pub deny: Vec<[u8; 32]>,
+    /// Authenticated peer and aggregate connection-rate limits.
+    pub connection_rates: ServerConnectionRateLimits,
 }
 
 impl ServerAccessPolicy {
@@ -60,7 +231,11 @@ impl ServerAccessPolicy {
         for value in deny_values {
             parse_entries(value, &mut deny)?;
         }
-        Ok(Self { allow, deny })
+        Ok(Self {
+            allow,
+            deny,
+            connection_rates: ServerConnectionRateLimits::default(),
+        })
     }
 }
 
@@ -172,5 +347,44 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(ServerAccessPolicy::parse(&[&many], &[]).is_err());
+    }
+
+    #[test]
+    fn connection_rate_limiter_enforces_peer_and_aggregate_windows() {
+        let mut per_peer = ServerConnectionRateLimiter::new(ServerConnectionRateLimits {
+            client_per_minute: 1,
+            ..ServerConnectionRateLimits::default()
+        });
+        assert!(per_peer.admit([1; 32], 10));
+        assert!(!per_peer.admit([1; 32], 11));
+        assert!(per_peer.admit([2; 32], 11));
+        assert!(per_peer.admit([1; 32], 60_000));
+
+        let mut aggregate = ServerConnectionRateLimiter::new(ServerConnectionRateLimits {
+            total_per_hour: 1,
+            ..ServerConnectionRateLimits::default()
+        });
+        assert!(aggregate.admit([1; 32], 0));
+        assert!(!aggregate.admit([2; 32], 1));
+        assert!(aggregate.admit([2; 32], 3_600_000));
+        assert_eq!(aggregate.tracked_peers(), 0);
+    }
+
+    #[test]
+    fn connection_rate_limiter_is_bounded_and_fails_closed() {
+        let mut limiter = ServerConnectionRateLimiter::new(ServerConnectionRateLimits {
+            client_per_day: 1,
+            ..ServerConnectionRateLimits::default()
+        });
+        for index in 0..MAX_RATE_LIMIT_PEERS {
+            let mut peer = [0_u8; 32];
+            peer[..4].copy_from_slice(&(index as u32).to_be_bytes());
+            assert!(limiter.admit(peer, 1));
+        }
+        assert_eq!(limiter.tracked_peers(), MAX_RATE_LIMIT_PEERS);
+        assert!(!limiter.admit([0xff; 32], 2));
+        // A new day reclaims old records before adding the next peer.
+        assert!(limiter.admit([0xff; 32], 86_400_000));
+        assert_eq!(limiter.tracked_peers(), 1);
     }
 }

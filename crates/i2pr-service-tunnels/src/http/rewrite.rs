@@ -85,6 +85,9 @@ pub fn rewrite_headers(
             drop = true;
         }
         match name {
+            "accept" if !privacy.allow_accept => {
+                continue;
+            }
             "referer" if privacy.strip_referer => {
                 drop = true;
             }
@@ -351,6 +354,23 @@ mod tests {
             .find(|h| h.name_str() == "user-agent")
             .expect("user-agent present");
         assert_eq!(ua.value, "Mozilla/5.0");
+    }
+
+    #[test]
+    fn proposal_allow_accept_filter_removes_accept_when_disabled() {
+        let policy = PrivacyPolicy {
+            allow_accept: false,
+            ..PrivacyPolicy::default()
+        };
+        let headers = vec![
+            entry("Host", "example.i2p"),
+            entry("Accept", "text/html"),
+            entry("Accept-Language", "en"),
+        ];
+        let rewritten = rewrite_headers(&headers, &target("example.i2p", None), &policy);
+        let names: Vec<&str> = rewritten.iter().map(|header| header.name_str()).collect();
+        assert!(!names.contains(&"accept"));
+        assert!(names.contains(&"accept-language"));
     }
 
     #[test]

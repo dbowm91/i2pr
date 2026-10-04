@@ -35,8 +35,9 @@ use i2pr_client::streaming::connection::ConnectionId;
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
-    HttpErrorKind, HttpLimits, build_error_response, classify_presentation, filter_server_request,
-    filter_server_response, parse_origin_form, parse_request_head,
+    HttpErrorKind, HttpLimits, build_error_response, classify_presentation,
+    filter_server_request_with_policy, filter_server_response, parse_origin_form,
+    parse_request_head,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
@@ -86,6 +87,7 @@ pub(crate) async fn run_http_server_connection(
     peer: RemoteDestination,
     cancellation: CancellationToken,
 ) -> HttpServerConnectionOutcome {
+    let peer_hash = peer.destination_hash;
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
     let unique_local = manager.unique_local_for(&runtime.spec_id);
     let dial = timeout(
@@ -154,6 +156,8 @@ pub(crate) async fn run_http_server_connection(
         target_stream,
         endpoint,
         manager.http_policy_for(&runtime.spec_id),
+        &runtime.post_limiter,
+        peer_hash,
         &cancellation,
     )
     .await;
@@ -167,6 +171,8 @@ async fn drive_relay<S>(
     target_stream: S,
     endpoint: Arc<dyn StreamPumpEndpoint>,
     policy: i2pr_service_tunnels::HttpServerPolicy,
+    post_limiter: &std::sync::Mutex<i2pr_service_tunnels::HttpPostLimiter>,
+    peer_hash: [u8; 32],
     cancellation: &CancellationToken,
 ) -> HttpServerConnectionOutcome
 where
@@ -194,6 +200,23 @@ where
             return HttpServerConnectionOutcome::BadRequest;
         }
     };
+    if head.line.method == "POST" {
+        let now_seconds = crate::service_tunnels::service_streaming_now_ms() / 1_000;
+        let admitted = post_limiter
+            .lock()
+            .map(|mut limiter| limiter.admit_post(peer_hash, now_seconds))
+            .unwrap_or(false);
+        if !admitted {
+            admit_error(
+                endpoint.as_ref(),
+                HttpErrorKind::PresentationRefused,
+                "HTTP POST rate limit exceeded",
+                cancellation,
+            )
+            .await;
+            return HttpServerConnectionOutcome::Forbidden;
+        }
+    }
     // Same-read pipelined bytes after the head belong to the
     // request body; carry them into the body forward.
     let mut body_prefix = head.initial_body_bytes.clone();
@@ -218,7 +241,7 @@ where
             return HttpServerConnectionOutcome::Forbidden;
         }
     }
-    let filtered = match filter_server_request(&head, &target.to_string()) {
+    let filtered = match filter_server_request_with_policy(&head, &target.to_string(), &policy) {
         Ok(value) => value,
         Err(error) => {
             admit_error(endpoint.as_ref(), error.kind, error.reason, cancellation).await;

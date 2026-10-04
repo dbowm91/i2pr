@@ -262,12 +262,26 @@ async fn build_paired_manager_with_policy(
     mpsc::UnboundedReceiver<ObservedRequest>,
     SocketAddr,
 ) {
+    build_paired_manager_with_policy_and_spoofed_host(data_dir, response, policy, None).await
+}
+
+async fn build_paired_manager_with_policy_and_spoofed_host(
+    data_dir: &Path,
+    response: Vec<u8>,
+    policy: i2pr_service_tunnels::HttpServerPolicy,
+    spoofed_host: Option<String>,
+) -> (
+    Arc<ServiceTunnelManager>,
+    mpsc::UnboundedReceiver<ObservedRequest>,
+    SocketAddr,
+) {
     let (fixture_addr, observed_rx, _fixture) = start_http_fixture(response);
-    let probe = build_manager(
-        data_dir,
-        vec![http_server_spec_with_policy(fixture_addr, policy)],
-        StaticAliasTable::new(),
-    );
+    let make_server = || {
+        let mut spec = http_server_spec_with_policy(fixture_addr, policy.clone());
+        spec.http_policy.spoofed_host = spoofed_host.clone();
+        spec
+    };
+    let probe = build_manager(data_dir, vec![make_server()], StaticAliasTable::new());
     probe.prepare().await.expect("probe prepare");
     let server_b64 = probe
         .service_destination_b64("alpha-web")
@@ -276,10 +290,7 @@ async fn build_paired_manager_with_policy(
     let destination = DestinationRef::ConfiguredDestination(server_b64);
     let manager = build_manager(
         data_dir,
-        vec![
-            client_spec(destination),
-            http_server_spec_with_policy(fixture_addr, policy),
-        ],
+        vec![client_spec(destination), make_server()],
         StaticAliasTable::new(),
     );
     (manager, observed_rx, fixture_addr)
@@ -418,6 +429,153 @@ async fn http_server_get_roundtrip_filters() {
     assert!(text.contains("connection: close\r\n"), "close: {text}");
     let body = read_body_bounded(&mut stream, &head).await;
     assert_eq!(body, b"hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn proposal_spoofed_host_and_referer_policy_reach_http_server_target() {
+    let directory = temp_data_dir("http-server-spoofed-host");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_referers: false,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) = build_paired_manager_with_policy_and_spoofed_host(
+        directory.path(),
+        CANNED_RESPONSE.to_vec(),
+        policy,
+        Some("site.example.i2p".to_owned()),
+    )
+    .await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /path HTTP/1.1\r\nHost: attacker.example\r\nReferer: https://source.example/path\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let body = read_body_bounded(&mut stream, &head).await;
+    assert_eq!(body, b"hello");
+    let forwarded = next_observed(&mut observed).await;
+    assert!(forwarded.head.contains("host: site.example.i2p\r\n"));
+    assert!(!forwarded.head.contains("attacker.example"));
+    assert!(
+        forwarded
+            .head
+            .contains("referer: https://source.example/path\r\n")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn proposal_post_limits_reject_excess_peer_requests_before_target() {
+    let directory = temp_data_dir("http-server-post-limits");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        post_limits: i2pr_service_tunnels::HttpPostLimits {
+            window_seconds: 300,
+            client_max: 1,
+            ..i2pr_service_tunnels::HttpPostLimits::default()
+        },
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+
+    let mut first = TcpStream::connect(listener).await.expect("first connect");
+    first
+        .write_all(b"POST /submit HTTP/1.1\r\nHost: example.i2p\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("first post");
+    let first_response = read_head_bounded(&mut first).await;
+    assert!(
+        String::from_utf8_lossy(&first_response).starts_with("HTTP/1.1 200 OK\r\n"),
+        "first POST is admitted"
+    );
+    let _ = next_observed(&mut observed).await;
+
+    let mut second = TcpStream::connect(listener).await.expect("second connect");
+    second
+        .write_all(b"POST /submit HTTP/1.1\r\nHost: example.i2p\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("second post");
+    let second_response = read_head_bounded(&mut second).await;
+    assert!(
+        String::from_utf8_lossy(&second_response).starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "excess peer POST is rejected"
+    );
+    assert!(
+        observed.try_recv().is_err(),
+        "rejected POST never reaches target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn proposal_user_agent_blocklist_rejects_before_local_target() {
+    let directory = temp_data_dir("http-server-user-agent-blocklist");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_user_agents: true,
+        user_agents: vec!["crawler".to_owned()],
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: example crawler\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let response = String::from_utf8_lossy(&head);
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "configured User-Agent substring is refused: {response:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "blocked request never reaches the local target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn proposal_block_access_in_proxies_rejects_before_local_target() {
+    let directory = temp_data_dir("http-server-block-inproxy");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_access_in_proxies: true,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.i2p\r\nX-Forwarded-For: 192.0.2.1\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let response = String::from_utf8_lossy(&head);
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "inproxy-identifying header is refused: {response:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "blocked request never reaches the local target"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -605,7 +763,7 @@ async fn http_server_closed_helper_gate_refuses() {
     let directory = temp_data_dir("http-server-nohelper");
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: false,
-        jump_list: true,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
@@ -670,8 +828,8 @@ async fn http_server_closed_helper_gate_refuses() {
 async fn http_server_closed_jump_gate_refuses() {
     let directory = temp_data_dir("http-server-nojump");
     let policy = i2pr_service_tunnels::HttpServerPolicy {
-        address_helper: true,
         jump_list: false,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;

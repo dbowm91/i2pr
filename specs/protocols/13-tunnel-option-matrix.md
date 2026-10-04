@@ -36,6 +36,11 @@ explicit i2pr interpretations below.
   ordinary i2pr behavior. Determinations and evidence live in
   `specs/protocols/14-tunnel-deep-option-determinations.md`; Plan
   295 carries the limitations into the final support claim.
+- Current override (Plan 324): the historical SigType incompatibility is
+  superseded for type 7 only. Canonical TunnelManager accepts EdDSA-SHA512 /
+  Ed25519 (type 7) and active Standard LeaseSet2 X25519 (EncType 4) through
+  the typed Destination crypto-policy owner. Other signature/encryption
+  types remain explicitly unavailable; Red25519 depends on Plan 325.
 - `CORRECTIVE_296_CELLS = 0` (Plan 296 closed every residual into a
   named apply owner: pool backup-quantity/variance, multihoming
   target selection, reply bundling) and `CORRECTIVE_297_CELLS = 0`

@@ -10,7 +10,7 @@ Paths are relative to the workspace root.
 
 | Script | What it catches |
 | --- | --- |
-| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. |
+| `scripts/check-dependency-direction.sh` | Crate-layer DAG violations, including the runtime-neutral SU3 verifier layer and its NetDB consumer. Uses `cargo metadata` piped to a Python 3 JSON reader with an explicit allowlist map. |
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, `tokio::spawn` without an owner, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. |
 | `scripts/check-fixture-manifest.sh` | Drift in the I2NP fixture corpus under `tests/fixtures/i2np/`. Validates manifest IDs, classification (`positive`/`negative`), provenance (`locally-authored`/`independently-produced`), all metadata fields, on-disk file existence, and SHA-256 hash matches. Rejects orphan `.hex` files (i.e. unlisted fixtures). |
 | `scripts/check-ntcp2-vectors.sh` | Drift in the NTCP2 crypto vector corpus under `tests/fixtures/ntcp2/crypto/`. Verifies duplicate-free manifest, `positive`/`malformed` categories, 64-char hex hashes, path containment, file existence, and SHA-256 match. Additionally verifies `vectors.tsv` contains all 13 required NTCP2 crypto vector IDs. |

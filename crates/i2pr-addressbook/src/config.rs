@@ -12,22 +12,20 @@
 //!   the staged-download artifact consumed by the ingestion pipeline.
 //! - `refresh_interval`: integer hours, 1..=720. Drives the refresh
 //!   worker cadence.
-//! - `proxy_host`, `proxy_port`: bounded host / 1..=65535 port for the
-//!   subscription fetch path only. They never create a general proxy
-//!   capability. No downloader owner exists yet, so refresh attempts
-//!   report unavailable; the values are validated, stored, and
-//!   round-tripped for the fetch path to consume when one is composed.
+//! - `proxy_host`, `proxy_port`: loopback IP literal / 1..=65535 port
+//!   for the explicitly configured local eepProxy only. They never
+//!   create a general proxy capability or trigger name resolution.
 //! - `theme`: inert frontend metadata. Durable round-trip only; no
 //!   router, logging, or frontend side effect.
 //! - `log_level`: artifact verbosity only (`off`, `error`, `warn`,
 //!   `info`, `debug`). Never redirects or reconfigures global tracing.
-//! - `lookup_timeout`: integer seconds, 1..=300. Bounds the fetch
-//!   stages of the subscription pipeline once a downloader owner
-//!   exists; validated, stored, and round-tripped meanwhile.
+//! - `lookup_timeout`: integer seconds, 1..=300. Bounds each request
+//!   stage of the daemon-owned subscription fetch pipeline.
 //! - `max_entries`: per-book entry ceiling, 1..=[`MAX_ENTRIES_PER_BOOK`].
 //!   Enforced on mutation, import, and configuration tightening.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 
 use crate::error::AddressBookError;
 use crate::generation::MAX_ENTRIES_PER_BOOK;
@@ -74,10 +72,16 @@ pub enum ConfigKey {
     LookupTimeout,
     /// Per-book entry ceiling.
     MaxEntries,
+    /// Whether the eligible router address book is regenerated for publication.
+    ShouldPublish,
+    /// ETag validator artifact.
+    Etags,
+    /// Last-Modified validator artifact.
+    LastModified,
 }
 
 impl ConfigKey {
-    /// Exact wire spelling (matches the frozen thirteen-key inventory).
+    /// Exact owner-config spelling (Proposal wire names are projected at the daemon boundary).
     pub const fn name(self) -> &'static str {
         match self {
             Self::PrivateBook => "private_book",
@@ -93,6 +97,9 @@ impl ConfigKey {
             Self::LogLevel => "log_level",
             Self::LookupTimeout => "lookup_timeout",
             Self::MaxEntries => "max_entries",
+            Self::ShouldPublish => "should_publish",
+            Self::Etags => "etags",
+            Self::LastModified => "last_modified",
         }
     }
 
@@ -106,6 +113,8 @@ impl ConfigKey {
                 | Self::PublishedBook
                 | Self::Subscriptions
                 | Self::LogFile
+                | Self::Etags
+                | Self::LastModified
         )
     }
 }
@@ -126,6 +135,9 @@ pub fn parse_config_key(name: &str) -> Result<ConfigKey, AddressBookError> {
         "log_level" => Ok(ConfigKey::LogLevel),
         "lookup_timeout" => Ok(ConfigKey::LookupTimeout),
         "max_entries" => Ok(ConfigKey::MaxEntries),
+        "should_publish" => Ok(ConfigKey::ShouldPublish),
+        "etags" => Ok(ConfigKey::Etags),
+        "last_modified" => Ok(ConfigKey::LastModified),
         _ => Err(AddressBookError::UnknownConfigKey),
     }
 }
@@ -171,7 +183,7 @@ impl LogLevel {
     }
 }
 
-/// Validated thirteen-key address-book configuration.
+/// Validated address-book owner configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddressBookConfig {
     /// Per-book snapshot artifact names (logical, confined).
@@ -194,6 +206,12 @@ pub struct AddressBookConfig {
     pub lookup_timeout_secs: u64,
     /// Per-book entry ceiling.
     pub max_entries: usize,
+    /// Whether a published-book artifact is regenerated after refresh.
+    pub should_publish: bool,
+    /// Logical artifact name for subscription ETag validators.
+    pub etags_artifact: String,
+    /// Logical artifact name for subscription Last-Modified validators.
+    pub last_modified_artifact: String,
 }
 
 impl Default for AddressBookConfig {
@@ -214,12 +232,15 @@ impl Default for AddressBookConfig {
             log_level: LogLevel::Warn,
             lookup_timeout_secs: 30,
             max_entries: MAX_ENTRIES_PER_BOOK,
+            should_publish: false,
+            etags_artifact: "subscriptions.etags".to_owned(),
+            last_modified_artifact: "subscriptions.last-modified".to_owned(),
         }
     }
 }
 
 impl AddressBookConfig {
-    /// Renders all thirteen keys in canonical order for getters and
+    /// Renders all owner keys in canonical order for persistence and
     /// generation encoding.
     pub fn rendered_entries(&self) -> BTreeMap<String, String> {
         let mut map = BTreeMap::new();
@@ -237,6 +258,9 @@ impl AddressBookConfig {
             "log_level",
             "lookup_timeout",
             "max_entries",
+            "should_publish",
+            "etags",
+            "last_modified",
         ];
         let values = [
             self.book_artifacts[0].clone(),
@@ -254,6 +278,9 @@ impl AddressBookConfig {
             self.log_level.name().to_owned(),
             self.lookup_timeout_secs.to_string(),
             self.max_entries.to_string(),
+            self.should_publish.to_string(),
+            self.etags_artifact.clone(),
+            self.last_modified_artifact.clone(),
         ];
         for (key, value) in keys.into_iter().zip(values) {
             map.insert(key.to_owned(), value);
@@ -328,6 +355,26 @@ impl AddressBookConfig {
                     let ceiling = parse_ranged_u64(value, 1, MAX_ENTRIES_PER_BOOK as u64)?;
                     next.max_entries = ceiling as usize;
                 }
+                ConfigKey::ShouldPublish => {
+                    next.should_publish = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err(AddressBookError::InvalidConfigValue),
+                    };
+                }
+                ConfigKey::Etags => next.etags_artifact = confined_path(value)?,
+                ConfigKey::LastModified => next.last_modified_artifact = confined_path(value)?,
+            }
+        }
+        let mut paths = BTreeSet::new();
+        for path in next.book_artifacts.iter().chain([
+            &next.subscriptions_artifact,
+            &next.log_file,
+            &next.etags_artifact,
+            &next.last_modified_artifact,
+        ]) {
+            if !paths.insert(path) {
+                return Err(AddressBookError::InvalidConfigValue);
             }
         }
         Ok(next)
@@ -356,6 +403,14 @@ fn confined_path(value: &str) -> Result<String, AddressBookError> {
         // out of scope for the artifact namespace.
         return Err(AddressBookError::InvalidConfigValue);
     }
+    if matches!(
+        value,
+        "addressbook.current.json" | "addressbook.backup.json"
+    ) {
+        // These filenames belong exclusively to the opaque generation
+        // store; logical artifacts must never overwrite durable state.
+        return Err(AddressBookError::InvalidConfigValue);
+    }
     Ok(value.to_owned())
 }
 
@@ -373,30 +428,17 @@ fn parse_ranged_u64(text: &str, minimum: u64, maximum: u64) -> Result<u64, Addre
     Ok(value)
 }
 
-/// Validates a fetch-path proxy host: bounded IP literal or hostname,
-/// no scheme, port, userinfo, or whitespace.
+/// Validates an explicitly local proxy host without allowing DNS
+/// resolution or non-loopback proxy access.
 fn validated_proxy_host(value: &str) -> Result<String, AddressBookError> {
-    if value.len() > MAX_HOSTNAME_LEN_PLUS {
+    let address = value
+        .parse::<IpAddr>()
+        .map_err(|_| AddressBookError::InvalidConfigValue)?;
+    if !address.is_loopback() {
         return Err(AddressBookError::InvalidConfigValue);
     }
-    if value.bytes().any(|byte| {
-        byte <= 0x20
-            || byte == 0x7f
-            || byte == b'/'
-            || byte == b':'
-            || byte == b'@'
-            || byte == b'['
-            || byte == b']'
-    }) {
-        return Err(AddressBookError::InvalidConfigValue);
-    }
-    // Reuse the hostname shape where it fits; IP literals pass the
-    // character gate above and need no further structure here.
-    Ok(value.to_owned())
+    Ok(address.to_string())
 }
-
-/// Host ceiling shared with hostnames (255) plus bracket headroom.
-const MAX_HOSTNAME_LEN_PLUS: usize = 256;
 
 #[cfg(test)]
 mod tests {
@@ -436,6 +478,31 @@ mod tests {
     }
 
     #[test]
+    fn publication_and_validator_config_are_typed_and_confined() {
+        let config = AddressBookConfig::default();
+        let updated = config
+            .checked_update(&map(&[
+                ("should_publish", "true"),
+                ("etags", "validators.etag"),
+                ("last_modified", "validators.modified"),
+            ]))
+            .expect("valid config");
+        assert!(updated.should_publish);
+        assert_eq!(updated.etags_artifact, "validators.etag");
+        assert_eq!(updated.last_modified_artifact, "validators.modified");
+        for invalid in ["yes", "1", "true "] {
+            assert!(
+                config
+                    .checked_update(&map(&[("should_publish", invalid)]))
+                    .is_err()
+            );
+        }
+        for invalid in ["../escape", "/tmp/escape", "dir/file"] {
+            assert!(config.checked_update(&map(&[("etags", invalid)])).is_err());
+        }
+    }
+
+    #[test]
     fn paths_stay_confined() {
         let config = AddressBookConfig::default();
         for bad in [
@@ -449,6 +516,8 @@ mod tests {
             "a\\b",
             "nul\0byte",
             "tab\there",
+            "addressbook.current.json",
+            "addressbook.backup.json",
         ] {
             assert!(
                 config.checked_update(&map(&[("log_file", bad)])).is_err(),
@@ -488,9 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn proxy_hosts_are_bounded_hosts() {
+    fn proxy_hosts_must_be_loopback_ip_literals() {
         let config = AddressBookConfig::default();
-        for good in ["proxy.i2p", "127.0.0.1", "10.0.0.7"] {
+        for good in ["127.0.0.1", "::1"] {
             assert!(
                 config.checked_update(&map(&[("proxy_host", good)])).is_ok(),
                 "{good} must pass"
@@ -498,10 +567,12 @@ mod tests {
         }
         for bad in [
             "http://proxy.i2p/",
+            "proxy.i2p",
             "proxy:8080",
             "user@proxy",
             "has space",
             "[::1]",
+            "10.0.0.7",
         ] {
             assert!(
                 config.checked_update(&map(&[("proxy_host", bad)])).is_err(),

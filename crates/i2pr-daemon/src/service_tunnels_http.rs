@@ -231,10 +231,16 @@ fn target_for_remote_destination(
 /// and waits until `Established` (or returns a typed error).
 async fn open_streaming(
     manager: &ServiceTunnelManager,
+    spec_id: &str,
     destination_id: i2pr_client::DestinationId,
     remote: &RemoteDestination,
     timeout_ms: u64,
+    cancellation: &CancellationToken,
 ) -> Result<ConnectionId, HttpError> {
+    manager
+        .ensure_destination_active(spec_id, cancellation, timeout_ms)
+        .await
+        .map_err(|_| HttpError::new(HttpErrorKind::BadGateway, "destination activation failed"))?;
     let identity_arc = manager
         .with_destination_bridge(destination_id, |bridge| bridge.identity())
         .ok_or_else(|| HttpError::new(HttpErrorKind::BadGateway, "missing identity"))?;
@@ -495,6 +501,17 @@ async fn handle_connect(
         .await;
         return HttpConnectionOutcome::Forbidden;
     }
+    if authority.port == Some(443) && !options.allow_internal_ssl {
+        let _ = write_error_response(
+            &mut stream,
+            build_error_response(
+                HttpErrorKind::UnsupportedConnectPort,
+                "internal SSL is disabled for this HTTP client",
+            ),
+        )
+        .await;
+        return HttpConnectionOutcome::Forbidden;
+    }
     let target = match resolve_target_for_service(&manager, runtime.destination_id, &authority) {
         Ok(value) => value,
         Err(error) => {
@@ -509,9 +526,11 @@ async fn handle_connect(
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let connection_id = match open_streaming(
         &manager,
+        &runtime.spec_id,
         runtime.destination_id,
         &target.remote,
         connect_timeout_ms,
+        &cancellation,
     )
     .await
     {
@@ -630,9 +649,11 @@ async fn handle_proxy_request(
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let connection_id = match open_streaming(
         &manager,
+        &runtime.spec_id,
         runtime.destination_id,
         &client.remote,
         connect_timeout_ms,
+        &cancellation,
     )
     .await
     {
@@ -856,6 +877,9 @@ pub async fn run_connect_only_connection(
         },
         destination_ports: std::collections::BTreeSet::new(),
         allowed_hosts: Vec::new(),
+        // CONNECT-only has its own HTTPS port policy and does not use
+        // Proposal 170's HTTP-client internal-SSL toggle.
+        allow_internal_ssl: true,
         // Plan 292: the strict-CONNECT executor enforces the same
         // credentials as the shared CONNECT handler.
         proxy_auth: options.proxy_auth.clone(),

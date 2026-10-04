@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod addressbook;
+mod addressbook_fetch;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
@@ -24,6 +25,7 @@ pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
+mod news;
 pub mod outbound_lookup;
 pub mod peer_test;
 pub mod router_i2np;
@@ -302,6 +304,9 @@ fn build_daemon_graph_inner(
     if inspection.publish_tunnels(0, 0, 0, 0).is_err() {
         tracing::warn!("tunnel attestation rejected");
     }
+    // No build coordinator is installed in this composition, so the
+    // separate Tunnel Build Message queue is authoritatively empty.
+    inspection.publish_tbm_queue(0);
 
     if config.sam.enabled {
         register_sam_service(&mut builder, config, inspection, &addressbook)?;
@@ -317,6 +322,10 @@ fn build_daemon_graph_inner(
 
     if addressbook.is_active() {
         register_addressbook_refresh_service(&mut builder, &addressbook)?;
+    }
+
+    if config.news.enabled {
+        register_news_refresh_service(&mut builder, config, inspection)?;
     }
 
     if config.ssu2.enabled {
@@ -572,12 +581,10 @@ fn register_i2pcontrol_service(
         })?;
     Ok(())
 }
-/// Registers the Plan 294 subscription-refresh worker. The worker
-/// wakes once per committed refresh interval and drains the bounded
-/// queue through the manager (attempt, diagnostic artifact, promote).
-/// With no downloader owner composed, attempts report unavailable;
-/// the cadence, queue discipline, and artifact remain live and
-/// tested. Cancellation stops the worker between wakes.
+/// Registers the Plan 321 subscription-refresh worker. The manager owns
+/// queue state and the narrow fetch capability; the daemon service owns
+/// cadence and cancellation. Dropping an in-flight fetch cancels its
+/// socket operation and releases the queue's active slot.
 fn register_addressbook_refresh_service(
     builder: &mut i2pr_runtime::ServiceGraphBuilder,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
@@ -600,9 +607,25 @@ fn register_addressbook_refresh_service(
                         tokio::select! {
                             _ = cancellation.cancelled() => break,
                             _ = tokio::time::sleep(Duration::from_secs(hours * 3600)) => {
-                                manager.run_queued_refreshes(
-                                    i2pr_addressbook::RefreshReason::IntervalElapsed,
-                                );
+                                let reason = i2pr_addressbook::RefreshReason::IntervalElapsed;
+                                let _ = manager.enqueue_current_for_refresh(reason);
+                                tokio::select! {
+                                    _ = cancellation.cancelled() => {
+                                        manager.release_refresh_after_cancel();
+                                        break;
+                                    },
+                                    _ = manager.run_queued_fetches(reason) => {}
+                                }
+                            }
+                            _ = manager.refresh_requested() => {
+                                let reason = i2pr_addressbook::RefreshReason::SubscriptionsReplaced;
+                                tokio::select! {
+                                    _ = cancellation.cancelled() => {
+                                        manager.release_refresh_after_cancel();
+                                        break;
+                                    },
+                                    _ = manager.run_queued_fetches(reason) => {}
+                                }
                             }
                         }
                     }
@@ -613,6 +636,54 @@ fn register_addressbook_refresh_service(
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!(
                 "failed to register address-book refresh service: {e}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn register_news_refresh_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    inspection: &Arc<InspectionHandles>,
+) -> Result<(), DaemonError> {
+    use crate::addressbook_fetch::{BoundedContentFetcher, LoopbackProxyFetcher};
+
+    let fetcher: Arc<dyn BoundedContentFetcher> = Arc::new(LoopbackProxyFetcher {
+        host: config.news.proxy_host.to_string(),
+        port: config.news.proxy_port,
+    });
+    let manager = Arc::new(crate::news::NewsManager::new(
+        config.news.clone(),
+        config.router.data_dir.clone(),
+        fetcher,
+    ));
+    inspection.publish_news_manager(Arc::clone(&manager));
+    let service_name = ServiceName::new("signed-news-refresh").expect("valid service name");
+    let interval = config.news.refresh_interval;
+    builder
+        .register(ServiceSpec::new(
+            service_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let manager = Arc::clone(&manager);
+                let cancellation = ctx.cancellation().clone();
+                Box::pin(async move {
+                    let _ = manager.refresh_once().await;
+                    loop {
+                        tokio::select! {
+                            _ = cancellation.cancelled() => break,
+                            _ = tokio::time::sleep(interval) => {
+                                let _ = manager.refresh_once().await;
+                            }
+                        }
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|error| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register signed-news refresh service: {error}"
             ))
         })?;
     Ok(())
@@ -1311,6 +1382,23 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         Some(Arc::clone(&bootstrap_handle)),
         service_lifecycle.clone(),
     )?;
+    if let Ok(bootstrap) = bootstrap_handle.lock()
+        && let Some(local) = bootstrap.local()
+    {
+        match local.encoded(crate::i2pcontrol_inspection::MAX_LOCAL_ROUTER_INFO_BYTES) {
+            Ok(encoded) => match i2pr_netdb::encode(&encoded) {
+                Ok(info_b64) => {
+                    if inspection.publish_local_router_info_b64(&info_b64).is_err() {
+                        tracing::warn!("local RouterInfo publication rejected");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "local RouterInfo base64 encoding failed")
+                }
+            },
+            Err(error) => tracing::warn!(error = %error, "local RouterInfo encoding failed"),
+        }
+    }
     // Publish the local router hash for the Plan 288 inspection plane.
     // The hash is public RouterInfo material; no secret crosses into the
     // control plane. When bootstrap built no local RouterInfo the row

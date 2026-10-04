@@ -1,10 +1,12 @@
 # Plan 320 — Exact Proposal 170 canonical wire-contract reconciliation
 
-Status: **registered-prop170-canonical-wire-reconciliation-blocked-on-plan319**
+Status: **passed-prop170-canonical-wire-contract-reconciliation**
 
 Classification: protocol contract corrective. This plan changes the public control-plane contract but does not add deep router capabilities.
 
 Hard dependency: Plan 319 closed.
+
+Plan 319 closed as `passed-prop170-planning-authority-and-global-number-reconciliation` in [`plans/closure/i2pcontrol-proposal-170/319-status.md`](../../closure/i2pcontrol-proposal-170/319-status.md). Current-source check performed 2026-10-04: Proposal 170 remains Open and lists Last Updated 2026-05-20, matching the research baseline. Canonical reference: <https://www.i2p.net/en/proposals/170-i2pcontrol-expansion/>. The base API reference was checked 2026-10-04 and now reports Updated 2026-07-10 at <https://i2p.net/en/docs/api/i2pcontrol/>; its fourteen RouterInfo keys are recorded separately from the 43 Proposal additions. Pinned Java PR 6, Emissary fork, and i2pd commits remain those in [`docs/provenance/proposal-170-manifest.md`](../../../docs/provenance/proposal-170-manifest.md).
 
 ## Objective
 
@@ -24,6 +26,8 @@ At execution start re-fetch and pin:
 - i2pd only for the base/adopted subset it implements.
 
 If Proposal 170 materially changed from the 2026-05-20 baseline, stop and record the diff before changing code.
+
+The base API reference changed after the original planning baseline: its current page identifies itself as updated 2026-07-10 and lists the fourteen base RouterInfo fields frozen independently in `BASE_ROUTER_INFO_FIELDS`. The Proposal 170 43-addition set remains unchanged.
 
 ## Required canonical inventory
 
@@ -100,3 +104,13 @@ RawConfig must never leak secret options even if reference implementations do.
 Plan 320 passes only when the default I2PControl endpoint accepts and emits the exact pinned Proposal 170 wire contract and no documentation calls the prior normalized inventory canonical.
 
 Closure unblocks Plans 321, 323, and 325.
+
+## Closure
+
+Closed as `passed-prop170-canonical-wire-contract-reconciliation` in
+[`plans/closure/i2pcontrol-proposal-170/320-status.md`](../../closure/i2pcontrol-proposal-170/320-status.md).
+The exact Proposal examples and pinned Java/Emissary overlap observations are
+frozen in
+[`crates/i2pr-daemon/tests/fixtures/i2pcontrol-proposal-170-examples.json`](../../../crates/i2pr-daemon/tests/fixtures/i2pcontrol-proposal-170-examples.json).
+This is a canonical-wire closure only; operational source gaps and live
+cross-router conformance remain owned by Plans 321–328.

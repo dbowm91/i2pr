@@ -269,6 +269,26 @@ impl ServiceDestinationStore {
         })
     }
 
+    /// Creates a store for one logical private-key reference owned by a
+    /// service. The reference is a validated identifier, never a host path;
+    /// the key material remains under the private service-destination root.
+    pub fn for_key_reference(
+        data_dir: &Path,
+        service_id: &str,
+        key_reference: &str,
+    ) -> Result<Self, ServiceDestinationStorageError> {
+        validate_service_id(service_id)?;
+        validate_key_reference(key_reference)?;
+        let subdir = data_dir
+            .join(SERVICE_DESTINATIONS_SUBDIR)
+            .join(service_id)
+            .join("keys")
+            .join(key_reference);
+        Ok(Self {
+            path: subdir.join(SERVICE_DESTINATION_FILE_NAME),
+        })
+    }
+
     /// Creates a store for an exact service destination path. No
     /// validation of the path is performed; callers must own the
     /// filesystem boundary.
@@ -449,6 +469,26 @@ fn validate_service_id(value: &str) -> Result<(), ServiceDestinationStorageError
         return Err(ServiceDestinationStorageError::InvalidId {
             value: value.to_owned(),
             reason: "must use a-z0-9, hyphen, or underscore",
+        });
+    }
+    Ok(())
+}
+
+fn validate_key_reference(value: &str) -> Result<(), ServiceDestinationStorageError> {
+    if value.is_empty() || value.len() > 32 {
+        return Err(ServiceDestinationStorageError::InvalidId {
+            value: value.to_owned(),
+            reason: "key reference must contain 1..=32 bytes",
+        });
+    }
+    if !value.as_bytes()[0].is_ascii_alphanumeric()
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
+    {
+        return Err(ServiceDestinationStorageError::InvalidId {
+            value: value.to_owned(),
+            reason: "key reference must be lowercase ASCII alphanumeric, hyphen, or underscore",
         });
     }
     Ok(())
@@ -894,6 +934,88 @@ mod tests {
         assert_eq!(loaded.padding(), original.padding());
         assert_eq!(loaded.legacy_filler(), original.legacy_filler());
         assert!(loaded.is_v2());
+    }
+
+    #[test]
+    fn logical_key_reference_store_is_namespaced_and_rejects_paths() {
+        let directory = tempdir().expect("directory");
+        let store =
+            ServiceDestinationStore::for_key_reference(directory.path(), "alpha", "service-key-1")
+                .expect("logical key reference store");
+        assert!(
+            store.path().starts_with(
+                directory
+                    .path()
+                    .join(SERVICE_DESTINATIONS_SUBDIR)
+                    .join("alpha")
+                    .join("keys")
+                    .join("service-key-1")
+            )
+        );
+        let mut rng = ChaCha8Rng::seed_from_u64(82);
+        let original = store.generate_new(&mut rng).expect("generate identity");
+        let loaded = store.load().expect("reload identity");
+        assert_eq!(loaded.signing_seed(), original.signing_seed());
+        assert_eq!(loaded.static_secret(), original.static_secret());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(store.path())
+                    .expect("key file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            for directory in [store.parent(), store.parent().parent().expect("keys root")] {
+                assert_eq!(
+                    fs::metadata(directory)
+                        .expect("key directory metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
+            }
+        }
+        assert!(matches!(
+            ServiceDestinationStore::for_key_reference(directory.path(), "alpha", "../escape"),
+            Err(ServiceDestinationStorageError::InvalidId { .. })
+        ));
+        assert!(matches!(
+            ServiceDestinationStore::for_key_reference(directory.path(), "alpha", "Upper"),
+            Err(ServiceDestinationStorageError::InvalidId { .. })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logical_key_reference_store_rejects_symlinked_key_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().expect("data directory");
+        let outside = tempdir().expect("outside directory");
+        let service_root = directory
+            .path()
+            .join(SERVICE_DESTINATIONS_SUBDIR)
+            .join("alpha");
+        fs::create_dir_all(&service_root).expect("service root");
+        symlink(outside.path(), service_root.join("keys")).expect("symlink key root");
+        let store =
+            ServiceDestinationStore::for_key_reference(directory.path(), "alpha", "primary")
+                .expect("logical key path remains well formed");
+        let mut rng = ChaCha8Rng::seed_from_u64(83);
+        assert!(matches!(
+            store.generate_new(&mut rng),
+            Err(ServiceDestinationStorageError::UnsafePath)
+        ));
+        assert!(
+            fs::read_dir(outside.path())
+                .expect("outside directory")
+                .next()
+                .is_none()
+        );
     }
 
     #[test]

@@ -29,8 +29,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use i2pr_i2pcontrol::{
-    ClientService, ROUTER_INFO_SOURCE_MATRIX, RouterInfoSelector, SourceAvailability, service_row,
-    source_row,
+    ClientService, PROPOSAL_ROUTER_INFO_FIELDS, ProposalRouterInfoField, ROUTER_INFO_SOURCE_MATRIX,
+    RouterInfoSelector, SourceAvailability, service_row, source_row,
 };
 use i2pr_runtime::Ssu2RuntimeService;
 
@@ -63,6 +63,10 @@ pub const MAX_INSPECTION_LIST: usize = 1024;
 
 /// Maximum bytes of a published mode/state string.
 pub const MAX_INSPECTION_STATE_STRING: usize = 32;
+/// Maximum base64 bytes retained for a local serialized RouterInfo.
+pub const MAX_LOCAL_ROUTER_INFO_BASE64_BYTES: usize = 1_048_576;
+/// Binary ceiling that keeps base64 expansion within the serialized value cap.
+pub const MAX_LOCAL_ROUTER_INFO_BYTES: usize = 786_432;
 
 /// Maximum bytes of a published router-hash string (44-char I2P base64).
 pub const MAX_INSPECTION_HASH_STRING: usize = 64;
@@ -91,6 +95,8 @@ impl FloodfillMode {
 struct PublishedSnapshots {
     /// Published local router hash (I2P base64) or `None`.
     router_hash: Option<String>,
+    /// Published local serialized RouterInfo (I2P base64) or `None`.
+    local_router_info_b64: Option<String>,
     /// Published known-peer hashes or `None`.
     netdb_known: Option<Vec<String>>,
     /// Published active-peer hashes or `None`.
@@ -113,9 +119,15 @@ struct PublishedSnapshots {
     participating: Option<u64>,
     /// Published build-queue depth or `None`.
     build_queue: Option<u64>,
+    /// Published Tunnel Build Message queue depth or `None`.
+    tbm_queue: Option<u64>,
     /// Published authoritative ban set or `None` (Plan 295 explicit
     /// ban owner; empty means no bans, never an unowned guess).
     bans: Option<Vec<String>>,
+    /// Configured active-link admission limit for NTCP2.
+    ntcp2_connection_limit: Option<u64>,
+    /// Configured active-session admission limit for SSU2.
+    ssu2_connection_limit: Option<u64>,
 }
 
 /// Rejection of an over-ceiling or malformed publication.
@@ -133,6 +145,8 @@ pub enum PublishError {
     },
     /// A router hash was not 44-char I2P base64.
     MalformedHash,
+    /// A serialized RouterInfo base64 string was malformed.
+    MalformedRouterInfo,
 }
 
 impl core::fmt::Display for PublishError {
@@ -145,6 +159,9 @@ impl core::fmt::Display for PublishError {
                 write!(formatter, "inspection string over ceiling for {key}")
             }
             Self::MalformedHash => write!(formatter, "inspection router hash malformed"),
+            Self::MalformedRouterInfo => {
+                write!(formatter, "inspection local RouterInfo base64 malformed")
+            }
         }
     }
 }
@@ -210,6 +227,8 @@ pub struct InspectionHandles {
     /// the service is registered (Plan 295); session and error rows
     /// read its cheap snapshot accessors per request.
     ssu2_live: Mutex<Option<Ssu2RuntimeService>>,
+    /// Authenticated router NEWS owner, published by the daemon worker.
+    news_live: Mutex<Option<Arc<crate::news::NewsManager>>>,
 }
 
 impl InspectionHandles {
@@ -233,6 +252,7 @@ impl InspectionHandles {
             log_live: Mutex::new(None),
             metrics_live: Mutex::new(None),
             ssu2_live: Mutex::new(None),
+            news_live: Mutex::new(None),
         }
     }
 
@@ -264,12 +284,39 @@ impl InspectionHandles {
                 listener: spec.listener.map(|listener| listener.socket()),
             })
             .collect();
-        Self::new(
+        let handles = Self::new(
             config.network.network_id,
             sam_endpoint,
             i2cp_endpoint,
             startup_services,
-        )
+        );
+        handles.publish_connection_limits(
+            config.transport.ntcp2.max_active_links,
+            config.ssu2.max_active_sessions,
+        );
+        handles
+    }
+
+    /// Publishes the validated transport active-connection ceilings.
+    ///
+    /// These values describe configured admission limits, not current
+    /// connection counts or advertised protocol support.
+    fn publish_connection_limits(&self, ntcp2: usize, ssu2: usize) {
+        if let Ok(mut published) = self.published.lock() {
+            published.ntcp2_connection_limit = u64::try_from(ntcp2).ok();
+            published.ssu2_connection_limit = u64::try_from(ssu2).ok();
+        }
+    }
+
+    /// Returns the configured transport active-connection limit for a
+    /// canonical Proposal RouterInfo selector.
+    pub(crate) fn proposal_connection_limit(&self, key: &str) -> Option<u64> {
+        let snapshots = self.snapshots();
+        match key {
+            "i2p.router.netdb.ntcp.limit" => snapshots.ntcp2_connection_limit,
+            "i2p.router.netdb.ssu.limit" => snapshots.ssu2_connection_limit,
+            _ => None,
+        }
     }
 
     /// Validated network id.
@@ -294,6 +341,25 @@ impl InspectionHandles {
         }
         if let Ok(mut published) = self.published.lock() {
             published.router_hash = Some(hash_b64.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Publishes a bounded I2P-base64 local RouterInfo string.
+    pub fn publish_local_router_info_b64(&self, info_b64: &str) -> Result<(), PublishError> {
+        if info_b64.is_empty() || info_b64.len() > MAX_LOCAL_ROUTER_INFO_BASE64_BYTES {
+            return Err(PublishError::StringOverBound {
+                key: "i2p.router.info",
+            });
+        }
+        if !info_b64
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'~')
+        {
+            return Err(PublishError::MalformedHash);
+        }
+        if let Ok(mut published) = self.published.lock() {
+            published.local_router_info_b64 = Some(info_b64.to_owned());
         }
         Ok(())
     }
@@ -360,6 +426,13 @@ impl InspectionHandles {
         Ok(())
     }
 
+    /// Publishes the independently observed Tunnel Build Message queue depth.
+    pub fn publish_tbm_queue(&self, depth: u64) {
+        if let Ok(mut published) = self.published.lock() {
+            published.tbm_queue = Some(depth);
+        }
+    }
+
     /// Publishes the authoritative ban set from the explicit ban
     /// owner (empty means no bans exist, never an unowned guess).
     pub fn publish_bans(&self, banned: Vec<String>) -> Result<(), PublishError> {
@@ -378,12 +451,47 @@ impl InspectionHandles {
         }
     }
 
+    /// Clears the retained redacted ring through its owning lock.
+    /// Ordinary tracing output and cumulative eviction diagnostics are
+    /// unaffected. `None` means the owner was not published.
+    pub fn clear_logs(&self) -> Option<bool> {
+        self.log_live
+            .lock()
+            .ok()
+            .and_then(|live| live.clone())
+            .map(|ring| ring.clear())
+    }
+
+    /// Returns the bounded redacted log lines in chronological order.
+    /// The Proposal field exposes only the string list; internal drop
+    /// diagnostics remain available through the normalized owner view.
+    pub fn recent_logs(&self) -> Option<Vec<String>> {
+        self.log_live
+            .lock()
+            .ok()
+            .and_then(|live| live.clone())
+            .map(|ring| ring.snapshot().0.iter().map(|line| line.wire()).collect())
+    }
+
     /// Publishes the rolling control metrics (called once by the
     /// composition root).
     pub fn publish_metrics(&self, metrics: Arc<ControlMetrics>) {
         if let Ok(mut live) = self.metrics_live.lock() {
             *live = Some(metrics);
         }
+    }
+
+    pub(crate) fn publish_news_manager(&self, manager: Arc<crate::news::NewsManager>) {
+        if let Ok(mut slot) = self.news_live.lock() {
+            *slot = Some(manager);
+        }
+    }
+
+    pub(crate) fn proposal_news(&self, now_unix: u64) -> Option<crate::news::NewsSnapshot> {
+        self.news_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(|manager| manager.snapshot(now_unix)))
     }
 
     /// Publishes the cloned SSU2 runtime service (called by the SSU2
@@ -596,17 +704,331 @@ fn addressbook_subscriptions_value(
     Ok(value)
 }
 
-/// Renders the committed thirteen-key configuration map.
+/// Renders the committed canonical Proposal 170 thirteen-key map.
 fn addressbook_config_value(
     handles: &InspectionHandles,
     row: &i2pr_i2pcontrol::SourceRow,
 ) -> Result<serde_json::Value, InspectionGap> {
     let snapshot = addressbook_cells(handles, row)?;
-    let mut map = serde_json::Map::with_capacity(snapshot.config_entries().len());
-    for (key, value) in snapshot.config_entries() {
-        map.insert(key.clone(), serde_json::Value::String(value.clone()));
+    let internal = snapshot.config_entries();
+    let mapping = [
+        ("subscriptions", "subscriptions"),
+        ("update_delay", "refresh_interval"),
+        ("published_addressbook", "published_book"),
+        ("router_addressbook", "router_book"),
+        ("local_addressbook", "local_book"),
+        ("private_addressbook", "private_book"),
+        ("proxy_port", "proxy_port"),
+        ("proxy_host", "proxy_host"),
+        ("should_publish", "should_publish"),
+        ("etags", "etags"),
+        ("last_modified", "last_modified"),
+        ("log", "log_file"),
+        ("theme", "theme"),
+    ];
+    let mut map = serde_json::Map::with_capacity(mapping.len());
+    for (wire, owner) in mapping {
+        if let Some(value) = internal.get(owner) {
+            map.insert(wire.to_owned(), serde_json::Value::String(value.clone()));
+        }
     }
     Ok(serde_json::Value::Object(map))
+}
+
+/// Serializes the six canonical Proposal 170 AddressBook RouterInfo
+/// fields from the same committed snapshot used by normal resolution.
+pub(crate) fn proposal_addressbook_value(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    use RouterInfoSelector as Selector;
+
+    let (selector, book_index) = match key {
+        "i2p.router.addressbook.private.list" => (Selector::AddressBookPrivate, Some(0)),
+        "i2p.router.addressbook.local.list" => (Selector::AddressBookLocal, Some(1)),
+        "i2p.router.addressbook.router.list" => (Selector::AddressBookRouter, Some(2)),
+        "i2p.router.addressbook.published.list" => (Selector::AddressBookPublished, Some(3)),
+        "i2p.router.addressbook.subscriptions" => (Selector::AddressBookSubscriptions, None),
+        "i2p.router.addressbook.config" => (Selector::AddressBookConfig, None),
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "Proposal AddressBook source adapter",
+            });
+        }
+    };
+    let mut row = source_row(selector);
+    row.key = key;
+    let snapshot = addressbook_cells(handles, &row)?;
+    let value = if let Some(index) = book_index {
+        let entries = snapshot.book_entries(index).ok_or(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook",
+        })?;
+        if entries.len() > MAX_ADDRESSBOOK_BOOK_ITEMS {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "321",
+                owner: "canonical AddressBook",
+            });
+        }
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(hostname, destination)| {
+                serde_json::json!({
+                    "hostname": hostname.as_str(),
+                    "destination": destination,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(rows)
+    } else if key == "i2p.router.addressbook.subscriptions" {
+        let config = snapshot.config_entries();
+        let path = config.get("subscriptions").ok_or(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook configuration",
+        })?;
+        serde_json::json!({
+            "path": path,
+            "entries": snapshot.subscription_urls(),
+        })
+    } else {
+        serde_json::json!({
+            "path": i2pr_storage::ADDRESSBOOK_CURRENT_FILE_NAME,
+            "entries": addressbook_config_value(handles, &row)?,
+        })
+    };
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > MAX_ADDRESSBOOK_BOOK_BYTES
+    {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook",
+        });
+    }
+    Ok(value)
+}
+
+/// Reads canonical cumulative SSU2 byte counters through the metrics
+/// owner. Values are unavailable until a transport owner publishes a
+/// sample; loopback and destination traffic are outside this counter's
+/// documented coverage.
+pub(crate) fn proposal_transport_total(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let received_field = match key {
+        "i2p.router.net.total.received.bytes" => true,
+        "i2p.router.net.total.sent.bytes" => false,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "Proposal transport counters",
+            });
+        }
+    };
+    let Some((received, sent)) =
+        metrics_owner(handles).and_then(|metrics| metrics.transport_totals())
+    else {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "SSU2 cumulative transport counters",
+        });
+    };
+    let value = if received_field { received } else { sent };
+    Ok(serde_json::Value::from(value))
+}
+
+/// Reads the cumulative tunnel build success ratio from the existing
+/// metrics owner. A ratio is undefined until at least one build attempt
+/// has been observed, so the unobserved state stays unavailable.
+pub(crate) fn proposal_tunnel_success_rate(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let recent = match key {
+        "i2p.router.net.tunnels.successrate" => true,
+        "i2p.router.net.tunnels.totalsuccessrate" => false,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "ControlMetrics tunnel-build outcomes",
+            });
+        }
+    };
+    let Some((recent_rate, total_rate)) =
+        metrics_owner(handles).map(|metrics| metrics.success_rates())
+    else {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "ControlMetrics tunnel-build outcomes",
+        });
+    };
+    match if recent { recent_rate } else { total_rate } {
+        Some(rate) => Ok(serde_json::Value::from(rate)),
+        None => Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "ControlMetrics tunnel-build outcomes",
+        }),
+    }
+}
+
+/// Reads the canonical scalar build-queue depth from the existing
+/// attested Plan 295 snapshot. The legacy selector's one-element list
+/// representation is an internal compatibility shape only.
+pub(crate) fn proposal_tunnel_queue_depth(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let value = router_info_result(RouterInfoSelector::BuildQueue, handles, 0)?;
+    value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_u64)
+        .map(serde_json::Value::from)
+        .ok_or(InspectionGap {
+            key: "i2p.router.net.tunnels.queue",
+            owner_plan: "322",
+            owner: "attested tunnel build-queue snapshot",
+        })
+}
+
+/// Returns the published local RouterInfo as Proposal base64, or null
+/// while bootstrap has not published a local record.
+pub(crate) fn proposal_local_router_info(handles: &InspectionHandles) -> serde_json::Value {
+    handles
+        .snapshots()
+        .local_router_info_b64
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Reads the canonical Tunnel Build Message queue depth from its own
+/// attested snapshot; it is not conflated with the tunnel-request queue.
+pub(crate) fn proposal_tbm_queue_depth(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    handles
+        .snapshots()
+        .tbm_queue
+        .map(serde_json::Value::from)
+        .ok_or(InspectionGap {
+            key: "i2p.router.net.tunnels.tbmqueue",
+            owner_plan: "322",
+            owner: "attested Tunnel Build Message queue snapshot",
+        })
+}
+
+/// Serialized RouterInfo lists are empty exactly when their attested
+/// peer-hash source is empty. A populated hash snapshot requires a
+/// separate serialized RouterInfo owner and therefore fails closed.
+pub(crate) fn proposal_empty_router_info_list(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let selector = match key {
+        "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.activepeers.stats" => {
+            RouterInfoSelector::NetDbActivePeers
+        }
+        "i2p.router.netdb.peers.info" => RouterInfoSelector::NetDbKnownPeers,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "attested NetDB peer snapshot",
+            });
+        }
+    };
+    let gap = InspectionGap {
+        key,
+        owner_plan: "322",
+        owner: "serialized RouterInfo snapshot for known peers",
+    };
+    let peers = router_info_result(selector, handles, 0).map_err(|_| gap)?;
+    if peers.as_array().is_some_and(Vec::is_empty) {
+        Ok(serde_json::Value::Array(Vec::new()))
+    } else {
+        Err(gap)
+    }
+}
+
+/// Projects an empty banned-peer detail map only when the ban ledger's
+/// attested owner reports no entries. Populated hashes need reason and
+/// expiry details that the current owner does not retain.
+pub(crate) fn proposal_empty_banned_peer_details(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let key = "i2p.router.netdb.bannedpeers";
+    match handles.snapshots().bans {
+        Some(bans) if bans.is_empty() => Ok(serde_json::Value::Object(serde_json::Map::new())),
+        _ => Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "ban reason and expiry detail snapshot",
+        }),
+    }
+}
+
+/// Projects canonical tunnel direction counts and detail lists only
+/// when the attested aggregate owner reports no tunnels. A nonzero
+/// aggregate needs per-direction or per-tunnel data that this graph
+/// does not maintain, so those cases remain fail-closed.
+pub(crate) fn proposal_empty_tunnel_projection(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let (selector, list) = match key {
+        "i2p.router.net.tunnels.exploratory.inbound"
+        | "i2p.router.net.tunnels.exploratory.outbound" => {
+            (RouterInfoSelector::ExploratoryCount, false)
+        }
+        "i2p.router.net.tunnels.exploratory.info.list" => {
+            (RouterInfoSelector::ExploratoryCount, true)
+        }
+        "i2p.router.net.tunnels.client.inbound" | "i2p.router.net.tunnels.client.outbound" => {
+            (RouterInfoSelector::ClientCount, false)
+        }
+        "i2p.router.net.tunnels.client.info.list" => (RouterInfoSelector::ClientCount, true),
+        "i2p.router.net.tunnels.participating.info" => {
+            (RouterInfoSelector::ParticipatingCount, true)
+        }
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "attested tunnel count snapshot",
+            });
+        }
+    };
+    let gap = InspectionGap {
+        key,
+        owner_plan: "322",
+        owner: "per-direction and per-tunnel inspection snapshot",
+    };
+    let value = router_info_result(selector, handles, 0).map_err(|_| gap)?;
+    let count = value
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(gap)?;
+    if count != 0 {
+        return Err(gap);
+    }
+    Ok(if list {
+        serde_json::Value::Array(Vec::new())
+    } else {
+        serde_json::Value::from(0)
+    })
 }
 
 /// Rejects an over-ceiling publication string.
@@ -645,35 +1067,41 @@ pub enum SelectError {
     /// An unknown key (including every `i2p.*` base-compatibility key,
     /// which is structurally disjoint from the Proposal vocabulary).
     UnknownKey(String),
-    /// A selector key carrying a non-null value. The canonical select
-    /// form is `"key": null`; values carry no defined meaning.
-    NonNullValue(String),
 }
 
-/// Validates the RouterInfo select form: `Token` plus selector keys with
-/// null values. Returns the selection in canonical matrix order; the
-/// JSON response object itself sorts keys lexicographically
-/// (`serde_json::Map`), so both orders are deterministic regardless of
-/// request order.
+/// Validates the canonical RouterInfo select form. Selector
+/// values carry no meaning; presence selects the field, including empty,
+/// null, and benign non-null values. Proposal additions retain proposal
+/// order; base API fields follow them in their own frozen order.
 pub fn select_router_info(
     params: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Vec<RouterInfoSelector>, SelectError> {
-    use i2pr_i2pcontrol::RouterInfoSelector;
+) -> Result<Vec<&'static ProposalRouterInfoField>, SelectError> {
     let mut selected = Vec::new();
-    for (key, value) in params {
+    for key in params.keys() {
         if key == "Token" {
             continue;
         }
-        let selector = RouterInfoSelector::parse(key)
-            .map_err(|_| SelectError::UnknownKey(truncated_key(key)))?;
-        if !value.is_null() {
-            return Err(SelectError::NonNullValue(key.clone()));
-        }
-        if !selected.contains(&selector) {
-            selected.push(selector);
+        let field = i2pr_i2pcontrol::router_info_field(key)
+            .ok_or_else(|| SelectError::UnknownKey(truncated_key(key)))?;
+        if !selected
+            .iter()
+            .any(|prior: &&ProposalRouterInfoField| prior.key == field.key)
+        {
+            selected.push(field);
         }
     }
-    selected.sort_by_key(|selector| i2pr_i2pcontrol::selector_index(*selector));
+    selected.sort_by_key(|field| {
+        PROPOSAL_ROUTER_INFO_FIELDS
+            .iter()
+            .position(|candidate| candidate.key == field.key)
+            .or_else(|| {
+                i2pr_i2pcontrol::BASE_ROUTER_INFO_FIELDS
+                    .iter()
+                    .position(|candidate| candidate.key == field.key)
+                    .map(|position| PROPOSAL_ROUTER_INFO_FIELDS.len() + position)
+            })
+            .unwrap_or(usize::MAX)
+    });
     Ok(selected)
 }
 
@@ -682,15 +1110,12 @@ pub fn select_client_services(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<ClientService>, SelectError> {
     let mut selected = Vec::new();
-    for (key, value) in params {
+    for key in params.keys() {
         if key == "Token" {
             continue;
         }
         let service =
             ClientService::parse(key).map_err(|_| SelectError::UnknownKey(truncated_key(key)))?;
-        if !value.is_null() {
-            return Err(SelectError::NonNullValue(key.clone()));
-        }
         if !selected.contains(&service) {
             selected.push(service);
         }
@@ -858,6 +1283,23 @@ fn unavailable_gap(row: i2pr_i2pcontrol::SourceRow) -> InspectionGap {
             owner: row.owner,
         },
     }
+}
+
+/// Builds the canonical Proposal gap when its source matrix says there is
+/// no owner. This keeps unavailable wire failures field-specific and tied
+/// to the plan that must supply the missing source.
+pub(crate) fn proposal_unavailable_gap(key: &'static str) -> Option<InspectionGap> {
+    let row = i2pr_i2pcontrol::proposal_router_info_source_matrix()
+        .into_iter()
+        .find(|row| row.key == key)?;
+    let SourceAvailability::Unavailable { owner_plan, .. } = row.availability else {
+        return None;
+    };
+    Some(InspectionGap {
+        key,
+        owner_plan,
+        owner: row.owner,
+    })
 }
 
 /// Builds the gap for a Plan 295 owner-backed row whose owner has not
@@ -1063,6 +1505,63 @@ fn i2ptunnel_value(handles: &InspectionHandles) -> serde_json::Value {
     })
 }
 
+/// Proposal RouterInfo quick summaries from the existing bounded
+/// I2PTunnel startup inventory and live manager overlay.
+pub(crate) fn proposal_i2ptunnel_summaries(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let key = "i2p.router.net.tunnels.i2ptunnel";
+    let inventory = i2ptunnel_value(handles);
+    let mut rows = Vec::new();
+    for side in ["client", "server"] {
+        let Some(entries) = inventory.get(side).and_then(serde_json::Value::as_object) else {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "289",
+                owner: "service tunnel inventory",
+            });
+        };
+        for (name, summary) in entries {
+            let Some(fields) = summary.as_object() else {
+                return Err(InspectionGap {
+                    key,
+                    owner_plan: "289",
+                    owner: "service tunnel summary",
+                });
+            };
+            let mut row = fields.clone();
+            row.insert("name".to_owned(), serde_json::Value::String(name.clone()));
+            row.insert(
+                "side".to_owned(),
+                serde_json::Value::String(side.to_owned()),
+            );
+            rows.push((name.clone(), serde_json::Value::Object(row)));
+        }
+    }
+    if rows.len() > i2pr_service_tunnels::MAX_SERVICE_TUNNELS * 2 {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "289",
+            owner: "service tunnel inventory ceiling",
+        });
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    let summaries: Vec<serde_json::Value> = rows.into_iter().map(|(_, row)| row).collect();
+    let value = serde_json::Value::Array(summaries);
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > 65_536
+    {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "289",
+            owner: "service tunnel summary byte ceiling",
+        });
+    }
+    Ok(value)
+}
+
 /// Actual proxy state for one client profile: enabled iff any matching
 /// startup service is enabled, bind from the first enabled listener in
 /// configuration order overlaid with live manager binds.
@@ -1216,6 +1715,256 @@ mod tests {
     }
 
     #[test]
+    fn proposal_i2ptunnel_summaries_are_bounded_and_canonical() {
+        let handles = test_handles();
+        let value = proposal_i2ptunnel_summaries(&handles).expect("summaries are available");
+        let rows = value.as_array().expect("object-list shape");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["name"], "alpha-client");
+        assert_eq!(rows[0]["side"], "client");
+        assert_eq!(rows[0]["kind"], "http-client");
+        assert_eq!(rows[0]["enabled"], true);
+        assert_eq!(rows[0]["running"], false);
+        assert_eq!(rows[0]["bind"], "127.0.0.1:8080");
+        assert_eq!(rows[1]["name"], "beta-server");
+        assert_eq!(rows[1]["side"], "server");
+        assert_eq!(rows[2]["name"], "gamma-socks");
+    }
+
+    #[test]
+    fn proposal_transport_totals_require_and_read_authoritative_sample() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.received.bytes", &handles)
+                .expect_err("unobserved counters stay unavailable")
+                .owner_plan,
+            "322"
+        );
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.observe_transport(1234, 5678, 12, 34);
+        handles.publish_metrics(metrics);
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.received.bytes", &handles)
+                .expect("received total"),
+            serde_json::json!(1234)
+        );
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.sent.bytes", &handles)
+                .expect("sent total"),
+            serde_json::json!(5678)
+        );
+    }
+
+    #[test]
+    fn proposal_success_rates_require_attempts_and_read_metrics() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.successrate", &handles)
+                .expect_err("0/0 has no rate")
+                .owner_plan,
+            "322"
+        );
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.totalsuccessrate", &handles)
+                .expect_err("0/0 has no cumulative rate")
+                .owner_plan,
+            "322"
+        );
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.tick_at(std::time::Instant::now());
+        metrics.observe_builds(3, 4);
+        metrics.tick_at(std::time::Instant::now() + std::time::Duration::from_secs(15));
+        handles.publish_metrics(metrics);
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.successrate", &handles)
+                .expect("recent observed ratio"),
+            serde_json::json!(0.75)
+        );
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.totalsuccessrate", &handles)
+                .expect("cumulative observed ratio"),
+            serde_json::json!(0.75)
+        );
+    }
+
+    #[test]
+    fn proposal_tunnel_queue_depth_uses_attested_snapshot() {
+        let handles = test_handles();
+        handles
+            .publish_tunnels(0, 0, 0, 7)
+            .expect("bounded snapshot publishes");
+        assert_eq!(
+            proposal_tunnel_queue_depth(&handles).expect("attested queue depth"),
+            serde_json::json!(7)
+        );
+    }
+
+    #[test]
+    fn proposal_local_router_info_is_bounded_and_publish_gated() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_local_router_info(&handles),
+            serde_json::Value::Null
+        );
+        let encoded = i2pr_netdb::encode(b"signed router info").expect("base64 encodes");
+        handles
+            .publish_local_router_info_b64(&encoded)
+            .expect("bounded info publishes");
+        assert_eq!(
+            proposal_local_router_info(&handles),
+            serde_json::Value::String(encoded)
+        );
+        assert!(matches!(
+            handles
+                .publish_local_router_info_b64(&"A".repeat(MAX_LOCAL_ROUTER_INFO_BASE64_BYTES + 1)),
+            Err(PublishError::StringOverBound {
+                key: "i2p.router.info"
+            })
+        ));
+    }
+
+    #[test]
+    fn proposal_tbm_queue_depth_uses_independent_attested_snapshot() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_tbm_queue_depth(&handles)
+                .expect_err("unpublished queue is a gap")
+                .owner,
+            "attested Tunnel Build Message queue snapshot"
+        );
+        handles
+            .publish_tunnels(0, 0, 0, 7)
+            .expect("tunnel snapshot");
+        handles.publish_tbm_queue(3);
+        assert_eq!(
+            proposal_tbm_queue_depth(&handles).expect("published TBM queue"),
+            serde_json::json!(3)
+        );
+    }
+
+    #[test]
+    fn proposal_empty_router_info_lists_require_empty_attested_peer_sets() {
+        let handles = test_handles();
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert!(proposal_empty_router_info_list(key, &handles).is_err());
+        }
+        handles
+            .publish_netdb(Vec::new(), Vec::new(), FloodfillMode::Disabled)
+            .expect("empty NetDB snapshot publishes");
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert_eq!(
+                proposal_empty_router_info_list(key, &handles)
+                    .expect("empty peer set proves empty info list"),
+                serde_json::json!([]),
+                "{key}"
+            );
+        }
+        handles
+            .publish_netdb(
+                vec!["A".repeat(44)],
+                vec!["B".repeat(44)],
+                FloodfillMode::Disabled,
+            )
+            .expect("nonempty NetDB snapshot publishes");
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert_eq!(
+                proposal_empty_router_info_list(key, &handles)
+                    .expect_err("hash presence does not provide serialized RouterInfo")
+                    .owner_plan,
+                "322",
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_empty_peer_stats_and_bans_require_attested_empty_sources() {
+        let handles = test_handles();
+        assert!(proposal_empty_banned_peer_details(&handles).is_err());
+        handles
+            .publish_netdb(Vec::new(), Vec::new(), FloodfillMode::Disabled)
+            .expect("empty NetDB snapshot publishes");
+        assert_eq!(
+            proposal_empty_router_info_list("i2p.router.netdb.activepeers.stats", &handles)
+                .expect("empty active peer set proves empty stats"),
+            serde_json::json!([])
+        );
+        handles
+            .publish_bans(Vec::new())
+            .expect("empty ban set publishes");
+        assert_eq!(
+            proposal_empty_banned_peer_details(&handles).expect("empty ban set proves empty map"),
+            serde_json::json!({})
+        );
+        handles
+            .publish_bans(vec!["A".repeat(44)])
+            .expect("nonempty ban set publishes");
+        assert_eq!(
+            proposal_empty_banned_peer_details(&handles)
+                .expect_err("ban hashes do not provide detail")
+                .owner,
+            "ban reason and expiry detail snapshot"
+        );
+    }
+
+    #[test]
+    fn proposal_empty_tunnel_projection_requires_zero_aggregate() {
+        let handles = test_handles();
+        handles
+            .publish_tunnels(0, 0, 0, 0)
+            .expect("bounded snapshot publishes");
+        for key in [
+            "i2p.router.net.tunnels.exploratory.inbound",
+            "i2p.router.net.tunnels.exploratory.outbound",
+            "i2p.router.net.tunnels.client.inbound",
+            "i2p.router.net.tunnels.client.outbound",
+        ] {
+            assert_eq!(
+                proposal_empty_tunnel_projection(key, &handles).expect("zero count is known"),
+                serde_json::json!(0),
+                "{key}"
+            );
+        }
+        for key in [
+            "i2p.router.net.tunnels.exploratory.info.list",
+            "i2p.router.net.tunnels.client.info.list",
+            "i2p.router.net.tunnels.participating.info",
+        ] {
+            assert_eq!(
+                proposal_empty_tunnel_projection(key, &handles).expect("empty list is known"),
+                serde_json::json!([]),
+                "{key}"
+            );
+        }
+
+        handles
+            .publish_tunnels(1, 1, 1, 0)
+            .expect("bounded nonzero snapshot publishes");
+        for key in [
+            "i2p.router.net.tunnels.exploratory.inbound",
+            "i2p.router.net.tunnels.exploratory.outbound",
+            "i2p.router.net.tunnels.exploratory.info.list",
+            "i2p.router.net.tunnels.client.inbound",
+            "i2p.router.net.tunnels.client.outbound",
+            "i2p.router.net.tunnels.client.info.list",
+            "i2p.router.net.tunnels.participating.info",
+        ] {
+            let gap = proposal_empty_tunnel_projection(key, &handles)
+                .expect_err("aggregate does not establish direction/details");
+            assert_eq!(gap.owner_plan, "322", "{key}");
+        }
+    }
+
+    #[test]
     fn plan288_static_selectors_report_config_truth() {
         let handles = test_handles();
         assert_eq!(
@@ -1256,7 +2005,6 @@ mod tests {
 
     #[test]
     fn plan288_router_hash_gated_until_identity_published() {
-        use i2pr_i2pcontrol::RouterInfoSelector;
         let handles = test_handles();
         let gap = router_info_result(RouterInfoSelector::RouterHash, &handles, 0)
             .expect_err("hash gated before publication");
@@ -1523,56 +2271,50 @@ mod tests {
 
     #[test]
     fn plan288_select_form_validation() {
-        use i2pr_i2pcontrol::RouterInfoSelector;
         // Empty selection (token only) is valid and empty.
         let params: serde_json::Map<String, serde_json::Value> =
             [("Token".to_owned(), serde_json::json!("t"))]
                 .into_iter()
                 .collect();
-        assert_eq!(
-            select_router_info(&params).expect("empty valid"),
-            Vec::new()
-        );
-        // Canonical order regardless of request order; duplicates collapse.
+        assert!(select_router_info(&params).expect("empty valid").is_empty());
+        // Proposal order regardless of request order. Any selector value
+        // selects the field; value semantics are intentionally absent.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
-            ("router.uptime".to_owned(), serde_json::Value::Null),
-            ("router.version".to_owned(), serde_json::Value::Null),
-            ("router.version".to_owned(), serde_json::Value::Null),
+            ("i2p.router.id".to_owned(), serde_json::json!("")),
+            ("i2p.router.news".to_owned(), serde_json::Value::Null),
         ]
         .into_iter()
         .collect();
         assert_eq!(
-            select_router_info(&params).expect("ordered"),
-            vec![
-                RouterInfoSelector::RouterVersion,
-                RouterInfoSelector::RouterUptime
-            ]
+            select_router_info(&params)
+                .expect("ordered")
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            vec!["i2p.router.news", "i2p.router.id"]
         );
-        // Non-null values carry no defined meaning and are rejected.
+        // Benign non-null selector values have no defined meaning and are
+        // ignored, as specified by presence-based selection.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
-            ("router.version".to_owned(), serde_json::json!(true)),
+            ("i2p.router.news".to_owned(), serde_json::json!(true)),
         ]
         .into_iter()
         .collect();
-        assert_eq!(
-            select_router_info(&params),
-            Err(SelectError::NonNullValue("router.version".to_owned()))
-        );
-        // Unknown keys fail, including every base-compatibility key: the
-        // `i2p.*` vocabulary is structurally disjoint from Proposal keys.
+        assert_eq!(select_router_info(&params).expect("value ignored").len(), 1);
+        // Old normalized names are not aliases in the canonical namespace.
         for key in [
             "bogus",
-            "i2p.router.uptime",
-            "i2p.router.version",
-            "i2p.router.netdb.knownpeers",
+            "router.uptime",
+            "router.version",
+            "router.status",
             "Router.Version",
             "ROUTER.VERSION",
         ] {
             let params: serde_json::Map<String, serde_json::Value> = [
                 ("Token".to_owned(), serde_json::json!("t")),
-                (key.to_owned(), serde_json::Value::Null),
+                (key.to_owned(), serde_json::json!("")),
             ]
             .into_iter()
             .collect();
@@ -1582,6 +2324,20 @@ mod tests {
                 "key {key} must not select"
             );
         }
+        let base: serde_json::Map<String, serde_json::Value> = [
+            ("i2p.router.version".to_owned(), serde_json::Value::Null),
+            ("i2p.router.uptime".to_owned(), serde_json::json!("ignored")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            select_router_info(&base)
+                .expect("base API fields remain selected")
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            vec!["i2p.router.version", "i2p.router.uptime"]
+        );
         // ClientServicesInfo shares the select rules.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
@@ -1593,6 +2349,14 @@ mod tests {
         assert_eq!(
             select_client_services(&params).expect("services select"),
             vec![ClientService::Sam, ClientService::Bob]
+        );
+        let values: serde_json::Map<String, serde_json::Value> =
+            [("I2CP".to_owned(), serde_json::json!(false))]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            select_client_services(&values),
+            Ok(vec![ClientService::I2cp])
         );
     }
 

@@ -71,7 +71,7 @@ use i2pr_tunnel::short_record::HopRole;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::destination_peers::{DestinationPeerCandidate, select_destination_path_os};
 use crate::destination_tunnels::{
@@ -89,7 +89,9 @@ use crate::sam::streams::RouterNetworkSummary;
 use crate::service_delivery::{
     RemoteDeliveryCounters, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
 };
-use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
+use crate::service_tunnels::{
+    DeferredActivationRequest, ServiceTunnelManager, ServiceTunnelManagerConfig,
+};
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
 /// per-service Destination tunnel material.
@@ -434,6 +436,114 @@ mod normal_daemon_owner_tests {
             .expect("failed readiness gate must release the staged client listener");
         drop(rebound);
     }
+
+    #[tokio::test]
+    async fn delay_open_starts_without_pools_and_activation_fails_closed_without_candidates() {
+        let directory = tempfile::tempdir().expect("temporary data directory");
+        let port_probe = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener port");
+        let listener_address = port_probe.local_addr().expect("listener address");
+        drop(port_probe);
+        let config_text = format!(
+            "schema_version = 1\n[router]\ndata_dir = {:?}\n[ssu2]\nenabled = true\nbind_ipv4 = \"127.0.0.1\"\nport = 0\n[service_tunnels]\nenabled = true\n[[service_tunnels.tunnel]]\nid = \"delay-open-client\"\nkind = \"generic-client\"\nenabled = true\nlistener = \"{}\"\ndestination = \"{}.b32.i2p\"\n",
+            directory.path().to_string_lossy(),
+            listener_address,
+            "a".repeat(52),
+        );
+        let mut config = crate::config::Config::parse(&config_text).expect("valid service config");
+        config.service_tunnels.tunnels.tunnels[0]
+            .timeouts
+            .delay_open = true;
+        let mut rng = ChaCha8Rng::seed_from_u64(0x323);
+        let bundle = Arc::new(RouterIdentityBundle::generate(&mut rng).expect("router identity"));
+        let identity =
+            crate::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", 44_001)
+                .expect("controlled identity");
+        let daemon_service =
+            Ssu2DaemonService::new(&config.ssu2, identity).expect("strict controlled SSU2");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+        let handle = daemon_service
+            .start(&scope, &config.ssu2)
+            .await
+            .expect("existing SSU2 owner");
+        let endpoint = handle.local_v4().expect("bound endpoint");
+        let spec = ServiceProductSpec {
+            data_dir: directory.path().to_path_buf(),
+            ssu2_bind: endpoint,
+            router_bundle: bundle,
+            service_tunnels: Arc::new(config.service_tunnels.tunnels.clone()),
+            aliases: Arc::new(config.service_tunnels.aliases.clone()),
+            aggregate_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_aggregate,
+            per_service_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_per_service,
+            reference: None,
+            options: ServiceProductOptions::default(),
+            addressbook: crate::addressbook::AddressBookManager::activate(
+                config.addressbook.clone(),
+            )
+            .shared(),
+        };
+        let router_infos = Vec::new();
+        let mut product = ServiceProduct::start_over_existing_daemon(
+            spec,
+            handle,
+            scope,
+            token,
+            router_infos,
+            RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes),
+            crate::service_lifecycle::ServiceLifecycleController::new(),
+        )
+        .await
+        .expect("deferred groups do not require startup build candidates");
+        let runtime = product
+            .manager
+            .service_runtime_for_spec("delay-open-client")
+            .expect("service runtime");
+        assert!(
+            product
+                .inner
+                .deferred_destination_ids
+                .contains(&runtime.destination_id)
+        );
+        assert!(
+            !product
+                .inner
+                .destination_ids
+                .contains(&runtime.destination_id)
+        );
+
+        let manager = Arc::clone(&product.manager);
+        let destination_id = runtime.destination_id;
+        let cancellation = CancellationToken::new();
+        let waiter = tokio::spawn(async move {
+            manager
+                .ensure_destination_active("delay-open-client", &cancellation, 5_000)
+                .await
+        });
+        tokio::task::yield_now().await;
+        product
+            .advance_destination_pools()
+            .await
+            .expect("failed optional activation stays isolated to the requester");
+        assert!(waiter.await.expect("activation waiter").is_err());
+        assert!(
+            product
+                .inner
+                .deferred_destination_ids
+                .contains(&destination_id)
+        );
+        product
+            .shutdown()
+            .await
+            .expect("product shuts down cleanly");
+    }
 }
 
 /// Typed failure for the production composition helper.
@@ -530,6 +640,9 @@ struct ProductInner {
         i2pr_client::DestinationId,
         Arc<crate::service_tunnels::ServiceRuntime>,
     >,
+    deferred_destination_ids: std::collections::HashSet<i2pr_client::DestinationId>,
+    deferred_activation_failures: std::collections::HashMap<i2pr_client::DestinationId, String>,
+    deferred_activation_requests: mpsc::Receiver<DeferredActivationRequest>,
     service_generation_id: Option<u64>,
     local_router_hash: Option<Hash>,
     tunnel_id_allocator: Plan212TunnelIdAllocator,
@@ -693,11 +806,26 @@ pub(crate) enum ServiceProductReadiness {
     /// Router readiness and every configured Destination group's usable
     /// pool threshold passed before service supervisors were started.
     RouterReadyGroupsUsable { groups: u16 },
+    /// Router readiness with one or more intentionally deferred client
+    /// groups that activate on first local use.
+    RouterReadyWithDeferredGroups {
+        ready_groups: u16,
+        deferred_groups: u16,
+    },
 }
 
 impl ServiceProductReadiness {
     pub(crate) const fn router_ready(self) -> bool {
-        matches!(self, Self::RouterReadyGroupsUsable { groups } if groups > 0)
+        matches!(
+            self,
+            Self::RouterReadyGroupsUsable { groups } if groups > 0
+        ) || matches!(
+            self,
+            Self::RouterReadyWithDeferredGroups {
+                ready_groups,
+                deferred_groups
+            } if ready_groups.saturating_add(deferred_groups) > 0
+        )
     }
 }
 
@@ -854,6 +982,17 @@ impl ServiceProduct {
             .prepare()
             .await
             .map_err(|error| ServiceProductError::ManagerBuild(error.to_string()))?;
+        let deferred_destination_ids = if router_bootstrap.is_some() {
+            manager.deferred_destination_ids()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let deferred_activation_requests =
+            manager.take_deferred_activation_requests().ok_or_else(|| {
+                ServiceProductError::ManagerBuild(
+                    "deferred activation receiver was already taken".to_owned(),
+                )
+            })?;
         let mut destination_ids = Vec::new();
         let mut destination_runtimes = std::collections::HashMap::new();
         let mut server_destination_ids = Vec::new();
@@ -864,9 +1003,13 @@ impl ServiceProduct {
                 {
                     server_destination_ids.push(runtime.destination_id);
                 }
-                if !destination_ids.contains(&runtime.destination_id) {
+                destination_runtimes
+                    .entry(runtime.destination_id)
+                    .or_insert_with(|| Arc::clone(runtime));
+                if !deferred_destination_ids.contains(&runtime.destination_id)
+                    && !destination_ids.contains(&runtime.destination_id)
+                {
                     destination_ids.push(runtime.destination_id);
-                    destination_runtimes.insert(runtime.destination_id, Arc::clone(runtime));
                 }
             }
         }
@@ -879,7 +1022,12 @@ impl ServiceProduct {
         let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
         let mut startup_inbound = VecDeque::new();
         let mut startup_inbound_bytes = 0;
-        let readiness = if router_bootstrap.is_some() {
+        let readiness = if router_bootstrap.is_some() && !deferred_destination_ids.is_empty() {
+            ServiceProductReadiness::RouterReadyWithDeferredGroups {
+                ready_groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
+                deferred_groups: u16::try_from(deferred_destination_ids.len()).unwrap_or(u16::MAX),
+            }
+        } else if router_bootstrap.is_some() {
             ServiceProductReadiness::RouterReadyGroupsUsable {
                 groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
             }
@@ -887,6 +1035,11 @@ impl ServiceProduct {
             ServiceProductReadiness::LocalOnly
         };
         let local_router_hash = router_bootstrap.map(|bootstrap| bootstrap.local_hash);
+        let provisionable_runtimes = runtimes
+            .iter()
+            .filter(|runtime| !deferred_destination_ids.contains(&runtime.destination_id))
+            .cloned()
+            .collect::<Vec<_>>();
         if let Some(peer) = router_bootstrap
             && let Err(error) = provision_all_service_router_material(
                 &manager,
@@ -894,7 +1047,7 @@ impl ServiceProduct {
                 &destination_tunnels,
                 &mut ssu2_handle,
                 &peer,
-                &runtimes,
+                &provisionable_runtimes,
                 spec.options,
                 &token,
                 &mut tunnel_id_allocator,
@@ -913,6 +1066,10 @@ impl ServiceProduct {
             return Err(error);
         }
 
+        if router_bootstrap.is_some() {
+            manager.enable_deferred_activation();
+        }
+
         manager
             .start_supervisors(runtimes, &scope, token.clone())
             .map_err(|error| ServiceProductError::ManagerBuild(error.to_string()))?;
@@ -926,6 +1083,9 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                deferred_destination_ids,
+                deferred_activation_failures: std::collections::HashMap::new(),
+                deferred_activation_requests,
                 service_generation_id,
                 local_router_hash,
                 tunnel_id_allocator,
@@ -1046,6 +1206,13 @@ impl ServiceProduct {
                 return Err(ServiceProductError::ManagerBuild(error.to_string()));
             }
         };
+        let deferred_destination_ids = manager.deferred_destination_ids();
+        let deferred_activation_requests =
+            manager.take_deferred_activation_requests().ok_or_else(|| {
+                ServiceProductError::ManagerBuild(
+                    "deferred activation receiver was already taken".to_owned(),
+                )
+            })?;
         let mut destination_ids = Vec::new();
         let mut destination_runtimes = std::collections::HashMap::new();
         let mut server_destination_ids = Vec::new();
@@ -1055,9 +1222,13 @@ impl ServiceProduct {
             {
                 server_destination_ids.push(runtime.destination_id);
             }
-            if !destination_ids.contains(&runtime.destination_id) {
+            destination_runtimes
+                .entry(runtime.destination_id)
+                .or_insert_with(|| Arc::clone(runtime));
+            if !deferred_destination_ids.contains(&runtime.destination_id)
+                && !destination_ids.contains(&runtime.destination_id)
+            {
                 destination_ids.push(runtime.destination_id);
-                destination_runtimes.insert(runtime.destination_id, Arc::clone(runtime));
             }
         }
         let mut tunnel_id_allocator = Plan212TunnelIdAllocator::new(0x51A7_9300);
@@ -1066,13 +1237,18 @@ impl ServiceProduct {
         let peer = RouterBootstrapMaterial {
             local_hash: local_router_hash,
         };
+        let provisionable_runtimes = runtimes
+            .iter()
+            .filter(|runtime| !deferred_destination_ids.contains(&runtime.destination_id))
+            .cloned()
+            .collect::<Vec<_>>();
         if let Err(error) = provision_all_service_router_material(
             &manager,
             &mut coordinator,
             &destination_tunnels,
             &mut ssu2_handle,
             &peer,
-            &runtimes,
+            &provisionable_runtimes,
             spec.options,
             &token,
             &mut tunnel_id_allocator,
@@ -1087,7 +1263,8 @@ impl ServiceProduct {
             let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
             return Err(error);
         }
-        if destination_ids.is_empty() {
+        manager.enable_deferred_activation();
+        if destination_ids.is_empty() && deferred_destination_ids.is_empty() {
             manager.shutdown().await;
             token.cancel(i2pr_core::CancellationReason::OperatorRequest);
             ssu2_handle.shutdown();
@@ -1096,8 +1273,15 @@ impl ServiceProduct {
                 "enabled service configuration produced no Destination groups".to_owned(),
             ));
         }
-        let readiness = ServiceProductReadiness::RouterReadyGroupsUsable {
-            groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
+        let readiness = if deferred_destination_ids.is_empty() {
+            ServiceProductReadiness::RouterReadyGroupsUsable {
+                groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
+            }
+        } else {
+            ServiceProductReadiness::RouterReadyWithDeferredGroups {
+                ready_groups: u16::try_from(destination_ids.len()).unwrap_or(u16::MAX),
+                deferred_groups: u16::try_from(deferred_destination_ids.len()).unwrap_or(u16::MAX),
+            }
         };
         if let Err(error) = manager.start_supervisors(runtimes, &scope, token.clone()) {
             manager.shutdown().await;
@@ -1116,6 +1300,9 @@ impl ServiceProduct {
                 destination_tunnels,
                 destination_ids,
                 destination_runtimes,
+                deferred_destination_ids,
+                deferred_activation_failures: std::collections::HashMap::new(),
+                deferred_activation_requests,
                 service_generation_id,
                 local_router_hash: Some(local_router_hash),
                 tunnel_id_allocator,
@@ -1273,6 +1460,94 @@ impl ServiceProduct {
         self.advance_destination_pools_at(wall_ms()).await
     }
 
+    async fn process_deferred_activation_request(&mut self) {
+        let request = match self.inner.deferred_activation_requests.try_recv() {
+            Ok(request) => request,
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                return;
+            }
+        };
+        if request.completion.is_closed() {
+            return;
+        }
+        let result = self
+            .activate_deferred_destination(request.destination_id)
+            .await;
+        let response = result.map_err(|_| "deferred destination provisioning failed".to_owned());
+        let _ = request.completion.send(response);
+    }
+
+    async fn activate_deferred_destination(
+        &mut self,
+        destination_id: i2pr_client::DestinationId,
+    ) -> Result<(), ServiceProductError> {
+        if !self
+            .inner
+            .deferred_destination_ids
+            .contains(&destination_id)
+        {
+            return self
+                .inner
+                .deferred_activation_failures
+                .get(&destination_id)
+                .map_or(Ok(()), |failure| {
+                    Err(ServiceProductError::Provisioning(failure.clone()))
+                });
+        }
+        if let Some(failure) = self.inner.deferred_activation_failures.get(&destination_id) {
+            return Err(ServiceProductError::Provisioning(failure.clone()));
+        }
+        let runtime = self
+            .inner
+            .destination_runtimes
+            .get(&destination_id)
+            .cloned()
+            .ok_or_else(|| {
+                ServiceProductError::Provisioning(
+                    "deferred destination runtime is unavailable".to_owned(),
+                )
+            })?;
+        let peer = RouterBootstrapMaterial {
+            local_hash: self.inner.local_router_hash.ok_or_else(|| {
+                ServiceProductError::Provisioning(
+                    "deferred destination requires a router-backed product".to_owned(),
+                )
+            })?,
+        };
+        let result = provision_all_service_router_material(
+            &self.manager,
+            &mut self.inner.coordinator,
+            &self.inner.destination_tunnels,
+            &mut self.inner.ssu2_handle,
+            &peer,
+            std::slice::from_ref(&runtime),
+            self.inner.options,
+            &self.token,
+            &mut self.inner.tunnel_id_allocator,
+            &mut self.inner.startup_inbound,
+            &mut self.inner.startup_inbound_bytes,
+        )
+        .await;
+        match result {
+            Ok(()) => {
+                self.inner.deferred_destination_ids.remove(&destination_id);
+                self.inner.destination_ids.push(destination_id);
+                Ok(())
+            }
+            Err(error) => {
+                let reason = "deferred destination provisioning failed".to_owned();
+                let _ = self
+                    .inner
+                    .coordinator
+                    .cancel_destination_builds(destination_id);
+                self.inner
+                    .deferred_activation_failures
+                    .insert(destination_id, reason);
+                Err(error)
+            }
+        }
+    }
+
     /// Receives the next message through the one SSU2 inbound owner.
     pub(crate) async fn next_inbound(&mut self) -> Option<Ssu2InboundI2np> {
         if let Some(inbound) = pop_startup_inbound(
@@ -1378,12 +1653,20 @@ impl ServiceProduct {
             self.inner.destination_ids.clear();
             self.inner.destination_runtimes.clear();
             self.inner.server_destination_ids.clear();
+            self.inner.deferred_destination_ids = self.manager.deferred_destination_ids();
+            self.inner.deferred_activation_failures.clear();
             for runtime in self.manager.destination_group_runtimes() {
                 let destination_id = runtime.destination_id;
-                self.inner.destination_ids.push(destination_id);
                 self.inner
                     .destination_runtimes
-                    .insert(destination_id, runtime);
+                    .insert(destination_id, Arc::clone(&runtime));
+                if !self
+                    .inner
+                    .deferred_destination_ids
+                    .contains(&destination_id)
+                {
+                    self.inner.destination_ids.push(destination_id);
+                }
                 if self.manager.destination_group_has_server(destination_id) {
                     self.inner.server_destination_ids.push(destination_id);
                 }
@@ -1392,6 +1675,7 @@ impl ServiceProduct {
             self.inner.publication_retry_after.clear();
             self.inner.service_generation_id = current_generation;
         }
+        self.process_deferred_activation_request().await;
         self.inner.coordinator.advance_time(now_ms);
         for outcome in self.inner.coordinator.expire_pending() {
             if let BuildCoordinatorOutcome::DestinationBuildFailed { destination_id, .. } = outcome

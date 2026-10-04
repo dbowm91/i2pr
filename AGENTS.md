@@ -24,6 +24,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
 - `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` — runtime-neutral, no Tokio/sockets/`async fn`.
 - `i2pr-netdb`, `i2pr-netdb-persist` — RouterInfo/LeaseSet2 validation/store.
+- `i2pr-su3` — bounded, runtime-neutral SU3 framing and signature verification.
 - `i2pr-tunnel` — runtime-neutral exploratory pool, short-build, data plane.
 - `i2pr-client` — destination lifecycle, ECIES session/routing, Streaming.
 - `i2pr-api` — runtime-neutral SAM 3.1 + I2CP wire/state (no sockets).
@@ -61,6 +62,8 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
+bash scripts/check-global-plan-number-uniqueness.py
+python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh
 bash scripts/check-fixture-manifest.sh

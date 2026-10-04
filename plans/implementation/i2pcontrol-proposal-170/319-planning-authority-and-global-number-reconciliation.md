@@ -1,6 +1,6 @@
 # Plan 319 — Proposal 170 planning-authority and global-number reconciliation
 
-Status: **registered-prop170-planning-authority-and-global-number-reconciliation**
+Status: **passed-prop170-planning-authority-and-global-number-reconciliation** — see [`plans/closure/i2pcontrol-proposal-170/319-status.md`](../../closure/i2pcontrol-proposal-170/319-status.md).
 
 Classification: planning invariant + tooling corrective. No protocol/runtime behavior changes are authorized.
 

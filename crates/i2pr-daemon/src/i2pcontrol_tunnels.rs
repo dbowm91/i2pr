@@ -43,15 +43,15 @@ use std::time::Duration;
 
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
-use i2pr_i2pcontrol::{TunnelAction, TunnelManagerRequest, TunnelType};
+use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
-    DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
-    MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS,
-    MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE,
-    MAX_TUNNEL_QUANTITY, MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT, PROXY_AUTH_REALM_HTTP,
-    PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials, ServerAccessPolicy,
-    ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
-    TunnelShaping,
+    DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationPolicy, DestinationRef,
+    IdleSweepAction, LocalListenerSpec, MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS,
+    MAX_SERVICE_TUNNELS, MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS,
+    MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT,
+    PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,
+    ServerAccessPolicy, ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
+    ServiceTunnelSpec, TunnelShaping,
 };
 
 use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
@@ -67,6 +67,9 @@ pub const CONTROL_TUNNELS_SUBDIR: &str = "tunnels";
 pub const CONTROL_POINTER_FILE: &str = "current.json";
 /// Maximum bytes of one generation file.
 pub const MAX_GENERATION_BYTES: usize = 1_048_576;
+/// Maximum UTF-8 bytes in one confined access-filter file.
+pub const MAX_FILTER_FILE_BYTES: usize = 4_096;
+const FILTER_DIRECTORY: &str = "filters";
 /// Bounded drain deadline for control reconciles.
 ///
 /// The control-plane drain policy is immediate release: administrative
@@ -148,6 +151,45 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// arm below consumes it (the `other` arm still rejects ownerless
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
+/// Plan 323 TunnelManager metadata and runtime options with typed owners.
+pub const SUPPORTED_323_OPTIONS: [&str; 33] = [
+    "description",
+    "proxy_auth",
+    "allow_user_agent",
+    "allow_referer",
+    "allow_accept",
+    "close_time",
+    "reduce_time",
+    "reduce_count",
+    "spoofed_host",
+    "block_referers",
+    "allow_internal_ssl",
+    "block_user_agents",
+    "user_agents",
+    "block_access_in_proxies",
+    "shared",
+    "persistent_client_key",
+    "access_option",
+    "new_dest",
+    "connect_delay",
+    "delay_open",
+    "client_per_minute",
+    "client_per_hour",
+    "client_per_day",
+    "total_in_per_minute",
+    "total_in_per_hour",
+    "total_in_per_day",
+    "post_limit",
+    "post_limit_time",
+    "per_client_period",
+    "total_period",
+    "total_ban_time",
+    "filter_file_path",
+    "priv_key_file",
+];
+/// Plan 324 exposes only algorithms supported by the current
+/// destination-identity and LeaseSet2 encryption owners.
+pub const SUPPORTED_324_OPTIONS: [&str; 2] = ["sig_type", "enc_type"];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -178,7 +220,7 @@ pub struct ControlDefinition {
     pub name: String,
     /// Proposal tunnel type.
     pub tunnel_type: TunnelType,
-    /// Normalized option map (289 subset only).
+    /// Normalized runtime options plus bounded TunnelManager metadata.
     pub options: BTreeMap<String, String>,
     /// Persisted start-at-startup intent (distinct from running state).
     pub start_on_load: bool,
@@ -394,12 +436,20 @@ impl ControlStore {
         reject_symlink(data_dir)?;
         create_dir_secure(&root)?;
         reject_symlink(&root)?;
+        let filter_root = root.join(FILTER_DIRECTORY);
+        create_dir_secure(&filter_root)?;
+        reject_symlink(&filter_root)?;
         Ok(Self { root })
     }
 
     /// State root (tests).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Confined root for bounded server peer-filter files.
+    pub fn filter_root(&self) -> PathBuf {
+        self.root.join(FILTER_DIRECTORY)
     }
 
     /// Next generation id: one above the highest id present in
@@ -760,6 +810,85 @@ fn parse_bool_option(option: &str, value: &str) -> Result<bool, ControlError> {
     }
 }
 
+fn parse_rate_option(option: &str, value: &str) -> Result<u32, ControlError> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| ControlError::InvalidOption {
+            option: option.to_owned(),
+            reason: "connection rate must be an integer within 0..=100000",
+        })?;
+    if parsed > 100_000 {
+        return Err(ControlError::InvalidOption {
+            option: option.to_owned(),
+            reason: "connection rate must be an integer within 0..=100000",
+        });
+    }
+    Ok(parsed)
+}
+
+/// Opens a bounded regular filter file through a no-follow directory
+/// walk rooted at the control-owned filter directory. The stored path
+/// is a logical relative reference; absolute paths, traversal, symlinks,
+/// special files, and permissive Unix file modes are rejected.
+fn read_confined_filter_file(root: &Path, relative: &str) -> Result<String, &'static str> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+
+    let components: Vec<&std::ffi::OsStr> = Path::new(relative)
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(name) => Ok(name),
+            _ => Err("FilterFilePath must stay inside the owned filters directory"),
+        })
+        .collect::<Result<_, _>>()?;
+    if components.is_empty() {
+        return Err("FilterFilePath must name a file inside the owned filters directory");
+    }
+
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut directory: OwnedFd = open(root, directory_flags, Mode::empty())
+        .map_err(|_| "FilterFilePath owned root is unavailable")?;
+    for component in &components[..components.len() - 1] {
+        directory = openat(&directory, *component, directory_flags, Mode::empty())
+            .map_err(|_| "FilterFilePath contains a missing or unsafe directory")?;
+    }
+
+    let file_flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    let file = openat(
+        &directory,
+        components[components.len() - 1],
+        file_flags,
+        Mode::empty(),
+    )
+    .map_err(|_| "FilterFilePath file is missing or unsafe")?;
+    let file = std::fs::File::from(file);
+    let metadata = file
+        .metadata()
+        .map_err(|_| "FilterFilePath file metadata is unavailable")?;
+    if !metadata.is_file() {
+        return Err("FilterFilePath must name a regular file");
+    }
+    if metadata.len() > MAX_FILTER_FILE_BYTES as u64 {
+        return Err("FilterFilePath exceeds the 4096-byte ceiling");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("FilterFilePath file must not be accessible by group or others");
+        }
+    }
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    file.take((MAX_FILTER_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut contents)
+        .map_err(|_| "FilterFilePath file could not be read")?;
+    if contents.len() > MAX_FILTER_FILE_BYTES {
+        return Err("FilterFilePath exceeds the 4096-byte ceiling");
+    }
+    String::from_utf8(contents).map_err(|_| "FilterFilePath must contain UTF-8 text")
+}
+
 /// Parses a Proposal tunnel length (Plan 292 shaping: 1..=3).
 /// Length 0 is rejected: service destinations run in Remote tunnel
 /// mode and the destination policy does not permit zero-hop pools.
@@ -851,13 +980,23 @@ fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError>
 /// Builds a validated [`ServiceTunnelSpec`] from a control definition.
 ///
 /// Only options with a real owner are accepted (Plans 289, 291, the
-/// Plan 292 option slice, the Plan 296 residual slice, and the Plan
-/// 297 TLS slice); every other supplied option fails as unsupported
+/// Plan 292 option slice, the Plan 296 residual slice, the Plan 297
+/// TLS slice, and implemented Plan 323 fields); every other supplied option fails as unsupported
 /// (never accepted inertly). Secret-classified options are rejected
 /// even though the subset contains none, so a future subset
 /// extension cannot silently persist secrets.
 pub fn build_control_spec(
     definition: &ControlDefinition,
+) -> Result<ServiceTunnelSpec, ControlError> {
+    build_control_spec_with_filter_root(definition, None)
+}
+
+/// Builds a control spec with access-filter files confined beneath
+/// `filter_root`. The test/simple wrapper deliberately cannot open a
+/// file because it has no owned filesystem root.
+pub fn build_control_spec_with_filter_root(
+    definition: &ControlDefinition,
+    filter_root: Option<&Path>,
 ) -> Result<ServiceTunnelSpec, ControlError> {
     let kind = map_tunnel_type(definition.tunnel_type)?;
     let id = ServiceTunnelId::parse(&definition.name)
@@ -887,15 +1026,41 @@ pub fn build_control_spec(
     let mut idle_timeout_ms: Option<u64> = None;
     let mut idle_close = false;
     let mut idle_new_dest = false;
+    let mut rotate_destination_on_idle = false;
     let mut idle_reduce = false;
+    let mut idle_close_timeout_ms: Option<u64> = None;
+    let mut idle_reduce_timeout_ms: Option<u64> = None;
+    let mut idle_reduce_count: Option<u8> = None;
     // Plan 292 proxy authentication inputs (both halves required;
     // plaintext is scrubbed to the marked verifier in normalize).
     let mut proxy_username: Option<String> = None;
     let mut proxy_password: Option<String> = None;
+    let mut proxy_auth_declared: Option<bool> = None;
+    // Proposal `Shared` places client tunnels in one explicit
+    // control-owned Destination group. The shared group is an
+    // intentional linkability domain, matching I2PTunnel's
+    // sharedClient setting.
+    let mut shared_client = false;
+    let mut persistent_client_key = false;
+    let mut persistent_client_key_declared: Option<bool> = None;
+    let mut priv_key_file: Option<i2pr_service_tunnels::ServiceKeyReference> = None;
+    let mut proposal_new_dest: Option<u8> = None;
+    let mut connect_delay = false;
+    let mut delay_open = false;
+    let mut sig_type_selected = false;
+    let mut enc_type_selected = false;
+    let mut allow_user_agent: Option<bool> = None;
+    let mut allow_referer: Option<bool> = None;
+    let mut allow_accept: Option<bool> = None;
+    let mut allow_internal_ssl: Option<bool> = None;
     // Plan 292 access inputs (raw values per source key so failures
     // name the offending key, never the value).
     let mut access_allow_sources: Vec<(String, String)> = Vec::new();
     let mut access_deny_sources: Vec<(String, String)> = Vec::new();
+    let mut proposal_access_list: Option<String> = None;
+    let mut proposal_access_option: Option<String> = None;
+    let mut filter_file_path: Option<String> = None;
+    let mut connection_rates = i2pr_service_tunnels::ServerConnectionRateLimits::default();
     // Plan 292 server dial/presentation inputs (kind-gated at
     // parse; defaults preserve the historical behavior).
     let mut unique_local_address = false;
@@ -924,6 +1089,231 @@ pub fn build_control_spec(
     let mut payload_limit_bytes: Option<usize> = None;
     for (key, value) in &definition.options {
         match key.as_str() {
+            "sig_type" => {
+                if !matches!(value.as_str(), "7" | "EDDSA_SHA512_ED25519") {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "SigType supports only EdDSA_SHA512_ED25519 (type 7)",
+                    });
+                }
+                sig_type_selected = true;
+            }
+            "enc_type" => {
+                if value != "4" {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "EncType supports only LeaseSet2 X25519 (type 4)",
+                    });
+                }
+                enc_type_selected = true;
+            }
+            "shared" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "Shared applies to client tunnels with a local Destination",
+                    });
+                }
+                shared_client = parse_bool_option(key, value)?;
+            }
+            "persistent_client_key" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                        | ServiceTunnelKind::StreamrClient
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "PersistentClientKey applies to client tunnels only",
+                    });
+                }
+                let enabled = parse_bool_option(key, value)?;
+                persistent_client_key = enabled;
+                persistent_client_key_declared = Some(enabled);
+            }
+            "priv_key_file" => {
+                priv_key_file = Some(
+                    i2pr_service_tunnels::ServiceKeyReference::parse(value).map_err(|_| {
+                        ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "PrivKeyFile must be a logical lowercase key reference, not a path",
+                        }
+                    })?,
+                );
+            }
+            "new_dest" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                        | ServiceTunnelKind::StreamrClient
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "NewDest applies to client tunnels only",
+                    });
+                }
+                let mode = value
+                    .parse::<u8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "NewDest must be 0, 1, or 2",
+                    })?;
+                if mode > 2 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "NewDest must be 0, 1, or 2",
+                    });
+                }
+                proposal_new_dest = Some(mode);
+            }
+            "connect_delay" => {
+                if kind != ServiceTunnelKind::GenericClient {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "ConnectDelay applies to generic client tunnels only",
+                    });
+                }
+                connect_delay = parse_bool_option(key, value)?;
+            }
+            "delay_open" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "DelayOpen applies to client tunnels only",
+                    });
+                }
+                delay_open = parse_bool_option(key, value)?;
+            }
+            "description" => {
+                // Description is control-plane metadata: its authoritative
+                // owner is the durable definition and canonical TunnelManager
+                // Get projection, not the M10 traffic specification.
+                if value.len() > MAX_OPTION_VALUE_LEN {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "description exceeds the Proposal string ceiling",
+                    });
+                }
+            }
+            "allow_user_agent" | "allow_referer" | "allow_accept" | "allow_internal_ssl" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "HTTP request filters apply to HTTP client families only",
+                    });
+                }
+                let enabled = value
+                    .parse::<bool>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "HTTP filter must be a boolean",
+                    })?;
+                match key.as_str() {
+                    "allow_user_agent" => allow_user_agent = Some(enabled),
+                    "allow_referer" => allow_referer = Some(enabled),
+                    "allow_accept" => allow_accept = Some(enabled),
+                    "allow_internal_ssl" => allow_internal_ssl = Some(enabled),
+                    _ => unreachable!(),
+                }
+            }
+            "block_user_agents" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "BlockUserAgents applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_user_agents = parse_bool_option(key, value)?;
+            }
+            "block_access_in_proxies" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "BlockAccessInProxies applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_access_in_proxies = parse_bool_option(key, value)?;
+            }
+            "user_agents" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "UserAgents applies to HTTP server kinds only",
+                    });
+                }
+                let rules: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|rule| !rule.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if !i2pr_service_tunnels::http::valid_user_agent_rules(&rules) {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "UserAgents exceeds the bounded substring rule format",
+                    });
+                }
+                http_policy.user_agents = rules;
+            }
+            "post_limit" | "post_limit_time" | "per_client_period" | "total_period"
+            | "total_ban_time" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "POST limits apply to HTTP server tunnels only",
+                    });
+                }
+                let value = parse_rate_option(key, value)?;
+                match key.as_str() {
+                    "post_limit" => http_policy.post_limits.window_seconds = value,
+                    "post_limit_time" => http_policy.post_limits.client_ban_seconds = value,
+                    "per_client_period" => http_policy.post_limits.client_max = value,
+                    "total_period" => http_policy.post_limits.total_max = value,
+                    "total_ban_time" => http_policy.post_limits.total_ban_seconds = value,
+                    _ => unreachable!(),
+                }
+            }
             "target_destination" => {
                 if !matches!(
                     kind,
@@ -1071,6 +1461,36 @@ pub fn build_control_spec(
                     });
                 }
             }
+            "client_per_minute"
+            | "client_per_hour"
+            | "client_per_day"
+            | "total_in_per_minute"
+            | "total_in_per_hour"
+            | "total_in_per_day" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "connection-rate controls require a server or Streamr publisher",
+                    });
+                }
+                let rate = parse_rate_option(key, value)?;
+                match key.as_str() {
+                    "client_per_minute" => connection_rates.client_per_minute = rate,
+                    "client_per_hour" => connection_rates.client_per_hour = rate,
+                    "client_per_day" => connection_rates.client_per_day = rate,
+                    "total_in_per_minute" => connection_rates.total_per_minute = rate,
+                    "total_in_per_hour" => connection_rates.total_per_hour = rate,
+                    "total_in_per_day" => connection_rates.total_per_day = rate,
+                    _ => unreachable!(),
+                }
+            }
             // Plan 292: pool shaping. `tunnel_length` and
             // `tunnel_quantity` are symmetric defaults; the
             // per-direction keys override. Proposal bounds bind
@@ -1200,6 +1620,65 @@ pub fn build_control_spec(
                     idle_reduce = true;
                 }
             }
+            "close_time" => {
+                let minutes = value
+                    .parse::<u64>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "CloseTime must be an integer number of minutes",
+                    })?;
+                let timeout =
+                    minutes
+                        .checked_mul(60_000)
+                        .ok_or_else(|| ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "CloseTime exceeds the bounded idle deadline",
+                        })?;
+                if minutes > 9_999 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "CloseTime must be within 0..=9999 minutes",
+                    });
+                }
+                idle_close_timeout_ms = Some(timeout);
+            }
+            "reduce_time" => {
+                let minutes = value
+                    .parse::<u64>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceTime must be an integer number of minutes",
+                    })?;
+                let timeout =
+                    minutes
+                        .checked_mul(60_000)
+                        .ok_or_else(|| ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "ReduceTime exceeds the bounded idle deadline",
+                        })?;
+                if minutes > 9_999 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceTime must be within 0..=9999 minutes",
+                    });
+                }
+                idle_reduce_timeout_ms = Some(timeout);
+            }
+            "reduce_count" => {
+                let count = value
+                    .parse::<u8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceCount must be within 0..=9",
+                    })?;
+                if count > 9 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "ReduceCount must be within 0..=9",
+                    });
+                }
+                idle_reduce_count = Some(count);
+            }
             // Plan 292: listener proxy authentication (proxy client
             // kinds only; both halves required together, PR6 rule).
             "proxy_username" => {
@@ -1232,9 +1711,79 @@ pub fn build_control_spec(
                 }
                 proxy_password = Some(value.clone());
             }
+            "proxy_auth" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "proxy_auth applies to proxy client kinds only",
+                    });
+                }
+                proxy_auth_declared = Some(parse_bool_option(key, value)?);
+            }
+            "access_option" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "AccessOption applies to server tunnels only",
+                    });
+                }
+                if value != "allow" && value != "deny" {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "AccessOption must be allow or deny",
+                    });
+                }
+                proposal_access_option = Some(value.clone());
+            }
+            "filter_file_path" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "FilterFilePath applies to server tunnels only",
+                    });
+                }
+                if value.is_empty() || value.len() > 128 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "FilterFilePath must be a bounded relative path",
+                    });
+                }
+                filter_file_path = Some(value.clone());
+            }
             // Plan 292: inbound peer policy (server kinds only;
             // access_list unions white_list, black_list denies).
-            "access_list" | "white_list" => {
+            "access_list" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "access lists apply to server kinds only",
+                    });
+                }
+                proposal_access_list = Some(value.clone());
+            }
+            "white_list" => {
                 if !matches!(
                     kind,
                     ServiceTunnelKind::GenericServer
@@ -1491,6 +2040,36 @@ pub fn build_control_spec(
                 }
                 http_policy.jump_list = parse_bool_option("jump_list", value)?;
             }
+            "spoofed_host" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "spoofed_host applies to HTTP server kinds only",
+                    });
+                }
+                if !i2pr_service_tunnels::http::valid_spoofed_host(value) {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "must be a bounded ASCII DNS hostname",
+                    });
+                }
+                http_policy.spoofed_host = Some(value.clone());
+            }
+            "block_referers" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "block_referers applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_referers = parse_bool_option(key, value)?;
+            }
             other => {
                 // Secret-classified keys are rejected here even though
                 // they never reach storage: belt and suspenders against
@@ -1502,6 +2081,111 @@ pub fn build_control_spec(
                 )));
             }
         }
+    }
+    if let Some(mode) = proposal_new_dest {
+        let persistent_from_mode = mode == 2;
+        if persistent_client_key_declared.is_some_and(|declared| declared != persistent_from_mode) {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "NewDest and PersistentClientKey request conflicting identity policies",
+            });
+        }
+        if mode == 1 && shared_client {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "NewDest=1 cannot rotate a shared Destination group independently",
+            });
+        }
+        if mode == 1 {
+            if !idle_close {
+                return Err(ControlError::ContradictoryOptions {
+                    name: definition.name.clone(),
+                    reason: "NewDest=1 requires Close:true to resume with a fresh Destination",
+                });
+            }
+            rotate_destination_on_idle = true;
+        }
+        persistent_client_key = persistent_from_mode;
+    }
+    if priv_key_file.is_some() {
+        if shared_client {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "PrivKeyFile selects a per-service key reference and cannot combine with Shared",
+            });
+        }
+        if persistent_client_key_declared == Some(false)
+            || proposal_new_dest.is_some_and(|mode| mode != 2)
+        {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "PrivKeyFile requires persistent identity semantics (PersistentClientKey:true or NewDest:2)",
+            });
+        }
+    }
+    if let Some(mode) = proposal_access_option.as_deref() {
+        if let Some(value) = proposal_access_list {
+            if mode == "allow" {
+                access_allow_sources.push(("access_list".to_owned(), value));
+            } else {
+                access_deny_sources.push(("access_list".to_owned(), value));
+            }
+        } else if filter_file_path.is_none() {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "AccessOption requires AccessList",
+            });
+        }
+    } else if let Some(value) = proposal_access_list {
+        access_allow_sources.push(("access_list".to_owned(), value));
+    }
+    if let Some(path) = filter_file_path.as_deref() {
+        let root = filter_root.ok_or(ControlError::InvalidOption {
+            option: "filter_file_path".to_owned(),
+            reason: "FilterFilePath requires the owned control filter directory",
+        })?;
+        let contents = read_confined_filter_file(root, path).map_err(|reason| {
+            ControlError::InvalidOption {
+                option: "filter_file_path".to_owned(),
+                reason,
+            }
+        })?;
+        let entries = contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(",");
+        if entries.is_empty() {
+            return Err(ControlError::InvalidOption {
+                option: "filter_file_path".to_owned(),
+                reason: "FilterFilePath must contain at least one peer hash",
+            });
+        }
+        let source = ("filter_file_path".to_owned(), entries);
+        if proposal_access_option.as_deref() == Some("deny") {
+            access_deny_sources.push(source);
+        } else {
+            access_allow_sources.push(source);
+        }
+    }
+    if idle_close_timeout_ms.is_some() && !idle_close {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "CloseTime requires Close:true",
+        });
+    }
+    if http_policy.block_user_agents && http_policy.user_agents.is_empty() {
+        return Err(ControlError::InvalidOption {
+            option: "block_user_agents".to_owned(),
+            reason: "BlockUserAgents requires at least one UserAgents rule",
+        });
+    }
+    if (idle_reduce_timeout_ms.is_some() || idle_reduce_count.is_some()) && !idle_reduce {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "ReduceTime and ReduceCount require Reduce:true",
+        });
     }
     // Per-kind required-field completion with real defaults.
     // Server targets require both halves explicitly: no silent default
@@ -1549,18 +2233,36 @@ pub fn build_control_spec(
     // take the documented default; a deadline without flags flows
     // to spec validation, which rejects it as inert with the
     // service id. Ranges were enforced per key at parse time.
-    let idle_timeout_ms = match (idle_timeout_ms, idle_close || idle_new_dest || idle_reduce) {
-        (None, true) => Some(DEFAULT_IDLE_TIMEOUT_MS),
-        (timeout, _) => timeout,
+    let has_proposal_idle_time =
+        idle_close_timeout_ms.is_some() || idle_reduce_timeout_ms.is_some();
+    let idle_timeout_ms = match (
+        idle_timeout_ms,
+        idle_close || idle_new_dest || idle_reduce,
+        has_proposal_idle_time,
+    ) {
+        (None, true, false) => Some(DEFAULT_IDLE_TIMEOUT_MS),
+        (timeout, _, _) => timeout,
     };
     let idle = i2pr_service_tunnels::IdlePolicy {
         timeout_ms: idle_timeout_ms,
         close_on_idle: idle_close,
         new_dest_on_idle: idle_new_dest,
+        rotate_destination_on_idle,
         reduce_on_idle: idle_reduce,
+        close_timeout_ms: idle_close_timeout_ms,
+        reduce_timeout_ms: idle_reduce_timeout_ms,
+        reduce_count: idle_reduce_count,
     };
     // Plan 292: resolve proxy credentials and the access policy.
     // Failures name the offending key, never the value.
+    if let Some(enabled) = proxy_auth_declared
+        && enabled != (proxy_username.is_some() && proxy_password.is_some())
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "ProxyAuth must match the complete ProxyUsername/ProxyPassword pair",
+        });
+    }
     let proxy_auth = proxy_credentials_for(kind, proxy_username, proxy_password)?;
     let mut allow = Vec::new();
     for (key, value) in &access_allow_sources {
@@ -1582,7 +2284,16 @@ pub fn build_control_spec(
         })?;
         deny.extend(parsed.deny);
     }
-    let access = ServerAccessPolicy { allow, deny };
+    let access = ServerAccessPolicy {
+        allow,
+        deny,
+        connection_rates: connection_rates
+            .validate()
+            .map_err(|_| ControlError::InvalidOption {
+                option: "ClientPerMinute".to_owned(),
+                reason: "server connection rate is outside the bounded range",
+            })?,
+    };
     // Plan 296: multihoming needs two configured targets, but the
     // control surface carries a singular target (no multi-target
     // wire key exists and none may be added here). The key parses
@@ -1650,15 +2361,26 @@ pub fn build_control_spec(
         ServiceTunnelKind::HttpClient => {
             let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
             options.proxy_auth = proxy_auth;
+            apply_proposal_http_filters(
+                &mut options,
+                allow_user_agent,
+                allow_referer,
+                allow_accept,
+                allow_internal_ssl,
+            );
             (Some(options), None, None, None, None)
         }
-        ServiceTunnelKind::HttpBidirServer => (
-            Some(i2pr_service_tunnels::HttpClientOptions::defaults()),
-            None,
-            None,
-            None,
-            None,
-        ),
+        ServiceTunnelKind::HttpBidirServer => {
+            let mut options = i2pr_service_tunnels::HttpClientOptions::defaults();
+            apply_proposal_http_filters(
+                &mut options,
+                allow_user_agent,
+                allow_referer,
+                allow_accept,
+                allow_internal_ssl,
+            );
+            (Some(options), None, None, None, None)
+        }
         ServiceTunnelKind::Socks5Client => {
             let mut options = i2pr_service_tunnels::Socks5ClientOptions::defaults();
             options.proxy_auth = proxy_auth;
@@ -1726,6 +2448,32 @@ pub fn build_control_spec(
         }
         _ => (None, None, None, None, None),
     };
+    let mut timeouts = i2pr_service_tunnels::ServiceTimeouts::defaults();
+    if connect_delay {
+        timeouts.streaming_connect_delay_ms =
+            Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS);
+    }
+    timeouts.delay_open = delay_open;
+    let mut destination_policy = if let Some(key_reference) = priv_key_file {
+        DestinationPolicy::KeyReference(key_reference)
+    } else {
+        match (shared_client, persistent_client_key) {
+            (true, true) => DestinationPolicy::PersistentSharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            ),
+            (true, false) => DestinationPolicy::SharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            ),
+            (false, true) => DestinationPolicy::PersistentClient,
+            (false, false) => DestinationPolicy::Dedicated,
+        }
+    };
+    if sig_type_selected || enc_type_selected {
+        destination_policy = destination_policy
+            .with_crypto(i2pr_service_tunnels::DestinationCryptoPolicy::default());
+    }
     let spec = ServiceTunnelSpec {
         id,
         kind,
@@ -1734,11 +2482,11 @@ pub fn build_control_spec(
         target,
         targets: Vec::new(),
         destination,
-        policy: DestinationPolicy::Dedicated,
+        policy: destination_policy,
         inbound_port: None,
         max_connections,
         max_buffered_bytes_per_direction: 65_536,
-        timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+        timeouts,
         shaping,
         streaming_interactive: profile_interactive,
         idle,
@@ -1777,6 +2525,29 @@ fn static_spec_reason(error: i2pr_service_tunnels::ServiceTunnelError) -> &'stat
     }
 }
 
+fn apply_proposal_http_filters(
+    options: &mut i2pr_service_tunnels::HttpClientOptions,
+    allow_user_agent: Option<bool>,
+    allow_referer: Option<bool>,
+    allow_accept: Option<bool>,
+    allow_internal_ssl: Option<bool>,
+) {
+    if let Some(allow) = allow_user_agent {
+        options.privacy.user_agent = if allow {
+            i2pr_service_tunnels::UserAgentPolicy::Keep
+        } else {
+            i2pr_service_tunnels::UserAgentPolicy::ReplaceStable
+        };
+    }
+    if let Some(allow) = allow_referer {
+        options.privacy.strip_referer = !allow;
+    }
+    if let Some(allow) = allow_accept {
+        options.privacy.allow_accept = allow;
+    }
+    options.allow_internal_ssl = allow_internal_ssl.unwrap_or(false);
+}
+
 /// Validates one control definition's options against the 289 subset and
 /// builds the normalized definition. Unknown-universe keys cannot arrive
 /// here (the envelope rejects them); known-but-unsupported keys fail.
@@ -1804,6 +2575,18 @@ pub fn normalize_definition(
     options: &BTreeMap<String, String>,
     start_on_load: bool,
 ) -> Result<ControlDefinition, ControlError> {
+    normalize_definition_with_filter_root(name, tunnel_type, options, start_on_load, None)
+}
+
+/// Normalizes a definition and validates file-backed options against an
+/// explicitly owned filter root.
+pub fn normalize_definition_with_filter_root(
+    name: &str,
+    tunnel_type: TunnelType,
+    options: &BTreeMap<String, String>,
+    start_on_load: bool,
+    filter_root: Option<&Path>,
+) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
     if !tunnel_type.has_plan291_backend() {
         return Err(ControlError::UnsupportedType(tunnel_type.name().to_owned()));
@@ -1814,6 +2597,8 @@ pub fn normalize_definition(
             && !SUPPORTED_292_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_296_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_297_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_323_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_324_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -1865,7 +2650,7 @@ pub fn normalize_definition(
     };
     // Validate the full mapping now, before any side effect. The
     // returned spec is discarded; the coordinator rebuilds it.
-    let _ = build_control_spec(&definition)?;
+    let _ = build_control_spec_with_filter_root(&definition, filter_root)?;
     Ok(definition)
 }
 
@@ -1915,7 +2700,7 @@ pub struct TunnelControlState {
 pub struct IdleSweepApplied {
     /// Service id the action applied to.
     pub spec_id: String,
-    /// Action label (`close`, `rebuild-pools`, `reduce-pools`).
+    /// Action label (`close`, `new-destination`, `rebuild-pools`, `reduce-pools`).
     pub action: &'static str,
 }
 
@@ -2057,7 +2842,9 @@ impl TunnelControlState {
                 failures.push((definition.name.clone(), "startup name collision"));
                 continue;
             }
-            if build_control_spec(&definition).is_err() {
+            if build_control_spec_with_filter_root(&definition, Some(&self.store.filter_root()))
+                .is_err()
+            {
                 failures.push((definition.name.clone(), "stored definition invalid"));
                 continue;
             }
@@ -2136,7 +2923,8 @@ impl TunnelControlState {
                 if !running.contains(&definition.name) {
                     continue;
                 }
-                let mut spec = build_control_spec(definition)?;
+                let filter_root = self.store.filter_root();
+                let mut spec = build_control_spec_with_filter_root(definition, Some(&filter_root))?;
                 spec.enabled = true;
                 tunnels.push(spec);
             }
@@ -2196,13 +2984,15 @@ impl TunnelControlState {
     /// runtime (listener/destination/target/kind change). Restaging
     /// rebinds sockets, so it travels as stop-plus-start; in-place
     /// changes (resource ceilings, intent flags) commit directly.
-    fn edit_restages(prior: &ControlDefinition, candidate: &ControlDefinition) -> bool {
+    fn edit_restages(&self, prior: &ControlDefinition, candidate: &ControlDefinition) -> bool {
         use i2pr_service_tunnels::{DiffClass, diff_spec};
-        let mut old_spec = match build_control_spec(prior) {
+        let filter_root = self.store.filter_root();
+        let mut old_spec = match build_control_spec_with_filter_root(prior, Some(&filter_root)) {
             Ok(spec) => spec,
             Err(_) => return true,
         };
-        let mut new_spec = match build_control_spec(candidate) {
+        let mut new_spec = match build_control_spec_with_filter_root(candidate, Some(&filter_root))
+        {
             Ok(spec) => spec,
             Err(_) => return true,
         };
@@ -2579,8 +3369,15 @@ impl TunnelControlState {
             .get("start_on_load")
             .map(|value| value == "true")
             .unwrap_or(true);
-        let definition = normalize_definition(name, tunnel_type, &request.options, start_on_load)?;
-        let probe = build_control_spec(&definition)?;
+        let filter_root = self.store.filter_root();
+        let definition = normalize_definition_with_filter_root(
+            name,
+            tunnel_type,
+            &request.options,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&definition, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         let running_before = lock(&self.running).clone();
         lock(&self.definitions).insert(name.to_owned(), definition);
@@ -2662,9 +3459,15 @@ impl TunnelControlState {
                 .rename_locked(&guard, name, target_name, &prior, &merged, &running_before)
                 .await;
         }
-        let candidate =
-            normalize_definition(target_name, prior.tunnel_type, &merged, start_on_load)?;
-        let probe = build_control_spec(&candidate)?;
+        let filter_root = self.store.filter_root();
+        let candidate = normalize_definition_with_filter_root(
+            target_name,
+            prior.tunnel_type,
+            &merged,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         let running_before = lock(&self.running).clone();
         let was_running = running_before.contains(target_name);
@@ -2674,7 +3477,7 @@ impl TunnelControlState {
         // as stop-plus-start: staging rebinds sockets while the old
         // runtime still holds them, so the old runtime must drain (and
         // be reaped) before the new one stages.
-        if was_running && Self::edit_restages(&prior, &candidate) {
+        if was_running && self.edit_restages(&prior, &candidate) {
             return self
                 .edit_restage_locked(&guard, target_name, &prior, &running_before)
                 .await;
@@ -2756,9 +3559,15 @@ impl TunnelControlState {
             .get("start_on_load")
             .map(|value| value == "true")
             .unwrap_or(prior.start_on_load);
-        let candidate =
-            normalize_definition(target_name, prior.tunnel_type, merged, start_on_load)?;
-        let probe = build_control_spec(&candidate)?;
+        let filter_root = self.store.filter_root();
+        let candidate = normalize_definition_with_filter_root(
+            target_name,
+            prior.tunnel_type,
+            merged,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         // Phase one: add the new definition stopped. The old
         // name's sweep reduction override is dropped: the renamed
@@ -2965,10 +3774,11 @@ impl TunnelControlState {
             let request = TunnelManagerRequest {
                 action: match decision.action {
                     IdleSweepAction::Close => TunnelAction::Stop,
-                    IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
-                        TunnelAction::Restart
-                    }
+                    IdleSweepAction::RotateDestination
+                    | IdleSweepAction::RebuildPools
+                    | IdleSweepAction::ReducePools => TunnelAction::Restart,
                 },
+                all: false,
                 name: Some(decision.spec_id.clone()),
                 tunnel_type: None,
                 new_name: None,
@@ -2976,12 +3786,13 @@ impl TunnelControlState {
             };
             let outcome = match decision.action {
                 IdleSweepAction::Close => self.stop(&request).await,
-                IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
-                    self.restart(&request).await
-                }
+                IdleSweepAction::RotateDestination
+                | IdleSweepAction::RebuildPools
+                | IdleSweepAction::ReducePools => self.restart(&request).await,
             };
             let label = match decision.action {
                 IdleSweepAction::Close => "close",
+                IdleSweepAction::RotateDestination => "new-destination",
                 IdleSweepAction::RebuildPools => "rebuild-pools",
                 IdleSweepAction::ReducePools => "reduce-pools",
             };
@@ -3105,6 +3916,16 @@ impl TunnelControlState {
         &self,
         request: &TunnelManagerRequest,
     ) -> Result<serde_json::Value, ControlError> {
+        if request.all {
+            return self.dispatch_all(request.action).await;
+        }
+        self.dispatch_single(request).await
+    }
+
+    async fn dispatch_single(
+        &self,
+        request: &TunnelManagerRequest,
+    ) -> Result<serde_json::Value, ControlError> {
         match request.action {
             TunnelAction::Get => self.get(request.name.as_deref()),
             TunnelAction::Create => self.create(request).await,
@@ -3114,6 +3935,47 @@ impl TunnelControlState {
             TunnelAction::Stop => self.stop(request).await,
             TunnelAction::Restart => self.restart(request).await,
         }
+    }
+
+    /// Applies a bulk lifecycle action to a bounded, deterministic
+    /// snapshot of control-owned definitions only. Startup-owned entries
+    /// remain under their original configuration owner and are excluded.
+    async fn dispatch_all(&self, action: TunnelAction) -> Result<serde_json::Value, ControlError> {
+        if !matches!(
+            action,
+            TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart
+        ) {
+            return Err(ControlError::UnsupportedOption("All".to_owned()));
+        }
+        let names: Vec<String> = lock(&self.definitions).keys().cloned().collect();
+        if names.len() > MAX_SERVICE_TUNNELS {
+            return Err(ControlError::AggregateRejected(
+                "control-owned tunnel snapshot exceeds the service ceiling",
+            ));
+        }
+        let mut results = Vec::with_capacity(names.len());
+        for name in names {
+            let single = TunnelManagerRequest {
+                action,
+                all: false,
+                name: Some(name.clone()),
+                tunnel_type: None,
+                new_name: None,
+                options: BTreeMap::new(),
+            };
+            match self.dispatch_single(&single).await {
+                Ok(result) => results.push(serde_json::json!({
+                    "name": name,
+                    "status": "success",
+                    "result": result,
+                })),
+                Err(_) => results.push(serde_json::json!({
+                    "name": name,
+                    "status": "error",
+                })),
+            }
+        }
+        Ok(serde_json::json!({ "results": results }))
     }
 }
 
@@ -3212,6 +4074,7 @@ mod tests {
     ) -> TunnelManagerRequest {
         TunnelManagerRequest {
             action: TunnelAction::Create,
+            all: false,
             name: Some(name.to_owned()),
             tunnel_type: Some(tunnel_type),
             new_name: None,
@@ -3222,6 +4085,7 @@ mod tests {
     fn named_request(action: TunnelAction, name: &str) -> TunnelManagerRequest {
         TunnelManagerRequest {
             action,
+            all: false,
             name: Some(name.to_owned()),
             tunnel_type: None,
             new_name: None,
@@ -3480,6 +4344,481 @@ mod tests {
     }
 
     #[test]
+    fn plan323_shared_uses_one_explicit_client_destination_group() {
+        use i2pr_service_tunnels::{DestinationGroupKey, DestinationPolicy, ServiceTunnelSet};
+
+        let mut definitions = Vec::new();
+        for (name, tunnel_type) in [
+            ("shared-http", TunnelType::HttpClient),
+            ("shared-socks", TunnelType::Socks),
+        ] {
+            let definition = ControlDefinition {
+                name: name.to_owned(),
+                tunnel_type,
+                options: BTreeMap::from([
+                    ("shared".to_owned(), "true".to_owned()),
+                    (
+                        "target_destination".to_owned(),
+                        format!("{}.b32.i2p", "a".repeat(52)),
+                    ),
+                ]),
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("shared client spec");
+            assert!(matches!(
+                spec.policy,
+                DestinationPolicy::SharedClientGroup(_)
+            ));
+            definitions.push(spec);
+        }
+        let groups = ServiceTunnelSet {
+            tunnels: definitions,
+        }
+        .destination_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+        assert_eq!(
+            groups[0].key,
+            DestinationGroupKey::Explicit(
+                DestinationGroupId::parse("i2pcontrol-shared-client").expect("group id")
+            )
+        );
+
+        let persistent = ControlDefinition {
+            name: "persistent-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let persistent_spec = build_control_spec(&persistent).expect("persistent client spec");
+        assert_eq!(persistent_spec.policy, DestinationPolicy::PersistentClient);
+        assert!(
+            ServiceTunnelSet {
+                tunnels: vec![persistent_spec],
+            }
+            .destination_groups()[0]
+                .persistent
+        );
+
+        let from_new_dest = ControlDefinition {
+            name: "new-dest-persistent".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "2".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        assert_eq!(
+            build_control_spec(&from_new_dest)
+                .expect("NewDest=2 selects persistence")
+                .policy,
+            DestinationPolicy::PersistentClient
+        );
+        let new_dest_on_resume = ControlDefinition {
+            name: "new-dest-on-resume".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "1".to_owned()),
+                ("close_on_idle".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let resume_spec = build_control_spec(&new_dest_on_resume)
+            .expect("NewDest=1 selects the ephemeral idle-rotation owner");
+        assert_eq!(resume_spec.policy, DestinationPolicy::Dedicated);
+        assert!(resume_spec.idle.close_on_idle);
+        assert!(resume_spec.idle.rotate_destination_on_idle);
+        assert!(!resume_spec.idle.new_dest_on_idle);
+
+        let shared_new_dest = ControlDefinition {
+            name: "shared-new-dest-on-resume".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "1".to_owned()),
+                ("close_on_idle".to_owned(), "true".to_owned()),
+                ("shared".to_owned(), "true".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&shared_new_dest),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+        let conflicting = ControlDefinition {
+            name: "new-dest-conflict".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "0".to_owned()),
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&conflicting),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+
+        let shared_persistent = ControlDefinition {
+            name: "shared-persistent".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("shared".to_owned(), "true".to_owned()),
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let shared_persistent =
+            build_control_spec(&shared_persistent).expect("shared persistent client spec");
+        assert!(matches!(
+            shared_persistent.policy,
+            DestinationPolicy::PersistentSharedClientGroup(_)
+        ));
+
+        for tunnel_type in [TunnelType::Server, TunnelType::StreamrClient] {
+            let definition = ControlDefinition {
+                name: "bad-shared".to_owned(),
+                tunnel_type,
+                options: BTreeMap::from([("shared".to_owned(), "true".to_owned())]),
+                start_on_load: false,
+            };
+            assert!(build_control_spec(&definition).is_err());
+        }
+    }
+
+    #[test]
+    fn plan323_priv_key_file_is_a_confined_persistent_logical_reference() {
+        use i2pr_service_tunnels::{DestinationPolicy, ServiceKeyReference, ServiceTunnelSet};
+
+        let client = ControlDefinition {
+            name: "keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "primary".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&client).expect("client key reference");
+        assert_eq!(
+            spec.policy,
+            DestinationPolicy::KeyReference(
+                ServiceKeyReference::parse("primary").expect("key reference")
+            )
+        );
+        assert!(
+            ServiceTunnelSet {
+                tunnels: vec![spec],
+            }
+            .destination_groups()[0]
+                .persistent
+        );
+
+        let server = ControlDefinition {
+            name: "keyed-server".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("priv_key_file".to_owned(), "site-key".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&server)
+                .expect("server key reference")
+                .policy,
+            DestinationPolicy::KeyReference(_)
+        ));
+
+        let traversal = ControlDefinition {
+            name: "unsafe-keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "../escape".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&traversal),
+            Err(ControlError::InvalidOption { .. })
+        ));
+
+        let shared = ControlDefinition {
+            name: "shared-keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "primary".to_owned()),
+                ("shared".to_owned(), "true".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&shared),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+    }
+
+    #[test]
+    fn plan323_connection_rates_use_authenticated_server_admission() {
+        let definition = ControlDefinition {
+            name: "server-rates".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+                ("client_per_hour".to_owned(), "10".to_owned()),
+                ("client_per_day".to_owned(), "30".to_owned()),
+                ("total_in_per_minute".to_owned(), "20".to_owned()),
+                ("total_in_per_hour".to_owned(), "100".to_owned()),
+                ("total_in_per_day".to_owned(), "300".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("server connection limits map");
+        assert_eq!(spec.access.connection_rates.client_per_minute, 2);
+        assert_eq!(spec.access.connection_rates.client_per_hour, 10);
+        assert_eq!(spec.access.connection_rates.client_per_day, 30);
+        assert_eq!(spec.access.connection_rates.total_per_minute, 20);
+        assert_eq!(spec.access.connection_rates.total_per_hour, 100);
+        assert_eq!(spec.access.connection_rates.total_per_day, 300);
+
+        let irc_server = ControlDefinition {
+            name: "irc-server-rates".to_owned(),
+            tunnel_type: TunnelType::IrcServer,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "6667".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+                ("total_in_per_minute".to_owned(), "20".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let irc_spec = build_control_spec(&irc_server).expect("IRC server limits map");
+        assert_eq!(irc_spec.access.connection_rates.client_per_minute, 2);
+        assert_eq!(irc_spec.access.connection_rates.total_per_minute, 20);
+
+        let client = ControlDefinition {
+            name: "client-rates".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("listen_port".to_owned(), "8123".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&client),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+
+        let http_server = ControlDefinition {
+            name: "http-post-rates".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("post_limit".to_owned(), "300".to_owned()),
+                ("post_limit_time".to_owned(), "600".to_owned()),
+                ("per_client_period".to_owned(), "6".to_owned()),
+                ("total_period".to_owned(), "20".to_owned()),
+                ("total_ban_time".to_owned(), "1200".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let http_spec = build_control_spec(&http_server).expect("HTTP POST limits map");
+        assert_eq!(http_spec.http_policy.post_limits.window_seconds, 300);
+        assert_eq!(http_spec.http_policy.post_limits.client_ban_seconds, 600);
+        assert_eq!(http_spec.http_policy.post_limits.client_max, 6);
+        assert_eq!(http_spec.http_policy.post_limits.total_max, 20);
+        assert_eq!(http_spec.http_policy.post_limits.total_ban_seconds, 1_200);
+
+        let streamr_server = ControlDefinition {
+            name: "streamr-rates".to_owned(),
+            tunnel_type: TunnelType::StreamrServer,
+            options: BTreeMap::from([
+                ("local_udp_host".to_owned(), "127.0.0.1".to_owned()),
+                ("local_udp_port".to_owned(), "12345".to_owned()),
+                ("client_per_minute".to_owned(), "3".to_owned()),
+                ("total_in_per_minute".to_owned(), "24".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let streamr_spec =
+            build_control_spec(&streamr_server).expect("Streamr subscription limits map");
+        assert_eq!(streamr_spec.access.connection_rates.client_per_minute, 3);
+        assert_eq!(streamr_spec.access.connection_rates.total_per_minute, 24);
+    }
+
+    #[test]
+    fn proposal_filter_file_is_confined_bounded_and_owns_server_access() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ControlStore::open(directory.path()).expect("control store opens");
+        let filter_root = store.filter_root();
+        let peer = format!("{}.b32.i2p", "a".repeat(52));
+        let filter = filter_root.join("allowed.txt");
+        std::fs::write(&filter, format!("# comment\n{peer}\n")).expect("filter writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&filter, std::fs::Permissions::from_mode(0o600))
+                .expect("private filter permissions");
+        }
+        let options = BTreeMap::from([
+            ("target_host".to_owned(), "127.0.0.1".to_owned()),
+            ("target_port".to_owned(), "8080".to_owned()),
+            ("access_option".to_owned(), "allow".to_owned()),
+            ("filter_file_path".to_owned(), "allowed.txt".to_owned()),
+        ]);
+        let definition = normalize_definition_with_filter_root(
+            "filter-server",
+            TunnelType::Server,
+            &options,
+            false,
+            Some(&filter_root),
+        )
+        .expect("bounded filter definition normalizes");
+        let spec = build_control_spec_with_filter_root(&definition, Some(&filter_root))
+            .expect("filter file feeds access policy");
+        let expected = ServerAccessPolicy::parse(&[peer.as_str()], &[]).expect("peer parses");
+        assert_eq!(spec.access.allow, expected.allow);
+        assert!(spec.access.deny.is_empty());
+
+        let traversal = BTreeMap::from([
+            ("target_host".to_owned(), "127.0.0.1".to_owned()),
+            ("target_port".to_owned(), "8080".to_owned()),
+            ("filter_file_path".to_owned(), "../escape.txt".to_owned()),
+        ]);
+        assert!(
+            normalize_definition_with_filter_root(
+                "filter-traversal",
+                TunnelType::Server,
+                &traversal,
+                false,
+                Some(&filter_root),
+            )
+            .is_err()
+        );
+
+        let oversized = filter_root.join("large.txt");
+        std::fs::write(&oversized, vec![b'a'; MAX_FILTER_FILE_BYTES + 1])
+            .expect("oversized filter writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&oversized, std::fs::Permissions::from_mode(0o600))
+                .expect("private filter permissions");
+        }
+        assert!(read_confined_filter_file(&filter_root, "large.txt").is_err());
+
+        #[cfg(unix)]
+        {
+            let outside = directory.path().join("outside.txt");
+            std::fs::write(&outside, peer).expect("outside file writes");
+            std::os::unix::fs::symlink(&outside, filter_root.join("linked.txt"))
+                .expect("symlink creates");
+            assert!(read_confined_filter_file(&filter_root, "linked.txt").is_err());
+        }
+    }
+
+    #[test]
+    fn plan323_connect_delay_has_bounded_generic_client_owner() {
+        let definition = ControlDefinition {
+            name: "delayed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("connect_delay".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("generic client spec");
+        assert_eq!(
+            spec.timeouts.streaming_connect_delay_ms,
+            Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS)
+        );
+
+        let delayed_open = ControlDefinition {
+            name: "delayed-open-client".to_owned(),
+            tunnel_type: TunnelType::Socks,
+            options: BTreeMap::from([
+                ("delay_open".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let delayed_spec = build_control_spec(&delayed_open).expect("SOCKS DelayOpen spec");
+        assert!(delayed_spec.timeouts.delay_open);
+
+        let invalid = ControlDefinition {
+            name: "delayed-http".to_owned(),
+            tunnel_type: TunnelType::HttpClient,
+            options: BTreeMap::from([("connect_delay".to_owned(), "true".to_owned())]),
+            start_on_load: false,
+        };
+        assert!(build_control_spec(&invalid).is_err());
+
+        let invalid_server = ControlDefinition {
+            name: "delayed-server".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([("delay_open".to_owned(), "true".to_owned())]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            normalize_definition(
+                &invalid_server.name,
+                invalid_server.tunnel_type,
+                &invalid_server.options,
+                invalid_server.start_on_load,
+            ),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+    }
+
+    #[test]
     fn plan291_streamr_control_spec_builds() {
         use i2pr_service_tunnels::ServiceTunnelKind;
         // Server: explicit loopback UDP source plus bounded
@@ -3698,6 +5037,29 @@ mod tests {
                 i2pr_service_tunnels::HttpServerPolicy::default()
             );
             let mut options = server_options("127.0.0.1:9090");
+            options.insert("spoofed_host".to_owned(), "site.example.i2p".to_owned());
+            let definition = ControlDefinition {
+                name: "spoofed".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("SpoofedHost has an owner");
+            assert_eq!(
+                spec.http_policy.spoofed_host.as_deref(),
+                Some("site.example.i2p")
+            );
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert("block_referers".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "referer-policy".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("BlockReferers has an owner");
+            assert!(!spec.http_policy.block_referers);
+            let mut options = server_options("127.0.0.1:9090");
             options.insert("address_helper".to_owned(), "false".to_owned());
             options.insert("jump_list".to_owned(), "false".to_owned());
             let definition = ControlDefinition {
@@ -3731,6 +5093,79 @@ mod tests {
                 "unexpected error: {error:?}"
             );
         }
+        for tunnel_type in [TunnelType::Server, TunnelType::Client] {
+            let mut options = if tunnel_type == TunnelType::Server {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("block_referers".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "referer-off-kind".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            assert!(matches!(
+                build_control_spec(&definition),
+                Err(ControlError::ContradictoryOptions { .. })
+            ));
+        }
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("spoofed_host".to_owned(), "bad host".to_owned());
+        let malformed = ControlDefinition {
+            name: "badspoof".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options,
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&malformed),
+            Err(ControlError::InvalidOption { ref option, .. }) if option == "spoofed_host"
+        ));
+    }
+
+    #[test]
+    fn plan323_server_user_agent_filter_has_a_bounded_http_owner() {
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("block_user_agents".to_owned(), "true".to_owned());
+        options.insert("user_agents".to_owned(), "crawler,none".to_owned());
+        options.insert("block_access_in_proxies".to_owned(), "true".to_owned());
+        let definition = ControlDefinition {
+            name: "ua-filter".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("HTTP server owner builds");
+        assert!(spec.http_policy.block_user_agents);
+        assert_eq!(spec.http_policy.user_agents, ["crawler", "none"]);
+        assert!(spec.http_policy.block_access_in_proxies);
+
+        let mut invalid = server_options("127.0.0.1:9090");
+        invalid.insert("block_user_agents".to_owned(), "true".to_owned());
+        assert!(matches!(
+            build_control_spec(&ControlDefinition {
+                name: "ua-empty".to_owned(),
+                tunnel_type: TunnelType::HttpServer,
+                options: invalid,
+                start_on_load: false,
+            }),
+            Err(ControlError::InvalidOption { ref option, .. }) if option == "block_user_agents"
+        ));
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        incompatible.insert("user_agents".to_owned(), "crawler".to_owned());
+        let error = build_control_spec(&ControlDefinition {
+            name: "ua-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: incompatible,
+            start_on_load: false,
+        })
+        .expect_err("UserAgents is rejected on client tunnels");
+        assert!(
+            matches!(error, ControlError::ContradictoryOptions { .. }),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
@@ -3846,6 +5281,80 @@ mod tests {
     }
 
     #[test]
+    fn plan323_description_is_bounded_owned_and_survives_generation_reload() {
+        let description = "Managed HTTP client";
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("description".to_owned(), description.to_owned());
+        let definition = normalize_definition("described", TunnelType::Client, &options, false)
+            .expect("description uses the control metadata owner");
+        assert_eq!(
+            definition.options.get("description"),
+            Some(&description.to_owned())
+        );
+        let spec = build_control_spec(&definition).expect("description does not alter routing");
+        assert!(spec.destination.is_some());
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let definitions = BTreeMap::from([(definition.name.clone(), definition)]);
+        let generation = store.stage(&definitions).expect("generation stages");
+        store.publish(generation).expect("generation publishes");
+        let recovered = store.load().expect("generation recovers");
+        assert_eq!(
+            recovered.definitions[0].options.get("description"),
+            Some(&description.to_owned())
+        );
+    }
+
+    #[test]
+    fn plan323_http_request_filters_have_a_real_http_client_owner() {
+        let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        options.insert("allow_user_agent".to_owned(), "true".to_owned());
+        options.insert("allow_referer".to_owned(), "true".to_owned());
+        options.insert("allow_accept".to_owned(), "false".to_owned());
+        options.insert("allow_internal_ssl".to_owned(), "false".to_owned());
+        let definition =
+            normalize_definition("http-filters", TunnelType::HttpClient, &options, false)
+                .expect("Proposal filter fields are supported");
+        let spec = build_control_spec(&definition).expect("HTTP client owner consumes filters");
+        let privacy = &spec.http_options.as_ref().expect("HTTP options").privacy;
+        assert_eq!(
+            privacy.user_agent,
+            i2pr_service_tunnels::UserAgentPolicy::Keep
+        );
+        assert!(!privacy.strip_referer);
+        assert!(!privacy.allow_accept);
+        assert!(
+            !spec
+                .http_options
+                .as_ref()
+                .expect("HTTP options")
+                .allow_internal_ssl
+        );
+
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "b".repeat(52)), 0);
+        incompatible.insert("allow_referer".to_owned(), "true".to_owned());
+        assert!(matches!(
+            normalize_definition("socks-filter", TunnelType::Socks, &incompatible, false)
+                .and_then(|definition| build_control_spec(&definition)),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "c".repeat(52)), 0);
+        incompatible.insert("allow_internal_ssl".to_owned(), "true".to_owned());
+        assert!(matches!(
+            normalize_definition(
+                "socks-internal-ssl",
+                TunnelType::Socks,
+                &incompatible,
+                false
+            )
+            .and_then(|definition| build_control_spec(&definition)),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+    }
+
+    #[test]
     fn plan292_shaping_options_have_real_effect() {
         use i2pr_service_tunnels::ServiceTunnelKind;
         // Symmetric quantity/length drive the pool projection; the
@@ -3936,13 +5445,28 @@ mod tests {
         }
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
         options.insert("sig_type".to_owned(), "EDDSA_SHA512_ED25519".to_owned());
-        let error = normalize_definition("bad", TunnelType::Client, &options, false)
-            .expect_err("sig_type rejected");
-        assert!(
-            matches!(&error, ControlError::UnsupportedOption(message)
-                if message.contains("Plan 293 determination")),
-            "unexpected error: {error:?}"
-        );
+        options.insert("enc_type".to_owned(), "4".to_owned());
+        let definition = normalize_definition("typed-crypto", TunnelType::Client, &options, false)
+            .expect("the supported identity policy is typed and persisted");
+        let spec = build_control_spec(&definition).expect("the supported identity policy maps");
+        assert!(matches!(
+            spec.policy,
+            DestinationPolicy::WithCrypto { crypto, .. }
+                if crypto == i2pr_service_tunnels::DestinationCryptoPolicy::default()
+        ));
+        for (key, value) in [
+            ("sig_type", "Ed25519"),
+            ("sig_type", "DSA-SHA1"),
+            ("enc_type", "0"),
+            ("enc_type", "5"),
+        ] {
+            let mut invalid = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            invalid.insert(key.to_owned(), value.to_owned());
+            assert!(matches!(
+                normalize_definition("bad-crypto", TunnelType::Client, &invalid, false),
+                Err(ControlError::InvalidOption { .. })
+            ));
+        }
         // Outproxy provider residual on an in-mask proxy kind.
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
         options.insert(
@@ -4184,22 +5708,27 @@ mod tests {
     fn plan293_deep_primitives_rejected_with_named_limitation() {
         fn base_options(tunnel_type: TunnelType) -> BTreeMap<String, String> {
             match tunnel_type {
-                TunnelType::Server | TunnelType::HttpServer | TunnelType::HttpBidirServer => {
-                    server_options("127.0.0.1:9090")
-                }
+                TunnelType::Server
+                | TunnelType::IrcServer
+                | TunnelType::HttpServer
+                | TunnelType::HttpBidirServer => server_options("127.0.0.1:9090"),
                 TunnelType::StreamrClient | TunnelType::StreamrServer => {
                     let mut options = BTreeMap::new();
                     options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
                     options.insert("local_udp_port".to_owned(), "5001".to_owned());
+                    if tunnel_type == TunnelType::StreamrClient {
+                        options.insert(
+                            "target_destination".to_owned(),
+                            format!("{}.b32.i2p", "a".repeat(52)),
+                        );
+                    }
                     options
                 }
                 _ => client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0),
             }
         }
-        // sig_type applies to every kind: the Java spelling, the numeric
-        // type, the lone i2pr-supported value, and a legacy name all fail
-        // with the SigType limitation. No singleton accept exists because
-        // accepting the one generatable value would select nothing.
+        // The current Ed25519 policy is accepted for every destination
+        // owner; unsupported legacy and alternate algorithms fail closed.
         for tunnel_type in [
             TunnelType::Client,
             TunnelType::Server,
@@ -4214,19 +5743,37 @@ mod tests {
             TunnelType::StreamrClient,
             TunnelType::StreamrServer,
         ] {
-            for value in ["EDDSA_SHA512_ED25519", "7", "Ed25519", "DSA-SHA1"] {
+            for value in ["EDDSA_SHA512_ED25519", "7"] {
                 let mut options = base_options(tunnel_type);
                 options.insert("sig_type".to_owned(), value.to_owned());
-                let error = normalize_definition("sigbad", tunnel_type, &options, false)
-                    .expect_err("sig_type rejected");
+                let normalized = normalize_definition("sig-ok", tunnel_type, &options, false);
                 assert!(
-                    matches!(&error, ControlError::UnsupportedOption(message)
-                        if message.contains("sig_type")
-                            && message.contains("SigType")
-                            && message.contains("Plan 293 determination")
-                            && message.contains("Plan 295")),
-                    "unexpected error for {tunnel_type:?} sig_type={value}: {error:?}"
+                    normalized.is_ok(),
+                    "unexpected supported SigType failure for {tunnel_type:?}: {normalized:?}"
                 );
+            }
+            for value in ["Ed25519", "DSA-SHA1"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("sig_type".to_owned(), value.to_owned());
+                assert!(matches!(
+                    normalize_definition("sigbad", tunnel_type, &options, false),
+                    Err(ControlError::InvalidOption { .. })
+                ));
+            }
+            let mut options = base_options(tunnel_type);
+            options.insert("enc_type".to_owned(), "4".to_owned());
+            let normalized = normalize_definition("enc-ok", tunnel_type, &options, false);
+            assert!(
+                normalized.is_ok(),
+                "unexpected supported EncType failure for {tunnel_type:?}: {normalized:?}"
+            );
+            for value in ["0", "5"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("enc_type".to_owned(), value.to_owned());
+                assert!(matches!(
+                    normalize_definition("encbad", tunnel_type, &options, false),
+                    Err(ControlError::InvalidOption { .. })
+                ));
             }
         }
         // LeaseSet security keys on publishing kinds: every mode fails,
@@ -4382,6 +5929,9 @@ mod tests {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert("idle_timeout".to_owned(), "5000".to_owned());
             options.insert(flag.to_owned(), "true".to_owned());
+            if flag == "new_dest_on_idle" {
+                options.insert("close_on_idle".to_owned(), "true".to_owned());
+            }
             let definition = ControlDefinition {
                 name: format!("idle-{flag}"),
                 tunnel_type: TunnelType::Client,
@@ -4461,6 +6011,7 @@ mod tests {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert("proxy_username".to_owned(), "operator".to_owned());
             options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            options.insert("proxy_auth".to_owned(), "true".to_owned());
             let definition = ControlDefinition {
                 name: name.to_owned(),
                 tunnel_type,
@@ -4494,6 +6045,24 @@ mod tests {
                 "marked verifier: {persisted}"
             );
             assert!(!persisted.contains("s3cret"));
+        }
+        for (proxy_auth, with_credentials) in [("true", false), ("false", true)] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert("proxy_auth".to_owned(), proxy_auth.to_owned());
+            if with_credentials {
+                options.insert("proxy_username".to_owned(), "operator".to_owned());
+                options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            }
+            let definition = ControlDefinition {
+                name: "proxy-auth-conflict".to_owned(),
+                tunnel_type: TunnelType::Socks,
+                options,
+                start_on_load: false,
+            };
+            assert!(matches!(
+                build_control_spec(&definition),
+                Err(ControlError::ContradictoryOptions { .. })
+            ));
         }
         // Either half alone fails (both required together).
         for (key, value) in [
@@ -4558,6 +6127,7 @@ mod tests {
         rotation.insert("proxy_username".to_owned(), "renamed".to_owned());
         let error = block_on(control.edit(&TunnelManagerRequest {
             action: TunnelAction::Edit,
+            all: false,
             name: Some("authrot".to_owned()),
             tunnel_type: None,
             new_name: None,
@@ -4574,6 +6144,7 @@ mod tests {
         rotation.insert("proxy_password".to_owned(), "n3w-secret".to_owned());
         block_on(control.edit(&TunnelManagerRequest {
             action: TunnelAction::Edit,
+            all: false,
             name: Some("authrot".to_owned()),
             tunnel_type: None,
             new_name: None,
@@ -4602,6 +6173,28 @@ mod tests {
         let spec = build_control_spec(&definition).expect("access spec builds");
         assert_eq!(spec.access.allow.len(), 2);
         assert_eq!(spec.access.deny.len(), 1);
+        let mut proposal_deny = server_options("127.0.0.1:9090");
+        proposal_deny.insert("access_option".to_owned(), "deny".to_owned());
+        proposal_deny.insert("access_list".to_owned(), hash_b.clone());
+        let denied =
+            normalize_definition("proposal-deny", TunnelType::Server, &proposal_deny, false)
+                .expect("Proposal deny list builds");
+        let denied = build_control_spec(&denied).expect("Proposal deny policy builds");
+        assert!(denied.access.allow.is_empty());
+        let expected_deny =
+            ServerAccessPolicy::parse(&[], &[&hash_b]).expect("expected access hash parses");
+        assert_eq!(denied.access.deny, expected_deny.deny);
+        let mut missing_list = server_options("127.0.0.1:9090");
+        missing_list.insert("access_option".to_owned(), "allow".to_owned());
+        assert!(matches!(
+            normalize_definition(
+                "proposal-missing-list",
+                TunnelType::Server,
+                &missing_list,
+                false
+            ),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
         // Non-hash entries fail naming the key, never the value.
         for (key, value) in [
             ("access_list", "example.i2p"),
@@ -4715,6 +6308,37 @@ mod tests {
     }
 
     #[test]
+    fn plan323_idle_controls_use_independent_time_and_reduce_count() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("tunnel_quantity".to_owned(), "4".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        options.insert("close_time".to_owned(), "30".to_owned());
+        options.insert("reduce_on_idle".to_owned(), "true".to_owned());
+        options.insert("reduce_time".to_owned(), "20".to_owned());
+        options.insert("reduce_count".to_owned(), "1".to_owned());
+        block_on(control.create(&create_request("proposalidle", TunnelType::Client, options)))
+            .expect("create runs");
+
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        let reduced = block_on(control.idle_sweep_once(base + 1_200_000));
+        assert_eq!(reduced.len(), 1, "reduce deadline: {reduced:?}");
+        assert_eq!(reduced[0].action, "reduce-pools");
+        let shaping = control
+            .manager
+            .effective_shaping_for("proposalidle")
+            .unwrap();
+        assert_eq!(shaping.inbound_quantity, 3);
+        assert_eq!(shaping.outbound_quantity, 3);
+        assert!(control.is_running("proposalidle"));
+
+        // The pure service-tunnels test covers the independent close deadline;
+        // this runtime assertion pins the Proposal-specific decrement effect.
+    }
+
+    #[test]
     fn plan292_idle_sweep_rebuilds_pools_in_place() {
         let directory = tempfile::tempdir().expect("tempdir");
         let control = test_control(directory.path());
@@ -4722,7 +6346,7 @@ mod tests {
         let mut options = client_options(&destination, 0);
         options.insert("idle_timeout".to_owned(), "1000".to_owned());
         options.insert("new_dest_on_idle".to_owned(), "true".to_owned());
-        block_on(control.create(&create_request("idlerebuild", TunnelType::Client, options)))
+        block_on(control.create(&create_request("idle-rebuild", TunnelType::Client, options)))
             .expect("create runs");
         let generation_before = control.store_generation();
         let base = crate::service_tunnels::service_streaming_now_ms();
@@ -4730,7 +6354,36 @@ mod tests {
         assert_eq!(applied.len(), 1, "rebuild fires: {applied:?}");
         assert_eq!(applied[0].action, "rebuild-pools");
         assert!(control.store_generation() > generation_before);
+        assert!(control.is_running("idle-rebuild"));
+    }
+
+    #[test]
+    fn plan323_new_dest_one_rotates_identity_on_idle_resume() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("new_dest".to_owned(), "1".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        block_on(control.create(&create_request("idlerebuild", TunnelType::Client, options)))
+            .expect("create runs");
+        let destination_before = control
+            .manager
+            .service_destination_id("idlerebuild")
+            .expect("initial ephemeral Destination");
+        let generation_before = control.store_generation();
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        assert!(block_on(control.idle_sweep_once(base + 599_000)).is_empty());
+        let applied = block_on(control.idle_sweep_once(base + 660_000));
+        assert_eq!(applied.len(), 1, "idle rotation fires: {applied:?}");
+        assert_eq!(applied[0].action, "new-destination");
+        assert!(control.store_generation() > generation_before);
         assert!(control.is_running("idlerebuild"));
+        let destination_after = control
+            .manager
+            .service_destination_id("idlerebuild")
+            .expect("resumed ephemeral Destination");
+        assert_ne!(destination_after, destination_before);
     }
 
     #[test]
@@ -4775,6 +6428,75 @@ mod tests {
             control.get(Some("alpha")),
             Err(ControlError::UnknownTunnel("alpha".to_owned()))
         );
+    }
+
+    #[test]
+    fn plan323_all_lifecycle_uses_sorted_control_owned_snapshot() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let ports = distinct_ports(3);
+        let startup = ServiceTunnelSet {
+            tunnels: vec![
+                build_control_spec(&ControlDefinition {
+                    name: "startup".to_owned(),
+                    tunnel_type: TunnelType::Client,
+                    options: client_options(&destination, ports[2]),
+                    start_on_load: false,
+                })
+                .expect("startup spec"),
+            ],
+        };
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, startup, test_manager(directory.path()));
+        for (name, port) in [("zeta", ports[0]), ("alpha", ports[1])] {
+            block_on(control.create(&create_request(
+                name,
+                TunnelType::Client,
+                client_options(&destination, port),
+            )))
+            .expect("create control-owned tunnel");
+        }
+        let all_start = TunnelManagerRequest {
+            action: TunnelAction::Start,
+            all: true,
+            name: None,
+            tunnel_type: None,
+            new_name: None,
+            options: BTreeMap::new(),
+        };
+        let started = block_on(control.dispatch(&all_start)).expect("bulk start");
+        let results = started["results"].as_array().expect("result array");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["name"], "alpha");
+        assert_eq!(results[1]["name"], "zeta");
+        assert!(results.iter().all(|result| result["status"] == "success"));
+        assert!(control.is_running("alpha"));
+        assert!(control.is_running("zeta"));
+        let startup_status = control.get(Some("startup")).expect("startup get");
+        assert_eq!(startup_status["provenance"], "startup");
+        assert_eq!(startup_status["enabled"], false);
+
+        let all_restart = TunnelManagerRequest {
+            action: TunnelAction::Restart,
+            ..all_start
+        };
+        let restarted = block_on(control.dispatch(&all_restart)).expect("bulk restart");
+        assert_eq!(restarted["results"].as_array().unwrap().len(), 2);
+        assert!(control.is_running("alpha"));
+        assert!(control.is_running("zeta"));
+
+        let all_stop = TunnelManagerRequest {
+            action: TunnelAction::Stop,
+            all: true,
+            name: None,
+            tunnel_type: None,
+            new_name: None,
+            options: BTreeMap::new(),
+        };
+        let stopped = block_on(control.dispatch(&all_stop)).expect("bulk stop");
+        assert_eq!(stopped["results"].as_array().unwrap().len(), 2);
+        assert!(!control.is_running("alpha"));
+        assert!(!control.is_running("zeta"));
     }
 
     #[test]

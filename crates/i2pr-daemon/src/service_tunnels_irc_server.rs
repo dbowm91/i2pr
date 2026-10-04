@@ -476,22 +476,31 @@ pub async fn run_irc_server_loop(
             }
         });
         for connection_id in accepted_ids {
+            // Apply peer policy and per-client admission before queuing
+            // the SYN response, matching the other server tunnel paths.
+            let peer_hash = manager
+                .with_destination_bridge(runtime.destination_id, |bridge| {
+                    bridge
+                        .receiver_streaming()
+                        .get_connection(connection_id)
+                        .map(|conn| *conn.peer_destination_hash())
+                })
+                .flatten();
+            let Some(peer_hash) = peer_hash else {
+                runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            if !crate::service_tunnels::admit_server_peer(runtime, peer_hash) {
+                continue;
+            }
             // Plan 182: answer the SYN before waiting for
             // Established. Without the SYN response the handshake
             // can never complete; see `accept_irc_inbound_syn`.
-            let Some(peer) = accept_irc_inbound_syn(manager, runtime, connection_id) else {
+            let Some(()) = accept_irc_inbound_syn(manager, runtime, connection_id) else {
                 debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc accept failed");
                 runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
-            // Plan 292: peer policy (structurally empty for IRC
-            // server kinds, which cannot carry access lists, but
-            // enforced uniformly so a validation gap can never
-            // silently admit).
-            if !runtime.access.allows(&peer.destination_hash) {
-                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
             debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc SYN answered");
             manager.notify_outbound_signal(runtime.destination_id);
             spawn_irc_server_connection(
@@ -509,15 +518,14 @@ pub async fn run_irc_server_loop(
 
 /// Answers one accepted inbound SYN with the connection's real
 /// authenticated peer metadata and real port tuple (SAM parity),
-/// queues the SYN response for the delivery driver, and returns
-/// the authenticated peer [`RemoteDestination`] the pump needs
-/// for server-to-client sends. Returns `None` when the accept
-/// fails; the caller counts the failure and drops the connection.
+/// queues the SYN response for the delivery driver. Returns `None`
+/// when the accept fails; the caller counts the failure and drops
+/// the connection.
 fn accept_irc_inbound_syn(
     manager: &ServiceTunnelManager,
     runtime: &ServiceRuntime,
     connection_id: ConnectionId,
-) -> Option<RemoteDestination> {
+) -> Option<()> {
     let now_ms = service_streaming_now_ms();
     manager.with_destination_bridge(runtime.destination_id, |bridge| {
         let (local_port, remote_port, peer_hash, peer_signing, peer_static_public) = {
@@ -558,7 +566,7 @@ fn accept_irc_inbound_syn(
         bridge
             .receiver_streaming_mut()
             .queue_outbound_packet(request);
-        Some(peer)
+        Some(())
     })?
 }
 

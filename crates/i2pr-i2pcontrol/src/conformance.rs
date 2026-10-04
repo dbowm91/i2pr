@@ -11,6 +11,9 @@ use crate::auth::AuthErrorCode;
 use crate::client_services::CLIENT_SERVICES;
 use crate::jsonrpc::JsonRpcErrorCode;
 use crate::methods::METHODS;
+use crate::proposal_wire::{
+    BASE_ROUTER_INFO_FIELDS, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS, PROPOSAL_ROUTER_INFO_FIELDS,
+};
 use crate::router_info::ROUTER_INFO_SELECTORS;
 use crate::tunnel::{TUNNEL_ACTIONS, TUNNEL_TYPES, TunnelStatus};
 use crate::tunnel_options::{SECRET_OPTIONS, TUNNEL_OPTIONS};
@@ -22,6 +25,10 @@ pub struct ContractInventory {
     pub methods: usize,
     /// Frozen RouterInfo selector count (30).
     pub router_info_selectors: usize,
+    /// Canonical Proposal RouterInfo additions (43).
+    pub proposal_router_info_fields: usize,
+    /// Adopted base API RouterInfo fields (14), separate from proposal additions.
+    pub base_router_info_fields: usize,
     /// Frozen ClientServicesInfo selector count (6).
     pub client_services: usize,
     /// Frozen address-book type count (4).
@@ -52,6 +59,8 @@ impl ContractInventory {
         Self {
             methods: METHODS.len(),
             router_info_selectors: ROUTER_INFO_SELECTORS.len(),
+            proposal_router_info_fields: PROPOSAL_ROUTER_INFO_FIELDS.len(),
+            base_router_info_fields: BASE_ROUTER_INFO_FIELDS.len(),
             client_services: CLIENT_SERVICES.len(),
             book_types: BOOK_TYPES.len(),
             address_book_fields: ADDRESS_BOOK_FIELDS.len(),
@@ -78,10 +87,13 @@ impl ContractInventory {
 pub fn assert_frozen_counts(inventory: &ContractInventory) -> bool {
     inventory.methods == 5
         && inventory.router_info_selectors == 30
+        && inventory.proposal_router_info_fields == 43
+        && inventory.base_router_info_fields == 14
         && inventory.client_services == 6
         && inventory.book_types == 4
         && inventory.address_book_fields == 6
         && inventory.set_config_keys == 13
+        && PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS.len() == 13
         && inventory.tunnel_actions == 7
         && inventory.tunnel_types == 12
         && inventory.tunnel_options == 46

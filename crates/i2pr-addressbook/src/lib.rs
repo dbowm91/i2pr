@@ -3,7 +3,7 @@
 //! This crate owns i2pr `.i2p` naming: four independent administrative
 //! books (private, local, router, published) with fixed lookup
 //! precedence, a subscription-derived table consulted last, typed
-//! hostname and full-Destination validation, the thirteen-key `SetConfig`
+//! hostname and full-Destination validation, the Proposal `SetConfig`
 //! domain, bounded subscription ingestion, deterministic versioned
 //! generations, and a narrow read-only resolver handle.
 //!
@@ -48,6 +48,7 @@ pub use refresh::{RefreshDiagnostic, RefreshOutcome, RefreshQueue, RefreshReason
 pub use resolver::{AddressBookResolver, AddressBookSnapshot};
 pub use subscription::{
     MAX_SUBSCRIBED_ENTRIES, MAX_SUBSCRIPTION_BODY_BYTES, MAX_SUBSCRIPTION_LINE_LEN,
-    MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS, SubscriptionSet, ingest_subscription_body,
-    validate_subscription_url,
+    MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS, MAX_SUBSCRIPTION_VALIDATOR_LEN,
+    SubscriptionSet, SubscriptionSource, ingest_subscription_body, validate_subscription_url,
+    validate_subscription_validator,
 };

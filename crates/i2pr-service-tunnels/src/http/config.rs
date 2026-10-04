@@ -33,6 +33,10 @@ pub const HTTP_ERROR_RESPONSE_MAX_BYTES: usize = 1024;
 /// Maximum HTTP-specific options-set entries (e.g. CONNECT ports,
 /// allowed destinations list).
 pub const HTTP_OPTIONS_MAX_PORTS: usize = 16;
+/// Maximum substring rules for the HTTP server User-Agent filter.
+pub const HTTP_USER_AGENT_RULES_MAX: usize = 32;
+/// Maximum bytes in one User-Agent substring rule.
+pub const HTTP_USER_AGENT_RULE_MAX_BYTES: usize = 256;
 
 /// Default User-Agent substitution value used by the conservative
 /// privacy profile.
@@ -74,6 +78,9 @@ pub struct PrivacyPolicy {
     pub strip_referer: bool,
     /// Strip `From` before forwarding.
     pub strip_from: bool,
+    /// Forward the caller's `Accept` header. Disabled by the
+    /// Proposal 170 `AllowAccept` control filter.
+    pub allow_accept: bool,
     /// Allowed CONNECT target ports (canonical HTTPS plus any
     /// additional explicit I2P destination ports configured for the
     /// tunnel). Empty set is rejected at validation; port 443 is
@@ -90,6 +97,7 @@ impl Default for PrivacyPolicy {
             user_agent: UserAgentPolicy::ReplaceStable,
             strip_referer: true,
             strip_from: true,
+            allow_accept: true,
             connect_allowed_ports: ports,
         }
     }
@@ -128,6 +136,9 @@ impl PrivacyPolicy {
 pub struct HttpClientOptions {
     /// Privacy/hop-by-hop rewrite policy.
     pub privacy: PrivacyPolicy,
+    /// Proposal 170 `AllowInternalSSL`: permits HTTPS CONNECT on the
+    /// conventional TLS port for I2P destinations. Disabled by default.
+    pub allow_internal_ssl: bool,
     /// Maximum I2P destination ports to advertise via the
     /// destination reference; used by the daemon to validate that
     /// the configured remote destination accepts the requested
@@ -201,6 +212,11 @@ mod tests {
         assert!(policy.allows_connect_port(443));
         assert!(!policy.allows_connect_port(80));
         assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn internal_ssl_is_disabled_by_default() {
+        assert!(!HttpClientOptions::defaults().allow_internal_ssl);
     }
 
     #[test]

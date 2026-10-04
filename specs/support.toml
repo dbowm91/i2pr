@@ -1799,6 +1799,24 @@ evidence = [
 advertised = false
 
 [[surface]]
+id = "prop170.destination-algorithm-policy"
+protocol = "i2pcontrol"
+structure = "typed-supported-destination-signing-and-leaseset-encryption-policy"
+scope = "experimental"
+status = "experimental"
+notes = "Plan 324 supersedes Plan 293's historical SigType rejection for the current generated algorithms only: canonical SigType 7 (EDDSA_SHA512_ED25519) and active LeaseSet2 EncType 4 (X25519) map to the typed Destination identity policy, persist in TunnelManager definitions, and are verified against generated/restored identity material. The separate legacy Destination public-encryption slot is not selected by EncType. All other values fail before allocation; Red25519 remains gated by blocked Plan 325. No algorithm breadth or protocol capability advertisement is implied."
+evidence = [
+    "crates/i2pr-service-tunnels/src/config.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "crates/i2pr-daemon/src/service_tunnels.rs",
+    "crates/i2pr-i2pcontrol/src/proposal_tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/tests/contract.rs",
+    "crates/i2pr-daemon/tests/i2pcontrol_tunnels.rs",
+    "plans/implementation/i2pcontrol-proposal-170/324-destination-signing-and-encryption-policy.md",
+]
+advertised = false
+
+[[surface]]
 id = "prop170.canonical-addressbook-and-resolver-integration"
 protocol = "i2pcontrol"
 structure = "proposal-170-addressbook-owner-with-resolver-and-getters"

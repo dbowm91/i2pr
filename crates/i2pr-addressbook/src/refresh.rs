@@ -44,6 +44,7 @@ pub enum RefreshOutcome {
 pub struct RefreshQueue {
     active: Option<SubscriptionSet>,
     pending: Option<SubscriptionSet>,
+    in_flight: bool,
     last_reason: Option<RefreshReason>,
 }
 
@@ -59,6 +60,7 @@ impl RefreshQueue {
     pub fn push(&mut self, set: SubscriptionSet, reason: RefreshReason) -> bool {
         if self.active.is_none() {
             self.active = Some(set);
+            self.in_flight = false;
             self.last_reason = Some(reason);
             true
         } else {
@@ -78,6 +80,7 @@ impl RefreshQueue {
     /// queue is idle and `None` is returned.
     pub fn finish_active(&mut self) -> Option<SubscriptionSet> {
         self.active = None;
+        self.in_flight = false;
         if let Some(next) = self.pending.take() {
             self.active = Some(next.clone());
             Some(next)
@@ -90,7 +93,11 @@ impl RefreshQueue {
     /// primitive; pair with [`Self::finish_active`] to promote the
     /// coalesced pending set afterwards).
     pub fn take_active(&mut self) -> Option<SubscriptionSet> {
-        self.active.take()
+        if self.in_flight {
+            return None;
+        }
+        self.in_flight = self.active.is_some();
+        self.active.clone()
     }
 
     /// Whether no fetch is active and none is pending.

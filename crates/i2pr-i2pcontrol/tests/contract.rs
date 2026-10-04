@@ -2,23 +2,27 @@
 //! typed literal failures, max/max+1 bounds, secret classification.
 
 use i2pr_i2pcontrol::{
-    ADDRESS_BOOK_FIELDS, AddressBookField, AuthErrorCode, BOOK_TYPES, BookType, CLIENT_SERVICES,
-    ClientService, ContractError, ContractInventory, JsonRpcErrorCode, JsonRpcRequest,
-    MAX_BATCH_ELEMENTS, MAX_DESTINATION_LEN, MAX_HOSTNAME_LEN, MAX_HTTP_BODY_BYTES,
+    ADDRESS_BOOK_FIELDS, AddressBookField, AuthErrorCode, BASE_ROUTER_INFO_FIELDS, BOOK_TYPES,
+    BookType, CLIENT_SERVICES, ClientService, ContractError, ContractInventory, JsonRpcErrorCode,
+    JsonRpcRequest, MAX_BATCH_ELEMENTS, MAX_DESTINATION_LEN, MAX_HOSTNAME_LEN, MAX_HTTP_BODY_BYTES,
     MAX_ID_STRING_LEN, MAX_INFLIGHT_REQUESTS, MAX_LIST_ITEMS, MAX_LIVE_TOKENS, MAX_MAP_ENTRIES,
     MAX_MAP_KEY_LEN, MAX_METHOD_NAME_LEN, MAX_OPTION_NAME_LEN, MAX_OPTION_VALUE_LEN,
     MAX_OPTIONS_PER_TUNNEL, MAX_PARAMS_KEYS, MAX_PASSWORD_LEN, MAX_PRESENTED_TOKEN_LEN,
     MAX_SELECTOR_LEN, MAX_STRING_LEN, MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS,
-    MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN, METHODS, Method, ROUTER_INFO_SELECTORS, RequestId,
-    ReturnType, RouterInfoSelector, SECRET_OPTIONS, SET_CONFIG_KEYS, TOKEN_BYTES,
+    MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN, METHODS, Method, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS,
+    PROPOSAL_ENCRYPT_LEASE_SET_VALUES, PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_INTEGER_RANGES,
+    PROPOSAL_TUNNEL_MANAGER_FIELDS, PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES, ROUTER_INFO_SELECTORS,
+    RequestId, ReturnType, RouterInfoSelector, SECRET_OPTIONS, SET_CONFIG_KEYS, TOKEN_BYTES,
     TOKEN_LIFETIME_SECS, TUNNEL_ACTIONS, TUNNEL_OPTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus,
-    TunnelType, auth, conformance, jsonrpc, limits, tunnel, tunnel_options,
+    TunnelType, auth, conformance, jsonrpc, limits, proposal_wire, tunnel, tunnel_options,
 };
 
 #[test]
 fn frozen_counts_match_plan_286() {
     assert_eq!(METHODS.len(), 5);
     assert_eq!(ROUTER_INFO_SELECTORS.len(), 30);
+    assert_eq!(PROPOSAL_ROUTER_INFO_FIELDS.len(), 43);
+    assert_eq!(BASE_ROUTER_INFO_FIELDS.len(), 14);
     assert_eq!(CLIENT_SERVICES.len(), 6);
     assert_eq!(BOOK_TYPES.len(), 4);
     assert_eq!(ADDRESS_BOOK_FIELDS.len(), 6);
@@ -35,6 +39,172 @@ fn frozen_counts_match_plan_286() {
     let first = inventory.to_canonical_json();
     let second = ContractInventory::current().to_canonical_json();
     assert_eq!(first, second);
+}
+
+#[test]
+fn proposal_170_wire_inventory_is_exact_and_unique() {
+    assert_eq!(PROPOSAL_ROUTER_INFO_FIELDS.len(), 43);
+    let mut keys = std::collections::BTreeSet::new();
+    for field in PROPOSAL_ROUTER_INFO_FIELDS {
+        assert!(
+            keys.insert(field.key),
+            "duplicate canonical key: {}",
+            field.key
+        );
+        assert!(proposal_wire::router_info_field(field.key).is_some());
+    }
+    for field in BASE_ROUTER_INFO_FIELDS {
+        assert!(
+            keys.insert(field.key),
+            "base selector overlaps proposal key: {}",
+            field.key
+        );
+        assert!(proposal_wire::router_info_field(field.key).is_some());
+    }
+    assert_eq!(
+        proposal_wire::router_info_field("i2p.router.version")
+            .unwrap()
+            .value_type,
+        proposal_wire::ProposalValueType::String
+    );
+    assert_eq!(
+        proposal_wire::router_info_field("i2p.router.netdb.isreseeding")
+            .unwrap()
+            .value_type,
+        proposal_wire::ProposalValueType::Boolean
+    );
+    assert_eq!(PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS.len(), 13);
+    assert_eq!(
+        PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS,
+        [
+            "subscriptions",
+            "update_delay",
+            "published_addressbook",
+            "router_addressbook",
+            "local_addressbook",
+            "private_addressbook",
+            "proxy_port",
+            "proxy_host",
+            "should_publish",
+            "etags",
+            "last_modified",
+            "log",
+            "theme",
+        ]
+    );
+    assert!(proposal_wire::router_info_field("router.version").is_none());
+    assert!(proposal_wire::router_info_field("I2P.router.news").is_none());
+    let tunnel_fields: std::collections::BTreeSet<_> =
+        PROPOSAL_TUNNEL_MANAGER_FIELDS.iter().copied().collect();
+    assert_eq!(tunnel_fields.len(), PROPOSAL_TUNNEL_MANAGER_FIELDS.len());
+    assert!(tunnel_fields.contains(&"Action"));
+    assert!(tunnel_fields.contains(&"All"));
+    assert!(tunnel_fields.contains(&"OptionalLookup"));
+    assert!(!tunnel_fields.contains(&"options"));
+    assert_eq!(PROPOSAL_ENCRYPT_LEASE_SET_VALUES.len(), 10);
+    assert_eq!(PROPOSAL_TUNNEL_INTEGER_RANGES.len(), 19);
+    assert_eq!(PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES.len(), 3);
+}
+
+#[test]
+fn proposal_tunnel_wire_types_ranges_and_compound_values_are_checked() {
+    for range in PROPOSAL_TUNNEL_INTEGER_RANGES
+        .iter()
+        .chain(PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES.iter())
+    {
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.minimum)
+            )
+            .is_ok(),
+            "{} minimum is inclusive",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.maximum)
+            )
+            .is_ok(),
+            "{} maximum is inclusive",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.minimum - 1)
+            )
+            .is_err(),
+            "{} rejects min-1",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.maximum + 1)
+            )
+            .is_err(),
+            "{} rejects max+1",
+            range.key
+        );
+    }
+    for value in PROPOSAL_ENCRYPT_LEASE_SET_VALUES {
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                "EncryptLeaseSet",
+                &serde_json::json!(value)
+            )
+            .is_ok()
+        );
+    }
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "EncryptLeaseSet",
+            &serde_json::json!("encrypted (unknown)")
+        )
+        .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("StartOnLoad", &serde_json::json!(true))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("StartOnLoad", &serde_json::json!(1))
+            .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("ConnectDelay", &serde_json::json!(false))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("NewDest", &serde_json::json!(2)).is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("NewDest", &serde_json::json!(3)).is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("JumpList", &serde_json::json!("true"))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("JumpList", &serde_json::json!(true))
+            .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "LeaseSetClientAuths",
+            &serde_json::json!([{"Name": "client", "Key": "secret"}])
+        )
+        .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "LeaseSetClientAuths",
+            &serde_json::json!([{"Name": 1, "Key": "secret"}])
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -249,7 +419,7 @@ fn address_book_books_fields_and_config_keys() {
         Err(ContractError::CaseMismatch)
     );
     assert_eq!(
-        i2pr_i2pcontrol::address_book::parse_set_config_key("PRIVATE_BOOK"),
+        i2pr_i2pcontrol::address_book::parse_set_config_key("PRIVATE_ADDRESSBOOK"),
         Err(ContractError::CaseMismatch)
     );
     assert_eq!(
@@ -258,7 +428,7 @@ fn address_book_books_fields_and_config_keys() {
     );
     // Path-like and inert classifications are disjoint and total on their rows.
     assert!(i2pr_i2pcontrol::address_book::is_path_like_config_key(
-        "private_book"
+        "private_addressbook"
     ));
     assert!(i2pr_i2pcontrol::address_book::is_inert_config_key("theme"));
     assert!(!i2pr_i2pcontrol::address_book::is_path_like_config_key(
@@ -670,44 +840,189 @@ fn plan288_source_matrix_mirrors_frozen_inventories() {
 }
 
 #[test]
+fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
+    use std::collections::BTreeSet;
+
+    use i2pr_i2pcontrol::{
+        PROPOSAL_ROUTER_INFO_FIELDS, SourceAvailability, proposal_router_info_source_matrix,
+    };
+
+    let rows = proposal_router_info_source_matrix();
+    assert_eq!(rows.len(), 43);
+    assert_eq!(
+        rows.iter().map(|row| row.key).collect::<Vec<_>>(),
+        PROPOSAL_ROUTER_INFO_FIELDS
+            .iter()
+            .map(|field| field.key)
+            .collect::<Vec<_>>()
+    );
+    let keys = rows.iter().map(|row| row.key).collect::<BTreeSet<_>>();
+    assert_eq!(keys.len(), 43, "canonical Proposal keys are unique");
+    for row in &rows {
+        assert!(!row.owner.is_empty(), "{} owner", row.key);
+        assert!(!row.snapshot.is_empty(), "{} snapshot", row.key);
+        assert!(!row.sensitivity.is_empty(), "{} sensitivity", row.key);
+        assert!(!row.freshness.is_empty(), "{} freshness", row.key);
+        assert!(row.max_bytes > 0, "{} byte ceiling", row.key);
+        match row.availability {
+            SourceAvailability::Unavailable { reason, .. } => {
+                assert_eq!(
+                    row.evidence_test,
+                    Some("proposal_unavailable_sources_fail_closed_over_wire"),
+                    "{} has a field-specific fail-closed wire test",
+                    row.key
+                );
+                assert!(!reason.is_empty(), "{} unavailable reason", row.key);
+            }
+            SourceAvailability::PublishedGated { .. }
+            | SourceAvailability::PermittedNeutral { .. }
+            | SourceAvailability::Available => {
+                assert!(row.evidence_test.is_some(), "{} source evidence", row.key);
+            }
+        }
+    }
+    assert!(matches!(
+        rows.iter()
+            .find(|row| row.key == "i2p.router.news")
+            .unwrap()
+            .availability,
+        SourceAvailability::PublishedGated {
+            owner_plan: "322",
+            ..
+        }
+    ));
+    for key in [
+        "i2p.router.net.total.received.bytes",
+        "i2p.router.net.total.sent.bytes",
+    ] {
+        assert!(matches!(
+            rows.iter().find(|row| row.key == key).unwrap().availability,
+            SourceAvailability::PublishedGated {
+                owner_plan: "322",
+                ..
+            }
+        ));
+    }
+    let gap_owner = |key: &str| {
+        rows.iter()
+            .find(|row| row.key == key)
+            .expect("canonical field")
+    };
+    assert_eq!(
+        gap_owner("i2p.router.net.total.transit.bytes").owner,
+        "controlled TransitBuildService qualification gate"
+    );
+    assert_eq!(
+        gap_owner("i2p.router.net.bw.transit.15s").owner,
+        "transit bandwidth sampler"
+    );
+    assert_eq!(
+        gap_owner("i2p.router.net.tunnels.shareratio").owner,
+        "transit participation metrics"
+    );
+    for key in [
+        "i2p.router.net.status.v6",
+        "i2p.router.net.error",
+        "i2p.router.net.error.v6",
+        "i2p.router.net.testing",
+        "i2p.router.net.testing.v6",
+    ] {
+        let row = gap_owner(key);
+        assert_ne!(row.owner, "Plan 322 source not implemented", "{key}");
+        assert!(matches!(
+            row.availability,
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                ..
+            }
+        ));
+    }
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
+            .count(),
+        8,
+        "unimplemented canonical fields remain explicit gaps"
+    );
+    let remaining_gaps: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
+        .map(|row| row.key)
+        .collect();
+    assert_eq!(
+        remaining_gaps,
+        [
+            "i2p.router.net.total.transit.bytes",
+            "i2p.router.net.bw.transit.15s",
+            "i2p.router.net.tunnels.shareratio",
+            "i2p.router.net.status.v6",
+            "i2p.router.net.error",
+            "i2p.router.net.error.v6",
+            "i2p.router.net.testing",
+            "i2p.router.net.testing.v6",
+        ]
+    );
+}
+
+#[test]
 fn plan289_tunnel_request_envelope_rules() {
     use i2pr_i2pcontrol::{TunnelAction, TunnelRequestError, TunnelType, decode_tunnel_request};
+
+    for (key, value) in [
+        ("ClientPerMinute", serde_json::json!(2)),
+        ("ClientPerHour", serde_json::json!(10)),
+        ("ClientPerDay", serde_json::json!(30)),
+        ("TotalInPerMinute", serde_json::json!(20)),
+        ("TotalInPerHour", serde_json::json!(100)),
+        ("TotalInPerDay", serde_json::json!(300)),
+    ] {
+        let mut input = serde_json::json!({
+            "Action": "create", "Name": "rate-server", "Type": "server",
+            "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        });
+        input.as_object_mut().unwrap().insert(key.to_owned(), value);
+        assert!(decode_tunnel_request(&params(input)).is_ok(), "{key}");
+    }
 
     fn params(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
         value.as_object().expect("object").clone()
     }
 
-    // get without name selects the whole inventory.
-    let request = decode_tunnel_request(&params(serde_json::json!({
-        "Token": "t", "action": "get",
-    })))
-    .expect("inventory get decodes");
-    assert_eq!(request.action, TunnelAction::Get);
-    assert_eq!(request.name, None);
+    // Canonical get requires a name; whole-inventory get is a nonstandard
+    // extension and is not accepted by this endpoint.
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Token": "t", "Action": "get",
+        }))),
+        Err(TunnelRequestError::MissingField("name"))
+    );
 
     // get with name selects one tunnel; type/options/new_name forbidden.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "Token": "t", "action": "get", "name": "alpha",
+        "Token": "t", "Action": "get", "Name": "alpha",
     })))
     .expect("named get decodes");
     assert_eq!(request.name.as_deref(), Some("alpha"));
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "name": "alpha", "type": "client",
+            "Action": "get", "Name": "alpha", "Type": "client",
         })))
         .is_err()
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "options": {},
+            "Action": "get", "Port": 8180,
         })))
         .is_err()
     );
 
     // create requires name + type; options validated against the universe.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "action": "create", "name": "alpha", "type": "httpclient",
-        "options": {"listen_port": 8180, "start_on_load": true},
+        "Action": "create", "Name": "alpha", "Type": "httpclient",
+        "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
+        "Profile": "interactive", "AllowUserAgent": true,
+        "AllowReferer": false, "AllowAccept": false, "AllowInternalSSL": true,
+        "ConnectDelay": true,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -720,16 +1035,127 @@ fn plan289_tunnel_request_envelope_rules() {
         request.options.get("start_on_load").map(String::as_str),
         Some("true")
     );
+    assert_eq!(
+        request.options.get("close_on_idle").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("close_time").map(String::as_str),
+        Some("30"),
+        "Proposal Close defaults to the pinned 30-minute idle deadline"
+    );
+    assert_eq!(
+        request.options.get("reduce_on_idle").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        request.options.get("profile").map(String::as_str),
+        Some("interactive")
+    );
+    assert_eq!(
+        request.options.get("allow_user_agent").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("allow_referer").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        request.options.get("allow_accept").map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        request
+            .options
+            .get("allow_internal_ssl")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("connect_delay").map(String::as_str),
+        Some("true")
+    );
+    let server_rates = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "rate-server", "Type": "server",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "ClientPerMinute": 2, "ClientPerHour": 10, "ClientPerDay": 30,
+        "TotalInPerMinute": 20, "TotalInPerHour": 100, "TotalInPerDay": 300,
+        "PostLimit": 300, "PostLimitTime": 600, "PerClientPeriod": 6,
+        "TotalPeriod": 20, "TotalBanTime": 1200, "FilterFilePath": "filters/deny.txt",
+    })))
+    .expect("Proposal server rates decode into typed owner keys");
+    for (key, expected) in [
+        ("client_per_minute", "2"),
+        ("client_per_hour", "10"),
+        ("client_per_day", "30"),
+        ("total_in_per_minute", "20"),
+        ("total_in_per_hour", "100"),
+        ("total_in_per_day", "300"),
+        ("post_limit", "300"),
+        ("post_limit_time", "600"),
+        ("per_client_period", "6"),
+        ("total_period", "20"),
+        ("total_ban_time", "1200"),
+    ] {
+        assert_eq!(
+            server_rates.options.get(key).map(String::as_str),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        server_rates
+            .options
+            .get("filter_file_path")
+            .map(String::as_str),
+        Some("filters/deny.txt")
+    );
+    let idle_options = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "idle-client", "Type": "client",
+        "TargetDestination": "example.b32.i2p", "Reduce": true,
+        "ReduceCount": 3, "ReduceTime": 12, "Close": true, "CloseTime": 45,
+    })))
+    .expect("explicit Proposal idle values decode");
+    assert_eq!(
+        idle_options.options.get("reduce_count").map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        idle_options.options.get("reduce_time").map(String::as_str),
+        Some("12")
+    );
+    assert_eq!(
+        idle_options.options.get("close_time").map(String::as_str),
+        Some("45")
+    );
+    let reduce_defaults = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "reduce-client", "Type": "client",
+        "TargetDestination": "example.b32.i2p", "Reduce": true,
+    })))
+    .expect("Proposal Reduce defaults decode");
+    assert_eq!(
+        reduce_defaults
+            .options
+            .get("reduce_count")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        reduce_defaults
+            .options
+            .get("reduce_time")
+            .map(String::as_str),
+        Some("20")
+    );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "alpha",
+            "Action": "create", "Name": "alpha",
         })))
         .is_err(),
         "create without type fails"
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "type": "client",
+            "Action": "create", "Type": "client",
         })))
         .is_err(),
         "create without name fails"
@@ -738,25 +1164,23 @@ fn plan289_tunnel_request_envelope_rules() {
     // Unknown option keys fail at the envelope; values are typed.
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"no_such_option": "x"},
+            "Action": "create", "Name": "a", "Type": "client",
+            "NoSuchOption": "x",
         }))),
-        Err(TunnelRequestError::BadOption(
-            i2pr_i2pcontrol::ContractError::UnknownLiteral
-        ))
+        Err(TunnelRequestError::UnknownKey("NoSuchOption".to_owned()))
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"listen_port": null},
+            "Action": "create", "Name": "a", "Type": "client",
+            "Port": null,
         })))
         .is_err(),
         "null option value fails"
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"listen_port": [1]},
+            "Action": "create", "Name": "a", "Type": "client",
+            "Port": [1],
         })))
         .is_err(),
         "array option value fails"
@@ -764,39 +1188,39 @@ fn plan289_tunnel_request_envelope_rules() {
 
     // edit: type immutable, rename via new_name, something must change.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "action": "edit", "name": "a", "new_name": "b",
+        "Action": "edit", "Name": "a", "NewName": "b",
     })))
     .expect("rename edit decodes");
     assert_eq!(request.new_name.as_deref(), Some("b"));
     assert_eq!(
-        decode_tunnel_request(&params(serde_json::json!({"action": "edit", "name": "a"}))),
+        decode_tunnel_request(&params(serde_json::json!({"Action": "edit", "Name": "a"}))),
         Err(TunnelRequestError::NothingToChange)
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "edit", "name": "a", "type": "server",
-            "options": {"target": "127.0.0.1:9"},
+            "Action": "edit", "Name": "a", "Type": "server",
+            "TargetHost": "127.0.0.1",
         })))
         .is_err(),
         "edit cannot change type"
     );
 
     // action spelling is exact and case-sensitive.
-    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "Get"}))).is_err());
-    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "launch"}))).is_err());
-    assert!(decode_tunnel_request(&params(serde_json::json!({"name": "a"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Action": "Get"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Action": "launch"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Name": "a"}))).is_err());
 
     // Lifecycle actions require exactly a name.
     for action in ["delete", "start", "stop", "restart"] {
         let request = decode_tunnel_request(&params(serde_json::json!({
-            "action": action, "name": "a",
+            "Action": action, "Name": "a",
         })))
         .expect("lifecycle decodes");
         assert_eq!(request.name.as_deref(), Some("a"));
-        assert!(decode_tunnel_request(&params(serde_json::json!({"action": action}))).is_err());
+        assert!(decode_tunnel_request(&params(serde_json::json!({"Action": action}))).is_err());
         assert!(
             decode_tunnel_request(&params(serde_json::json!({
-                "action": action, "name": "a", "options": {},
+                "Action": action, "Name": "a", "Port": 1,
             })))
             .is_err(),
             "{action} forbids options"
@@ -806,7 +1230,7 @@ fn plan289_tunnel_request_envelope_rules() {
     // Closed envelope: unknown top-level keys fail.
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "verbose": true,
+            "Action": "get", "verbose": true,
         })))
         .is_err(),
         "unknown keys fail"
@@ -815,19 +1239,280 @@ fn plan289_tunnel_request_envelope_rules() {
     // Names are validated; over-ceiling option maps fail.
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "delete", "name": "a/b",
+            "Action": "delete", "Name": "a/b",
         })))
         .is_err(),
         "path separators fail"
     );
-    let mut oversized = serde_json::Map::new();
-    for n in 0..65 {
-        oversized.insert(format!("k{n}"), serde_json::json!("v"));
+    // The prior lowercase/nested-options extension is deliberately not
+    // accepted in the canonical namespace.
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client",
+        })))
+        .is_err()
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "client",
+            "options": {"Port": 1},
+        }))),
+        Err(TunnelRequestError::UnknownKey("options".to_owned()))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "client",
+            "Host": "127.0.0.1", "TargetHost": "127.0.0.1",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias("TargetHost".to_owned()))
+    );
+    let all = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "stop", "All": true,
+    })))
+    .expect("All is a canonical stop parameter");
+    assert!(all.all);
+    assert_eq!(all.name, None);
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "stop", "All": true, "Name": "a",
+        }))),
+        Err(TunnelRequestError::UnexpectedField("name"))
+    );
+    let description = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "Description": "valid Proposal field",
+    })))
+    .expect("Description has a typed control-plane metadata owner");
+    assert_eq!(
+        description.options.get("description").map(String::as_str),
+        Some("valid Proposal field")
+    );
+    let spoofed_host = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "web", "Type": "httpserver",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "SpoofedHost": "public.example.i2p", "BlockReferers": false,
+    })))
+    .expect("SpoofedHost has a typed HTTP server owner");
+    assert_eq!(
+        spoofed_host.options.get("spoofed_host").map(String::as_str),
+        Some("public.example.i2p")
+    );
+    assert_eq!(
+        spoofed_host
+            .options
+            .get("block_referers")
+            .map(String::as_str),
+        Some("false")
+    );
+    let user_agent_policy = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "web", "Type": "httpserver",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "BlockUserAgents": true, "UserAgents": "crawler, none", "BlockAccessInProxies": true,
+    })))
+    .expect("User-Agent filters have typed HTTP server owners");
+    assert_eq!(
+        user_agent_policy
+            .options
+            .get("block_user_agents")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        user_agent_policy
+            .options
+            .get("user_agents")
+            .map(String::as_str),
+        Some("crawler, none")
+    );
+    assert_eq!(
+        user_agent_policy
+            .options
+            .get("block_access_in_proxies")
+            .map(String::as_str),
+        Some("true")
+    );
+    let website_hostname = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "web", "Type": "httpserver",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "WebsiteHostname": "public.example.i2p",
+    })))
+    .expect("WebsiteHostname is the Proposal alias for SpoofedHost");
+    assert_eq!(
+        website_hostname.options.get("spoofed_host"),
+        spoofed_host.options.get("spoofed_host")
+    );
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "web", "Type": "httpserver",
+            "TargetHost": "127.0.0.1", "TargetPort": 8080,
+            "WebsiteHostname": "public.example.i2p", "SpoofedHost": "other.example.i2p",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias(alias)) if alias == "WebsiteHostname"
+    ));
+    let max_concurrent = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "MaxConcurrentConns": 24,
+    })))
+    .expect("MaxConcurrentConns has a bounded service admission owner");
+    assert_eq!(
+        max_concurrent
+            .options
+            .get("max_streams")
+            .map(String::as_str),
+        Some("24")
+    );
+    let proxy_auth = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "socks",
+        "ProxyAuth": true,
+    })))
+    .expect("ProxyAuth has a typed proxy credential owner");
+    assert_eq!(
+        proxy_auth.options.get("proxy_auth").map(String::as_str),
+        Some("true")
+    );
+    let delay_open = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "lazy-client", "Type": "client",
+        "Port": 4444, "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+        "DelayOpen": true,
+    })))
+    .expect("DelayOpen is a typed Proposal client-management option");
+    assert_eq!(
+        delay_open.options.get("delay_open").map(String::as_str),
+        Some("true")
+    );
+    let crypto_policy = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "crypto-client", "Type": "client",
+        "Port": 4445, "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+        "SigType": "EDDSA_SHA512_ED25519", "EncType": "4",
+    })))
+    .expect("current destination algorithms have typed owners");
+    assert_eq!(
+        crypto_policy.options.get("sig_type").map(String::as_str),
+        Some("EDDSA_SHA512_ED25519")
+    );
+    assert_eq!(
+        crypto_policy.options.get("enc_type").map(String::as_str),
+        Some("4")
+    );
+    let multihoming = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "MultiHoming": false,
+    })))
+    .expect("MultiHoming has an explicit capitalization adapter");
+    assert_eq!(
+        multihoming.options.get("multihoming").map(String::as_str),
+        Some("false")
+    );
+    let access_mode = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "AccessOption": "deny", "AccessList": "a{}.b32.i2p",
+    })))
+    .expect("AccessOption is a typed Proposal mode");
+    assert_eq!(
+        access_mode.options.get("access_option").map(String::as_str),
+        Some("deny")
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "AccessOption": "arbitrary",
+        }))),
+        Err(TunnelRequestError::BadValue("AccessOption".to_owned()))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "MaxConcurrentConns": "24",
+        }))),
+        Err(TunnelRequestError::BadValue(
+            "MaxConcurrentConns".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "Description": "x".repeat(4097),
+        }))),
+        Err(TunnelRequestError::ValueOverBound("Description".to_owned()))
+    );
+    let jump_list = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "httpserver",
+        "JumpList": "false",
+    })))
+    .expect("canonical JumpList reaches the existing HTTP server owner");
+    assert_eq!(
+        jump_list.options.get("jump_list").map(String::as_str),
+        Some("false")
+    );
+    for (mode, expected) in [(0_u64, "0"), (1, "1"), (2, "2")] {
+        let request = decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "httpclient",
+            "NewDest": mode,
+        })))
+        .expect("supported NewDest mode decodes");
+        assert_eq!(
+            request.options.get("new_dest").map(String::as_str),
+            Some(expected)
+        );
     }
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client", "options": oversized,
+            "Action": "create", "Name": "a", "Type": "server",
+            "CustomOptions": "TargetHost=attacker.invalid",
         }))),
-        Err(TunnelRequestError::TooManyOptions)
+        Err(TunnelRequestError::RejectedOption(
+            "CustomOptions".to_owned()
+        )),
+        "arbitrary CustomOptions are explicitly rejected without a typed allowlist"
+    );
+    let key_file = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "PrivKeyFile": "operator-key",
+    })))
+    .expect("logical key reference decodes");
+    assert_eq!(
+        key_file.options.get("priv_key_file").map(String::as_str),
+        Some("operator-key")
+    );
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "PrivKeyFile": "../escape",
+        }))),
+        Err(TunnelRequestError::BadValue(_))
+    ));
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "JumpList": false,
+        }))),
+        Err(TunnelRequestError::BadValue("JumpList".to_owned()))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "encrypted (psk)",
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "EncryptLeaseSet".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "LeaseSetClientAuths": [{"Name": "client", "Key": "secret"}],
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "LeaseSetClientAuths".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "WebsiteHostname": "site.i2p", "SpoofedHost": "alias.i2p",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias(
+            "WebsiteHostname".to_owned()
+        ))
     );
 }

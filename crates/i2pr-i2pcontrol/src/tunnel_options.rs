@@ -1,4 +1,4 @@
-//! Exact Proposal tunnel-option inventory with value types, secret
+//! Existing typed tunnel-option subset with value types, secret
 //! sensitivity, and family applicability metadata.
 //!
 //! Every option carries an explicit [`OptionSensitivity`]: there is no
@@ -63,7 +63,9 @@ pub const MASK_STREAMR: u16 = (1 << 10) | (1 << 11);
 pub const MASK_PROXY_AUTH: u16 = (1 << 2) | (1 << 3) | (1 << 6) | (1 << 7);
 pub const MASK_PUBLISHING: u16 = (1 << 1) | (1 << 8) | (1 << 9) | (1 << 11);
 
-/// Exact frozen option inventory: 46 rows.
+/// Existing typed option subset: 46 rows. This is not the full Proposal
+/// 170 TunnelManager vocabulary; canonical wire names are inventoried in
+/// [`crate::proposal_wire::PROPOSAL_TUNNEL_MANAGER_FIELDS`].
 pub const TUNNEL_OPTIONS: [TunnelOption; 46] = [
     TunnelOption {
         name: "target_host",

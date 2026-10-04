@@ -95,6 +95,16 @@ fn streamr_server_spec(id: &str, media_source: SocketAddr) -> ServiceTunnelSpec 
     }
 }
 
+fn streamr_server_spec_with_rates(
+    id: &str,
+    media_source: SocketAddr,
+    rates: i2pr_service_tunnels::ServerConnectionRateLimits,
+) -> ServiceTunnelSpec {
+    let mut spec = streamr_server_spec(id, media_source);
+    spec.access.connection_rates = rates;
+    spec
+}
+
 fn streamr_client_spec(
     id: &str,
     producer_b64: String,
@@ -289,6 +299,71 @@ async fn streamr_multi_subscriber_fanout() {
         .expect("second subscriber receives");
     assert_eq!(first, media);
     assert_eq!(second, media);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn streamr_publisher_admission_rate_limits_new_subscribers() {
+    let directory = temp_data_dir("streamr-rate-limit");
+    let server_port = free_port();
+    let first_target = free_port();
+    let second_target = free_port();
+    let server_udp: SocketAddr = format!("127.0.0.1:{server_port}").parse().expect("addr");
+    let probe = build_manager(
+        directory.path(),
+        vec![streamr_server_spec("alpha-pub", server_udp)],
+    );
+    probe.prepare().await.expect("probe prepare");
+    let server_b64 = probe
+        .service_destination_b64("alpha-pub")
+        .expect("server b64");
+    drop(probe);
+    let manager = build_manager(
+        directory.path(),
+        vec![
+            streamr_server_spec_with_rates(
+                "alpha-pub",
+                server_udp,
+                i2pr_service_tunnels::ServerConnectionRateLimits {
+                    total_per_minute: 1,
+                    ..Default::default()
+                },
+            ),
+            streamr_client_spec(
+                "sub-one",
+                server_b64.clone(),
+                format!("127.0.0.1:{first_target}").parse().expect("addr"),
+            ),
+            streamr_client_spec(
+                "sub-two",
+                server_b64,
+                format!("127.0.0.1:{second_target}").parse().expect("addr"),
+            ),
+        ],
+    );
+    let first_player = UdpSocket::bind(format!("127.0.0.1:{first_target}"))
+        .await
+        .expect("first player binds");
+    let second_player = UdpSocket::bind(format!("127.0.0.1:{second_target}"))
+        .await
+        .expect("second player binds");
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let source = UdpSocket::bind("127.0.0.1:0").await.expect("source binds");
+    let media = media_bytes(256);
+    source
+        .send_to(&media, server_udp)
+        .await
+        .expect("media sends");
+    let (first, second) = tokio::join!(
+        recv_media(&first_player, Duration::from_secs(2)),
+        recv_media(&second_player, Duration::from_secs(2)),
+    );
+    assert_ne!(
+        first.is_some(),
+        second.is_some(),
+        "one new peer is admitted"
+    );
+    assert_eq!(first.or(second), Some(media));
 }
 
 #[tokio::test(flavor = "current_thread")]

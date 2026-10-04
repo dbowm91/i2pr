@@ -148,3 +148,14 @@ Proposal before any final support claim:
    `proxy_host`, `should_publish`, `theme`). Recorded for the
    Plan 294 implementation (which builds against the frozen
    inventory) and Plan 295 adjudication.
+
+## Current override — Plan 324
+
+Plan 293's SigType disposition is historical. Plan 324 supplies an explicit
+typed Destination crypto policy: SigType 7 EdDSA-SHA512/Ed25519 and active
+LeaseSet2 EncType 4 X25519 are accepted and checked against generated or
+restored destination material. Other algorithms remain rejected before
+allocation. The legacy Destination encryption slot remains a distinct
+compatibility structure and is not selected by EncType. Red25519 type 11 is
+still gated by Plan 325. The LeaseSet security and outproxy determinations
+remain unchanged.

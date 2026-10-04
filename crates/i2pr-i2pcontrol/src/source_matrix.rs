@@ -1,5 +1,7 @@
-//! Plan 288 machine-readable source matrix: one row per exact Proposal 170
-//! RouterInfo selector (30) and ClientServicesInfo service (6).
+//! Plan 288 machine-readable legacy-source matrix: one row per normalized
+//! RouterInfo selector (30) and ClientServicesInfo service (6). Plan 322's
+//! canonical Proposal additions are inventoried separately by
+//! [`proposal_router_info_source_matrix`].
 //!
 //! Each row records the wire key, return type, authoritative owner
 //! subsystem, snapshot method, cardinality/encoded-byte ceiling,
@@ -35,6 +37,7 @@
 //! recorded here.
 
 use crate::client_services::{CLIENT_SERVICES, ClientService};
+use crate::proposal_wire::{PROPOSAL_ROUTER_INFO_FIELDS, ProposalValueType};
 use crate::router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
 
 /// Availability state of one matrix row.
@@ -97,6 +100,400 @@ pub struct SourceRow {
     pub availability: SourceAvailability,
     /// Fixture/test identifier proving the row.
     pub test_id: &'static str,
+}
+
+/// Source and availability status for one canonical Proposal 170
+/// RouterInfo addition. `evidence_test` is absent until a source-specific
+/// positive or fail-closed test proves the row; missing evidence is
+/// represented rather than replaced with an inventory-only check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProposalSourceRow {
+    /// Exact canonical Proposal key.
+    pub key: &'static str,
+    /// Proposal-declared JSON type.
+    pub value_type: ProposalValueType,
+    /// Authoritative subsystem or explicit pending owner.
+    pub owner: &'static str,
+    /// Bounded snapshot/read method.
+    pub snapshot: &'static str,
+    /// Maximum collection cardinality (zero for scalar values).
+    pub max_items: usize,
+    /// Maximum encoded bytes for the individual value.
+    pub max_bytes: usize,
+    /// Sensitivity and redaction rule.
+    pub sensitivity: &'static str,
+    /// Freshness semantics.
+    pub freshness: &'static str,
+    /// Current source availability.
+    pub availability: SourceAvailability,
+    /// Test proving this source row, when implemented.
+    pub evidence_test: Option<&'static str>,
+}
+
+/// Current source authority for all 43 canonical RouterInfo additions.
+/// This is generated in Proposal order so inventory and source coverage
+/// cannot silently drift apart. Unavailable rows carry evidence for their
+/// typed fail-closed response, not for a fabricated value source.
+pub fn proposal_router_info_source_matrix() -> Vec<ProposalSourceRow> {
+    PROPOSAL_ROUTER_INFO_FIELDS
+        .iter()
+        .map(|field| proposal_source_row(field.key, field.value_type))
+        .collect()
+}
+
+fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> ProposalSourceRow {
+    let list = matches!(
+        value_type,
+        ProposalValueType::StringList
+            | ProposalValueType::ObjectList
+            | ProposalValueType::NestedObject
+    );
+    let (
+        owner,
+        snapshot,
+        max_items,
+        max_bytes,
+        sensitivity,
+        freshness,
+        availability,
+        evidence_test,
+    ) = match key {
+        "i2p.router.id" => (
+            "bootstrap identity",
+            "published RouterHash snapshot",
+            0,
+            64,
+            "public router hash",
+            "published at bootstrap",
+            SourceAvailability::PermittedNeutral {
+                reason: "Proposal permits null before identity publication",
+            },
+            Some("router_info_hash_gated_then_published_over_wire"),
+        ),
+        "i2p.router.clockskew" => (
+            "clock-skew observer",
+            "no peer-skew sample is currently collected",
+            0,
+            8,
+            "public aggregate",
+            "null until an observation exists",
+            SourceAvailability::PermittedNeutral {
+                reason: "Proposal permits null when no peer-skew sample exists",
+            },
+            Some("router_info_proposal_selection_over_wire"),
+        ),
+        "i2p.router.info" => (
+            "bootstrap local RouterInfo publisher",
+            "canonical bounded serialized local RouterInfo published after bootstrap",
+            0,
+            1_048_576,
+            "public router information",
+            "latest bootstrap local RouterInfo snapshot",
+            SourceAvailability::PublishedGated {
+                owner: "bootstrap local RouterInfo publisher",
+                owner_plan: "322",
+            },
+            Some("proposal_local_router_info_is_bounded_and_publish_gated"),
+        ),
+        "i2p.router.news" => (
+            "daemon signed NEWS manager",
+            "bounded verified SU3 Atom snapshot with validators and last-known-good fallback",
+            0,
+            524_288,
+            "public authenticated router news",
+            "last verified feed; refresh status and staleness tracked separately",
+            SourceAvailability::PublishedGated {
+                owner: "signed NEWS cache",
+                owner_plan: "322",
+            },
+            Some("authenticated_news_verifies_before_parse_and_survives_304_restart"),
+        ),
+        "i2p.router.logs" => (
+            "daemon LogRing",
+            "bounded redacted ring snapshot",
+            256,
+            65_536,
+            "messages redacted before retention",
+            "snapshot at request time",
+            SourceAvailability::Available,
+            Some("authenticated_router_info_logs_clear_clears_ring_and_returns_success"),
+        ),
+        "i2p.router.logs.clear" => (
+            "daemon LogRing",
+            "authenticated atomic ring clear",
+            0,
+            16,
+            "mutation; no log content returned",
+            "immediate at request time",
+            SourceAvailability::Available,
+            Some("authenticated_router_info_logs_clear_clears_ring_and_returns_success"),
+        ),
+        "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes" => (
+            "SSU2 runtime counters",
+            "ControlMetrics cumulative I2NP byte totals",
+            0,
+            20,
+            "aggregate transport counters",
+            "latest registered SSU2 sample; excludes uncovered transports",
+            SourceAvailability::PublishedGated {
+                owner: "SSU2 cumulative byte counters",
+                owner_plan: "322",
+            },
+            Some("canonical_transport_totals_are_served_from_published_metrics"),
+        ),
+        "i2p.router.netdb.peers" | "i2p.router.netdb.peers.list" => (
+            "NetDB inspection snapshot",
+            "bounded known-peer hash snapshot",
+            1024,
+            65_536,
+            "public router hashes",
+            "latest published NetDB snapshot",
+            SourceAvailability::Available,
+            Some("differential_corpus_against_production_composition"),
+        ),
+        "i2p.router.netdb.ntcp.limit" | "i2p.router.netdb.ssu.limit" => (
+            "validated transport runtime configuration",
+            "configured NTCP2 active-link or SSU2 active-session admission ceiling",
+            0,
+            20,
+            "public local resource ceiling; does not imply enabled or advertised support",
+            "fixed by validated daemon configuration at startup",
+            SourceAvailability::Available,
+            Some("router_info_transport_limits_follow_validated_config_over_wire"),
+        ),
+        "i2p.router.net.total.transit.bytes" => (
+            "controlled TransitBuildService qualification gate",
+            "no production transit-byte counter is installed; qualification counters are not a production source",
+            0,
+            20,
+            "aggregate transit volume",
+            "unavailable outside the explicitly controlled transit lane",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "the transit service is not installed in production composition",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.net.bw.transit.15s" => (
+            "transit bandwidth sampler",
+            "no production rolling 15-second transit-byte window exists",
+            0,
+            20,
+            "aggregate transit bandwidth",
+            "unavailable until a bounded production transit sampler exists",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no production transit bandwidth window is maintained",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.net.tunnels.shareratio" => (
+            "transit participation metrics",
+            "no production transit volume and tunnel-share numerator/denominator are maintained",
+            0,
+            8,
+            "aggregate participation ratio",
+            "unavailable until the router owns production transit metrics",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no authoritative transit share-ratio inputs are maintained",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.net.status.v6" => (
+            "IPv6 transport lifecycle",
+            "no production IPv6 transport session or reachability snapshot exists",
+            0,
+            20,
+            "public local connectivity state",
+            "unavailable until an IPv6 transport owner publishes status",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no production IPv6 transport status owner is installed",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.net.error" | "i2p.router.net.error.v6" => (
+            "transport failure observer",
+            "no stable IPv4/IPv6 connectivity error-code snapshot exists",
+            0,
+            20,
+            "public local connectivity diagnostic",
+            "unavailable until transport owners publish typed status codes",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no authoritative transport error-code source is maintained",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.net.testing" | "i2p.router.net.testing.v6" => (
+            "peer reachability-test owner",
+            "no production IPv4/IPv6 peer-testing result snapshot exists",
+            0,
+            20,
+            "public local reachability state",
+            "unavailable until the corresponding peer-testing owner publishes a result",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no authoritative peer-testing result is maintained",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+        "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.peers.info" => (
+            "NetDB inspection snapshot",
+            "empty serialized list follows an attested empty peer-hash set; nonempty peer sets require serialized RouterInfo data",
+            1024,
+            65_536,
+            "public router information",
+            "latest peer snapshot; fails closed when peers exist without serialized data",
+            SourceAvailability::PublishedGated {
+                owner: "serialized RouterInfo snapshot for known peers",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_router_info_lists_require_empty_attested_peer_sets"),
+        ),
+        "i2p.router.netdb.activepeers.stats" => (
+            "NetDB inspection snapshot",
+            "empty stats list follows an attested empty active-peer set; nonempty peers require the stats detail owner",
+            1024,
+            65_536,
+            "public peer statistics",
+            "latest active-peer snapshot; fails closed when peers exist without stats",
+            SourceAvailability::PublishedGated {
+                owner: "active-peer stats detail snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_peer_stats_and_bans_require_attested_empty_sources"),
+        ),
+        "i2p.router.netdb.bannedpeers" => (
+            "Plan 295 ban ledger",
+            "empty details map follows an attested empty ban set; populated hashes require reason and expiry details",
+            1024,
+            65_536,
+            "peer identifiers and ban reasons",
+            "latest attested ban set; fails closed when detail is absent",
+            SourceAvailability::PublishedGated {
+                owner: "ban reason and expiry detail snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_peer_stats_and_bans_require_attested_empty_sources"),
+        ),
+        "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate" => (
+            "ControlMetrics tunnel-build outcomes",
+            "latest interval ratio / cumulative ratio; unavailable until attempted > 0",
+            0,
+            24,
+            "public aggregate ratio",
+            "cumulative at request time",
+            SourceAvailability::PublishedGated {
+                owner: "ControlMetrics tunnel-build outcomes",
+                owner_plan: "322",
+            },
+            Some("proposal_success_rates_require_attempts_and_read_metrics"),
+        ),
+        "i2p.router.net.tunnels.queue" => (
+            "Plan 295 tunnel build-queue snapshot",
+            "attested scalar build queue depth",
+            0,
+            20,
+            "public aggregate queue depth",
+            "attested at composition and read at request time",
+            SourceAvailability::Available,
+            Some("proposal_tunnel_queue_depth_uses_attested_snapshot"),
+        ),
+        "i2p.router.net.tunnels.tbmqueue" => (
+            "Tunnel Build Message queue owner",
+            "independent bounded queue-depth snapshot (zero in the composed graph without a tunnel-build coordinator)",
+            0,
+            20,
+            "public aggregate queue depth",
+            "latest attested queue depth",
+            SourceAvailability::Available,
+            Some("proposal_tbm_queue_depth_uses_independent_attested_snapshot"),
+        ),
+        "i2p.router.net.tunnels.exploratory.inbound"
+        | "i2p.router.net.tunnels.exploratory.outbound"
+        | "i2p.router.net.tunnels.exploratory.info.list"
+        | "i2p.router.net.tunnels.client.inbound"
+        | "i2p.router.net.tunnels.client.outbound"
+        | "i2p.router.net.tunnels.client.info.list"
+        | "i2p.router.net.tunnels.participating.info" => (
+            "Plan 295 tunnel-count snapshot",
+            "zero aggregate projects zero directional count or empty details; nonzero requires a missing detail snapshot",
+            if list { 1024 } else { 0 },
+            if list { 65_536 } else { 20 },
+            "public tunnel counts or local tunnel detail",
+            "attested aggregate at composition; fail closed if nonzero",
+            SourceAvailability::PublishedGated {
+                owner: "per-direction and per-tunnel inspection snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_tunnel_projection_requires_zero_aggregate"),
+        ),
+        "i2p.router.netdb.activepeers.list" => (
+            "NetDB inspection snapshot",
+            "bounded active-peer hash snapshot",
+            1024,
+            65_536,
+            "public router hashes",
+            "latest published NetDB snapshot",
+            SourceAvailability::Available,
+            Some("differential_corpus_against_production_composition"),
+        ),
+        "i2p.router.net.tunnels.i2ptunnel" => (
+            "service tunnel inventory",
+            "startup definitions plus live manager overlay",
+            64,
+            65_536,
+            "local service names, kinds, loopback binds, and lifecycle state",
+            "point-in-time inventory snapshot",
+            SourceAvailability::Available,
+            Some("proposal_i2ptunnel_summaries_are_bounded_and_canonical"),
+        ),
+        "i2p.router.addressbook.private.list"
+        | "i2p.router.addressbook.local.list"
+        | "i2p.router.addressbook.router.list"
+        | "i2p.router.addressbook.published.list"
+        | "i2p.router.addressbook.subscriptions"
+        | "i2p.router.addressbook.config" => (
+            "Plan 321 AddressBookManager",
+            "committed generation snapshot",
+            1024,
+            4_500_000,
+            "private/local names and destinations; bounded serialized values",
+            "one committed AddressBook generation",
+            SourceAvailability::PublishedGated {
+                owner: "active AddressBookManager",
+                owner_plan: "321",
+            },
+            Some("plan294_addressbook_method_drives_the_canonical_owner"),
+        ),
+        _ => (
+            "Plan 322 source not implemented",
+            "no authoritative bounded snapshot is wired",
+            if list { 1024 } else { 0 },
+            if list { 1_048_576 } else { 128 },
+            "not available until a truthful owner is established",
+            "unavailable",
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                reason: "no authoritative source is wired; zero/empty would be fabricated",
+            },
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
+        ),
+    };
+    ProposalSourceRow {
+        key,
+        value_type,
+        owner,
+        snapshot,
+        max_items,
+        max_bytes,
+        sensitivity,
+        freshness,
+        availability,
+        evidence_test,
+    }
 }
 
 /// Exact RouterInfo source matrix in canonical selector order (30 rows).

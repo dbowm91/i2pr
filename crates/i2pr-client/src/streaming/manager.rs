@@ -49,7 +49,7 @@ use i2pr_proto::streaming::{
     StreamingOptionDecodeContext, StreamingOptions, StreamingPacket, StreamingPacketBuilder,
     StreamingPacketError, StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage,
     decode_client_payload, decode_streaming_packet, encode_client_payload, encode_streaming_packet,
-    encode_syn_replay_binding, install_packet_signature, peek_streaming_header,
+    encode_syn_replay_binding, install_packet_signature_at, peek_streaming_header,
     validate_initial_syn, validate_syn_response,
 };
 use i2pr_proto::{CodecError, SignatureValue};
@@ -222,6 +222,8 @@ pub enum StreamingManagerError {
         /// Wire destination port of the rejected delivery.
         actual_destination: u16,
     },
+    #[error("initial SYN payload {actual} exceeds advertised receive ceiling {maximum}")]
+    InitialSynPayloadTooLarge { actual: usize, maximum: usize },
     #[error("streaming: {0}")]
     Streaming(#[from] StreamingError),
     #[error("streaming codec: {0}")]
@@ -315,6 +317,9 @@ pub struct StreamingManager {
     /// piggybacked views sent with `NO_ACK`) so the peer's send
     /// window fills and memory stays bounded at every layer.
     pending_bytes_by_connection: BTreeMap<ConnectionId, usize>,
+    /// Initial application bytes carried by inbound SYNs, retained until
+    /// the application accepts the pending connection.
+    pending_syn_payloads: BTreeMap<ConnectionId, Vec<u8>>,
 }
 
 impl StreamingManager {
@@ -335,6 +340,7 @@ impl StreamingManager {
             next_inbound_stream_id: 0x8000_0000,
             pending_delivered: VecDeque::new(),
             pending_bytes_by_connection: BTreeMap::new(),
+            pending_syn_payloads: BTreeMap::new(),
         }
     }
 
@@ -378,8 +384,42 @@ impl StreamingManager {
         now_ms: u64,
         _rng: &mut R,
     ) -> Result<ConnectOutcome, StreamingManagerError> {
+        self.connect_with_initial_payload(
+            local_dest,
+            remote,
+            local_port,
+            remote_port,
+            advertised_max_payload,
+            &[],
+            now_ms,
+            _rng,
+        )
+    }
+
+    /// Initiates an outbound connection with bounded application data in
+    /// the originator SYN. This supports the Streaming connect-delay mode,
+    /// where initial writes are bundled into the first packet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_initial_payload<R: CryptoRngStub + ?Sized>(
+        &mut self,
+        local_dest: &DestinationIdentity,
+        remote: &RemoteDestination,
+        local_port: u16,
+        remote_port: u16,
+        advertised_max_payload: u16,
+        initial_payload: &[u8],
+        now_ms: u64,
+        _rng: &mut R,
+    ) -> Result<ConnectOutcome, StreamingManagerError> {
         if self.connections.len() >= self.config.max_streams_per_destination as usize {
             return Ok(ConnectOutcome::ConnectionTableFull);
+        }
+        let maximum = usize::from(advertised_max_payload);
+        if initial_payload.len() > maximum {
+            return Ok(ConnectOutcome::PayloadTooLarge {
+                actual: initial_payload.len(),
+                maximum,
+            });
         }
 
         let connection_id = ConnectionId::new(self.next_connection_id);
@@ -394,6 +434,7 @@ impl StreamingManager {
             local_port,
             remote_port,
             advertised_max_payload,
+            initial_payload,
         )?;
 
         let mut conn = StreamingConnection::new_outbound(
@@ -456,6 +497,7 @@ impl StreamingManager {
         nacks: Vec<u32>,
         local_port: u16,
         remote_port: u16,
+        payload: &[u8],
     ) -> Result<TransportSendRequest, StreamingManagerError> {
         let flags = StreamingFlags::new(flags_bits)?;
         let signature_length = local_dest
@@ -464,6 +506,18 @@ impl StreamingManager {
             .signature_len()
             .ok_or(StreamingPacketError::SignatureContextUnavailable)?;
         let option_bytes = options.encode_with_placeholder(flags, signature_length)?;
+        let nack_bytes = nacks
+            .len()
+            .checked_mul(4)
+            .ok_or(StreamingPacketError::ArithmeticOverflow)?;
+        let signature_offset_in_options = option_bytes
+            .len()
+            .checked_sub(signature_length)
+            .ok_or(StreamingPacketError::SignatureMissing)?;
+        let signature_offset = i2pr_proto::streaming::MIN_STREAMING_HEADER_BYTES
+            .checked_add(nack_bytes)
+            .and_then(|offset| offset.checked_add(signature_offset_in_options))
+            .ok_or(StreamingPacketError::ArithmeticOverflow)?;
         let builder = StreamingPacketBuilder {
             send_stream_id,
             receive_stream_id,
@@ -473,13 +527,20 @@ impl StreamingManager {
             resend_delay: 0,
             flags,
             option_bytes,
-            payload: Vec::new(),
+            payload: payload.to_vec(),
         };
         let mut wire_bytes = encode_streaming_packet(&builder, StreamingSendLimit::default())?;
         // `wire_bytes` still carries the zeroed placeholder, so it is
         // exactly the canonical preimage.
         let signature = local_dest.sign(&wire_bytes)?;
-        install_packet_signature(&mut wire_bytes, signature.as_bytes())?;
+        install_packet_signature_at(
+            &mut wire_bytes,
+            SignatureLocation {
+                offset: signature_offset,
+                length: signature_length,
+            },
+            signature.as_bytes(),
+        )?;
 
         let envelope = ClientPayload {
             protocol: i2pr_proto::streaming::STREAMING_PROTOCOL_NUMBER,
@@ -516,6 +577,7 @@ impl StreamingManager {
         local_port: u16,
         remote_port: u16,
         advertised_max_payload: u16,
+        initial_payload: &[u8],
     ) -> Result<TransportSendRequest, StreamingManagerError> {
         let options = StreamingOptions {
             delay_requested: None,
@@ -536,6 +598,7 @@ impl StreamingManager {
             nack_binding,
             local_port,
             remote_port,
+            initial_payload,
         )
     }
 
@@ -576,6 +639,7 @@ impl StreamingManager {
             nacks,
             local_port,
             remote_port,
+            &[],
         )
     }
 
@@ -857,6 +921,13 @@ impl StreamingManager {
             .map_err(StreamingManagerError::I2npCodec)?
             .as_bytes();
         validate_initial_syn(packet, &local_destination_hash)?;
+        let initial_maximum = usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD);
+        if packet.payload.len() > initial_maximum {
+            return Err(StreamingManagerError::InitialSynPayloadTooLarge {
+                actual: packet.payload.len(),
+                maximum: initial_maximum,
+            });
+        }
 
         // Verify the originator's signature over the canonical
         // preimage (the full packet with the raw signature zeroed)
@@ -941,6 +1012,7 @@ impl StreamingManager {
             0
         } else {
             self.connections.remove(&connection_id);
+            self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
             return Err(StreamingManagerError::NoMatchingListener { destination_port });
@@ -952,12 +1024,17 @@ impl StreamingManager {
             .unwrap_or(false);
         if backlog_full {
             self.connections.remove(&connection_id);
+            self.pending_syn_payloads.remove(&connection_id);
             self.inbound_by_stream.remove(&local_receive_stream_id);
             self.outbound_packets.remove(&connection_id);
             return Err(StreamingManagerError::ListenerBacklogFull);
         }
         if let Some(entry) = self.listeners.get_mut(&matched_listener) {
             entry.push_back(connection_id);
+        }
+        if !packet.payload.is_empty() {
+            self.pending_syn_payloads
+                .insert(connection_id, packet.payload.clone());
         }
 
         Ok(WirePacketObservation {
@@ -1033,6 +1110,13 @@ impl StreamingManager {
         let negotiated = remote_max.unwrap_or(DEFAULT_ADVERTISED_MAX_PAYLOAD);
         conn.transition_established(u32::from(negotiated), now_ms)
             .map_err(StreamingManagerError::Streaming)?;
+        if let Some(bytes) = self.pending_syn_payloads.remove(&connection_id) {
+            self.note_delivered_bytes(connection_id, bytes.len());
+            self.pending_delivered.push_back(DeliveredApplicationBytes {
+                connection_id,
+                bytes,
+            });
+        }
         // Track the SYN response packet for retransmission until the
         // originator confirms with a non-SYN packet.
         let outbound = OutboundPacket {
@@ -1660,6 +1744,7 @@ impl StreamingManager {
             ack_nacks,
             wire_local_port,
             wire_remote_port,
+            &[],
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -1762,6 +1847,7 @@ impl StreamingManager {
             ack_nacks,
             local_port,
             remote_port,
+            &[],
         )?;
 
         // ---- Phase 3: protocol-state commit (infallible after build) -----------
@@ -2036,6 +2122,7 @@ impl StreamingManager {
     /// Drops a connection from the table.
     pub fn remove_connection(&mut self, id: ConnectionId) -> Option<StreamingConnection> {
         let removed = self.connections.remove(&id);
+        self.pending_syn_payloads.remove(&id);
         if let Some(conn) = &removed {
             match conn.direction() {
                 StreamDirection::Outbound => {
@@ -2248,6 +2335,100 @@ mod tests {
         let delivered = manager.drain_delivered();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].bytes, vec![1]);
+    }
+
+    #[test]
+    fn initial_syn_payload_is_bounded_authenticated_and_delivered_after_accept() {
+        let initiator = destination(0x13A0_0001);
+        let receiver = destination(0x13A0_0002);
+        let initiator_remote = RemoteDestination {
+            destination_hash: *initiator.id().as_hash().as_bytes(),
+            signing_public_key: initiator.destination().signing_key().clone(),
+            static_public_key: initiator.static_public_bytes(),
+        };
+        let receiver_remote = RemoteDestination {
+            destination_hash: *receiver.id().as_hash().as_bytes(),
+            signing_public_key: receiver.destination().signing_key().clone(),
+            static_public_key: receiver.static_public_bytes(),
+        };
+        let payload = b"GET / HTTP/1.1\\r\\nHost: example.i2p\\r\\n\\r\\n";
+        let mut sender = StreamingManager::new(StreamingConfig::balanced());
+        let ConnectOutcome::SynSent { .. } = sender
+            .connect_with_initial_payload(
+                &initiator,
+                &receiver_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                payload,
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x13A0_0003),
+            )
+            .expect("connect with initial payload")
+        else {
+            panic!("expected outbound SYN");
+        };
+        let request = sender.drain_outbound().pop().expect("SYN request");
+        let envelope = decode_client_payload(
+            &request.application_payload,
+            i2pr_proto::streaming::MAX_CLIENT_PAYLOAD_BYTES,
+        )
+        .expect("SYN client-payload envelope");
+        let (syn, _) = decode_streaming_packet(
+            &envelope.payload,
+            i2pr_proto::streaming::StreamingReceiveLimit::default(),
+            i2pr_proto::streaming::StreamingOptionDecodeContext::anonymous(),
+        )
+        .expect("signed SYN with initial payload");
+        assert_eq!(syn.payload, payload);
+
+        let mut sink = StreamingManager::new(StreamingConfig::balanced());
+        sink.listen(REMOTE_PORT).expect("listener");
+        sink.process_inbound_packet(
+            &envelope.payload,
+            initiator.id().as_hash().as_bytes(),
+            &receiver,
+            LOCAL_PORT,
+            REMOTE_PORT,
+            NOW_MS,
+        )
+        .expect("authenticated inbound SYN");
+        assert!(
+            sink.drain_delivered().is_empty(),
+            "pending SYN data is not exposed before accept"
+        );
+        let connection_id = sink.accept(REMOTE_PORT).expect("pending connection");
+        sink.accept_inbound_syn(
+            &receiver,
+            &initiator_remote,
+            connection_id,
+            REMOTE_PORT,
+            LOCAL_PORT,
+            super::DEFAULT_ADVERTISED_MAX_PAYLOAD,
+            NOW_MS + 1,
+            &mut ChaCha8Rng::seed_from_u64(0x13A0_0004),
+        )
+        .expect("accept SYN");
+        let delivered = sink.drain_delivered();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].bytes, payload);
+
+        assert!(matches!(
+            sender.connect_with_initial_payload(
+                &initiator,
+                &receiver_remote,
+                LOCAL_PORT,
+                REMOTE_PORT,
+                4,
+                b"12345",
+                NOW_MS,
+                &mut ChaCha8Rng::seed_from_u64(0x13A0_0005),
+            ),
+            Ok(ConnectOutcome::PayloadTooLarge {
+                actual: 5,
+                maximum: 4
+            })
+        ));
     }
 
     #[test]

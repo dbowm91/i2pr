@@ -15,8 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use i2pr_daemon::config::Config;
+use i2pr_daemon::control_sources::ControlMetrics;
 use i2pr_daemon::i2pcontrol::I2pControlServiceState;
-use i2pr_daemon::i2pcontrol_inspection::InspectionHandles;
+use i2pr_daemon::i2pcontrol_inspection::{InspectionHandles, ServiceEndpoint};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -211,7 +212,7 @@ async fn authenticate(address: SocketAddr) -> String {
 }
 
 #[tokio::test]
-async fn router_info_static_selection_over_wire() {
+async fn router_info_proposal_selection_over_wire() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")
         .i2pcontrol;
@@ -238,12 +239,8 @@ async fn router_info_static_selection_over_wire() {
             "jsonrpc": "2.0",
             "method": "RouterInfo",
             "params": {
-                "Token": token,
-                "router.version": null,
-                "router.api_version": null,
-                "router.uptime": null,
-                "router.status": null,
-                "router.network_id": null,
+                "Token": token.clone(),
+                "i2p.router.clockskew": "ignored",
             },
             "id": 2,
         }),
@@ -251,11 +248,7 @@ async fn router_info_static_selection_over_wire() {
     )
     .await;
     let result = &response["result"];
-    assert!(result["router.version"].is_string(), "version: {result}");
-    assert_eq!(result["router.api_version"], serde_json::json!(1));
-    assert!(result["router.uptime"].is_number(), "uptime: {result}");
-    assert_eq!(result["router.status"], serde_json::json!("running"));
-    assert_eq!(result["router.network_id"], serde_json::json!(2));
+    assert!(result["i2p.router.clockskew"].is_null());
     // Deterministic sorted key order regardless of request order
     // (`serde_json::Map` sorts keys; selection order is canonical).
     let keys: Vec<&str> = result
@@ -264,16 +257,155 @@ async fn router_info_static_selection_over_wire() {
         .keys()
         .map(String::as_str)
         .collect();
+    assert_eq!(keys, vec!["i2p.router.clockskew",]);
+
+    let (_, base_response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.version": null,
+                "i2p.router.status": "select by presence",
+                "i2p.router.uptime": "select by presence",
+            },
+            "id": 3,
+        }),
+        &[],
+    )
+    .await;
     assert_eq!(
-        keys,
-        vec![
-            "router.api_version",
-            "router.network_id",
-            "router.status",
-            "router.uptime",
-            "router.version",
-        ]
+        base_response["result"]["i2p.router.version"],
+        env!("CARGO_PKG_VERSION")
     );
+    assert_eq!(base_response["result"]["i2p.router.status"], "running");
+    assert!(base_response["result"]["i2p.router.uptime"].is_u64());
+}
+
+#[tokio::test]
+async fn canonical_transport_totals_are_served_from_published_metrics() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let metrics = Arc::new(ControlMetrics::new());
+    metrics.observe_transport(12_345, 67_890, 12, 34);
+    inspection.publish_metrics(metrics);
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.total.received.bytes": null,
+                "i2p.router.net.total.sent.bytes": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response["result"]["i2p.router.net.total.received.bytes"],
+        12_345
+    );
+    assert_eq!(
+        response["result"]["i2p.router.net.total.sent.bytes"],
+        67_890
+    );
+}
+
+#[tokio::test]
+async fn router_info_transport_limits_follow_validated_config_over_wire() {
+    let config = Config::parse(&format!(
+        "{}\n[transport.ntcp2]\nmax_active_links = 17\n[ssu2]\nmax_active_sessions = 23\n",
+        config_text(TEST_PASSWORD)
+    ))
+    .expect("config parses");
+    let inspection = Arc::new(InspectionHandles::from_config(&config));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config.i2pcontrol.clone(), inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.netdb.ntcp.limit": null,
+                "i2p.router.netdb.ssu.limit": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+
+    assert_eq!(response["result"]["i2p.router.netdb.ntcp.limit"], 17);
+    assert_eq!(response["result"]["i2p.router.netdb.ssu.limit"], 23);
+}
+
+#[tokio::test]
+async fn base_router_info_peer_counts_keep_the_documented_integer_shape() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        i2pr_daemon::i2pcontrol_inspection::ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        i2pr_daemon::i2pcontrol_inspection::ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    inspection
+        .publish_netdb(
+            vec!["known-a".to_owned(), "known-b".to_owned()],
+            vec!["active-a".to_owned()],
+            i2pr_daemon::i2pcontrol_inspection::FloodfillMode::Disabled,
+        )
+        .expect("bounded NetDB snapshot publishes");
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.netdb.knownpeers": false,
+                "i2p.router.netdb.activepeers": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["result"]["i2p.router.netdb.knownpeers"], 2);
+    assert_eq!(response["result"]["i2p.router.netdb.activepeers"], 1);
 }
 
 #[tokio::test]
@@ -299,21 +431,12 @@ async fn router_info_hash_gated_then_published_over_wire() {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "RouterInfo",
-        "params": {"Token": token, "router.hash": null},
+        "params": {"Token": token, "i2p.router.id": null},
         "id": 2,
     });
-    // Before identity publication the whole request fails explicitly.
+    // The Proposal permits null until identity publication.
     let (_, response) = post_json(address, &body, &[]).await;
-    assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
-    assert!(
-        response["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("Plan 288"),
-        "message: {}",
-        response["error"]["message"]
-    );
-    assert!(response.get("result").is_none(), "no partial response");
+    assert!(response["result"]["i2p.router.id"].is_null());
     // After publication the same request answers without a restart.
     let hash = format!("{}~", "b".repeat(43));
     state
@@ -321,7 +444,7 @@ async fn router_info_hash_gated_then_published_over_wire() {
         .publish_router_hash(&hash)
         .expect("publishes");
     let (_, response) = post_json(address, &body, &[]).await;
-    assert_eq!(response["result"]["router.hash"], serde_json::json!(hash));
+    assert_eq!(response["result"]["i2p.router.id"], serde_json::json!(hash));
 }
 
 #[tokio::test]
@@ -348,18 +471,13 @@ async fn router_info_unavailable_fails_whole_without_partial() {
     let token = authenticate(address).await;
     // One unavailable selector poisons the whole request even beside
     // available ones: no partial response is emitted.
-    for (key, plan) in [
-        ("addressbook.private", "Plan 294"),
-        ("logs.recent", "Plan 295"),
-        ("network.banned_peers", "Plan 295"),
-        ("netdb.known_peers", "Plan 295"),
-    ] {
+    for key in ["i2p.router.news", "i2p.router.logs.clear"] {
         let (_, response) = post_json(
             address,
             &serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "RouterInfo",
-                "params": {"Token": token, "router.version": null, key: null},
+                "params": {"Token": token, "i2p.router.clockskew": null, key: null},
                 "id": 2,
             }),
             &[],
@@ -370,16 +488,156 @@ async fn router_info_unavailable_fails_whole_without_partial() {
             serde_json::json!(-32_603),
             "key {key}"
         );
-        assert!(
-            response["error"]["message"]
-                .as_str()
-                .expect("message")
-                .contains(plan),
-            "key {key}: {}",
-            response["error"]["message"]
-        );
         assert!(response.get("result").is_none(), "no partial for {key}");
     }
+}
+
+#[tokio::test]
+async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let (_state, address, _scope, _parent) = start_service_with_inspection(
+        config,
+        Arc::new(InspectionHandles::new(
+            2,
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            Vec::new(),
+        )),
+    )
+    .await;
+    let token = authenticate(address).await;
+    let gaps = [
+        "i2p.router.net.total.transit.bytes",
+        "i2p.router.net.bw.transit.15s",
+        "i2p.router.net.tunnels.shareratio",
+        "i2p.router.net.status.v6",
+        "i2p.router.net.error",
+        "i2p.router.net.error.v6",
+        "i2p.router.net.testing",
+        "i2p.router.net.testing.v6",
+    ];
+    for (id, key) in gaps.into_iter().enumerate() {
+        let (_, response) = post_json(
+            address,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "RouterInfo",
+                "params": {"Token": token, key: null},
+                "id": id,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response.get("result").is_none(),
+            "no partial result for {key}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains(key), "field named in {message}");
+        assert!(
+            message.contains("Plan 322"),
+            "owner plan named in {message}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn authenticated_router_info_logs_clear_clears_ring_and_returns_success() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let ring = Arc::new(i2pr_daemon::control_sources::LogRing::new());
+    ring.record("INFO", "daemon", "before clear");
+    inspection.publish_log_ring(Arc::clone(&ring));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.logs": null,
+                "i2p.router.logs.clear": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response["result"]["i2p.router.logs"],
+        serde_json::json!(["INFO daemon: before clear"])
+    );
+    assert_eq!(response["result"]["i2p.router.logs.clear"], "success");
+    assert!(ring.is_empty());
+}
+
+#[tokio::test]
+async fn failed_mixed_router_info_selection_does_not_clear_logs() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let ring = Arc::new(i2pr_daemon::control_sources::LogRing::new());
+    ring.record("INFO", "daemon", "must remain on failed request");
+    inspection.publish_log_ring(Arc::clone(&ring));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.logs.clear": null,
+                "i2p.router.news": null,
+            },
+            "id": 3,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32603);
+    assert_eq!(ring.snapshot().0.len(), 1);
 }
 
 #[tokio::test]
@@ -404,13 +662,13 @@ async fn router_info_unknown_and_base_keys_rejected() {
     )
     .await;
     let token = authenticate(address).await;
-    // Unknown keys, base-compatibility keys, case mismatches, and
-    // non-null values are all invalid params.
+    // Unknown keys, former normalized names, and case mismatches are
+    // invalid params. Canonical selector values are presence-based.
     for key in [
         "bogus",
-        "i2p.router.uptime",
-        "i2p.router.version",
-        "i2p.router.netdb.knownpeers",
+        "router.uptime",
+        "router.version",
+        "router.status",
         "Router.Version",
     ] {
         let (_, response) = post_json(
@@ -435,13 +693,13 @@ async fn router_info_unknown_and_base_keys_rejected() {
         &serde_json::json!({
             "jsonrpc": "2.0",
             "method": "RouterInfo",
-            "params": {"Token": token, "router.version": true},
+            "params": {"Token": token, "i2p.router.clockskew": true},
             "id": 3,
         }),
         &[],
     )
     .await;
-    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
+    assert!(response["result"]["i2p.router.clockskew"].is_null());
 }
 
 #[tokio::test]
@@ -608,7 +866,7 @@ async fn inspection_reads_do_not_mutate() {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "RouterInfo",
-        "params": {"Token": token, "router.version": null, "router.status": null},
+        "params": {"Token": token, "i2p.router.clockskew": null},
         "id": 2,
     });
     let (_, first) = post_json(address, &body, &[]).await;
@@ -641,15 +899,14 @@ async fn batch_isolation_with_inspection() {
     let (_, response) = post_json(
         address,
         &serde_json::json!([
-            {"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "router.version": null}, "id": "a"},
-            {"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "addressbook.private": null}, "id": "b"},
+            {"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "i2p.router.clockskew": null}, "id": "a"},
+            {"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "i2p.router.info": null}, "id": "b"},
         ]),
         &[],
     )
     .await;
     let elements = response.as_array().expect("batch array");
     assert_eq!(elements.len(), 2);
-    assert!(elements[0]["result"]["router.version"].is_string());
-    assert_eq!(elements[1]["error"]["code"], serde_json::json!(-32_603));
-    assert!(elements[1].get("result").is_none(), "no partial in batch");
+    assert!(elements[0]["result"]["i2p.router.clockskew"].is_null());
+    assert!(elements[1]["result"]["i2p.router.info"].is_null());
 }

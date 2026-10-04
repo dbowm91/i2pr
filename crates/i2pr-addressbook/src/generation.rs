@@ -1,7 +1,7 @@
 //! Deterministic versioned generations: the persisted form.
 //!
 //! A generation is one complete bounded state: four books, the
-//! subscription set, and the thirteen-key configuration, plus a
+//! subscription set, and the typed owner configuration, plus a
 //! saturating revision. Serialization is deterministic JSON (fixed
 //! field order, `BTreeMap` ordering throughout). Decoding re-validates
 //! everything a live mutation would — hostnames, destinations,
@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::book::{AddressBook, BookKind};
 use crate::error::AddressBookError;
+use crate::hostname::parse_hostname;
+use crate::subscription::SubscriptionSource;
 
 /// Generation format version (reject anything else, fail closed).
 pub const GENERATION_VERSION: u32 = 1;
@@ -32,7 +34,20 @@ struct GenerationShape {
     router: BTreeMap<String, String>,
     published: BTreeMap<String, String>,
     subscriptions: Vec<String>,
+    #[serde(default)]
+    subscribed: BTreeMap<String, String>,
+    #[serde(default)]
+    subscription_sources: BTreeMap<String, SubscriptionSourceShape>,
     config: ConfigShape,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SubscriptionSourceShape {
+    entries: BTreeMap<String, String>,
+    #[serde(default)]
+    etag: Option<String>,
+    #[serde(default)]
+    last_modified: Option<String>,
 }
 
 /// Serializable configuration shape (fixed field order).
@@ -48,6 +63,19 @@ struct ConfigShape {
     log_level: String,
     lookup_timeout_secs: u64,
     max_entries: usize,
+    #[serde(default)]
+    should_publish: bool,
+    #[serde(default = "default_etags_artifact")]
+    etags_artifact: String,
+    #[serde(default = "default_last_modified_artifact")]
+    last_modified_artifact: String,
+}
+
+fn default_etags_artifact() -> String {
+    "subscriptions.etags".to_owned()
+}
+fn default_last_modified_artifact() -> String {
+    "subscriptions.last-modified".to_owned()
 }
 
 impl ConfigShape {
@@ -63,6 +91,9 @@ impl ConfigShape {
             log_level: config.log_level.name().to_owned(),
             lookup_timeout_secs: config.lookup_timeout_secs,
             max_entries: config.max_entries,
+            should_publish: config.should_publish,
+            etags_artifact: config.etags_artifact.clone(),
+            last_modified_artifact: config.last_modified_artifact.clone(),
         }
     }
 }
@@ -77,6 +108,31 @@ pub fn encode_generation(book: &AddressBook) -> Vec<u8> {
         router: listed(book, BookKind::Router),
         published: listed(book, BookKind::Published),
         subscriptions: book.subscriptions().urls().to_vec(),
+        subscribed: book
+            .derived_table()
+            .iter()
+            .map(|(hostname, destination)| (hostname.as_str().to_owned(), destination.clone()))
+            .collect(),
+        subscription_sources: book
+            .subscription_sources()
+            .iter()
+            .map(|(url, source)| {
+                (
+                    url.clone(),
+                    SubscriptionSourceShape {
+                        entries: source
+                            .entries
+                            .iter()
+                            .map(|(hostname, destination)| {
+                                (hostname.as_str().to_owned(), destination.clone())
+                            })
+                            .collect(),
+                        etag: source.etag.clone(),
+                        last_modified: source.last_modified.clone(),
+                    },
+                )
+            })
+            .collect(),
         config: ConfigShape::capture(book.config()),
     };
     serde_json::to_vec(&shape).expect("in-memory state serializes")
@@ -136,6 +192,9 @@ pub fn decode_generation(bytes: &[u8]) -> Result<AddressBook, AddressBookError> 
                 shape.config.lookup_timeout_secs.to_string(),
             ),
             ("max_entries", shape.config.max_entries.to_string()),
+            ("should_publish", shape.config.should_publish.to_string()),
+            ("etags", shape.config.etags_artifact.clone()),
+            ("last_modified", shape.config.last_modified_artifact.clone()),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
@@ -168,6 +227,52 @@ pub fn decode_generation(bytes: &[u8]) -> Result<AddressBook, AddressBookError> 
         control
             .replace_subscriptions(&shape.subscriptions)
             .map_err(|_| AddressBookError::InvalidGeneration)?;
+        if shape.subscription_sources.len() > crate::subscription::MAX_SUBSCRIPTION_URLS {
+            return Err(AddressBookError::InvalidGeneration);
+        }
+        if shape.subscription_sources.is_empty() {
+            let subscribed = shape
+                .subscribed
+                .iter()
+                .map(|(hostname, destination)| Ok((parse_hostname(hostname)?, destination.clone())))
+                .collect::<Result<BTreeMap<_, _>, AddressBookError>>()?;
+            control
+                .replace_derived(subscribed)
+                .map_err(|_| AddressBookError::InvalidGeneration)?;
+        } else {
+            let sources = shape
+                .subscription_sources
+                .into_iter()
+                .map(|(url, source)| {
+                    let entries = source
+                        .entries
+                        .into_iter()
+                        .map(|(hostname, destination)| {
+                            Ok((parse_hostname(&hostname)?, destination))
+                        })
+                        .collect::<Result<BTreeMap<_, _>, AddressBookError>>()?;
+                    Ok((
+                        url,
+                        SubscriptionSource {
+                            entries,
+                            etag: source.etag,
+                            last_modified: source.last_modified,
+                        },
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, AddressBookError>>()?;
+            control
+                .replace_subscription_sources(sources)
+                .map_err(|_| AddressBookError::InvalidGeneration)?;
+            let actual = control.derived_entries();
+            if actual.len() != shape.subscribed.len()
+                || actual.iter().any(|(hostname, destination)| {
+                    shape.subscribed.get(hostname.as_str()) != Some(destination)
+                })
+            {
+                return Err(AddressBookError::InvalidGeneration);
+            }
+        }
     }
     // Restore the persisted revision exactly (mutations bump from here).
     book.set_revision(shape.revision);
@@ -230,6 +335,53 @@ mod tests {
         assert_eq!(restored.config().theme, "midnight");
         assert_eq!(restored.config().max_entries, 42);
         assert_eq!(encode_generation(&restored), bytes);
+    }
+
+    #[test]
+    fn subscription_entries_and_validators_round_trip_as_one_generation() {
+        let mut book = AddressBook::new();
+        let urls = [
+            "http://one.i2p/hosts.txt".to_owned(),
+            "http://two.i2p/hosts.txt".to_owned(),
+        ];
+        let mut first_entries = BTreeMap::new();
+        first_entries.insert(parse_hostname("shared.i2p").unwrap(), destination_text());
+        first_entries.insert(parse_hostname("one.i2p").unwrap(), destination_text());
+        let mut second_entries = BTreeMap::new();
+        second_entries.insert(parse_hostname("shared.i2p").unwrap(), destination_text());
+        second_entries.insert(parse_hostname("two.i2p").unwrap(), destination_text());
+        {
+            let mut control = book.control();
+            control.replace_subscriptions(&urls).unwrap();
+            control
+                .replace_subscription_sources(BTreeMap::from([
+                    (
+                        urls[0].clone(),
+                        SubscriptionSource {
+                            entries: first_entries,
+                            etag: Some("\"v1\"".to_owned()),
+                            last_modified: Some("Sun, 06 Nov 1994 08:49:37 GMT".to_owned()),
+                        },
+                    ),
+                    (
+                        urls[1].clone(),
+                        SubscriptionSource {
+                            entries: second_entries,
+                            etag: Some("\"v2\"".to_owned()),
+                            last_modified: None,
+                        },
+                    ),
+                ]))
+                .unwrap();
+        }
+        let restored = decode_generation(&encode_generation(&book)).unwrap();
+        assert_eq!(restored.subscription_sources(), book.subscription_sources());
+        assert_eq!(restored.derived_table(), book.derived_table());
+        assert_eq!(restored.subscribed_len(), 3);
+        assert_eq!(
+            restored.lookup("shared.i2p").unwrap().provenance,
+            crate::book::Provenance::Subscribed
+        );
     }
 
     #[test]

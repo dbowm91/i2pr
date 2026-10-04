@@ -1,6 +1,6 @@
 # Plan 326 — Encrypted/blinded LeaseSet2 and Proposal 170 client-authorization modes
 
-Status: **registered-prop170-encrypted-leaseset-completion-blocked-on-plan324-plan325**
+Status: **blocked-prop170-encrypted-leaseset-awaiting-qualified-red25519-provider**
 
 Classification: cryptographic protocol + destination/NetDB capability.
 

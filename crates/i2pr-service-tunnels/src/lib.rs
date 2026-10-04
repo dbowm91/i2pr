@@ -61,22 +61,27 @@ pub mod irc;
 pub mod socks5;
 pub mod streamr;
 
-pub use access::{MAX_ACCESS_LIST_ENTRIES, ServerAccessPolicy};
+pub use access::{
+    MAX_ACCESS_LIST_ENTRIES, MAX_RATE_LIMIT_PEERS, ServerAccessPolicy, ServerConnectionRateLimiter,
+    ServerConnectionRateLimits,
+};
 pub use auth::{
     MAX_PROXY_PASSWORD_LEN, MAX_PROXY_USERNAME_LEN, PROXY_AUTH_REALM_CONNECT,
     PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,
     decode_basic_credentials,
 };
 pub use config::{
-    DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationGroupKey, DestinationGroupSpec,
-    DestinationPolicy, IdlePolicy, LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE,
-    MAX_ACTIVE_CONNECTIONS_PER_SERVICE, MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS,
-    MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_GROUP_ID_LEN, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_ID_LEN,
-    MAX_SERVICE_TUNNELS, MAX_STATIC_ALIASES, MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS,
-    MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MAX_UNIX_PATH_LEN,
+    DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_STREAMING_CONNECT_DELAY_MS, DestinationCryptoPolicy,
+    DestinationGroupId, DestinationGroupKey, DestinationGroupSpec,
+    DestinationLeaseSetEncryptionPolicy, DestinationPolicy, DestinationSigningPolicy, IdlePolicy,
+    LocalListenerSpec, MAX_ACTIVE_CONNECTIONS_AGGREGATE, MAX_ACTIVE_CONNECTIONS_PER_SERVICE,
+    MAX_BUFFERED_BYTES_PER_DIRECTION, MAX_CONFIGURED_TARGETS, MAX_EFFECTIVE_DIRECTION_TUNNELS,
+    MAX_GROUP_ID_LEN, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_ID_LEN, MAX_SERVICE_TUNNELS,
+    MAX_STATIC_ALIASES, MAX_STREAMING_CONNECT_DELAY_MS, MAX_TUNNEL_BACKUP_QUANTITY,
+    MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MAX_UNIX_PATH_LEN,
     MIN_BUFFERED_BYTES_PER_DIRECTION, MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceClientGroupId,
-    ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
-    ServiceTunnelSpec, TunnelShaping, multihoming_start_index,
+    ServiceKeyReference, ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId,
+    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping, multihoming_start_index,
 };
 pub use connect::{CONNECT_DEFAULT_PORT, CONNECT_OPTIONS_MAX_PORTS, ConnectClientOptions};
 pub use destination::{DestinationRef, StaticAliasTable};
@@ -85,9 +90,10 @@ pub use events::{ServiceTunnelEvent, ServiceTunnelSnapshot};
 pub use generation::{DiffClass, ServiceDiff, diff_sets, diff_spec, kind_string};
 pub use http::{
     FilteredServerRequest, HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind,
-    HttpLimits, HttpRequestHead, HttpServerPolicy, ParseError, PresentationClass, PrivacyPolicy,
-    RequestLine, RequestTarget, TargetKind, TargetParseError, UserAgentPolicy,
-    build_error_response, classify_presentation, filter_server_request, filter_server_response,
+    HttpLimits, HttpPostLimiter, HttpPostLimits, HttpRequestHead, HttpServerPolicy,
+    MAX_POST_LIMIT_PEERS, ParseError, PresentationClass, PrivacyPolicy, RequestLine, RequestTarget,
+    TargetKind, TargetParseError, UserAgentPolicy, build_error_response, classify_presentation,
+    filter_server_request, filter_server_request_with_policy, filter_server_response,
     parse_authority_form, parse_origin_form, parse_request_head, parse_request_target,
     proxy_auth_required, rewrite_headers,
 };

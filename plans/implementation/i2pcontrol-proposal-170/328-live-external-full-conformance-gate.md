@@ -1,6 +1,6 @@
 # Plan 328 — Live external differential and full Proposal 170 conformance gate
 
-Status: **registered-prop170-full-conformance-gate-blocked-on-plan322-plan326-plan327**
+Status: **blocked-prop170-full-conformance-gate-awaiting-322-326-327**
 
 Classification: external evidence + final closure gate.
 

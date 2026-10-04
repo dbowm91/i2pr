@@ -619,10 +619,21 @@ pub fn resolve_target_for_service(
 /// Plan 290: shared with the `socks-irc` composition.
 pub async fn open_streaming(
     manager: &ServiceTunnelManager,
+    spec_id: &str,
     destination_id: i2pr_client::DestinationId,
     remote: &RemoteDestination,
     timeout_ms: u64,
+    cancellation: &CancellationToken,
 ) -> Result<ConnectionId, Socks5Error> {
+    manager
+        .ensure_destination_active(spec_id, cancellation, timeout_ms)
+        .await
+        .map_err(|_| {
+            Socks5Error::new(
+                Socks5ErrorKind::ConnectFailure,
+                "destination activation failed",
+            )
+        })?;
     let identity_arc = manager
         .with_destination_bridge(destination_id, |bridge| bridge.identity())
         .ok_or_else(|| Socks5Error::new(Socks5ErrorKind::ConnectFailure, "missing identity"))?;
@@ -802,9 +813,11 @@ pub async fn run_socks5_connection(
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let connection_id = match open_streaming(
         &manager,
+        &runtime.spec_id,
         runtime.destination_id,
         &target.remote,
         connect_timeout_ms,
+        &cancellation,
     )
     .await
     {

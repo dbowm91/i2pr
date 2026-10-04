@@ -134,9 +134,11 @@ pub async fn run_socks_irc_connection(
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let connection_id = match open_streaming(
         &manager,
+        &runtime.spec_id,
         runtime.destination_id,
         &target.remote,
         connect_timeout_ms,
+        &cancellation,
     )
     .await
     {

@@ -32,8 +32,8 @@ pub use packet::{
     StreamingOptions, StreamingPacket, StreamingPacketBuilder, StreamingPacketError,
     StreamingReceiveLimit, StreamingSendLimit, build_signature_preimage, decode_streaming_packet,
     encode_streaming_packet, encode_syn_replay_binding, install_packet_signature,
-    peek_streaming_header, validate_initial_syn, validate_signature_policy, validate_syn_response,
-    verify_syn_replay_binding,
+    install_packet_signature_at, peek_streaming_header, validate_initial_syn,
+    validate_signature_policy, validate_syn_response, verify_syn_replay_binding,
 };
 pub use payload::{
     ClientPayload, ClientPayloadDecodeError, ClientPayloadEncodeError,

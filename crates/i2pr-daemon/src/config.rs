@@ -56,6 +56,8 @@ struct RawConfig {
     #[serde(default)]
     addressbook: RawAddressBookConfig,
     #[serde(default)]
+    news: RawNewsConfig,
+    #[serde(default)]
     floodfill: RawFloodfillConfig,
 }
 
@@ -621,6 +623,44 @@ impl Default for RawAddressBookConfig {
     }
 }
 
+/// Raw signed-router-news source configuration. It is disabled unless the
+/// operator supplies a source, a pinned signer certificate, and proxy.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawNewsConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    source_url: String,
+    #[serde(default)]
+    signer_id: String,
+    #[serde(default)]
+    certificate_path: String,
+    #[serde(default = "default_news_proxy_host")]
+    proxy_host: String,
+    #[serde(default = "default_news_proxy_port")]
+    proxy_port: u16,
+    #[serde(default = "default_news_max_su3_bytes")]
+    max_su3_bytes: u64,
+    #[serde(default = "default_news_refresh_interval_secs")]
+    refresh_interval_secs: u64,
+}
+
+impl Default for RawNewsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            source_url: String::new(),
+            signer_id: String::new(),
+            certificate_path: String::new(),
+            proxy_host: default_news_proxy_host(),
+            proxy_port: default_news_proxy_port(),
+            max_su3_bytes: default_news_max_su3_bytes(),
+            refresh_interval_secs: default_news_refresh_interval_secs(),
+        }
+    }
+}
+
 /// Raw Plan 279 normal floodfill opt-in.
 ///
 /// The surface is a single intent boolean. It never carries advertisement
@@ -749,6 +789,22 @@ const fn default_reseed_max_sources() -> usize {
 
 const fn default_reseed_max_su3_bytes() -> u64 {
     8 * 1024 * 1024
+}
+
+const fn default_news_proxy_port() -> u16 {
+    4444
+}
+
+const fn default_news_max_su3_bytes() -> u64 {
+    8 * 1024 * 1024
+}
+
+const fn default_news_refresh_interval_secs() -> u64 {
+    6 * 60 * 60
+}
+
+fn default_news_proxy_host() -> String {
+    String::from("127.0.0.1")
 }
 
 const fn default_sam_enabled() -> bool {
@@ -1259,6 +1315,19 @@ pub struct ReseedSourceConfig {
     pub certificate_path: PathBuf,
 }
 
+/// Validated, opt-in signed NEWS feed configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewsConfig {
+    pub enabled: bool,
+    pub source_url: Option<String>,
+    pub signer_id: Option<String>,
+    pub certificate_path: Option<PathBuf>,
+    pub proxy_host: IpAddr,
+    pub proxy_port: u16,
+    pub max_su3_bytes: usize,
+    pub refresh_interval: Duration,
+}
+
 /// Normalized SAM v3.1 service configuration (Plan 137).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SamConfig {
@@ -1351,6 +1420,8 @@ pub struct Config {
     pub netdb: NetDbConfig,
     /// Reseed settings.
     pub reseed: ReseedConfig,
+    /// Signed NEWS source settings (disabled by default).
+    pub news: NewsConfig,
     /// SAM v3.1 service settings.
     pub sam: SamConfig,
     /// SSU2 UDP runtime settings (Plan 158; disabled, loopback-only).
@@ -1510,6 +1581,7 @@ impl Config {
         let ntcp2 = normalize_ntcp2(&raw.transport.ntcp2)?;
         let netdb = normalize_netdb(&raw.netdb)?;
         let reseed = normalize_reseed(&raw.reseed, &netdb)?;
+        let news = normalize_news(&raw.news)?;
         let sam = normalize_sam(&raw.sam, &raw.limits)?;
         let ssu2 = normalize_ssu2(&raw.ssu2)?;
         let i2cp = normalize_i2cp(&raw.i2cp, &raw.limits)?;
@@ -1538,6 +1610,7 @@ impl Config {
             transport: TransportConfig { ntcp2 },
             netdb,
             reseed,
+            news,
             sam,
             ssu2,
             i2cp,
@@ -1846,6 +1919,8 @@ fn normalize_service_tunnels(
         read_timeout_ms: raw.read_timeout_ms,
         write_timeout_ms: raw.write_timeout_ms,
         shutdown_timeout_ms: raw.shutdown_timeout_ms,
+        streaming_connect_delay_ms: None,
+        delay_open: false,
     };
     timeouts.validate().map_err(|_| ConfigError::Semantic {
         field: "service_tunnels.timeouts",
@@ -2696,6 +2771,81 @@ fn normalize_reseed(
     })
 }
 
+fn normalize_news(raw: &RawNewsConfig) -> Result<NewsConfig, ConfigError> {
+    if raw.max_su3_bytes == 0 || raw.max_su3_bytes > default_news_max_su3_bytes() {
+        return Err(ConfigError::Semantic {
+            field: "news.max_su3_bytes",
+            reason: "must be between 1 byte and the 8 MiB NEWS ceiling",
+        });
+    }
+    if !(60..=7 * 24 * 60 * 60).contains(&raw.refresh_interval_secs) {
+        return Err(ConfigError::Semantic {
+            field: "news.refresh_interval_secs",
+            reason: "must be between 60 seconds and 7 days",
+        });
+    }
+    let proxy_host = raw
+        .proxy_host
+        .parse::<IpAddr>()
+        .map_err(|_| ConfigError::Semantic {
+            field: "news.proxy_host",
+            reason: "must be a loopback IP address",
+        })?;
+    if !proxy_host.is_loopback() || raw.proxy_port == 0 {
+        return Err(ConfigError::Semantic {
+            field: "news.proxy_host",
+            reason: "the configured proxy must have a loopback address and nonzero port",
+        });
+    }
+    let source_url = if raw.source_url.is_empty() {
+        None
+    } else {
+        i2pr_addressbook::validate_subscription_url(&raw.source_url).map_err(|_| {
+            ConfigError::Semantic {
+                field: "news.source_url",
+                reason: "must be a bounded HTTP(S) URL on an .i2p host",
+            }
+        })?;
+        Some(raw.source_url.clone())
+    };
+    let signer_id = if raw.signer_id.is_empty() {
+        None
+    } else if raw.signer_id.len() > i2pr_su3::MAX_SIGNER_ID_BYTES
+        || raw
+            .signer_id
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        return Err(ConfigError::Semantic {
+            field: "news.signer_id",
+            reason: "must be a bounded printable signer identifier",
+        });
+    } else {
+        Some(raw.signer_id.clone())
+    };
+    let certificate_path = if raw.certificate_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&raw.certificate_path))
+    };
+    if raw.enabled && (source_url.is_none() || signer_id.is_none() || certificate_path.is_none()) {
+        return Err(ConfigError::Semantic {
+            field: "news",
+            reason: "enabled NEWS requires source_url, signer_id, and certificate_path",
+        });
+    }
+    Ok(NewsConfig {
+        enabled: raw.enabled,
+        source_url,
+        signer_id,
+        certificate_path,
+        proxy_host,
+        proxy_port: raw.proxy_port,
+        max_su3_bytes: raw.max_su3_bytes as usize,
+        refresh_interval: Duration::from_secs(raw.refresh_interval_secs),
+    })
+}
+
 /// Configuration parse and semantic-validation failures.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -2788,6 +2938,52 @@ data_dir = "./state"
         assert_eq!(config.limits.max_tasks, DEFAULT_MAX_TASKS);
         assert_eq!(config.logging.format, LogFormat::Text);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn signed_news_is_disabled_by_default_and_requires_complete_explicit_trust() {
+        let default = Config::parse(MINIMAL).expect("default config");
+        assert!(!default.news.enabled);
+        assert_eq!(default.news.source_url, None);
+        assert_eq!(default.news.signer_id, None);
+        let incomplete = format!(
+            "{MINIMAL}\n[news]\nenabled = true\nsource_url = \"http://news.i2p/feed.su3\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&incomplete),
+            Err(ConfigError::Semantic { field: "news", .. })
+        ));
+        let complete = format!(
+            "{MINIMAL}\n[news]\nenabled = true\nsource_url = \"https://news.i2p/feed.su3\"\nsigner_id = \"router-news\"\ncertificate_path = \"./news-signers/router.der\"\n"
+        );
+        let configured = Config::parse(&complete).expect("explicit NEWS config");
+        assert!(configured.news.enabled);
+        assert_eq!(
+            configured.news.source_url.as_deref(),
+            Some("https://news.i2p/feed.su3")
+        );
+    }
+
+    #[test]
+    fn signed_news_rejects_clearnet_sources_and_non_loopback_proxies() {
+        let clearnet = format!(
+            "{MINIMAL}\n[news]\nenabled = true\nsource_url = \"https://news.example/feed.su3\"\nsigner_id = \"router-news\"\ncertificate_path = \"./router.der\"\n"
+        );
+        assert!(matches!(
+            Config::parse(&clearnet),
+            Err(ConfigError::Semantic {
+                field: "news.source_url",
+                ..
+            })
+        ));
+        let public_proxy = format!("{MINIMAL}\n[news]\nproxy_host = \"0.0.0.0\"\n");
+        assert!(matches!(
+            Config::parse(&public_proxy),
+            Err(ConfigError::Semantic {
+                field: "news.proxy_host",
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -61,7 +61,7 @@ impl AddressBookSnapshot {
         &self.subscriptions
     }
 
-    /// Rendered thirteen-key configuration.
+    /// Rendered address-book owner configuration.
     pub fn config_entries(&self) -> &BTreeMap<String, String> {
         &self.config
     }

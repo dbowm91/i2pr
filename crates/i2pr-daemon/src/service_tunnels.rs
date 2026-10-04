@@ -61,8 +61,9 @@ use i2pr_storage::{
 use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
@@ -165,6 +166,9 @@ pub struct ServiceRuntime {
     group: Arc<DestinationGroupRuntime>,
     /// The destination id used for this service.
     pub(crate) destination_id: DestinationId,
+    /// Whether router-backed pool construction is deferred until the
+    /// first local client connection (Proposal 170 `DelayOpen`).
+    delay_open: bool,
     /// Listener for client tunnels (loopback TCP).
     pub(crate) client_listener: Option<TcpListener>,
     /// Local TCP target address for server tunnels.
@@ -214,9 +218,15 @@ pub struct ServiceRuntime {
     /// Inbound peer allow/deny policy (Plan 292; cached at build so
     /// accept paths never lock for policy).
     pub(crate) access: i2pr_service_tunnels::ServerAccessPolicy,
+    /// Bounded authenticated-peer and aggregate server connection-rate owner.
+    pub(crate) connection_rate_limiter: Mutex<i2pr_service_tunnels::ServerConnectionRateLimiter>,
+    /// Bounded HTTP POST window and ban state for this HTTP server generation.
+    pub(crate) post_limiter: Mutex<i2pr_service_tunnels::HttpPostLimiter>,
     /// Policy-denied inbound connections (Plan 292 evidence;
     /// handshake failures keep using `failed_connects`).
     pub(crate) access_denied: AtomicUsize,
+    /// Authenticated inbound peers rejected by configured connection-rate limits.
+    pub(crate) rate_limited: AtomicUsize,
     /// Unique-local dials that fell back to the wildcard source
     /// because the platform has no derived alias assigned (Plan
     /// 292 evidence; the connection still succeeds).
@@ -422,6 +432,19 @@ pub struct ServiceTunnelManager {
     /// composition root installs the active subsystem's shared handle;
     /// static aliases always win over address-book entries.
     addressbook: Mutex<crate::addressbook::SharedAddressBook>,
+    /// Bounded service-to-product activation requests. The product's SSU2
+    /// owner drains this queue and remains the sole inbound/build owner.
+    deferred_activation_tx: mpsc::Sender<DeferredActivationRequest>,
+    deferred_activation_rx: Mutex<Option<mpsc::Receiver<DeferredActivationRequest>>>,
+    deferred_activation_enabled: AtomicBool,
+}
+
+const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
+
+/// One bounded request to activate a deferred Destination group.
+pub(crate) struct DeferredActivationRequest {
+    pub(crate) destination_id: DestinationId,
+    pub(crate) completion: oneshot::Sender<Result<(), String>>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -470,6 +493,8 @@ impl ServiceTunnelManager {
             ServiceTunnelError::InvalidConfig("service count exceeds u16 capacity".to_owned())
         })?;
         let aggregate_ceiling = config.aggregate_connection_ceiling;
+        let (deferred_activation_tx, deferred_activation_rx) =
+            mpsc::channel(MAX_DEFERRED_ACTIVATION_REQUESTS);
         Ok(Self {
             config,
             runtimes: Mutex::new(HashMap::new()),
@@ -496,7 +521,124 @@ impl ServiceTunnelManager {
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
+            deferred_activation_tx,
+            deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
+            deferred_activation_enabled: AtomicBool::new(false),
         })
+    }
+
+    /// Enables product-owned deferred activation after the router-backed
+    /// product has taken the bounded request receiver.
+    pub(crate) fn enable_deferred_activation(&self) {
+        self.deferred_activation_enabled
+            .store(true, Ordering::Release);
+    }
+
+    /// Transfers the single activation receiver to the product owner.
+    pub(crate) fn take_deferred_activation_requests(
+        &self,
+    ) -> Option<mpsc::Receiver<DeferredActivationRequest>> {
+        self.deferred_activation_rx
+            .lock()
+            .ok()
+            .and_then(|mut receiver| receiver.take())
+    }
+
+    /// Returns deferred client groups after service runtimes have been
+    /// committed. A shared group is deferred only when every member is a
+    /// client with `DelayOpen`; one eager member keeps the whole identity
+    /// group eager.
+    pub(crate) fn deferred_destination_ids(&self) -> std::collections::HashSet<DestinationId> {
+        let Ok(runtimes) = self.runtimes.lock() else {
+            return std::collections::HashSet::new();
+        };
+        let mut members = HashMap::<DestinationId, Vec<&ServiceRuntime>>::new();
+        for runtime in runtimes.values() {
+            members
+                .entry(runtime.destination_id)
+                .or_default()
+                .push(runtime);
+        }
+        members
+            .into_iter()
+            .filter_map(|(destination_id, group)| {
+                (!group.is_empty()
+                    && group
+                        .iter()
+                        .all(|runtime| !runtime.is_server && runtime.delay_open))
+                .then_some(destination_id)
+            })
+            .collect()
+    }
+
+    /// Requests product-owned router activation before a client begins its
+    /// first Streaming handshake. Non-deferred and local-only services return
+    /// immediately. Caller cancellation and the service connect deadline
+    /// bound the wait.
+    pub(crate) async fn ensure_destination_active(
+        &self,
+        spec_id: &str,
+        cancellation: &CancellationToken,
+        timeout_ms: u64,
+    ) -> Result<(), ServiceTunnelError> {
+        if !self.deferred_activation_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let runtime = self
+            .runtimes
+            .lock()
+            .ok()
+            .and_then(|runtimes| runtimes.get(spec_id).cloned());
+        let Some(runtime) = runtime else {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation service runtime is unavailable".to_owned(),
+            ));
+        };
+        if !runtime.delay_open
+            || !self
+                .deferred_destination_ids()
+                .contains(&runtime.destination_id)
+        {
+            return Ok(());
+        }
+        let (completion, result) = oneshot::channel();
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(timeout_ms.clamp(1, 120_000));
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation cancelled".to_owned(),
+            )),
+            _ = tokio::time::sleep_until(deadline) => return Err(
+                ServiceTunnelError::InvalidConfig("deferred activation deadline reached".to_owned()),
+            ),
+            sent = self.deferred_activation_tx.send(DeferredActivationRequest {
+                destination_id: runtime.destination_id,
+                completion,
+            }) => {
+                if sent.is_err() {
+                    return Err(ServiceTunnelError::InvalidConfig(
+                        "deferred activation owner is unavailable".to_owned(),
+                    ));
+                }
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation cancelled".to_owned(),
+            )),
+            _ = tokio::time::sleep_until(deadline) => Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation deadline reached".to_owned(),
+            )),
+            response = result => match response {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(reason)) => Err(ServiceTunnelError::InvalidConfig(reason)),
+                Err(_) => Err(ServiceTunnelError::InvalidConfig(
+                    "deferred activation owner stopped".to_owned(),
+                )),
+            }
+        }
     }
 
     /// Installs the canonical address-book resolver cell (Plan 294).
@@ -2913,6 +3055,16 @@ impl ServiceTunnelManager {
             .unwrap_or(0)
     }
 
+    /// Returns configured connection-rate rejections for one live service.
+    pub fn rate_limited_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.rate_limited.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     /// Unique-local dials that fell back to the wildcard source
     /// for one live runtime (platform-alias evidence; missing
     /// runtime reports zero).
@@ -3061,7 +3213,7 @@ impl ServiceTunnelManager {
     /// gates open, matching the spec default).
     pub fn http_policy_for(&self, spec_id: &str) -> i2pr_service_tunnels::HttpServerPolicy {
         self.committed_spec_for(spec_id)
-            .map(|spec| spec.http_policy)
+            .map(|spec| spec.http_policy.clone())
             .unwrap_or_default()
     }
 
@@ -3105,9 +3257,16 @@ impl ServiceTunnelManager {
             };
             if action == IdleSweepAction::ReducePools {
                 let effective = runtime.effective_shaping;
+                let reduce_quantity = |quantity: u8| {
+                    if let Some(count) = spec.idle.reduce_count {
+                        quantity.saturating_sub(count).max(1)
+                    } else {
+                        (quantity / 2).max(1)
+                    }
+                };
                 let reduced = i2pr_service_tunnels::TunnelShaping {
-                    inbound_quantity: (effective.inbound_quantity / 2).max(1),
-                    outbound_quantity: (effective.outbound_quantity / 2).max(1),
+                    inbound_quantity: reduce_quantity(effective.inbound_quantity),
+                    outbound_quantity: reduce_quantity(effective.outbound_quantity),
                     length_hops: effective.length_hops,
                     backup_quantity: effective.backup_quantity,
                     length_variance: effective.length_variance,
@@ -3335,6 +3494,7 @@ impl ServiceTunnelManager {
             bridge: group.bridge.clone(),
             group: Arc::clone(&group),
             destination_id: group.destination_id,
+            delay_open: spec.timeouts.delay_open,
             client_listener,
             server_target,
             server_streaming_port,
@@ -3353,7 +3513,16 @@ impl ServiceTunnelManager {
             streamr_subscribers: AtomicUsize::new(0),
             effective_shaping: shaping,
             access: spec.access.clone(),
+            connection_rate_limiter: Mutex::new(
+                i2pr_service_tunnels::ServerConnectionRateLimiter::new(
+                    spec.access.connection_rates,
+                ),
+            ),
+            post_limiter: Mutex::new(i2pr_service_tunnels::HttpPostLimiter::new(
+                spec.http_policy.post_limits,
+            )),
             access_denied: AtomicUsize::new(0),
+            rate_limited: AtomicUsize::new(0),
             unique_local_fallbacks: AtomicUsize::new(0),
             multihoming_next: AtomicUsize::new(0),
             tls_handshakes_ok: AtomicUsize::new(0),
@@ -3411,7 +3580,25 @@ impl ServiceTunnelManager {
         group_spec: &DestinationGroupSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
-        let identity = if group_spec.persistent {
+        let identity = if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) =
+            spec.policy.ownership()
+        {
+            let store = ServiceDestinationStore::for_key_reference(
+                &self.config.data_dir,
+                spec.id.as_str(),
+                key_ref.as_str(),
+            )
+            .map_err(ServiceTunnelError::Storage)?;
+            let record = if store.exists() {
+                store.load().map_err(ServiceTunnelError::Storage)?
+            } else {
+                let mut rng = OsRng;
+                store
+                    .generate_new(&mut rng)
+                    .map_err(ServiceTunnelError::Storage)?
+            };
+            identity_from_record(&record, spec.id.as_str())?
+        } else if group_spec.persistent {
             let group_name = match &group_spec.key {
                 DestinationGroupKey::Dedicated(id) => id.as_str(),
                 DestinationGroupKey::Explicit(id) => id.as_str(),
@@ -3447,6 +3634,7 @@ impl ServiceTunnelManager {
                 ))
             })?
         };
+        validate_destination_crypto_policy(&identity, group_spec.crypto, spec.id.as_str())?;
         let fabric = SamLocalProductFabric::new();
         let product = fabric
             .prepare_for_destination(&identity, now_seconds)
@@ -3456,6 +3644,20 @@ impl ServiceTunnelManager {
                     spec.id.as_str()
                 ))
             })?;
+        let lease_set_encryption_matches = match group_spec.crypto.lease_set_encryption {
+            i2pr_service_tunnels::DestinationLeaseSetEncryptionPolicy::X25519 => {
+                product.lease_set2.encryption_keys().len() == 1
+                    && product.lease_set2.encryption_keys()[0].key_type().code() == 4
+                    && product.lease_set2.encryption_keys()[0].as_bytes()
+                        == identity.static_public_bytes()
+            }
+        };
+        if !lease_set_encryption_matches {
+            return Err(ServiceTunnelError::InvalidConfig(format!(
+                "{} LeaseSet2 encryption does not match its selected crypto policy",
+                spec.id.as_str()
+            )));
+        }
         let destination_id = identity.id();
         Ok(BridgeData {
             identity_arc: Arc::new(identity),
@@ -3650,6 +3852,24 @@ impl ServiceTunnelManager {
         }
         None
     }
+}
+
+fn validate_destination_crypto_policy(
+    identity: &DestinationIdentity,
+    policy: i2pr_service_tunnels::DestinationCryptoPolicy,
+    service_id: &str,
+) -> Result<(), ServiceTunnelError> {
+    let signing_matches = match policy.signing {
+        i2pr_service_tunnels::DestinationSigningPolicy::Ed25519 => {
+            identity.signing_public_key().key_type().code() == 7
+        }
+    };
+    if !signing_matches {
+        return Err(ServiceTunnelError::InvalidConfig(format!(
+            "{service_id} destination identity does not match its selected crypto policy"
+        )));
+    }
+    Ok(())
 }
 
 fn identity_from_record(
@@ -4156,10 +4376,9 @@ pub(crate) async fn accept_server_syn(
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    if !runtime.access.allows(&peer_hash) {
-        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+    if !admit_server_peer(runtime, peer_hash) {
         return None;
-    };
+    }
     // Plan 182: answer the SYN with the connection's real
     // authenticated peer metadata and real port tuple (SAM parity
     // with `sam.rs` accept). The previous code passed a zeroed peer
@@ -4225,6 +4444,26 @@ pub(crate) async fn accept_server_syn(
     };
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
     Some((peer, aggregate_permit))
+}
+
+/// Applies the shared authenticated-peer policy and connection-rate owner
+/// before any server path queues a SYN response.
+pub(crate) fn admit_server_peer(runtime: &ServiceRuntime, peer_hash: [u8; 32]) -> bool {
+    if !runtime.access.allows(&peer_hash) {
+        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    let rate_allowed = runtime
+        .connection_rate_limiter
+        .lock()
+        .map(|mut limiter| limiter.admit(peer_hash, service_streaming_now_ms()))
+        .unwrap_or(false);
+    if !rate_allowed {
+        runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    true
 }
 
 async fn handle_server_syn(
@@ -4514,10 +4753,107 @@ async fn run_client_connection(
     manager: Arc<ServiceTunnelManager>,
     runtime: Arc<ServiceRuntime>,
     target: ClientTarget,
-    stream: TcpStream,
+    mut stream: TcpStream,
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
+    let connect_delay_ms = lookup_streaming_connect_delay(&manager, &runtime.spec_id);
+    if let Some(delay_ms) = connect_delay_ms {
+        let initial_payload = collect_connect_delay_payload(&mut stream, delay_ms).await?;
+        return run_client_connection_with_initial_payload(
+            manager,
+            runtime,
+            target,
+            stream,
+            cancellation,
+            initial_payload,
+        )
+        .await;
+    }
+    run_client_connection_with_initial_payload(
+        manager,
+        runtime,
+        target,
+        stream,
+        cancellation,
+        Vec::new(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod connect_delay_buffer_tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_uses_first_read_as_flush_and_bounds_payload() {
+        let (mut writer, mut reader) = duplex(usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 32);
+        let input = vec![0xA5; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 7];
+        writer.write_all(&input).await.expect("write initial bytes");
+        let started = tokio::time::Instant::now();
+        let output = collect_connect_delay_payload(&mut reader, 500)
+            .await
+            .expect("collect bounded payload");
+        assert_eq!(output, input[..usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)]);
+        assert_eq!(tokio::time::Instant::now(), started);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_emits_empty_payload_at_deadline() {
+        let (_writer, mut reader) = duplex(32);
+        let started = tokio::time::Instant::now();
+        let output = collect_connect_delay_payload(&mut reader, 500)
+            .await
+            .expect("timer expires without local data");
+        assert!(output.is_empty());
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_triggers_on_first_available_application_bytes() {
+        let (mut writer, mut reader) = duplex(64);
+        writer.write_all(b"first").await.expect("write first bytes");
+        let reader_task = tokio::spawn(async move {
+            collect_connect_delay_payload(&mut reader, 500)
+                .await
+                .expect("collect payload")
+        });
+        assert_eq!(reader_task.await.expect("reader task"), b"first");
+    }
+}
+
+async fn collect_connect_delay_payload<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    delay_ms: u64,
+) -> Result<Vec<u8>, std::io::Error> {
+    let mut buffer = vec![0u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)];
+    // A TCP peer does not expose its application-level flush calls.
+    // Treat the first readable batch as the flush trigger; if no bytes
+    // arrive, the configured delay still opens an empty Streaming SYN.
+    let length = match timeout(Duration::from_millis(delay_ms), reader.read(&mut buffer)).await {
+        Ok(Ok(length)) => length,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => 0,
+    };
+    buffer.truncate(length);
+    Ok(buffer)
+}
+
+async fn run_client_connection_with_initial_payload(
+    manager: Arc<ServiceTunnelManager>,
+    runtime: Arc<ServiceRuntime>,
+    target: ClientTarget,
+    stream: TcpStream,
+    cancellation: CancellationToken,
+    initial_payload: Vec<u8>,
+) -> Result<(), BoxError> {
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
+    manager
+        .ensure_destination_active(&runtime.spec_id, &cancellation, connect_timeout_ms)
+        .await?;
     let identity_arc =
         manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity());
     let Some(identity_arc) = identity_arc else {
@@ -4530,12 +4866,13 @@ async fn run_client_connection(
         let mut os_rng = OsRng;
         let mut rng = rand_core::UnwrapMut(&mut os_rng);
         manager.with_destination_bridge(runtime.destination_id, |bridge| {
-            bridge.streaming_mut().connect(
+            bridge.streaming_mut().connect_with_initial_payload(
                 identity_arc.as_ref(),
                 &target.remote,
                 0,
                 0,
                 DEFAULT_ADVERTISED_MAX_PAYLOAD,
+                &initial_payload,
                 service_streaming_now_ms(),
                 &mut rng,
             )
@@ -4644,6 +4981,16 @@ fn lookup_connect_timeout(manager: &ServiceTunnelManager, spec_id: &str) -> u64 
         .find(|spec| spec.id.as_str() == spec_id)
         .map(|spec| spec.timeouts.connect_timeout_ms)
         .unwrap_or(10_000)
+}
+
+fn lookup_streaming_connect_delay(manager: &ServiceTunnelManager, spec_id: &str) -> Option<u64> {
+    manager
+        .config()
+        .specs
+        .tunnels
+        .iter()
+        .find(|spec| spec.id.as_str() == spec_id)
+        .and_then(|spec| spec.timeouts.streaming_connect_delay_ms)
 }
 
 /// Streaming pump endpoint adapted to one service-tunnel destination.
@@ -5144,6 +5491,91 @@ mod plan202_routing_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn delay_open_queues_one_bounded_group_activation_and_waits_for_owner() {
+        let directory = temp_data_dir("plan323-delay-open");
+        let mut lazy_http = group_client(
+            "lazy-http",
+            "lazy-group",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        lazy_http.timeouts.delay_open = true;
+        let mut lazy_socks = group_client(
+            "lazy-socks",
+            "lazy-group",
+            ServiceTunnelKind::Socks5Client,
+            "127.0.0.1:0",
+        );
+        lazy_socks.timeouts.delay_open = true;
+        let mut mixed_lazy = group_client(
+            "mixed-lazy",
+            "mixed-group",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        mixed_lazy.timeouts.delay_open = true;
+        let mixed_eager = group_client(
+            "mixed-eager",
+            "mixed-group",
+            ServiceTunnelKind::Socks5Client,
+            "127.0.0.1:0",
+        );
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 8,
+                per_service_connection_ceiling: 4,
+                specs: Arc::new(ServiceTunnelSet {
+                    tunnels: vec![lazy_http, lazy_socks, mixed_lazy, mixed_eager],
+                }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let lazy_destination = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "lazy-http")
+            .expect("lazy runtime")
+            .destination_id;
+        let mixed_destination = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "mixed-lazy")
+            .expect("mixed runtime")
+            .destination_id;
+        assert_eq!(
+            manager.deferred_destination_ids(),
+            std::collections::HashSet::from([lazy_destination]),
+            "every member must opt in before a shared group is deferred",
+        );
+
+        let mut requests = manager
+            .take_deferred_activation_requests()
+            .expect("single product receiver");
+        manager.enable_deferred_activation();
+        let cancellation = CancellationToken::new();
+        let request_manager = Arc::clone(&manager);
+        let wait = tokio::spawn(async move {
+            request_manager
+                .ensure_destination_active("lazy-socks", &cancellation, 1_000)
+                .await
+        });
+        let request = tokio::time::timeout(Duration::from_secs(1), requests.recv())
+            .await
+            .expect("bounded activation request arrives")
+            .expect("receiver remains owned");
+        assert_eq!(request.destination_id, lazy_destination);
+        assert_ne!(request.destination_id, mixed_destination);
+        request
+            .completion
+            .send(Ok(()))
+            .expect("client still waits for product completion");
+        wait.await
+            .expect("activation waiter task")
+            .expect("product activation result");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn http_and_socks_services_can_share_one_ephemeral_group() {
         let directory = temp_data_dir("plan309-shared-clients");
         let mut dedicated_http = group_client(
@@ -5283,6 +5715,103 @@ mod plan202_routing_tests {
         let restarted_runtimes = restarted.prepare().await.expect("restart");
         assert_eq!(restarted_runtimes[0].destination_id, first_id);
         assert_eq!(restarted_runtimes[1].destination_id, first_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn persistent_client_identity_survives_manager_restart() {
+        let directory = temp_data_dir("plan323-persistent-client");
+        let group = DestinationGroupId::parse("i2pcontrol-shared-client").expect("group id");
+        let mut client = group_client(
+            "persistent-client",
+            "unused",
+            ServiceTunnelKind::GenericClient,
+            "127.0.0.1:0",
+        );
+        client.policy = DestinationPolicy::PersistentSharedClientGroup(group.clone());
+        let mut second = group_client(
+            "persistent-client-second",
+            "unused",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        second.policy = DestinationPolicy::PersistentSharedClientGroup(group);
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![client, second],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
+        let runtimes = manager.prepare().await.expect("prepare persistent client");
+        let initial = runtimes[0].destination_id;
+        assert_eq!(runtimes[1].destination_id, initial);
+        assert!(
+            ServiceDestinationStore::for_group(directory.path(), "i2pcontrol-shared-client")
+                .expect("persistent client group store")
+                .exists()
+        );
+        drop(runtimes);
+        drop(manager);
+
+        let restarted = build_manager();
+        let restarted_runtimes = restarted
+            .prepare()
+            .await
+            .expect("restart persistent client");
+        assert_eq!(restarted_runtimes.len(), 2);
+        assert_eq!(restarted_runtimes[0].destination_id, initial);
+        assert_eq!(restarted_runtimes[1].destination_id, initial);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn logical_key_reference_identity_survives_manager_restart() {
+        let directory = temp_data_dir("plan323-key-reference");
+        let mut client = group_client(
+            "keyed-client",
+            "unused",
+            ServiceTunnelKind::GenericClient,
+            "127.0.0.1:0",
+        );
+        client.policy = DestinationPolicy::KeyReference(
+            i2pr_service_tunnels::ServiceKeyReference::parse("primary").expect("key reference"),
+        );
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![client],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
+        let runtimes = manager.prepare().await.expect("prepare keyed client");
+        let initial = runtimes[0].destination_id;
+        let store =
+            ServiceDestinationStore::for_key_reference(directory.path(), "keyed-client", "primary")
+                .expect("key reference store");
+        assert!(store.exists());
+        drop(runtimes);
+        drop(manager);
+
+        let restarted = build_manager();
+        let restarted_runtimes = restarted.prepare().await.expect("restart keyed client");
+        assert_eq!(restarted_runtimes[0].destination_id, initial);
     }
 
     #[tokio::test(flavor = "current_thread")]

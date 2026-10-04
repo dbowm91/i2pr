@@ -255,7 +255,7 @@ acceptance advanced to
 | `destination` | `crates/i2pr-service-tunnels/src/destination.rs` | Base32/alias/configured parsing, alias table | `DestinationRef`, `StaticAliasTable` |
 | `errors` | `crates/i2pr-service-tunnels/src/errors.rs` | Typed structural errors, no secrets | `ServiceTunnelError` |
 | `events` | `crates/i2pr-service-tunnels/src/events.rs` | Value-only lifecycle events and snapshots | `ServiceTunnelEvent`, `ServiceTunnelSnapshot` |
-| `http` | `crates/i2pr-service-tunnels/src/http/` | Plan 176 runtime-neutral HTTP/1.1 parser, target validator, hop-by-hop/privacy rewrite, bounded error response; Plan 290 adds the server privacy contract (`server.rs`: origin-form only, required `Host` replaced with the loopback target, `Transfer-Encoding` rejection, hop-by-hop + identifying strip, forced close, no peer-identity injection) and `HttpErrorKind::MethodNotAllowed` (405); Plan 292 adds `HttpServerPolicy` presentation gates (`classify_presentation`: `/addresshelper` + `i2paddresshelper` helper class, `/jump` + `jump` jump class, closed gates refuse 403 via `HttpErrorKind::PresentationRefused`) | `HttpLimits`, `HttpClientOptions`, `PrivacyPolicy`, `UserAgentPolicy`, `HttpRequestHead`, `RequestTarget`, `parse_request_head`, `rewrite_headers`, `build_error_response`, `filter_server_request`, `filter_server_response`, `HttpServerPolicy`, `PresentationClass`, `classify_presentation` |
+| `http` | `crates/i2pr-service-tunnels/src/http/` | Plan 176 runtime-neutral HTTP/1.1 parser, target validator, hop-by-hop/privacy rewrite, bounded error response; Plan 290 adds the server privacy contract (`server.rs`: origin-form only, required `Host` replaced with the loopback target, `Transfer-Encoding` rejection, hop-by-hop + identifying strip, forced close, no peer-identity injection) and `HttpErrorKind::MethodNotAllowed` (405); Plan 292 adds `HttpServerPolicy` presentation gates (`classify_presentation`: `/addresshelper` + `i2paddresshelper` helper class, `/jump` + `jump` jump class, closed gates refuse 403 via `HttpErrorKind::PresentationRefused`); Plan 323 maps `AllowUserAgent`, `AllowReferer`, and `AllowAccept` into the typed request rewrite policy for HTTP client families | `HttpLimits`, `HttpClientOptions`, `PrivacyPolicy`, `UserAgentPolicy`, `HttpRequestHead`, `RequestTarget`, `parse_request_head`, `rewrite_headers`, `build_error_response`, `filter_server_request`, `filter_server_response`, `HttpServerPolicy`, `PresentationClass`, `classify_presentation` |
 | `auth` | `crates/i2pr-service-tunnels/src/auth.rs` | Plan 292 proxy credentials: per-realm SHA-256 `username:realm:password` verifiers with `$i2pr1$` marked stored form, constant-time verify, redacted `Debug`, HTTP Basic decode and SOCKS RFC 1929 subnegotiation helpers | `ProxyCredentials`, `PROXY_AUTH_REALM_*` |
 | `access` | `crates/i2pr-service-tunnels/src/access.rs` | Plan 292 server inbound peer allow/deny policy over canonical Base32 destination hashes (allow = `access_list` ∪ `white_list`, deny = `black_list`, deny wins, values never echoed) | `ServerAccessPolicy`, `MAX_ACCESS_LIST_ENTRIES` |
 | `idle` | `crates/i2pr-service-tunnels/src/idle.rs` | Plan 292 pure idle-sweep decision (close > rebuild > reduce priority, exact-deadline fire, saturating arithmetic) | `IdlePolicy`, `IdleSweepAction`, `idle_decision` |
@@ -378,7 +378,12 @@ i2pr_daemon::service_tunnels_irc_server:
 Destination group per service. An explicit `group` is an intentional
 linkability domain: every member shares one identity, Streaming owner,
 router material, registry entry, and lifecycle. Client-only groups use
-ephemeral identities. A group containing any server persists under
+ephemeral identities unless their explicit `PersistentClientKey`
+policy selects the same versioned service-Destination store. The
+Proposal 170 `Shared` plus `PersistentClientKey` combination persists
+the opted-in control-owned client group under
+`service_destinations/groups/i2pcontrol-shared-client/destination.identity`.
+A group containing any server persists under
 `service_destinations/groups/<group>/destination.identity`; an existing
 dedicated server identity is migrated byte-for-byte to its corresponding
 group path. Client activity in a persistent mixed group is logged as

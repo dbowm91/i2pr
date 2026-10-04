@@ -156,6 +156,16 @@ fn minimal_config(data_dir: &std::path::Path) -> Config {
             enabled: false,
             state_dir: data_dir.join("addressbook"),
         },
+        news: i2pr_daemon::config::NewsConfig {
+            enabled: false,
+            source_url: None,
+            signer_id: None,
+            certificate_path: None,
+            proxy_host: "127.0.0.1".parse().unwrap(),
+            proxy_port: 4444,
+            max_su3_bytes: 8 * 1024 * 1024,
+            refresh_interval: std::time::Duration::from_secs(6 * 60 * 60),
+        },
         floodfill: i2pr_daemon::config::FloodfillConfig { enabled: false },
         source_path: None,
     }

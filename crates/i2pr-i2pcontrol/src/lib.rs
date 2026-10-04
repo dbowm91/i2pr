@@ -43,6 +43,8 @@ pub mod errors;
 pub mod jsonrpc;
 pub mod limits;
 pub mod methods;
+pub mod proposal_tunnel_matrix;
+pub mod proposal_wire;
 pub mod router_info;
 pub mod source_matrix;
 pub mod tunnel;
@@ -71,11 +73,21 @@ pub use limits::{
     MAX_SUBSCRIPTION_URLS, MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN,
 };
 pub use methods::{METHODS, Method};
+pub use proposal_tunnel_matrix::{
+    ProposalTunnelCellDisposition, ProposalTunnelMatrixCell, proposal_tunnel_manager_matrix,
+};
+pub use proposal_wire::{
+    BASE_ROUTER_INFO_FIELDS, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS, PROPOSAL_ENCRYPT_LEASE_SET_VALUES,
+    PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_INTEGER_RANGES, PROPOSAL_TUNNEL_MANAGER_FIELDS,
+    PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES, ProposalRouterInfoField, ProposalTunnelIntegerRange,
+    ProposalTunnelValueError, ProposalTunnelValueType, ProposalValueType,
+    proposal_tunnel_value_type, router_info_field, validate_proposal_tunnel_value,
+};
 pub use router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
 pub use source_matrix::{
-    CLIENT_SERVICES_SOURCE_MATRIX, ROUTER_INFO_SOURCE_MATRIX, SOURCE_MATRIX_NEUTRAL_COUNT,
-    SourceAvailability, SourceRow, matrix_mirrors_inventories, selector_index, service_index,
-    service_row, source_row,
+    CLIENT_SERVICES_SOURCE_MATRIX, ProposalSourceRow, ROUTER_INFO_SOURCE_MATRIX,
+    SOURCE_MATRIX_NEUTRAL_COUNT, SourceAvailability, SourceRow, matrix_mirrors_inventories,
+    proposal_router_info_source_matrix, selector_index, service_index, service_row, source_row,
 };
 pub use tunnel::{TUNNEL_ACTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus, TunnelType};
 pub use tunnel_options::{

@@ -64,6 +64,10 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Check dependency direction
         run: bash scripts/check-dependency-direction.sh
+      - name: Check global plan-number ownership
+        run: python3 scripts/check-global-plan-number-uniqueness.py
+      - name: Test planning checkers
+        run: python3 -m unittest discover -s tests/planning -p 'test_*.py'
       - name: Check runtime boundaries
         if: runner.os == 'Linux'
         run: bash scripts/check-runtime-boundaries.sh
