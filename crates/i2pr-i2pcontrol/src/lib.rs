@@ -43,6 +43,7 @@ pub mod errors;
 pub mod jsonrpc;
 pub mod limits;
 pub mod methods;
+pub mod proposal_tunnel_matrix;
 pub mod proposal_wire;
 pub mod router_info;
 pub mod source_matrix;
@@ -72,6 +73,9 @@ pub use limits::{
     MAX_SUBSCRIPTION_URLS, MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN,
 };
 pub use methods::{METHODS, Method};
+pub use proposal_tunnel_matrix::{
+    ProposalTunnelCellDisposition, ProposalTunnelMatrixCell, proposal_tunnel_manager_matrix,
+};
 pub use proposal_wire::{
     BASE_ROUTER_INFO_FIELDS, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS, PROPOSAL_ENCRYPT_LEASE_SET_VALUES,
     PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_INTEGER_RANGES, PROPOSAL_TUNNEL_MANAGER_FIELDS,
