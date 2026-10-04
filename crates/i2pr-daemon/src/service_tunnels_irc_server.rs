@@ -490,18 +490,7 @@ pub async fn run_irc_server_loop(
                 runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
-            if !runtime.access.allows(&peer_hash) {
-                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            let rate_allowed = runtime
-                .connection_rate_limiter
-                .lock()
-                .map(|mut limiter| limiter.admit(peer_hash, service_streaming_now_ms()))
-                .unwrap_or(false);
-            if !rate_allowed {
-                runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
-                runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+            if !crate::service_tunnels::admit_server_peer(runtime, peer_hash) {
                 continue;
             }
             // Plan 182: answer the SYN before waiting for

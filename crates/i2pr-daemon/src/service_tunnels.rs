@@ -4189,18 +4189,7 @@ pub(crate) async fn accept_server_syn(
         runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
         return None;
     };
-    if !runtime.access.allows(&peer_hash) {
-        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
-        return None;
-    };
-    let rate_allowed = runtime
-        .connection_rate_limiter
-        .lock()
-        .map(|mut limiter| limiter.admit(peer_hash, now_ms))
-        .unwrap_or(false);
-    if !rate_allowed {
-        runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
-        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+    if !admit_server_peer(runtime, peer_hash) {
         return None;
     }
     // Plan 182: answer the SYN with the connection's real
@@ -4268,6 +4257,26 @@ pub(crate) async fn accept_server_syn(
     };
     runtime.active_connections.fetch_add(1, Ordering::Relaxed);
     Some((peer, aggregate_permit))
+}
+
+/// Applies the shared authenticated-peer policy and connection-rate owner
+/// before any server path queues a SYN response.
+pub(crate) fn admit_server_peer(runtime: &ServiceRuntime, peer_hash: [u8; 32]) -> bool {
+    if !runtime.access.allows(&peer_hash) {
+        runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    let rate_allowed = runtime
+        .connection_rate_limiter
+        .lock()
+        .map(|mut limiter| limiter.admit(peer_hash, service_streaming_now_ms()))
+        .unwrap_or(false);
+    if !rate_allowed {
+        runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return false;
+    }
+    true
 }
 
 async fn handle_server_syn(
