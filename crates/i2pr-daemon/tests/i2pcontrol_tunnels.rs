@@ -409,7 +409,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         serde_json::json!({
             "Action":"create", "Name":"shared-client", "Type":"client",
             "TargetDestination":b32, "Port":distinct_port(),
-            "StartOnLoad":false, "Shared":true
+            "StartOnLoad":false, "Shared":true, "PersistentClientKey":true
         }),
         9,
     )
@@ -430,6 +430,10 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     .await;
     assert_eq!(
         shared_info["result"]["info"]["rawConfig"]["shared"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        shared_info["result"]["info"]["persistentClientKey"],
         serde_json::json!(true)
     );
     let deleted_shared = tunnel_raw(

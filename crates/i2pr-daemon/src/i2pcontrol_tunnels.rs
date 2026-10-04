@@ -148,8 +148,8 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// arm below consumes it (the `other` arm still rejects ownerless
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
-/// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 15] = [
+/// Plan 323 TunnelManager metadata and runtime options with typed owners.
+pub const SUPPORTED_323_OPTIONS: [&str; 16] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -165,6 +165,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 15] = [
     "user_agents",
     "block_access_in_proxies",
     "shared",
+    "persistent_client_key",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -869,8 +870,8 @@ fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError>
 /// Builds a validated [`ServiceTunnelSpec`] from a control definition.
 ///
 /// Only options with a real owner are accepted (Plans 289, 291, the
-/// Plan 292 option slice, the Plan 296 residual slice, and the Plan
-/// 297 TLS slice); every other supplied option fails as unsupported
+/// Plan 292 option slice, the Plan 296 residual slice, the Plan 297
+/// TLS slice, and implemented Plan 323 fields); every other supplied option fails as unsupported
 /// (never accepted inertly). Secret-classified options are rejected
 /// even though the subset contains none, so a future subset
 /// extension cannot silently persist secrets.
@@ -919,6 +920,7 @@ pub fn build_control_spec(
     // intentional linkability domain, matching I2PTunnel's
     // sharedClient setting.
     let mut shared_client = false;
+    let mut persistent_client_key = false;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -971,6 +973,24 @@ pub fn build_control_spec(
                     });
                 }
                 shared_client = parse_bool_option(key, value)?;
+            }
+            "persistent_client_key" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                        | ServiceTunnelKind::StreamrClient
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "PersistentClientKey applies to client tunnels only",
+                    });
+                }
+                persistent_client_key = parse_bool_option(key, value)?;
             }
             "description" => {
                 // Description is control-plane metadata: its authoritative
@@ -2015,13 +2035,17 @@ pub fn build_control_spec(
         target,
         targets: Vec::new(),
         destination,
-        policy: if shared_client {
-            DestinationPolicy::SharedClientGroup(
+        policy: match (shared_client, persistent_client_key) {
+            (true, true) => DestinationPolicy::PersistentSharedClientGroup(
                 DestinationGroupId::parse("i2pcontrol-shared-client")
                     .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
-            )
-        } else {
-            DestinationPolicy::Dedicated
+            ),
+            (true, false) => DestinationPolicy::SharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            ),
+            (false, true) => DestinationPolicy::PersistentClient,
+            (false, false) => DestinationPolicy::Dedicated,
         },
         inbound_port: None,
         max_connections,
@@ -3885,6 +3909,48 @@ mod tests {
                 DestinationGroupId::parse("i2pcontrol-shared-client").expect("group id")
             )
         );
+
+        let persistent = ControlDefinition {
+            name: "persistent-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let persistent_spec = build_control_spec(&persistent).expect("persistent client spec");
+        assert_eq!(persistent_spec.policy, DestinationPolicy::PersistentClient);
+        assert!(
+            ServiceTunnelSet {
+                tunnels: vec![persistent_spec],
+            }
+            .destination_groups()[0]
+                .persistent
+        );
+
+        let shared_persistent = ControlDefinition {
+            name: "shared-persistent".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("shared".to_owned(), "true".to_owned()),
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let shared_persistent =
+            build_control_spec(&shared_persistent).expect("shared persistent client spec");
+        assert!(matches!(
+            shared_persistent.policy,
+            DestinationPolicy::PersistentSharedClientGroup(_)
+        ));
 
         for tunnel_type in [TunnelType::Server, TunnelType::StreamrClient] {
             let definition = ControlDefinition {

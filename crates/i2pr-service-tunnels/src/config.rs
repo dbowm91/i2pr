@@ -267,8 +267,12 @@ impl ServiceTunnelKind {
 pub enum DestinationPolicy {
     /// One destination/pool per service.
     Dedicated,
+    /// One persistent destination/pool per client service.
+    PersistentClient,
     /// Legacy client-only group spelling, retained for source compatibility.
     SharedClientGroup(ServiceClientGroupId),
+    /// Persistent named group of explicitly shared client services.
+    PersistentSharedClientGroup(DestinationGroupId),
     /// Shared named Destination linkability domain.
     SharedGroup(DestinationGroupId),
 }
@@ -297,24 +301,39 @@ pub struct DestinationGroupSpec {
 impl DestinationPolicy {
     /// Returns `true` for the dedicated policy.
     pub fn is_dedicated(&self) -> bool {
-        matches!(self, Self::Dedicated)
+        matches!(self, Self::Dedicated | Self::PersistentClient)
+    }
+
+    /// Whether this policy requires the named client identity to
+    /// survive router restart.
+    pub fn persists_client_identity(&self) -> bool {
+        matches!(
+            self,
+            Self::PersistentClient | Self::PersistentSharedClientGroup(_)
+        )
     }
 
     /// Returns the explicit Destination-group identity when present.
     pub fn group_id(&self, service_id: &ServiceTunnelId) -> DestinationGroupId {
         match self {
-            Self::Dedicated => DestinationGroupId(service_id.as_str().to_owned()),
-            Self::SharedClientGroup(id) | Self::SharedGroup(id) => id.clone(),
+            Self::Dedicated | Self::PersistentClient => {
+                DestinationGroupId(service_id.as_str().to_owned())
+            }
+            Self::SharedClientGroup(id)
+            | Self::PersistentSharedClientGroup(id)
+            | Self::SharedGroup(id) => id.clone(),
         }
     }
 
     /// Returns the collision-free group owner key for a service.
     pub fn group_key(&self, service_id: &ServiceTunnelId) -> DestinationGroupKey {
         match self {
-            Self::Dedicated => DestinationGroupKey::Dedicated(service_id.clone()),
-            Self::SharedClientGroup(id) | Self::SharedGroup(id) => {
-                DestinationGroupKey::Explicit(id.clone())
+            Self::Dedicated | Self::PersistentClient => {
+                DestinationGroupKey::Dedicated(service_id.clone())
             }
+            Self::SharedClientGroup(id)
+            | Self::PersistentSharedClientGroup(id)
+            | Self::SharedGroup(id) => DestinationGroupKey::Explicit(id.clone()),
         }
     }
 }
@@ -1001,6 +1020,16 @@ impl ServiceTunnelSpec {
             ServiceTunnelKind::GenericServer
             | ServiceTunnelKind::IrcServer
             | ServiceTunnelKind::HttpServer => {
+                if matches!(
+                    self.policy,
+                    DestinationPolicy::PersistentClient
+                        | DestinationPolicy::PersistentSharedClientGroup(_)
+                ) {
+                    return Err(ServiceTunnelError::ContradictoryOptions {
+                        id,
+                        reason: "persistent client-key policy applies to client services only",
+                    });
+                }
                 if self.listener.is_some() {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
@@ -1021,7 +1050,9 @@ impl ServiceTunnelSpec {
                 }
                 let explicit_group = matches!(
                     self.policy,
-                    DestinationPolicy::SharedClientGroup(_) | DestinationPolicy::SharedGroup(_)
+                    DestinationPolicy::SharedClientGroup(_)
+                        | DestinationPolicy::PersistentSharedClientGroup(_)
+                        | DestinationPolicy::SharedGroup(_)
                 );
                 if explicit_group && self.inbound_port.is_none_or(|port| port == 0) {
                     return Err(ServiceTunnelError::ContradictoryOptions {
@@ -1056,7 +1087,12 @@ impl ServiceTunnelSpec {
                         reason: "http-bidir-server must not carry a remote destination reference",
                     });
                 }
-                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                if matches!(
+                    self.policy,
+                    DestinationPolicy::PersistentClient
+                        | DestinationPolicy::PersistentSharedClientGroup(_)
+                        | DestinationPolicy::SharedClientGroup(_)
+                ) {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "http-bidir-server requires a dedicated destination",
@@ -1088,7 +1124,11 @@ impl ServiceTunnelSpec {
                         reason: "streamr-client requires the producer destination reference",
                     });
                 }
-                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                if matches!(
+                    self.policy,
+                    DestinationPolicy::SharedClientGroup(_)
+                        | DestinationPolicy::PersistentSharedClientGroup(_)
+                ) {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "streamr-client requires a dedicated destination",
@@ -1119,7 +1159,12 @@ impl ServiceTunnelSpec {
                         reason: "streamr-server must not carry a remote destination reference",
                     });
                 }
-                if matches!(self.policy, DestinationPolicy::SharedClientGroup(_)) {
+                if matches!(
+                    self.policy,
+                    DestinationPolicy::PersistentClient
+                        | DestinationPolicy::SharedClientGroup(_)
+                        | DestinationPolicy::PersistentSharedClientGroup(_)
+                ) {
                     return Err(ServiceTunnelError::ContradictoryOptions {
                         id,
                         reason: "streamr-server requires a dedicated destination",
@@ -1471,6 +1516,7 @@ impl ServiceTunnelSet {
             if spec.kind.is_server()
                 && let Some(port) = spec.inbound_port
                 && let DestinationPolicy::SharedClientGroup(group)
+                | DestinationPolicy::PersistentSharedClientGroup(group)
                 | DestinationPolicy::SharedGroup(group) = &spec.policy
                 && !server_ports.insert((group.as_str().to_owned(), port))
             {
@@ -1513,7 +1559,8 @@ impl ServiceTunnelSet {
                     persistent: false,
                 });
             group.members.push(service.id.clone());
-            group.persistent |= service.kind.is_server()
+            group.persistent |= service.policy.persists_client_identity()
+                || service.kind.is_server()
                 || matches!(service.kind, ServiceTunnelKind::HttpBidirServer);
         }
         groups.into_values().collect()

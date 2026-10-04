@@ -5293,6 +5293,61 @@ mod plan202_routing_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn persistent_client_identity_survives_manager_restart() {
+        let directory = temp_data_dir("plan323-persistent-client");
+        let group = DestinationGroupId::parse("i2pcontrol-shared-client").expect("group id");
+        let mut client = group_client(
+            "persistent-client",
+            "unused",
+            ServiceTunnelKind::GenericClient,
+            "127.0.0.1:0",
+        );
+        client.policy = DestinationPolicy::PersistentSharedClientGroup(group.clone());
+        let mut second = group_client(
+            "persistent-client-second",
+            "unused",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        second.policy = DestinationPolicy::PersistentSharedClientGroup(group);
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![client, second],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
+        let runtimes = manager.prepare().await.expect("prepare persistent client");
+        let initial = runtimes[0].destination_id;
+        assert_eq!(runtimes[1].destination_id, initial);
+        assert!(
+            ServiceDestinationStore::for_group(directory.path(), "i2pcontrol-shared-client")
+                .expect("persistent client group store")
+                .exists()
+        );
+        drop(runtimes);
+        drop(manager);
+
+        let restarted = build_manager();
+        let restarted_runtimes = restarted
+            .prepare()
+            .await
+            .expect("restart persistent client");
+        assert_eq!(restarted_runtimes.len(), 2);
+        assert_eq!(restarted_runtimes[0].destination_id, initial);
+        assert_eq!(restarted_runtimes[1].destination_id, initial);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn distinct_destination_groups_have_distinct_canonical_pools() {
         let directory = temp_data_dir("plan315-distinct-pools");
         let specs = Arc::new(ServiceTunnelSet {

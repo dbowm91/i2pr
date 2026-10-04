@@ -378,7 +378,12 @@ i2pr_daemon::service_tunnels_irc_server:
 Destination group per service. An explicit `group` is an intentional
 linkability domain: every member shares one identity, Streaming owner,
 router material, registry entry, and lifecycle. Client-only groups use
-ephemeral identities. A group containing any server persists under
+ephemeral identities unless their explicit `PersistentClientKey`
+policy selects the same versioned service-Destination store. The
+Proposal 170 `Shared` plus `PersistentClientKey` combination persists
+the opted-in control-owned client group under
+`service_destinations/groups/i2pcontrol-shared-client/destination.identity`.
+A group containing any server persists under
 `service_destinations/groups/<group>/destination.identity`; an existing
 dedicated server identity is migrated byte-for-byte to its corresponding
 group path. Client activity in a persistent mixed group is logged as

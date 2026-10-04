@@ -119,6 +119,7 @@ impl core::fmt::Display for TunnelRequestError {
 fn canonical_option(key: &str) -> Option<&'static str> {
     match key {
         "Shared" => Some("shared"),
+        "PersistentClientKey" => Some("persistent_client_key"),
         "TargetHost" | "Host" => Some("target_host"),
         "TargetPort" => Some("target_port"),
         "Port" => Some("listen_port"),
@@ -170,7 +171,7 @@ fn pascal_option_name(key: &str) -> String {
 }
 
 fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
-    let value_type = if key == "shared" {
+    let value_type = if matches!(key, "shared" | "persistent_client_key") {
         crate::tunnel_options::OptionValueType::Boolean
     } else {
         find_option(key)
@@ -354,9 +355,10 @@ pub fn decode_tunnel_request(
                     options_seen = true;
                     continue;
                 };
-                let option_value_type = if option_key == "shared" {
-                    // Proposal 170's Shared control extends the
-                    // frozen Plan 286 option table under Plan 323.
+                let option_value_type = if matches!(option_key, "shared" | "persistent_client_key")
+                {
+                    // Proposal 170 controls extend the frozen Plan
+                    // 286 option table under Plan 323.
                     crate::tunnel_options::OptionValueType::Boolean
                 } else {
                     find_option(option_key)
