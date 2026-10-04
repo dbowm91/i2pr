@@ -628,6 +628,33 @@ async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
 }
 
 #[tokio::test]
+async fn custom_options_are_rejected_as_invalid_params_without_allocation() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let rejected = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"create", "Name":"unsafe-options", "Type":"server",
+            "CustomOptions":"TargetHost=attacker.invalid"
+        }),
+        2,
+    )
+    .await;
+    assert_eq!(rejected["error"]["code"], -32_602, "{rejected}");
+    assert!(
+        rejected["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no safe typed allowlist"),
+        "the rejection names the missing safe owner: {rejected}"
+    );
+}
+
+#[tokio::test]
 async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     let directory = tempfile::tempdir().expect("tempdir");
     let filter_root = directory

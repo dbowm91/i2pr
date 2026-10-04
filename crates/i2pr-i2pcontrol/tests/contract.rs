@@ -1431,16 +1431,26 @@ fn plan289_tunnel_request_envelope_rules() {
             Some(expected)
         );
     }
-    for key in ["CustomOptions", "PrivKeyFile"] {
-        assert_eq!(
-            decode_tunnel_request(&params(serde_json::json!({
-                "Action": "create", "Name": "a", "Type": "server",
-                (key): "operator supplied value",
-            }))),
-            Err(TunnelRequestError::UnavailableOption(key.to_owned())),
-            "{key} must not bypass typed validation or accept an arbitrary path"
-        );
-    }
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "CustomOptions": "TargetHost=attacker.invalid",
+        }))),
+        Err(TunnelRequestError::RejectedOption(
+            "CustomOptions".to_owned()
+        )),
+        "arbitrary CustomOptions are explicitly rejected without a typed allowlist"
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "PrivKeyFile": "operator supplied path",
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "PrivKeyFile".to_owned()
+        )),
+        "PrivKeyFile remains unavailable until a confined logical key owner exists"
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",

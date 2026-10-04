@@ -87,6 +87,9 @@ pub enum TunnelRequestError {
     DuplicateAlias(String),
     /// Proposal field is valid, but its owner is registered to a later plan.
     UnavailableOption(String),
+    /// Proposal field is explicitly rejected because no safe typed owner
+    /// or bounded allowlist exists for its arbitrary contents.
+    RejectedOption(String),
     /// `All` selected a capability not implemented by the current owner.
     AllUnavailable,
     /// `edit` carried neither `NewName` nor options.
@@ -111,6 +114,12 @@ impl core::fmt::Display for TunnelRequestError {
             Self::NothingToChange => write!(formatter, "edit requires new_name or options"),
             Self::DuplicateAlias(_) => write!(formatter, "duplicate TunnelManager aliases"),
             Self::UnavailableOption(_) => write!(formatter, "TunnelManager field is unavailable"),
+            Self::RejectedOption(key) => {
+                write!(
+                    formatter,
+                    "TunnelManager option {key} has no safe typed allowlist"
+                )
+            }
             Self::AllUnavailable => write!(formatter, "All action is not available"),
         }
     }
@@ -416,6 +425,9 @@ pub fn decode_tunnel_request(
                     continue;
                 }
                 let Some(option_key) = canonical_option(key) else {
+                    if key == "CustomOptions" {
+                        return Err(TunnelRequestError::RejectedOption(key.to_owned()));
+                    }
                     unavailable_option.get_or_insert_with(|| key.to_owned());
                     options_seen = true;
                     continue;
