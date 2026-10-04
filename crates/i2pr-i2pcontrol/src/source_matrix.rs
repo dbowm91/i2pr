@@ -206,7 +206,7 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
                 owner: "signed NEWS cache",
                 owner_plan: "322",
             },
-            Some("signed_news_refresh_preserves_last_verified_feed"),
+            Some("authenticated_news_verifies_before_parse_and_survives_304_restart"),
         ),
         "i2p.router.logs" => (
             "daemon LogRing",
