@@ -1,6 +1,6 @@
 # Plan 327 — I2P-routed outproxy provider and canonical proxy option completion
 
-Status: **registered-prop170-outproxy-provider-blocked-on-plan323**
+Status: **blocked-prop170-outproxy-provider-needs-routed-provider-and-secret-owner**
 
 Classification: capability + security boundary.
 
@@ -78,3 +78,7 @@ Changing provider/proxy list is a transactional service reconfiguration with cle
 Plan 327 closes when every canonical outproxy field has a real I2P-routed owner and UseOutproxyPlugin is no longer an explicit incompatibility.
 
 No direct-clearnet capability is introduced.
+
+## Current disposition
+
+Plan 327 is closed blocked in `plans/closure/i2pcontrol-proposal-170/327-status.md`. The existing `.i2p` Streaming path does not supply an outproxy protocol or configured provider owner. The current credential persistence path stores a one-way inbound-auth verifier, which cannot produce an outbound password after restart. Reopen after a reviewed static I2P outproxy/HTTP-SOCKS provider and restart-safe non-echoing outbound secret owner are available.
