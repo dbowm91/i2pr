@@ -21,11 +21,11 @@
 //!   ride the datagram path, not the streaming stack.
 //! - [`CellDisposition::ExplicitIncompatibility`]: applicable, but the key
 //!   names a capability i2pr explicitly does not provide (dynamic
-//!   destination SigType, encrypted/blinded LeaseSet security and client
-//!   authorization, outproxy provider). The limitation string names the
-//!   missing owner. Supplying the key fails before allocation with the
-//!   limitation; omitting it selects the ordinary i2pr behavior. Plan 295
-//!   carries these limitations into the final support claim.
+//!   destination SigType, a second LeaseSet lookup secret, outproxy
+//!   provider). The limitation string names the missing owner. Supplying
+//!   the key fails before allocation with the limitation; omitting it
+//!   selects the ordinary i2pr behavior. Plan 295 carries these
+//!   limitations into the final support claim.
 //! - [`CellDisposition::CorrectivePending`]: applicable, but the required
 //!   primitive needs a new corrective plan. All Plan 296 residuals
 //!   closed into apply owners (pool shaping, multihoming, reply
@@ -248,14 +248,30 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
         40 => CellDisposition::ExplicitIncompatibility {
             limitation: "dynamic destination SigType has no key-generation owner (Ed25519-only)",
         },
-        // 41 encrypt_lease_set / 42 leaseset_password /
-        // 43 leaseset_blinding_secret / 44 leaseset_client_auth: Plan 293
-        // determination. No blinded/encrypted LeaseSet publication owner,
-        // no type-5 framing owner, and no client-authorization verifier
-        // exist; any supplied value fails before allocation, including
-        // explicit disable (omit the field for ordinary publication).
-        41..=44 => CellDisposition::ExplicitIncompatibility {
-            limitation: "encrypted/blinded LeaseSet security and client authorization have no publication owner",
+        // 41 encrypt_lease_set / 42 leaseset_password / 44 leaseset_client_auth:
+        // Plan 334 supersedes the Plan 293 determination. The Proposal 170
+        // LeaseSet block now resolves onto the real ELS2 owners frozen by
+        // Plans 332/333: the mode selects the record shape, the lookup secret
+        // is the single ELS2 lookup secret, and the client list is the
+        // authorization block. All three are validated as one block before
+        // any mutation and are never echoed.
+        41 => CellDisposition::Apply {
+            owner: "EncryptLeaseSet mode into the Plan 332/333 ELS2 publication owner",
+        },
+        42 => CellDisposition::Apply {
+            owner: "OptionalLookup into the ELS2 lookup-secret owner (BlindingIdentity)",
+        },
+        44 => CellDisposition::Apply {
+            owner: "LeaseSetClientAuths into Els2AuthorizationServerConfig (PSK or DH)",
+        },
+        // 43 leaseset_blinding_secret: Plan 334 retires this i2pr-invented
+        // duplicate. The ELS2 specification defines exactly one lookup secret
+        // and Proposal 170 spells it once, as `OptionalLookup`, so keeping a
+        // second slot would let an operator believe two secrets are in effect
+        // when only one can be. It is refused by name rather than aliased.
+        43 => CellDisposition::ExplicitIncompatibility {
+            limitation: "a second LeaseSet lookup secret has no distinct owner; Proposal 170 \
+                         spells the single ELS2 lookup secret as OptionalLookup",
         },
         // 45 use_outproxy_plugin: Plan 293 determination. No safe
         // I2P-routed outproxy provider exists, and a provider would need

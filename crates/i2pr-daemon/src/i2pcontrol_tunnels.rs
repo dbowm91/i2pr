@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use i2pr_i2pcontrol::proposal_leaseset_mode::{LeaseSetClientAuthScheme, LeaseSetSecurityPlan};
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
@@ -190,6 +191,23 @@ pub const SUPPORTED_323_OPTIONS: [&str; 33] = [
 /// Plan 324 exposes only algorithms supported by the current
 /// destination-identity and LeaseSet2 encryption owners.
 pub const SUPPORTED_324_OPTIONS: [&str; 2] = ["sig_type", "enc_type"];
+
+/// Plan 334: the three LeaseSet security options that now have real owners.
+///
+/// `encrypt_lease_set` is the Proposal 170 `EncryptLeaseSet` mode,
+/// `leaseset_password` is its `OptionalLookup` field, and
+/// `leaseset_client_auth` is its `LeaseSetClientAuths` list in the bounded
+/// durable encoding.
+///
+/// `leaseset_blinding_secret` is deliberately **not** here. The ELS2
+/// specification defines exactly one lookup secret, and Proposal 170 spells it
+/// once, so the duplicate i2pr slot keeps its refusal rather than becoming a
+/// second secret an operator could believe is in effect.
+pub const SUPPORTED_334_OPTIONS: [&str; 3] = [
+    "encrypt_lease_set",
+    "leaseset_password",
+    "leaseset_client_auth",
+];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -224,6 +242,88 @@ pub struct ControlDefinition {
     pub options: BTreeMap<String, String>,
     /// Persisted start-at-startup intent (distinct from running state).
     pub start_on_load: bool,
+}
+
+impl ControlDefinition {
+    /// Plan 334: the resolved LeaseSet security posture of this definition.
+    ///
+    /// Derived from `options` on every call rather than stored alongside them,
+    /// so the two cannot drift: there is no state in which a definition's
+    /// recorded posture disagrees with the options it was derived from, and a
+    /// reloaded generation is re-validated instead of trusted.
+    pub fn lease_set_security(&self) -> Result<LeaseSetSecurityPlan, ControlError> {
+        lease_set_security_plan(&self.options)
+    }
+}
+
+/// Resolves the LeaseSet security posture of one options map.
+///
+/// A map with none of the three Plan 334 keys is the ordinary posture, which is
+/// also what `disable` means. The identical rule runs in the request envelope
+/// and here, so a merged `create`+stored-`edit` candidate and a reloaded stored
+/// definition obey the same law as a fresh request.
+///
+/// The error names the offending option and the selected mode and never a
+/// secret value.
+pub fn lease_set_security_plan(
+    options: &BTreeMap<String, String>,
+) -> Result<LeaseSetSecurityPlan, ControlError> {
+    if !options.contains_key("encrypt_lease_set")
+        && !options.contains_key("leaseset_password")
+        && !options.contains_key("leaseset_client_auth")
+    {
+        return Ok(i2pr_i2pcontrol::resolve_lease_set_security(None, None, &[])
+            .expect("the ordinary security block is valid by construction"));
+    }
+    i2pr_i2pcontrol::tunnel_request::validate_lease_set_security_block(options).map_err(|error| {
+        // `BadValue` carries the rule's own message, which names the mode and
+        // never a secret. The envelope variant is unreachable here because the
+        // caller already holds decoded option strings.
+        let reason = match error {
+            i2pr_i2pcontrol::TunnelRequestError::BadValue(message) => message,
+            other => format!("{other:?}"),
+        };
+        ControlError::LeaseSetSecurityRejected(reason)
+    })
+}
+
+/// Projects one definition's resolved LeaseSet security posture for a control
+/// response.
+///
+/// Reports *whether* each secret is configured, the lookup secret's length,
+/// and the client count — never a byte of either. This is the same rule the
+/// ELS2 secret types enforce structurally by having no revealing `Display`,
+/// no `Debug` that reveals, and no serializer; the control surface cannot
+/// avoid the question, so it answers it without the value.
+///
+/// The `EncryptLeaseSet` mode itself is `OptionSensitivity::Public` and is
+/// reported verbatim, so an operator can read back which of the ten values the
+/// stored definition actually recorded.
+pub fn lease_set_security_projection(definition: &ControlDefinition) -> serde_json::Value {
+    let plan = definition
+        .lease_set_security()
+        .expect("a stored definition has already passed this rule");
+    let flags = plan.address_flags();
+    serde_json::json!({
+        "encryptLeaseSet": plan.spelling(),
+        "behavior": format!("{:?}", plan.behavior()),
+        "publishesEncryptedLeaseSet2": plan.publishes_type5(),
+        "lookupSecretConfigured": plan.lookup_secret_supplied(),
+        // The lookup secret is needed verbatim to derive the daily blinded
+        // key, so its length is the only non-secret fact about it worth
+        // returning. It is bounded, so it cannot be a covert channel.
+        "lookupSecretLength": definition
+            .options
+            .get("leaseset_password")
+            .map_or(0, String::len),
+        "clientAuthScheme": plan.client_auth_scheme().map(|scheme| match scheme {
+            LeaseSetClientAuthScheme::PreSharedKey => "psk",
+            LeaseSetClientAuthScheme::DiffieHellman => "dh",
+        }),
+        "clientAuthCount": plan.client_count(),
+        "requiresBlindingSecret": flags.requires_blinding_secret(),
+        "requiresClientKey": flags.requires_client_key(),
+    })
 }
 
 impl core::fmt::Debug for ControlDefinition {
@@ -261,6 +361,17 @@ pub enum ControlError {
         /// Static reason (never echoes the value).
         reason: &'static str,
     },
+    /// Plan 334: the LeaseSet security block is internally inconsistent — a
+    /// mode that needs `OptionalLookup` or `LeaseSetClientAuths` did not get
+    /// it, or got one its mode does not consume, or the mode itself is one
+    /// i2pr refuses.
+    ///
+    /// A dedicated variant rather than [`Self::InvalidOption`] because the
+    /// reason is owned bounded text: it must name *which* Proposal mode was
+    /// selected to be actionable, and `InvalidOption`'s `&'static str` cannot
+    /// carry that. The text comes from the frozen mode-mapping rule and names
+    /// the mode and the key, never a secret value.
+    LeaseSetSecurityRejected(String),
     /// Options contradict the tunnel kind.
     ContradictoryOptions {
         /// Tunnel name.
@@ -311,6 +422,9 @@ impl core::fmt::Display for ControlError {
             }
             Self::InvalidOption { option, reason } => {
                 write!(formatter, "invalid option {option}: {reason}")
+            }
+            Self::LeaseSetSecurityRejected(reason) => {
+                write!(formatter, "invalid LeaseSet security block: {reason}")
             }
             Self::ContradictoryOptions { name, reason } => {
                 write!(formatter, "contradictory options for {name}: {reason}")
@@ -550,6 +664,14 @@ impl ControlStore {
             }
             let tunnel_type =
                 TunnelType::parse(&stored.tunnel_type).map_err(|_| StoreError::Corrupt("type"))?;
+            // Plan 334: the stored LeaseSet security block is re-validated on
+            // load, not trusted. A generation written under an older or
+            // different rule that no longer satisfies the frozen mapping fails
+            // the whole load closed rather than starting a service in a posture
+            // the operator never asked for. The reason is deliberately dropped:
+            // it can name the mode but must never surface stored bytes.
+            let _ = lease_set_security_plan(&stored.options)
+                .map_err(|_| StoreError::Corrupt("leaseset security"))?;
             definitions.push(ControlDefinition {
                 name: stored.name,
                 tunnel_type,
@@ -2070,6 +2192,29 @@ pub fn build_control_spec_with_filter_root(
                 }
                 http_policy.block_referers = parse_bool_option(key, value)?;
             }
+            // Plan 334: the three LeaseSet security options are consumed by
+            // the ELS2 publication path, not by the traffic specification, so
+            // the M10 spec has nothing to project from them. The block's
+            // cross-field rule is enforced once, as a whole, in
+            // `normalize_definition` after this mask check; re-deriving it
+            // here per key would reject a valid combination one key at a time.
+            //
+            // The mask check below is what scopes the rule to kinds that
+            // publish a LeaseSet at all, so it must run first: "this kind has
+            // no LeaseSet" is a more fundamental objection than "this mode
+            // does not use this secret".
+            "encrypt_lease_set" | "leaseset_password" | "leaseset_client_auth" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                        | ServiceTunnelKind::StreamrServer
+                ) {
+                    return Err(ControlError::UnsupportedOption(key.clone()));
+                }
+            }
             other => {
                 // Secret-classified keys are rejected here even though
                 // they never reach storage: belt and suspenders against
@@ -2599,6 +2744,7 @@ pub fn normalize_definition_with_filter_root(
             && !SUPPORTED_297_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_323_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_324_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_334_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -2651,6 +2797,13 @@ pub fn normalize_definition_with_filter_root(
     // Validate the full mapping now, before any side effect. The
     // returned spec is discarded; the coordinator rebuilds it.
     let _ = build_control_spec_with_filter_root(&definition, filter_root)?;
+    // Plan 334: the LeaseSet security block is a cross-field constraint, so it
+    // is validated as a whole block, after the per-key mask check inside
+    // `build_control_spec` has already scoped these keys to kinds that publish
+    // a LeaseSet. The identical rule also ran in the request envelope; running
+    // it again here is what makes a merged `create`+stored-`edit` candidate, or
+    // a reloaded stored definition, obey the same law as a fresh request.
+    let _ = definition.lease_set_security()?;
     Ok(definition)
 }
 
@@ -3298,6 +3451,17 @@ impl TunnelControlState {
                 .as_object_mut()
                 .expect("tunnel response is an object")
                 .insert("tls".to_owned(), tls);
+        }
+        // Plan 334: the LeaseSet security projection reports which mode is
+        // stored and whether each secret is configured, never a byte of
+        // either. It appears on every tunnel — an ordinary one reports the
+        // ordinary posture — so a client never has to infer the absence of
+        // encryption from a missing field.
+        if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "lease_set_security".to_owned(),
+                lease_set_security_projection(definition),
+            );
         }
         response
     }
@@ -4037,6 +4201,10 @@ fn static_control_reason(error: &ControlError) -> &'static str {
         ControlError::UnsupportedType(_) => "unsupported type",
         ControlError::UnsupportedOption(_) => "unsupported option",
         ControlError::InvalidOption { reason, .. } => reason,
+        // The LeaseSet rule's reason is owned text and can name a mode, so the
+        // recovery paths get a static label instead. That is also the safer
+        // choice: `static_control_reason` feeds bounded diagnostic strings.
+        ControlError::LeaseSetSecurityRejected(_) => "invalid LeaseSet security block",
         ControlError::ContradictoryOptions { reason, .. } => reason,
         ControlError::InvalidRequest(reason) => reason,
         ControlError::AggregateRejected(reason) => reason,
@@ -5211,8 +5379,9 @@ mod tests {
 
     #[test]
     fn plan289_unsupported_options_rejected_before_storage() {
-        // Every secret-classified key is rejected even though none can
-        // be stored: belt and suspenders against secret persistence.
+        // Every secret-classified key is rejected on a client kind, which
+        // publishes no LeaseSet at all. The rejection is a mask rejection
+        // (the key is out of scope for the kind), so it still names the key.
         for secret in i2pr_i2pcontrol::SECRET_OPTIONS {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert(secret.to_owned(), "hunter2".to_owned());
@@ -5233,6 +5402,43 @@ mod tests {
                 assert_eq!(error, ControlError::UnsupportedOption(secret.to_owned()));
             }
         }
+        // Plan 334: on a *publishing* kind the two real LeaseSet secrets are
+        // accepted by the supported-subset gate, and are then refused by the
+        // cross-field rule instead — a supplied secret for a mode that does
+        // not consume it is an error, never a silent no-op. The retired
+        // duplicate slot keeps its own refusal.
+        for secret in ["leaseset_password", "leaseset_client_auth"] {
+            let mut options = server_options("127.0.0.1:9090");
+            options.insert(secret.to_owned(), "hunter2".to_owned());
+            let error = normalize_definition("alpha", TunnelType::Server, &options, true)
+                .expect_err("unused leaseset secret rejected");
+            // Either the mode rule (nothing consumes it) or the shape rule
+            // (the value is not a valid client list) may fire first; both
+            // reject before storage, and neither may echo the value.
+            assert!(
+                matches!(&error, ControlError::LeaseSetSecurityRejected(message)
+                    if message.contains("not used by") || message.contains("Key must be")),
+                "unexpected error for {secret}: {error:?}"
+            );
+            assert!(
+                !format!("{error:?}").contains("hunter2"),
+                "secret value leaked for {secret}"
+            );
+        }
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("leaseset_blinding_secret".to_owned(), "hunter2".to_owned());
+        let error = normalize_definition("alpha", TunnelType::Server, &options, true)
+            .expect_err("retired duplicate slot rejected");
+        assert!(
+            matches!(&error, ControlError::UnsupportedOption(message)
+                if message.contains("leaseset_blinding_secret")
+                    && message.contains("OptionalLookup")),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            !format!("{error:?}").contains("hunter2"),
+            "secret value leaked for the retired duplicate slot"
+        );
         // Known-but-not-yet-supported options fail explicitly too,
         // naming the owning plan for blocked and corrective cells.
         for key in ["outproxy", "description", "leaseset_type"] {
@@ -5776,44 +5982,122 @@ mod tests {
                 ));
             }
         }
-        // LeaseSet security keys on publishing kinds: every mode fails,
-        // including explicit disable (omit the field for ordinary
-        // publication) and every secret companion. Secret values never
-        // reach the message, the mirror, or the store.
+        // Plan 334 supersedes the Plan 293 LeaseSet block. On every
+        // publishing kind, all nine applied modes now normalize with their own
+        // companions; the tenth is recognized and refused by name; and the
+        // retired duplicate secret slot keeps its own refusal. Every failure
+        // still names the key and the mode, and no secret value reaches the
+        // message, the mirror, or the store.
         for tunnel_type in [
             TunnelType::Server,
             TunnelType::HttpServer,
             TunnelType::HttpBidirServer,
             TunnelType::StreamrServer,
         ] {
+            for (mode, lookup, clients) in [
+                ("disable", None, false),
+                ("blinded", None, false),
+                ("blinded with lookup password", Some("hunter2"), false),
+                ("encrypted (psk)", None, true),
+                (
+                    "encrypted with lookup password (psk)",
+                    Some("hunter2"),
+                    true,
+                ),
+                ("encrypted with per-user key (psk)", None, true),
+                (
+                    "encrypted with lookup password and per-user key (psk)",
+                    Some("hunter2"),
+                    true,
+                ),
+                ("encrypted with per-user key (dh)", None, true),
+                (
+                    "encrypted with lookup password and per-user key (dh)",
+                    Some("hunter2"),
+                    true,
+                ),
+            ] {
+                let mut options = base_options(tunnel_type);
+                options.insert("encrypt_lease_set".to_owned(), mode.to_owned());
+                if let Some(secret) = lookup {
+                    options.insert("leaseset_password".to_owned(), secret.to_owned());
+                }
+                if clients {
+                    options.insert(
+                        "leaseset_client_auth".to_owned(),
+                        format!("alpha:{}", "ab".repeat(32)),
+                    );
+                }
+                let definition = normalize_definition("lsok", tunnel_type, &options, false)
+                    .unwrap_or_else(|error| {
+                        panic!("{mode} must normalize for {tunnel_type:?}: {error:?}")
+                    });
+                // The stored options carry the mode verbatim and the secret in
+                // its bounded encoding, and the derived posture agrees.
+                assert_eq!(
+                    definition
+                        .options
+                        .get("encrypt_lease_set")
+                        .map(String::as_str),
+                    Some(mode)
+                );
+                let plan = definition
+                    .lease_set_security()
+                    .expect("normalize_definition already validated this block");
+                assert_eq!(plan.spelling(), Some(mode), "{tunnel_type:?}");
+                assert_eq!(plan.lookup_secret_supplied(), lookup.is_some());
+                assert_eq!(plan.client_count(), usize::from(clients));
+            }
+            // The legacy AES mode is refused, and named as deprecated.
+            let mut options = base_options(tunnel_type);
+            options.insert("encrypt_lease_set".to_owned(), "encrypted (aes)".to_owned());
+            let error = normalize_definition("lsaes", tunnel_type, &options, false)
+                .expect_err("legacy aes refused");
+            assert!(
+                matches!(&error, ControlError::LeaseSetSecurityRejected(message)
+                    if message.contains("deprecated") && message.contains("encrypted LeaseSet2")),
+                "unexpected error for {tunnel_type:?}: {error:?}"
+            );
+            // A mode name is an identifier: no boolean or normalized spelling
+            // is accepted, and each rejection names the field.
+            for value in ["true", "false", "Disable", "blinded  ", "encrypted(psk)"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("encrypt_lease_set".to_owned(), value.to_owned());
+                let error = normalize_definition("lsbad", tunnel_type, &options, false)
+                    .expect_err("bad mode rejected");
+                assert!(
+                    matches!(&error, ControlError::LeaseSetSecurityRejected(message)
+                        if message.contains("ten Proposal 170 values")),
+                    "unexpected error for {tunnel_type:?} {value:?}: {error:?}"
+                );
+            }
+            // The retired duplicate secret slot stays refused by name, and a
+            // malformed client list is refused by the shape rule. Both reject
+            // before storage and neither may echo the supplied value.
             for (key, value) in [
-                ("encrypt_lease_set", "true"),
-                ("encrypt_lease_set", "false"),
-                ("encrypt_lease_set", "disable"),
-                ("leaseset_password", "hunter2"),
                 ("leaseset_blinding_secret", "hunter2"),
                 ("leaseset_client_auth", "hunter2"),
             ] {
                 let mut options = base_options(tunnel_type);
                 options.insert(key.to_owned(), value.to_owned());
                 let error = normalize_definition("lsbad", tunnel_type, &options, false)
-                    .expect_err("leaseset security rejected");
-                match &error {
-                    ControlError::UnsupportedOption(message) => {
-                        assert!(
-                            message.contains(key)
-                                && message.contains("LeaseSet")
-                                && message.contains("Plan 293 determination")
-                                && message.contains("Plan 295"),
-                            "unexpected message for {tunnel_type:?} {key}: {message}"
-                        );
-                        assert!(
-                            !message.contains(value) || key == "encrypt_lease_set",
-                            "secret value leaked for {tunnel_type:?} {key}"
-                        );
-                    }
-                    other => panic!("unexpected error for {tunnel_type:?} {key}: {other:?}"),
-                }
+                    .expect_err("leaseset secret rejected");
+                let acceptable = match key {
+                    "leaseset_blinding_secret" => matches!(
+                        &error,
+                        ControlError::UnsupportedOption(message)
+                            if message.contains("OptionalLookup")
+                    ),
+                    _ => matches!(&error, ControlError::LeaseSetSecurityRejected(_)),
+                };
+                assert!(
+                    acceptable,
+                    "unexpected error for {tunnel_type:?} {key}: {error:?}"
+                );
+                assert!(
+                    !format!("{error:?}").contains(value),
+                    "secret value leaked for {tunnel_type:?} {key}"
+                );
             }
         }
         // Outproxy provider on the proxy kinds: any supplied plugin

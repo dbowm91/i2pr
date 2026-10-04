@@ -53,10 +53,17 @@ fn plan295_final_public_contract_census() {
     assert_eq!(TUNNEL_TYPES.len(), 12);
     assert_eq!(TUNNEL_OPTIONS.len(), 46);
 
-    // Type-by-option cells: 269 apply + 37 not-applicable + 30
-    // explicit incompatibilities (Plan 293) + 0 corrective-296
+    // Type-by-option cells: 281 apply + 37 not-applicable + 18
+    // explicit incompatibilities + 0 corrective-296
     // (Plan 296 closed every residual into an apply owner) +
     // 0 corrective-297 (Plan 297 closed the TLS residual).
+    //
+    // Plan 334 moved 12 cells: the three LeaseSet security options
+    // (`encrypt_lease_set`, `leaseset_password`, `leaseset_client_auth`) on
+    // the four publishing kinds went from incompatible to apply, because
+    // they now have the real ELS2 owners. `sig_type` (12 cells) and
+    // `use_outproxy_plugin` (2 cells) and `leaseset_blinding_secret`
+    // (4 cells) remain incompatible, which is 18.
     let mut apply = 0;
     let mut not_applicable = 0;
     let mut incompatible = 0;
@@ -75,9 +82,9 @@ fn plan295_final_public_contract_census() {
         }
     }
     assert_eq!(MATRIX.len(), 336);
-    assert_eq!(apply, 269);
+    assert_eq!(apply, 281);
     assert_eq!(not_applicable, 37);
-    assert_eq!(incompatible, 30);
+    assert_eq!(incompatible, 18);
     assert_eq!(corrective_296, 0);
     assert_eq!(corrective_297, 0);
     assert_eq!(

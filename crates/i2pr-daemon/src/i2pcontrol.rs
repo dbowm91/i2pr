@@ -1886,6 +1886,16 @@ fn proposal_tunnel_manager_result(
             }
             if let Some(options) = options.and_then(serde_json::Value::as_object) {
                 for (key, value) in options {
+                    // Plan 334: the two Proposal 170 LeaseSet secrets are
+                    // reported as a presence marker with their length and
+                    // never their bytes, so `rawConfig` can answer "is this
+                    // service protected, and by what" without becoming a
+                    // read-back channel for the lookup secret or any client
+                    // key. The mode itself is public and appears verbatim.
+                    if let Some(marker) = lease_set_secret_presence(key, value) {
+                        raw_config.insert(proposal_wire_key_for_secret(key).to_owned(), marker);
+                        continue;
+                    }
                     if is_tunnel_secret_key(key) {
                         continue;
                     }
@@ -2009,6 +2019,47 @@ fn destination_b32_address(destination: &str) -> Option<String> {
 fn is_tunnel_secret_key(key: &str) -> bool {
     i2pr_i2pcontrol::SECRET_OPTIONS.contains(&key)
         || matches!(key, "outproxy_password" | "private_key_file")
+}
+
+/// The exact Proposal 170 field a Plan 334 LeaseSet secret slot projects to.
+fn proposal_wire_key_for_secret(key: &str) -> &'static str {
+    match key {
+        "leaseset_password" => "OptionalLookup",
+        "leaseset_client_auth" => "LeaseSetClientAuths",
+        // Unreachable: the caller only asks about the two slots above.
+        _ => "OptionalLookup",
+    }
+}
+
+/// A `rawConfig` presence marker for one LeaseSet secret, or `None` when the
+/// key is not one of them.
+///
+/// Reports configuration and magnitude only. The lookup secret's length is
+/// bounded by the option-value ceiling and its client list by the client-count
+/// ceiling, so neither can carry arbitrary bytes; both are also derivable from
+/// the operator's own input.
+fn lease_set_secret_presence(key: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+    match key {
+        "leaseset_password" => {
+            let length = value.as_str().map_or(0, str::len);
+            Some(serde_json::json!({
+                "configured": length > 0,
+                "length": length,
+                "redacted": true,
+            }))
+        }
+        "leaseset_client_auth" => {
+            let count = value
+                .as_str()
+                .map_or(0, |encoded| encoded.split('\n').count());
+            Some(serde_json::json!({
+                "configured": count > 0,
+                "clients": count,
+                "redacted": true,
+            }))
+        }
+        _ => None,
+    }
 }
 
 /// Maps one internal option name to an exact Proposal TunnelManager key.

@@ -152,15 +152,41 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         }
         "SigType" => Some("typed Ed25519 Destination identity policy (SigType 7)"),
         "EncType" => Some("typed Standard LeaseSet2 X25519 policy (EncType 4)"),
-        "EncryptLeaseSet"
-        | "OptionalLookup"
-        | "LeaseSetPassword"
-        | "LeaseSetBlindingSecret"
-        | "LeaseSetClientAuths" => {
+        // Plan 334 supersedes the Plan 326 deep prerequisite for the whole
+        // Proposal 170 LeaseSet block. Each of the three fields now names a
+        // real owner frozen by Plans 332/333; the mapping between them and the
+        // nine applied modes is frozen in
+        // `specs/references/proposal-170-encryptleaseset-mode-mapping.md`.
+        //
+        // Only the three Proposal spellings appear here. `LeaseSetPassword`
+        // and `LeaseSetBlindingSecret` are i2pr-inventory names with no
+        // Proposal field, so they are dead arms and are not listed.
+        "EncryptLeaseSet" => {
             return if applies(LEASESET_SERVERS) {
-                DeepPrerequisite {
-                    plan: 326,
-                    reason: "encrypted/blinded LeaseSet and client authorization",
+                Apply {
+                    owner: "Proposal 170 mode mapping into the Plan 332/333 ELS2 publication owner",
+                }
+            } else {
+                NotApplicable {
+                    reason: "type does not publish a service LeaseSet",
+                }
+            };
+        }
+        "OptionalLookup" => {
+            return if applies(LEASESET_SERVERS) {
+                Apply {
+                    owner: "ELS2 lookup-secret owner (BlindingIdentity daily key derivation)",
+                }
+            } else {
+                NotApplicable {
+                    reason: "type does not publish a service LeaseSet",
+                }
+            };
+        }
+        "LeaseSetClientAuths" => {
+            return if applies(LEASESET_SERVERS) {
+                Apply {
+                    owner: "Els2AuthorizationServerConfig PSK or DH authorization block",
                 }
             } else {
                 NotApplicable {

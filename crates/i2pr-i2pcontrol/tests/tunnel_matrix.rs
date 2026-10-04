@@ -48,9 +48,12 @@ fn matrix_covers_every_applicable_cell() {
 
 #[test]
 fn disposition_census_is_exact() {
-    assert_eq!(APPLY_CELLS, 269);
+    // Plan 334 moved 12 cells: the three LeaseSet security options on the
+    // four publishing kinds went from incompatible to apply, because they now
+    // have the real ELS2 owners frozen by Plans 332/333.
+    assert_eq!(APPLY_CELLS, 281);
     assert_eq!(NOT_APPLICABLE_CELLS, 37);
-    assert_eq!(INCOMPATIBLE_CELLS, 30);
+    assert_eq!(INCOMPATIBLE_CELLS, 18);
     assert_eq!(CORRECTIVE_296_CELLS, 0);
     assert_eq!(CORRECTIVE_297_CELLS, 0);
     assert_eq!(
@@ -161,9 +164,28 @@ fn spot_dispositions_match_plan_record() {
         find_cell(0, 40).expect("sig_type cell").disposition,
         CellDisposition::ExplicitIncompatibility { .. }
     ));
-    // (streamrserver, encrypt_lease_set) -> Plan 293 LeaseSet security.
+    // (streamrserver, encrypt_lease_set) -> Plan 334 ELS2 mode owner. The
+    // Plan 293 determination that blocked every value of this key, including
+    // explicit `disable`, no longer holds: the mode now selects a real record
+    // shape with a named owner.
     assert!(matches!(
         find_cell(11, 41).expect("encrypt cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    // (server, leaseset_password) / (server, leaseset_client_auth) likewise.
+    assert!(matches!(
+        find_cell(1, 42).expect("lookup secret cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    assert!(matches!(
+        find_cell(1, 44).expect("client auth cell").disposition,
+        CellDisposition::Apply { .. }
+    ));
+    // (server, leaseset_blinding_secret) -> Plan 334 retires the duplicate
+    // spelling: the ELS2 specification defines exactly one lookup secret and
+    // Proposal 170 spells it once, so a second slot has no distinct owner.
+    assert!(matches!(
+        find_cell(1, 43).expect("duplicate secret cell").disposition,
         CellDisposition::ExplicitIncompatibility { .. }
     ));
     // (client, reply_bundling) -> Plan 296 garlic bundling owner.
@@ -193,14 +215,15 @@ fn spot_dispositions_match_plan_record() {
     ));
 }
 
-/// Plan 293: every one of the 30 deep-primitive cells carries the exact
-/// class limitation, and no other cell does.
+/// Every remaining incompatible cell carries the exact class limitation for
+/// its own key, and the three LeaseSet security keys that Plan 334 promoted
+/// carry no limitation at all.
 #[test]
-fn plan293_incompatible_cells_match_class_limitations() {
+fn incompatible_cells_match_class_limitations() {
     const SIGTYPE_LIMITATION: &str =
         "dynamic destination SigType has no key-generation owner (Ed25519-only)";
-    const LEASESET_LIMITATION: &str =
-        "encrypted/blinded LeaseSet security and client authorization have no publication owner";
+    const DUPLICATE_LOOKUP_SECRET_LIMITATION: &str = "a second LeaseSet lookup secret has no distinct owner; Proposal 170 \
+         spells the single ELS2 lookup secret as OptionalLookup";
     const OUTPROXY_LIMITATION: &str = "outproxy provider semantics have no I2P-routed provider";
     let mut incompatible = 0;
     for cell in MATRIX {
@@ -209,8 +232,8 @@ fn plan293_incompatible_cells_match_class_limitations() {
                 incompatible += 1;
                 let expected = if cell.option_index == 40 {
                     SIGTYPE_LIMITATION
-                } else if (41..=44).contains(&cell.option_index) {
-                    LEASESET_LIMITATION
+                } else if cell.option_index == 43 {
+                    DUPLICATE_LOOKUP_SECRET_LIMITATION
                 } else if cell.option_index == 45 {
                     OUTPROXY_LIMITATION
                 } else {
@@ -228,15 +251,25 @@ fn plan293_incompatible_cells_match_class_limitations() {
             _ => {
                 assert!(
                     !(cell.option_index == 40
-                        || (41..=44).contains(&cell.option_index)
+                        || cell.option_index == 43
                         || cell.option_index == 45),
                     "deep-primitive cell ({}, {}) lost its incompatibility",
                     cell.type_index,
                     cell.option_index
                 );
+                // Plan 334: the three promoted keys must be apply cells on
+                // every in-mask type, never silently incompatible.
+                if matches!(cell.option_index, 41 | 42 | 44) {
+                    assert!(
+                        matches!(cell.disposition, CellDisposition::Apply { .. }),
+                        "Plan 334 cell ({}, {}) is not an apply owner",
+                        cell.type_index,
+                        cell.option_index
+                    );
+                }
             }
         }
     }
-    assert_eq!(incompatible, 30);
+    assert_eq!(incompatible, 18);
     assert_eq!(incompatible, INCOMPATIBLE_CELLS);
 }
