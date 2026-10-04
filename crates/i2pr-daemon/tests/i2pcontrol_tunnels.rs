@@ -307,7 +307,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         &token,
         serde_json::json!({
             "Action":"create", "Name":"canonical", "Type":"client",
-            "TargetDestination":b32, "Port":port
+            "TargetDestination":b32, "Port":port, "ReachableBy":"127.0.0.1"
         }),
         2,
     )
@@ -334,6 +334,10 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     assert_eq!(info["rawConfig"]["name"], serde_json::json!("canonical"));
     assert_eq!(info["rawConfig"]["type"], serde_json::json!("client"));
     assert_eq!(info["rawConfig"]["port"], serde_json::json!(port));
+    assert_eq!(
+        info["rawConfig"]["reachableBy"],
+        serde_json::json!("127.0.0.1")
+    );
     assert_eq!(info["persistentClientKey"], serde_json::json!(false));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
     assert!(
