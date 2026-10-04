@@ -121,6 +121,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Shared" => Some("shared"),
         "PersistentClientKey" => Some("persistent_client_key"),
         "AccessOption" => Some("access_option"),
+        "JumpList" => Some("jump_list"),
         "TargetHost" | "Host" => Some("target_host"),
         "TargetPort" => Some("target_port"),
         "Port" => Some("listen_port"),
@@ -359,6 +360,17 @@ pub fn decode_tunnel_request(
                         return Err(TunnelRequestError::BadValue(key.to_owned()));
                     }
                     options.insert("access_option".to_owned(), mode.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "JumpList" {
+                    let enabled = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if enabled != "true" && enabled != "false" {
+                        return Err(TunnelRequestError::BadValue(key.to_owned()));
+                    }
+                    options.insert("jump_list".to_owned(), enabled.to_owned());
                     options_seen = true;
                     continue;
                 }

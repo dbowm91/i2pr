@@ -1322,12 +1322,14 @@ fn plan289_tunnel_request_envelope_rules() {
         }))),
         Err(TunnelRequestError::ValueOverBound("Description".to_owned()))
     );
+    let jump_list = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "httpserver",
+        "JumpList": "false",
+    })))
+    .expect("canonical JumpList reaches the existing HTTP server owner");
     assert_eq!(
-        decode_tunnel_request(&params(serde_json::json!({
-            "Action": "create", "Name": "a", "Type": "server",
-            "JumpList": "false",
-        }))),
-        Err(TunnelRequestError::UnavailableOption("JumpList".to_owned()))
+        jump_list.options.get("jump_list").map(String::as_str),
+        Some("false")
     );
     for key in ["CustomOptions", "PrivKeyFile"] {
         assert_eq!(
