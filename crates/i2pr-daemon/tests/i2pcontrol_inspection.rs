@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use i2pr_daemon::config::Config;
+use i2pr_daemon::control_sources::ControlMetrics;
 use i2pr_daemon::i2pcontrol::I2pControlServiceState;
 use i2pr_daemon::i2pcontrol_inspection::{InspectionHandles, ServiceEndpoint};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope};
@@ -280,6 +281,54 @@ async fn router_info_proposal_selection_over_wire() {
     );
     assert_eq!(base_response["result"]["i2p.router.status"], "running");
     assert!(base_response["result"]["i2p.router.uptime"].is_u64());
+}
+
+#[tokio::test]
+async fn canonical_transport_totals_are_served_from_published_metrics() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let metrics = Arc::new(ControlMetrics::new());
+    metrics.observe_transport(12_345, 67_890, 12, 34);
+    inspection.publish_metrics(metrics);
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.total.received.bytes": null,
+                "i2p.router.net.total.sent.bytes": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response["result"]["i2p.router.net.total.received.bytes"],
+        12_345
+    );
+    assert_eq!(
+        response["result"]["i2p.router.net.total.sent.bytes"],
+        67_890
+    );
 }
 
 #[tokio::test]
