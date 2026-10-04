@@ -1253,10 +1253,32 @@ impl I2pControlServiceState {
             }
             if matches!(
                 field.key,
-                "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.peers.info"
+                "i2p.router.netdb.activepeers.info"
+                    | "i2p.router.netdb.activepeers.stats"
+                    | "i2p.router.netdb.peers.info"
             ) {
                 match crate::i2pcontrol_inspection::proposal_empty_router_info_list(
                     field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
+            if field.key == "i2p.router.netdb.bannedpeers" {
+                match crate::i2pcontrol_inspection::proposal_empty_banned_peer_details(
                     &self.inspection,
                 ) {
                     Ok(value) => {

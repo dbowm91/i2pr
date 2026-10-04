@@ -250,6 +250,32 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             },
             Some("proposal_empty_router_info_lists_require_empty_attested_peer_sets"),
         ),
+        "i2p.router.netdb.activepeers.stats" => (
+            "NetDB inspection snapshot",
+            "empty stats list follows an attested empty active-peer set; nonempty peers require the stats detail owner",
+            1024,
+            65_536,
+            "public peer statistics",
+            "latest active-peer snapshot; fails closed when peers exist without stats",
+            SourceAvailability::PublishedGated {
+                owner: "active-peer stats detail snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_peer_stats_and_bans_require_attested_empty_sources"),
+        ),
+        "i2p.router.netdb.bannedpeers" => (
+            "Plan 295 ban ledger",
+            "empty details map follows an attested empty ban set; populated hashes require reason and expiry details",
+            1024,
+            65_536,
+            "peer identifiers and ban reasons",
+            "latest attested ban set; fails closed when detail is absent",
+            SourceAvailability::PublishedGated {
+                owner: "ban reason and expiry detail snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_peer_stats_and_bans_require_attested_empty_sources"),
+        ),
         "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate" => (
             "ControlMetrics tunnel-build outcomes",
             "latest interval ratio / cumulative ratio; unavailable until attempted > 0",

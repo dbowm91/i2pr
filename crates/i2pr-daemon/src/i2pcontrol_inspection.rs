@@ -850,7 +850,9 @@ pub(crate) fn proposal_empty_router_info_list(
     handles: &InspectionHandles,
 ) -> Result<serde_json::Value, InspectionGap> {
     let selector = match key {
-        "i2p.router.netdb.activepeers.info" => RouterInfoSelector::NetDbActivePeers,
+        "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.activepeers.stats" => {
+            RouterInfoSelector::NetDbActivePeers
+        }
         "i2p.router.netdb.peers.info" => RouterInfoSelector::NetDbKnownPeers,
         _ => {
             return Err(InspectionGap {
@@ -870,6 +872,23 @@ pub(crate) fn proposal_empty_router_info_list(
         Ok(serde_json::Value::Array(Vec::new()))
     } else {
         Err(gap)
+    }
+}
+
+/// Projects an empty banned-peer detail map only when the ban ledger's
+/// attested owner reports no entries. Populated hashes need reason and
+/// expiry details that the current owner does not retain.
+pub(crate) fn proposal_empty_banned_peer_details(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let key = "i2p.router.netdb.bannedpeers";
+    match handles.snapshots().bans {
+        Some(bans) if bans.is_empty() => Ok(serde_json::Value::Object(serde_json::Map::new())),
+        _ => Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "ban reason and expiry detail snapshot",
+        }),
     }
 }
 
@@ -1737,6 +1756,36 @@ mod tests {
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn proposal_empty_peer_stats_and_bans_require_attested_empty_sources() {
+        let handles = test_handles();
+        assert!(proposal_empty_banned_peer_details(&handles).is_err());
+        handles
+            .publish_netdb(Vec::new(), Vec::new(), FloodfillMode::Disabled)
+            .expect("empty NetDB snapshot publishes");
+        assert_eq!(
+            proposal_empty_router_info_list("i2p.router.netdb.activepeers.stats", &handles)
+                .expect("empty active peer set proves empty stats"),
+            serde_json::json!([])
+        );
+        handles
+            .publish_bans(Vec::new())
+            .expect("empty ban set publishes");
+        assert_eq!(
+            proposal_empty_banned_peer_details(&handles).expect("empty ban set proves empty map"),
+            serde_json::json!({})
+        );
+        handles
+            .publish_bans(vec!["A".repeat(44)])
+            .expect("nonempty ban set publishes");
+        assert_eq!(
+            proposal_empty_banned_peer_details(&handles)
+                .expect_err("ban hashes do not provide detail")
+                .owner,
+            "ban reason and expiry detail snapshot"
+        );
     }
 
     #[test]
