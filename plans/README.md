@@ -84,6 +84,10 @@ them. Renumbering would destroy traceability.
 - Subsystem roadmap: `subsystems/<subsystem>-roadmap.md` (stable kebab-case, no dates).
 - Implementation plan: `implementation/<subsystem>/NNN-short-title.md` (global NNN kept).
 - Closure record: `closure/<subsystem>/NNN-status.md` (same global NNN as the plan).
+- New implementation-plan numbers have one owning subsystem. The exact historical
+  Proposal 170/296, Proposal 170/297, Anonymity/296, and Anonymity/297 collision is
+  recorded in [`global-number-collision-ledger.md`](global-number-collision-ledger.md)
+  and checked by `scripts/check-global-plan-number-uniqueness.py`.
 - Early-era records kept as-is: `closure/<subsystem>/NNN-closure.md`,
   `NNN-closure-attempt.md`, `NNN-candidate.md`, status-amending `*-amendment-*.md` files.
 - Non-standard but authoritative: `closure/mixed-router-interop/193-streaming-status.md`.

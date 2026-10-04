@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–297 closed the historical qualified i2pr profile. Full Proposal 170 conformance is not yet claimed. Plans 319–328 are the registered continuation; Plan 319 is dependency-ready. This workstream remains parallel to M12/mainline.
+Status: `qualified-profile-closed` for the historical i2pr profile in Plans 286–297. Full Proposal 170 conformance is not claimed. Plans 319–328 are the current continuation; Plan 319 is active and remains the only dependency-ready continuation plan until it closes. This workstream remains parallel to M12/mainline.
 
 Long-term references:
 - GUARDRAILS.md
@@ -122,8 +122,8 @@ Plans 288, 289, and 294 may execute concurrently once Plan 287 is closed. Plans 
 | 293 | passed | capability/crypto integration | plans/implementation/i2pcontrol-proposal-170/293-signature-leaseset-security-and-provider-option-completion.md | plans/closure/i2pcontrol-proposal-170/293-status.md (`passed-prop170-deep-tunnel-option-determinations`) |
 | 294 | passed | capability | plans/implementation/i2pcontrol-proposal-170/294-canonical-addressbook-and-resolver-integration.md | plans/closure/i2pcontrol-proposal-170/294-status.md (`passed-prop170-canonical-addressbook-and-resolver-integration`) |
 | 295 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/295-full-source-completion-and-cross-router-conformance.md | plans/closure/i2pcontrol-proposal-170/295-status.md (`passed-prop170-full-source-completion-and-differential-conformance`) |
-| 296 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | plans/closure/i2pcontrol-proposal-170/296-status.md (`passed-prop170-pool-shaping-and-bundling-residuals`) |
-| 297 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | plans/closure/i2pcontrol-proposal-170/297-status.md (`passed-prop170-local-tls-identity-for-use-ssl`) |
+| Proposal 170/296 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md | plans/closure/i2pcontrol-proposal-170/296-status.md (`passed-prop170-pool-shaping-and-bundling-residuals`) |
+| Proposal 170/297 | passed | evidence/closure | plans/implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md | plans/closure/i2pcontrol-proposal-170/297-status.md (`passed-prop170-local-tls-identity-for-use-ssl`) |
 
 ## 8. Cross-cutting requirements
 
@@ -204,6 +204,14 @@ six types belong to Plans 290–291 and the wider option matrix to Plans
 
 ## 13. Full Proposal 170 conformance continuation (Plans 319–328)
 
+### Claim vocabulary
+
+- **`qualified-profile-closed`** — the Plans 286–297 experimental profile and its explicit incompatibilities are closed as implemented.
+- **`canonical-wire`** — exact Proposal 170 names, parameter shapes, return types, and action semantics.
+- **`full-proposal-conformant`** — canonical wire plus every Proposal-required capability is operational or explicitly implementation-dependent under the Proposal, with live external evidence.
+
+The historical phrase “workstream is fully closed” in the Proposal 170/297 closure is scoped to `qualified-profile-closed`; it does not establish `full-proposal-conformant`. Historical status files remain unchanged. The subsystem-qualified collision identities and interpretation are recorded in [`plans/global-number-collision-ledger.md`](../global-number-collision-ledger.md).
+
 Post-297 audit identified four classes that prevent an unqualified full Proposal 170 claim:
 
 1. Planning authority: historical global plan-number collisions at 296/297, duplicate registry rows, and stale “fully closed” wording.
@@ -230,7 +238,7 @@ Plans 321, 323, and 325 may execute in parallel after Plan 320. Plan 325 is a ha
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
-| 319 | ready | planning invariant/tooling corrective | plans/implementation/i2pcontrol-proposal-170/319-planning-authority-and-global-number-reconciliation.md | future |
+| 319 | active | planning invariant/tooling corrective | plans/implementation/i2pcontrol-proposal-170/319-planning-authority-and-global-number-reconciliation.md | future |
 | 320 | blocked on 319 | protocol contract corrective | plans/implementation/i2pcontrol-proposal-170/320-canonical-wire-contract-reconciliation.md | future |
 | 321 | blocked on 320 | capability/I-O composition | plans/implementation/i2pcontrol-proposal-170/321-addressbook-operational-completion.md | future |
 | 322 | blocked on 321 | capability/observability/signed content | plans/implementation/i2pcontrol-proposal-170/322-routerinfo-canonical-source-and-news-completion.md | future |
