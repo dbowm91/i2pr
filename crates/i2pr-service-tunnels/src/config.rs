@@ -145,6 +145,36 @@ impl DestinationGroupId {
     }
 }
 
+/// Validated logical key-file reference. It names an identity owned by the
+/// daemon's per-service key root and is never interpreted as a filesystem
+/// path.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct ServiceKeyReference(String);
+
+impl ServiceKeyReference {
+    /// Parses one lowercase logical key reference.
+    pub fn parse(value: &str) -> Result<Self, ServiceTunnelError> {
+        if value.is_empty()
+            || value.len() > 32
+            || !value.as_bytes()[0].is_ascii_alphanumeric()
+            || !value.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+            })
+        {
+            return Err(ServiceTunnelError::InvalidId {
+                value: truncated(value),
+                reason: "private key reference must be 1..=32 lowercase ASCII alphanumeric, hyphen, or underscore",
+            });
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Returns the validated logical reference.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Compatibility name for configurations and callers that used
 /// the original client-only group concept.
 pub type ServiceClientGroupId = DestinationGroupId;
@@ -279,6 +309,8 @@ pub enum DestinationPolicy {
     PersistentSharedClientGroup(DestinationGroupId),
     /// Shared named Destination linkability domain.
     SharedGroup(DestinationGroupId),
+    /// Persistent, service-owned identity selected by logical key reference.
+    KeyReference(ServiceKeyReference),
 }
 
 /// Collision-free key for an implicit dedicated group or an
@@ -308,19 +340,18 @@ impl DestinationPolicy {
         matches!(self, Self::Dedicated | Self::PersistentClient)
     }
 
-    /// Whether this policy requires the named client identity to
-    /// survive router restart.
+    /// Whether this policy requires its client identity to survive restart.
     pub fn persists_client_identity(&self) -> bool {
         matches!(
             self,
-            Self::PersistentClient | Self::PersistentSharedClientGroup(_)
+            Self::PersistentClient | Self::PersistentSharedClientGroup(_) | Self::KeyReference(_)
         )
     }
 
     /// Returns the explicit Destination-group identity when present.
     pub fn group_id(&self, service_id: &ServiceTunnelId) -> DestinationGroupId {
         match self {
-            Self::Dedicated | Self::PersistentClient => {
+            Self::Dedicated | Self::PersistentClient | Self::KeyReference(_) => {
                 DestinationGroupId(service_id.as_str().to_owned())
             }
             Self::SharedClientGroup(id)
@@ -332,7 +363,7 @@ impl DestinationPolicy {
     /// Returns the collision-free group owner key for a service.
     pub fn group_key(&self, service_id: &ServiceTunnelId) -> DestinationGroupKey {
         match self {
-            Self::Dedicated | Self::PersistentClient => {
+            Self::Dedicated | Self::PersistentClient | Self::KeyReference(_) => {
                 DestinationGroupKey::Dedicated(service_id.clone())
             }
             Self::SharedClientGroup(id)

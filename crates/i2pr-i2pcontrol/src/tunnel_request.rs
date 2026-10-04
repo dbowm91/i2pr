@@ -129,6 +129,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
     match key {
         "Shared" => Some("shared"),
         "PersistentClientKey" => Some("persistent_client_key"),
+        "PrivKeyFile" => Some("priv_key_file"),
         "NewDest" => Some("new_dest"),
         "ConnectDelay" => Some("connect_delay"),
         "AccessOption" => Some("access_option"),
@@ -213,7 +214,7 @@ fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelR
             | "total_ban_time"
     ) {
         crate::tunnel_options::OptionValueType::Integer
-    } else if key == "filter_file_path" {
+    } else if matches!(key, "filter_file_path" | "priv_key_file") {
         crate::tunnel_options::OptionValueType::String
     } else {
         find_option(key)
@@ -237,7 +238,19 @@ fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelR
     if text.len() > MAX_OPTION_VALUE_LEN {
         return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
     }
+    if key == "priv_key_file" && !valid_priv_key_file_reference(&text) {
+        return Err(TunnelRequestError::BadValue(key.to_owned()));
+    }
     Ok(text)
+}
+
+fn valid_priv_key_file_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
 }
 
 /// Decodes and validates one TunnelManager param map (without `Token`,
@@ -437,7 +450,7 @@ pub fn decode_tunnel_request(
                     // Proposal 170 controls extend the frozen Plan
                     // 286 option table under Plan 323.
                     crate::tunnel_options::OptionValueType::Boolean
-                } else if option_key == "filter_file_path" {
+                } else if matches!(option_key, "filter_file_path" | "priv_key_file") {
                     crate::tunnel_options::OptionValueType::String
                 } else if matches!(
                     option_key,

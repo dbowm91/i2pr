@@ -1441,16 +1441,22 @@ fn plan289_tunnel_request_envelope_rules() {
         )),
         "arbitrary CustomOptions are explicitly rejected without a typed allowlist"
     );
+    let key_file = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "PrivKeyFile": "operator-key",
+    })))
+    .expect("logical key reference decodes");
     assert_eq!(
+        key_file.options.get("priv_key_file").map(String::as_str),
+        Some("operator-key")
+    );
+    assert!(matches!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
-            "PrivKeyFile": "operator supplied path",
+            "PrivKeyFile": "../escape",
         }))),
-        Err(TunnelRequestError::UnavailableOption(
-            "PrivKeyFile".to_owned()
-        )),
-        "PrivKeyFile remains unavailable until a confined logical key owner exists"
-    );
+        Err(TunnelRequestError::BadValue(_))
+    ));
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",

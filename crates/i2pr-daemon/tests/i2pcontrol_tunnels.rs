@@ -683,6 +683,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
         serde_json::json!({
             "Action":"create", "Name":"canonical-server", "Type":"httpserver",
             "TargetHost":"127.0.0.1", "TargetPort":9090,
+            "PrivKeyFile":"canonical-server-key",
             "AccessOption":"deny", "AccessList":access_entry, "JumpList":"false",
             "FilterFilePath":"denied.txt",
             "ClientPerMinute":2, "ClientPerHour":10, "ClientPerDay":30,
@@ -712,6 +713,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     let raw = &fetched["result"]["info"]["rawConfig"];
     assert_eq!(raw["targetHost"], "127.0.0.1", "{fetched}");
     assert_eq!(raw["targetPort"], 9090);
+    assert_eq!(raw["privKeyFile"], "canonical-server-key");
     assert_eq!(raw["accessList"], access_entry);
     assert_eq!(raw["accessOption"], "deny");
     assert_eq!(raw["filterFilePath"], "denied.txt");

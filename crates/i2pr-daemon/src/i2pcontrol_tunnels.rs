@@ -152,7 +152,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 31] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 32] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -184,6 +184,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 31] = [
     "total_period",
     "total_ban_time",
     "filter_file_path",
+    "priv_key_file",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -1038,6 +1039,7 @@ pub fn build_control_spec_with_filter_root(
     let mut shared_client = false;
     let mut persistent_client_key = false;
     let mut persistent_client_key_declared: Option<bool> = None;
+    let mut priv_key_file: Option<i2pr_service_tunnels::ServiceKeyReference> = None;
     let mut proposal_new_dest: Option<u8> = None;
     let mut connect_delay = false;
     let mut allow_user_agent: Option<bool> = None;
@@ -1116,6 +1118,16 @@ pub fn build_control_spec_with_filter_root(
                 let enabled = parse_bool_option(key, value)?;
                 persistent_client_key = enabled;
                 persistent_client_key_declared = Some(enabled);
+            }
+            "priv_key_file" => {
+                priv_key_file = Some(
+                    i2pr_service_tunnels::ServiceKeyReference::parse(value).map_err(|_| {
+                        ControlError::InvalidOption {
+                            option: key.clone(),
+                            reason: "PrivKeyFile must be a logical lowercase key reference, not a path",
+                        }
+                    })?,
+                );
             }
             "new_dest" => {
                 if !matches!(
@@ -2053,6 +2065,22 @@ pub fn build_control_spec_with_filter_root(
         }
         persistent_client_key = persistent_from_mode;
     }
+    if priv_key_file.is_some() {
+        if shared_client {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "PrivKeyFile selects a per-service key reference and cannot combine with Shared",
+            });
+        }
+        if persistent_client_key_declared == Some(false)
+            || proposal_new_dest.is_some_and(|mode| mode != 2)
+        {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "PrivKeyFile requires persistent identity semantics (PersistentClientKey:true or NewDest:2)",
+            });
+        }
+    }
     if let Some(mode) = proposal_access_option.as_deref() {
         if let Some(value) = proposal_access_list {
             if mode == "allow" {
@@ -2391,17 +2419,21 @@ pub fn build_control_spec_with_filter_root(
         target,
         targets: Vec::new(),
         destination,
-        policy: match (shared_client, persistent_client_key) {
-            (true, true) => DestinationPolicy::PersistentSharedClientGroup(
-                DestinationGroupId::parse("i2pcontrol-shared-client")
-                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
-            ),
-            (true, false) => DestinationPolicy::SharedClientGroup(
-                DestinationGroupId::parse("i2pcontrol-shared-client")
-                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
-            ),
-            (false, true) => DestinationPolicy::PersistentClient,
-            (false, false) => DestinationPolicy::Dedicated,
+        policy: if let Some(key_reference) = priv_key_file {
+            DestinationPolicy::KeyReference(key_reference)
+        } else {
+            match (shared_client, persistent_client_key) {
+                (true, true) => DestinationPolicy::PersistentSharedClientGroup(
+                    DestinationGroupId::parse("i2pcontrol-shared-client")
+                        .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+                ),
+                (true, false) => DestinationPolicy::SharedClientGroup(
+                    DestinationGroupId::parse("i2pcontrol-shared-client")
+                        .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+                ),
+                (false, true) => DestinationPolicy::PersistentClient,
+                (false, false) => DestinationPolicy::Dedicated,
+            }
         },
         inbound_port: None,
         max_connections,
@@ -4424,6 +4456,90 @@ mod tests {
             };
             assert!(build_control_spec(&definition).is_err());
         }
+    }
+
+    #[test]
+    fn plan323_priv_key_file_is_a_confined_persistent_logical_reference() {
+        use i2pr_service_tunnels::{DestinationPolicy, ServiceKeyReference, ServiceTunnelSet};
+
+        let client = ControlDefinition {
+            name: "keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "primary".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&client).expect("client key reference");
+        assert_eq!(
+            spec.policy,
+            DestinationPolicy::KeyReference(
+                ServiceKeyReference::parse("primary").expect("key reference")
+            )
+        );
+        assert!(
+            ServiceTunnelSet {
+                tunnels: vec![spec],
+            }
+            .destination_groups()[0]
+                .persistent
+        );
+
+        let server = ControlDefinition {
+            name: "keyed-server".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("priv_key_file".to_owned(), "site-key".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&server)
+                .expect("server key reference")
+                .policy,
+            DestinationPolicy::KeyReference(_)
+        ));
+
+        let traversal = ControlDefinition {
+            name: "unsafe-keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "../escape".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&traversal),
+            Err(ControlError::InvalidOption { .. })
+        ));
+
+        let shared = ControlDefinition {
+            name: "shared-keyed-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("priv_key_file".to_owned(), "primary".to_owned()),
+                ("shared".to_owned(), "true".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&shared),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
     }
 
     #[test]

@@ -79,8 +79,8 @@ pub use config::{
     MAX_STATIC_ALIASES, MAX_STREAMING_CONNECT_DELAY_MS, MAX_TUNNEL_BACKUP_QUANTITY,
     MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MAX_UNIX_PATH_LEN,
     MIN_BUFFERED_BYTES_PER_DIRECTION, MIN_IDLE_TIMEOUT_MS, ServerTarget, ServiceClientGroupId,
-    ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
-    ServiceTunnelSpec, TunnelShaping, multihoming_start_index,
+    ServiceKeyReference, ServiceResourceLimits, ServiceTimeouts, ServiceTunnelId,
+    ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec, TunnelShaping, multihoming_start_index,
 };
 pub use connect::{CONNECT_DEFAULT_PORT, CONNECT_OPTIONS_MAX_PORTS, ConnectClientOptions};
 pub use destination::{DestinationRef, StaticAliasTable};

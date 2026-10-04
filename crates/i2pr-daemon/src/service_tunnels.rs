@@ -3444,42 +3444,59 @@ impl ServiceTunnelManager {
         group_spec: &DestinationGroupSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
-        let identity = if group_spec.persistent {
-            let group_name = match &group_spec.key {
-                DestinationGroupKey::Dedicated(id) => id.as_str(),
-                DestinationGroupKey::Explicit(id) => id.as_str(),
-            };
-            let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
+        let identity =
+            if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) = &spec.policy {
+                let store = ServiceDestinationStore::for_key_reference(
+                    &self.config.data_dir,
+                    spec.id.as_str(),
+                    key_ref.as_str(),
+                )
                 .map_err(ServiceTunnelError::Storage)?;
-            let legacy = match &group_spec.key {
-                DestinationGroupKey::Dedicated(id) => Some(
-                    ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
-                        .map_err(ServiceTunnelError::Storage)?,
-                ),
-                DestinationGroupKey::Explicit(_) => None,
-            };
-            let record: ServiceDestinationRecord = if store.exists() {
-                store.load().map_err(ServiceTunnelError::Storage)?
-            } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
-                store
-                    .migrate_from(&legacy)
-                    .map_err(ServiceTunnelError::Storage)?
+                let record = if store.exists() {
+                    store.load().map_err(ServiceTunnelError::Storage)?
+                } else {
+                    let mut rng = OsRng;
+                    store
+                        .generate_new(&mut rng)
+                        .map_err(ServiceTunnelError::Storage)?
+                };
+                identity_from_record(&record, spec.id.as_str())?
+            } else if group_spec.persistent {
+                let group_name = match &group_spec.key {
+                    DestinationGroupKey::Dedicated(id) => id.as_str(),
+                    DestinationGroupKey::Explicit(id) => id.as_str(),
+                };
+                let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
+                    .map_err(ServiceTunnelError::Storage)?;
+                let legacy = match &group_spec.key {
+                    DestinationGroupKey::Dedicated(id) => Some(
+                        ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
+                            .map_err(ServiceTunnelError::Storage)?,
+                    ),
+                    DestinationGroupKey::Explicit(_) => None,
+                };
+                let record: ServiceDestinationRecord = if store.exists() {
+                    store.load().map_err(ServiceTunnelError::Storage)?
+                } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
+                    store
+                        .migrate_from(&legacy)
+                        .map_err(ServiceTunnelError::Storage)?
+                } else {
+                    let mut rng = OsRng;
+                    store
+                        .generate_new(&mut rng)
+                        .map_err(ServiceTunnelError::Storage)?
+                };
+                identity_from_record(&record, spec.id.as_str())?
             } else {
                 let mut rng = OsRng;
-                store
-                    .generate_new(&mut rng)
-                    .map_err(ServiceTunnelError::Storage)?
+                DestinationIdentity::generate(&mut rng).map_err(|error| {
+                    ServiceTunnelError::InvalidConfig(format!(
+                        "{} ephemeral identity generation failed: {error}",
+                        spec.id.as_str()
+                    ))
+                })?
             };
-            identity_from_record(&record, spec.id.as_str())?
-        } else {
-            let mut rng = OsRng;
-            DestinationIdentity::generate(&mut rng).map_err(|error| {
-                ServiceTunnelError::InvalidConfig(format!(
-                    "{} ephemeral identity generation failed: {error}",
-                    spec.id.as_str()
-                ))
-            })?
-        };
         let fabric = SamLocalProductFabric::new();
         let product = fabric
             .prepare_for_destination(&identity, now_seconds)
@@ -5495,6 +5512,48 @@ mod plan202_routing_tests {
         assert_eq!(restarted_runtimes.len(), 2);
         assert_eq!(restarted_runtimes[0].destination_id, initial);
         assert_eq!(restarted_runtimes[1].destination_id, initial);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn logical_key_reference_identity_survives_manager_restart() {
+        let directory = temp_data_dir("plan323-key-reference");
+        let mut client = group_client(
+            "keyed-client",
+            "unused",
+            ServiceTunnelKind::GenericClient,
+            "127.0.0.1:0",
+        );
+        client.policy = DestinationPolicy::KeyReference(
+            i2pr_service_tunnels::ServiceKeyReference::parse("primary").expect("key reference"),
+        );
+        let specs = Arc::new(ServiceTunnelSet {
+            tunnels: vec![client],
+        });
+        let build_manager = || {
+            Arc::new(
+                ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                    data_dir: directory.path().to_path_buf(),
+                    aggregate_connection_ceiling: 8,
+                    per_service_connection_ceiling: 4,
+                    specs: Arc::clone(&specs),
+                    aliases: Arc::new(StaticAliasTable::new()),
+                })
+                .expect("manager"),
+            )
+        };
+        let manager = build_manager();
+        let runtimes = manager.prepare().await.expect("prepare keyed client");
+        let initial = runtimes[0].destination_id;
+        let store =
+            ServiceDestinationStore::for_key_reference(directory.path(), "keyed-client", "primary")
+                .expect("key reference store");
+        assert!(store.exists());
+        drop(runtimes);
+        drop(manager);
+
+        let restarted = build_manager();
+        let restarted_runtimes = restarted.prepare().await.expect("restart keyed client");
+        assert_eq!(restarted_runtimes[0].destination_id, initial);
     }
 
     #[tokio::test(flavor = "current_thread")]

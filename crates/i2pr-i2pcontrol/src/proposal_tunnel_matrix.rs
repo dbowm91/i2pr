@@ -134,9 +134,7 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
             };
         }
         "PrivKeyFile" => {
-            return OwnerGap {
-                owner_needed: "confined logical key reference and identity loader",
-            };
+            Some("per-service confined logical key reference and persistent identity store")
         }
         "UseSSL" => {
             return if matches!(tunnel_type, "server" | "httpserver" | "httpbidirserver") {
@@ -195,8 +193,9 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         }
         "SSLProxies" => {
             return if applies(PROXY_CLIENTS) {
-                OwnerGap {
-                    owner_needed: "safe I2P-only SSL proxy routing semantics",
+                DeepPrerequisite {
+                    plan: 327,
+                    reason: "safe I2P-routed SSL proxy provider semantics",
                 }
             } else {
                 NotApplicable {
@@ -390,11 +389,6 @@ mod tests {
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(
-            gaps,
-            ["DelayOpen", "MultiHoming", "PrivKeyFile", "SSLProxies"]
-                .into_iter()
-                .collect()
-        );
+        assert_eq!(gaps, ["DelayOpen", "MultiHoming"].into_iter().collect());
     }
 }
