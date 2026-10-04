@@ -766,6 +766,7 @@ dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
  "rcgen",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "sad-rsa",

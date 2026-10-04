@@ -123,6 +123,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "NewDest" => Some("new_dest"),
         "ConnectDelay" => Some("connect_delay"),
         "AccessOption" => Some("access_option"),
+        "FilterFilePath" => Some("filter_file_path"),
         "JumpList" => Some("jump_list"),
         "TargetHost" | "Host" => Some("target_host"),
         "TargetPort" => Some("target_port"),
@@ -203,6 +204,8 @@ fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelR
             | "total_ban_time"
     ) {
         crate::tunnel_options::OptionValueType::Integer
+    } else if key == "filter_file_path" {
+        crate::tunnel_options::OptionValueType::String
     } else {
         find_option(key)
             .map_err(TunnelRequestError::BadOption)?
@@ -422,6 +425,8 @@ pub fn decode_tunnel_request(
                     // Proposal 170 controls extend the frozen Plan
                     // 286 option table under Plan 323.
                     crate::tunnel_options::OptionValueType::Boolean
+                } else if option_key == "filter_file_path" {
+                    crate::tunnel_options::OptionValueType::String
                 } else if matches!(
                     option_key,
                     "client_per_minute"

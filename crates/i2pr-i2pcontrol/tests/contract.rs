@@ -1081,7 +1081,7 @@ fn plan289_tunnel_request_envelope_rules() {
         "ClientPerMinute": 2, "ClientPerHour": 10, "ClientPerDay": 30,
         "TotalInPerMinute": 20, "TotalInPerHour": 100, "TotalInPerDay": 300,
         "PostLimit": 300, "PostLimitTime": 600, "PerClientPeriod": 6,
-        "TotalPeriod": 20, "TotalBanTime": 1200,
+        "TotalPeriod": 20, "TotalBanTime": 1200, "FilterFilePath": "filters/deny.txt",
     })))
     .expect("Proposal server rates decode into typed owner keys");
     for (key, expected) in [
@@ -1102,6 +1102,13 @@ fn plan289_tunnel_request_envelope_rules() {
             Some(expected)
         );
     }
+    assert_eq!(
+        server_rates
+            .options
+            .get("filter_file_path")
+            .map(String::as_str),
+        Some("filters/deny.txt")
+    );
     let idle_options = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "idle-client", "Type": "client",
         "TargetDestination": "example.b32.i2p", "Reduce": true,

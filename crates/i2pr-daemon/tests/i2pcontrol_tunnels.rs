@@ -630,6 +630,21 @@ async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
 #[tokio::test]
 async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     let directory = tempfile::tempdir().expect("tempdir");
+    let filter_root = directory
+        .path()
+        .join("i2pcontrol")
+        .join("tunnels")
+        .join("filters");
+    std::fs::create_dir_all(&filter_root).expect("filter root creates");
+    let filter_path = filter_root.join("denied.txt");
+    std::fs::write(&filter_path, format!("{}.b32.i2p\n", "b".repeat(51) + "a"))
+        .expect("filter file writes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&filter_path, std::fs::Permissions::from_mode(0o600))
+            .expect("filter file is private");
+    }
     let config =
         Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
     let (_state, address, _scope, _parent) = start_service(&config).await;
@@ -642,6 +657,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
             "Action":"create", "Name":"canonical-server", "Type":"httpserver",
             "TargetHost":"127.0.0.1", "TargetPort":9090,
             "AccessOption":"deny", "AccessList":access_entry, "JumpList":"false",
+            "FilterFilePath":"denied.txt",
             "ClientPerMinute":2, "ClientPerHour":10, "ClientPerDay":30,
             "TotalInPerMinute":20, "TotalInPerHour":100, "TotalInPerDay":300,
             "PostLimit":300, "PostLimitTime":600, "PerClientPeriod":6,
@@ -671,6 +687,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     assert_eq!(raw["targetPort"], 9090);
     assert_eq!(raw["accessList"], access_entry);
     assert_eq!(raw["accessOption"], "deny");
+    assert_eq!(raw["filterFilePath"], "denied.txt");
     assert_eq!(raw["jumpList"], "false");
     assert_eq!(raw["clientPerMinute"], 2);
     assert_eq!(raw["clientPerHour"], 10);

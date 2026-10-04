@@ -67,6 +67,9 @@ pub const CONTROL_TUNNELS_SUBDIR: &str = "tunnels";
 pub const CONTROL_POINTER_FILE: &str = "current.json";
 /// Maximum bytes of one generation file.
 pub const MAX_GENERATION_BYTES: usize = 1_048_576;
+/// Maximum UTF-8 bytes in one confined access-filter file.
+pub const MAX_FILTER_FILE_BYTES: usize = 4_096;
+const FILTER_DIRECTORY: &str = "filters";
 /// Bounded drain deadline for control reconciles.
 ///
 /// The control-plane drain policy is immediate release: administrative
@@ -149,7 +152,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 30] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 31] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -180,6 +183,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 30] = [
     "per_client_period",
     "total_period",
     "total_ban_time",
+    "filter_file_path",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -427,12 +431,20 @@ impl ControlStore {
         reject_symlink(data_dir)?;
         create_dir_secure(&root)?;
         reject_symlink(&root)?;
+        let filter_root = root.join(FILTER_DIRECTORY);
+        create_dir_secure(&filter_root)?;
+        reject_symlink(&filter_root)?;
         Ok(Self { root })
     }
 
     /// State root (tests).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Confined root for bounded server peer-filter files.
+    pub fn filter_root(&self) -> PathBuf {
+        self.root.join(FILTER_DIRECTORY)
     }
 
     /// Next generation id: one above the highest id present in
@@ -809,6 +821,69 @@ fn parse_rate_option(option: &str, value: &str) -> Result<u32, ControlError> {
     Ok(parsed)
 }
 
+/// Opens a bounded regular filter file through a no-follow directory
+/// walk rooted at the control-owned filter directory. The stored path
+/// is a logical relative reference; absolute paths, traversal, symlinks,
+/// special files, and permissive Unix file modes are rejected.
+fn read_confined_filter_file(root: &Path, relative: &str) -> Result<String, &'static str> {
+    use rustix::fs::{Mode, OFlags, open, openat};
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+
+    let components: Vec<&std::ffi::OsStr> = Path::new(relative)
+        .components()
+        .map(|component| match component {
+            std::path::Component::Normal(name) => Ok(name),
+            _ => Err("FilterFilePath must stay inside the owned filters directory"),
+        })
+        .collect::<Result<_, _>>()?;
+    if components.is_empty() {
+        return Err("FilterFilePath must name a file inside the owned filters directory");
+    }
+
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut directory: OwnedFd = open(root, directory_flags, Mode::empty())
+        .map_err(|_| "FilterFilePath owned root is unavailable")?;
+    for component in &components[..components.len() - 1] {
+        directory = openat(&directory, *component, directory_flags, Mode::empty())
+            .map_err(|_| "FilterFilePath contains a missing or unsafe directory")?;
+    }
+
+    let file_flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    let file = openat(
+        &directory,
+        components[components.len() - 1],
+        file_flags,
+        Mode::empty(),
+    )
+    .map_err(|_| "FilterFilePath file is missing or unsafe")?;
+    let file = std::fs::File::from(file);
+    let metadata = file
+        .metadata()
+        .map_err(|_| "FilterFilePath file metadata is unavailable")?;
+    if !metadata.is_file() {
+        return Err("FilterFilePath must name a regular file");
+    }
+    if metadata.len() > MAX_FILTER_FILE_BYTES as u64 {
+        return Err("FilterFilePath exceeds the 4096-byte ceiling");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("FilterFilePath file must not be accessible by group or others");
+        }
+    }
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    file.take((MAX_FILTER_FILE_BYTES + 1) as u64)
+        .read_to_end(&mut contents)
+        .map_err(|_| "FilterFilePath file could not be read")?;
+    if contents.len() > MAX_FILTER_FILE_BYTES {
+        return Err("FilterFilePath exceeds the 4096-byte ceiling");
+    }
+    String::from_utf8(contents).map_err(|_| "FilterFilePath must contain UTF-8 text")
+}
+
 /// Parses a Proposal tunnel length (Plan 292 shaping: 1..=3).
 /// Length 0 is rejected: service destinations run in Remote tunnel
 /// mode and the destination policy does not permit zero-hop pools.
@@ -908,6 +983,16 @@ fn parse_shaping_quantity(option: &str, value: &str) -> Result<u8, ControlError>
 pub fn build_control_spec(
     definition: &ControlDefinition,
 ) -> Result<ServiceTunnelSpec, ControlError> {
+    build_control_spec_with_filter_root(definition, None)
+}
+
+/// Builds a control spec with access-filter files confined beneath
+/// `filter_root`. The test/simple wrapper deliberately cannot open a
+/// file because it has no owned filesystem root.
+pub fn build_control_spec_with_filter_root(
+    definition: &ControlDefinition,
+    filter_root: Option<&Path>,
+) -> Result<ServiceTunnelSpec, ControlError> {
     let kind = map_tunnel_type(definition.tunnel_type)?;
     let id = ServiceTunnelId::parse(&definition.name)
         .map_err(|_| ControlError::InvalidRequest("stored name fails service id validation"))?;
@@ -965,6 +1050,7 @@ pub fn build_control_spec(
     let mut access_deny_sources: Vec<(String, String)> = Vec::new();
     let mut proposal_access_list: Option<String> = None;
     let mut proposal_access_option: Option<String> = None;
+    let mut filter_file_path: Option<String> = None;
     let mut connection_rates = i2pr_service_tunnels::ServerConnectionRateLimits::default();
     // Plan 292 server dial/presentation inputs (kind-gated at
     // parse; defaults preserve the historical behavior).
@@ -1606,6 +1692,27 @@ pub fn build_control_spec(
                 }
                 proposal_access_option = Some(value.clone());
             }
+            "filter_file_path" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "FilterFilePath applies to server tunnels only",
+                    });
+                }
+                if value.is_empty() || value.len() > 128 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "FilterFilePath must be a bounded relative path",
+                    });
+                }
+                filter_file_path = Some(value.clone());
+            }
             // Plan 292: inbound peer policy (server kinds only;
             // access_list unions white_list, black_list denies).
             "access_list" => {
@@ -1946,20 +2053,51 @@ pub fn build_control_spec(
         }
         persistent_client_key = persistent_from_mode;
     }
-    if let Some(mode) = proposal_access_option {
-        let Some(value) = proposal_access_list else {
+    if let Some(mode) = proposal_access_option.as_deref() {
+        if let Some(value) = proposal_access_list {
+            if mode == "allow" {
+                access_allow_sources.push(("access_list".to_owned(), value));
+            } else {
+                access_deny_sources.push(("access_list".to_owned(), value));
+            }
+        } else if filter_file_path.is_none() {
             return Err(ControlError::ContradictoryOptions {
                 name: definition.name.clone(),
                 reason: "AccessOption requires AccessList",
             });
-        };
-        if mode == "allow" {
-            access_allow_sources.push(("access_list".to_owned(), value));
-        } else {
-            access_deny_sources.push(("access_list".to_owned(), value));
         }
     } else if let Some(value) = proposal_access_list {
         access_allow_sources.push(("access_list".to_owned(), value));
+    }
+    if let Some(path) = filter_file_path.as_deref() {
+        let root = filter_root.ok_or(ControlError::InvalidOption {
+            option: "filter_file_path".to_owned(),
+            reason: "FilterFilePath requires the owned control filter directory",
+        })?;
+        let contents = read_confined_filter_file(root, path).map_err(|reason| {
+            ControlError::InvalidOption {
+                option: "filter_file_path".to_owned(),
+                reason,
+            }
+        })?;
+        let entries = contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(",");
+        if entries.is_empty() {
+            return Err(ControlError::InvalidOption {
+                option: "filter_file_path".to_owned(),
+                reason: "FilterFilePath must contain at least one peer hash",
+            });
+        }
+        let source = ("filter_file_path".to_owned(), entries);
+        if proposal_access_option.as_deref() == Some("deny") {
+            access_deny_sources.push(source);
+        } else {
+            access_allow_sources.push(source);
+        }
     }
     if idle_close_timeout_ms.is_some() && !idle_close {
         return Err(ControlError::ContradictoryOptions {
@@ -2357,6 +2495,18 @@ pub fn normalize_definition(
     options: &BTreeMap<String, String>,
     start_on_load: bool,
 ) -> Result<ControlDefinition, ControlError> {
+    normalize_definition_with_filter_root(name, tunnel_type, options, start_on_load, None)
+}
+
+/// Normalizes a definition and validates file-backed options against an
+/// explicitly owned filter root.
+pub fn normalize_definition_with_filter_root(
+    name: &str,
+    tunnel_type: TunnelType,
+    options: &BTreeMap<String, String>,
+    start_on_load: bool,
+    filter_root: Option<&Path>,
+) -> Result<ControlDefinition, ControlError> {
     validate_tunnel_name(name).map_err(|_| ControlError::InvalidRequest("invalid tunnel name"))?;
     if !tunnel_type.has_plan291_backend() {
         return Err(ControlError::UnsupportedType(tunnel_type.name().to_owned()));
@@ -2419,7 +2569,7 @@ pub fn normalize_definition(
     };
     // Validate the full mapping now, before any side effect. The
     // returned spec is discarded; the coordinator rebuilds it.
-    let _ = build_control_spec(&definition)?;
+    let _ = build_control_spec_with_filter_root(&definition, filter_root)?;
     Ok(definition)
 }
 
@@ -2611,7 +2761,9 @@ impl TunnelControlState {
                 failures.push((definition.name.clone(), "startup name collision"));
                 continue;
             }
-            if build_control_spec(&definition).is_err() {
+            if build_control_spec_with_filter_root(&definition, Some(&self.store.filter_root()))
+                .is_err()
+            {
                 failures.push((definition.name.clone(), "stored definition invalid"));
                 continue;
             }
@@ -2690,7 +2842,8 @@ impl TunnelControlState {
                 if !running.contains(&definition.name) {
                     continue;
                 }
-                let mut spec = build_control_spec(definition)?;
+                let filter_root = self.store.filter_root();
+                let mut spec = build_control_spec_with_filter_root(definition, Some(&filter_root))?;
                 spec.enabled = true;
                 tunnels.push(spec);
             }
@@ -2750,13 +2903,15 @@ impl TunnelControlState {
     /// runtime (listener/destination/target/kind change). Restaging
     /// rebinds sockets, so it travels as stop-plus-start; in-place
     /// changes (resource ceilings, intent flags) commit directly.
-    fn edit_restages(prior: &ControlDefinition, candidate: &ControlDefinition) -> bool {
+    fn edit_restages(&self, prior: &ControlDefinition, candidate: &ControlDefinition) -> bool {
         use i2pr_service_tunnels::{DiffClass, diff_spec};
-        let mut old_spec = match build_control_spec(prior) {
+        let filter_root = self.store.filter_root();
+        let mut old_spec = match build_control_spec_with_filter_root(prior, Some(&filter_root)) {
             Ok(spec) => spec,
             Err(_) => return true,
         };
-        let mut new_spec = match build_control_spec(candidate) {
+        let mut new_spec = match build_control_spec_with_filter_root(candidate, Some(&filter_root))
+        {
             Ok(spec) => spec,
             Err(_) => return true,
         };
@@ -3133,8 +3288,15 @@ impl TunnelControlState {
             .get("start_on_load")
             .map(|value| value == "true")
             .unwrap_or(true);
-        let definition = normalize_definition(name, tunnel_type, &request.options, start_on_load)?;
-        let probe = build_control_spec(&definition)?;
+        let filter_root = self.store.filter_root();
+        let definition = normalize_definition_with_filter_root(
+            name,
+            tunnel_type,
+            &request.options,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&definition, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         let running_before = lock(&self.running).clone();
         lock(&self.definitions).insert(name.to_owned(), definition);
@@ -3216,9 +3378,15 @@ impl TunnelControlState {
                 .rename_locked(&guard, name, target_name, &prior, &merged, &running_before)
                 .await;
         }
-        let candidate =
-            normalize_definition(target_name, prior.tunnel_type, &merged, start_on_load)?;
-        let probe = build_control_spec(&candidate)?;
+        let filter_root = self.store.filter_root();
+        let candidate = normalize_definition_with_filter_root(
+            target_name,
+            prior.tunnel_type,
+            &merged,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         let running_before = lock(&self.running).clone();
         let was_running = running_before.contains(target_name);
@@ -3228,7 +3396,7 @@ impl TunnelControlState {
         // as stop-plus-start: staging rebinds sockets while the old
         // runtime still holds them, so the old runtime must drain (and
         // be reaped) before the new one stages.
-        if was_running && Self::edit_restages(&prior, &candidate) {
+        if was_running && self.edit_restages(&prior, &candidate) {
             return self
                 .edit_restage_locked(&guard, target_name, &prior, &running_before)
                 .await;
@@ -3310,9 +3478,15 @@ impl TunnelControlState {
             .get("start_on_load")
             .map(|value| value == "true")
             .unwrap_or(prior.start_on_load);
-        let candidate =
-            normalize_definition(target_name, prior.tunnel_type, merged, start_on_load)?;
-        let probe = build_control_spec(&candidate)?;
+        let filter_root = self.store.filter_root();
+        let candidate = normalize_definition_with_filter_root(
+            target_name,
+            prior.tunnel_type,
+            merged,
+            start_on_load,
+            Some(&filter_root),
+        )?;
+        let probe = build_control_spec_with_filter_root(&candidate, Some(&filter_root))?;
         self.check_listener_against_startup(&probe)?;
         // Phase one: add the new definition stopped. The old
         // name's sweep reduction override is dropped: the renamed
@@ -4331,6 +4505,77 @@ mod tests {
             build_control_spec(&streamr_server).expect("Streamr subscription limits map");
         assert_eq!(streamr_spec.access.connection_rates.client_per_minute, 3);
         assert_eq!(streamr_spec.access.connection_rates.total_per_minute, 24);
+    }
+
+    #[test]
+    fn proposal_filter_file_is_confined_bounded_and_owns_server_access() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = ControlStore::open(directory.path()).expect("control store opens");
+        let filter_root = store.filter_root();
+        let peer = format!("{}.b32.i2p", "a".repeat(52));
+        let filter = filter_root.join("allowed.txt");
+        std::fs::write(&filter, format!("# comment\n{peer}\n")).expect("filter writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&filter, std::fs::Permissions::from_mode(0o600))
+                .expect("private filter permissions");
+        }
+        let options = BTreeMap::from([
+            ("target_host".to_owned(), "127.0.0.1".to_owned()),
+            ("target_port".to_owned(), "8080".to_owned()),
+            ("access_option".to_owned(), "allow".to_owned()),
+            ("filter_file_path".to_owned(), "allowed.txt".to_owned()),
+        ]);
+        let definition = normalize_definition_with_filter_root(
+            "filter-server",
+            TunnelType::Server,
+            &options,
+            false,
+            Some(&filter_root),
+        )
+        .expect("bounded filter definition normalizes");
+        let spec = build_control_spec_with_filter_root(&definition, Some(&filter_root))
+            .expect("filter file feeds access policy");
+        let expected = ServerAccessPolicy::parse(&[peer.as_str()], &[]).expect("peer parses");
+        assert_eq!(spec.access.allow, expected.allow);
+        assert!(spec.access.deny.is_empty());
+
+        let traversal = BTreeMap::from([
+            ("target_host".to_owned(), "127.0.0.1".to_owned()),
+            ("target_port".to_owned(), "8080".to_owned()),
+            ("filter_file_path".to_owned(), "../escape.txt".to_owned()),
+        ]);
+        assert!(
+            normalize_definition_with_filter_root(
+                "filter-traversal",
+                TunnelType::Server,
+                &traversal,
+                false,
+                Some(&filter_root),
+            )
+            .is_err()
+        );
+
+        let oversized = filter_root.join("large.txt");
+        std::fs::write(&oversized, vec![b'a'; MAX_FILTER_FILE_BYTES + 1])
+            .expect("oversized filter writes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&oversized, std::fs::Permissions::from_mode(0o600))
+                .expect("private filter permissions");
+        }
+        assert!(read_confined_filter_file(&filter_root, "large.txt").is_err());
+
+        #[cfg(unix)]
+        {
+            let outside = directory.path().join("outside.txt");
+            std::fs::write(&outside, peer).expect("outside file writes");
+            std::os::unix::fs::symlink(&outside, filter_root.join("linked.txt"))
+                .expect("symlink creates");
+            assert!(read_confined_filter_file(&filter_root, "linked.txt").is_err());
+        }
     }
 
     #[test]
