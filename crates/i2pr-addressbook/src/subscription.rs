@@ -86,8 +86,10 @@ impl SubscriptionSet {
 }
 
 /// Validates one subscription URL: `http`/`https` scheme
-/// (case-insensitive), non-empty host, bounded length, no whitespace
-/// or control bytes, no userinfo.
+/// (case-insensitive), an I2P `.i2p` hostname, bounded length, no
+/// whitespace or control bytes, and no userinfo. Requiring an I2P
+/// destination prevents an eepProxy outproxy from silently becoming a
+/// clearnet subscription capability.
 pub fn validate_subscription_url(url: &str) -> Result<(), AddressBookError> {
     if url.is_empty() || url.len() > MAX_SUBSCRIPTION_URL_LEN {
         return Err(AddressBookError::InvalidSubscription);
@@ -100,12 +102,16 @@ pub fn validate_subscription_url(url: &str) -> Result<(), AddressBookError> {
         .strip_prefix("http://")
         .or_else(|| lower.strip_prefix("https://"))
         .ok_or(AddressBookError::InvalidSubscription)?;
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(':');
-    if host.is_empty() || host.len() > MAX_HOSTNAME_LEN || host.contains('@') {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| port.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host);
+    if host.is_empty()
+        || host.len() > MAX_HOSTNAME_LEN
+        || host.contains('@')
+        || !host.to_ascii_lowercase().ends_with(".i2p")
+    {
         return Err(AddressBookError::InvalidSubscription);
     }
     Ok(())
@@ -171,7 +177,6 @@ mod tests {
             "http://example.i2p/hosts.txt",
             "https://example.i2p:8443/hosts.txt",
             "HTTP://EXAMPLE.I2P/HOSTS.TXT",
-            "http://127.0.0.1/hosts.txt",
         ] {
             assert!(validate_subscription_url(good).is_ok(), "{good} passes");
         }
@@ -183,6 +188,8 @@ mod tests {
             "http:///path",
             "http://user@example.i2p/hosts.txt",
             "http://example.i2p/has space.txt",
+            "http://127.0.0.1/hosts.txt",
+            "http://example.com/hosts.txt",
             "example.i2p/hosts.txt",
         ] {
             assert!(validate_subscription_url(bad).is_err(), "{bad:?} fails");
