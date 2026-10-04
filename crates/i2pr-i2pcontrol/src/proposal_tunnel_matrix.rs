@@ -299,8 +299,8 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         }
         "MultiHoming" => {
             return if matches!(tunnel_type, "server" | "httpserver" | "httpbidirserver") {
-                OwnerGap {
-                    owner_needed: "bounded canonical server target-list owner for failover",
+                Apply {
+                    owner: "Plan 296 target-list dial policy and canonical single-target contradiction",
                 }
             } else {
                 NotApplicable {
@@ -389,6 +389,17 @@ mod tests {
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(gaps, ["DelayOpen", "MultiHoming"].into_iter().collect());
+        assert_eq!(gaps, ["DelayOpen"].into_iter().collect());
+
+        for tunnel_type in ["server", "httpserver", "httpbidirserver"] {
+            assert!(cells.iter().any(|cell| {
+                cell.field == "MultiHoming"
+                    && cell.tunnel_type == tunnel_type
+                    && matches!(
+                        cell.disposition,
+                        ProposalTunnelCellDisposition::Apply { .. }
+                    )
+            }));
+        }
     }
 }
