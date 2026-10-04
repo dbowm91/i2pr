@@ -903,6 +903,40 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
             }
         ));
     }
+    let gap_owner = |key: &str| {
+        rows.iter()
+            .find(|row| row.key == key)
+            .expect("canonical field")
+    };
+    assert_eq!(
+        gap_owner("i2p.router.net.total.transit.bytes").owner,
+        "controlled TransitBuildService qualification gate"
+    );
+    assert_eq!(
+        gap_owner("i2p.router.net.bw.transit.15s").owner,
+        "transit bandwidth sampler"
+    );
+    assert_eq!(
+        gap_owner("i2p.router.net.tunnels.shareratio").owner,
+        "transit participation metrics"
+    );
+    for key in [
+        "i2p.router.net.status.v6",
+        "i2p.router.net.error",
+        "i2p.router.net.error.v6",
+        "i2p.router.net.testing",
+        "i2p.router.net.testing.v6",
+    ] {
+        let row = gap_owner(key);
+        assert_ne!(row.owner, "Plan 322 source not implemented", "{key}");
+        assert!(matches!(
+            row.availability,
+            SourceAvailability::Unavailable {
+                owner_plan: "322",
+                ..
+            }
+        ));
+    }
     assert_eq!(
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
