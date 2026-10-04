@@ -1,0 +1,55 @@
+{
+  "schema": "i2pr-els2-emissary-differential/1",
+  "provenance": {
+    "oracle": "eggstack/emissary@6885a945d25a5ae61bc68191d27c5816bc3df4c9",
+    "access": "public API only (els2::credential, els2::subcredential, els2::encrypt_no_auth_with_salts, els2::decrypt_outer, els2::decrypt_inner, els2::encode_encrypted_service_b32, els2::decode_encrypted_service_b32); no Emissary source was read",
+    "freeze": "i2pr implementation commit 4e691bd was frozen before the oracle was invoked",
+    "driver": "kept outside this repository, under /tmp/ref/, and is not committed",
+    "generated_on": "2026-10-04",
+    "authority": "ADR 0028 section 7 as amended by Plan 329: post-implementation behavioral oracle only"
+  },
+  "agreement": {
+    "credential": true,
+    "subcredential": true,
+    "outer_ciphertext": true,
+    "encrypted_service_address": true,
+    "emissary_decodes_i2pr_address": true,
+    "emissary_recovers_unblinded_key": true,
+    "emissary_reads_secret_required_flag": true
+  },
+  "case": {
+    "name": "type-7-unblinded-standard-inner-lease-set2",
+    "unblinded_sigtype": 7,
+    "unblinded_public_key": "5866666666666666666666666666666666666666666666666666666666666666",
+    "blinded_public_key": "5866666666666666666666666666666666666666666666666666666666666665",
+    "published": 1700000000,
+    "inner_store_type": 3,
+    "inner_record": "de5a366abe9c3c92990072fe8c8d577595117fe7a3e206136117d8f50c7d2549b8b8f3aab1776bd99d3a45fd230310d49cea54f1aa2411b6bb50d9ba955baeb047e96d60fe2c443462d70a185448eac6bad92902c916832381d19ab2d8bb23ebb050cee9716c1d48b925bb01e5d9facf8de808595e1b1f1ac5a15c85eb84f29b49ea99bcd6d147579db97315305a910c3f2d16ecf328125f298a1fa6b04e0ec7bc2780fd7d02e7ab155bdc692296c4003269150e4acc1532853b2eb777b9844deaae363657bcf3aea827e42a2434eedc2f2e604a2224ae890f8a25baec8817c3f7181d1a18bef1259a911872f1080eedb81b88c99a333baf5071a11526097570df3765248f14d74bbd139c5385d934a9e972d7d69b8b97d31d0f2ac79ed323bc3574a2ed3a1aa99b912d7c51458be69f063cfb09042122468ce48cfea28a17f92979e2840a00ffe1e59022b193252a94294354b695574daf9479a74785be0fc23d751605a35103cc9e3edd7fe8e69cafd84cdeb30d1db0392224b35b39870b75050004000700046553f1000e100000000001000400205555555555555555555555555555555555555555555555555555555555555555011111111111111111111111111111111111111111111111111111111111111111000000076553f358a75838df9993e034f004700ae475eb7df8aeaeb7fe1f8fe565fa7295402b1db52b601a691fa94d713395657016a67ba7d378c442d74608e71da7623b9e7bb80a",
+    "inner_salt": "0b30557a9fc4e90e33587da2c7ec11365b80a5caef14395e83a8cdf2173c6186",
+    "outer_salt": "abd0f51a3f6489aed3f81d42678cb1d6fb20456a8fb4d9fe23486d92b7dc0126",
+    "secret_required": true,
+    "i2pr": {
+      "credential": "d73b4a5dd81884ef7cb79045cb21a9113b0a9a90d2251b6648d10621dedd4e17",
+      "subcredential": "626ca3d6229c5c7f2668167faa7d02236defecd3b427858f1f1e64efd5ea83fa",
+      "outer_ciphertext": "abd0f51a3f6489aed3f81d42678cb1d6fb20456a8fb4d9fe23486d92b7dc0126420c4fac44fa5695553065deed113fd57ee9ea6024237c3eba19746d0f00a395496d32eeed0469a3f335bd6e14f94995ab2e8497c5b0956634d2843d52ed5a69f4211ec399bf4485c64664d7c7478b7d5e01b923720ed19e33c2a74ae2548121d7b503e8b2a63fb888f9f8d650fbdf06f76d6e7064cdfa8f6c8ea56c5972e682e71fe0ca13f3f2c8d0d22df311a36ef8a1114d97f4889aa3b8f8acd46b1e41b37a815766a1dec46a3f54873f78d4437984836fe77ca5b58448854c7bd74c63db2986ae17b9013cf1424344154a2cd79acbd34493df82ec3c19b2169a99ee20976c0a34f2811cb07bd5684bb39b5ea54c6a298bbafc651330dc881a2f5a9268ef0f05527e604a39d801ecaade9b6fcf5cf0a31b715a310047390749c93c2ea118c5fa83a9fd6d4f4795390cbdf9d3e3238a217006527470b06cdd9a074407748c645a8b1c946b0ac973b2ce797bc90ba43793204aea91968a657897f81b35cdd1e7021fd7ebd333e2b366a089f579cbe46dd3e9a43539c6f425ece68d45429e090110354ebdeae84b395b72d65728c5e67d5f7dd9103cad08197b6f4b81735e94073898fc2f2845db5642b9bf0c33874fe55fca65f008ae14b451878f66dcc30207e8ff0a8e2eeae6d1fd2bd729b351d1a02c0f099ba16f0cb7132aa38c66382985e83a144146c9e2ce65e3cb8d986d67cb5e62c615779d81625f7aab0999b9a64087216e2c79db7368e8bce31b97620f19d1c84e19ec4ae28fe7d3aa18eb4eed9af52b713d6f75a18cc00c6720310799f04255c3180fc2704a92acf638637d9f7c",
+      "address_text": "ipy5qwdgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztg.b32.i2p",
+      "day": "20231114",
+      "daily_blinded_public_key": "9398cec876f3b357bbf45a98914805ccffdb54f7c3643cc29a4a86333d52ab3f",
+      "storage_key": "f6d8f84a1412b5e12f68a2e2f2b5d40fad0691dc68df2a52da0bbe5eb2cc67ca"
+    },
+    "emissary": {
+      "credential": "d73b4a5dd81884ef7cb79045cb21a9113b0a9a90d2251b6648d10621dedd4e17",
+      "subcredential": "626ca3d6229c5c7f2668167faa7d02236defecd3b427858f1f1e64efd5ea83fa",
+      "outer_ciphertext": "abd0f51a3f6489aed3f81d42678cb1d6fb20456a8fb4d9fe23486d92b7dc0126420c4fac44fa5695553065deed113fd57ee9ea6024237c3eba19746d0f00a395496d32eeed0469a3f335bd6e14f94995ab2e8497c5b0956634d2843d52ed5a69f4211ec399bf4485c64664d7c7478b7d5e01b923720ed19e33c2a74ae2548121d7b503e8b2a63fb888f9f8d650fbdf06f76d6e7064cdfa8f6c8ea56c5972e682e71fe0ca13f3f2c8d0d22df311a36ef8a1114d97f4889aa3b8f8acd46b1e41b37a815766a1dec46a3f54873f78d4437984836fe77ca5b58448854c7bd74c63db2986ae17b9013cf1424344154a2cd79acbd34493df82ec3c19b2169a99ee20976c0a34f2811cb07bd5684bb39b5ea54c6a298bbafc651330dc881a2f5a9268ef0f05527e604a39d801ecaade9b6fcf5cf0a31b715a310047390749c93c2ea118c5fa83a9fd6d4f4795390cbdf9d3e3238a217006527470b06cdd9a074407748c645a8b1c946b0ac973b2ce797bc90ba43793204aea91968a657897f81b35cdd1e7021fd7ebd333e2b366a089f579cbe46dd3e9a43539c6f425ece68d45429e090110354ebdeae84b395b72d65728c5e67d5f7dd9103cad08197b6f4b81735e94073898fc2f2845db5642b9bf0c33874fe55fca65f008ae14b451878f66dcc30207e8ff0a8e2eeae6d1fd2bd729b351d1a02c0f099ba16f0cb7132aa38c66382985e83a144146c9e2ce65e3cb8d986d67cb5e62c615779d81625f7aab0999b9a64087216e2c79db7368e8bce31b97620f19d1c84e19ec4ae28fe7d3aa18eb4eed9af52b713d6f75a18cc00c6720310799f04255c3180fc2704a92acf638637d9f7c",
+      "encoded_address": "ipy5qwdgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztgmztg.b32.i2p",
+      "decoded_unblinded_public_key": "5866666666666666666666666666666666666666666666666666666666666666"
+    }
+  },
+  "reverse": {
+    "note": "i2pr decrypted the oracle-produced outer ciphertext and recovered the inner LeaseSet2 byte-for-byte",
+    "inner_store_type": 3,
+    "inner_len": 543,
+    "inner_matches_original": true
+  },
+  "inner_store_type_convention": "the specification places a one-byte inner store type at the head of the layer-2 plaintext. The oracle's encrypt helper prepends that byte itself, so its caller passes the bare LeaseSet2 record; i2pr's API takes the store type and the record separately and prepends it. The two conventions are equivalent, which is why the outer ciphertexts are byte-identical. Handing the oracle an already-prefixed record produces a layer-2 plaintext one byte longer and a correspondingly longer outer ciphertext."
+}

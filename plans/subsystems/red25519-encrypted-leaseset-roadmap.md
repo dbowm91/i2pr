@@ -119,8 +119,8 @@ No custom field/bignum/curve formulas are permitted.
 | 329 | passed | provenance/reference correction and exact algorithm/vector freeze (closure: `plans/closure/i2pcontrol-proposal-170/329-status.md`) |
 | 330 | passed | independent Rust Red25519 construction (closure: `plans/closure/i2pcontrol-proposal-170/330-status.md`) |
 | 331 | passed | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
-| 332 | blocked on 331 | type-5 ELS2 format/publication/lookup + lookup secret/B33 |
-| 333 | blocked on 332 | PSK and DH/X25519 client authorization |
+| 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
+| 333 | ready | PSK and DH/X25519 client authorization |
 | 334 | blocked on 333 | exact Proposal 170 mode/field mapping |
 | 335 | blocked on 334 | live interop and successor reclosure for blocked Plan 326 |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |

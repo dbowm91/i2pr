@@ -1,6 +1,8 @@
 # Plan 332 — Type-5 Encrypted LeaseSet2 foundation, blinding lookup, and B33
 
-Status: **ready-encrypted-ls2-foundation**
+Status: **passed-encrypted-leaseset2-foundation-without-per-client-authorization**
+
+Closed by [`plans/closure/i2pcontrol-proposal-170/332-status.md`](../../closure/i2pcontrol-proposal-170/332-status.md).
 
 Unblocked by the Plan 331 closure; conformance basis is the Plan 336 spec-first decision. A type-5
 record signed by i2pr is not verifiable by i2pd or Java I2P today, so this plan must not claim
