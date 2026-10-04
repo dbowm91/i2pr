@@ -460,6 +460,48 @@ async fn authenticated_router_info_logs_clear_clears_ring_and_returns_success() 
 }
 
 #[tokio::test]
+async fn failed_mixed_router_info_selection_does_not_clear_logs() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    let ring = Arc::new(i2pr_daemon::control_sources::LogRing::new());
+    ring.record("INFO", "daemon", "must remain on failed request");
+    inspection.publish_log_ring(Arc::clone(&ring));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.logs.clear": null,
+                "i2p.router.info": null,
+            },
+            "id": 3,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32603);
+    assert_eq!(ring.snapshot().0.len(), 1);
+}
+
+#[tokio::test]
 async fn router_info_unknown_and_base_keys_rejected() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")
