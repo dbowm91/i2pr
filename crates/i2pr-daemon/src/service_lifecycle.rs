@@ -57,6 +57,35 @@ impl RemainingBucket {
             Self::OverFiveMinutes
         }
     }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::UnderOneMinute => "under_one_minute",
+            Self::OneToFiveMinutes => "one_to_five_minutes",
+            Self::OverFiveMinutes => "over_five_minutes",
+        }
+    }
+}
+
+impl LifecycleStatus {
+    const fn coarse_label(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::NoGroups => "no_groups",
+            Self::Active => "active",
+            Self::Retiring { .. } => "retiring",
+            Self::Drained => "drained",
+            Self::HardStopped => "hard_stopped",
+            Self::Failed => "failed",
+        }
+    }
+
+    const fn remaining_bucket_label(self) -> &'static str {
+        match self {
+            Self::Retiring { remaining } => remaining.label(),
+            _ => "none",
+        }
+    }
 }
 
 /// Shared command/status handles between daemon shutdown and the SSU2 group
@@ -83,7 +112,15 @@ impl ServiceLifecycleController {
     }
 
     pub(crate) fn set_status(&self, status: LifecycleStatus) {
+        if *self.status.borrow() == status {
+            return;
+        }
         self.status.send_replace(status);
+        tracing::info!(
+            lifecycle = status.coarse_label(),
+            remaining = status.remaining_bucket_label(),
+            "service group lifecycle changed"
+        );
     }
 
     pub(crate) fn request_graceful(&self) {
@@ -94,7 +131,7 @@ impl ServiceLifecycleController {
 
     pub(crate) fn request_hard(&self) {
         self.command.send_replace(LifecycleCommand::Hard);
-        self.status.send_replace(LifecycleStatus::HardStopped);
+        self.set_status(LifecycleStatus::HardStopped);
     }
 
     pub(crate) async fn wait_for_terminal_status(&self) -> LifecycleStatus {
@@ -215,7 +252,8 @@ mod tests {
     use i2pr_runtime::CancellationToken;
 
     use super::{
-        LifecycleStatus, RetirementState, SERVICE_RETIREMENT_HARD_CAP, SERVICE_RETIREMENT_TARGET,
+        LifecycleCommand, LifecycleStatus, RetirementState, SERVICE_RETIREMENT_HARD_CAP,
+        SERVICE_RETIREMENT_TARGET, ServiceLifecycleController,
     };
 
     #[tokio::test(start_paused = true)]
@@ -276,5 +314,47 @@ mod tests {
         let state = RetirementState::begin(0, Some(600_000), 1);
         assert_eq!(state.hard_stop(), RetirementState::HardStopped);
         assert_eq!(state.hard_stop().status(0), LifecycleStatus::HardStopped);
+    }
+
+    #[test]
+    fn hard_shutdown_upgrades_graceful_and_status_is_coarse() {
+        let lifecycle = ServiceLifecycleController::new();
+        lifecycle.set_status(LifecycleStatus::Active);
+        lifecycle.request_graceful();
+        assert_eq!(lifecycle.command(), LifecycleCommand::Graceful);
+        lifecycle.request_graceful();
+        assert_eq!(lifecycle.command(), LifecycleCommand::Graceful);
+        lifecycle.request_hard();
+        assert_eq!(lifecycle.command(), LifecycleCommand::Hard);
+        assert_eq!(lifecycle.status(), LifecycleStatus::HardStopped);
+        assert_eq!(LifecycleStatus::HardStopped.coarse_label(), "hard_stopped");
+        assert_eq!(
+            LifecycleStatus::Retiring {
+                remaining: super::RemainingBucket::OneToFiveMinutes,
+            }
+            .remaining_bucket_label(),
+            "one_to_five_minutes"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retirement_trace_waits_for_lease_and_connections_but_respects_hard_cap() {
+        let mut state = RetirementState::begin(0, Some(180_000), 1);
+        assert_eq!(
+            state.status(0),
+            LifecycleStatus::Retiring {
+                remaining: super::RemainingBucket::OneToFiveMinutes,
+            }
+        );
+        tokio::time::advance(Duration::from_secs(180)).await;
+        state = state.advance(180_000, 1);
+        assert!(matches!(state, RetirementState::Retiring { .. }));
+        state = state.advance(180_001, 0);
+        assert_eq!(state, RetirementState::Drained);
+
+        let mut capped = RetirementState::begin(0, Some(600_000), 1);
+        tokio::time::advance(SERVICE_RETIREMENT_HARD_CAP).await;
+        capped = capped.advance(SERVICE_RETIREMENT_HARD_CAP.as_millis() as u64, 1);
+        assert_eq!(capped, RetirementState::HardCapReached);
     }
 }
