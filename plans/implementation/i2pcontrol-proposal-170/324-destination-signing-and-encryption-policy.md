@@ -1,6 +1,6 @@
 # Plan 324 — Destination signing/encryption policy for canonical SigType and EncType
 
-Status: **in-progress-prop170-destination-key-policy**
+Status: **passed-prop170-destination-signing-and-encryption-policy**
 
 Classification: crypto integration + identity lifecycle capability.
 
