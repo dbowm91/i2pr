@@ -303,9 +303,6 @@ pub fn decode_tunnel_request(
                     let mode = value
                         .as_u64()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
-                    if mode == 1 {
-                        return Err(TunnelRequestError::UnavailableOption(key.to_owned()));
-                    }
                     options.insert("new_dest".to_owned(), mode.to_string());
                     options_seen = true;
                     continue;

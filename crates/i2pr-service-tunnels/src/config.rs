@@ -768,6 +768,9 @@ pub struct IdlePolicy {
     /// (identity stable; ephemeral client identities follow the
     /// existing restart-regeneration behavior).
     pub new_dest_on_idle: bool,
+    /// Rotate a dedicated client Destination after its close-on-idle
+    /// deadline, while keeping the service active on the new identity.
+    pub rotate_destination_on_idle: bool,
     /// Halve pool targets toward one once idle past the deadline
     /// (runtime-only; a restart restores the stored shaping).
     pub reduce_on_idle: bool,
@@ -789,6 +792,7 @@ impl IdlePolicy {
             timeout_ms: None,
             close_on_idle: false,
             new_dest_on_idle: false,
+            rotate_destination_on_idle: false,
             reduce_on_idle: false,
             close_timeout_ms: None,
             reduce_timeout_ms: None,
@@ -824,6 +828,7 @@ impl IdlePolicy {
             timeout_ms,
             close_on_idle,
             new_dest_on_idle,
+            rotate_destination_on_idle: false,
             reduce_on_idle,
             close_timeout_ms: None,
             reduce_timeout_ms: None,
@@ -841,6 +846,12 @@ impl IdlePolicy {
             self.new_dest_on_idle,
             self.reduce_on_idle,
         )?;
+        if self.rotate_destination_on_idle && !self.close_on_idle {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "destination rotation on idle requires close_on_idle",
+            });
+        }
         if let Some(timeout) = self.close_timeout_ms
             && (!self.close_on_idle || timeout > MAX_PROPOSAL_IDLE_TIMEOUT_MS)
         {
@@ -873,7 +884,10 @@ impl IdlePolicy {
         (self.timeout_ms.is_some()
             || self.close_timeout_ms.is_some()
             || self.reduce_timeout_ms.is_some())
-            && (self.close_on_idle || self.new_dest_on_idle || self.reduce_on_idle)
+            && (self.close_on_idle
+                || self.new_dest_on_idle
+                || self.rotate_destination_on_idle
+                || self.reduce_on_idle)
     }
 }
 
@@ -1355,7 +1369,10 @@ impl ServiceTunnelSpec {
         if (self.idle.timeout_ms.is_some()
             || self.idle.close_timeout_ms.is_some()
             || self.idle.reduce_timeout_ms.is_some())
-            && !(self.idle.close_on_idle || self.idle.new_dest_on_idle || self.idle.reduce_on_idle)
+            && !(self.idle.close_on_idle
+                || self.idle.new_dest_on_idle
+                || self.idle.rotate_destination_on_idle
+                || self.idle.reduce_on_idle)
         {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id,
@@ -1363,6 +1380,16 @@ impl ServiceTunnelSpec {
             });
         }
         self.idle.validate()?;
+        if self.idle.rotate_destination_on_idle
+            && (!self.idle.close_on_idle
+                || !self.kind.is_client()
+                || !matches!(&self.policy, DestinationPolicy::Dedicated))
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "Destination rotation on idle requires Close and a dedicated client Destination",
+            });
+        }
         // Plan 292: only server kinds terminate inbound I2P streams,
         // so only they may carry a peer policy.
         if !self.access.is_empty()
@@ -1898,6 +1925,7 @@ mod tests {
             timeout_ms: Some(60_000),
             close_on_idle: false,
             new_dest_on_idle: false,
+            rotate_destination_on_idle: false,
             reduce_on_idle: false,
             close_timeout_ms: None,
             reduce_timeout_ms: None,

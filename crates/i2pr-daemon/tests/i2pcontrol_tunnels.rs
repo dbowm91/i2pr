@@ -376,6 +376,38 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     assert_eq!(info["rawConfig"]["newDest"], serde_json::json!(2));
     assert_eq!(info["persistentClientKey"], serde_json::json!(true));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
+
+    let resume_port = distinct_port();
+    let resume_created = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"create", "Name":"resume-client", "Type":"client",
+            "TargetDestination":b32, "Port":resume_port, "StartOnLoad":false,
+            "Close":true, "NewDest":1
+        }),
+        4,
+    )
+    .await;
+    assert!(
+        resume_created.get("error").is_none(),
+        "NewDest=1 with Close creates: {resume_created}"
+    );
+    let resume_fetched = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get", "Name":"resume-client"}),
+        5,
+    )
+    .await;
+    assert_eq!(
+        resume_fetched["result"]["info"]["rawConfig"]["newDest"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        resume_fetched["result"]["info"]["rawConfig"]["close"],
+        serde_json::json!(true)
+    );
     assert!(
         info["destinationB32"]
             .as_str()
@@ -466,6 +498,14 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         .await;
         assert!(response.get("error").is_none(), "bulk setup: {response}");
     }
+    let stopped_resume_client = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"stop", "Name":"resume-client"}),
+        9,
+    )
+    .await;
+    assert!(stopped_resume_client.get("error").is_none());
     let all = tunnel_raw(
         address,
         &token,
@@ -474,7 +514,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     )
     .await;
     let results = all["result"]["results"].as_array().expect("bulk results");
-    assert_eq!(results.len(), 2, "{all}");
+    assert_eq!(results.len(), 3, "{all}");
     assert_eq!(results[0]["name"], "bulk-alpha");
     assert_eq!(results[1]["name"], "bulk-zeta");
     for (id, action) in [(12, "restart"), (13, "stop")] {
@@ -485,7 +525,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
             id,
         )
         .await;
-        assert_eq!(response["result"]["results"].as_array().unwrap().len(), 2);
+        assert_eq!(response["result"]["results"].as_array().unwrap().len(), 3);
         assert!(
             response["result"]["results"]
                 .as_array()

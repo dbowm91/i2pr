@@ -3,8 +3,8 @@
 //! The manager owns the sweep clock and runtime counters; this module
 //! owns the pure per-tunnel decision so unit tests can pin every edge
 //! (exact deadline, saturation, priority) without timers or sockets.
-//! Priority is fixed: close wins over pool rebuild wins over pool
-//! reduction. An inert policy (deadline with no action, rejected at
+//! Priority is fixed: explicit destination rotation wins over close,
+//! which wins over pool rebuild, which wins over reduction. An inert policy (deadline with no action, rejected at
 //! every construction boundary) decides nothing here either.
 
 use crate::config::IdlePolicy;
@@ -15,9 +15,10 @@ pub enum IdleSweepAction {
     /// Stop the runtime (definition and persisted intent preserved;
     /// an operator start resumes from the stored definition).
     Close,
-    /// Rebuild tunnel pools in place under the same identity
-    /// (ephemeral client identities follow the existing
-    /// restart-regeneration behavior).
+    /// Restart an ephemeral client service with a fresh Destination,
+    /// keeping the service active on the new identity.
+    RotateDestination,
+    /// Rebuild tunnel pools in place under the same identity.
     RebuildPools,
     /// Reduce pool targets toward one via a runtime-only override
     /// (a restart restores the stored shaping).
@@ -42,6 +43,10 @@ pub fn idle_decision(
     let idle_ms = now_ms.saturating_sub(last_activity_ms);
     let close_timeout = policy.close_timeout_ms.or(policy.timeout_ms);
     let reduce_timeout = policy.reduce_timeout_ms.or(policy.timeout_ms);
+    if policy.rotate_destination_on_idle && close_timeout.is_some_and(|timeout| idle_ms >= timeout)
+    {
+        return Some(IdleSweepAction::RotateDestination);
+    }
     if policy.close_on_idle && close_timeout.is_some_and(|timeout| idle_ms >= timeout) {
         return Some(IdleSweepAction::Close);
     }
@@ -64,6 +69,7 @@ mod tests {
             timeout_ms,
             close_on_idle: close,
             new_dest_on_idle: new_dest,
+            rotate_destination_on_idle: false,
             reduce_on_idle: reduce,
             close_timeout_ms: None,
             reduce_timeout_ms: None,
@@ -107,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_is_close_then_rebuild_then_reduce() {
+    fn existing_priority_is_close_then_rebuild_then_reduce() {
         let all = policy(Some(1_000), true, true, true);
         assert_eq!(
             idle_decision(&all, 0, 0, 0, 5_000),
@@ -117,6 +123,16 @@ mod tests {
         assert_eq!(
             idle_decision(&rebuild, 0, 0, 0, 5_000),
             Some(IdleSweepAction::RebuildPools)
+        );
+    }
+
+    #[test]
+    fn proposal_destination_rotation_precedes_idle_close() {
+        let mut rotate = policy(Some(1_000), true, false, true);
+        rotate.rotate_destination_on_idle = true;
+        assert_eq!(
+            idle_decision(&rotate, 0, 0, 0, 1_000),
+            Some(IdleSweepAction::RotateDestination)
         );
     }
 

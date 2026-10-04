@@ -909,6 +909,7 @@ pub fn build_control_spec(
     let mut idle_timeout_ms: Option<u64> = None;
     let mut idle_close = false;
     let mut idle_new_dest = false;
+    let mut rotate_destination_on_idle = false;
     let mut idle_reduce = false;
     let mut idle_close_timeout_ms: Option<u64> = None;
     let mut idle_reduce_timeout_ms: Option<u64> = None;
@@ -1018,14 +1019,16 @@ pub fn build_control_spec(
                         reason: "NewDest applies to client tunnels only",
                     });
                 }
-                let mode = value.parse::<u8>().map_err(|_| ControlError::InvalidOption {
-                    option: key.clone(),
-                    reason: "NewDest must be 0 or 2; mode 1 requires identity rotation on resume",
-                })?;
-                if mode != 0 && mode != 2 {
+                let mode = value
+                    .parse::<u8>()
+                    .map_err(|_| ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "NewDest must be 0, 1, or 2",
+                    })?;
+                if mode > 2 {
                     return Err(ControlError::InvalidOption {
                         option: key.clone(),
-                        reason: "NewDest must be 0 or 2; mode 1 requires identity rotation on resume",
+                        reason: "NewDest must be 0, 1, or 2",
                     });
                 }
                 proposal_new_dest = Some(mode);
@@ -1847,6 +1850,21 @@ pub fn build_control_spec(
                 reason: "NewDest and PersistentClientKey request conflicting identity policies",
             });
         }
+        if mode == 1 && shared_client {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "NewDest=1 cannot rotate a shared Destination group independently",
+            });
+        }
+        if mode == 1 {
+            if !idle_close {
+                return Err(ControlError::ContradictoryOptions {
+                    name: definition.name.clone(),
+                    reason: "NewDest=1 requires Close:true to resume with a fresh Destination",
+                });
+            }
+            rotate_destination_on_idle = true;
+        }
         persistent_client_key = persistent_from_mode;
     }
     if let Some(mode) = proposal_access_option {
@@ -1942,6 +1960,7 @@ pub fn build_control_spec(
         timeout_ms: idle_timeout_ms,
         close_on_idle: idle_close,
         new_dest_on_idle: idle_new_dest,
+        rotate_destination_on_idle,
         reduce_on_idle: idle_reduce,
         close_timeout_ms: idle_close_timeout_ms,
         reduce_timeout_ms: idle_reduce_timeout_ms,
@@ -2362,7 +2381,7 @@ pub struct TunnelControlState {
 pub struct IdleSweepApplied {
     /// Service id the action applied to.
     pub spec_id: String,
-    /// Action label (`close`, `rebuild-pools`, `reduce-pools`).
+    /// Action label (`close`, `new-destination`, `rebuild-pools`, `reduce-pools`).
     pub action: &'static str,
 }
 
@@ -3412,9 +3431,9 @@ impl TunnelControlState {
             let request = TunnelManagerRequest {
                 action: match decision.action {
                     IdleSweepAction::Close => TunnelAction::Stop,
-                    IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
-                        TunnelAction::Restart
-                    }
+                    IdleSweepAction::RotateDestination
+                    | IdleSweepAction::RebuildPools
+                    | IdleSweepAction::ReducePools => TunnelAction::Restart,
                 },
                 all: false,
                 name: Some(decision.spec_id.clone()),
@@ -3424,12 +3443,13 @@ impl TunnelControlState {
             };
             let outcome = match decision.action {
                 IdleSweepAction::Close => self.stop(&request).await,
-                IdleSweepAction::RebuildPools | IdleSweepAction::ReducePools => {
-                    self.restart(&request).await
-                }
+                IdleSweepAction::RotateDestination
+                | IdleSweepAction::RebuildPools
+                | IdleSweepAction::ReducePools => self.restart(&request).await,
             };
             let label = match decision.action {
                 IdleSweepAction::Close => "close",
+                IdleSweepAction::RotateDestination => "new-destination",
                 IdleSweepAction::RebuildPools => "rebuild-pools",
                 IdleSweepAction::ReducePools => "reduce-pools",
             };
@@ -4061,6 +4081,40 @@ mod tests {
                 .policy,
             DestinationPolicy::PersistentClient
         );
+        let new_dest_on_resume = ControlDefinition {
+            name: "new-dest-on-resume".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "1".to_owned()),
+                ("close_on_idle".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let resume_spec = build_control_spec(&new_dest_on_resume)
+            .expect("NewDest=1 selects the ephemeral idle-rotation owner");
+        assert_eq!(resume_spec.policy, DestinationPolicy::Dedicated);
+        assert!(resume_spec.idle.close_on_idle);
+        assert!(resume_spec.idle.rotate_destination_on_idle);
+        assert!(!resume_spec.idle.new_dest_on_idle);
+
+        let shared_new_dest = ControlDefinition {
+            name: "shared-new-dest-on-resume".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "1".to_owned()),
+                ("close_on_idle".to_owned(), "true".to_owned()),
+                ("shared".to_owned(), "true".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&shared_new_dest),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
         let conflicting = ControlDefinition {
             name: "new-dest-conflict".to_owned(),
             tunnel_type: TunnelType::Client,
@@ -5212,6 +5266,9 @@ mod tests {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert("idle_timeout".to_owned(), "5000".to_owned());
             options.insert(flag.to_owned(), "true".to_owned());
+            if flag == "new_dest_on_idle" {
+                options.insert("close_on_idle".to_owned(), "true".to_owned());
+            }
             let definition = ControlDefinition {
                 name: format!("idle-{flag}"),
                 tunnel_type: TunnelType::Client,
@@ -5626,7 +5683,7 @@ mod tests {
         let mut options = client_options(&destination, 0);
         options.insert("idle_timeout".to_owned(), "1000".to_owned());
         options.insert("new_dest_on_idle".to_owned(), "true".to_owned());
-        block_on(control.create(&create_request("idlerebuild", TunnelType::Client, options)))
+        block_on(control.create(&create_request("idle-rebuild", TunnelType::Client, options)))
             .expect("create runs");
         let generation_before = control.store_generation();
         let base = crate::service_tunnels::service_streaming_now_ms();
@@ -5634,7 +5691,36 @@ mod tests {
         assert_eq!(applied.len(), 1, "rebuild fires: {applied:?}");
         assert_eq!(applied[0].action, "rebuild-pools");
         assert!(control.store_generation() > generation_before);
+        assert!(control.is_running("idle-rebuild"));
+    }
+
+    #[test]
+    fn plan323_new_dest_one_rotates_identity_on_idle_resume() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let control = test_control(directory.path());
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let mut options = client_options(&destination, 0);
+        options.insert("new_dest".to_owned(), "1".to_owned());
+        options.insert("close_on_idle".to_owned(), "true".to_owned());
+        block_on(control.create(&create_request("idlerebuild", TunnelType::Client, options)))
+            .expect("create runs");
+        let destination_before = control
+            .manager
+            .service_destination_id("idlerebuild")
+            .expect("initial ephemeral Destination");
+        let generation_before = control.store_generation();
+        let base = crate::service_tunnels::service_streaming_now_ms();
+        assert!(block_on(control.idle_sweep_once(base + 599_000)).is_empty());
+        let applied = block_on(control.idle_sweep_once(base + 660_000));
+        assert_eq!(applied.len(), 1, "idle rotation fires: {applied:?}");
+        assert_eq!(applied[0].action, "new-destination");
+        assert!(control.store_generation() > generation_before);
         assert!(control.is_running("idlerebuild"));
+        let destination_after = control
+            .manager
+            .service_destination_id("idlerebuild")
+            .expect("resumed ephemeral Destination");
+        assert_ne!(destination_after, destination_before);
     }
 
     #[test]
