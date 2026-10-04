@@ -69,7 +69,7 @@ The crate does **not** include:
 
 ## Module layout
 
-The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`, and `src/red25519.rs`:
+The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`, `src/red25519.rs`, and `src/chacha.rs`:
 
 | Section | File | Responsibility | Public types |
 | --- | --- | --- | --- |
@@ -87,10 +87,33 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`, and `s
 | Hash helpers | `lib.rs` | SHA-256, identity hash | `sha256`, `router_identity_hash` |
 | Constant-time compare | `lib.rs` | `subtle`-backed | `constant_time_eq` |
 | ECIES primitives | `ecies.rs` | Ephemeral keypair, representative codec, HKDF transcript, directional tag-set ratchets, bound NS/NSR/ES message codecs | `EciesEphemeralKeypair`, `EciesEphemeralRepresentative`, `EciesEphemeralSecret`, `EciesNoiseState`, `EciesTagSet`, `BoundNewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply`, `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session`, `decode_representative` |
+| ChaCha20 layer primitive | `chacha.rs` | Raw RFC 8439 keystream pinned to the I2P layer initial block counter, with a zeroizing key owner | `CHACHA20_KEY_LENGTH`, `CHACHA20_NONCE_LENGTH`, `CHACHA20_BLOCK_LENGTH`, `LAYER_INITIAL_BLOCK_COUNTER`, `ChachaError`, `LayerCipherKey`, `chacha20_xor_layer`, `chacha20_xor_layer_owned` |
 | Red25519 secrets | `red25519.rs` | Fixed-size zeroizing owners for the unblinded/converted scalar, the daily blinding scalar, and the blinded scalar | `Red25519PrivateScalar`, `BlindingScalar`, `BlindedPrivateScalar` |
+| Red25519 blinding input | `red25519.rs` | Erase-on-drop owner for the optional UTF-8 lookup secret, with the documented length bound applied at construction | `LookupSecret`, `MAX_LOOKUP_SECRET_LENGTH` |
 | Red25519 public | `red25519.rs` | Compressed Edwards public key, 64-byte signature, validated UTC day | `Red25519PublicKey`, `Red25519Signature`, `BlindingDay` |
 | Red25519 operations | `red25519.rs` | Ed25519→Red25519 conversion, key generation/derivation, daily `GENERATE_ALPHA`, public/private blinding, randomized signing, verification, blinded DHT storage key | `convert_ed25519_private`, `generate_private`, `derive_public_key`, `generate_alpha`, `blind_public_key`, `blind_private_key`, `sign`, `sign_with_nonce`, `verify`, `verify_blinded`, `blinded_storage_key` |
 | Tests | all files | Deterministic primitives tests | _(private)_ |
+
+### Plan 332 additions
+
+`chacha.rs` is a narrow wrapper, not a second destination stack. The encrypted
+LeaseSet2 layers need the raw RFC 7539 stream cipher, not an AEAD: each layer
+derives a fresh key from a fresh random salt, so integrity comes from the
+Red25519 signature over the whole record rather than from a per-layer
+authenticator. Two details are normative and enforced here rather than left to
+callers — a 12-byte nonce, and an initial block counter of **1**, which the
+`chacha20` crate's constructor does not select and which the wrapper therefore
+seeks to. `LayerCipherKey` erases on drop and is not `Clone`, `Debug`, or
+serializable, so a derived layer key cannot reach a log line.
+
+`LookupSecret` lives here rather than in `i2pr-netdb` for a concrete reason: it
+is a key-derivation input, `i2pr-netdb` has no `zeroize` dependency, and the
+length bound is better enforced once at construction than at each call site. The
+specification defines no maximum, so the 256-byte bound is an i2pr resource
+decision, and over-long input is rejected rather than hashed silently. An absent
+secret and an empty secret are the same derivation input, and there is
+deliberately no fallback in the other direction: a configured secret that failed
+to apply is an error, never a no-secret derivation.
 
 ## Public surface (`src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`)
 

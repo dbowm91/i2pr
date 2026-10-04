@@ -27,7 +27,7 @@ use rand_core::TryCryptoRng;
 use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The blinded signing key type every I2P blinded key uses: RedDSA over Ed25519.
 pub const BLINDED_SIGNING_KEY_TYPE: SigningKeyType = SigningKeyType::RedDsaSha512Ed25519;
@@ -360,7 +360,10 @@ impl core::fmt::Debug for Red25519Signature {
 ///
 /// The type exists so an invalid calendar day cannot reach the key-derivation step: the day is
 /// checked once, at construction, and every later use is a fixed 8-byte array.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// The ordering is calendar order and is used by the NetDB blinding schedule to bound a
+/// per-day key cache, so it must agree with the `YYYYMMDD` derivation input.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BlindingDay {
     year: u16,
     month: u8,
@@ -393,6 +396,74 @@ impl BlindingDay {
     /// Returns the validated `(year, month, day)` triple.
     pub const fn as_ymd(&self) -> (u16, u8, u8) {
         (self.year, self.month, self.day)
+    }
+}
+
+/// The optional UTF-8 blinding secret that participates in `GENERATE_ALPHA`.
+///
+/// The secret is operator input that must be shared out of band between a
+/// publisher and its clients. It is held with erase-on-drop semantics, is not
+/// `Clone`, has no `Display`, and has no serde implementation, so it cannot
+/// reach a log line or a configuration dump by accident.
+///
+/// An absent secret and an empty secret are the same derivation input. There is
+/// deliberately no silent fallback in the other direction: a configured secret
+/// that failed to be applied is an error, never a no-secret derivation.
+pub struct LookupSecret(Zeroizing<String>);
+
+impl LookupSecret {
+    /// Returns the zero-length secret, i.e. "no secret configured".
+    pub fn empty() -> Self {
+        Self(Zeroizing::new(String::new()))
+    }
+
+    /// Wraps a secret, rejecting anything above [`MAX_LOOKUP_SECRET_LENGTH`].
+    ///
+    /// The specification defines no maximum. This bound is an i2pr resource
+    /// decision, applied here rather than at each call site, so a
+    /// control-plane-supplied value cannot become an unbounded key-derivation
+    /// input and is rejected rather than hashed silently.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(secret: &str) -> Result<Self, Red25519Error> {
+        if secret.len() > MAX_LOOKUP_SECRET_LENGTH {
+            return Err(Red25519Error::LookupSecretTooLong {
+                actual: secret.len(),
+                maximum: MAX_LOOKUP_SECRET_LENGTH,
+            });
+        }
+        Ok(Self(Zeroizing::new(secret.to_owned())))
+    }
+
+    /// Returns the borrowed secret, or `None` when no secret is configured.
+    ///
+    /// Returning `None` for the empty secret keeps [`generate_alpha`] from
+    /// distinguishing "no secret" from "empty secret", which the specification
+    /// requires to be the same input.
+    pub fn as_option(&self) -> Option<&str> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.as_str())
+        }
+    }
+
+    /// Returns whether no secret is configured.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the secret length in bytes.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl core::fmt::Debug for LookupSecret {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("LookupSecret")
+            .field("length", &self.0.len())
+            .finish()
     }
 }
 

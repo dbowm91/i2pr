@@ -69,6 +69,7 @@ RouterInfo publication coordinator.
 | `replication` | Bounded source-excluding direct DatabaseStore action planning over current/next daily routing keys (Plan 275) |
 | `resource` | Drop-released admission leases for active requests, queued effects/bytes, crypto, replication, and maintenance work (Plan 276) |
 | `lease_set2` | Plan 119 Standard LeaseSet2 validation, freshness, and bounded store |
+| `els2` | Plan 332 encrypted LeaseSet2 (DatabaseStore type 5): credential/subcredential derivation, the two layer key derivations, no-authorization encryption and decryption, signature/freshness/key-binding validation, the bounded `Els2Store`, and the per-UTC-day `BlindingSchedule` |
 
 ## Dependency boundary
 

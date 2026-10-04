@@ -32,6 +32,7 @@ pub mod bundle;
 pub mod config;
 pub mod datagram;
 pub mod dispatch;
+pub mod encrypted_leaseset;
 pub mod identity;
 pub mod lease_selection;
 pub mod leaseset;
@@ -65,6 +66,10 @@ pub use datagram::{
 pub use dispatch::{
     DestinationDispatcher, InboundDispatchError, InboundDispatchOutcome, MAX_INBOUND_DESTINATIONS,
     MAX_INBOUND_PAYLOAD_BYTES_PER_DESTINATION, MAX_INBOUND_PENDING_MESSAGES,
+};
+pub use encrypted_leaseset::{
+    EncryptedLeaseSet2Publisher, EncryptedLeaseSet2Resolver, EncryptedLeaseSetError,
+    ResolvedEncryptedService, owner_scalar_from_seed,
 };
 pub use identity::{
     DESTINATION_IDENTITY_LEGACY_CRYPTO_TYPE, DESTINATION_LEGACY_PADDING_LENGTH,

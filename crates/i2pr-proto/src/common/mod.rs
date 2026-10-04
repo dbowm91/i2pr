@@ -73,8 +73,10 @@ fn validate_text(value: &str, allow_empty: bool, context: &'static str) -> Resul
     Ok(())
 }
 
+mod base32;
 mod certificate;
 mod date;
+mod els2;
 mod hash;
 mod identity;
 mod keys;
@@ -84,8 +86,10 @@ mod mapping;
 mod router_address;
 mod router_info;
 
+pub use base32::*;
 pub use certificate::*;
 pub use date::*;
+pub use els2::*;
 pub use hash::*;
 pub use identity::*;
 pub use keys::*;

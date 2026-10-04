@@ -13,8 +13,9 @@ use i2pr_crypto::{
     ROUTER_CRYPTO_KEY_TYPE, ROUTER_SIGNING_KEY_TYPE, RouterIdentityBundle, verify_lease_set2,
 };
 use i2pr_proto::{
-    DatabaseStoreData, DatabaseStoreMessage, DatabaseStoreType, Date32, Hash, I2npHeader,
-    I2npMessage, Lease2, LeaseSet2, LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header,
+    DatabaseStoreData, DatabaseStoreMessage, DatabaseStoreType, Date32,
+    ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE, EncryptedLeaseSet2, Hash, I2npHeader, I2npMessage,
+    Lease2, LeaseSet2, LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header,
     LeaseSet2KeySelectionError, Mapping, MessageType, ProtocolErrorKind,
     SHORT_TRANSPORT_HEADER_SIZE, STANDARD_HEADER_SIZE, SignatureValue,
 };
@@ -186,21 +187,29 @@ fn database_store_type_3_envelope_short_transport_round_trips() {
 }
 
 #[test]
-fn database_store_type_5_remains_explicitly_deferred() {
-    // Type 5 (EncryptedLeaseSet) and type 7 (MetaLeaseSet) remain
-    // deferred. Construct a minimal envelope and confirm the body is
-    // still the Deferred variant.
-    let key = Hash::from_bytes([0x33; 32]);
-    let payload = vec![0u8; 8];
+fn database_store_type_5_is_a_first_class_encrypted_lease_set2_record() {
+    // Plan 332 supersedes the earlier deferral: type 5 now decodes into the
+    // structural `EncryptedLeaseSet2` layer-0 codec instead of an opaque
+    // payload. The record is still opaque in the sense that matters — its
+    // ciphertext is never interpreted at this layer — but its framing, flag
+    // bits, and signed region are validated, and a malformed type-5 body is a
+    // typed error rather than an accepted blob.
+    let record = EncryptedLeaseSet2::new(
+        ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
+        (0..32_u8).collect(),
+        1_700_000_000,
+        3_600,
+        None,
+        vec![0x77; 200],
+        vec![0x88; 64],
+    )
+    .expect("record");
     let store = DatabaseStoreMessage {
-        key,
+        key: Hash::from_bytes([0x33; 32]),
         reply_token: 0,
         reply_tunnel_id: None,
         reply_gateway: None,
-        data: DatabaseStoreData::Deferred {
-            store_type: DatabaseStoreType::EncryptedLeaseSet,
-            payload: i2pr_proto::DeferredPayload::new(payload, MAX).expect("payload"),
-        },
+        data: DatabaseStoreData::EncryptedLeaseSet(Box::new(record.clone())),
     };
     let body = i2pr_proto::I2npBody::DatabaseStore(Box::new(store));
     let message = I2npMessage::new_standard(0x0102_0304, i2pr_proto::Date::from_millis(0), body)
@@ -209,13 +218,40 @@ fn database_store_type_5_remains_explicitly_deferred() {
     let decoded = I2npMessage::decode_standard(&raw, MAX).expect("decode standard");
     match decoded.body() {
         i2pr_proto::I2npBody::DatabaseStore(decoded_store) => match &decoded_store.data {
-            DatabaseStoreData::Deferred { store_type, .. } => {
-                assert_eq!(*store_type, DatabaseStoreType::EncryptedLeaseSet);
+            DatabaseStoreData::EncryptedLeaseSet(value) => {
+                assert_eq!(**value, record);
+                assert_eq!(value.signature_preimage()[0], 5);
             }
-            other => panic!("expected Deferred, got {other:?}"),
+            other => panic!("expected EncryptedLeaseSet, got {other:?}"),
         },
         other => panic!("expected DatabaseStore, got {other:?}"),
     }
+}
+
+#[test]
+fn database_store_type_5_rejects_a_malformed_body_instead_of_deferring() {
+    // The old deferral accepted any byte string as a type-5 payload. A body too
+    // short to be a layer-0 header is now rejected, which is the fail-closed
+    // behavior a floodfill needs before it can store the record.
+    let key = Hash::from_bytes([0x33; 32]);
+    let store = DatabaseStoreMessage {
+        key,
+        reply_token: 0,
+        reply_tunnel_id: None,
+        reply_gateway: None,
+        data: DatabaseStoreData::Deferred {
+            store_type: DatabaseStoreType::EncryptedLeaseSet,
+            payload: i2pr_proto::DeferredPayload::new(vec![0u8; 8], MAX).expect("payload"),
+        },
+    };
+    let body = i2pr_proto::I2npBody::DatabaseStore(Box::new(store));
+    let message = I2npMessage::new_standard(0x0102_0304, i2pr_proto::Date::from_millis(0), body)
+        .expect("new standard");
+    let raw = message.encode_standard_to_vec(MAX).expect("raw");
+    assert!(matches!(
+        I2npMessage::decode_standard(&raw, MAX),
+        Err(i2pr_proto::CodecError::Truncated { .. })
+    ));
 }
 
 #[test]

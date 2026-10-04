@@ -628,13 +628,13 @@ fn decode_database_store(
             let bytes = cursor.take(cursor.remaining())?;
             DatabaseStoreData::MetaLeaseSet(Box::new(MetaLeaseSet::decode(bytes, bytes.len())?))
         }
-        DatabaseStoreType::EncryptedLeaseSet => DatabaseStoreData::Deferred {
-            store_type,
-            payload: DeferredPayload::new(
-                cursor.take(cursor.remaining())?.to_vec(),
-                maximum.min(MAX_I2NP_PAYLOAD_SIZE),
-            )?,
-        },
+        DatabaseStoreType::EncryptedLeaseSet => {
+            let bytes = cursor.take(cursor.remaining())?;
+            DatabaseStoreData::EncryptedLeaseSet(Box::new(EncryptedLeaseSet2::decode(
+                bytes,
+                bytes.len().min(maximum),
+            )?))
+        }
     };
     Ok(DatabaseStoreMessage {
         key,
@@ -796,6 +796,7 @@ fn encode_database_store(
         DatabaseStoreData::LeaseSet(_) => DatabaseStoreType::LeaseSet,
         DatabaseStoreData::LeaseSet2(_) => DatabaseStoreType::LeaseSet2,
         DatabaseStoreData::MetaLeaseSet(_) => DatabaseStoreType::MetaLeaseSet,
+        DatabaseStoreData::EncryptedLeaseSet(_) => DatabaseStoreType::EncryptedLeaseSet,
         DatabaseStoreData::Deferred { store_type, .. } => *store_type,
     };
     encoder.write_u8(store_type.code())?;
@@ -836,6 +837,9 @@ fn encode_database_store(
             encoder.write_raw(&bytes)
         }
         DatabaseStoreData::MetaLeaseSet(value) => {
+            encoder.write_raw(&value.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)?)
+        }
+        DatabaseStoreData::EncryptedLeaseSet(value) => {
             encoder.write_raw(&value.encode_to_vec(MAX_I2NP_PAYLOAD_SIZE)?)
         }
         DatabaseStoreData::Deferred { payload, .. } => encoder.write_raw(payload.as_bytes()),

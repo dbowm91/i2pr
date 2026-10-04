@@ -55,6 +55,13 @@ pub enum DatabaseStoreData {
     LeaseSet2(Box<LeaseSet2>),
     /// A structurally decoded MetaLeaseSet (DatabaseStore type 7).
     MetaLeaseSet(Box<MetaLeaseSet>),
+    /// A structurally decoded outer layer of an encrypted LeaseSet2
+    /// (DatabaseStore type 5).
+    ///
+    /// The payload is still opaque at this layer: it is the layer-0 framing of
+    /// a blinded record, not a LeaseSet2. Signature verification, layer
+    /// decryption, and freshness policy belong to the NetDB layer.
+    EncryptedLeaseSet(Box<EncryptedLeaseSet2>),
     /// A recognized later LeaseSet-family type retained for a later decoder.
     Deferred {
         /// The recognized type identifier.
@@ -76,6 +83,10 @@ impl fmt::Debug for DatabaseStoreData {
             Self::MetaLeaseSet(value) => {
                 formatter.debug_tuple("MetaLeaseSet").field(value).finish()
             }
+            Self::EncryptedLeaseSet(value) => formatter
+                .debug_tuple("EncryptedLeaseSet")
+                .field(value)
+                .finish(),
             Self::Deferred {
                 store_type,
                 payload,

@@ -7,6 +7,7 @@ use flate2::Compression;
 use flate2::GzBuilder;
 use i2pr_proto::{DatabaseStoreData, DatabaseStoreMessage, DeferredPayload};
 
+use crate::els2::{BlindedStorageKey, Els2InsertOutcome, Els2Store, ValidatedEncryptedLeaseSet2};
 use crate::lease_set2::DestinationHash;
 use crate::{
     InsertOutcome, LeaseSet2InsertOutcome, LeaseSet2Store, LeaseSetInsertOutcome, LeaseSetStore,
@@ -22,6 +23,12 @@ pub enum ValidatedNetDbRecord {
     LeaseSet(ValidatedLeaseSet),
     LeaseSet2(ValidatedLeaseSet2),
     MetaLeaseSet(ValidatedMetaLeaseSet),
+    /// A validated type-5 encrypted LeaseSet2, filed under its blinded storage key.
+    ///
+    /// A floodfill holds this record opaquely. It never learns the destination's
+    /// unblinded public key, so it cannot derive the subcredential and cannot
+    /// decrypt the payload; serving the stored bytes is the whole job.
+    EncryptedLeaseSet2(ValidatedEncryptedLeaseSet2),
 }
 
 impl ValidatedNetDbRecord {
@@ -31,6 +38,7 @@ impl ValidatedNetDbRecord {
             Self::LeaseSet(value) => RecordId::new(1, *value.key().as_hash()),
             Self::LeaseSet2(value) => RecordId::new(3, *value.key().as_hash()),
             Self::MetaLeaseSet(value) => RecordId::new(7, *value.key().as_hash()),
+            Self::EncryptedLeaseSet2(value) => RecordId::new(5, *value.storage_key().as_hash()),
         }
     }
     pub fn encoded_len(&self) -> usize {
@@ -39,6 +47,7 @@ impl ValidatedNetDbRecord {
             Self::LeaseSet(value) => value.encoded_len(),
             Self::LeaseSet2(value) => value.encoded_len(),
             Self::MetaLeaseSet(value) => value.encoded_len(),
+            Self::EncryptedLeaseSet2(value) => value.encoded_len(),
         }
     }
 }
@@ -76,6 +85,7 @@ pub struct ServerNetDb {
     leases: LeaseSetStore,
     leases2: LeaseSet2Store,
     meta_leases: MetaLeaseSetStore,
+    els2: Els2Store,
     provenance: ProvenanceIndex,
     sizes: BTreeMap<RecordId, usize>,
     total_bytes: usize,
@@ -94,6 +104,7 @@ impl ServerNetDb {
             leases: LeaseSetStore::default(),
             leases2: LeaseSet2Store::default(),
             meta_leases: MetaLeaseSetStore::default(),
+            els2: Els2Store::default(),
             provenance: ProvenanceIndex::default(),
             sizes: BTreeMap::new(),
             total_bytes: 0,
@@ -155,6 +166,14 @@ impl ServerNetDb {
                 MetaLeaseSetInsertOutcome::CapacityExceeded => {
                     ServerInsertOutcome::CapacityExceeded
                 }
+            },
+            ValidatedNetDbRecord::EncryptedLeaseSet2(value) => match self.els2.insert(value) {
+                Els2InsertOutcome::Inserted => ServerInsertOutcome::Inserted,
+                Els2InsertOutcome::Replaced => ServerInsertOutcome::Replaced,
+                Els2InsertOutcome::Idempotent => ServerInsertOutcome::Idempotent,
+                Els2InsertOutcome::Conflict => ServerInsertOutcome::Conflict,
+                Els2InsertOutcome::StaleReplacement => ServerInsertOutcome::Stale,
+                Els2InsertOutcome::CapacityExceeded => ServerInsertOutcome::CapacityExceeded,
             },
         };
         if matches!(
@@ -269,6 +288,17 @@ impl ServerNetDb {
                 };
                 DatabaseStoreData::MetaLeaseSet(Box::new(record.value().clone()))
             }
+            5 => {
+                let Some(record) = self.encrypted_lease_set2_for_answer(
+                    BlindedStorageKey::from_hash(key),
+                    now_ms,
+                    max_age_ms,
+                )?
+                else {
+                    return Ok(None);
+                };
+                DatabaseStoreData::EncryptedLeaseSet(Box::new(record.record().clone()))
+            }
             _ => return Ok(None),
         };
         let size = match &data {
@@ -282,6 +312,10 @@ impl ServerNetDb {
                 .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
                 .len(),
             DatabaseStoreData::MetaLeaseSet(value) => value
+                .encode_to_vec(max_encoded_bytes)
+                .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
+                .len(),
+            DatabaseStoreData::EncryptedLeaseSet(value) => value
                 .encode_to_vec(max_encoded_bytes)
                 .map_err(|_| ProvenanceEligibility::CapacityExceeded)?
                 .len(),
@@ -422,6 +456,38 @@ impl ServerNetDb {
         }
         Ok(value)
     }
+    /// Returns a type-5 record when it is still answer-eligible.
+    ///
+    /// Eligibility is freshness only. Unlike an ordinary LeaseSet2 there is no
+    /// disclosure flag to consult: a type-5 record is publishable by
+    /// construction, because it contains no plaintext routing information and
+    /// cannot be read by the floodfill serving it.
+    pub fn encrypted_lease_set2_for_answer(
+        &self,
+        key: BlindedStorageKey,
+        now_ms: u64,
+        max_age_ms: u64,
+    ) -> Result<Option<&ValidatedEncryptedLeaseSet2>, ProvenanceEligibility> {
+        let id = RecordId::new(5, *key.as_hash());
+        let decision = self
+            .provenance
+            .may_answer_router_lookup(&id, now_ms, max_age_ms);
+        if decision != ProvenanceEligibility::Allowed {
+            return Err(decision);
+        }
+        let value = self.els2.get(&key);
+        let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+        if value.is_some_and(|record| {
+            record.expires_seconds() <= now_seconds
+                || record
+                    .record()
+                    .offline_keys()
+                    .is_some_and(|offline| offline.expires_seconds() <= now_seconds)
+        }) {
+            return Err(ProvenanceEligibility::Expired);
+        }
+        Ok(value)
+    }
     pub fn may_replicate(
         &self,
         id: &RecordId,
@@ -500,6 +566,21 @@ impl ServerNetDb {
                 .filter(|record| record.version_ms() > now_ms)
                 .map(|_| ProvenanceEligibility::Allowed)
                 .unwrap_or(ProvenanceEligibility::NotPublished),
+            // Replication of a type-5 record is freshness-only for the same
+            // reason serving is: it holds no plaintext routing information.
+            5 => self
+                .els2
+                .get(&BlindedStorageKey::from_hash(*id.key()))
+                .filter(|record| {
+                    let now_seconds = u32::try_from(now_ms / 1000).unwrap_or(u32::MAX);
+                    record.expires_seconds() > now_seconds
+                        && record
+                            .record()
+                            .offline_keys()
+                            .is_none_or(|offline| offline.expires_seconds() > now_seconds)
+                })
+                .map(|_| ProvenanceEligibility::Allowed)
+                .unwrap_or(ProvenanceEligibility::NotPublished),
             _ => ProvenanceEligibility::NotPublished,
         }
     }
@@ -527,6 +608,7 @@ impl ServerNetDb {
             7 => self
                 .meta_leases
                 .remove(&DestinationHash::from_hash(*id.key())),
+            5 => self.els2.remove(&BlindedStorageKey::from_hash(*id.key())),
             _ => false,
         };
         if removed {

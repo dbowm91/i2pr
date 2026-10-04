@@ -9,7 +9,7 @@
 use std::fmt;
 
 use crate::codec::{CodecError, DecodeCursor, EncodeBuffer, decode_exact, encode_to_vec};
-use crate::{Date, Hash, LeaseSet, LeaseSet2, MetaLeaseSet};
+use crate::{Date, EncryptedLeaseSet2, Hash, LeaseSet, LeaseSet2, MetaLeaseSet};
 use zeroize::Zeroizing;
 
 /// The largest I2NP payload accepted by this codec.

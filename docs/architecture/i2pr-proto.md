@@ -72,13 +72,15 @@ The crate is single-directory with **three** top-level submodules under
 | `src/common/router_address.rs` | Transport-address record | `RouterAddress` |
 | `src/common/router_info.rs` | Signed descriptor with retained `signed_bytes` | `RouterInfo`, `ProtocolVersion`, `Capabilities` |
 | `src/common/lease.rs` | Classic `Lease`/`LeaseSet` with deferred variants explicitly rejected | `Lease`, `LeaseSet`, `DeferredLeaseSetVariant`, `decode_lease_set_variant`, `decode_lease_set2_variant` |
+| `src/common/base32.rs` | RFC 4648 base 32, CRC-32, and the encrypted-service (`b33`) address form (Plan 332) | `B32_SUFFIX`, `B32_HASH_CHARS`, `B32_SERVICE_CHARS`, `B32_SERVICE_WIDE_CHARS`, `B32_FLAG_*`, `B32_UNBLINDED_SIGTYPE_*`, `B32_BLINDED_SIGTYPE`, `Base32Error`, `crc32`, `base32_encode`, `base32_decode`, `EncryptedServiceAddress`, `is_encrypted_service_address` |
+| `src/common/els2.rs` | DatabaseStore type 5: encrypted-LeaseSet2 outer-layer framing, offline-key block, and the exact signature preimage (Plan 332) | `EncryptedLeaseSet2`, `EncryptedLeaseSet2Flags`, `EncryptedLeaseSet2OfflineKeys`, `ENCRYPTED_LEASE_SET2_STORE_TYPE`, `ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE`, `ENCRYPTED_LEASE_SET2_UNBLINDED_SIGTYPES`, `ENCRYPTED_LEASE_SET2_FLAG_OFFLINE_KEYS`, `ENCRYPTED_LEASE_SET2_MAX_EXPIRES_OFFSET`, `ENCRYPTED_LEASE_SET2_SALT_LENGTH`, `INNER_LEASE_SET2_STORE_TYPE`, `INNER_META_LEASE_SET2_STORE_TYPE` |
 | `src/common/lease2.rs` | Standard LeaseSet2 carrier (Plan 119 ordinary online-signed published subset) | `Lease2`, `LeaseSet2Flags`, `LeaseSet2Header`, `LeaseSet2EncryptionKey`, `LeaseSet2`, `LeaseSet2BuildError`, `LeaseSet2HeaderError`, `LeaseSet2KeySelectionError`, `LEASE_SET2_SIGNATURE_DOMAIN_BYTE`, `LEASE_SET2_DATABASE_STORE_TYPE`, `MAX_LEASE_SET2_*` |
 | `src/i2np/mod.rs` | I2NP wire constants and glob re-exports | `MAX_I2NP_PAYLOAD_SIZE`, `STANDARD_HEADER_SIZE`, `SHORT_SSU_HEADER_SIZE`, `SHORT_TRANSPORT_HEADER_SIZE`, `MAX_DATABASE_LOOKUP_EXCLUDED_PEERS`, `MAX_DATABASE_SEARCH_REPLY_PEERS`, `MAX_BUILD_RECORDS`, `VARIABLE_BUILD_RECORD_SIZE`, `SHORT_BUILD_RECORD_SIZE`, `TUNNEL_DATA_PAYLOAD_SIZE`, `SHORT_REQUEST_PLAINTEXT_SIZE`, `SHORT_REPLY_PLAINTEXT_SIZE`, `SHORT_BUILD_EPHEMERAL_KEY_LEN`, `SHORT_BUILD_NONCE_LEN`, `SHORT_BUILD_TAG_LEN` |
 | `src/i2np/header.rs` | Three-variant header enum, `MessageType` registry | `MessageType`, `I2npHeader` |
 | `src/i2np/message.rs` | Top-level dispatch + 14-variant `I2npBody` | `I2npBody`, `I2npMessage` |
 | `src/i2np/delivery.rs` | `DeliveryStatusMessage` body | `DeliveryStatusMessage` |
 | `src/i2np/tunnel.rs` | Tunnel data, gateway, deferred build records | `TunnelDataMessage`, `TunnelGatewayMessage`, `DeferredBuildRecords` |
-| `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
+| `src/i2np/netdb.rs` | `DatabaseStore`, `Lookup`, `SearchReply`, `ReplyEncryption`, zeroizing `ReplySecret<N>` | `DatabaseStoreType`, `DatabaseStoreData` (`RouterInfoCompressed`/`LeaseSet`/`LeaseSet2`/`MetaLeaseSet`/`EncryptedLeaseSet`/`Deferred`), `DatabaseStoreMessage`, `DatabaseLookupMessage`, `DatabaseSearchReplyMessage`, `ReplyEncryption`, `ReplySecret<N>` |
 | `src/i2np/deferred.rs` | Bounded opaque payloads | `DeferredPayload`, `OpaqueMessageBody` |
 | `src/ecies_payload.rs` | Bounded structural ECIES Garlic payload block codec (Plan 121) | `EciesPayloadSequence`, `EciesPayloadBlock`, `GarlicCloveBlock`, `GarlicDelivery`, `EciesPayloadError` |
 | `src/i2cp_data_body.rs` | Bounded I2CP-style Data body codec used on the inbound-delivery path (Plan 192) | I2CP-style Data encode/decode helpers |
@@ -93,6 +95,41 @@ i2np-level round-trip coverage), and `tests/plan128_wire.rs`
 layout, TLV absence, raw final-signature placement, and the
 zeroed-signature preimage; provenance in
 [specs/references/streaming-packet-wire.md](../specs/references/streaming-packet-wire.md)).
+
+## Plan 332: base 32 and the encrypted-LeaseSet2 outer layer
+
+`common/base32.rs` and `common/els2.rs` are the two modules Plan 332 added. Both
+are framing-only; neither performs cryptography, because `i2pr-proto` may not
+depend on any `i2pr-*` crate.
+
+**`base32.rs`** owns RFC 4648 base 32, a CRC-32, and the encrypted-service
+(`b33`) address form. The ordinary 52-character hash form is left untouched: it
+is still accepted, still emitted, and never reinterpreted. The encrypted-service
+form is separate because it must carry the *unblinded public key* and both
+signature types — a client cannot derive the daily blinded key from a
+Destination hash.
+
+Two properties are enforced on every decode:
+
+- **Canonical encoding.** Unused trailing bits of the final base-32 group must be
+  zero, and the decoded value must re-encode to exactly the input string. The
+  second check matters more than it looks: the CRC-32 is folded into the leading
+  three bytes, so those bytes are a function of the sigtypes and the key, and a
+  bit flip there maps onto a *different valid address* rather than a failure. The
+  re-encode check is what makes one address have exactly one text form. The CRC
+  stays a typo detector, not a MAC, and the module documents that.
+- **No secret material.** The flags say a blinding secret or a per-client key is
+  *required*; neither is ever encoded. A secret recoverable from a leaked address
+  would not be a secret.
+
+**`els2.rs`** owns the type-5 layer-0 framing. The one piece of semantics it
+keeps is `EncryptedLeaseSet2::signed_bytes()`: the exact region a verifier must
+cover. The store-type byte is *not* part of the stored record but *is* part of the
+signature, and a verifier that omitted it would accept a record no other
+implementation produced. Everything else — the credential and subcredential, the
+two layer key derivations, encryption, signature verification, freshness policy —
+belongs to `i2pr-netdb`, which composes this framing with the `i2pr-crypto`
+primitives.
 
 ## Public surface
 

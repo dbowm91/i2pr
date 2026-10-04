@@ -412,6 +412,47 @@ change, and never a log line containing key, secret, salt, or plaintext.
    `is_small_order() == false` and `is_torsion_free() == true`. Verification deliberately applies
    neither, because the cofactor multiplication in the verification equation already makes such keys
    unusable for forgery. **[compat]**
+10. **The ELS2 layer keystream's initial block counter is 1, and it is observable** (found while
+    implementing Plan 332). The specification says "the initial counter set to 1"; the pinned i2pd
+    reference builds the same IV layout (`counter = 1` little-endian, then the 12-byte nonce). The
+    RFC 8439 §2.4.2 published vector happens to use initial counter 1, so it doubles as the counter
+    check: the same key and nonce at counter 0 produce a different prefix. Frozen as counter 1 with a
+    dedicated control row so a regression cannot silently change the stream. **[compat]**
+11. **ELS2 layer framing overhead is exactly 66 bytes, not 130** (found while implementing Plan 332).
+    The outer ciphertext is `outerSalt(32) || flags(1) || innerSalt(32) || innerStoreType(1) || inner`;
+    the inner salt is *inside* the layer-1 plaintext, not a third salt in the clear. A first-pass
+    resource bound over-counted the overhead at 130 bytes. The bound is now derived from the framing
+    rather than restated, so the two cannot drift. An over-large ceiling is a safety-only defect; an
+    under-large one would reject valid records at the boundary. **[spec]**
+12. **The `expires` offset is bounded by two rules that do not contain each other** (found while
+    implementing Plan 332). The field is a two-byte offset from `published`, so it cannot express the
+    ~86 400 s remaining until the next UTC midnight, which a record published early in the day
+    needs. Clamping to midnight and then saturating would emit a record that expires minutes before
+    midnight while the caller believed it lived until midnight. Frozen as
+    `offset = min(requested, until_midnight, 65535)`, so `published + offset` is the record's true
+    absolute expiration under every bound. **[spec]**
+13. **The b33 CRC-32 is a typo detector, not a MAC** (found while implementing Plan 332). The
+    checksum covers `data[3..end]` and is folded into the leading three bytes, so those bytes are a
+    function of the sigtypes and the key. A bit flip *inside the folded prefix* therefore decodes to a
+    **different valid address** rather than failing, while a flip in the key region fails the
+    checksum. i2pr enforces canonical form by re-encoding and comparing, which gives one text form
+    per address, and the residue is documented rather than papered over. The encoded flags say
+    whether a secret is *required*; no secret is ever encoded. **[spec]**
+14. **The lookup secret protects discovery, not content** (found while implementing Plan 332). The
+    secret enters `GENERATE_ALPHA`, so it changes the *blinded* key and therefore the DHT storage
+    key. It does not enter the credential or the subcredential, which are functions of the unblinded
+    public key and the blinded public key alone. Consequences: a party with a b33 address but not the
+    secret cannot *find* the record; a party that already holds the record bytes and the address
+    *can* decrypt them, because both credentials are public-key derivations. A floodfill, which
+    holds the record but never the unblinded public key, cannot derive the subcredential at all.
+    Raising the bar against a party holding the record is what per-client authorization (Plan 333)
+    is for. **[spec]**
+15. **ELS2 layers are malleable by construction, and the signature is the integrity layer** (found
+    while implementing Plan 332). A layer is a raw ChaCha20 stream with no authenticator, because
+    each layer's key comes from a fresh random salt and the Red25519 signature covers the whole
+    layer-0 region. A flipped ciphertext byte corrupts the plaintext, and whether the corruption
+    still parses depends on where it lands. Integrity is therefore asserted at the signature and at
+    the inner LeaseSet2's own signature, not at the layer. **[spec]**
 
 ## 15. Ownership boundary of the future module
 

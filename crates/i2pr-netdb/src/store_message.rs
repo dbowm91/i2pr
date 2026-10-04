@@ -81,6 +81,7 @@ pub fn handle_unsolicited_databasestore(
         DatabaseStoreData::LeaseSet(_)
         | DatabaseStoreData::LeaseSet2(_)
         | DatabaseStoreData::MetaLeaseSet(_)
+        | DatabaseStoreData::EncryptedLeaseSet(_)
         | DatabaseStoreData::Deferred { .. } => {
             return Err(UnsolicitedStoreError::UnsupportedPayload);
         }

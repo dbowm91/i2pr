@@ -253,6 +253,42 @@ reviewed `curve25519-dalek` arithmetic. Its status is:
 Authority: Plans 329–331 and the Plan 336 spec-first conformance decision
 (`plans/closure/i2pcontrol-proposal-170/336-closure.md`).
 
+### Encrypted LeaseSet2 (DatabaseStore type 5) status
+
+Plan 332 implements the type-5 record: layer-0 framing, the `credential` and `subcredential`
+derivations, both ChaCha20 layer key derivations, the no-client-authorization form, signature and
+freshness validation, the bounded store, the per-UTC-day blinding schedule, and the encrypted-service
+(`b33`) address codec. Its status is:
+
+- **Structurally first-class.** `DatabaseStoreData::EncryptedLeaseSet` replaces the earlier
+  `Deferred` pass-through: a type-5 body is now framed, flag-checked, and signature-preimage
+  complete at the wire layer, and a malformed body is a typed error rather than an accepted blob.
+- **Layer cryptography agrees with an independent derivation.** A pure-Python re-derivation written
+  from the specification text (`tools/generate-els2-independent-fixture.py`, standard library
+  SHA-256/HMAC plus an RFC 8439 ChaCha20) reproduces the credential, the subcredential, and the
+  complete outer ciphertext byte-for-byte across five cases spanning both unblinded signature types,
+  both inner store types, and the block and length boundaries.
+- **Adversarial coverage is fail-closed.** Wrong day, wrong lookup secret, wrong `published`
+  timestamp, every single-byte ciphertext tamper, flipped signatures, rewritten header fields,
+  reserved flag bits in both layer 0 and layer 1, truncated and oversized inputs, unsupported
+  signature types, per-client layer-1 flags (refused, not guessed at), and an unknown storage key
+  are all rejected.
+- **Not accepted on the wire, not advertised, not live-verified.** No `specs/support.toml` entry
+  exists, no daemon configuration exposes it, and no publication driver sends or fetches a type-5
+  record. `i2pr-client` *builds* the `DatabaseStoreMessage`; the daemon still has nothing that
+  publishes it. Per-client authorization (PSK and DH) is not implemented and is Plan 333.
+- **Known interop limitation, unchanged and still decisive.** The type-11 signature divergence
+  recorded above means an i2pr-signed type-5 record is unverifiable by `i2pd` and Java I2P. Live
+  interoperability is Plan 335 and is expected to be blocked on that until a follow-up plan changes
+  the conformance decision.
+- **The lookup secret is a discovery control, not a content control.** It changes the daily blinded
+  key and therefore the DHT storage key, so a party with the address but not the secret cannot find
+  the record. It does not enter the credential or subcredential, so a party that already holds both
+  the record bytes and the address can decrypt them. See
+  `specs/references/red25519-algorithm-worksheet.md` §14.14.
+
+Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`).
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

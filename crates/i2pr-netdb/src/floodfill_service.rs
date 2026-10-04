@@ -14,9 +14,10 @@ use i2pr_proto::{
 };
 
 use crate::{
-    DestinationHash, InboundProvenance, LeaseSet2ValidationContext, LeaseSetValidationContext,
-    NetDbNamespace, RecordId, RecordProvenance, RouterHash, ServerInsertOutcome, ServerNetDb,
-    StorePurpose, ValidatedLeaseSet, ValidatedLeaseSet2, ValidatedMetaLeaseSet,
+    BlindedStorageKey, DestinationHash, Els2ValidationContext, InboundProvenance,
+    LeaseSet2ValidationContext, LeaseSetValidationContext, NetDbNamespace, RecordId,
+    RecordProvenance, RouterHash, ServerInsertOutcome, ServerNetDb, StorePurpose,
+    ValidatedEncryptedLeaseSet2, ValidatedLeaseSet, ValidatedLeaseSet2, ValidatedMetaLeaseSet,
     ValidatedNetDbRecord, ValidatedRouterInfo, ValidationContext, decompress_router_info,
 };
 
@@ -731,6 +732,24 @@ impl FloodfillStoreService {
                 .map_err(|_| ())?;
                 ValidatedNetDbRecord::MetaLeaseSet(value)
             }
+            // A type-5 record is validated and then stored opaquely. The
+            // floodfill checks the Red25519 signature over the blinded key and
+            // the freshness window, and never derives the subcredential: it
+            // cannot, because it never learns the unblinded public key.
+            DatabaseStoreData::EncryptedLeaseSet(value) => {
+                if value.encode_to_vec(self.policy.max_record_bytes).is_err() {
+                    return Err(());
+                }
+                let value = (**value).clone();
+                let now = u32::try_from(time.wall_ms / 1000).map_err(|_| ())?;
+                let value = ValidatedEncryptedLeaseSet2::validate(
+                    value,
+                    Some(BlindedStorageKey::from_hash(key)),
+                    Els2ValidationContext::new(now),
+                )
+                .map_err(|_| ())?;
+                ValidatedNetDbRecord::EncryptedLeaseSet2(value)
+            }
             DatabaseStoreData::Deferred { .. } => return Ok(None),
         };
         Ok(Some(record))
@@ -745,6 +764,9 @@ fn encoded_size(data: &DatabaseStoreData, maximum: usize) -> Option<usize> {
         DatabaseStoreData::MetaLeaseSet(value) => {
             value.encode_to_vec(maximum).ok().map(|v| v.len())
         }
+        DatabaseStoreData::EncryptedLeaseSet(value) => {
+            value.encode_to_vec(maximum).ok().map(|v| v.len())
+        }
         DatabaseStoreData::Deferred { payload, .. } => Some(payload.as_bytes().len()),
     }
 }
@@ -755,6 +777,7 @@ fn message_key(message: &DatabaseStoreMessage) -> (u8, Hash) {
         DatabaseStoreData::LeaseSet(_) => 1,
         DatabaseStoreData::LeaseSet2(_) => 3,
         DatabaseStoreData::MetaLeaseSet(_) => 7,
+        DatabaseStoreData::EncryptedLeaseSet(_) => 5,
         DatabaseStoreData::Deferred { .. } => 5,
     };
     (record_type, message.key)

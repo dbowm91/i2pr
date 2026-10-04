@@ -13,7 +13,7 @@ from this production graph; they are allowed to support crate-local tests.
 | Crate | May depend on |
 | --- | --- |
 | `i2pr-proto` | (no production crate) + `sha2`, `zeroize`, `flate2` |
-| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20poly1305`, `hmac`, `elligator2` (replaces the retired `curve25519-elligator2 0.1.0-alpha.2`; Plan 131) |
+| `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20`, `chacha20poly1305`, `hmac`, `curve25519-dalek` (Plan 330), `elligator2` (replaces the retired `curve25519-elligator2 0.1.0-alpha.2`; Plan 131) |
 | `i2pr-storage` | `i2pr-crypto` + `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-core` | (zero deps) |
 | `i2pr-su3` | (no production crate) + `sad-rsa`, `sha2`, `thiserror`, `x509-parser` |

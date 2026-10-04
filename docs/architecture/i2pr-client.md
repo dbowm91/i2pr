@@ -341,6 +341,7 @@ crates/i2pr-client/
 │   ├── identity.rs       DestinationIdentity, DestinationId (non-Clone secret owner)
 │   ├── pool.rs           DestinationTunnelPool wrapping BoundedTunnelPool; Plan 296 adds standby accounting (effective base-plus-backup targets, standby promotion counting on failure/expiry loss, registration bounded at the effective target)
 │   ├── leaseset.rs       LeaseSet2 builder, LeaseSetLifecycle, LocalLeaseSet
+│   ├── encrypted_leaseset.rs Plan 332 encrypted-LeaseSet2 client halves: EncryptedLeaseSet2Publisher (owner-only, builds and signs the no-authorization type-5 record and its DatabaseStore hand-off) and EncryptedLeaseSet2Resolver (lookup-only, derives the daily blinded key from a b33 address and returns the decrypted inner LeaseSet2 as one value)
 │   ├── message.rs        BoundedPayloadQueue, DestinationPayload, RoutingUnavailable
 │   ├── registry.rs       DestinationRuntime, DestinationHandle, DestinationRegistry
 │   ├── session.rs        Plan 126/127 EciesSessionManager, EciesSessionConfig, PlannedOutboundForm, classify + bound NS/NSR/ES producers

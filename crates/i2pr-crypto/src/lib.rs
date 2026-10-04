@@ -36,10 +36,15 @@ use zeroize::{Zeroize, Zeroizing};
 /// Operating-system-backed randomness for explicit production injection.
 pub use rand_core::OsRng;
 
+pub mod chacha;
 pub mod ecies;
 pub mod hkdf;
 pub mod red25519;
 
+pub use chacha::{
+    CHACHA20_BLOCK_LENGTH, CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, ChachaError,
+    LAYER_INITIAL_BLOCK_COUNTER, LayerCipherKey, chacha20_xor_layer, chacha20_xor_layer_owned,
+};
 pub use ecies::{
     BOUND_NEW_SESSION_MIN_LENGTH, BoundNewSessionMessage, BoundNewSessionSender,
     ECIES_NOISE_PROTOCOL_NAME, EXISTING_SESSION_MIN_LENGTH, EciesEphemeralKeypair,
@@ -54,7 +59,7 @@ pub use hkdf::{HkdfError, MAX_HKDF_OUTPUT_LEN, hkdf_sha256_32, hkdf_sha256_extra
 pub use red25519::{
     ALPHA_HKDF_INFO, ALPHA_SALT_PERSONALIZATION, BLINDED_SIGNING_KEY_TYPE, BLINDING_DAY_LENGTH,
     BlindedPrivateScalar, BlindingDay, BlindingScalar, ED25519_SIGNING_KEY_TYPE, HASH_LENGTH,
-    HSTAR_PREFIX, MAX_LOOKUP_SECRET_LENGTH, MAX_MESSAGE_LENGTH, PRIVATE_SEED_LENGTH,
+    HSTAR_PREFIX, LookupSecret, MAX_LOOKUP_SECRET_LENGTH, MAX_MESSAGE_LENGTH, PRIVATE_SEED_LENGTH,
     PUBLIC_KEY_LENGTH, Red25519Error, Red25519PrivateScalar, Red25519PublicKey, Red25519Signature,
     SCALAR_LENGTH, SIGNING_NONCE_LENGTH, blind_private_key, blind_public_key, blinded_storage_key,
     convert_ed25519_private, derive_blinded_public_key, derive_public_key, generate_alpha,

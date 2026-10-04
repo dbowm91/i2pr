@@ -18,6 +18,7 @@
 
 mod base64;
 mod databaselookup;
+mod els2;
 mod floodfill_role;
 mod floodfill_service;
 mod lease_set;
@@ -40,6 +41,20 @@ mod store_message;
 
 pub use base64::{I2pBase64Error, MAX_DECODED_LEN, decode, encode, encode_filename_prefix};
 pub use databaselookup::{DatabaseLookupBuildError, build_databaselookup};
+pub use els2::{
+    BlindedStorageKey, BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DailyBlinding,
+    DecryptedEls2, ELS2_AUTH_CLIENT_LENGTH, ELS2_CREDENTIAL_PERSONALIZATION,
+    ELS2_LAYER_KEY_MATERIAL_LENGTH, ELS2_LAYER1_FLAG_PER_CLIENT, ELS2_LAYER1_HKDF_INFO,
+    ELS2_LAYER1_RESERVED_MASK, ELS2_LAYER1_SCHEME_DH, ELS2_LAYER1_SCHEME_MASK,
+    ELS2_LAYER1_SCHEME_PSK, ELS2_LAYER1_SCHEME_SHIFT, ELS2_LAYER2_HKDF_INFO, ELS2_SALT_LENGTH,
+    ELS2_SUBCREDENTIAL_PERSONALIZATION, Els2Credentials, Els2Error, Els2InsertOutcome, Els2Store,
+    Els2StoreConfig, Els2StoreStats, Els2ValidationContext, Els2ValidationError,
+    Els2ValidationPolicy, LookupSecret, MAX_ELS2_AUTH_CLIENTS, MAX_ELS2_INNER_LEASE_SET_LENGTH,
+    MAX_ELS2_OUTER_CIPHERTEXT_LENGTH, MAX_ELS2_RECORD_LENGTH, OwnerBlinding,
+    ValidatedEncryptedLeaseSet2, day_bound_expiry_offset, decrypt_no_auth_outer_ciphertext,
+    derive_els2_credentials, encrypt_no_auth_outer_ciphertext, next_utc_day_boundary_seconds,
+    unblinded_scalar_from_ed25519_seed, utc_blinding_day,
+};
 pub use floodfill_role::{
     FloodfillAdvertisementPermit, FloodfillEligibilitySnapshot, FloodfillRoleController,
     FloodfillRoleEffect, FloodfillRoleState, LoopbackReachabilityProof, is_qualified_ssu2_address,

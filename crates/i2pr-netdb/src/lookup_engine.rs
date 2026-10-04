@@ -520,6 +520,7 @@ pub fn handle_database_store(
         DatabaseStoreData::LeaseSet(_)
         | DatabaseStoreData::LeaseSet2(_)
         | DatabaseStoreData::MetaLeaseSet(_)
+        | DatabaseStoreData::EncryptedLeaseSet(_)
         | DatabaseStoreData::Deferred { .. } => {
             return Ok(ResponseOutcome::Continue);
         }
