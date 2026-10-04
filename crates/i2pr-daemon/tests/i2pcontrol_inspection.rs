@@ -449,12 +449,20 @@ async fn authenticated_router_info_logs_clear_clears_ring_and_returns_success() 
         &serde_json::json!({
             "jsonrpc": "2.0",
             "method": "RouterInfo",
-            "params": {"Token": token, "i2p.router.logs.clear": null},
+            "params": {
+                "Token": token,
+                "i2p.router.logs": null,
+                "i2p.router.logs.clear": null,
+            },
             "id": 2,
         }),
         &[],
     )
     .await;
+    assert_eq!(
+        response["result"]["i2p.router.logs"],
+        serde_json::json!(["INFO daemon: before clear"])
+    );
     assert_eq!(response["result"]["i2p.router.logs.clear"], "success");
     assert!(ring.is_empty());
 }

@@ -389,6 +389,17 @@ impl InspectionHandles {
             .map(|ring| ring.clear())
     }
 
+    /// Returns the bounded redacted log lines in chronological order.
+    /// The Proposal field exposes only the string list; internal drop
+    /// diagnostics remain available through the normalized owner view.
+    pub fn recent_logs(&self) -> Option<Vec<String>> {
+        self.log_live
+            .lock()
+            .ok()
+            .and_then(|live| live.clone())
+            .map(|ring| ring.snapshot().0.iter().map(|line| line.wire()).collect())
+    }
+
     /// Publishes the rolling control metrics (called once by the
     /// composition root).
     pub fn publish_metrics(&self, metrics: Arc<ControlMetrics>) {

@@ -95,7 +95,7 @@ Plan 322 closes only when all 43 canonical Proposal additions have exact wire sh
 
 ## Current implementation progress
 
-- `i2p.router.logs.clear` is now an authenticated RouterInfo mutation backed by the bounded redacted log ring. It clears retained entries atomically, preserves cumulative eviction diagnostics and ordinary tracing output, returns the exact Proposal string `"success"`, and defers the clear until other selected fields have resolved.
+- `i2p.router.logs` now returns the Proposal's exact bounded `List<String>` shape from the redacted log ring. `i2p.router.logs.clear` is an authenticated mutation on the same owner: it clears retained entries atomically, preserves cumulative eviction diagnostics and ordinary tracing output, returns the exact Proposal string `"success"`, and defers the clear until other selected fields have resolved.
 - Focused evidence: `cargo test --locked -p i2pr-daemon --test i2pcontrol_inspection authenticated_router_info_logs_clear_clears_ring_and_returns_success -- --test-threads=1` and `cargo test --locked -p i2pr-daemon --test i2pcontrol_inspection failed_mixed_router_info_selection_does_not_clear_logs -- --test-threads=1`.
 - The canonical 43-field source ownership matrix, remaining metrics, and signed SU3 NEWS fetch/cache/verifier are still open. Plan 322 stays in progress; Plan 328 remains blocked on 322, 326, and 327.
 

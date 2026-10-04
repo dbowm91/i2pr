@@ -1191,6 +1191,20 @@ impl I2pControlServiceState {
         let mut result = serde_json::Map::with_capacity(selection.len());
         let mut clear_logs = false;
         for field in selection {
+            if field.key == "i2p.router.logs" {
+                let Some(lines) = self.inspection.recent_logs() else {
+                    return (
+                        error_envelope(
+                            id,
+                            JsonRpcErrorCode::InternalError.code(),
+                            "RouterInfo selector source is unavailable",
+                        ),
+                        Duration::ZERO,
+                    );
+                };
+                result.insert(field.key.to_owned(), serde_json::json!(lines));
+                continue;
+            }
             if field.key == "i2p.router.logs.clear" {
                 clear_logs = true;
                 continue;
