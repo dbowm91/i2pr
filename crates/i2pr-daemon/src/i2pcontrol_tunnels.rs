@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 19] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 25] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -169,6 +169,12 @@ pub const SUPPORTED_323_OPTIONS: [&str; 19] = [
     "access_option",
     "new_dest",
     "connect_delay",
+    "client_per_minute",
+    "client_per_hour",
+    "client_per_day",
+    "total_in_per_minute",
+    "total_in_per_hour",
+    "total_in_per_day",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -782,6 +788,22 @@ fn parse_bool_option(option: &str, value: &str) -> Result<bool, ControlError> {
     }
 }
 
+fn parse_rate_option(option: &str, value: &str) -> Result<u32, ControlError> {
+    let parsed = value
+        .parse::<u32>()
+        .map_err(|_| ControlError::InvalidOption {
+            option: option.to_owned(),
+            reason: "connection rate must be an integer within 0..=100000",
+        })?;
+    if parsed > 100_000 {
+        return Err(ControlError::InvalidOption {
+            option: option.to_owned(),
+            reason: "connection rate must be an integer within 0..=100000",
+        });
+    }
+    Ok(parsed)
+}
+
 /// Parses a Proposal tunnel length (Plan 292 shaping: 1..=3).
 /// Length 0 is rejected: service destinations run in Remote tunnel
 /// mode and the destination policy does not permit zero-hop pools.
@@ -938,6 +960,7 @@ pub fn build_control_spec(
     let mut access_deny_sources: Vec<(String, String)> = Vec::new();
     let mut proposal_access_list: Option<String> = None;
     let mut proposal_access_option: Option<String> = None;
+    let mut connection_rates = i2pr_service_tunnels::ServerConnectionRateLimits::default();
     // Plan 292 server dial/presentation inputs (kind-gated at
     // parse; defaults preserve the historical behavior).
     let mut unique_local_address = false;
@@ -1270,6 +1293,35 @@ pub fn build_control_spec(
                         option: key.clone(),
                         reason: "max_streams must be within 1..=128",
                     });
+                }
+            }
+            "client_per_minute"
+            | "client_per_hour"
+            | "client_per_day"
+            | "total_in_per_minute"
+            | "total_in_per_hour"
+            | "total_in_per_day" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                        | ServiceTunnelKind::IrcServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "connection-rate controls require a TCP server tunnel",
+                    });
+                }
+                let rate = parse_rate_option(key, value)?;
+                match key.as_str() {
+                    "client_per_minute" => connection_rates.client_per_minute = rate,
+                    "client_per_hour" => connection_rates.client_per_hour = rate,
+                    "client_per_day" => connection_rates.client_per_day = rate,
+                    "total_in_per_minute" => connection_rates.total_per_minute = rate,
+                    "total_in_per_hour" => connection_rates.total_per_hour = rate,
+                    "total_in_per_day" => connection_rates.total_per_day = rate,
+                    _ => unreachable!(),
                 }
             }
             // Plan 292: pool shaping. `tunnel_length` and
@@ -1997,7 +2049,16 @@ pub fn build_control_spec(
         })?;
         deny.extend(parsed.deny);
     }
-    let access = ServerAccessPolicy { allow, deny };
+    let access = ServerAccessPolicy {
+        allow,
+        deny,
+        connection_rates: connection_rates
+            .validate()
+            .map_err(|_| ControlError::InvalidOption {
+                option: "ClientPerMinute".to_owned(),
+                reason: "server connection rate is outside the bounded range",
+            })?,
+    };
     // Plan 296: multihoming needs two configured targets, but the
     // control surface carries a singular target (no multi-target
     // wire key exists and none may be added here). The key parses
@@ -4162,6 +4223,50 @@ mod tests {
             };
             assert!(build_control_spec(&definition).is_err());
         }
+    }
+
+    #[test]
+    fn plan323_connection_rates_use_authenticated_tcp_server_admission() {
+        let definition = ControlDefinition {
+            name: "server-rates".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+                ("client_per_hour".to_owned(), "10".to_owned()),
+                ("client_per_day".to_owned(), "30".to_owned()),
+                ("total_in_per_minute".to_owned(), "20".to_owned()),
+                ("total_in_per_hour".to_owned(), "100".to_owned()),
+                ("total_in_per_day".to_owned(), "300".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("server connection limits map");
+        assert_eq!(spec.access.connection_rates.client_per_minute, 2);
+        assert_eq!(spec.access.connection_rates.client_per_hour, 10);
+        assert_eq!(spec.access.connection_rates.client_per_day, 30);
+        assert_eq!(spec.access.connection_rates.total_per_minute, 20);
+        assert_eq!(spec.access.connection_rates.total_per_hour, 100);
+        assert_eq!(spec.access.connection_rates.total_per_day, 300);
+
+        let client = ControlDefinition {
+            name: "client-rates".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+                ("listen_port".to_owned(), "8123".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&client),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
     }
 
     #[test]

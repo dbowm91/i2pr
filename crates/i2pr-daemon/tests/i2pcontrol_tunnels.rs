@@ -642,6 +642,8 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
             "Action":"create", "Name":"canonical-server", "Type":"httpserver",
             "TargetHost":"127.0.0.1", "TargetPort":9090,
             "AccessOption":"deny", "AccessList":access_entry, "JumpList":"false",
+            "ClientPerMinute":2, "ClientPerHour":10, "ClientPerDay":30,
+            "TotalInPerMinute":20, "TotalInPerHour":100, "TotalInPerDay":300,
             "StartOnLoad":false
         }),
         2,
@@ -668,6 +670,12 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     assert_eq!(raw["accessList"], access_entry);
     assert_eq!(raw["accessOption"], "deny");
     assert_eq!(raw["jumpList"], "false");
+    assert_eq!(raw["clientPerMinute"], 2);
+    assert_eq!(raw["clientPerHour"], 10);
+    assert_eq!(raw["clientPerDay"], 30);
+    assert_eq!(raw["totalInPerMinute"], 20);
+    assert_eq!(raw["totalInPerHour"], 100);
+    assert_eq!(raw["totalInPerDay"], 300);
     assert_eq!(raw["startOnLoad"], false);
 }
 

@@ -215,9 +215,13 @@ pub struct ServiceRuntime {
     /// Inbound peer allow/deny policy (Plan 292; cached at build so
     /// accept paths never lock for policy).
     pub(crate) access: i2pr_service_tunnels::ServerAccessPolicy,
+    /// Bounded authenticated-peer and aggregate server connection-rate owner.
+    pub(crate) connection_rate_limiter: Mutex<i2pr_service_tunnels::ServerConnectionRateLimiter>,
     /// Policy-denied inbound connections (Plan 292 evidence;
     /// handshake failures keep using `failed_connects`).
     pub(crate) access_denied: AtomicUsize,
+    /// Authenticated inbound peers rejected by configured connection-rate limits.
+    pub(crate) rate_limited: AtomicUsize,
     /// Unique-local dials that fell back to the wildcard source
     /// because the platform has no derived alias assigned (Plan
     /// 292 evidence; the connection still succeeds).
@@ -2914,6 +2918,16 @@ impl ServiceTunnelManager {
             .unwrap_or(0)
     }
 
+    /// Returns configured connection-rate rejections for one live service.
+    pub fn rate_limited_for(&self, spec_id: &str) -> usize {
+        self.runtimes
+            .lock()
+            .expect("runtimes poisoned")
+            .get(spec_id)
+            .map(|runtime| runtime.rate_limited.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
     /// Unique-local dials that fell back to the wildcard source
     /// for one live runtime (platform-alias evidence; missing
     /// runtime reports zero).
@@ -3361,7 +3375,13 @@ impl ServiceTunnelManager {
             streamr_subscribers: AtomicUsize::new(0),
             effective_shaping: shaping,
             access: spec.access.clone(),
+            connection_rate_limiter: Mutex::new(
+                i2pr_service_tunnels::ServerConnectionRateLimiter::new(
+                    spec.access.connection_rates,
+                ),
+            ),
             access_denied: AtomicUsize::new(0),
+            rate_limited: AtomicUsize::new(0),
             unique_local_fallbacks: AtomicUsize::new(0),
             multihoming_next: AtomicUsize::new(0),
             tls_handshakes_ok: AtomicUsize::new(0),
@@ -4168,6 +4188,16 @@ pub(crate) async fn accept_server_syn(
         runtime.access_denied.fetch_add(1, Ordering::Relaxed);
         return None;
     };
+    let rate_allowed = runtime
+        .connection_rate_limiter
+        .lock()
+        .map(|mut limiter| limiter.admit(peer_hash, now_ms))
+        .unwrap_or(false);
+    if !rate_allowed {
+        runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
+        runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
     // Plan 182: answer the SYN with the connection's real
     // authenticated peer metadata and real port tuple (SAM parity
     // with `sam.rs` accept). The previous code passed a zeroed peer

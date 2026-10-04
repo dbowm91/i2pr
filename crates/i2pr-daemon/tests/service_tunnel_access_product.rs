@@ -185,6 +185,17 @@ async fn poll_denied(manager: &Arc<ServiceTunnelManager>, spec: &str, want: usiz
     }
 }
 
+async fn poll_rate_limited(manager: &Arc<ServiceTunnelManager>, spec: &str) -> usize {
+    let started = std::time::Instant::now();
+    loop {
+        let seen = manager.rate_limited_for(spec);
+        if seen > 0 || started.elapsed() > Duration::from_secs(10) {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// A hash nobody holds this epoch (the caller is an ephemeral
 /// identity the test never observes).
 fn stranger_hash() -> [u8; 32] {
@@ -203,6 +214,7 @@ async fn allow_list_naming_only_stranger_rejects_caller() {
     let access = ServerAccessPolicy {
         allow: vec![stranger_hash()],
         deny: Vec::new(),
+        connection_rates: Default::default(),
     };
     let manager = build_manager(
         &data_dir,
@@ -243,6 +255,7 @@ async fn deny_list_naming_others_admits_caller() {
     let access = ServerAccessPolicy {
         allow: Vec::new(),
         deny: vec![stranger_hash()],
+        connection_rates: Default::default(),
     };
     let manager = build_manager(
         &data_dir,
@@ -270,6 +283,56 @@ async fn deny_list_naming_others_admits_caller() {
         .expect("echo done")
         .expect("echo task");
     assert_eq!(total, payload.len());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn total_in_rate_limit_rejects_second_authenticated_stream() {
+    let directory = temp_data_dir("access-total-rate");
+    let data_dir: PathBuf = directory.path().to_path_buf();
+    let (echo_addr, echo_task) = start_echo_fixture().await;
+    let server_b64 = probe_server_b64(&data_dir, echo_addr, "alpha-server").await;
+    let mut access = ServerAccessPolicy::default();
+    access.connection_rates.total_per_minute = 1;
+    let manager = build_manager(
+        &data_dir,
+        vec![
+            client_spec("alpha-client", &server_b64),
+            server_spec("alpha-server", echo_addr, access),
+        ],
+        StaticAliasTable::new(),
+    );
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut first = TcpStream::connect(listener).await.expect("first connect");
+    first
+        .write_all(b"first-rate-admission")
+        .await
+        .expect("first write");
+    assert_eq!(
+        read_exact_bounded(&mut first, b"first-rate-admission".len()).await,
+        b"first-rate-admission"
+    );
+    let _ = first.shutdown().await;
+    let total = tokio::time::timeout(Duration::from_secs(10), echo_task)
+        .await
+        .expect("echo done")
+        .expect("echo task");
+    assert_eq!(total, b"first-rate-admission".len());
+
+    let mut second = TcpStream::connect(listener).await.expect("second connect");
+    second
+        .write_all(b"second-rate-admission")
+        .await
+        .expect("second write");
+    assert!(poll_rate_limited(&manager, "alpha-server").await > 0);
+    let mut response = [0_u8; 32];
+    let result = tokio::time::timeout(Duration::from_secs(1), second.read(&mut response)).await;
+    assert!(
+        matches!(result, Err(_) | Ok(Ok(0))),
+        "rate-limited peer gets no echo: {result:?}"
+    );
 }
 
 fn canonical_b32() -> String {

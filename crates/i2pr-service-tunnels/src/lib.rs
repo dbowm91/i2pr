@@ -61,7 +61,10 @@ pub mod irc;
 pub mod socks5;
 pub mod streamr;
 
-pub use access::{MAX_ACCESS_LIST_ENTRIES, ServerAccessPolicy};
+pub use access::{
+    MAX_ACCESS_LIST_ENTRIES, MAX_RATE_LIMIT_PEERS, ServerAccessPolicy, ServerConnectionRateLimiter,
+    ServerConnectionRateLimits,
+};
 pub use auth::{
     MAX_PROXY_PASSWORD_LEN, MAX_PROXY_USERNAME_LEN, PROXY_AUTH_REALM_CONNECT,
     PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,

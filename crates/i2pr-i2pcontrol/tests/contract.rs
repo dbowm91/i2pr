@@ -968,6 +968,22 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
 fn plan289_tunnel_request_envelope_rules() {
     use i2pr_i2pcontrol::{TunnelAction, TunnelRequestError, TunnelType, decode_tunnel_request};
 
+    for (key, value) in [
+        ("ClientPerMinute", serde_json::json!(2)),
+        ("ClientPerHour", serde_json::json!(10)),
+        ("ClientPerDay", serde_json::json!(30)),
+        ("TotalInPerMinute", serde_json::json!(20)),
+        ("TotalInPerHour", serde_json::json!(100)),
+        ("TotalInPerDay", serde_json::json!(300)),
+    ] {
+        let mut input = serde_json::json!({
+            "Action": "create", "Name": "rate-server", "Type": "server",
+            "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        });
+        input.as_object_mut().unwrap().insert(key.to_owned(), value);
+        assert!(decode_tunnel_request(&params(input)).is_ok(), "{key}");
+    }
+
     fn params(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
         value.as_object().expect("object").clone()
     }
@@ -1059,6 +1075,26 @@ fn plan289_tunnel_request_envelope_rules() {
         request.options.get("connect_delay").map(String::as_str),
         Some("true")
     );
+    let server_rates = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "rate-server", "Type": "server",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "ClientPerMinute": 2, "ClientPerHour": 10, "ClientPerDay": 30,
+        "TotalInPerMinute": 20, "TotalInPerHour": 100, "TotalInPerDay": 300,
+    })))
+    .expect("Proposal server rates decode into typed owner keys");
+    for (key, expected) in [
+        ("client_per_minute", "2"),
+        ("client_per_hour", "10"),
+        ("client_per_day", "30"),
+        ("total_in_per_minute", "20"),
+        ("total_in_per_hour", "100"),
+        ("total_in_per_day", "300"),
+    ] {
+        assert_eq!(
+            server_rates.options.get(key).map(String::as_str),
+            Some(expected)
+        );
+    }
     let idle_options = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "idle-client", "Type": "client",
         "TargetDestination": "example.b32.i2p", "Reduce": true,

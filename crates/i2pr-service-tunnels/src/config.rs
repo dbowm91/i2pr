@@ -1405,6 +1405,21 @@ impl ServiceTunnelSpec {
                 reason: "access lists apply to server kinds only",
             });
         }
+        self.access.connection_rates.validate()?;
+        if self.access.connection_rates.enabled()
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericServer
+                    | ServiceTunnelKind::HttpServer
+                    | ServiceTunnelKind::HttpBidirServer
+                    | ServiceTunnelKind::IrcServer
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "connection-rate controls require a TCP server tunnel",
+            });
+        }
         // Plan 292: the deterministic source bind consumes the
         // server-to-target dial, which only the masked server
         // kinds perform.

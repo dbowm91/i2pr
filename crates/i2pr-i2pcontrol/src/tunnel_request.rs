@@ -135,6 +135,12 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "BlockAccessInProxies" => Some("block_access_in_proxies"),
         "UserAgents" => Some("user_agents"),
         "MaxConcurrentConns" => Some("max_streams"),
+        "ClientPerMinute" => Some("client_per_minute"),
+        "ClientPerHour" => Some("client_per_hour"),
+        "ClientPerDay" => Some("client_per_day"),
+        "TotalInPerMinute" => Some("total_in_per_minute"),
+        "TotalInPerHour" => Some("total_in_per_hour"),
+        "TotalInPerDay" => Some("total_in_per_day"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
         "AllowReferer" => Some("allow_referer"),
@@ -177,6 +183,16 @@ fn pascal_option_name(key: &str) -> String {
 fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
     let value_type = if matches!(key, "shared" | "persistent_client_key") {
         crate::tunnel_options::OptionValueType::Boolean
+    } else if matches!(
+        key,
+        "client_per_minute"
+            | "client_per_hour"
+            | "client_per_day"
+            | "total_in_per_minute"
+            | "total_in_per_hour"
+            | "total_in_per_day"
+    ) {
+        crate::tunnel_options::OptionValueType::Integer
     } else {
         find_option(key)
             .map_err(TunnelRequestError::BadOption)?
@@ -396,6 +412,16 @@ pub fn decode_tunnel_request(
                     // Proposal 170 controls extend the frozen Plan
                     // 286 option table under Plan 323.
                     crate::tunnel_options::OptionValueType::Boolean
+                } else if matches!(
+                    option_key,
+                    "client_per_minute"
+                        | "client_per_hour"
+                        | "client_per_day"
+                        | "total_in_per_minute"
+                        | "total_in_per_hour"
+                        | "total_in_per_day"
+                ) {
+                    crate::tunnel_options::OptionValueType::Integer
                 } else {
                     find_option(option_key)
                         .map_err(TunnelRequestError::BadOption)?
