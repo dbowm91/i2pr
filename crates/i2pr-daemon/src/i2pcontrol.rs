@@ -1298,10 +1298,17 @@ impl I2pControlServiceState {
                 }
             }
             match field.key {
-                "i2p.router.clockskew" | "i2p.router.info" => {
-                    // Proposal 170 explicitly permits null when there is
-                    // no peer-skew sample or local serialized RouterInfo.
+                "i2p.router.clockskew" => {
+                    // No peer-skew sample is collected yet; the Proposal
+                    // explicitly permits null when there are no observations.
                     result.insert(field.key.to_owned(), serde_json::Value::Null);
+                    continue;
+                }
+                "i2p.router.info" => {
+                    result.insert(
+                        field.key.to_owned(),
+                        crate::i2pcontrol_inspection::proposal_local_router_info(&self.inspection),
+                    );
                     continue;
                 }
                 "i2p.router.id" => {

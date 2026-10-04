@@ -63,6 +63,10 @@ pub const MAX_INSPECTION_LIST: usize = 1024;
 
 /// Maximum bytes of a published mode/state string.
 pub const MAX_INSPECTION_STATE_STRING: usize = 32;
+/// Maximum base64 bytes retained for a local serialized RouterInfo.
+pub const MAX_LOCAL_ROUTER_INFO_BASE64_BYTES: usize = 1_048_576;
+/// Binary ceiling that keeps base64 expansion within the serialized value cap.
+pub const MAX_LOCAL_ROUTER_INFO_BYTES: usize = 786_432;
 
 /// Maximum bytes of a published router-hash string (44-char I2P base64).
 pub const MAX_INSPECTION_HASH_STRING: usize = 64;
@@ -91,6 +95,8 @@ impl FloodfillMode {
 struct PublishedSnapshots {
     /// Published local router hash (I2P base64) or `None`.
     router_hash: Option<String>,
+    /// Published local serialized RouterInfo (I2P base64) or `None`.
+    local_router_info_b64: Option<String>,
     /// Published known-peer hashes or `None`.
     netdb_known: Option<Vec<String>>,
     /// Published active-peer hashes or `None`.
@@ -135,6 +141,8 @@ pub enum PublishError {
     },
     /// A router hash was not 44-char I2P base64.
     MalformedHash,
+    /// A serialized RouterInfo base64 string was malformed.
+    MalformedRouterInfo,
 }
 
 impl core::fmt::Display for PublishError {
@@ -147,6 +155,9 @@ impl core::fmt::Display for PublishError {
                 write!(formatter, "inspection string over ceiling for {key}")
             }
             Self::MalformedHash => write!(formatter, "inspection router hash malformed"),
+            Self::MalformedRouterInfo => {
+                write!(formatter, "inspection local RouterInfo base64 malformed")
+            }
         }
     }
 }
@@ -292,10 +303,29 @@ impl InspectionHandles {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'~')
         {
-            return Err(PublishError::MalformedHash);
+            return Err(PublishError::MalformedRouterInfo);
         }
         if let Ok(mut published) = self.published.lock() {
             published.router_hash = Some(hash_b64.to_owned());
+        }
+        Ok(())
+    }
+
+    /// Publishes a bounded I2P-base64 local RouterInfo string.
+    pub fn publish_local_router_info_b64(&self, info_b64: &str) -> Result<(), PublishError> {
+        if info_b64.is_empty() || info_b64.len() > MAX_LOCAL_ROUTER_INFO_BASE64_BYTES {
+            return Err(PublishError::StringOverBound {
+                key: "i2p.router.info",
+            });
+        }
+        if !info_b64
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'~')
+        {
+            return Err(PublishError::MalformedHash);
+        }
+        if let Ok(mut published) = self.published.lock() {
+            published.local_router_info_b64 = Some(info_b64.to_owned());
         }
         Ok(())
     }
@@ -824,6 +854,16 @@ pub(crate) fn proposal_tunnel_queue_depth(
             owner_plan: "322",
             owner: "attested tunnel build-queue snapshot",
         })
+}
+
+/// Returns the published local RouterInfo as Proposal base64, or null
+/// while bootstrap has not published a local record.
+pub(crate) fn proposal_local_router_info(handles: &InspectionHandles) -> serde_json::Value {
+    handles
+        .snapshots()
+        .local_router_info_b64
+        .map(serde_json::Value::String)
+        .unwrap_or(serde_json::Value::Null)
 }
 
 /// Reads the canonical Tunnel Build Message queue depth from its own
@@ -1693,6 +1733,30 @@ mod tests {
             proposal_tunnel_queue_depth(&handles).expect("attested queue depth"),
             serde_json::json!(7)
         );
+    }
+
+    #[test]
+    fn proposal_local_router_info_is_bounded_and_publish_gated() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_local_router_info(&handles),
+            serde_json::Value::Null
+        );
+        let encoded = i2pr_netdb::encode(b"signed router info").expect("base64 encodes");
+        handles
+            .publish_local_router_info_b64(&encoded)
+            .expect("bounded info publishes");
+        assert_eq!(
+            proposal_local_router_info(&handles),
+            serde_json::Value::String(encoded)
+        );
+        assert!(matches!(
+            handles
+                .publish_local_router_info_b64(&"A".repeat(MAX_LOCAL_ROUTER_INFO_BASE64_BYTES + 1)),
+            Err(PublishError::StringOverBound {
+                key: "i2p.router.info"
+            })
+        ));
     }
 
     #[test]

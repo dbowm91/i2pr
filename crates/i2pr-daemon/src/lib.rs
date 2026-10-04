@@ -1329,6 +1329,23 @@ pub async fn run_daemon(config: Config) -> Result<(), DaemonError> {
         Some(Arc::clone(&bootstrap_handle)),
         service_lifecycle.clone(),
     )?;
+    if let Ok(bootstrap) = bootstrap_handle.lock()
+        && let Some(local) = bootstrap.local()
+    {
+        match local.encoded(crate::i2pcontrol_inspection::MAX_LOCAL_ROUTER_INFO_BYTES) {
+            Ok(encoded) => match i2pr_netdb::encode(&encoded) {
+                Ok(info_b64) => {
+                    if inspection.publish_local_router_info_b64(&info_b64).is_err() {
+                        tracing::warn!("local RouterInfo publication rejected");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "local RouterInfo base64 encoding failed")
+                }
+            },
+            Err(error) => tracing::warn!(error = %error, "local RouterInfo encoding failed"),
+        }
+    }
     // Publish the local router hash for the Plan 288 inspection plane.
     // The hash is public RouterInfo material; no secret crosses into the
     // control plane. When bootstrap built no local RouterInfo the row

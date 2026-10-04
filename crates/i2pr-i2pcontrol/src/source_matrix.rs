@@ -183,16 +183,17 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             Some("router_info_proposal_selection_over_wire"),
         ),
         "i2p.router.info" => (
-            "local RouterInfo publisher",
-            "no serialized local RouterInfo is published",
+            "bootstrap local RouterInfo publisher",
+            "canonical bounded serialized local RouterInfo published after bootstrap",
             0,
             1_048_576,
             "public router information",
-            "null until locally serialized RouterInfo is published",
-            SourceAvailability::PermittedNeutral {
-                reason: "Proposal permits null when no local RouterInfo is available",
+            "latest bootstrap local RouterInfo snapshot",
+            SourceAvailability::PublishedGated {
+                owner: "bootstrap local RouterInfo publisher",
+                owner_plan: "322",
             },
-            Some("batch_isolation_with_inspection"),
+            Some("proposal_local_router_info_is_bounded_and_publish_gated"),
         ),
         "i2p.router.logs" => (
             "daemon LogRing",
