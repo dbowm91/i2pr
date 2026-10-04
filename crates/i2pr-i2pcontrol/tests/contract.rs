@@ -1143,6 +1143,16 @@ fn plan289_tunnel_request_envelope_rules() {
         }))),
         Err(TunnelRequestError::UnavailableOption("JumpList".to_owned()))
     );
+    for key in ["CustomOptions", "PrivKeyFile"] {
+        assert_eq!(
+            decode_tunnel_request(&params(serde_json::json!({
+                "Action": "create", "Name": "a", "Type": "server",
+                (key): "operator supplied value",
+            }))),
+            Err(TunnelRequestError::UnavailableOption(key.to_owned())),
+            "{key} must not bypass typed validation or accept an arbitrary path"
+        );
+    }
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
