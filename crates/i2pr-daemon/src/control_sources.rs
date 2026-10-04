@@ -374,6 +374,15 @@ impl ControlMetrics {
         }
     }
 
+    /// Cumulative transport-byte totals, available only after an
+    /// authoritative transport source has registered a sample.
+    pub fn transport_totals(&self) -> Option<(u64, u64)> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.observed.then_some((state.rx_bytes, state.tx_bytes)))
+    }
+
     /// Registers cumulative tunnel-build outcomes. No build reporter
     /// exists in the default graph, so production holds (0, 0).
     pub fn observe_builds(&self, succeeded: u64, attempted: u64) {

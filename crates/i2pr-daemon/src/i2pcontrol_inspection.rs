@@ -729,6 +729,38 @@ pub(crate) fn proposal_addressbook_value(
     Ok(value)
 }
 
+/// Reads canonical cumulative SSU2 byte counters through the metrics
+/// owner. Values are unavailable until a transport owner publishes a
+/// sample; loopback and destination traffic are outside this counter's
+/// documented coverage.
+pub(crate) fn proposal_transport_total(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let received_field = match key {
+        "i2p.router.net.total.received.bytes" => true,
+        "i2p.router.net.total.sent.bytes" => false,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "Proposal transport counters",
+            });
+        }
+    };
+    let Some((received, sent)) =
+        metrics_owner(handles).and_then(|metrics| metrics.transport_totals())
+    else {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "322",
+            owner: "SSU2 cumulative transport counters",
+        });
+    };
+    let value = if received_field { received } else { sent };
+    Ok(serde_json::Value::from(value))
+}
+
 /// Rejects an over-ceiling publication string.
 fn check_state_string(key: &'static str, value: &str) -> Result<(), PublishError> {
     if value.is_empty() || value.len() > MAX_INSPECTION_STATE_STRING {
@@ -1336,6 +1368,30 @@ mod tests {
         uptime: u64,
     ) -> serde_json::Value {
         router_info_result(selector, handles, uptime).expect("selector answers")
+    }
+
+    #[test]
+    fn proposal_transport_totals_require_and_read_authoritative_sample() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.received.bytes", &handles)
+                .expect_err("unobserved counters stay unavailable")
+                .owner_plan,
+            "322"
+        );
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.observe_transport(1234, 5678, 12, 34);
+        handles.publish_metrics(metrics);
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.received.bytes", &handles)
+                .expect("received total"),
+            serde_json::json!(1234)
+        );
+        assert_eq!(
+            proposal_transport_total("i2p.router.net.total.sent.bytes", &handles)
+                .expect("sent total"),
+            serde_json::json!(5678)
+        );
     }
 
     #[test]

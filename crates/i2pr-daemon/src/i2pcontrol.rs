@@ -1191,6 +1191,30 @@ impl I2pControlServiceState {
         let mut result = serde_json::Map::with_capacity(selection.len());
         let mut clear_logs = false;
         for field in selection {
+            if matches!(
+                field.key,
+                "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes"
+            ) {
+                match crate::i2pcontrol_inspection::proposal_transport_total(
+                    field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             match field.key {
                 "i2p.router.clockskew" | "i2p.router.info" => {
                     // Proposal 170 explicitly permits null when there is
