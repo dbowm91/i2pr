@@ -470,7 +470,7 @@ async fn tunnelmanager_spoofed_host_roundtrips_for_http_server() {
         serde_json::json!({
             "Action":"create", "Name":"spoofed", "Type":"httpserver",
             "TargetHost":"127.0.0.1", "TargetPort":8080,
-            "StartOnLoad":false, "SpoofedHost":"site.example.i2p"
+            "StartOnLoad":false, "WebsiteHostname":"site.example.i2p"
         }),
         2,
     )

@@ -1201,6 +1201,24 @@ fn plan289_tunnel_request_envelope_rules() {
         spoofed_host.options.get("spoofed_host").map(String::as_str),
         Some("public.example.i2p")
     );
+    let website_hostname = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "web", "Type": "httpserver",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "WebsiteHostname": "public.example.i2p",
+    })))
+    .expect("WebsiteHostname is the Proposal alias for SpoofedHost");
+    assert_eq!(
+        website_hostname.options.get("spoofed_host"),
+        spoofed_host.options.get("spoofed_host")
+    );
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "web", "Type": "httpserver",
+            "TargetHost": "127.0.0.1", "TargetPort": 8080,
+            "WebsiteHostname": "public.example.i2p", "SpoofedHost": "other.example.i2p",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias(alias)) if alias == "WebsiteHostname"
+    ));
     let max_concurrent = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "a", "Type": "server",
         "MaxConcurrentConns": 24,

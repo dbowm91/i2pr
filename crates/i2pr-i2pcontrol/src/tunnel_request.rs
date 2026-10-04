@@ -123,7 +123,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Port" => Some("listen_port"),
         "ReachableBy" => Some("listen_host"),
         "Description" => Some("description"),
-        "SpoofedHost" => Some("spoofed_host"),
+        "WebsiteHostname" | "SpoofedHost" => Some("spoofed_host"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
@@ -263,7 +263,7 @@ pub fn decode_tunnel_request(
                     options_seen = true;
                     continue;
                 }
-                if key == "SpoofedHost" {
+                if matches!(key, "WebsiteHostname" | "SpoofedHost") {
                     let host = value
                         .as_str()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
