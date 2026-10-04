@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: `qualified-profile-closed` for the historical i2pr profile in Plans 286–297. Full Proposal 170 conformance is not claimed. Plans 319–328 are the current continuation; Plans 319–321 passed, Plans 322 and 323 are active, and Plan 325 is blocked after a completed provider survey. This workstream remains parallel to M12/mainline.
+Status: `qualified-profile-closed` for the historical i2pr profile in Plans 286–297. Full Proposal 170 conformance is not claimed. Plans 319–321 and 323 passed; Plans 322, 324, and 327 are active; Plan 325 is blocked after a completed provider survey. Plans 326 and 328 remain blocked on their stated dependencies. This workstream remains parallel to M12/mainline.
 
 Long-term references:
 - GUARDRAILS.md
@@ -234,7 +234,7 @@ Current continuation graph:
 
     322 + 326 + 327 -> 328 live external full-conformance gate
 
-Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed Rust provider currently matches I2P Red25519. Plan 321 is passed; Plans 322 and 323 are active. Plan 326 and an unqualified full Proposal 170 claim remain blocked without weakening the crypto guardrail.
+Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed Rust provider currently matches I2P Red25519. Plans 321 and 323 have passed; Plans 322, 324, and 327 are active. Plan 326 and an unqualified full Proposal 170 claim remain blocked without weakening the crypto guardrail.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
@@ -242,11 +242,11 @@ Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's p
 | 320 | passed | protocol contract corrective | plans/implementation/i2pcontrol-proposal-170/320-canonical-wire-contract-reconciliation.md | plans/closure/i2pcontrol-proposal-170/320-status.md (`passed-prop170-canonical-wire-contract-reconciliation`) |
 | 321 | passed | capability/I-O composition | plans/implementation/i2pcontrol-proposal-170/321-addressbook-operational-completion.md | plans/closure/i2pcontrol-proposal-170/321-status.md (`passed-prop170-addressbook-operational-completion`) |
 | 322 | active | capability/observability/signed content | plans/implementation/i2pcontrol-proposal-170/322-routerinfo-canonical-source-and-news-completion.md | future |
-| 323 | active | capability/protocol parity | plans/implementation/i2pcontrol-proposal-170/323-tunnelmanager-canonical-nondeep-parity.md | future |
-| 324 | blocked on 323 | crypto integration/identity lifecycle | plans/implementation/i2pcontrol-proposal-170/324-destination-signing-and-encryption-policy.md | future |
+| 323 | passed | capability/protocol parity | plans/implementation/i2pcontrol-proposal-170/323-tunnelmanager-canonical-nondeep-parity.md | plans/closure/i2pcontrol-proposal-170/323-status.md (`passed-prop170-tunnelmanager-canonical-nondeep-parity`) |
+| 324 | active | crypto integration/identity lifecycle | plans/implementation/i2pcontrol-proposal-170/324-destination-signing-and-encryption-policy.md | future |
 | 325 | blocked | crypto provider qualification | plans/implementation/i2pcontrol-proposal-170/325-red25519-provider-qualification.md | plans/closure/i2pcontrol-proposal-170/325-status.md (`blocked-no-qualified-maintained-i2p-red25519-provider`) |
 | 326 | blocked on 323 + 324 + 325 | encrypted LeaseSet capability | plans/implementation/i2pcontrol-proposal-170/326-encrypted-leaseset-and-client-authorization.md | future |
-| 327 | blocked on 323 | I2P-routed outproxy capability | plans/implementation/i2pcontrol-proposal-170/327-i2p-routed-outproxy-provider.md | future |
+| 327 | active | I2P-routed outproxy capability | plans/implementation/i2pcontrol-proposal-170/327-i2p-routed-outproxy-provider.md | future |
 | 328 | blocked on 322 + 326 + 327 | live external conformance gate | plans/implementation/i2pcontrol-proposal-170/328-live-external-full-conformance-gate.md | future |
 
 The term full-proposal-conformant is reserved for a passing Plan 328 against its re-frozen Proposal revision. The 286–297 closure remains qualified-profile-closed and is not relabeled.
