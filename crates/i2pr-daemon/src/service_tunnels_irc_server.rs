@@ -476,6 +476,34 @@ pub async fn run_irc_server_loop(
             }
         });
         for connection_id in accepted_ids {
+            // Apply peer policy and per-client admission before queuing
+            // the SYN response, matching the other server tunnel paths.
+            let peer_hash = manager
+                .with_destination_bridge(runtime.destination_id, |bridge| {
+                    bridge
+                        .receiver_streaming()
+                        .get_connection(connection_id)
+                        .map(|conn| *conn.peer_destination_hash())
+                })
+                .flatten();
+            let Some(peer_hash) = peer_hash else {
+                runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            if !runtime.access.allows(&peer_hash) {
+                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            let rate_allowed = runtime
+                .connection_rate_limiter
+                .lock()
+                .map(|mut limiter| limiter.admit(peer_hash, service_streaming_now_ms()))
+                .unwrap_or(false);
+            if !rate_allowed {
+                runtime.rate_limited.fetch_add(1, Ordering::Relaxed);
+                runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             // Plan 182: answer the SYN before waiting for
             // Established. Without the SYN response the handshake
             // can never complete; see `accept_irc_inbound_syn`.
@@ -484,14 +512,6 @@ pub async fn run_irc_server_loop(
                 runtime.failed_connects.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
-            // Plan 292: peer policy (structurally empty for IRC
-            // server kinds, which cannot carry access lists, but
-            // enforced uniformly so a validation gap can never
-            // silently admit).
-            if !runtime.access.allows(&peer.destination_hash) {
-                runtime.access_denied.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
             debug!(service = %runtime.spec_id, connection_id = connection_id.raw(), "irc SYN answered");
             manager.notify_outbound_signal(runtime.destination_id);
             spawn_irc_server_connection(

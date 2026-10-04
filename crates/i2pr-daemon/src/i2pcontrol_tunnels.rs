@@ -4451,6 +4451,21 @@ mod tests {
         assert_eq!(spec.access.connection_rates.total_per_hour, 100);
         assert_eq!(spec.access.connection_rates.total_per_day, 300);
 
+        let irc_server = ControlDefinition {
+            name: "irc-server-rates".to_owned(),
+            tunnel_type: TunnelType::IrcServer,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "6667".to_owned()),
+                ("client_per_minute".to_owned(), "2".to_owned()),
+                ("total_in_per_minute".to_owned(), "20".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let irc_spec = build_control_spec(&irc_server).expect("IRC server limits map");
+        assert_eq!(irc_spec.access.connection_rates.client_per_minute, 2);
+        assert_eq!(irc_spec.access.connection_rates.total_per_minute, 20);
+
         let client = ControlDefinition {
             name: "client-rates".to_owned(),
             tunnel_type: TunnelType::Client,
