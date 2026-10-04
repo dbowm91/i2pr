@@ -501,6 +501,38 @@ async fn proposal_user_agent_blocklist_rejects_before_local_target() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn proposal_block_access_in_proxies_rejects_before_local_target() {
+    let directory = temp_data_dir("http-server-block-inproxy");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_access_in_proxies: true,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.i2p\r\nX-Forwarded-For: 192.0.2.1\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let response = String::from_utf8_lossy(&head);
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "inproxy-identifying header is refused: {response:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "blocked request never reaches the local target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn http_server_absolute_form_is_400() {
     let directory = temp_data_dir("http-server-absolute");
     let (manager, _observed, _addr) =

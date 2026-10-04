@@ -81,6 +81,8 @@ pub struct HttpServerPolicy {
     pub jump_list: bool,
     /// Strip the inbound Referer header before forwarding.
     pub block_referers: bool,
+    /// Reject requests carrying headers that identify an HTTP inproxy.
+    pub block_access_in_proxies: bool,
     /// Reject requests whose User-Agent contains one of `user_agents`.
     pub block_user_agents: bool,
     /// Case-sensitive comma-separated User-Agent substring rules after
@@ -96,6 +98,7 @@ impl Default for HttpServerPolicy {
             address_helper: true,
             jump_list: true,
             block_referers: true,
+            block_access_in_proxies: false,
             block_user_agents: false,
             user_agents: Vec::new(),
             spoofed_host: None,
@@ -244,6 +247,19 @@ pub fn filter_server_request_with_policy(
         return Err(rejected(
             HttpErrorKind::MalformedHeaders,
             "server profile requires a Host header",
+        ));
+    }
+    if policy.block_access_in_proxies
+        && head.headers.iter().any(|entry| {
+            matches!(
+                entry.name_str(),
+                "x-forwarded-for" | "x-forwarded-server" | "forwarded" | "x-forwarded-host"
+            )
+        })
+    {
+        return Err(rejected(
+            HttpErrorKind::PresentationRefused,
+            "request appears to have passed through an HTTP inproxy",
         ));
     }
     if policy.block_user_agents && user_agent_is_blocked(&head.headers, &policy.user_agents) {
@@ -648,6 +664,32 @@ mod tests {
         assert!(!valid_user_agent_rules(&["x".repeat(
             super::super::config::HTTP_USER_AGENT_RULE_MAX_BYTES + 1
         )]));
+    }
+
+    #[test]
+    fn proposal_block_access_in_proxies_rejects_forwarding_headers() {
+        let policy = HttpServerPolicy {
+            block_access_in_proxies: true,
+            ..HttpServerPolicy::default()
+        };
+        for header in [
+            "X-Forwarded-For: 192.0.2.1",
+            "X-Forwarded-Server: proxy.example",
+            "Forwarded: for=192.0.2.1",
+            "X-Forwarded-Host: example.com",
+        ] {
+            let request = format!("GET / HTTP/1.1\r\nHost: example.i2p\r\n{header}\r\n\r\n");
+            let head = parse_head(&request);
+            assert_eq!(
+                filter_server_request_with_policy(&head, "127.0.0.1:8080", &policy)
+                    .expect_err("proxy-identifying header is refused")
+                    .kind,
+                HttpErrorKind::PresentationRefused,
+                "header: {header}"
+            );
+        }
+        let direct = parse_head("GET / HTTP/1.1\r\nHost: example.i2p\r\n\r\n");
+        assert!(filter_server_request_with_policy(&direct, "127.0.0.1:8080", &policy).is_ok());
     }
 
     #[test]

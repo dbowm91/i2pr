@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 13] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 14] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -163,6 +163,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 13] = [
     "allow_internal_ssl",
     "block_user_agents",
     "user_agents",
+    "block_access_in_proxies",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -994,6 +995,18 @@ pub fn build_control_spec(
                     });
                 }
                 http_policy.block_user_agents = parse_bool_option(key, value)?;
+            }
+            "block_access_in_proxies" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "BlockAccessInProxies applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_access_in_proxies = parse_bool_option(key, value)?;
             }
             "user_agents" => {
                 if !matches!(
@@ -4114,6 +4127,7 @@ mod tests {
         let mut options = server_options("127.0.0.1:9090");
         options.insert("block_user_agents".to_owned(), "true".to_owned());
         options.insert("user_agents".to_owned(), "crawler,none".to_owned());
+        options.insert("block_access_in_proxies".to_owned(), "true".to_owned());
         let definition = ControlDefinition {
             name: "ua-filter".to_owned(),
             tunnel_type: TunnelType::HttpServer,
@@ -4123,6 +4137,7 @@ mod tests {
         let spec = build_control_spec(&definition).expect("HTTP server owner builds");
         assert!(spec.http_policy.block_user_agents);
         assert_eq!(spec.http_policy.user_agents, ["crawler", "none"]);
+        assert!(spec.http_policy.block_access_in_proxies);
 
         let mut invalid = server_options("127.0.0.1:9090");
         invalid.insert("block_user_agents".to_owned(), "true".to_owned());

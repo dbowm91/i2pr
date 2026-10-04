@@ -126,6 +126,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "WebsiteHostname" | "SpoofedHost" => Some("spoofed_host"),
         "BlockReferers" => Some("block_referers"),
         "BlockUserAgents" => Some("block_user_agents"),
+        "BlockAccessInProxies" => Some("block_access_in_proxies"),
         "UserAgents" => Some("user_agents"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
@@ -314,6 +315,7 @@ pub fn decode_tunnel_request(
                         | "AllowAccept"
                         | "AllowInternalSSL"
                         | "BlockUserAgents"
+                        | "BlockAccessInProxies"
                         | "BlockReferers"
                 ) {
                     let enabled = value
@@ -325,6 +327,7 @@ pub fn decode_tunnel_request(
                         "AllowAccept" => "allow_accept",
                         "AllowInternalSSL" => "allow_internal_ssl",
                         "BlockUserAgents" => "block_user_agents",
+                        "BlockAccessInProxies" => "block_access_in_proxies",
                         _ => "block_referers",
                     };
                     options.insert(internal.to_owned(), enabled.to_string());

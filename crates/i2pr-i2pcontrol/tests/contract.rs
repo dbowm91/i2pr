@@ -1218,7 +1218,7 @@ fn plan289_tunnel_request_envelope_rules() {
     let user_agent_policy = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "web", "Type": "httpserver",
         "TargetHost": "127.0.0.1", "TargetPort": 8080,
-        "BlockUserAgents": true, "UserAgents": "crawler, none",
+        "BlockUserAgents": true, "UserAgents": "crawler, none", "BlockAccessInProxies": true,
     })))
     .expect("User-Agent filters have typed HTTP server owners");
     assert_eq!(
@@ -1234,6 +1234,13 @@ fn plan289_tunnel_request_envelope_rules() {
             .get("user_agents")
             .map(String::as_str),
         Some("crawler, none")
+    );
+    assert_eq!(
+        user_agent_policy
+            .options
+            .get("block_access_in_proxies")
+            .map(String::as_str),
+        Some("true")
     );
     let website_hostname = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "web", "Type": "httpserver",
