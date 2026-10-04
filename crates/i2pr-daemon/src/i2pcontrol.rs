@@ -396,12 +396,12 @@ fn decode_addressbook_request(
                         "proxy_host" => "proxy_host",
                         "log" => "log_file",
                         "theme" => "theme",
-                        // These are valid Proposal keys, but their operational
-                        // owners are not present yet. Never silently persist or
-                        // discard them as if they took effect.
-                        "should_publish" | "etags" | "last_modified" => {
-                            return Err("AddressBook config field is not available");
-                        }
+                        // Canonical values are retained so dispatch can report
+                        // the owning capability gap instead of misclassifying
+                        // valid Proposal vocabulary as malformed input.
+                        "should_publish" => "should_publish",
+                        "etags" => "etags",
+                        "last_modified" => "last_modified",
                         _ => return Err("malformed AddressBook field"),
                     };
                     value
@@ -1011,11 +1011,26 @@ impl I2pControlServiceState {
                     Err(error) => Self::addressbook_manager_error(id, &error),
                 }
             }
-            AddressBookRequest::Config { entries } => match manager.apply_config(&entries) {
-                Ok(true) => Self::addressbook_success(id, "config applied"),
-                Ok(false) => Self::addressbook_success(id, "config unchanged"),
-                Err(error) => Self::addressbook_manager_error(id, &error),
-            },
+            AddressBookRequest::Config { entries } => {
+                if ["should_publish", "etags", "last_modified"]
+                    .iter()
+                    .any(|key| entries.contains_key(*key))
+                {
+                    return (
+                        error_envelope(
+                            id,
+                            JsonRpcErrorCode::InternalError.code(),
+                            "AddressBook config field owner is unavailable (Plan 321)",
+                        ),
+                        Duration::ZERO,
+                    );
+                }
+                match manager.apply_config(&entries) {
+                    Ok(true) => Self::addressbook_success(id, "config applied"),
+                    Ok(false) => Self::addressbook_success(id, "config unchanged"),
+                    Err(error) => Self::addressbook_manager_error(id, &error),
+                }
+            }
         }
     }
 
@@ -1165,6 +1180,24 @@ impl I2pControlServiceState {
             };
             match router_info_result(selector, &self.inspection, uptime_secs) {
                 Ok(value) => {
+                    let value = match field.key {
+                        "i2p.router.netdb.knownpeers" | "i2p.router.netdb.activepeers" => {
+                            match value.as_array() {
+                                Some(peers) => serde_json::Value::from(peers.len() as u64),
+                                None => {
+                                    return (
+                                        error_envelope(
+                                            id,
+                                            JsonRpcErrorCode::InternalError.code(),
+                                            "RouterInfo owner returned an invalid field shape",
+                                        ),
+                                        Duration::ZERO,
+                                    );
+                                }
+                            }
+                        }
+                        _ => value,
+                    };
                     result.insert(field.key.to_owned(), value);
                 }
                 Err(gap) => {
@@ -2402,28 +2435,19 @@ mod tests {
             response["result"]["message"],
             serde_json::json!("entry updated")
         );
-        // Getters read the same committed generation the lookup uses.
+        // Proposal getters are recognized as canonical fields, but their
+        // exact list/object projections are owned by the next plan. No
+        // normalized alias or partial response is emitted.
         let response = json_of(&dispatch(
             &state,
-            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "addressbook.private": null, "addressbook.subscriptions": null, "addressbook.config": null}, "id": 2}),
+            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "i2p.router.addressbook.private.list": null, "i2p.router.addressbook.subscriptions": null, "i2p.router.addressbook.config": null}, "id": 2}),
             None,
             0,
         ));
-        assert_eq!(
-            response["result"]["addressbook.private"],
-            serde_json::json!({"wire.i2p": destination})
-        );
-        assert_eq!(
-            response["result"]["addressbook.subscriptions"],
-            serde_json::json!({"urls": []})
-        );
-        assert_eq!(
-            response["result"]["addressbook.config"]["theme"],
-            serde_json::json!("")
-        );
-        assert_eq!(
-            response["result"]["addressbook.config"]["max_entries"],
-            serde_json::json!("1000")
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response.get("result").is_none(),
+            "no partial selector results"
         );
         // Delete presence selects deletion even with a false value.
         let response = call(
@@ -2435,14 +2459,11 @@ mod tests {
         );
         let response = json_of(&dispatch(
             &state,
-            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "addressbook.private": null}, "id": 3}),
+            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "i2p.router.addressbook.private.list": null}, "id": 3}),
             None,
             0,
         ));
-        assert_eq!(
-            response["result"]["addressbook.private"],
-            serde_json::json!({})
-        );
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
         // Shape violations fail whole with no partial effect.
         for params in [
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "gone.i2p", "Delete": true}),
@@ -2481,22 +2502,33 @@ mod tests {
             response["result"]["message"],
             serde_json::json!("subscriptions unchanged")
         );
-        let response = call(
-            serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}),
-        );
+        let response =
+            call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight"}}));
         assert_eq!(
             response["result"],
             serde_json::json!({"success": true, "message": "config applied"})
         );
-        let response = call(
-            serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight", "log_level": "info"}}),
-        );
+        let response =
+            call(serde_json::json!({"Token": token, "SetConfig": {"theme": "midnight"}}));
         assert_eq!(
             response["result"]["message"],
             serde_json::json!("config unchanged")
         );
         let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": 7}}));
         assert!(response.get("error").is_some());
+        for key in ["should_publish", "etags", "last_modified"] {
+            let response = call(serde_json::json!({
+                "Token": token,
+                "SetConfig": {(key): "proposal-value"},
+            }));
+            assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("Plan 321")
+            );
+        }
         // Error messages never echo request values.
         let response = call(
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "secret-host.i2p", "Destination": "hunter2-material"}),

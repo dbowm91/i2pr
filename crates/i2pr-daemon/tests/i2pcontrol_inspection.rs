@@ -283,6 +283,52 @@ async fn router_info_proposal_selection_over_wire() {
 }
 
 #[tokio::test]
+async fn base_router_info_peer_counts_keep_the_documented_integer_shape() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        i2pr_daemon::i2pcontrol_inspection::ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        i2pr_daemon::i2pcontrol_inspection::ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    inspection
+        .publish_netdb(
+            vec!["known-a".to_owned(), "known-b".to_owned()],
+            vec!["active-a".to_owned()],
+            i2pr_daemon::i2pcontrol_inspection::FloodfillMode::Disabled,
+        )
+        .expect("bounded NetDB snapshot publishes");
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.netdb.knownpeers": false,
+                "i2p.router.netdb.activepeers": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["result"]["i2p.router.netdb.knownpeers"], 2);
+    assert_eq!(response["result"]["i2p.router.netdb.activepeers"], 1);
+}
+
+#[tokio::test]
 async fn router_info_hash_gated_then_published_over_wire() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")

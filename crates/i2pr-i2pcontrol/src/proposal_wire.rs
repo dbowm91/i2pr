@@ -276,12 +276,12 @@ pub const BASE_ROUTER_INFO_FIELDS: [ProposalRouterInfoField; 14] = [
     field(
         "i2p.router.netdb.knownpeers",
         ProposalValueType::Integer,
-        None,
+        Some(RouterInfoSelector::NetDbKnownPeers),
     ),
     field(
         "i2p.router.netdb.activepeers",
         ProposalValueType::Integer,
-        None,
+        Some(RouterInfoSelector::NetDbActivePeers),
     ),
     field(
         "i2p.router.netdb.fastpeers",
