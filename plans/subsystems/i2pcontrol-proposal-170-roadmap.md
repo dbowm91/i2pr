@@ -1,6 +1,6 @@
 # Proposal 170 / I2PControl Parallel Roadmap
 
-Status: Plans 286–297 passed. This workstream is parallel to M12 and does not gate router-mainline progression. The Proposal 170 workstream is fully closed.
+Status: Plans 286–297 closed the historical qualified i2pr profile. Full Proposal 170 conformance is not yet claimed. Plans 319–328 are the registered continuation; Plan 319 is dependency-ready. This workstream remains parallel to M12/mainline.
 
 Long-term references:
 - GUARDRAILS.md
@@ -199,6 +199,46 @@ generation store, and the validate-mirror-stage-reconcile-publish-verify
 transaction (see
 `plans/closure/i2pcontrol-proposal-170/289-status.md`); the remaining
 six types belong to Plans 290–291 and the wider option matrix to Plans
-292–293. Plans 290–297 are closed; the workstream is complete.
-The remainder of the workstream is registered but dependency-gated. No
-Proposal 170 capability is claimed by registration alone.
+292–293. Plans 290–297 closed the historical qualified profile. Subsequent audit found that the public contract is not the exact Proposal 170 wire contract and that external differential evidence was not executed. Plans 319–328 own planning reconciliation, canonical-wire migration, remaining operational capabilities, and the final live conformance gate. No new capability is claimed by registration alone.
+
+
+## 13. Full Proposal 170 conformance continuation (Plans 319–328)
+
+Post-297 audit identified four classes that prevent an unqualified full Proposal 170 claim:
+
+1. Planning authority: historical global plan-number collisions at 296/297, duplicate registry rows, and stale “fully closed” wording.
+2. Canonical wire: the current control crate exposes normalized RouterInfo/TunnelManager/AddressBook vocabulary rather than the exact Proposal 170 public names and shapes.
+3. Capability gaps: live AddressBook subscription fetching/publishing, signed router news and exact RouterInfo shapes, destination key-policy semantics, encrypted/blinded LeaseSet2 client authorization, and I2P-routed outproxy-provider behavior.
+4. Evidence: Plan 295’s retained external differential row is blocked-env-absent; full conformance requires executed reference lanes.
+
+Current continuation graph:
+
+    319 planning authority / numbering reconciliation
+      -> 320 canonical Proposal 170 wire contract
+           -> 321 AddressBook operational completion
+                -> 322 canonical RouterInfo + signed news
+           -> 323 canonical TunnelManager non-deep parity
+                -> 324 destination SigType/EncType policy
+                -> 327 I2P-routed outproxy provider
+           -> 325 Red25519 provider qualification
+                -> 326 encrypted/blinded LS2 + client auth
+                     (also requires 323 + 324)
+
+    322 + 326 + 327 -> 328 live external full-conformance gate
+
+Plans 321, 323, and 325 may execute in parallel after Plan 320. Plan 325 is a hard cryptographic prerequisite: if no reviewed I2P-compatible Red25519 provider exists, it closes blocked and an unqualified full Proposal 170 claim remains blocked without weakening the crypto guardrail.
+
+| Plan | State | Classification | Handoff | Closure |
+|---|---|---|---|---|
+| 319 | ready | planning invariant/tooling corrective | plans/implementation/i2pcontrol-proposal-170/319-planning-authority-and-global-number-reconciliation.md | future |
+| 320 | blocked on 319 | protocol contract corrective | plans/implementation/i2pcontrol-proposal-170/320-canonical-wire-contract-reconciliation.md | future |
+| 321 | blocked on 320 | capability/I-O composition | plans/implementation/i2pcontrol-proposal-170/321-addressbook-operational-completion.md | future |
+| 322 | blocked on 321 | capability/observability/signed content | plans/implementation/i2pcontrol-proposal-170/322-routerinfo-canonical-source-and-news-completion.md | future |
+| 323 | blocked on 320 | capability/protocol parity | plans/implementation/i2pcontrol-proposal-170/323-tunnelmanager-canonical-nondeep-parity.md | future |
+| 324 | blocked on 323 | crypto integration/identity lifecycle | plans/implementation/i2pcontrol-proposal-170/324-destination-signing-and-encryption-policy.md | future |
+| 325 | blocked on 320 | crypto provider qualification | plans/implementation/i2pcontrol-proposal-170/325-red25519-provider-qualification.md | future |
+| 326 | blocked on 323 + 324 + 325 | encrypted LeaseSet capability | plans/implementation/i2pcontrol-proposal-170/326-encrypted-leaseset-and-client-authorization.md | future |
+| 327 | blocked on 323 | I2P-routed outproxy capability | plans/implementation/i2pcontrol-proposal-170/327-i2p-routed-outproxy-provider.md | future |
+| 328 | blocked on 322 + 326 + 327 | live external conformance gate | plans/implementation/i2pcontrol-proposal-170/328-live-external-full-conformance-gate.md | future |
+
+The term full-proposal-conformant is reserved for a passing Plan 328 against its re-frozen Proposal revision. The 286–297 closure remains qualified-profile-closed and is not relabeled.
