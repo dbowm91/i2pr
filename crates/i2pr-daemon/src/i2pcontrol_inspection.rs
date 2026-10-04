@@ -649,6 +649,86 @@ fn addressbook_config_value(
     Ok(serde_json::Value::Object(map))
 }
 
+/// Serializes the six canonical Proposal 170 AddressBook RouterInfo
+/// fields from the same committed snapshot used by normal resolution.
+pub(crate) fn proposal_addressbook_value(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    use RouterInfoSelector as Selector;
+
+    let (selector, book_index) = match key {
+        "i2p.router.addressbook.private.list" => (Selector::AddressBookPrivate, Some(0)),
+        "i2p.router.addressbook.local.list" => (Selector::AddressBookLocal, Some(1)),
+        "i2p.router.addressbook.router.list" => (Selector::AddressBookRouter, Some(2)),
+        "i2p.router.addressbook.published.list" => (Selector::AddressBookPublished, Some(3)),
+        "i2p.router.addressbook.subscriptions" => (Selector::AddressBookSubscriptions, None),
+        "i2p.router.addressbook.config" => (Selector::AddressBookConfig, None),
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "Proposal AddressBook source adapter",
+            });
+        }
+    };
+    let mut row = source_row(selector);
+    row.key = key;
+    let snapshot = addressbook_cells(handles, &row)?;
+    let value = if let Some(index) = book_index {
+        let entries = snapshot.book_entries(index).ok_or(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook",
+        })?;
+        if entries.len() > MAX_ADDRESSBOOK_BOOK_ITEMS {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "321",
+                owner: "canonical AddressBook",
+            });
+        }
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(hostname, destination)| {
+                serde_json::json!({
+                    "hostname": hostname.as_str(),
+                    "destination": destination,
+                })
+            })
+            .collect();
+        serde_json::Value::Array(rows)
+    } else if key == "i2p.router.addressbook.subscriptions" {
+        let config = snapshot.config_entries();
+        let path = config.get("subscriptions").ok_or(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook configuration",
+        })?;
+        serde_json::json!({
+            "path": path,
+            "entries": snapshot.subscription_urls(),
+        })
+    } else {
+        serde_json::json!({
+            "path": i2pr_storage::ADDRESSBOOK_CURRENT_FILE_NAME,
+            "entries": addressbook_config_value(handles, &row)?,
+        })
+    };
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > MAX_ADDRESSBOOK_BOOK_BYTES
+    {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "321",
+            owner: "canonical AddressBook",
+        });
+    }
+    Ok(value)
+}
+
 /// Rejects an over-ceiling publication string.
 fn check_state_string(key: &'static str, value: &str) -> Result<(), PublishError> {
     if value.is_empty() || value.len() > MAX_INSPECTION_STATE_STRING {

@@ -1191,6 +1191,46 @@ impl I2pControlServiceState {
         let mut result = serde_json::Map::with_capacity(selection.len());
         let mut clear_logs = false;
         for field in selection {
+            match field.key {
+                "i2p.router.clockskew" | "i2p.router.info" => {
+                    // Proposal 170 explicitly permits null when there is
+                    // no peer-skew sample or local serialized RouterInfo.
+                    result.insert(field.key.to_owned(), serde_json::Value::Null);
+                    continue;
+                }
+                "i2p.router.id" => {
+                    let identity = router_info_result(
+                        i2pr_i2pcontrol::RouterInfoSelector::RouterHash,
+                        &self.inspection,
+                        uptime_secs,
+                    )
+                    .unwrap_or(serde_json::Value::Null);
+                    result.insert(field.key.to_owned(), identity);
+                    continue;
+                }
+                _ => {}
+            }
+            if field.key.starts_with("i2p.router.addressbook.") {
+                match crate::i2pcontrol_inspection::proposal_addressbook_value(
+                    field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             if field.key == "i2p.router.logs" {
                 let Some(lines) = self.inspection.recent_logs() else {
                     return (
@@ -2749,19 +2789,55 @@ mod tests {
             response["message"],
             serde_json::json!("Added wire.i2p in private address book")
         );
-        // Proposal getters are recognized as canonical fields, but their
-        // exact list/object projections are owned by the next plan. No
-        // normalized alias or partial response is emitted.
+        // Proposal getters share the committed resolver owner and retain
+        // each field's canonical list/map shape.
         let response = json_of(&dispatch(
             &state,
-            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {"Token": token, "i2p.router.addressbook.private.list": null, "i2p.router.addressbook.subscriptions": null, "i2p.router.addressbook.config": null}, "id": 2}),
+            &serde_json::json!({"jsonrpc": "2.0", "method": "RouterInfo", "params": {
+                "Token": token,
+                "i2p.router.addressbook.private.list": null,
+                "i2p.router.addressbook.local.list": null,
+                "i2p.router.addressbook.router.list": null,
+                "i2p.router.addressbook.published.list": null,
+                "i2p.router.addressbook.subscriptions": null,
+                "i2p.router.addressbook.config": null,
+            }, "id": 2}),
             None,
             0,
         ));
-        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
-        assert!(
-            response.get("result").is_none(),
-            "no partial selector results"
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.private.list"][0]["hostname"],
+            "wire.i2p"
+        );
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.private.list"][0]["destination"],
+            destination
+        );
+        for key in [
+            "i2p.router.addressbook.local.list",
+            "i2p.router.addressbook.router.list",
+            "i2p.router.addressbook.published.list",
+        ] {
+            assert_eq!(response["result"][key], serde_json::json!([]));
+        }
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.subscriptions"]["path"],
+            "subscriptions.body"
+        );
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.subscriptions"]["entries"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.config"]["path"],
+            i2pr_storage::ADDRESSBOOK_CURRENT_FILE_NAME
+        );
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.config"]["entries"]
+                .as_object()
+                .unwrap()
+                .len(),
+            13
         );
         // Delete presence selects deletion even with a false value.
         let response = call(
@@ -2778,7 +2854,10 @@ mod tests {
             None,
             0,
         ));
-        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert_eq!(
+            response["result"]["i2p.router.addressbook.private.list"],
+            serde_json::json!([])
+        );
         // Shape violations fail whole with no partial effect.
         for params in [
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "gone.i2p", "Delete": true}),
@@ -2832,18 +2911,16 @@ mod tests {
         );
         let response = call(serde_json::json!({"Token": token, "SetConfig": {"theme": 7}}));
         assert!(response.get("error").is_some());
-        for key in ["should_publish", "etags", "last_modified"] {
+        for (key, value) in [
+            ("should_publish", "true"),
+            ("etags", "custom-etags.txt"),
+            ("last_modified", "custom-last-modified.txt"),
+        ] {
             let response = call(serde_json::json!({
                 "Token": token,
-                "SetConfig": {(key): "proposal-value"},
+                "SetConfig": {(key): value},
             }));
-            assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
-            assert!(
-                response["error"]["message"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .contains("Plan 321")
-            );
+            assert_eq!(response["result"]["success"], true, "{key}: {response}");
         }
         // Error messages never echo request values.
         let response = call(

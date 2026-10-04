@@ -237,10 +237,11 @@ fn hex_prefix(bytes: &[u8]) -> String {
 /// Canonical selectors the default production composition answers (7 rows;
 /// address-book rows gap while the subsystem is disabled, identity
 /// gaps while bootstrap has not published, news never serves).
-const ANSWERABLE: [&str; 7] = [
+const ANSWERABLE: [&str; 8] = [
     "i2p.router.version",
     "i2p.router.status",
     "i2p.router.uptime",
+    "i2p.router.id",
     "i2p.router.net.tunnels.participating",
     "i2p.router.netdb.peers.list",
     "i2p.router.netdb.activepeers.list",
@@ -250,8 +251,7 @@ const ANSWERABLE: [&str; 7] = [
 /// Selectors that fail the whole request with an owning-plan marker
 /// under the default composition (identity unpublished, address book
 /// disabled, news never served).
-const GAPPED: [(&str, Option<&str>); 8] = [
-    ("i2p.router.id", Some("288")),
+const GAPPED: [(&str, Option<&str>); 7] = [
     ("i2p.router.news", Some("295")),
     ("i2p.router.addressbook.private.list", None),
     ("i2p.router.addressbook.local.list", None),
@@ -522,8 +522,8 @@ async fn differential_corpus_against_production_composition() {
         tokio::task::yield_now().await;
     }
     let (answered, gapped, errors, shape) = run_corpus(address, TEST_PASSWORD, true).await;
-    assert_eq!(answered, 13, "7 canonical rows + 6 services answer");
-    assert_eq!(gapped, 8, "hash + news + 6 address-book rows gap");
+    assert_eq!(answered, 14, "8 canonical rows + 6 services answer");
+    assert_eq!(gapped, 7, "news + 6 address-book rows gap");
     assert_eq!(
         errors, 4,
         "address-book, tunnel, determination, method errors"

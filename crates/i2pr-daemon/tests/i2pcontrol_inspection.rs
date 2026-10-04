@@ -247,7 +247,7 @@ async fn router_info_proposal_selection_over_wire() {
     )
     .await;
     let result = &response["result"];
-    assert_eq!(result["i2p.router.clockskew"], serde_json::json!(0));
+    assert!(result["i2p.router.clockskew"].is_null());
     // Deterministic sorted key order regardless of request order
     // (`serde_json::Map` sorts keys; selection order is canonical).
     let keys: Vec<&str> = result
@@ -354,18 +354,9 @@ async fn router_info_hash_gated_then_published_over_wire() {
         "params": {"Token": token, "i2p.router.id": null},
         "id": 2,
     });
-    // Before identity publication the whole request fails explicitly.
+    // The Proposal permits null until identity publication.
     let (_, response) = post_json(address, &body, &[]).await;
-    assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
-    assert!(
-        response["error"]["message"]
-            .as_str()
-            .expect("message")
-            .contains("Plan 288"),
-        "message: {}",
-        response["error"]["message"]
-    );
-    assert!(response.get("result").is_none(), "no partial response");
+    assert!(response["result"]["i2p.router.id"].is_null());
     // After publication the same request answers without a restart.
     let hash = format!("{}~", "b".repeat(43));
     state
@@ -400,7 +391,7 @@ async fn router_info_unavailable_fails_whole_without_partial() {
     let token = authenticate(address).await;
     // One unavailable selector poisons the whole request even beside
     // available ones: no partial response is emitted.
-    for key in ["i2p.router.info", "i2p.router.logs.clear"] {
+    for key in ["i2p.router.news", "i2p.router.logs.clear"] {
         let (_, response) = post_json(
             address,
             &serde_json::json!({
@@ -498,7 +489,7 @@ async fn failed_mixed_router_info_selection_does_not_clear_logs() {
             "params": {
                 "Token": token,
                 "i2p.router.logs.clear": null,
-                "i2p.router.info": null,
+                "i2p.router.news": null,
             },
             "id": 3,
         }),
@@ -568,10 +559,7 @@ async fn router_info_unknown_and_base_keys_rejected() {
         &[],
     )
     .await;
-    assert_eq!(
-        response["result"]["i2p.router.clockskew"],
-        serde_json::json!(0)
-    );
+    assert!(response["result"]["i2p.router.clockskew"].is_null());
 }
 
 #[tokio::test]
@@ -779,10 +767,6 @@ async fn batch_isolation_with_inspection() {
     .await;
     let elements = response.as_array().expect("batch array");
     assert_eq!(elements.len(), 2);
-    assert_eq!(
-        elements[0]["result"]["i2p.router.clockskew"],
-        serde_json::json!(0)
-    );
-    assert_eq!(elements[1]["error"]["code"], serde_json::json!(-32_603));
-    assert!(elements[1].get("result").is_none(), "no partial in batch");
+    assert!(elements[0]["result"]["i2p.router.clockskew"].is_null());
+    assert!(elements[1]["result"]["i2p.router.info"].is_null());
 }
