@@ -1333,10 +1333,11 @@ pub fn build_control_spec(
                         | ServiceTunnelKind::HttpServer
                         | ServiceTunnelKind::HttpBidirServer
                         | ServiceTunnelKind::IrcServer
+                        | ServiceTunnelKind::StreamrServer
                 ) {
                     return Err(ControlError::ContradictoryOptions {
                         name: definition.name.clone(),
-                        reason: "connection-rate controls require a TCP server tunnel",
+                        reason: "connection-rate controls require a server or Streamr publisher",
                     });
                 }
                 let rate = parse_rate_option(key, value)?;
@@ -4252,7 +4253,7 @@ mod tests {
     }
 
     #[test]
-    fn plan323_connection_rates_use_authenticated_tcp_server_admission() {
+    fn plan323_connection_rates_use_authenticated_server_admission() {
         let definition = ControlDefinition {
             name: "server-rates".to_owned(),
             tunnel_type: TunnelType::Server,
@@ -4314,6 +4315,22 @@ mod tests {
         assert_eq!(http_spec.http_policy.post_limits.client_max, 6);
         assert_eq!(http_spec.http_policy.post_limits.total_max, 20);
         assert_eq!(http_spec.http_policy.post_limits.total_ban_seconds, 1_200);
+
+        let streamr_server = ControlDefinition {
+            name: "streamr-rates".to_owned(),
+            tunnel_type: TunnelType::StreamrServer,
+            options: BTreeMap::from([
+                ("local_udp_host".to_owned(), "127.0.0.1".to_owned()),
+                ("local_udp_port".to_owned(), "12345".to_owned()),
+                ("client_per_minute".to_owned(), "3".to_owned()),
+                ("total_in_per_minute".to_owned(), "24".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let streamr_spec =
+            build_control_spec(&streamr_server).expect("Streamr subscription limits map");
+        assert_eq!(streamr_spec.access.connection_rates.client_per_minute, 3);
+        assert_eq!(streamr_spec.access.connection_rates.total_per_minute, 24);
     }
 
     #[test]

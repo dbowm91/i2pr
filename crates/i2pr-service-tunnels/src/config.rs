@@ -1413,11 +1413,12 @@ impl ServiceTunnelSpec {
                     | ServiceTunnelKind::HttpServer
                     | ServiceTunnelKind::HttpBidirServer
                     | ServiceTunnelKind::IrcServer
+                    | ServiceTunnelKind::StreamrServer
             )
         {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id,
-                reason: "connection-rate controls require a TCP server tunnel",
+                reason: "connection-rate controls require a server or Streamr publisher",
             });
         }
         // Plan 292: the deterministic source bind consumes the

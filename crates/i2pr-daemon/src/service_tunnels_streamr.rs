@@ -203,12 +203,27 @@ async fn drive_streamr_server(
                     if event.protocol != DATAGRAM1_PROTOCOL {
                         continue;
                     }
+                    let now_ms = service_streaming_now_ms();
+                    if is_new_subscriber(&subscribers, options, &event) {
+                        let allowed = runtime
+                            .connection_rate_limiter
+                            .lock()
+                            .map(|mut limiter| limiter.admit(event.from_hash, now_ms))
+                            .unwrap_or(false);
+                        if !allowed {
+                            runtime
+                                .rate_limited
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            debug!(service = %runtime.spec_id, "streamr subscription rate limited");
+                            continue;
+                        }
+                    }
                     if handle_subscribe(
                         runtime.spec_id.as_str(),
                         &mut subscribers,
                         options,
                         &event,
-                        service_streaming_now_ms(),
+                        now_ms,
                     ) {
                         // Subscription intake is publisher-visible
                         // liveness (Plan 292 idle sweep input).
@@ -232,6 +247,26 @@ async fn drive_streamr_server(
         }
     }
     StreamrLoopOutcome::Stopped
+}
+
+/// Returns whether an exactly formed subscribe control would add a
+/// previously unseen subscriber and has table capacity. Refreshes,
+/// malformed controls, unsubscriptions, and full-table attempts do not
+/// consume the configured admission-rate budget.
+fn is_new_subscriber(
+    subscribers: &HashMap<SubscriberKey, u64>,
+    options: &StreamrOptions,
+    event: &i2pr_client::datagram::DatagramReceiveEvent,
+) -> bool {
+    if event.payload.as_slice() != [0x00] || subscribers.len() >= options.max_subscribers {
+        return false;
+    }
+    let key = SubscriberKey {
+        destination_hash: event.from_hash,
+        source_port: event.destination_port,
+        destination_port: event.source_port,
+    };
+    !subscribers.contains_key(&key)
 }
 
 /// Applies one subscribe/unsubscribe control event to the
@@ -598,6 +633,56 @@ mod tests {
             1_000,
         );
         assert_eq!(table.len(), 10, "eleventh subscription denied");
+    }
+
+    #[test]
+    fn publisher_rate_limits_count_new_subscriptions_but_not_refreshes() {
+        let options = StreamrOptions::default();
+        let mut subscribers = HashMap::new();
+        let mut limiter = i2pr_service_tunnels::ServerConnectionRateLimiter::new(
+            i2pr_service_tunnels::ServerConnectionRateLimits {
+                client_per_minute: 1,
+                total_per_minute: 2,
+                ..Default::default()
+            },
+        );
+        let first = control_event([0x11; 32], vec![0x00]);
+        assert!(is_new_subscriber(&subscribers, &options, &first));
+        assert!(limiter.admit(first.from_hash, 1_000));
+        assert!(handle_subscribe(
+            "test",
+            &mut subscribers,
+            &options,
+            &first,
+            1_000
+        ));
+
+        // Repeated subscribe controls refresh the existing record and
+        // do not consume either the peer or aggregate new-admission budget.
+        assert!(!is_new_subscriber(&subscribers, &options, &first));
+        assert!(handle_subscribe(
+            "test",
+            &mut subscribers,
+            &options,
+            &first,
+            2_000
+        ));
+
+        let second = control_event([0x22; 32], vec![0x00]);
+        assert!(is_new_subscriber(&subscribers, &options, &second));
+        assert!(limiter.admit(second.from_hash, 2_000));
+        assert!(handle_subscribe(
+            "test",
+            &mut subscribers,
+            &options,
+            &second,
+            2_000
+        ));
+
+        let third = control_event([0x33; 32], vec![0x00]);
+        assert!(is_new_subscriber(&subscribers, &options, &third));
+        assert!(!limiter.admit(third.from_hash, 3_000));
+        assert_eq!(subscribers.len(), 2);
     }
 
     #[test]
