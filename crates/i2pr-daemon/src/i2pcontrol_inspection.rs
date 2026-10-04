@@ -124,6 +124,10 @@ struct PublishedSnapshots {
     /// Published authoritative ban set or `None` (Plan 295 explicit
     /// ban owner; empty means no bans, never an unowned guess).
     bans: Option<Vec<String>>,
+    /// Configured active-link admission limit for NTCP2.
+    ntcp2_connection_limit: Option<u64>,
+    /// Configured active-session admission limit for SSU2.
+    ssu2_connection_limit: Option<u64>,
 }
 
 /// Rejection of an over-ceiling or malformed publication.
@@ -280,12 +284,39 @@ impl InspectionHandles {
                 listener: spec.listener.map(|listener| listener.socket()),
             })
             .collect();
-        Self::new(
+        let handles = Self::new(
             config.network.network_id,
             sam_endpoint,
             i2cp_endpoint,
             startup_services,
-        )
+        );
+        handles.publish_connection_limits(
+            config.transport.ntcp2.max_active_links,
+            config.ssu2.max_active_sessions,
+        );
+        handles
+    }
+
+    /// Publishes the validated transport active-connection ceilings.
+    ///
+    /// These values describe configured admission limits, not current
+    /// connection counts or advertised protocol support.
+    fn publish_connection_limits(&self, ntcp2: usize, ssu2: usize) {
+        if let Ok(mut published) = self.published.lock() {
+            published.ntcp2_connection_limit = u64::try_from(ntcp2).ok();
+            published.ssu2_connection_limit = u64::try_from(ssu2).ok();
+        }
+    }
+
+    /// Returns the configured transport active-connection limit for a
+    /// canonical Proposal RouterInfo selector.
+    pub(crate) fn proposal_connection_limit(&self, key: &str) -> Option<u64> {
+        let snapshots = self.snapshots();
+        match key {
+            "i2p.router.netdb.ntcp.limit" => snapshots.ntcp2_connection_limit,
+            "i2p.router.netdb.ssu.limit" => snapshots.ssu2_connection_limit,
+            _ => None,
+        }
     }
 
     /// Validated network id.

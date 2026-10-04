@@ -1233,6 +1233,27 @@ impl I2pControlServiceState {
                     }
                 }
             }
+            if matches!(
+                field.key,
+                "i2p.router.netdb.ntcp.limit" | "i2p.router.netdb.ssu.limit"
+            ) {
+                match self.inspection.proposal_connection_limit(field.key) {
+                    Some(limit) => {
+                        result.insert(field.key.to_owned(), serde_json::Value::from(limit));
+                        continue;
+                    }
+                    None => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                "RouterInfo transport connection limit is unavailable",
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             if field.key == "i2p.router.net.tunnels.tbmqueue" {
                 match crate::i2pcontrol_inspection::proposal_tbm_queue_depth(&self.inspection) {
                     Ok(value) => {

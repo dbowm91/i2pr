@@ -251,6 +251,16 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("differential_corpus_against_production_composition"),
         ),
+        "i2p.router.netdb.ntcp.limit" | "i2p.router.netdb.ssu.limit" => (
+            "validated transport runtime configuration",
+            "configured NTCP2 active-link or SSU2 active-session admission ceiling",
+            0,
+            20,
+            "public local resource ceiling; does not imply enabled or advertised support",
+            "fixed by validated daemon configuration at startup",
+            SourceAvailability::Available,
+            Some("router_info_transport_limits_follow_validated_config_over_wire"),
+        ),
         "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.peers.info" => (
             "NetDB inspection snapshot",
             "empty serialized list follows an attested empty peer-hash set; nonempty peer sets require serialized RouterInfo data",

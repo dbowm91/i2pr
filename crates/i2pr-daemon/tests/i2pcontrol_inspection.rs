@@ -332,6 +332,37 @@ async fn canonical_transport_totals_are_served_from_published_metrics() {
 }
 
 #[tokio::test]
+async fn router_info_transport_limits_follow_validated_config_over_wire() {
+    let config = Config::parse(&format!(
+        "{}\n[transport.ntcp2]\nmax_active_links = 17\n[ssu2]\nmax_active_sessions = 23\n",
+        config_text(TEST_PASSWORD)
+    ))
+    .expect("config parses");
+    let inspection = Arc::new(InspectionHandles::from_config(&config));
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config.i2pcontrol.clone(), inspection).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.netdb.ntcp.limit": null,
+                "i2p.router.netdb.ssu.limit": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+
+    assert_eq!(response["result"]["i2p.router.netdb.ntcp.limit"], 17);
+    assert_eq!(response["result"]["i2p.router.netdb.ssu.limit"], 23);
+}
+
+#[tokio::test]
 async fn base_router_info_peer_counts_keep_the_documented_integer_shape() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")

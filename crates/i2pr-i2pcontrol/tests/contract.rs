@@ -906,8 +906,26 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
             .count(),
-        10,
+        8,
         "unimplemented canonical fields remain explicit gaps"
+    );
+    let remaining_gaps: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
+        .map(|row| row.key)
+        .collect();
+    assert_eq!(
+        remaining_gaps,
+        [
+            "i2p.router.net.total.transit.bytes",
+            "i2p.router.net.bw.transit.15s",
+            "i2p.router.net.tunnels.shareratio",
+            "i2p.router.net.status.v6",
+            "i2p.router.net.error",
+            "i2p.router.net.error.v6",
+            "i2p.router.net.testing",
+            "i2p.router.net.testing.v6",
+        ]
     );
 }
 
