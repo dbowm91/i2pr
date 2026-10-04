@@ -1489,6 +1489,12 @@ fn proposal_tunnel_manager_result(
 ) -> serde_json::Value {
     use i2pr_i2pcontrol::TunnelAction;
 
+    // Bulk lifecycle already carries one bounded result per tunnel; do
+    // not collapse it to the single-name acknowledgement shape below.
+    if value.get("results").is_some() {
+        return value;
+    }
+
     match action {
         TunnelAction::Get => {
             let name = name.unwrap_or_default();

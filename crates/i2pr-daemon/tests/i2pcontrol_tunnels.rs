@@ -377,6 +377,22 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
             .unwrap_or_default()
             .contains("Plan 323")
     );
+    for (name, bulk_port) in [
+        ("bulk-zeta", distinct_port()),
+        ("bulk-alpha", distinct_port()),
+    ] {
+        let response = tunnel_raw(
+            address,
+            &token,
+            serde_json::json!({
+                "Action":"create", "Name":name, "Type":"client",
+                "TargetDestination":b32, "Port":bulk_port, "StartOnLoad":false
+            }),
+            11,
+        )
+        .await;
+        assert!(response.get("error").is_none(), "bulk setup: {response}");
+    }
     let all = tunnel_raw(
         address,
         &token,
@@ -384,12 +400,27 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         10,
     )
     .await;
-    assert!(
-        all["result"]["status"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("All action is unavailable")
-    );
+    let results = all["result"]["results"].as_array().expect("bulk results");
+    assert_eq!(results.len(), 2, "{all}");
+    assert_eq!(results[0]["name"], "bulk-alpha");
+    assert_eq!(results[1]["name"], "bulk-zeta");
+    for (id, action) in [(12, "restart"), (13, "stop")] {
+        let response = tunnel_raw(
+            address,
+            &token,
+            serde_json::json!({"Action":action,"All":true}),
+            id,
+        )
+        .await;
+        assert_eq!(response["result"]["results"].as_array().unwrap().len(), 2);
+        assert!(
+            response["result"]["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["status"] == "success")
+        );
+    }
 }
 
 /// Calls one TunnelManager action over the wire.
