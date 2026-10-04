@@ -24,6 +24,13 @@ Scope is intentionally narrow:
   protocol-conformance reopened; the helper remains useful but
   the Plan 108 derivation labels are superseded — see
   [`plans/implementation/exploratory-tunnels/108-conformance-amendment.md`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md)).
+- Red25519 (I2P signature type 11) composition, `src/red25519.rs` (Plan 330):
+  the specification's own domain separation, `HStar` transcript hash, daily
+  alpha derivation, additive key re-randomization, randomized signing, and
+  cofactor-aware verification, composed over `curve25519-dalek`. It owns no
+  destination lifecycle, b33 text, LeaseSet framing, NetDB, or Proposal 170
+  behavior. Experimental and non-advertised: nothing else in the router
+  consumes it until Plan 331 qualifies it.
 - ECIES-X25519-AEAD-Ratchet destination session primitives
   (Plan 126 rewrite of the Plan 121 surface, `src/ecies.rs`):
   ephemeral key generation, RFC 9380 representative <->
@@ -62,12 +69,12 @@ The crate does **not** include:
 
 ## Module layout
 
-The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
+The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`, and `src/red25519.rs`:
 
 | Section | File | Responsibility | Public types |
 | --- | --- | --- | --- |
 | Constants | `lib.rs` | Algorithm IDs, lengths | `ROUTER_SIGNING_KEY_TYPE`, `ROUTER_CRYPTO_KEY_TYPE`, `PRIVATE_KEY_LENGTH`, `SIGNATURE_LENGTH`, `IDENTITY_PADDING_LENGTH`, `X25519_KEY_LENGTH` |
-| Errors | `lib.rs` | Typed crypto failure modes | `CryptoError`, `HkdfError`, `EciesError` |
+| Errors | `lib.rs` | Typed crypto failure modes | `CryptoError`, `HkdfError`, `EciesError`, `Red25519Error` |
 | HKDF helper | `hkdf.rs` | RFC 5869 HKDF-SHA256 extract-and-expand, single-shot and 32-byte wrappers | `MAX_HKDF_OUTPUT_LEN`, `hkdf_sha256_extract_and_expand`, `hkdf_sha256_32` |
 | X25519 private key | `lib.rs` | Static-key generation, DH | `X25519PrivateKey` |
 | X25519 shared secret | `lib.rs` | Zeroizing DH result | `X25519SharedSecret` |
@@ -80,6 +87,9 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | Hash helpers | `lib.rs` | SHA-256, identity hash | `sha256`, `router_identity_hash` |
 | Constant-time compare | `lib.rs` | `subtle`-backed | `constant_time_eq` |
 | ECIES primitives | `ecies.rs` | Ephemeral keypair, representative codec, HKDF transcript, directional tag-set ratchets, bound NS/NSR/ES message codecs | `EciesEphemeralKeypair`, `EciesEphemeralRepresentative`, `EciesEphemeralSecret`, `EciesNoiseState`, `EciesTagSet`, `BoundNewSessionMessage`, `NewSessionReplyMessage`, `ExistingSessionMessage`, `BoundNewSessionSender`, `NewSessionResponder`, `SealedNewSessionReply`, `OpenedNewSessionReply`, `seal_bound_new_session`, `open_bound_new_session`, `seal_new_session_reply`, `open_new_session_reply`, `seal_existing_session`, `open_existing_session`, `decode_representative` |
+| Red25519 secrets | `red25519.rs` | Fixed-size zeroizing owners for the unblinded/converted scalar, the daily blinding scalar, and the blinded scalar | `Red25519PrivateScalar`, `BlindingScalar`, `BlindedPrivateScalar` |
+| Red25519 public | `red25519.rs` | Compressed Edwards public key, 64-byte signature, validated UTC day | `Red25519PublicKey`, `Red25519Signature`, `BlindingDay` |
+| Red25519 operations | `red25519.rs` | Ed25519→Red25519 conversion, key generation/derivation, daily `GENERATE_ALPHA`, public/private blinding, randomized signing, verification, blinded DHT storage key | `convert_ed25519_private`, `generate_private`, `derive_public_key`, `generate_alpha`, `blind_public_key`, `blind_private_key`, `sign`, `sign_with_nonce`, `verify`, `verify_blinded`, `blinded_storage_key` |
 | Tests | all files | Deterministic primitives tests | _(private)_ |
 
 ## Public surface (`src/lib.rs`, `src/hkdf.rs`, `src/ecies.rs`)
@@ -216,6 +226,7 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 
 | Dependency | Purpose |
 | --- | --- |
+| `curve25519-dalek` (= 4.1.3) | Ed25519 group arithmetic owned by the dependency for the Red25519 composition: wide scalar reduction, canonical scalar decode, compressed point decode/encode, basepoint and variable-base multiplication, point addition, cofactor/small-order/torsion predicates. Enabled features `alloc`, `group`, `precomputed-tables`, `zeroize` only. Reviewed in ADR 0005 as amended by Plan 329; no version churn (already locked through `ed25519-dalek`/`x25519-dalek`). |
 | `ed25519-dalek` | Ed25519 signing/verification |
 | `hmac` | HKDF-SHA256 HMAC primitive |
 | `i2pr-proto` | Wire types (`PublicKey`, `SigningPublicKey`, `SignatureValue`, `RouterIdentity`, `RouterInfo`, `Hash`) |
@@ -229,6 +240,7 @@ The crate is laid out across `src/lib.rs`, `src/hkdf.rs`, and `src/ecies.rs`:
 | `curve25519-elligator2` (= 0.1.0-alpha.2) | **Deprecated**; workspace-dep retained for transitional use only. Plan 131 retired this dependency for the production Elligator branch because its `RFC9380::to_representative` branch choice was deterministic and its `Randomized` mode rotated the derived X25519 public key. |
 | `elligator2` (= 0.1.0) | **Active** RFC 9380 even-half representative codec. Plan 131 production switch; `EciesEphemeralKeypair::generate` drives `elligator2::to_representative(point, tweak)` with a CSPRNG tweak. |
 | `rand_chacha` (dev) | Deterministic test RNGs |
+| `serde_json` (dev) | Parses the official Red25519 vector and independent re-derivation fixtures in `tests/data/` |
 
 Dependency chain is satisfied: `i2pr-proto ← i2pr-crypto ← i2pr-storage`.
 

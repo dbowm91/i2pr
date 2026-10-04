@@ -9,7 +9,10 @@
 //!
 //! The crate also exposes the protocol-neutral HKDF-SHA256 helper
 //! that the Milestone 5 ECIES-X25519 tunnel build cryptography uses
-//! to derive per-hop keys.
+//! to derive per-hop keys, and the `red25519` module holding the
+//! independent I2P Red25519 (signature type 11) composition used by
+//! encrypted LeaseSet2 blinding. Red25519 is experimental and is not
+//! advertised as a supported signing type by this router.
 
 #![forbid(unsafe_code)]
 
@@ -35,6 +38,7 @@ pub use rand_core::OsRng;
 
 pub mod ecies;
 pub mod hkdf;
+pub mod red25519;
 
 pub use ecies::{
     BOUND_NEW_SESSION_MIN_LENGTH, BoundNewSessionMessage, BoundNewSessionSender,
@@ -47,6 +51,15 @@ pub use ecies::{
     seal_bound_new_session, seal_existing_session, seal_new_session_reply,
 };
 pub use hkdf::{HkdfError, MAX_HKDF_OUTPUT_LEN, hkdf_sha256_32, hkdf_sha256_extract_and_expand};
+pub use red25519::{
+    ALPHA_HKDF_INFO, ALPHA_SALT_PERSONALIZATION, BLINDED_SIGNING_KEY_TYPE, BLINDING_DAY_LENGTH,
+    BlindedPrivateScalar, BlindingDay, BlindingScalar, ED25519_SIGNING_KEY_TYPE, HASH_LENGTH,
+    HSTAR_PREFIX, MAX_LOOKUP_SECRET_LENGTH, MAX_MESSAGE_LENGTH, PRIVATE_SEED_LENGTH,
+    PUBLIC_KEY_LENGTH, Red25519Error, Red25519PrivateScalar, Red25519PublicKey, Red25519Signature,
+    SCALAR_LENGTH, SIGNING_NONCE_LENGTH, blind_private_key, blind_public_key, blinded_storage_key,
+    convert_ed25519_private, derive_blinded_public_key, derive_public_key, generate_alpha,
+    generate_private, sign, sign_with_nonce, verify, verify_blinded,
+};
 
 /// The generated I2P signature algorithm: EdDSA over Ed25519 (type 7).
 pub const ROUTER_SIGNING_KEY_TYPE: SigningKeyType = SigningKeyType::EdDsaSha512Ed25519;

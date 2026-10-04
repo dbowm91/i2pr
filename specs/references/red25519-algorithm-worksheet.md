@@ -1,6 +1,7 @@
 # Red25519 and Encrypted LeaseSet2 algorithm worksheet (Plan 329)
 
-Status: frozen 2026-10-04. Written from the normative sources pinned in
+Status: frozen 2026-10-04; §2, §5, and §14 amended by Plan 330 with the two findings recorded in
+§14.8 and §14.9. Written from the normative sources pinned in
 [`red25519-clean-room-freeze.md`](red25519-clean-room-freeze.md) §1, with ambiguities resolved
 against the pinned readable references in §2 of that file and recorded in §14 here.
 
@@ -109,9 +110,18 @@ CONVERT_ED25519_PUBLIC(edpk) := edpk
 ```
 
 Type 7 → type 11 conversion is therefore: the Red25519 private scalar is exactly the Ed25519
-secret scalar, and the public key is unchanged. The security loss of this direction (roughly one
-bit) is accepted by the specification for existing destinations; a *new* encrypted destination
-should use sigtype 11 natively (Plan 324 typed policy owns that choice).
+secret scalar, and the public key is unchanged.
+
+**The converted scalar is not canonical.** Clamping forces the value into `[2^254, 2^255)`, which is
+above `L`, so a converted type-7 key is *not* a canonical residue modulo `L`. The value must be kept
+verbatim if byte-fidelity with the published vectors matters (it does, for `sk`), and every operation
+that consumes it — derivation, blinding, signing — is defined modulo `L` and must reduce internally.
+Only the conversion output is exempt from the canonical-scalar rule; `GENERATE_PRIVATE`,
+`GENERATE_ALPHA`, and `BLIND_PRIVKEY` outputs are canonical. See §14.8.
+
+The security loss of this direction (roughly one bit) is accepted by the specification for existing
+destinations; a *new* encrypted destination should use sigtype 11 natively (Plan 324 typed policy
+owns that choice).
 
 ## 6. Blinding (per-day, UTC)
 
@@ -389,6 +399,19 @@ change, and never a log line containing key, secret, salt, or plaintext.
    i2pd and Proposal 149 agree. **[compat]**
 7. **No official vectors exist for `GENERATE_ALPHA`, credentials, ELS2 layers, or b33.** These are
    covered only by independent cross-implementation fixtures, recorded with source pin.
+8. **A converted Ed25519 scalar is not canonical mod `L`** (found while implementing Plan 330).
+   The clamping step puts the scalar in `[2^254, 2^255)`, above `L ≈ 2^252`. The specification's own
+   vector `sk` is therefore non-canonical, while `rsk = (sk + alpha) mod L` is canonical. Handling:
+   store the converted value verbatim, expose it through a converter that validates the clamped shape
+   rather than canonicality, keep the canonical rule for every other key, and reduce inside every
+   arithmetic operation. i2pd reaches the same arithmetic through `DecodeBN<32>` plus a final
+   `mod L`, and the official vectors pass byte-exactly under this handling. **[compat]**
+9. **Small-order points must be refused where a prime-order key is required** (found while
+   implementing Plan 330). The identity satisfies the "in the prime-order subgroup" test trivially,
+   so a subgroup-membership check alone lets it through. Blinding therefore requires *both*
+   `is_small_order() == false` and `is_torsion_free() == true`. Verification deliberately applies
+   neither, because the cofactor multiplication in the verification equation already makes such keys
+   unusable for forgery. **[compat]**
 
 ## 15. Ownership boundary of the future module
 

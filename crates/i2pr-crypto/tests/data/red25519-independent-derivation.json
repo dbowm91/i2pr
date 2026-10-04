@@ -1,0 +1,74 @@
+{
+  "schema": "i2pr-red25519-independent-derivation/1",
+  "provenance": {
+    "source": "local independent re-derivation from the frozen Red25519 and encrypted LeaseSet specifications",
+    "generator": "tools/generate-red25519-independent-fixture.py",
+    "spec_revision": "8baa1d680db263941daf2fb4462fbd75ba01c47f",
+    "generated_on": "2026-10-04",
+    "independence": "shares no code with the Rust implementation; pure-Python SHA-256/HMAC-SHA256 and RFC 8032 group arithmetic",
+    "authority": "corroborating cross-check only; the I2P specifications publish no official vectors for these operations",
+    "license": "CC0-1.0 locally authored"
+  },
+  "cases": [
+    {
+      "id": 1,
+      "edsk": "0101010101010101010101010101010101010101010101010101010101010101",
+      "sk": "58e86efb75fa4e2c410f46e16de9f6acae1a1703528651b69bc176c088bef36e",
+      "vk": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "unblinded_sigtype": 7,
+      "day": "20251015",
+      "lookup_secret": "",
+      "alpha": "fa4de8d7c7cf758f153ccd51e9c4bd36e0709aeeb792d5515a79b66bdf22af0c",
+      "blinded_public_key": "d581f97c36c718b4a8270ac8cb8a8ffe6cbe66a0983d587c9ce868c05262c637",
+      "storage_key": "0f341c35e71ffe78d269bcb7e990eb13890ca42e21f470f6786ba173a98e9718"
+    },
+    {
+      "id": 2,
+      "edsk": "0202020202020202020202020202020202020202020202020202020202020202",
+      "sk": "a83c626bc9c38c8c201878ebb1d5b0b50ac40e8986c78793db1d4ef369fca14e",
+      "vk": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "unblinded_sigtype": 7,
+      "day": "20251015",
+      "lookup_secret": "lookup-secret",
+      "alpha": "17a88ec0fd691a55a6889164dd8d5c49766f41958a5235943ec80418fb812402",
+      "blinded_public_key": "0eae0c7c194b7d76c2677131abd712ce967407aa71a45ce0bca83ad672d2f968",
+      "storage_key": "ca4cab42834affeceeb707aa0eecb7b5161eef90e20284f6321524aba8ccce90"
+    },
+    {
+      "id": 3,
+      "edsk": "0303030303030303030303030303030303030303030303030303030303030303",
+      "sk": "98aebbb178a551876bfaf8e1e530dac6aaf6c2ea1c8f8406a3ab37dfb40fbc65",
+      "vk": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "unblinded_sigtype": 11,
+      "day": "20250101",
+      "lookup_secret": "",
+      "alpha": "a6be925b9c2ca50133e2271424ed919c427b52acee6d0acb4fa313cf3ac48809",
+      "blinded_public_key": "77030090cc222d1ae21aa9b083d41cb1db4dc4fc13b2e993e4c349859da57682",
+      "storage_key": "e6c5461bd267db581db4a9b9cb169b58a82f89fc5d0eff914f64f1f86dd41beb"
+    },
+    {
+      "id": 4,
+      "edsk": "0404040404040404040404040404040404040404040404040404040404040404",
+      "sk": "483e3c145d7e680a16676925fc045183d2f510cb2f660a1fc517c73762185d43",
+      "vk": "ca93ac1705187071d67b83c7ff0efe8108e8ec4530575d7726879333dbdabe7c",
+      "unblinded_sigtype": 11,
+      "day": "20240229",
+      "lookup_secret": "another secret",
+      "alpha": "207568c20c795b50048c333d011f9c834495005ab494b59363720b6df4367e09",
+      "blinded_public_key": "15d19ff603ffbf1e855c92a241908d4a30d06ac57b0ef7131f1c505fc3137bfa",
+      "storage_key": "96b5714d915adf65e775d7bbc6bdd02c6bb824cd713eaa7a3053feda31358e92"
+    },
+    {
+      "id": 5,
+      "edsk": "0505050505050505050505050505050505050505050505050505050505050505",
+      "sk": "48370d6146de919cc1ce472897775d9a6c2834c509e08e14efcb2b52188f946e",
+      "vk": "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+      "unblinded_sigtype": 7,
+      "day": "19700101",
+      "lookup_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "alpha": "de346653a92b9424611a437d40be2c93841255307205d4f671bb7ceb745db904",
+      "blinded_public_key": "46e331dc4acef6b0431d19b139578bc75c3c677b59faf85e9920233504a12a91",
+      "storage_key": "6b2f579ef525900ebefdfaf38c40a45760f00529f4e4b75b5b7e1c3a6fcb982f"
+    }
+  ]
+}
