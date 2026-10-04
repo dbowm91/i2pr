@@ -166,6 +166,10 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "AllowAccept" => Some("allow_accept"),
         "AllowInternalSSL" => Some("allow_internal_ssl"),
         "MultiHoming" => Some("multihoming"),
+        // Plan 334: the Proposal 170 LeaseSet block. `OptionalLookup` is the
+        // single lookup secret the ELS2 specification defines, and
+        // `leaseset_password` is its canonical i2pr slot.
+        "OptionalLookup" => Some("leaseset_password"),
         // These canonical Proposal controls already have bounded idle
         // lifecycle owners in the service-tunnel runtime.
         "Close" => Some("close_on_idle"),
@@ -445,6 +449,25 @@ pub fn decode_tunnel_request(
                     options_seen = true;
                     continue;
                 }
+                // Plan 334: `LeaseSetClientAuths` is the one Proposal 170
+                // option whose wire type is an array. It is decoded into
+                // bounded, individually validated entries and then carried in
+                // the bounded durable encoding, so the rest of the pipeline
+                // (redaction, persistence, restart) sees one secret-classified
+                // string like every other LeaseSet secret.
+                if key == "LeaseSetClientAuths" {
+                    let entries =
+                        crate::proposal_leaseset_mode::decode_lease_set_client_auths(value)
+                            .map_err(|_| {
+                                TunnelRequestError::BadValue("LeaseSetClientAuths".to_owned())
+                            })?;
+                    options.insert(
+                        "leaseset_client_auth".to_owned(),
+                        crate::proposal_leaseset_mode::encode_lease_set_client_auths(&entries),
+                    );
+                    options_seen = true;
+                    continue;
+                }
                 let Some(option_key) = canonical_option(key) else {
                     if key == "CustomOptions" {
                         return Err(TunnelRequestError::RejectedOption(key.to_owned()));
@@ -615,6 +638,21 @@ pub fn decode_tunnel_request(
             return Err(TunnelRequestError::TooManyOptions);
         }
     }
+    // Plan 334: the LeaseSet security block is a *cross-field* constraint, so
+    // it is validated only once every Proposal field for this action has been
+    // decoded. Doing it here means an illegal mode/secret/list combination is
+    // rejected by the envelope, before the daemon can mirror, persist, or
+    // reconcile anything.
+    //
+    // The error names the mode and never a secret value, so a rejection is
+    // actionable without echoing the lookup secret or any client key.
+    if matches!(action, TunnelAction::Create | TunnelAction::Edit)
+        && (options.contains_key("encrypt_lease_set")
+            || options.contains_key("leaseset_password")
+            || options.contains_key("leaseset_client_auth"))
+    {
+        validate_lease_set_security_block(&options)?;
+    }
     Ok(TunnelManagerRequest {
         action,
         all,
@@ -623,6 +661,41 @@ pub fn decode_tunnel_request(
         new_name,
         options,
     })
+}
+
+/// Validates the complete decoded LeaseSet security block and returns the
+/// resolved plan.
+///
+/// Split out so the cross-field rule is one named function rather than an
+/// inline block at the end of a long decoder, and so the daemon can call the
+/// identical rule on a merged `create`+stored-`edit` candidate.
+///
+/// A [`TunnelRequestError::BadValue`] carries the rule's own message, which
+/// names the selected mode and never a secret value.
+pub fn validate_lease_set_security_block(
+    options: &BTreeMap<String, String>,
+) -> Result<crate::proposal_leaseset_mode::LeaseSetSecurityPlan, TunnelRequestError> {
+    use crate::proposal_leaseset_mode::{
+        decode_encoded_client_auths, resolve_encrypt_lease_set_mode, resolve_lease_set_security,
+    };
+    let mode = match options.get("encrypt_lease_set") {
+        Some(value) => Some(
+            resolve_encrypt_lease_set_mode(value)
+                .map_err(|error| TunnelRequestError::BadValue(error.to_string()))?,
+        ),
+        None => None,
+    };
+    let client_auths = match options.get("leaseset_client_auth") {
+        Some(encoded) => decode_encoded_client_auths(encoded)
+            .map_err(|error| TunnelRequestError::BadValue(error.to_string()))?,
+        None => Vec::new(),
+    };
+    resolve_lease_set_security(
+        mode.as_ref(),
+        options.get("leaseset_password").map(String::as_str),
+        &client_auths,
+    )
+    .map_err(|error| TunnelRequestError::BadValue(error.to_string()))
 }
 
 fn canonical_wire_alias(key: &str) -> &'static str {

@@ -43,6 +43,7 @@ pub mod errors;
 pub mod jsonrpc;
 pub mod limits;
 pub mod methods;
+pub mod proposal_leaseset_mode;
 pub mod proposal_tunnel_matrix;
 pub mod proposal_wire;
 pub mod router_info;
@@ -73,6 +74,15 @@ pub use limits::{
     MAX_SUBSCRIPTION_URLS, MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN,
 };
 pub use methods::{METHODS, Method};
+pub use proposal_leaseset_mode::{
+    EncryptLeaseSetMode, EncryptLeaseSetModeError, LEASESET_CLIENT_KEY_HEX_LEN,
+    LEASESET_CLIENT_KEY_LEN, LeaseSetAddressFlag, LeaseSetAddressFlags, LeaseSetClientAuthEntry,
+    LeaseSetClientAuthError, LeaseSetClientAuthScheme, LeaseSetSecurityBehavior,
+    LeaseSetSecurityError, LeaseSetSecurityPlan, MAX_LEASESET_CLIENT_AUTHS,
+    MAX_LEASESET_CLIENT_NAME_LEN, decode_encoded_client_auths, decode_lease_set_client_auths,
+    encode_lease_set_client_auths, max_encoded_client_auths_bytes, resolve_encrypt_lease_set_mode,
+    resolve_lease_set_security,
+};
 pub use proposal_tunnel_matrix::{
     ProposalTunnelCellDisposition, ProposalTunnelMatrixCell, proposal_tunnel_manager_matrix,
 };

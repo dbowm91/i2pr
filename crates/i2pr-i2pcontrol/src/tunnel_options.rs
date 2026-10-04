@@ -315,24 +315,38 @@ pub const TUNNEL_OPTIONS: [TunnelOption; 46] = [
     },
     TunnelOption {
         name: "encrypt_lease_set",
-        value_type: OptionValueType::Boolean,
+        // Plan 334: Proposal 170 types `EncryptLeaseSet` as one of ten
+        // enumeration *strings*, so the Plan 293 "Boolean" determination was
+        // wrong about the wire type and is corrected here. Plan 293 carried
+        // this to Plan 295 as wire-shape divergence item 1.
+        value_type: OptionValueType::String,
         sensitivity: OptionSensitivity::Public,
         applies_mask: MASK_PUBLISHING,
     },
     TunnelOption {
         name: "leaseset_password",
+        // Plan 334: this slot is the Proposal 170 `OptionalLookup` field. The
+        // ELS2 specification defines exactly one lookup secret, so this is
+        // the single canonical spelling; `leaseset_blinding_secret` below is
+        // refused as a duplicate rather than treated as a second secret.
         value_type: OptionValueType::String,
         sensitivity: OptionSensitivity::Secret,
         applies_mask: MASK_PUBLISHING,
     },
     TunnelOption {
         name: "leaseset_blinding_secret",
+        // Plan 334: retired as a duplicate spelling. Kept in the inventory so
+        // the closed envelope still names it in its refusal, but it has no
+        // owner and must never be read as a second lookup secret.
         value_type: OptionValueType::String,
         sensitivity: OptionSensitivity::Secret,
         applies_mask: MASK_PUBLISHING,
     },
     TunnelOption {
         name: "leaseset_client_auth",
+        // Plan 334: the Proposal 170 `LeaseSetClientAuths` array, carried
+        // durably in the bounded encoding from
+        // `proposal_leaseset_mode::encode_lease_set_client_auths`.
         value_type: OptionValueType::String,
         sensitivity: OptionSensitivity::Secret,
         applies_mask: MASK_PUBLISHING,

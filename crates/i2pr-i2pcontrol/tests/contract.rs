@@ -1488,24 +1488,127 @@ fn plan289_tunnel_request_envelope_rules() {
         }))),
         Err(TunnelRequestError::BadValue("JumpList".to_owned()))
     );
-    assert_eq!(
+    // Plan 334: the LeaseSet security block is no longer unavailable. The
+    // envelope now accepts all nine applied modes with their own companions
+    // and refuses the tenth (`encrypted (aes)`) by name.
+    for (value, lookup, clients) in [
+        ("disable", None, 0),
+        ("blinded", None, 0),
+        ("blinded with lookup password", Some("pw"), 0),
+        ("encrypted (psk)", None, 1),
+        ("encrypted with lookup password (psk)", Some("pw"), 1),
+        ("encrypted with per-user key (psk)", None, 1),
+        (
+            "encrypted with lookup password and per-user key (psk)",
+            Some("pw"),
+            1,
+        ),
+        ("encrypted with per-user key (dh)", None, 1),
+        (
+            "encrypted with lookup password and per-user key (dh)",
+            Some("pw"),
+            1,
+        ),
+    ] {
+        let mut object = serde_json::Map::new();
+        object.insert("Action".into(), "create".into());
+        object.insert("Name".into(), "a".into());
+        object.insert("Type".into(), "server".into());
+        object.insert("EncryptLeaseSet".into(), value.into());
+        if let Some(secret) = lookup {
+            object.insert("OptionalLookup".into(), secret.into());
+        }
+        if clients > 0 {
+            object.insert(
+                "LeaseSetClientAuths".into(),
+                serde_json::json!([{"Name": "client", "Key": "ab".repeat(32)}]),
+            );
+        }
+        let decoded = decode_tunnel_request(&params(serde_json::Value::Object(object)))
+            .unwrap_or_else(|error| panic!("{value} must decode: {error:?}"));
+        assert_eq!(
+            decoded.options.get("encrypt_lease_set").map(String::as_str),
+            Some(value)
+        );
+        assert_eq!(
+            decoded.options.contains_key("leaseset_password"),
+            lookup.is_some()
+        );
+        assert_eq!(
+            decoded.options.contains_key("leaseset_client_auth"),
+            clients > 0
+        );
+    }
+    // Mode 2 is recognized and then refused by name, not as an unknown value.
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "encrypted (aes)",
+        }))),
+        Err(TunnelRequestError::BadValue(message))
+            if message.contains("deprecated") && message.contains("encrypted LeaseSet2")
+    ));
+    // A mode that needs clients, without any.
+    assert!(matches!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
             "EncryptLeaseSet": "encrypted (psk)",
         }))),
-        Err(TunnelRequestError::UnavailableOption(
-            "EncryptLeaseSet".to_owned()
-        ))
-    );
-    assert_eq!(
+        Err(TunnelRequestError::BadValue(message))
+            if message.contains("requires LeaseSetClientAuths")
+    ));
+    // A mode that needs a lookup secret, without one, and with an empty one.
+    assert!(matches!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "blinded with lookup password",
+        }))),
+        Err(TunnelRequestError::BadValue(message))
+            if message.contains("requires OptionalLookup")
+    ));
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "blinded with lookup password", "OptionalLookup": "  ",
+        }))),
+        Err(TunnelRequestError::BadValue(message))
+            if message.contains("non-empty OptionalLookup")
+    ));
+    // A secret supplied to a mode that does not consume it is an error, not a
+    // silent no-op, and a malformed client list never reaches the store.
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "blinded", "OptionalLookup": "pw",
+        }))),
+        Err(TunnelRequestError::BadValue(message))
+            if message.contains("not used by")
+    ));
+    assert!(matches!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "blinded",
             "LeaseSetClientAuths": [{"Name": "client", "Key": "secret"}],
         }))),
-        Err(TunnelRequestError::UnavailableOption(
-            "LeaseSetClientAuths".to_owned()
-        ))
-    );
+        Err(TunnelRequestError::BadValue(_))
+    ));
+    // No rejection message may echo a supplied secret.
+    let secret = "hunter2-lookup-secret";
+    for error in [
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "blinded", "OptionalLookup": secret,
+        }))),
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "encrypted (psk)",
+            "LeaseSetClientAuths": [{"Name": "c", "Key": "ab".repeat(32)}],
+        }))),
+    ] {
+        let rendered = format!("{error:?}");
+        assert!(!rendered.contains(secret), "leaked: {rendered}");
+        assert!(!rendered.contains(&"ab".repeat(32)), "leaked: {rendered}");
+    }
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
