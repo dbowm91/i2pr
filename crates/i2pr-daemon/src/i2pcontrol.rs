@@ -1829,6 +1829,7 @@ fn proposal_tunnel_option_name(key: &str) -> Option<String> {
         "listen_host" => Some("ReachableBy"),
         "listen_port" => Some("Port"),
         "description" => Some("Description"),
+        "max_streams" => Some("MaxConcurrentConns"),
         "unique_local_address" => Some("UniqueLocalAddressPerClient"),
         "multihoming" => Some("MultiHoming"),
         _ => None,

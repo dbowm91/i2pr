@@ -1104,6 +1104,22 @@ fn plan289_tunnel_request_envelope_rules() {
         description.options.get("description").map(String::as_str),
         Some("valid Proposal field")
     );
+    let max_concurrent = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "MaxConcurrentConns": 24,
+    })))
+    .expect("MaxConcurrentConns has a bounded service admission owner");
+    assert_eq!(
+        max_concurrent.options.get("max_streams").map(String::as_str),
+        Some("24")
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "MaxConcurrentConns": "24",
+        }))),
+        Err(TunnelRequestError::BadValue("MaxConcurrentConns".to_owned()))
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",

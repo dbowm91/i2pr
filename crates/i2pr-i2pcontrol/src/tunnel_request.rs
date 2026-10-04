@@ -123,6 +123,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Port" => Some("listen_port"),
         "ReachableBy" => Some("listen_host"),
         "Description" => Some("description"),
+        "MaxConcurrentConns" => Some("max_streams"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),
@@ -246,6 +247,14 @@ pub fn decode_tunnel_request(
                         return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
                     }
                     options.insert("description".to_owned(), text.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "MaxConcurrentConns" {
+                    let value = value
+                        .as_u64()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("max_streams".to_owned(), value.to_string());
                     options_seen = true;
                     continue;
                 }
@@ -375,6 +384,7 @@ pub fn decode_tunnel_request(
 
 fn canonical_wire_alias(key: &str) -> &'static str {
     match key {
+        "MaxConcurrentConns" => "MaxConcurrentConns",
         "TargetHost" | "Host" => "TargetHost",
         "TargetDestination" | "Destination" => "TargetDestination",
         "WebsiteHostname" | "SpoofedHost" => "WebsiteHostname",
