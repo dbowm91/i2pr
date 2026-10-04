@@ -21,7 +21,7 @@
 //! nothing to change. Unknown top-level keys are rejected: the envelope
 //! is closed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::errors::ContractError;
 use crate::limits::{MAX_OPTION_NAME_LEN, MAX_OPTION_VALUE_LEN, MAX_OPTIONS_PER_TUNNEL};
@@ -29,7 +29,7 @@ use crate::tunnel::{TunnelAction, TunnelType, validate_tunnel_name};
 use crate::tunnel_options::find_option;
 
 /// Decoded TunnelManager request.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct TunnelManagerRequest {
     /// Lifecycle action.
     pub action: TunnelAction,
@@ -43,6 +43,20 @@ pub struct TunnelManagerRequest {
     pub new_name: Option<String>,
     /// Options map (`create`/`edit` only, normalized values).
     pub options: BTreeMap<String, String>,
+}
+
+impl core::fmt::Debug for TunnelManagerRequest {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("TunnelManagerRequest")
+            .field("action", &self.action)
+            .field("all", &self.all)
+            .field("name", &self.name)
+            .field("tunnel_type", &self.tunnel_type)
+            .field("new_name", &self.new_name)
+            .field("option_keys", &self.options.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// Envelope rejection.
@@ -71,6 +85,8 @@ pub enum TunnelRequestError {
     UnknownKey(String),
     /// Two aliases named the same domain option.
     DuplicateAlias(String),
+    /// Proposal field is valid, but its owner is registered to a later plan.
+    UnavailableOption(String),
     /// `All` selected a capability not implemented by the current owner.
     AllUnavailable,
     /// `edit` carried neither `NewName` nor options.
@@ -94,6 +110,7 @@ impl core::fmt::Display for TunnelRequestError {
             Self::UnknownKey(key) => write!(formatter, "unknown TunnelManager field {key}"),
             Self::NothingToChange => write!(formatter, "edit requires new_name or options"),
             Self::DuplicateAlias(_) => write!(formatter, "duplicate TunnelManager aliases"),
+            Self::UnavailableOption(_) => write!(formatter, "TunnelManager field is unavailable"),
             Self::AllUnavailable => write!(formatter, "All action is not available"),
         }
     }
@@ -107,6 +124,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "ReachableBy" => Some("listen_host"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
+        "UniqueLocalAddressPerClient" => Some("unique_local_address"),
         _ => crate::tunnel_options::TUNNEL_OPTIONS
             .iter()
             .find(|option| pascal_option_name(option.name) == key)
@@ -164,6 +182,8 @@ pub fn decode_tunnel_request(
     let mut options: BTreeMap<String, String> = BTreeMap::new();
     let mut options_seen = false;
     let mut all = false;
+    let mut unavailable_option = None;
+    let mut seen_aliases = BTreeSet::new();
 
     for (key, value) in params {
         match key.as_str() {
@@ -199,9 +219,41 @@ pub fn decode_tunnel_request(
                 if key.len() > MAX_OPTION_NAME_LEN {
                     return Err(TunnelRequestError::BadOption(ContractError::OverBound));
                 }
-                let option_key = canonical_option(key)
-                    .ok_or_else(|| TunnelRequestError::UnknownKey(truncated_key(key)))?;
-                find_option(option_key).map_err(TunnelRequestError::BadOption)?;
+                if crate::proposal_wire::proposal_tunnel_value_type(key).is_none() {
+                    return Err(TunnelRequestError::UnknownKey(truncated_key(key)));
+                }
+                crate::proposal_wire::validate_proposal_tunnel_value(key, value)
+                    .map_err(|_| TunnelRequestError::BadValue(key.to_owned()))?;
+                let alias = canonical_wire_alias(key);
+                if !seen_aliases.insert(alias) {
+                    return Err(TunnelRequestError::DuplicateAlias(alias.to_owned()));
+                }
+                let Some(option_key) = canonical_option(key) else {
+                    unavailable_option.get_or_insert_with(|| key.to_owned());
+                    options_seen = true;
+                    continue;
+                };
+                let option = find_option(option_key).map_err(TunnelRequestError::BadOption)?;
+                let wire_type = crate::proposal_wire::proposal_tunnel_value_type(key)
+                    .expect("Proposal field type was checked");
+                let adapter_type_matches = matches!(
+                    (wire_type, option.value_type),
+                    (
+                        crate::proposal_wire::ProposalTunnelValueType::String,
+                        crate::tunnel_options::OptionValueType::String
+                    ) | (
+                        crate::proposal_wire::ProposalTunnelValueType::Integer,
+                        crate::tunnel_options::OptionValueType::Integer
+                    ) | (
+                        crate::proposal_wire::ProposalTunnelValueType::Boolean,
+                        crate::tunnel_options::OptionValueType::Boolean
+                    )
+                );
+                if !adapter_type_matches {
+                    unavailable_option.get_or_insert_with(|| key.to_owned());
+                    options_seen = true;
+                    continue;
+                }
                 let text = scalar_string(option_key, value)?;
                 if options.insert(option_key.to_owned(), text).is_some() {
                     return Err(TunnelRequestError::DuplicateAlias(option_key.to_owned()));
@@ -287,6 +339,9 @@ pub fn decode_tunnel_request(
             }
         }
     }
+    if let Some(option) = unavailable_option {
+        return Err(TunnelRequestError::UnavailableOption(option));
+    }
     Ok(TunnelManagerRequest {
         action,
         all,
@@ -295,6 +350,19 @@ pub fn decode_tunnel_request(
         new_name,
         options,
     })
+}
+
+fn canonical_wire_alias(key: &str) -> &'static str {
+    match key {
+        "TargetHost" | "Host" => "TargetHost",
+        "TargetDestination" | "Destination" => "TargetDestination",
+        "WebsiteHostname" | "SpoofedHost" => "WebsiteHostname",
+        _ => crate::proposal_wire::PROPOSAL_TUNNEL_MANAGER_FIELDS
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == key)
+            .unwrap_or("invalid"),
+    }
 }
 
 /// Truncates an unknown key for error reporting (bounded diagnostics).

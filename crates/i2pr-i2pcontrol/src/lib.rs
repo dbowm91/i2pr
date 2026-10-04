@@ -73,8 +73,11 @@ pub use limits::{
 };
 pub use methods::{METHODS, Method};
 pub use proposal_wire::{
-    BASE_ROUTER_INFO_FIELDS, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS, PROPOSAL_ROUTER_INFO_FIELDS,
-    PROPOSAL_TUNNEL_MANAGER_FIELDS, ProposalRouterInfoField, ProposalValueType, router_info_field,
+    BASE_ROUTER_INFO_FIELDS, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS, PROPOSAL_ENCRYPT_LEASE_SET_VALUES,
+    PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_INTEGER_RANGES, PROPOSAL_TUNNEL_MANAGER_FIELDS,
+    PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES, ProposalRouterInfoField, ProposalTunnelIntegerRange,
+    ProposalTunnelValueError, ProposalTunnelValueType, ProposalValueType,
+    proposal_tunnel_value_type, router_info_field, validate_proposal_tunnel_value,
 };
 pub use router_info::{ROUTER_INFO_SELECTORS, ReturnType, RouterInfoSelector};
 pub use source_matrix::{

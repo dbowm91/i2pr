@@ -398,6 +398,212 @@ pub const PROPOSAL_TUNNEL_MANAGER_FIELDS: &[&str] = &[
     "LeaseSetClientAuths",
 ];
 
+/// Wire-level type for a Proposal 170 TunnelManager field. This inventory is
+/// independent of the smaller set of fields with current runtime adapters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposalTunnelValueType {
+    /// JSON string.
+    String,
+    /// JSON integer.
+    Integer,
+    /// JSON boolean.
+    Boolean,
+    /// Array of client authorization objects.
+    ClientAuthList,
+}
+
+/// Integer range declared by the pinned Java Proposal 170 parser.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProposalTunnelIntegerRange {
+    /// Exact case-sensitive field.
+    pub key: &'static str,
+    /// Inclusive lower bound.
+    pub minimum: i64,
+    /// Inclusive upper bound.
+    pub maximum: i64,
+}
+
+/// Validation failure for a typed Proposal 170 TunnelManager value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposalTunnelValueError {
+    /// The JSON type, value bounds, or compound-field shape is invalid.
+    Invalid,
+}
+
+/// Proposal integer constraints with explicit bounds in Java PR 6.
+pub const PROPOSAL_TUNNEL_INTEGER_RANGES: [ProposalTunnelIntegerRange; 19] = [
+    range("Port", 1, 65_535),
+    range("TargetPort", 1, 65_535),
+    range("TunnelLength", 0, 3),
+    range("TunnelVariance", -2, 2),
+    range("TunnelQuantity", 1, 6),
+    range("TunnelBackupQuantity", 0, 3),
+    range("ReduceCount", 0, 9),
+    range("ReduceTime", 0, 9_999),
+    range("CloseTime", 0, 9_999),
+    range("NewDest", 0, 2),
+    range("MaxConcurrentConns", 0, 100_000),
+    range("ClientPerMinute", 0, 100_000),
+    range("ClientPerHour", 0, 100_000),
+    range("ClientPerDay", 0, 100_000),
+    range("TotalInPerMinute", 0, 100_000),
+    range("TotalInPerHour", 0, 100_000),
+    range("TotalInPerDay", 0, 100_000),
+    range("PostLimit", 0, 100_000),
+    range("PostLimitTime", 0, 100_000),
+];
+
+/// Remaining bounded server-policy integer fields share Java's 0..100000
+/// range. Split out to keep the primary table's cardinality auditable.
+pub const PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES: [ProposalTunnelIntegerRange; 3] = [
+    range("PerClientPeriod", 0, 100_000),
+    range("TotalPeriod", 0, 100_000),
+    range("TotalBanTime", 0, 100_000),
+];
+
+/// Ten exact Proposal `EncryptLeaseSet` values, in specification order.
+pub const PROPOSAL_ENCRYPT_LEASE_SET_VALUES: [&str; 10] = [
+    "disable",
+    "encrypted (aes)",
+    "blinded",
+    "blinded with lookup password",
+    "encrypted (psk)",
+    "encrypted with lookup password (psk)",
+    "encrypted with per-user key (psk)",
+    "encrypted with lookup password and per-user key (psk)",
+    "encrypted with per-user key (dh)",
+    "encrypted with lookup password and per-user key (dh)",
+];
+
+/// Exact wire type lookup for a Proposal TunnelManager option.
+pub fn proposal_tunnel_value_type(key: &str) -> Option<ProposalTunnelValueType> {
+    use ProposalTunnelValueType::{Boolean, ClientAuthList, Integer, String};
+    if !PROPOSAL_TUNNEL_MANAGER_FIELDS.contains(&key) {
+        return None;
+    }
+    Some(match key {
+        "All"
+        | "StartOnLoad"
+        | "Shared"
+        | "UseSSL"
+        | "UseOutproxyPlugin"
+        | "ProxyAuth"
+        | "OutproxyAuth"
+        | "ConnectDelay"
+        | "DelayOpen"
+        | "Reduce"
+        | "Close"
+        | "PersistentClientKey"
+        | "AllowUserAgent"
+        | "AllowReferer"
+        | "AllowAccept"
+        | "AllowInternalSSL"
+        | "BlockAccessInProxies"
+        | "BlockUserAgents"
+        | "UniqueLocalAddressPerClient"
+        | "BlockReferers"
+        | "MultiHoming" => Boolean,
+        "Port"
+        | "TargetPort"
+        | "TunnelLength"
+        | "TunnelVariance"
+        | "TunnelQuantity"
+        | "TunnelBackupQuantity"
+        | "NewDest"
+        | "ReduceCount"
+        | "ReduceTime"
+        | "CloseTime"
+        | "MaxConcurrentConns"
+        | "ClientPerMinute"
+        | "ClientPerHour"
+        | "ClientPerDay"
+        | "TotalInPerMinute"
+        | "TotalInPerHour"
+        | "TotalInPerDay"
+        | "PostLimit"
+        | "PostLimitTime"
+        | "PerClientPeriod"
+        | "TotalPeriod"
+        | "TotalBanTime" => Integer,
+        "LeaseSetClientAuths" => ClientAuthList,
+        _ => String,
+    })
+}
+
+/// Validates the exact Proposal tunnel option JSON type and documented
+/// integer/enumeration bounds without converting values to strings.
+pub fn validate_proposal_tunnel_value(
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<(), ProposalTunnelValueError> {
+    use ProposalTunnelValueType::{Boolean, ClientAuthList, Integer, String};
+    let value_type = proposal_tunnel_value_type(key).ok_or(ProposalTunnelValueError::Invalid)?;
+    let invalid = ProposalTunnelValueError::Invalid;
+    match (value_type, value) {
+        (String, serde_json::Value::String(text))
+            if text.len() <= crate::limits::MAX_OPTION_VALUE_LEN =>
+        {
+            if key == "EncryptLeaseSet"
+                && !PROPOSAL_ENCRYPT_LEASE_SET_VALUES.contains(&text.as_str())
+            {
+                return Err(invalid);
+            }
+        }
+        (Integer, serde_json::Value::Number(number)) if number.is_i64() || number.is_u64() => {
+            if let Some(bounds) = PROPOSAL_TUNNEL_INTEGER_RANGES
+                .iter()
+                .chain(PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES.iter())
+                .find(|bounds| bounds.key == key)
+            {
+                let numeric = number.as_i64().ok_or(invalid)?;
+                if !(bounds.minimum..=bounds.maximum).contains(&numeric) {
+                    return Err(invalid);
+                }
+            }
+        }
+        (Boolean, serde_json::Value::Bool(_)) => {}
+        (ClientAuthList, serde_json::Value::Array(items))
+            if items.len() <= crate::limits::MAX_LIST_ITEMS =>
+        {
+            for item in items {
+                let object = item.as_object().ok_or(invalid)?;
+                if object.len() > 2 {
+                    return Err(invalid);
+                }
+                for field in object.keys() {
+                    if !matches!(field.as_str(), "Name" | "name" | "Key" | "key") {
+                        return Err(invalid);
+                    }
+                }
+                for name in ["Name", "name", "Key", "key"] {
+                    if object.get(name).is_some_and(|value| {
+                        value
+                            .as_str()
+                            .is_none_or(|text| text.len() > crate::limits::MAX_OPTION_VALUE_LEN)
+                    }) {
+                        return Err(invalid);
+                    }
+                }
+                if object.contains_key("Name") && object.contains_key("name")
+                    || object.contains_key("Key") && object.contains_key("key")
+                {
+                    return Err(invalid);
+                }
+            }
+        }
+        _ => return Err(invalid),
+    }
+    Ok(())
+}
+
+const fn range(key: &'static str, minimum: i64, maximum: i64) -> ProposalTunnelIntegerRange {
+    ProposalTunnelIntegerRange {
+        key,
+        minimum,
+        maximum,
+    }
+}
+
 const fn field(
     key: &'static str,
     value_type: ProposalValueType,

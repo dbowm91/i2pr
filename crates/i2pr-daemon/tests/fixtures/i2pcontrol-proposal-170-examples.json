@@ -1,0 +1,66 @@
+{
+  "source": "Proposal 170, revision 2026-05-20",
+  "examples": [
+    {
+      "name": "router-info-getter",
+      "request": {"jsonrpc":"2.0","method":"RouterInfo","params":{"i2p.router.id":""},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"i2p.router.id":"exampleRouterHashBase64"},"id":1}
+    },
+    {
+      "name": "address-book-entry-add",
+      "request": {"jsonrpc":"2.0","method":"AddressBook","params":{"Type":"private","Hostname":"example.i2p","Destination":"exampleDestinationString"},"id":1},
+      "response": {"jsonrpc":"2.0","success":true,"message":"Added example.i2p in private address book","id":1}
+    },
+    {
+      "name": "address-book-entry-delete",
+      "request": {"jsonrpc":"2.0","method":"AddressBook","params":{"Type":"private","Hostname":"example.i2p","Destination":"exampleDestinationString","Delete":""},"id":1},
+      "response": {"jsonrpc":"2.0","success":true,"message":"Deleted example.i2p in private address book","id":1}
+    },
+    {
+      "name": "address-book-subscriptions",
+      "request": {"jsonrpc":"2.0","method":"AddressBook","params":{"SetSubscriptions":["notbob.i2p","helloworld.i2p"]},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"success":true,"message":"Successfully modified: /path/to/subscriptions.txt"},"id":1}
+    },
+    {
+      "name": "address-book-config",
+      "request": {"jsonrpc":"2.0","method":"AddressBook","params":{"SetConfig":{"subscriptions":"subscriptions.txt","update_delay":"12","published_addressbook":"published/hosts.txt","router_addressbook":"hosts.txt","local_addressbook":"userhosts.txt","private_addressbook":"privatehosts.txt","proxy_port":"4444","proxy_host":"127.0.0.1","should_publish":"true","etags":"etags.txt","last_modified":"last_modified.txt","log":"log.txt","theme":"light"}},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"success":true,"message":"Successfully modified: /path/to/config.txt"},"id":1}
+    },
+    {
+      "name": "tunnel-manager-create",
+      "request": {"jsonrpc":"2.0","method":"TunnelManager","params":{"Name":"example-client","Action":"create","Type":"client","Port":7656,"TargetDestination":"exampleDestinationString","StartOnLoad":false},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"status":"success - created tunnel example-client","results":[]},"id":1}
+    },
+    {
+      "name": "tunnel-manager-edit",
+      "request": {"jsonrpc":"2.0","method":"TunnelManager","params":{"Name":"example-client","Action":"edit","NewName":"renamed-client","Port":7657,"TargetDestination":"newDestinationString","StartOnLoad":true},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"status":"success - edited tunnel example-client"},"id":1}
+    },
+    {
+      "name": "tunnel-manager-get",
+      "request": {"jsonrpc":"2.0","method":"TunnelManager","params":{"Name":"example-client","Action":"get"},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"status":"success - options for example-client","info":{"client":true,"status":"running","persistentClientKey":false,"offlineKeys":false,"targetDestination":"exampleDestinationString","localDestination":"exampleBase64Destination","destination":"exampleBase64Destination","destinationB32":"example.b32.i2p","rawConfig":{"name":"example-client","type":"client"}}},"id":1}
+    },
+    {
+      "name": "tunnel-manager-lifecycle",
+      "request": {"jsonrpc":"2.0","method":"TunnelManager","params":{"Name":"example-client","Action":"start"},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"status":"success - starting tunnel example-client"},"id":1}
+    },
+    {
+      "name": "client-services-info",
+      "request": {"jsonrpc":"2.0","method":"ClientServicesInfo","params":{"I2PTunnel":"","SAM":""},"id":1},
+      "response": {"jsonrpc":"2.0","result":{"I2PTunnel":{"client":{"my-client":{"address":"example.b32.i2p"}},"server":{"my-server":{"address":"example.b32.i2p","port":8080}}},"SAM":{"enabled":true,"sessions":{}}},"id":1}
+    }
+  ],
+  "differential": {
+    "java_pr6": {
+      "source": "i2p/i2p.plugins.i2pcontrol@45bb593000408071dd376b78848fdc246dccd964",
+      "overlap": {"parameter":"Action","canonical_value":"get","Port":{"type":"integer","minimum":1,"maximum":65535},"ConnectDelay":{"type":"boolean"},"NewDest":{"type":"integer","minimum":0,"maximum":2},"JumpList":{"type":"string"}}
+    },
+    "emissary": {
+      "source": "eggstack/emissary@6885a945d25a5ae61bc68191d27c5816bc3df4c9",
+      "overlap": {"parameter":"Action","canonical_value":"get","compatibility_alias":"Get","raw_config_keys":"lower-camel-case"},
+      "note":"Only canonical Proposal 170 spellings are accepted by i2pr; Emissary compatibility aliases are retained as differential observations, not added to the canonical parser."
+    }
+  }
+}

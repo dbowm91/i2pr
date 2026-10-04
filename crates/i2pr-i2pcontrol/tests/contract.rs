@@ -10,8 +10,9 @@ use i2pr_i2pcontrol::{
     MAX_OPTIONS_PER_TUNNEL, MAX_PARAMS_KEYS, MAX_PASSWORD_LEN, MAX_PRESENTED_TOKEN_LEN,
     MAX_SELECTOR_LEN, MAX_STRING_LEN, MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS,
     MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN, METHODS, Method, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS,
-    PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_MANAGER_FIELDS, ROUTER_INFO_SELECTORS, RequestId,
-    ReturnType, RouterInfoSelector, SECRET_OPTIONS, SET_CONFIG_KEYS, TOKEN_BYTES,
+    PROPOSAL_ENCRYPT_LEASE_SET_VALUES, PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_INTEGER_RANGES,
+    PROPOSAL_TUNNEL_MANAGER_FIELDS, PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES, ROUTER_INFO_SELECTORS,
+    RequestId, ReturnType, RouterInfoSelector, SECRET_OPTIONS, SET_CONFIG_KEYS, TOKEN_BYTES,
     TOKEN_LIFETIME_SECS, TUNNEL_ACTIONS, TUNNEL_OPTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus,
     TunnelType, auth, conformance, jsonrpc, limits, proposal_wire, tunnel, tunnel_options,
 };
@@ -100,6 +101,110 @@ fn proposal_170_wire_inventory_is_exact_and_unique() {
     assert!(tunnel_fields.contains(&"All"));
     assert!(tunnel_fields.contains(&"OptionalLookup"));
     assert!(!tunnel_fields.contains(&"options"));
+    assert_eq!(PROPOSAL_ENCRYPT_LEASE_SET_VALUES.len(), 10);
+    assert_eq!(PROPOSAL_TUNNEL_INTEGER_RANGES.len(), 19);
+    assert_eq!(PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES.len(), 3);
+}
+
+#[test]
+fn proposal_tunnel_wire_types_ranges_and_compound_values_are_checked() {
+    for range in PROPOSAL_TUNNEL_INTEGER_RANGES
+        .iter()
+        .chain(PROPOSAL_TUNNEL_POLICY_INTEGER_RANGES.iter())
+    {
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.minimum)
+            )
+            .is_ok(),
+            "{} minimum is inclusive",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.maximum)
+            )
+            .is_ok(),
+            "{} maximum is inclusive",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.minimum - 1)
+            )
+            .is_err(),
+            "{} rejects min-1",
+            range.key
+        );
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                range.key,
+                &serde_json::json!(range.maximum + 1)
+            )
+            .is_err(),
+            "{} rejects max+1",
+            range.key
+        );
+    }
+    for value in PROPOSAL_ENCRYPT_LEASE_SET_VALUES {
+        assert!(
+            proposal_wire::validate_proposal_tunnel_value(
+                "EncryptLeaseSet",
+                &serde_json::json!(value)
+            )
+            .is_ok()
+        );
+    }
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "EncryptLeaseSet",
+            &serde_json::json!("encrypted (unknown)")
+        )
+        .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("StartOnLoad", &serde_json::json!(true))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("StartOnLoad", &serde_json::json!(1))
+            .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("ConnectDelay", &serde_json::json!(false))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("NewDest", &serde_json::json!(2)).is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("NewDest", &serde_json::json!(3)).is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("JumpList", &serde_json::json!("true"))
+            .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value("JumpList", &serde_json::json!(true))
+            .is_err()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "LeaseSetClientAuths",
+            &serde_json::json!([{"Name": "client", "Key": "secret"}])
+        )
+        .is_ok()
+    );
+    assert!(
+        proposal_wire::validate_proposal_tunnel_value(
+            "LeaseSetClientAuths",
+            &serde_json::json!([{"Name": 1, "Key": "secret"}])
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -904,7 +1009,7 @@ fn plan289_tunnel_request_envelope_rules() {
             "Action": "create", "Name": "a", "Type": "client",
             "Host": "127.0.0.1", "TargetHost": "127.0.0.1",
         }))),
-        Err(TunnelRequestError::DuplicateAlias("target_host".to_owned()))
+        Err(TunnelRequestError::DuplicateAlias("TargetHost".to_owned()))
     );
     let all = decode_tunnel_request(&params(serde_json::json!({
         "Action": "stop", "All": true,
@@ -917,5 +1022,55 @@ fn plan289_tunnel_request_envelope_rules() {
             "Action": "stop", "All": true, "Name": "a",
         }))),
         Err(TunnelRequestError::UnexpectedField("name"))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "Description": "valid Proposal field",
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "Description".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "JumpList": "false",
+        }))),
+        Err(TunnelRequestError::UnavailableOption("JumpList".to_owned()))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "JumpList": false,
+        }))),
+        Err(TunnelRequestError::BadValue("JumpList".to_owned()))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "EncryptLeaseSet": "encrypted (psk)",
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "EncryptLeaseSet".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "LeaseSetClientAuths": [{"Name": "client", "Key": "secret"}],
+        }))),
+        Err(TunnelRequestError::UnavailableOption(
+            "LeaseSetClientAuths".to_owned()
+        ))
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "WebsiteHostname": "site.i2p", "SpoofedHost": "alias.i2p",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias(
+            "WebsiteHostname".to_owned()
+        ))
     );
 }

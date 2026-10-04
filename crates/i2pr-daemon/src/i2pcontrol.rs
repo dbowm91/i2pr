@@ -984,20 +984,34 @@ impl I2pControlServiceState {
                 delete,
             } => match manager.apply_entry(i2pr_addressbook::EntryMutation {
                 book,
-                hostname,
+                hostname: hostname.clone(),
                 destination,
                 delete,
             }) {
-                Ok(i2pr_addressbook::EntryOutcome::Created) => {
-                    Self::addressbook_success(id, "entry created")
-                }
-                Ok(i2pr_addressbook::EntryOutcome::Updated) => {
-                    Self::addressbook_success(id, "entry updated")
-                }
-                Ok(i2pr_addressbook::EntryOutcome::Deleted) => {
-                    Self::addressbook_success(id, "entry deleted")
-                }
-                Err(error) => Self::addressbook_manager_error(id, &error),
+                Ok(i2pr_addressbook::EntryOutcome::Created) => Self::addressbook_entry_result(
+                    id,
+                    true,
+                    &format!("Added {hostname} in {} address book", book.name()),
+                ),
+                Ok(i2pr_addressbook::EntryOutcome::Updated) => Self::addressbook_entry_result(
+                    id,
+                    true,
+                    &format!("Added {hostname} in {} address book", book.name()),
+                ),
+                Ok(i2pr_addressbook::EntryOutcome::Deleted) => Self::addressbook_entry_result(
+                    id,
+                    true,
+                    &format!("Deleted {hostname} in {} address book", book.name()),
+                ),
+                Err(_) => Self::addressbook_entry_result(
+                    id,
+                    false,
+                    &format!(
+                        "Failed to {} entry in {} address book",
+                        if delete { "delete" } else { "add" },
+                        book.name()
+                    ),
+                ),
             },
             AddressBookRequest::Subscriptions { urls } => {
                 match manager.replace_subscriptions(&urls) {
@@ -1045,6 +1059,23 @@ impl I2pControlServiceState {
         )
     }
 
+    /// Builds the Proposal's legacy top-level AddressBook entry result.
+    fn addressbook_entry_result(
+        id: Option<&JsonRpcRequestId>,
+        success: bool,
+        message: &str,
+    ) -> (serde_json::Value, Duration) {
+        let mut response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "success": success,
+            "message": message,
+        });
+        if let Some(id) = id {
+            response["id"] = serde_json::to_value(id).unwrap_or(serde_json::Value::Null);
+        }
+        (response, Duration::ZERO)
+    }
+
     /// Maps a manager error to its wire envelope (static strings only;
     /// request values never render).
     fn addressbook_manager_error(
@@ -1084,6 +1115,15 @@ impl I2pControlServiceState {
     ) -> (serde_json::Value, Duration) {
         let request = match i2pr_i2pcontrol::decode_tunnel_request(params) {
             Ok(request) => request,
+            Err(i2pr_i2pcontrol::tunnel_request::TunnelRequestError::UnavailableOption(_)) => {
+                return (
+                    success_envelope(
+                        id,
+                        serde_json::json!({"status": "error - TunnelManager field owner is unavailable (Plan 323)"}),
+                    ),
+                    Duration::ZERO,
+                );
+            }
             Err(error) => {
                 return (
                     error_envelope(
@@ -1097,10 +1137,9 @@ impl I2pControlServiceState {
         };
         if request.all {
             return (
-                error_envelope(
+                success_envelope(
                     id,
-                    JsonRpcErrorCode::InternalError.code(),
-                    "TunnelManager All action is unavailable (Plan 323)",
+                    serde_json::json!({"status": "error - TunnelManager All action is unavailable (Plan 323)"}),
                 ),
                 Duration::ZERO,
             );
@@ -1124,9 +1163,18 @@ impl I2pControlServiceState {
             }
         };
         match control.dispatch(&request).await {
-            Ok(value) => (success_envelope(id, value), Duration::ZERO),
+            Ok(value) => (
+                success_envelope(
+                    id,
+                    proposal_tunnel_manager_result(request.action, request.name.as_deref(), value),
+                ),
+                Duration::ZERO,
+            ),
             Err(error) => (
-                error_envelope(id, error.wire_code(), &format!("{error}")),
+                success_envelope(
+                    id,
+                    serde_json::json!({"status": format!("error - {error}")}),
+                ),
                 Duration::ZERO,
             ),
         }
@@ -1428,6 +1476,223 @@ impl I2pControlServiceState {
             )),
         }
     }
+}
+
+/// Converts the internal tunnel-control result to the Proposal 170
+/// `status`/`info` result shape. Internal normalized keys never cross the
+/// JSON-RPC boundary; secret-valued options are omitted from rawConfig.
+fn proposal_tunnel_manager_result(
+    action: i2pr_i2pcontrol::TunnelAction,
+    name: Option<&str>,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    use i2pr_i2pcontrol::TunnelAction;
+
+    match action {
+        TunnelAction::Get => {
+            let name = name.unwrap_or_default();
+            let type_name = value
+                .get("type")
+                .or_else(|| value.get("kind"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let status = value
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    value
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .map(|enabled| if enabled { "running" } else { "stopped" })
+                })
+                .unwrap_or("stopped");
+            let options = value.get("options");
+            let destination = value.get("destination").cloned();
+            let target_destination = options
+                .and_then(|options| options.get("target_destination"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let persistent_client_key = options
+                .and_then(|options| options.get("persistent_client_key"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(false);
+            let destination_b32 = destination
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .and_then(destination_b32_address);
+            let mut raw_config = serde_json::Map::new();
+            raw_config.insert(
+                "name".to_owned(),
+                serde_json::Value::String(name.to_owned()),
+            );
+            raw_config.insert(
+                "type".to_owned(),
+                serde_json::Value::String(type_name.to_owned()),
+            );
+            if let Some(start_on_load) = value
+                .get("start_on_load")
+                .and_then(serde_json::Value::as_bool)
+            {
+                raw_config.insert(
+                    "startOnLoad".to_owned(),
+                    serde_json::Value::Bool(start_on_load),
+                );
+            }
+            if let Some(options) = options.and_then(serde_json::Value::as_object) {
+                for (key, value) in options {
+                    if is_tunnel_secret_key(key) {
+                        continue;
+                    }
+                    let Some(wire_key) = proposal_tunnel_option_name(key) else {
+                        continue;
+                    };
+                    let value = match i2pr_i2pcontrol::proposal_tunnel_value_type(&wire_key) {
+                        Some(i2pr_i2pcontrol::ProposalTunnelValueType::Boolean) => value
+                            .as_str()
+                            .and_then(|text| text.parse::<bool>().ok())
+                            .map(serde_json::Value::Bool),
+                        Some(i2pr_i2pcontrol::ProposalTunnelValueType::Integer) => value
+                            .as_str()
+                            .and_then(|text| text.parse::<i64>().ok())
+                            .map(serde_json::Value::from),
+                        Some(i2pr_i2pcontrol::ProposalTunnelValueType::String) => value
+                            .as_str()
+                            .map(|text| serde_json::Value::String(text.to_owned())),
+                        Some(i2pr_i2pcontrol::ProposalTunnelValueType::ClientAuthList) | None => {
+                            None
+                        }
+                    };
+                    if let Some(value) = value {
+                        let mut chars = wire_key.chars();
+                        let key = chars
+                            .next()
+                            .map(|first| first.to_lowercase().to_string())
+                            .unwrap_or_default()
+                            + chars.as_str();
+                        raw_config.insert(key, value);
+                    }
+                }
+            }
+            let is_server = matches!(
+                type_name,
+                "server" | "httpserver" | "httpbidirserver" | "ircserver" | "streamrserver"
+            );
+            let mut info = serde_json::Map::new();
+            info.insert("client".to_owned(), serde_json::Value::Bool(!is_server));
+            info.insert(
+                "persistentClientKey".to_owned(),
+                serde_json::Value::Bool(persistent_client_key),
+            );
+            info.insert("offlineKeys".to_owned(), serde_json::Value::Bool(false));
+            info.insert(
+                "status".to_owned(),
+                serde_json::Value::String(status.to_owned()),
+            );
+            if let Some(target_destination) = target_destination {
+                info.insert(
+                    "targetDestination".to_owned(),
+                    serde_json::Value::String(target_destination),
+                );
+            }
+            if let Some(destination) = destination {
+                info.insert("localDestination".to_owned(), destination.clone());
+                info.insert("destination".to_owned(), destination);
+            }
+            if let Some(destination_b32) = destination_b32 {
+                info.insert(
+                    "destinationB32".to_owned(),
+                    serde_json::Value::String(destination_b32),
+                );
+            }
+            info.insert(
+                "rawConfig".to_owned(),
+                serde_json::Value::Object(raw_config),
+            );
+            serde_json::json!({
+                "status": format!("success - options for {name}"),
+                "info": info,
+            })
+        }
+        TunnelAction::Create => serde_json::json!({
+            "status": format!("success - created tunnel {}", name.unwrap_or_default()),
+            "results": [],
+        }),
+        TunnelAction::Edit => serde_json::json!({
+            "status": format!("success - edited tunnel {}", name.unwrap_or_default()),
+        }),
+        TunnelAction::Start => serde_json::json!({
+            "status": format!("success - starting tunnel {}", name.unwrap_or_default()),
+        }),
+        TunnelAction::Stop => serde_json::json!({
+            "status": format!("success - stopping tunnel {}", name.unwrap_or_default()),
+        }),
+        TunnelAction::Restart => serde_json::json!({
+            "status": format!("success - restarting tunnel {}", name.unwrap_or_default()),
+        }),
+        TunnelAction::Delete => serde_json::json!({
+            "status": format!("success - deleted tunnel {}", name.unwrap_or_default()),
+        }),
+    }
+}
+
+/// Derives the public `.b32.i2p` address from an I2P Base64 Destination.
+fn destination_b32_address(destination: &str) -> Option<String> {
+    const MAX_DESTINATION_BYTES: usize = 4096;
+    const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let bytes = i2pr_api::sam::base64::decode(destination, MAX_DESTINATION_BYTES).ok()?;
+    let digest = i2pr_crypto::sha256(&bytes);
+    let mut output = String::with_capacity(52);
+    let mut accumulator = 0u32;
+    let mut bits = 0u8;
+    for byte in digest.as_bytes() {
+        accumulator = (accumulator << 8) | u32::from(*byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            output.push(BASE32[((accumulator >> bits) & 0x1f) as usize] as char);
+        }
+        accumulator &= (1u32 << bits).wrapping_sub(1);
+    }
+    if bits > 0 {
+        output.push(BASE32[((accumulator << (5 - bits)) & 0x1f) as usize] as char);
+    }
+    Some(format!("{output}.b32.i2p"))
+}
+
+/// Whether an internal option name contains a secret value.
+fn is_tunnel_secret_key(key: &str) -> bool {
+    i2pr_i2pcontrol::SECRET_OPTIONS.contains(&key)
+        || matches!(key, "outproxy_password" | "private_key_file")
+}
+
+/// Maps one internal option name to an exact Proposal TunnelManager key.
+fn proposal_tunnel_option_name(key: &str) -> Option<String> {
+    let explicit = match key {
+        "listen_host" => Some("ReachableBy"),
+        "listen_port" => Some("Port"),
+        "unique_local_address" => Some("UniqueLocalAddressPerClient"),
+        "multihoming" => Some("MultiHoming"),
+        _ => None,
+    };
+    let canonical = explicit.map(str::to_owned).unwrap_or_else(|| {
+        let mut output = String::with_capacity(key.len());
+        let mut uppercase = true;
+        for character in key.chars() {
+            if character == '_' {
+                uppercase = true;
+            } else if uppercase {
+                output.extend(character.to_uppercase());
+                uppercase = false;
+            } else {
+                output.push(character);
+            }
+        }
+        output
+    });
+    i2pr_i2pcontrol::PROPOSAL_TUNNEL_MANAGER_FIELDS
+        .contains(&canonical.as_str())
+        .then_some(canonical)
 }
 
 /// Outcome of dispatching one HTTP body.
@@ -1764,6 +2029,33 @@ mod tests {
     /// Loopback test password (never logged; redaction asserted below).
     const TEST_PASSWORD: &str = "correct-horse-battery-staple-i2pcontrol";
 
+    #[test]
+    fn proposal_tunnel_raw_config_omits_secret_values() {
+        let result = proposal_tunnel_manager_result(
+            i2pr_i2pcontrol::TunnelAction::Get,
+            Some("redacted"),
+            serde_json::json!({
+                "type":"client",
+                "status":"stopped",
+                "start_on_load":false,
+                "options":{
+                    "proxy_password":"proxy-secret",
+                    "outproxy_password":"outproxy-secret",
+                    "private_key_file":"private-key-path",
+                    "persistent_client_key":"true"
+                }
+            }),
+        );
+        let rendered = result.to_string();
+        for secret in ["proxy-secret", "outproxy-secret", "private-key-path"] {
+            assert!(!rendered.contains(secret), "rawConfig leaked {secret}");
+        }
+        assert_eq!(
+            result["info"]["rawConfig"]["persistentClientKey"],
+            serde_json::json!(true)
+        );
+    }
+
     /// Builds an enabled loopback config with an ephemeral port.
     fn test_config(password: &str) -> I2pControlConfig {
         let text = format!(
@@ -1989,7 +2281,7 @@ mod tests {
         );
         let outcome = dispatch(
             &state,
-            &serde_json::json!({"jsonrpc": "2.0", "method": "TunnelManager", "params": {"Token": token, "action": "get"}, "id": 1}),
+            &serde_json::json!({"jsonrpc": "2.0", "method": "TunnelManager", "params": {"Token": token, "Action": "get", "Name": "known"}, "id": 1}),
             None,
             0,
         );
@@ -2424,16 +2716,17 @@ mod tests {
         let response = call(
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}),
         );
+        assert_eq!(response["success"], serde_json::json!(true));
         assert_eq!(
-            response["result"],
-            serde_json::json!({"success": true, "message": "entry created"})
+            response["message"],
+            serde_json::json!("Added wire.i2p in private address book")
         );
         let response = call(
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Destination": destination}),
         );
         assert_eq!(
-            response["result"]["message"],
-            serde_json::json!("entry updated")
+            response["message"],
+            serde_json::json!("Added wire.i2p in private address book")
         );
         // Proposal getters are recognized as canonical fields, but their
         // exact list/object projections are owned by the next plan. No
@@ -2453,9 +2746,10 @@ mod tests {
         let response = call(
             serde_json::json!({"Token": token, "Type": "private", "Hostname": "wire.i2p", "Delete": false}),
         );
+        assert_eq!(response["success"], serde_json::json!(true));
         assert_eq!(
-            response["result"],
-            serde_json::json!({"success": true, "message": "entry deleted"})
+            response["message"],
+            serde_json::json!("Deleted wire.i2p in private address book")
         );
         let response = json_of(&dispatch(
             &state,
@@ -2476,8 +2770,9 @@ mod tests {
         ] {
             let response = call(params);
             assert!(
-                response.get("error").is_some(),
-                "shape must fail: {response}"
+                response.get("error").is_some()
+                    || response.get("success") == Some(&serde_json::Value::Bool(false)),
+                "invalid request or failed mutation must be explicit: {response}"
             );
         }
         // Unknown hostnames delete deterministically; values stay valid.
@@ -2485,7 +2780,7 @@ mod tests {
         let response = call(
             serde_json::json!({"Token": token, "Type": "local", "Hostname": "ghost.i2p", "Destination": "nope"}),
         );
-        assert!(response.get("error").is_some());
+        assert_eq!(response["success"], serde_json::json!(false));
         assert_eq!(manager.revision(), Some(untouched));
         // Subscriptions and config replacements with exact messages.
         let response = call(

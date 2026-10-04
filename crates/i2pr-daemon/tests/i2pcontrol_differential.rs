@@ -398,9 +398,14 @@ async fn run_corpus(
         "tunnel envelope: {response}"
     );
     if strict {
-        assert_eq!(response["error"]["code"], serde_json::json!(-32602));
         assert!(
-            response["error"]["message"]
+            response["result"]["status"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("error - ")
+        );
+        assert!(
+            response["result"]["status"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("unknown tunnel"),
