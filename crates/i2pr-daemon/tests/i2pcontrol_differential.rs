@@ -435,7 +435,7 @@ async fn run_corpus(
     errors += 1;
     shapes.push_str(&shape_hash(&response["result"]));
 
-    // Deep-option incompatibility carries the Plan 293 determination.
+    // Unsupported signing types fail with Plan 324's exact policy.
     let (_, response) = post_json(
         address,
         &serde_json::json!({
@@ -443,7 +443,9 @@ async fn run_corpus(
             "method": "TunnelManager",
             "params": {
                 "Token": token, "Name": "sig-probe", "Action": "create",
-                "Type": "client", "SigType": "EDDSA_SHA512_ED25519",
+                "Type": "client",
+                "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+                "SigType": "DSA-SHA1",
             },
             "id": 15,
         }),
@@ -456,7 +458,7 @@ async fn run_corpus(
     if strict {
         let haystack = serde_json::to_string(&response).expect("serializes");
         assert!(
-            haystack.contains("Plan 293 determination"),
+            haystack.contains("SigType supports only EdDSA_SHA512_ED25519"),
             "determination marker: {response}"
         );
     }

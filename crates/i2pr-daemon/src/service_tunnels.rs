@@ -3580,59 +3580,61 @@ impl ServiceTunnelManager {
         group_spec: &DestinationGroupSpec,
     ) -> Result<BridgeData, ServiceTunnelError> {
         let now_seconds = service_now_seconds();
-        let identity =
-            if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) = &spec.policy {
-                let store = ServiceDestinationStore::for_key_reference(
-                    &self.config.data_dir,
-                    spec.id.as_str(),
-                    key_ref.as_str(),
-                )
-                .map_err(ServiceTunnelError::Storage)?;
-                let record = if store.exists() {
-                    store.load().map_err(ServiceTunnelError::Storage)?
-                } else {
-                    let mut rng = OsRng;
-                    store
-                        .generate_new(&mut rng)
-                        .map_err(ServiceTunnelError::Storage)?
-                };
-                identity_from_record(&record, spec.id.as_str())?
-            } else if group_spec.persistent {
-                let group_name = match &group_spec.key {
-                    DestinationGroupKey::Dedicated(id) => id.as_str(),
-                    DestinationGroupKey::Explicit(id) => id.as_str(),
-                };
-                let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
-                    .map_err(ServiceTunnelError::Storage)?;
-                let legacy = match &group_spec.key {
-                    DestinationGroupKey::Dedicated(id) => Some(
-                        ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
-                            .map_err(ServiceTunnelError::Storage)?,
-                    ),
-                    DestinationGroupKey::Explicit(_) => None,
-                };
-                let record: ServiceDestinationRecord = if store.exists() {
-                    store.load().map_err(ServiceTunnelError::Storage)?
-                } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
-                    store
-                        .migrate_from(&legacy)
-                        .map_err(ServiceTunnelError::Storage)?
-                } else {
-                    let mut rng = OsRng;
-                    store
-                        .generate_new(&mut rng)
-                        .map_err(ServiceTunnelError::Storage)?
-                };
-                identity_from_record(&record, spec.id.as_str())?
+        let identity = if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) =
+            spec.policy.ownership()
+        {
+            let store = ServiceDestinationStore::for_key_reference(
+                &self.config.data_dir,
+                spec.id.as_str(),
+                key_ref.as_str(),
+            )
+            .map_err(ServiceTunnelError::Storage)?;
+            let record = if store.exists() {
+                store.load().map_err(ServiceTunnelError::Storage)?
             } else {
                 let mut rng = OsRng;
-                DestinationIdentity::generate(&mut rng).map_err(|error| {
-                    ServiceTunnelError::InvalidConfig(format!(
-                        "{} ephemeral identity generation failed: {error}",
-                        spec.id.as_str()
-                    ))
-                })?
+                store
+                    .generate_new(&mut rng)
+                    .map_err(ServiceTunnelError::Storage)?
             };
+            identity_from_record(&record, spec.id.as_str())?
+        } else if group_spec.persistent {
+            let group_name = match &group_spec.key {
+                DestinationGroupKey::Dedicated(id) => id.as_str(),
+                DestinationGroupKey::Explicit(id) => id.as_str(),
+            };
+            let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
+                .map_err(ServiceTunnelError::Storage)?;
+            let legacy = match &group_spec.key {
+                DestinationGroupKey::Dedicated(id) => Some(
+                    ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
+                        .map_err(ServiceTunnelError::Storage)?,
+                ),
+                DestinationGroupKey::Explicit(_) => None,
+            };
+            let record: ServiceDestinationRecord = if store.exists() {
+                store.load().map_err(ServiceTunnelError::Storage)?
+            } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
+                store
+                    .migrate_from(&legacy)
+                    .map_err(ServiceTunnelError::Storage)?
+            } else {
+                let mut rng = OsRng;
+                store
+                    .generate_new(&mut rng)
+                    .map_err(ServiceTunnelError::Storage)?
+            };
+            identity_from_record(&record, spec.id.as_str())?
+        } else {
+            let mut rng = OsRng;
+            DestinationIdentity::generate(&mut rng).map_err(|error| {
+                ServiceTunnelError::InvalidConfig(format!(
+                    "{} ephemeral identity generation failed: {error}",
+                    spec.id.as_str()
+                ))
+            })?
+        };
+        validate_destination_crypto_policy(&identity, group_spec.crypto, spec.id.as_str())?;
         let fabric = SamLocalProductFabric::new();
         let product = fabric
             .prepare_for_destination(&identity, now_seconds)
@@ -3642,6 +3644,20 @@ impl ServiceTunnelManager {
                     spec.id.as_str()
                 ))
             })?;
+        let lease_set_encryption_matches = match group_spec.crypto.lease_set_encryption {
+            i2pr_service_tunnels::DestinationLeaseSetEncryptionPolicy::X25519 => {
+                product.lease_set2.encryption_keys().len() == 1
+                    && product.lease_set2.encryption_keys()[0].key_type().code() == 4
+                    && product.lease_set2.encryption_keys()[0].as_bytes()
+                        == identity.static_public_bytes()
+            }
+        };
+        if !lease_set_encryption_matches {
+            return Err(ServiceTunnelError::InvalidConfig(format!(
+                "{} LeaseSet2 encryption does not match its selected crypto policy",
+                spec.id.as_str()
+            )));
+        }
         let destination_id = identity.id();
         Ok(BridgeData {
             identity_arc: Arc::new(identity),
@@ -3836,6 +3852,24 @@ impl ServiceTunnelManager {
         }
         None
     }
+}
+
+fn validate_destination_crypto_policy(
+    identity: &DestinationIdentity,
+    policy: i2pr_service_tunnels::DestinationCryptoPolicy,
+    service_id: &str,
+) -> Result<(), ServiceTunnelError> {
+    let signing_matches = match policy.signing {
+        i2pr_service_tunnels::DestinationSigningPolicy::Ed25519 => {
+            identity.signing_public_key().key_type().code() == 7
+        }
+    };
+    if !signing_matches {
+        return Err(ServiceTunnelError::InvalidConfig(format!(
+            "{service_id} destination identity does not match its selected crypto policy"
+        )));
+    }
+    Ok(())
 }
 
 fn identity_from_record(

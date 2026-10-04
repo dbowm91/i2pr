@@ -150,18 +150,8 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         "TunnelLength" | "TunnelVariance" | "TunnelQuantity" | "TunnelBackupQuantity" => {
             Some("DestinationConfig tunnel shaping and Plan 296 pool policy")
         }
-        "SigType" => {
-            return DeepPrerequisite {
-                plan: 324,
-                reason: "destination signing algorithm policy",
-            };
-        }
-        "EncType" => {
-            return DeepPrerequisite {
-                plan: 324,
-                reason: "destination encryption algorithm policy",
-            };
-        }
+        "SigType" => Some("typed Ed25519 Destination identity policy (SigType 7)"),
+        "EncType" => Some("typed Standard LeaseSet2 X25519 policy (EncType 4)"),
         "EncryptLeaseSet"
         | "OptionalLookup"
         | "LeaseSetPassword"
@@ -390,6 +380,15 @@ mod tests {
             })
             .collect::<std::collections::BTreeSet<_>>();
         assert!(gaps.is_empty());
+
+        for field in ["SigType", "EncType"] {
+            assert!(cells.iter().filter(|cell| cell.field == field).all(|cell| {
+                matches!(
+                    cell.disposition,
+                    ProposalTunnelCellDisposition::Apply { .. }
+                )
+            }));
+        }
 
         for tunnel_type in ["server", "httpserver", "httpbidirserver"] {
             assert!(cells.iter().any(|cell| {

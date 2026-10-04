@@ -133,6 +133,8 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "NewDest" => Some("new_dest"),
         "ConnectDelay" => Some("connect_delay"),
         "DelayOpen" => Some("delay_open"),
+        "SigType" => Some("sig_type"),
+        "EncType" => Some("enc_type"),
         "AccessOption" => Some("access_option"),
         "FilterFilePath" => Some("filter_file_path"),
         "JumpList" => Some("jump_list"),
@@ -215,7 +217,10 @@ fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelR
             | "total_ban_time"
     ) {
         crate::tunnel_options::OptionValueType::Integer
-    } else if matches!(key, "filter_file_path" | "priv_key_file") {
+    } else if matches!(
+        key,
+        "filter_file_path" | "priv_key_file" | "sig_type" | "enc_type"
+    ) {
         crate::tunnel_options::OptionValueType::String
     } else {
         find_option(key)
@@ -453,7 +458,10 @@ pub fn decode_tunnel_request(
                     // Proposal 170 controls extend the frozen Plan
                     // 286 option table under Plan 323.
                     crate::tunnel_options::OptionValueType::Boolean
-                } else if matches!(option_key, "filter_file_path" | "priv_key_file") {
+                } else if matches!(
+                    option_key,
+                    "filter_file_path" | "priv_key_file" | "sig_type" | "enc_type"
+                ) {
                     crate::tunnel_options::OptionValueType::String
                 } else if matches!(
                     option_key,

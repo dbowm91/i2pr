@@ -187,6 +187,9 @@ pub const SUPPORTED_323_OPTIONS: [&str; 33] = [
     "filter_file_path",
     "priv_key_file",
 ];
+/// Plan 324 exposes only algorithms supported by the current
+/// destination-identity and LeaseSet2 encryption owners.
+pub const SUPPORTED_324_OPTIONS: [&str; 2] = ["sig_type", "enc_type"];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -1044,6 +1047,8 @@ pub fn build_control_spec_with_filter_root(
     let mut proposal_new_dest: Option<u8> = None;
     let mut connect_delay = false;
     let mut delay_open = false;
+    let mut sig_type_selected = false;
+    let mut enc_type_selected = false;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -1084,6 +1089,24 @@ pub fn build_control_spec_with_filter_root(
     let mut payload_limit_bytes: Option<usize> = None;
     for (key, value) in &definition.options {
         match key.as_str() {
+            "sig_type" => {
+                if !matches!(value.as_str(), "7" | "EDDSA_SHA512_ED25519") {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "SigType supports only EdDSA_SHA512_ED25519 (type 7)",
+                    });
+                }
+                sig_type_selected = true;
+            }
+            "enc_type" => {
+                if value != "4" {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "EncType supports only LeaseSet2 X25519 (type 4)",
+                    });
+                }
+                enc_type_selected = true;
+            }
             "shared" => {
                 if !matches!(
                     kind,
@@ -2431,6 +2454,26 @@ pub fn build_control_spec_with_filter_root(
             Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS);
     }
     timeouts.delay_open = delay_open;
+    let mut destination_policy = if let Some(key_reference) = priv_key_file {
+        DestinationPolicy::KeyReference(key_reference)
+    } else {
+        match (shared_client, persistent_client_key) {
+            (true, true) => DestinationPolicy::PersistentSharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            ),
+            (true, false) => DestinationPolicy::SharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            ),
+            (false, true) => DestinationPolicy::PersistentClient,
+            (false, false) => DestinationPolicy::Dedicated,
+        }
+    };
+    if sig_type_selected || enc_type_selected {
+        destination_policy = destination_policy
+            .with_crypto(i2pr_service_tunnels::DestinationCryptoPolicy::default());
+    }
     let spec = ServiceTunnelSpec {
         id,
         kind,
@@ -2439,22 +2482,7 @@ pub fn build_control_spec_with_filter_root(
         target,
         targets: Vec::new(),
         destination,
-        policy: if let Some(key_reference) = priv_key_file {
-            DestinationPolicy::KeyReference(key_reference)
-        } else {
-            match (shared_client, persistent_client_key) {
-                (true, true) => DestinationPolicy::PersistentSharedClientGroup(
-                    DestinationGroupId::parse("i2pcontrol-shared-client")
-                        .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
-                ),
-                (true, false) => DestinationPolicy::SharedClientGroup(
-                    DestinationGroupId::parse("i2pcontrol-shared-client")
-                        .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
-                ),
-                (false, true) => DestinationPolicy::PersistentClient,
-                (false, false) => DestinationPolicy::Dedicated,
-            }
-        },
+        policy: destination_policy,
         inbound_port: None,
         max_connections,
         max_buffered_bytes_per_direction: 65_536,
@@ -2570,6 +2598,7 @@ pub fn normalize_definition_with_filter_root(
             && !SUPPORTED_296_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_297_OPTIONS.contains(&key.as_str())
             && !SUPPORTED_323_OPTIONS.contains(&key.as_str())
+            && !SUPPORTED_324_OPTIONS.contains(&key.as_str())
         {
             return Err(ControlError::UnsupportedOption(rejected_option_reason(
                 tunnel_type,
@@ -5416,13 +5445,28 @@ mod tests {
         }
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
         options.insert("sig_type".to_owned(), "EDDSA_SHA512_ED25519".to_owned());
-        let error = normalize_definition("bad", TunnelType::Client, &options, false)
-            .expect_err("sig_type rejected");
-        assert!(
-            matches!(&error, ControlError::UnsupportedOption(message)
-                if message.contains("Plan 293 determination")),
-            "unexpected error: {error:?}"
-        );
+        options.insert("enc_type".to_owned(), "4".to_owned());
+        let definition = normalize_definition("typed-crypto", TunnelType::Client, &options, false)
+            .expect("the supported identity policy is typed and persisted");
+        let spec = build_control_spec(&definition).expect("the supported identity policy maps");
+        assert!(matches!(
+            spec.policy,
+            DestinationPolicy::WithCrypto { crypto, .. }
+                if crypto == i2pr_service_tunnels::DestinationCryptoPolicy::default()
+        ));
+        for (key, value) in [
+            ("sig_type", "Ed25519"),
+            ("sig_type", "DSA-SHA1"),
+            ("enc_type", "0"),
+            ("enc_type", "5"),
+        ] {
+            let mut invalid = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            invalid.insert(key.to_owned(), value.to_owned());
+            assert!(matches!(
+                normalize_definition("bad-crypto", TunnelType::Client, &invalid, false),
+                Err(ControlError::InvalidOption { .. })
+            ));
+        }
         // Outproxy provider residual on an in-mask proxy kind.
         let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
         options.insert(
@@ -5664,22 +5708,27 @@ mod tests {
     fn plan293_deep_primitives_rejected_with_named_limitation() {
         fn base_options(tunnel_type: TunnelType) -> BTreeMap<String, String> {
             match tunnel_type {
-                TunnelType::Server | TunnelType::HttpServer | TunnelType::HttpBidirServer => {
-                    server_options("127.0.0.1:9090")
-                }
+                TunnelType::Server
+                | TunnelType::IrcServer
+                | TunnelType::HttpServer
+                | TunnelType::HttpBidirServer => server_options("127.0.0.1:9090"),
                 TunnelType::StreamrClient | TunnelType::StreamrServer => {
                     let mut options = BTreeMap::new();
                     options.insert("local_udp_host".to_owned(), "127.0.0.1".to_owned());
                     options.insert("local_udp_port".to_owned(), "5001".to_owned());
+                    if tunnel_type == TunnelType::StreamrClient {
+                        options.insert(
+                            "target_destination".to_owned(),
+                            format!("{}.b32.i2p", "a".repeat(52)),
+                        );
+                    }
                     options
                 }
                 _ => client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0),
             }
         }
-        // sig_type applies to every kind: the Java spelling, the numeric
-        // type, the lone i2pr-supported value, and a legacy name all fail
-        // with the SigType limitation. No singleton accept exists because
-        // accepting the one generatable value would select nothing.
+        // The current Ed25519 policy is accepted for every destination
+        // owner; unsupported legacy and alternate algorithms fail closed.
         for tunnel_type in [
             TunnelType::Client,
             TunnelType::Server,
@@ -5694,19 +5743,37 @@ mod tests {
             TunnelType::StreamrClient,
             TunnelType::StreamrServer,
         ] {
-            for value in ["EDDSA_SHA512_ED25519", "7", "Ed25519", "DSA-SHA1"] {
+            for value in ["EDDSA_SHA512_ED25519", "7"] {
                 let mut options = base_options(tunnel_type);
                 options.insert("sig_type".to_owned(), value.to_owned());
-                let error = normalize_definition("sigbad", tunnel_type, &options, false)
-                    .expect_err("sig_type rejected");
+                let normalized = normalize_definition("sig-ok", tunnel_type, &options, false);
                 assert!(
-                    matches!(&error, ControlError::UnsupportedOption(message)
-                        if message.contains("sig_type")
-                            && message.contains("SigType")
-                            && message.contains("Plan 293 determination")
-                            && message.contains("Plan 295")),
-                    "unexpected error for {tunnel_type:?} sig_type={value}: {error:?}"
+                    normalized.is_ok(),
+                    "unexpected supported SigType failure for {tunnel_type:?}: {normalized:?}"
                 );
+            }
+            for value in ["Ed25519", "DSA-SHA1"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("sig_type".to_owned(), value.to_owned());
+                assert!(matches!(
+                    normalize_definition("sigbad", tunnel_type, &options, false),
+                    Err(ControlError::InvalidOption { .. })
+                ));
+            }
+            let mut options = base_options(tunnel_type);
+            options.insert("enc_type".to_owned(), "4".to_owned());
+            let normalized = normalize_definition("enc-ok", tunnel_type, &options, false);
+            assert!(
+                normalized.is_ok(),
+                "unexpected supported EncType failure for {tunnel_type:?}: {normalized:?}"
+            );
+            for value in ["0", "5"] {
+                let mut options = base_options(tunnel_type);
+                options.insert("enc_type".to_owned(), value.to_owned());
+                assert!(matches!(
+                    normalize_definition("encbad", tunnel_type, &options, false),
+                    Err(ControlError::InvalidOption { .. })
+                ));
             }
         }
         // LeaseSet security keys on publishing kinds: every mode fails,

@@ -310,6 +310,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
             "TargetDestination":b32, "Port":port, "ReachableBy":"127.0.0.1",
             "Description":"I2PControl managed test tunnel", "MaxConcurrentConns":24,
             "Close":true, "CloseTime":45, "Reduce":true, "ReduceTime":12, "ReduceCount":3, "Profile":"interactive",
+            "SigType":"EDDSA_SHA512_ED25519", "EncType":"4",
             "AllowUserAgent":true, "AllowReferer":true, "AllowAccept":false,
             "AllowInternalSSL":false, "NewDest":2
         }),
@@ -374,8 +375,40 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         serde_json::json!(false)
     );
     assert_eq!(info["rawConfig"]["newDest"], serde_json::json!(2));
+    assert_eq!(
+        info["rawConfig"]["sigType"],
+        serde_json::json!("EDDSA_SHA512_ED25519")
+    );
+    assert_eq!(info["rawConfig"]["encType"], serde_json::json!("4"));
     assert_eq!(info["persistentClientKey"], serde_json::json!(true));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
+    let destination_before_crypto_noop = info["destination"]
+        .as_str()
+        .expect("serialized local Destination")
+        .to_owned();
+    let edited = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"edit", "Name":"canonical",
+            "SigType":"EDDSA_SHA512_ED25519", "EncType":"4"
+        }),
+        9,
+    )
+    .await;
+    assert!(edited.get("error").is_none(), "edit: {edited}");
+    let fetched_after_crypto_noop = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get", "Name":"canonical"}),
+        10,
+    )
+    .await;
+    assert_eq!(
+        fetched_after_crypto_noop["result"]["info"]["destination"],
+        serde_json::json!(destination_before_crypto_noop),
+        "re-selecting the effective algorithms must not rotate identity"
+    );
 
     let resume_port = distinct_port();
     let resume_created = tunnel_raw(

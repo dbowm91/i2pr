@@ -1380,6 +1380,20 @@ fn plan289_tunnel_request_envelope_rules() {
         delay_open.options.get("delay_open").map(String::as_str),
         Some("true")
     );
+    let crypto_policy = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "crypto-client", "Type": "client",
+        "Port": 4445, "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+        "SigType": "EDDSA_SHA512_ED25519", "EncType": "4",
+    })))
+    .expect("current destination algorithms have typed owners");
+    assert_eq!(
+        crypto_policy.options.get("sig_type").map(String::as_str),
+        Some("EDDSA_SHA512_ED25519")
+    );
+    assert_eq!(
+        crypto_policy.options.get("enc_type").map(String::as_str),
+        Some("4")
+    );
     let multihoming = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "a", "Type": "server",
         "MultiHoming": false,
