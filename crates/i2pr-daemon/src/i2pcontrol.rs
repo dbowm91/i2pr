@@ -1902,6 +1902,8 @@ fn proposal_tunnel_option_name(key: &str) -> Option<String> {
         "listen_port" => Some("Port"),
         "description" => Some("Description"),
         "max_streams" => Some("MaxConcurrentConns"),
+        "close_on_idle" => Some("Close"),
+        "reduce_on_idle" => Some("Reduce"),
         "unique_local_address" => Some("UniqueLocalAddressPerClient"),
         "multihoming" => Some("MultiHoming"),
         _ => None,

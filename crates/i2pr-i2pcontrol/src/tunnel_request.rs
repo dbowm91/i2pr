@@ -126,6 +126,10 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
         "MultiHoming" => Some("multihoming"),
+        // These canonical Proposal controls already have bounded idle
+        // lifecycle owners in the service-tunnel runtime.
+        "Close" => Some("close_on_idle"),
+        "Reduce" => Some("reduce_on_idle"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),

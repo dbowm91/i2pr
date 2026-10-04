@@ -950,7 +950,7 @@ fn plan289_tunnel_request_envelope_rules() {
     // create requires name + type; options validated against the universe.
     let request = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "alpha", "Type": "httpclient",
-        "Port": 8180, "StartOnLoad": true,
+        "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -962,6 +962,14 @@ fn plan289_tunnel_request_envelope_rules() {
     assert_eq!(
         request.options.get("start_on_load").map(String::as_str),
         Some("true")
+    );
+    assert_eq!(
+        request.options.get("close_on_idle").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        request.options.get("reduce_on_idle").map(String::as_str),
+        Some("false")
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
