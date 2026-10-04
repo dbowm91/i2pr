@@ -1370,6 +1370,16 @@ fn plan289_tunnel_request_envelope_rules() {
         proxy_auth.options.get("proxy_auth").map(String::as_str),
         Some("true")
     );
+    let delay_open = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "lazy-client", "Type": "client",
+        "Port": 4444, "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+        "DelayOpen": true,
+    })))
+    .expect("DelayOpen is a typed Proposal client-management option");
+    assert_eq!(
+        delay_open.options.get("delay_open").map(String::as_str),
+        Some("true")
+    );
     let multihoming = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "a", "Type": "server",
         "MultiHoming": false,

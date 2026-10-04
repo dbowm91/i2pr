@@ -232,8 +232,8 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         }
         "DelayOpen" => {
             return if applies(CLIENTS) {
-                OwnerGap {
-                    owner_needed: "deferred service Destination/tunnel activation lifecycle",
+                Apply {
+                    owner: "bounded product-coordinator deferred Destination-group activation",
                 }
             } else {
                 NotApplicable {
@@ -389,7 +389,7 @@ mod tests {
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(gaps, ["DelayOpen"].into_iter().collect());
+        assert!(gaps.is_empty());
 
         for tunnel_type in ["server", "httpserver", "httpbidirserver"] {
             assert!(cells.iter().any(|cell| {

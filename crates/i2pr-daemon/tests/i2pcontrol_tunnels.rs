@@ -1247,6 +1247,34 @@ async fn tunnel_restart_recovery_over_wire() {
 #[tokio::test]
 async fn tunnel_disabled_mode_preserves_state() {
     use i2pr_daemon::i2pcontrol_tunnels::ControlStore;
+    fn snapshot_tree(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        fn visit(
+            root: &std::path::Path,
+            directory: &std::path::Path,
+            snapshot: &mut Vec<(std::path::PathBuf, Vec<u8>)>,
+        ) {
+            for entry in std::fs::read_dir(directory).expect("directory reads") {
+                let entry = entry.expect("entry");
+                let path = entry.path();
+                let relative = path
+                    .strip_prefix(root)
+                    .expect("path below root")
+                    .to_path_buf();
+                let metadata = std::fs::symlink_metadata(&path).expect("metadata");
+                if metadata.is_dir() {
+                    snapshot.push((relative, Vec::new()));
+                    visit(root, &path, snapshot);
+                } else {
+                    snapshot.push((relative, std::fs::read(path).expect("file reads")));
+                }
+            }
+        }
+        let mut snapshot = Vec::new();
+        visit(root, root, &mut snapshot);
+        snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+        snapshot
+    }
+
     let directory = tempfile::tempdir().expect("tempdir");
     // Seed one published generation directly through the store.
     let store = ControlStore::open(directory.path()).expect("store opens");
@@ -1254,15 +1282,8 @@ async fn tunnel_disabled_mode_preserves_state() {
         .stage(&std::collections::BTreeMap::new())
         .expect("stage");
     store.publish(staged).expect("publish");
-    let snapshot_before: Vec<(std::path::PathBuf, Vec<u8>)> =
-        std::fs::read_dir(directory.path().join("i2pcontrol").join("tunnels"))
-            .expect("tunnels dir")
-            .map(|entry| {
-                let entry = entry.expect("entry");
-                let bytes = std::fs::read(entry.path()).expect("read");
-                (entry.file_name().into(), bytes)
-            })
-            .collect();
+    let tunnels_dir = directory.path().join("i2pcontrol").join("tunnels");
+    let snapshot_before = snapshot_tree(&tunnels_dir);
     assert!(!snapshot_before.is_empty());
     // Build the daemon graph with I2PControl disabled: no service is
     // registered and the control files are untouched.
@@ -1274,15 +1295,7 @@ async fn tunnel_disabled_mode_preserves_state() {
     assert!(!config.i2pcontrol.enabled);
     let graph = i2pr_daemon::build_daemon_graph(&config).expect("graph builds");
     drop(graph);
-    let snapshot_after: Vec<(std::path::PathBuf, Vec<u8>)> =
-        std::fs::read_dir(directory.path().join("i2pcontrol").join("tunnels"))
-            .expect("tunnels dir")
-            .map(|entry| {
-                let entry = entry.expect("entry");
-                let bytes = std::fs::read(entry.path()).expect("read");
-                (entry.file_name().into(), bytes)
-            })
-            .collect();
+    let snapshot_after = snapshot_tree(&tunnels_dir);
     assert_eq!(
         snapshot_before, snapshot_after,
         "disabled mode mutates nothing"

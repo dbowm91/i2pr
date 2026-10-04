@@ -1920,6 +1920,7 @@ fn normalize_service_tunnels(
         write_timeout_ms: raw.write_timeout_ms,
         shutdown_timeout_ms: raw.shutdown_timeout_ms,
         streaming_connect_delay_ms: None,
+        delay_open: false,
     };
     timeouts.validate().map_err(|_| ConfigError::Semantic {
         field: "service_tunnels.timeouts",

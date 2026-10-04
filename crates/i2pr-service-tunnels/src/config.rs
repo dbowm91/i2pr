@@ -579,6 +579,10 @@ pub struct ServiceTimeouts {
     /// Optional deferred-connect delay for generic client tunnels.
     /// `None` means initiate the SYN immediately.
     pub streaming_connect_delay_ms: Option<u64>,
+    /// Defer router-backed destination pool provisioning until the first
+    /// local client connection requests it. The product coordinator owns the
+    /// activation and its inbound build-reply processing.
+    pub delay_open: bool,
 }
 
 impl ServiceTimeouts {
@@ -590,6 +594,7 @@ impl ServiceTimeouts {
             write_timeout_ms: 60_000,
             shutdown_timeout_ms: 5_000,
             streaming_connect_delay_ms: None,
+            delay_open: false,
         }
     }
 
@@ -1045,6 +1050,22 @@ impl ServiceTunnelSpec {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id: self.id.as_str().to_owned(),
                 reason: "streaming connect delay applies to generic client tunnels only",
+            });
+        }
+        if self.timeouts.delay_open
+            && !matches!(
+                self.kind,
+                ServiceTunnelKind::GenericClient
+                    | ServiceTunnelKind::HttpClient
+                    | ServiceTunnelKind::Socks5Client
+                    | ServiceTunnelKind::IrcClient
+                    | ServiceTunnelKind::ConnectClient
+                    | ServiceTunnelKind::SocksIrc
+            )
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: self.id.as_str().to_owned(),
+                reason: "delay open applies to client service tunnels only",
             });
         }
         TunnelShaping::try_new(

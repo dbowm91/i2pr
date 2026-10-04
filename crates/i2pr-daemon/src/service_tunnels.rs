@@ -63,7 +63,7 @@ use i2pr_tunnel::TunnelId;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
@@ -166,6 +166,9 @@ pub struct ServiceRuntime {
     group: Arc<DestinationGroupRuntime>,
     /// The destination id used for this service.
     pub(crate) destination_id: DestinationId,
+    /// Whether router-backed pool construction is deferred until the
+    /// first local client connection (Proposal 170 `DelayOpen`).
+    delay_open: bool,
     /// Listener for client tunnels (loopback TCP).
     pub(crate) client_listener: Option<TcpListener>,
     /// Local TCP target address for server tunnels.
@@ -429,6 +432,19 @@ pub struct ServiceTunnelManager {
     /// composition root installs the active subsystem's shared handle;
     /// static aliases always win over address-book entries.
     addressbook: Mutex<crate::addressbook::SharedAddressBook>,
+    /// Bounded service-to-product activation requests. The product's SSU2
+    /// owner drains this queue and remains the sole inbound/build owner.
+    deferred_activation_tx: mpsc::Sender<DeferredActivationRequest>,
+    deferred_activation_rx: Mutex<Option<mpsc::Receiver<DeferredActivationRequest>>>,
+    deferred_activation_enabled: AtomicBool,
+}
+
+const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
+
+/// One bounded request to activate a deferred Destination group.
+pub(crate) struct DeferredActivationRequest {
+    pub(crate) destination_id: DestinationId,
+    pub(crate) completion: oneshot::Sender<Result<(), String>>,
 }
 
 impl std::fmt::Debug for ServiceTunnelManager {
@@ -477,6 +493,8 @@ impl ServiceTunnelManager {
             ServiceTunnelError::InvalidConfig("service count exceeds u16 capacity".to_owned())
         })?;
         let aggregate_ceiling = config.aggregate_connection_ceiling;
+        let (deferred_activation_tx, deferred_activation_rx) =
+            mpsc::channel(MAX_DEFERRED_ACTIVATION_REQUESTS);
         Ok(Self {
             config,
             runtimes: Mutex::new(HashMap::new()),
@@ -503,7 +521,124 @@ impl ServiceTunnelManager {
             inbound_tunnel_owners: Mutex::new(HashMap::new()),
             inbound_orphan_receives: AtomicUsize::new(0),
             addressbook: Mutex::new(crate::addressbook::SharedAddressBook::new()),
+            deferred_activation_tx,
+            deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
+            deferred_activation_enabled: AtomicBool::new(false),
         })
+    }
+
+    /// Enables product-owned deferred activation after the router-backed
+    /// product has taken the bounded request receiver.
+    pub(crate) fn enable_deferred_activation(&self) {
+        self.deferred_activation_enabled
+            .store(true, Ordering::Release);
+    }
+
+    /// Transfers the single activation receiver to the product owner.
+    pub(crate) fn take_deferred_activation_requests(
+        &self,
+    ) -> Option<mpsc::Receiver<DeferredActivationRequest>> {
+        self.deferred_activation_rx
+            .lock()
+            .ok()
+            .and_then(|mut receiver| receiver.take())
+    }
+
+    /// Returns deferred client groups after service runtimes have been
+    /// committed. A shared group is deferred only when every member is a
+    /// client with `DelayOpen`; one eager member keeps the whole identity
+    /// group eager.
+    pub(crate) fn deferred_destination_ids(&self) -> std::collections::HashSet<DestinationId> {
+        let Ok(runtimes) = self.runtimes.lock() else {
+            return std::collections::HashSet::new();
+        };
+        let mut members = HashMap::<DestinationId, Vec<&ServiceRuntime>>::new();
+        for runtime in runtimes.values() {
+            members
+                .entry(runtime.destination_id)
+                .or_default()
+                .push(runtime);
+        }
+        members
+            .into_iter()
+            .filter_map(|(destination_id, group)| {
+                (!group.is_empty()
+                    && group
+                        .iter()
+                        .all(|runtime| !runtime.is_server && runtime.delay_open))
+                .then_some(destination_id)
+            })
+            .collect()
+    }
+
+    /// Requests product-owned router activation before a client begins its
+    /// first Streaming handshake. Non-deferred and local-only services return
+    /// immediately. Caller cancellation and the service connect deadline
+    /// bound the wait.
+    pub(crate) async fn ensure_destination_active(
+        &self,
+        spec_id: &str,
+        cancellation: &CancellationToken,
+        timeout_ms: u64,
+    ) -> Result<(), ServiceTunnelError> {
+        if !self.deferred_activation_enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let runtime = self
+            .runtimes
+            .lock()
+            .ok()
+            .and_then(|runtimes| runtimes.get(spec_id).cloned());
+        let Some(runtime) = runtime else {
+            return Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation service runtime is unavailable".to_owned(),
+            ));
+        };
+        if !runtime.delay_open
+            || !self
+                .deferred_destination_ids()
+                .contains(&runtime.destination_id)
+        {
+            return Ok(());
+        }
+        let (completion, result) = oneshot::channel();
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(timeout_ms.clamp(1, 120_000));
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation cancelled".to_owned(),
+            )),
+            _ = tokio::time::sleep_until(deadline) => return Err(
+                ServiceTunnelError::InvalidConfig("deferred activation deadline reached".to_owned()),
+            ),
+            sent = self.deferred_activation_tx.send(DeferredActivationRequest {
+                destination_id: runtime.destination_id,
+                completion,
+            }) => {
+                if sent.is_err() {
+                    return Err(ServiceTunnelError::InvalidConfig(
+                        "deferred activation owner is unavailable".to_owned(),
+                    ));
+                }
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation cancelled".to_owned(),
+            )),
+            _ = tokio::time::sleep_until(deadline) => Err(ServiceTunnelError::InvalidConfig(
+                "deferred activation deadline reached".to_owned(),
+            )),
+            response = result => match response {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(reason)) => Err(ServiceTunnelError::InvalidConfig(reason)),
+                Err(_) => Err(ServiceTunnelError::InvalidConfig(
+                    "deferred activation owner stopped".to_owned(),
+                )),
+            }
+        }
     }
 
     /// Installs the canonical address-book resolver cell (Plan 294).
@@ -3359,6 +3494,7 @@ impl ServiceTunnelManager {
             bridge: group.bridge.clone(),
             group: Arc::clone(&group),
             destination_id: group.destination_id,
+            delay_open: spec.timeouts.delay_open,
             client_listener,
             server_target,
             server_streaming_port,
@@ -4681,6 +4817,9 @@ async fn run_client_connection_with_initial_payload(
     initial_payload: Vec<u8>,
 ) -> Result<(), BoxError> {
     let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
+    manager
+        .ensure_destination_active(&runtime.spec_id, &cancellation, connect_timeout_ms)
+        .await?;
     let identity_arc =
         manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity());
     let Some(identity_arc) = identity_arc else {
@@ -5315,6 +5454,91 @@ mod plan202_routing_tests {
             _ => {}
         }
         spec
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delay_open_queues_one_bounded_group_activation_and_waits_for_owner() {
+        let directory = temp_data_dir("plan323-delay-open");
+        let mut lazy_http = group_client(
+            "lazy-http",
+            "lazy-group",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        lazy_http.timeouts.delay_open = true;
+        let mut lazy_socks = group_client(
+            "lazy-socks",
+            "lazy-group",
+            ServiceTunnelKind::Socks5Client,
+            "127.0.0.1:0",
+        );
+        lazy_socks.timeouts.delay_open = true;
+        let mut mixed_lazy = group_client(
+            "mixed-lazy",
+            "mixed-group",
+            ServiceTunnelKind::HttpClient,
+            "127.0.0.1:0",
+        );
+        mixed_lazy.timeouts.delay_open = true;
+        let mixed_eager = group_client(
+            "mixed-eager",
+            "mixed-group",
+            ServiceTunnelKind::Socks5Client,
+            "127.0.0.1:0",
+        );
+        let manager = Arc::new(
+            ServiceTunnelManager::new(ServiceTunnelManagerConfig {
+                data_dir: directory.path().to_path_buf(),
+                aggregate_connection_ceiling: 8,
+                per_service_connection_ceiling: 4,
+                specs: Arc::new(ServiceTunnelSet {
+                    tunnels: vec![lazy_http, lazy_socks, mixed_lazy, mixed_eager],
+                }),
+                aliases: Arc::new(StaticAliasTable::new()),
+            })
+            .expect("manager"),
+        );
+        let runtimes = manager.prepare().await.expect("prepare");
+        let lazy_destination = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "lazy-http")
+            .expect("lazy runtime")
+            .destination_id;
+        let mixed_destination = runtimes
+            .iter()
+            .find(|runtime| runtime.spec_id == "mixed-lazy")
+            .expect("mixed runtime")
+            .destination_id;
+        assert_eq!(
+            manager.deferred_destination_ids(),
+            std::collections::HashSet::from([lazy_destination]),
+            "every member must opt in before a shared group is deferred",
+        );
+
+        let mut requests = manager
+            .take_deferred_activation_requests()
+            .expect("single product receiver");
+        manager.enable_deferred_activation();
+        let cancellation = CancellationToken::new();
+        let request_manager = Arc::clone(&manager);
+        let wait = tokio::spawn(async move {
+            request_manager
+                .ensure_destination_active("lazy-socks", &cancellation, 1_000)
+                .await
+        });
+        let request = tokio::time::timeout(Duration::from_secs(1), requests.recv())
+            .await
+            .expect("bounded activation request arrives")
+            .expect("receiver remains owned");
+        assert_eq!(request.destination_id, lazy_destination);
+        assert_ne!(request.destination_id, mixed_destination);
+        request
+            .completion
+            .send(Ok(()))
+            .expect("client still waits for product completion");
+        wait.await
+            .expect("activation waiter task")
+            .expect("product activation result");
     }
 
     #[tokio::test(flavor = "current_thread")]

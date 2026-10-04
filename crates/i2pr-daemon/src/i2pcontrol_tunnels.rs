@@ -152,7 +152,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 32] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 33] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -172,6 +172,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 32] = [
     "access_option",
     "new_dest",
     "connect_delay",
+    "delay_open",
     "client_per_minute",
     "client_per_hour",
     "client_per_day",
@@ -1042,6 +1043,7 @@ pub fn build_control_spec_with_filter_root(
     let mut priv_key_file: Option<i2pr_service_tunnels::ServiceKeyReference> = None;
     let mut proposal_new_dest: Option<u8> = None;
     let mut connect_delay = false;
+    let mut delay_open = false;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -1167,6 +1169,23 @@ pub fn build_control_spec_with_filter_root(
                     });
                 }
                 connect_delay = parse_bool_option(key, value)?;
+            }
+            "delay_open" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "DelayOpen applies to client tunnels only",
+                    });
+                }
+                delay_open = parse_bool_option(key, value)?;
             }
             "description" => {
                 // Description is control-plane metadata: its authoritative
@@ -2411,6 +2430,7 @@ pub fn build_control_spec_with_filter_root(
         timeouts.streaming_connect_delay_ms =
             Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS);
     }
+    timeouts.delay_open = delay_open;
     let spec = ServiceTunnelSpec {
         id,
         kind,
@@ -4729,6 +4749,21 @@ mod tests {
             Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS)
         );
 
+        let delayed_open = ControlDefinition {
+            name: "delayed-open-client".to_owned(),
+            tunnel_type: TunnelType::Socks,
+            options: BTreeMap::from([
+                ("delay_open".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        let delayed_spec = build_control_spec(&delayed_open).expect("SOCKS DelayOpen spec");
+        assert!(delayed_spec.timeouts.delay_open);
+
         let invalid = ControlDefinition {
             name: "delayed-http".to_owned(),
             tunnel_type: TunnelType::HttpClient,
@@ -4736,6 +4771,22 @@ mod tests {
             start_on_load: false,
         };
         assert!(build_control_spec(&invalid).is_err());
+
+        let invalid_server = ControlDefinition {
+            name: "delayed-server".to_owned(),
+            tunnel_type: TunnelType::Server,
+            options: BTreeMap::from([("delay_open".to_owned(), "true".to_owned())]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            normalize_definition(
+                &invalid_server.name,
+                invalid_server.tunnel_type,
+                &invalid_server.options,
+                invalid_server.start_on_load,
+            ),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
     }
 
     #[test]

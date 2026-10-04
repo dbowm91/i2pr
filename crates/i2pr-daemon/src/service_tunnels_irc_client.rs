@@ -108,6 +108,17 @@ pub async fn run_irc_connection(
             return IrcConnectionOutcome::BadGateway;
         }
     };
+    if manager
+        .ensure_destination_active(
+            &runtime.spec_id,
+            &cancellation,
+            spec.timeouts.connect_timeout_ms,
+        )
+        .await
+        .is_err()
+    {
+        return IrcConnectionOutcome::BadGateway;
+    }
     let identity_arc =
         match manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity()) {
             Some(identity) => identity,

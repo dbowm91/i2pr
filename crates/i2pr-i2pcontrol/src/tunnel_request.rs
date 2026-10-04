@@ -132,6 +132,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "PrivKeyFile" => Some("priv_key_file"),
         "NewDest" => Some("new_dest"),
         "ConnectDelay" => Some("connect_delay"),
+        "DelayOpen" => Some("delay_open"),
         "AccessOption" => Some("access_option"),
         "FilterFilePath" => Some("filter_file_path"),
         "JumpList" => Some("jump_list"),
@@ -386,6 +387,7 @@ pub fn decode_tunnel_request(
                         | "AllowAccept"
                         | "AllowInternalSSL"
                         | "ConnectDelay"
+                        | "DelayOpen"
                         | "BlockUserAgents"
                         | "BlockAccessInProxies"
                         | "BlockReferers"
@@ -399,6 +401,7 @@ pub fn decode_tunnel_request(
                         "AllowAccept" => "allow_accept",
                         "AllowInternalSSL" => "allow_internal_ssl",
                         "ConnectDelay" => "connect_delay",
+                        "DelayOpen" => "delay_open",
                         "BlockUserAgents" => "block_user_agents",
                         "BlockAccessInProxies" => "block_access_in_proxies",
                         _ => "block_referers",
