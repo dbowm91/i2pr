@@ -311,7 +311,7 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
             "Description":"I2PControl managed test tunnel", "MaxConcurrentConns":24,
             "Close":true, "CloseTime":45, "Reduce":true, "ReduceTime":12, "ReduceCount":3, "Profile":"interactive",
             "AllowUserAgent":true, "AllowReferer":true, "AllowAccept":false,
-            "AllowInternalSSL":false
+            "AllowInternalSSL":false, "NewDest":2
         }),
         2,
     )
@@ -373,7 +373,8 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
         info["rawConfig"]["allowInternalSSL"],
         serde_json::json!(false)
     );
-    assert_eq!(info["persistentClientKey"], serde_json::json!(false));
+    assert_eq!(info["rawConfig"]["newDest"], serde_json::json!(2));
+    assert_eq!(info["persistentClientKey"], serde_json::json!(true));
     assert_eq!(info["offlineKeys"], serde_json::json!(false));
     assert!(
         info["destinationB32"]

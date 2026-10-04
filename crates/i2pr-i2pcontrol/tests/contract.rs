@@ -1331,6 +1331,24 @@ fn plan289_tunnel_request_envelope_rules() {
         jump_list.options.get("jump_list").map(String::as_str),
         Some("false")
     );
+    for (mode, expected) in [(0_u64, "0"), (2, "2")] {
+        let request = decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "httpclient",
+            "NewDest": mode,
+        })))
+        .expect("supported NewDest mode decodes");
+        assert_eq!(
+            request.options.get("new_dest").map(String::as_str),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "httpclient",
+            "NewDest": 1,
+        }))),
+        Err(TunnelRequestError::UnavailableOption("NewDest".to_owned()))
+    );
     for key in ["CustomOptions", "PrivKeyFile"] {
         assert_eq!(
             decode_tunnel_request(&params(serde_json::json!({

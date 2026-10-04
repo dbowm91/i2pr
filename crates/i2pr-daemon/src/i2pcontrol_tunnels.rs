@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 17] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 18] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -167,6 +167,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 17] = [
     "shared",
     "persistent_client_key",
     "access_option",
+    "new_dest",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -922,6 +923,8 @@ pub fn build_control_spec(
     // sharedClient setting.
     let mut shared_client = false;
     let mut persistent_client_key = false;
+    let mut persistent_client_key_declared: Option<bool> = None;
+    let mut proposal_new_dest: Option<u8> = None;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -993,7 +996,37 @@ pub fn build_control_spec(
                         reason: "PersistentClientKey applies to client tunnels only",
                     });
                 }
-                persistent_client_key = parse_bool_option(key, value)?;
+                let enabled = parse_bool_option(key, value)?;
+                persistent_client_key = enabled;
+                persistent_client_key_declared = Some(enabled);
+            }
+            "new_dest" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                        | ServiceTunnelKind::StreamrClient
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "NewDest applies to client tunnels only",
+                    });
+                }
+                let mode = value.parse::<u8>().map_err(|_| ControlError::InvalidOption {
+                    option: key.clone(),
+                    reason: "NewDest must be 0 or 2; mode 1 requires identity rotation on resume",
+                })?;
+                if mode != 0 && mode != 2 {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "NewDest must be 0 or 2; mode 1 requires identity rotation on resume",
+                    });
+                }
+                proposal_new_dest = Some(mode);
             }
             "description" => {
                 // Description is control-plane metadata: its authoritative
@@ -1794,6 +1827,16 @@ pub fn build_control_spec(
                 )));
             }
         }
+    }
+    if let Some(mode) = proposal_new_dest {
+        let persistent_from_mode = mode == 2;
+        if persistent_client_key_declared.is_some_and(|declared| declared != persistent_from_mode) {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "NewDest and PersistentClientKey request conflicting identity policies",
+            });
+        }
+        persistent_client_key = persistent_from_mode;
     }
     if let Some(mode) = proposal_access_option {
         let Some(value) = proposal_access_list else {
@@ -3983,6 +4026,42 @@ mod tests {
             .destination_groups()[0]
                 .persistent
         );
+
+        let from_new_dest = ControlDefinition {
+            name: "new-dest-persistent".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "2".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        assert_eq!(
+            build_control_spec(&from_new_dest)
+                .expect("NewDest=2 selects persistence")
+                .policy,
+            DestinationPolicy::PersistentClient
+        );
+        let conflicting = ControlDefinition {
+            name: "new-dest-conflict".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: BTreeMap::from([
+                ("new_dest".to_owned(), "0".to_owned()),
+                ("persistent_client_key".to_owned(), "true".to_owned()),
+                (
+                    "target_destination".to_owned(),
+                    format!("{}.b32.i2p", "a".repeat(52)),
+                ),
+            ]),
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&conflicting),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
 
         let shared_persistent = ControlDefinition {
             name: "shared-persistent".to_owned(),

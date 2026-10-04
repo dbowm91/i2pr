@@ -1856,7 +1856,12 @@ fn proposal_tunnel_manager_result(
                 .and_then(|options| options.get("persistent_client_key"))
                 .and_then(serde_json::Value::as_str)
                 .and_then(|value| value.parse::<bool>().ok())
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || options
+                    .and_then(|options| options.get("new_dest"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|value| value.parse::<u8>().ok())
+                    == Some(2);
             let destination_b32 = destination
                 .as_ref()
                 .and_then(serde_json::Value::as_str)
