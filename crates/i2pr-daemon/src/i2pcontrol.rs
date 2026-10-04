@@ -1337,6 +1337,36 @@ impl I2pControlServiceState {
                     }
                 }
             }
+            if matches!(
+                field.key,
+                "i2p.router.net.tunnels.exploratory.inbound"
+                    | "i2p.router.net.tunnels.exploratory.outbound"
+                    | "i2p.router.net.tunnels.exploratory.info.list"
+                    | "i2p.router.net.tunnels.client.inbound"
+                    | "i2p.router.net.tunnels.client.outbound"
+                    | "i2p.router.net.tunnels.client.info.list"
+                    | "i2p.router.net.tunnels.participating.info"
+            ) {
+                match crate::i2pcontrol_inspection::proposal_empty_tunnel_projection(
+                    field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             let Some(selector) = field.adapter else {
                 return (
                     error_envelope(

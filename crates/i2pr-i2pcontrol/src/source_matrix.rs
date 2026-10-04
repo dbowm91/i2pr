@@ -260,6 +260,25 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("proposal_tunnel_queue_depth_uses_attested_snapshot"),
         ),
+        "i2p.router.net.tunnels.exploratory.inbound"
+        | "i2p.router.net.tunnels.exploratory.outbound"
+        | "i2p.router.net.tunnels.exploratory.info.list"
+        | "i2p.router.net.tunnels.client.inbound"
+        | "i2p.router.net.tunnels.client.outbound"
+        | "i2p.router.net.tunnels.client.info.list"
+        | "i2p.router.net.tunnels.participating.info" => (
+            "Plan 295 tunnel-count snapshot",
+            "zero aggregate projects zero directional count or empty details; nonzero requires a missing detail snapshot",
+            if list { 1024 } else { 0 },
+            if list { 65_536 } else { 20 },
+            "public tunnel counts or local tunnel detail",
+            "attested aggregate at composition; fail closed if nonzero",
+            SourceAvailability::PublishedGated {
+                owner: "per-direction and per-tunnel inspection snapshot",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_tunnel_projection_requires_zero_aggregate"),
+        ),
         "i2p.router.netdb.activepeers.list" => (
             "NetDB inspection snapshot",
             "bounded active-peer hash snapshot",

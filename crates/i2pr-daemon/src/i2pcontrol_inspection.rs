@@ -817,6 +817,58 @@ pub(crate) fn proposal_tunnel_queue_depth(
         })
 }
 
+/// Projects canonical tunnel direction counts and detail lists only
+/// when the attested aggregate owner reports no tunnels. A nonzero
+/// aggregate needs per-direction or per-tunnel data that this graph
+/// does not maintain, so those cases remain fail-closed.
+pub(crate) fn proposal_empty_tunnel_projection(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let (selector, list) = match key {
+        "i2p.router.net.tunnels.exploratory.inbound"
+        | "i2p.router.net.tunnels.exploratory.outbound" => {
+            (RouterInfoSelector::ExploratoryCount, false)
+        }
+        "i2p.router.net.tunnels.exploratory.info.list" => {
+            (RouterInfoSelector::ExploratoryCount, true)
+        }
+        "i2p.router.net.tunnels.client.inbound" | "i2p.router.net.tunnels.client.outbound" => {
+            (RouterInfoSelector::ClientCount, false)
+        }
+        "i2p.router.net.tunnels.client.info.list" => (RouterInfoSelector::ClientCount, true),
+        "i2p.router.net.tunnels.participating.info" => {
+            (RouterInfoSelector::ParticipatingCount, true)
+        }
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "attested tunnel count snapshot",
+            });
+        }
+    };
+    let gap = InspectionGap {
+        key,
+        owner_plan: "322",
+        owner: "per-direction and per-tunnel inspection snapshot",
+    };
+    let value = router_info_result(selector, handles, 0).map_err(|_| gap.clone())?;
+    let count = value
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| gap.clone())?;
+    if count != 0 {
+        return Err(gap);
+    }
+    Ok(if list {
+        serde_json::Value::Array(Vec::new())
+    } else {
+        serde_json::Value::from(0)
+    })
+}
+
 /// Rejects an over-ceiling publication string.
 fn check_state_string(key: &'static str, value: &str) -> Result<(), PublishError> {
     if value.is_empty() || value.len() > MAX_INSPECTION_STATE_STRING {
@@ -1566,6 +1618,54 @@ mod tests {
             proposal_tunnel_queue_depth(&handles).expect("attested queue depth"),
             serde_json::json!(7)
         );
+    }
+
+    #[test]
+    fn proposal_empty_tunnel_projection_requires_zero_aggregate() {
+        let handles = test_handles();
+        handles
+            .publish_tunnels(0, 0, 0, 0)
+            .expect("bounded snapshot publishes");
+        for key in [
+            "i2p.router.net.tunnels.exploratory.inbound",
+            "i2p.router.net.tunnels.exploratory.outbound",
+            "i2p.router.net.tunnels.client.inbound",
+            "i2p.router.net.tunnels.client.outbound",
+        ] {
+            assert_eq!(
+                proposal_empty_tunnel_projection(key, &handles).expect("zero count is known"),
+                serde_json::json!(0),
+                "{key}"
+            );
+        }
+        for key in [
+            "i2p.router.net.tunnels.exploratory.info.list",
+            "i2p.router.net.tunnels.client.info.list",
+            "i2p.router.net.tunnels.participating.info",
+        ] {
+            assert_eq!(
+                proposal_empty_tunnel_projection(key, &handles).expect("empty list is known"),
+                serde_json::json!([]),
+                "{key}"
+            );
+        }
+
+        handles
+            .publish_tunnels(1, 1, 1, 0)
+            .expect("bounded nonzero snapshot publishes");
+        for key in [
+            "i2p.router.net.tunnels.exploratory.inbound",
+            "i2p.router.net.tunnels.exploratory.outbound",
+            "i2p.router.net.tunnels.exploratory.info.list",
+            "i2p.router.net.tunnels.client.inbound",
+            "i2p.router.net.tunnels.client.outbound",
+            "i2p.router.net.tunnels.client.info.list",
+            "i2p.router.net.tunnels.participating.info",
+        ] {
+            let gap = proposal_empty_tunnel_projection(key, &handles)
+                .expect_err("aggregate does not establish direction/details");
+            assert_eq!(gap.owner_plan, "322", "{key}");
+        }
     }
 
     #[test]
