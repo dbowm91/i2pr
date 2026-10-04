@@ -72,6 +72,17 @@ drain. The one-second outbound startup delay begins after the configured
 inbound builds are installed and the usable-pool minimum is met. Status
 contains only a lifecycle phase and coarse remaining
 time bucket.
+
+Plan 322 adds the canonical RouterInfo `i2p.router.news` source. The
+daemon-owned `news.rs` manager fetches only through the configured loopback
+proxy, verifies NEWS SU3 content with a pinned signer certificate before
+parsing, bounds XML/GZIP processing, and exposes only sanitized Atom text.
+The verified SU3 payload and conditional-fetch validators are stored through
+`i2pr-storage`'s opaque current/backup cache and are re-verified on restart.
+Transient fetch or validation failures retain the current verified snapshot;
+status reports freshness and the last bounded error. This does not perform
+router update or install behavior. Plan 322 remains in progress pending its
+signed-news acceptance fixtures and other canonical source rows.
 Plan 190 isolates and corrects the inbound NetDB reply-path
 metadata defect that left 5/7 destination rows blocked after the
 Plan 188 installs (typed public `InboundGatewayRoute` in

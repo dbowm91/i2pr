@@ -885,7 +885,7 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
             .find(|row| row.key == "i2p.router.news")
             .unwrap()
             .availability,
-        SourceAvailability::Unavailable {
+        SourceAvailability::PublishedGated {
             owner_plan: "322",
             ..
         }
@@ -906,7 +906,7 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
             .count(),
-        11,
+        10,
         "unimplemented canonical fields remain explicit gaps"
     );
 }

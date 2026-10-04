@@ -223,6 +223,8 @@ pub struct InspectionHandles {
     /// the service is registered (Plan 295); session and error rows
     /// read its cheap snapshot accessors per request.
     ssu2_live: Mutex<Option<Ssu2RuntimeService>>,
+    /// Authenticated router NEWS owner, published by the daemon worker.
+    news_live: Mutex<Option<Arc<crate::news::NewsManager>>>,
 }
 
 impl InspectionHandles {
@@ -246,6 +248,7 @@ impl InspectionHandles {
             log_live: Mutex::new(None),
             metrics_live: Mutex::new(None),
             ssu2_live: Mutex::new(None),
+            news_live: Mutex::new(None),
         }
     }
 
@@ -445,6 +448,19 @@ impl InspectionHandles {
         if let Ok(mut live) = self.metrics_live.lock() {
             *live = Some(metrics);
         }
+    }
+
+    pub(crate) fn publish_news_manager(&self, manager: Arc<crate::news::NewsManager>) {
+        if let Ok(mut slot) = self.news_live.lock() {
+            *slot = Some(manager);
+        }
+    }
+
+    pub(crate) fn proposal_news(&self, now_unix: u64) -> Option<crate::news::NewsSnapshot> {
+        self.news_live
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(|manager| manager.snapshot(now_unix)))
     }
 
     /// Publishes the cloned SSU2 runtime service (called by the SSU2

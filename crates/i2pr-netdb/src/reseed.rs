@@ -24,8 +24,6 @@ use std::fmt;
 
 use i2pr_proto::{MAX_COMMON_STRUCTURE_SIZE, RouterInfo};
 use thiserror::Error;
-use x509_parser::prelude::*;
-use x509_parser::public_key::PublicKey;
 
 use crate::router_info::{ValidatedRouterInfo, ValidationContext, router_hash};
 
@@ -758,45 +756,31 @@ pub fn trust_signer_from_certificate(
     not_before: u64,
     not_after: u64,
 ) -> Result<TrustedSigner, ReseedTrustError> {
-    let (_, certificate) = X509Certificate::from_der(&certificate_der)
-        .map_err(|_| ReseedTrustError::CertificateParse)?;
-    let (spki, cert_not_before_i, cert_not_after_i) = {
-        let tbs = &certificate.tbs_certificate;
-        (
-            &tbs.subject_pki,
-            certificate.validity.not_before.timestamp(),
-            certificate.validity.not_after.timestamp(),
-        )
-    };
-    let algorithm_oid = spki.algorithm.algorithm.to_id_string();
-    let public_key = match spki.parsed() {
-        Ok(key) => key,
-        Err(_) => {
-            return Err(ReseedTrustError::UnsupportedKeyType { algorithm_oid });
-        }
-    };
-    let rsa_pubkey = match public_key {
-        PublicKey::RSA(rsa) => rsa,
-        _ => {
-            return Err(ReseedTrustError::UnsupportedKeyType { algorithm_oid });
-        }
-    };
-    let modulus = rsa_pubkey.modulus.to_vec();
-    let exponent = rsa_pubkey.exponent.to_vec();
-    let cert_not_before = u64::try_from(cert_not_before_i).unwrap_or(0);
-    let cert_not_after = u64::try_from(cert_not_after_i).unwrap_or(0);
-    if not_before < cert_not_before || not_after > cert_not_after {
+    let rsa = i2pr_su3::rsa_signer_from_certificate(signer_id.as_str(), &certificate_der).map_err(
+        |error| match error {
+            i2pr_su3::Su3Error::CertificateParse => ReseedTrustError::CertificateParse,
+            i2pr_su3::Su3Error::UnsupportedKeyType(algorithm_oid) => {
+                ReseedTrustError::UnsupportedKeyType { algorithm_oid }
+            }
+            i2pr_su3::Su3Error::CertificateValidity => ReseedTrustError::CertificateNotValid {
+                not_before: 0,
+                not_after: 0,
+            },
+            _ => ReseedTrustError::CertificateParse,
+        },
+    )?;
+    if not_before < rsa.not_before || not_after > rsa.not_after || not_after < not_before {
         return Err(ReseedTrustError::CertificateNotValid {
-            not_before: cert_not_before,
-            not_after: cert_not_after,
+            not_before: rsa.not_before,
+            not_after: rsa.not_after,
         });
     }
     Ok(TrustedSigner {
         signer_id,
         certificate_der,
         signature_type,
-        modulus,
-        exponent,
+        modulus: rsa.modulus,
+        exponent: rsa.exponent,
         not_before,
         not_after,
     })

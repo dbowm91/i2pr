@@ -2,10 +2,11 @@
 
 `i2pr-su3` is a runtime-neutral library for the common SU3 container
 boundary. It validates complete framing under caller-supplied byte
-ceilings, exposes bounded content slices, and verifies the currently
-implemented RSA-SHA512 signature type against an explicit caller-provided
-key and validity interval. It has no file, network, clock, or trust-store
-access.
+ceilings, parses an operator-pinned DER X.509 certificate into RSA
+verification material, and verifies the currently implemented
+RSA-SHA512 signature type against an explicit caller-provided key and
+verification time. It has no file, network, clock, or ambient
+trust-store access.
 
 Content policy remains with the caller. Reseed ZIP entry limits and
 RouterInfo validation stay in `i2pr-netdb`; the Proposal 170 NEWS owner

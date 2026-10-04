@@ -195,6 +195,19 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             },
             Some("proposal_local_router_info_is_bounded_and_publish_gated"),
         ),
+        "i2p.router.news" => (
+            "daemon signed NEWS manager",
+            "bounded verified SU3 Atom snapshot with validators and last-known-good fallback",
+            0,
+            524_288,
+            "public authenticated router news",
+            "last verified feed; refresh status and staleness tracked separately",
+            SourceAvailability::PublishedGated {
+                owner: "signed NEWS cache",
+                owner_plan: "322",
+            },
+            Some("signed_news_refresh_preserves_last_verified_feed"),
+        ),
         "i2p.router.logs" => (
             "daemon LogRing",
             "bounded redacted ring snapshot",

@@ -116,6 +116,63 @@ pub enum Su3Error {
     InvalidSignature,
     #[error("input no longer matches parsed SU3 framing")]
     InputChanged,
+    #[error("trusted SU3 signer certificate is not valid DER X.509")]
+    CertificateParse,
+    #[error("trusted SU3 signer certificate uses unsupported public key algorithm {0}")]
+    UnsupportedKeyType(String),
+    #[error("trusted SU3 signer certificate has an invalid validity interval")]
+    CertificateValidity,
+}
+
+/// Parses an operator-pinned DER X.509 certificate into explicit RSA
+/// verification material. This does not build or validate a CA chain:
+/// the caller's configured certificate is the trust anchor.
+pub fn rsa_signer_from_certificate(
+    signer_id: &str,
+    certificate_der: &[u8],
+) -> Result<RsaSha512Signer, Su3Error> {
+    if signer_id.is_empty()
+        || signer_id.len() > MAX_SIGNER_ID_BYTES
+        || signer_id
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        return Err(Su3Error::InvalidSignerId);
+    }
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    use x509_parser::public_key::PublicKey;
+
+    let (_, certificate) =
+        X509Certificate::from_der(certificate_der).map_err(|_| Su3Error::CertificateParse)?;
+    let algorithm_oid = certificate
+        .tbs_certificate
+        .subject_pki
+        .algorithm
+        .algorithm
+        .to_id_string();
+    let public_key = certificate
+        .tbs_certificate
+        .subject_pki
+        .parsed()
+        .map_err(|_| Su3Error::UnsupportedKeyType(algorithm_oid.clone()))?;
+    let rsa = match public_key {
+        PublicKey::RSA(key) => key,
+        _ => return Err(Su3Error::UnsupportedKeyType(algorithm_oid)),
+    };
+    let not_before = u64::try_from(certificate.validity.not_before.timestamp())
+        .map_err(|_| Su3Error::CertificateValidity)?;
+    let not_after = u64::try_from(certificate.validity.not_after.timestamp())
+        .map_err(|_| Su3Error::CertificateValidity)?;
+    if not_after < not_before {
+        return Err(Su3Error::CertificateValidity);
+    }
+    Ok(RsaSha512Signer {
+        signer_id: signer_id.to_owned(),
+        modulus: rsa.modulus.to_vec(),
+        exponent: rsa.exponent.to_vec(),
+        not_before,
+        not_after,
+    })
 }
 
 /// Validates SU3 framing without imposing a content/file type policy.

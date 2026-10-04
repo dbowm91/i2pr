@@ -15,7 +15,6 @@ i2pr-proto = { path = "../i2pr-proto" }
 i2pr-su3 = { path = "../i2pr-su3" }
 sha2 = { workspace = true }
 thiserror.workspace = true
-x509-parser = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]

@@ -35,6 +35,11 @@ pub use address_book_generation::{
     AddressBookGenerationStorageError, AddressBookGenerationStore,
     MAX_ADDRESSBOOK_GENERATION_FILE_SIZE,
 };
+pub mod verified_content_cache;
+pub use verified_content_cache::{
+    MAX_VERIFIED_CONTENT_CACHE_BYTES, VERIFIED_CONTENT_CACHE_BACKUP, VERIFIED_CONTENT_CACHE_DIR,
+    VERIFIED_CONTENT_CACHE_FILE, VerifiedContentCacheError, VerifiedContentCacheStore,
+};
 pub mod service_destination;
 pub use service_destination::{
     MAX_SERVICE_DESTINATION_FILE_SIZE, SERVICE_DESTINATION_FILE_NAME,

@@ -49,6 +49,11 @@ an opaque current/backup file pair (`addressbook.current.json` /
 permission / size gates, and missing-directory loads as absent. The
 adapter never parses generations; `i2pr-addressbook` owns
 serialization and validation.
+Plan 322 adds `src/verified_content_cache.rs`, an opaque, size-bounded
+current/backup record store for authenticated NEWS source bytes and
+conditional validators. It enforces private directory/file permissions,
+rejects symlink paths, rotates records atomically, and deliberately leaves
+SU3 verification and record decoding to the daemon owner.
 
 ## Public surface
 

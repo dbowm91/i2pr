@@ -25,6 +25,7 @@ pub mod i2pcontrol_tunnels;
 pub mod inbound_dispatch;
 pub mod netdb_seam;
 pub mod netdb_tunnels;
+mod news;
 pub mod outbound_lookup;
 pub mod peer_test;
 pub mod router_i2np;
@@ -321,6 +322,10 @@ fn build_daemon_graph_inner(
 
     if addressbook.is_active() {
         register_addressbook_refresh_service(&mut builder, &addressbook)?;
+    }
+
+    if config.news.enabled {
+        register_news_refresh_service(&mut builder, config, inspection)?;
     }
 
     if config.ssu2.enabled {
@@ -631,6 +636,54 @@ fn register_addressbook_refresh_service(
         .map_err(|e| {
             DaemonError::RuntimeSupervisorFailed(format!(
                 "failed to register address-book refresh service: {e}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn register_news_refresh_service(
+    builder: &mut i2pr_runtime::ServiceGraphBuilder,
+    config: &Config,
+    inspection: &Arc<InspectionHandles>,
+) -> Result<(), DaemonError> {
+    use crate::addressbook_fetch::{BoundedContentFetcher, LoopbackProxyFetcher};
+
+    let fetcher: Arc<dyn BoundedContentFetcher> = Arc::new(LoopbackProxyFetcher {
+        host: config.news.proxy_host.to_string(),
+        port: config.news.proxy_port,
+    });
+    let manager = Arc::new(crate::news::NewsManager::new(
+        config.news.clone(),
+        config.router.data_dir.clone(),
+        fetcher,
+    ));
+    inspection.publish_news_manager(Arc::clone(&manager));
+    let service_name = ServiceName::new("signed-news-refresh").expect("valid service name");
+    let interval = config.news.refresh_interval;
+    builder
+        .register(ServiceSpec::new(
+            service_name,
+            ServiceClassification::Optional,
+            move |ctx| {
+                let manager = Arc::clone(&manager);
+                let cancellation = ctx.cancellation().clone();
+                Box::pin(async move {
+                    let _ = manager.refresh_once().await;
+                    loop {
+                        tokio::select! {
+                            _ = cancellation.cancelled() => break,
+                            _ = tokio::time::sleep(interval) => {
+                                let _ = manager.refresh_once().await;
+                            }
+                        }
+                    }
+                    i2pr_runtime::ServiceResult::RequestedShutdown
+                })
+            },
+        ))
+        .map_err(|error| {
+            DaemonError::RuntimeSupervisorFailed(format!(
+                "failed to register signed-news refresh service: {error}"
             ))
         })?;
     Ok(())

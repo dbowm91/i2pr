@@ -1298,6 +1298,26 @@ impl I2pControlServiceState {
                 }
             }
             match field.key {
+                "i2p.router.news" => {
+                    let news = match self.inspection.proposal_news(now_ms / 1000) {
+                        Some(news) => news,
+                        None => {
+                            return (
+                                error_envelope(
+                                    id,
+                                    JsonRpcErrorCode::InternalError.code(),
+                                    "Router news unavailable: no verified NEWS feed has been published (Plan 322)",
+                                ),
+                                Duration::ZERO,
+                            );
+                        }
+                    };
+                    result.insert(
+                        field.key.to_owned(),
+                        serde_json::Value::String(news.rendered),
+                    );
+                    continue;
+                }
                 "i2p.router.clockskew" => {
                     // No peer-skew sample is collected yet; the Proposal
                     // explicitly permits null when there are no observations.

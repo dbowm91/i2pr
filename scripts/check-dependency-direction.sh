@@ -44,6 +44,7 @@ expected = {
         "i2pr-runtime",
         "i2pr-service-tunnels",
         "i2pr-storage",
+        "i2pr-su3",
         "i2pr-transport",
         "i2pr-tunnel",
     },
