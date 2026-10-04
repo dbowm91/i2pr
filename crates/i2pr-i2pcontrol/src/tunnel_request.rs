@@ -125,6 +125,8 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Description" => Some("description"),
         "WebsiteHostname" | "SpoofedHost" => Some("spoofed_host"),
         "BlockReferers" => Some("block_referers"),
+        "BlockUserAgents" => Some("block_user_agents"),
+        "UserAgents" => Some("user_agents"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
@@ -311,6 +313,7 @@ pub fn decode_tunnel_request(
                         | "AllowReferer"
                         | "AllowAccept"
                         | "AllowInternalSSL"
+                        | "BlockUserAgents"
                         | "BlockReferers"
                 ) {
                     let enabled = value
@@ -321,9 +324,18 @@ pub fn decode_tunnel_request(
                         "AllowReferer" => "allow_referer",
                         "AllowAccept" => "allow_accept",
                         "AllowInternalSSL" => "allow_internal_ssl",
+                        "BlockUserAgents" => "block_user_agents",
                         _ => "block_referers",
                     };
                     options.insert(internal.to_owned(), enabled.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "UserAgents" {
+                    let value = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("user_agents".to_owned(), value.to_owned());
                     options_seen = true;
                     continue;
                 }

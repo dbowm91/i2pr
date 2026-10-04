@@ -468,6 +468,39 @@ async fn proposal_spoofed_host_and_referer_policy_reach_http_server_target() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn proposal_user_agent_blocklist_rejects_before_local_target() {
+    let directory = temp_data_dir("http-server-user-agent-blocklist");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_user_agents: true,
+        user_agents: vec!["crawler".to_owned()],
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: example crawler\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let response = String::from_utf8_lossy(&head);
+    assert!(
+        response.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "configured User-Agent substring is refused: {response:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .is_err(),
+        "blocked request never reaches the local target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn http_server_absolute_form_is_400() {
     let directory = temp_data_dir("http-server-absolute");
     let (manager, _observed, _addr) =
@@ -652,9 +685,7 @@ async fn http_server_closed_helper_gate_refuses() {
     let directory = temp_data_dir("http-server-nohelper");
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: false,
-        jump_list: true,
-        block_referers: true,
-        spoofed_host: None,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
@@ -719,10 +750,8 @@ async fn http_server_closed_helper_gate_refuses() {
 async fn http_server_closed_jump_gate_refuses() {
     let directory = temp_data_dir("http-server-nojump");
     let policy = i2pr_service_tunnels::HttpServerPolicy {
-        address_helper: true,
         jump_list: false,
-        block_referers: true,
-        spoofed_host: None,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;

@@ -475,7 +475,8 @@ async fn tunnelmanager_spoofed_host_roundtrips_for_http_server() {
         serde_json::json!({
             "Action":"create", "Name":"spoofed", "Type":"httpserver",
             "TargetHost":"127.0.0.1", "TargetPort":8080,
-            "StartOnLoad":false, "WebsiteHostname":"site.example.i2p", "BlockReferers":false
+            "StartOnLoad":false, "WebsiteHostname":"site.example.i2p", "BlockReferers":false,
+            "BlockUserAgents":true, "UserAgents":"crawler,none"
         }),
         2,
     )
@@ -491,6 +492,14 @@ async fn tunnelmanager_spoofed_host_roundtrips_for_http_server() {
     assert_eq!(
         fetched["result"]["info"]["rawConfig"]["spoofedHost"],
         serde_json::json!("site.example.i2p")
+    );
+    assert_eq!(
+        fetched["result"]["info"]["rawConfig"]["blockUserAgents"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        fetched["result"]["info"]["rawConfig"]["userAgents"],
+        serde_json::json!("crawler,none")
     );
     assert_eq!(
         fetched["result"]["info"]["rawConfig"]["blockReferers"],

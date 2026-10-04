@@ -81,6 +81,11 @@ pub struct HttpServerPolicy {
     pub jump_list: bool,
     /// Strip the inbound Referer header before forwarding.
     pub block_referers: bool,
+    /// Reject requests whose User-Agent contains one of `user_agents`.
+    pub block_user_agents: bool,
+    /// Case-sensitive comma-separated User-Agent substring rules after
+    /// parsing. The literal `none` matches a missing User-Agent header.
+    pub user_agents: Vec<String>,
     /// Optional validated Host replacement for Proposal `SpoofedHost`.
     pub spoofed_host: Option<String>,
 }
@@ -91,6 +96,8 @@ impl Default for HttpServerPolicy {
             address_helper: true,
             jump_list: true,
             block_referers: true,
+            block_user_agents: false,
+            user_agents: Vec::new(),
             spoofed_host: None,
         }
     }
@@ -239,6 +246,12 @@ pub fn filter_server_request_with_policy(
             "server profile requires a Host header",
         ));
     }
+    if policy.block_user_agents && user_agent_is_blocked(&head.headers, &policy.user_agents) {
+        return Err(rejected(
+            HttpErrorKind::PresentationRefused,
+            "request User-Agent is blocked by the server policy",
+        ));
+    }
     // This profile never forwards dechunked bodies: reject chunked
     // framing instead of stripping the header and corrupting the
     // body framing for the local target.
@@ -354,6 +367,33 @@ pub fn filter_server_request_with_policy(
         head_bytes,
         content_length,
     })
+}
+
+fn user_agent_is_blocked(headers: &[HeaderEntry], rules: &[String]) -> bool {
+    let user_agents: Vec<&str> = headers
+        .iter()
+        .filter(|entry| entry.name_str() == "user-agent")
+        .map(|entry| entry.value.as_str())
+        .collect();
+    if user_agents.is_empty() {
+        return rules.iter().any(|rule| rule == "none");
+    }
+    user_agents.iter().any(|agent| {
+        !agent.starts_with("MYOB")
+            && rules
+                .iter()
+                .any(|rule| rule != "none" && !rule.is_empty() && agent.contains(rule))
+    })
+}
+
+/// Validates the bounded, case-sensitive HTTP-server User-Agent rules.
+pub fn valid_user_agent_rules(rules: &[String]) -> bool {
+    rules.len() <= super::config::HTTP_USER_AGENT_RULES_MAX
+        && rules.iter().all(|rule| {
+            !rule.is_empty()
+                && rule.len() <= super::config::HTTP_USER_AGENT_RULE_MAX_BYTES
+                && !rule.bytes().any(|byte| byte.is_ascii_control())
+        })
 }
 
 /// Validates the daemon-supplied local authority replacement.
@@ -559,6 +599,55 @@ mod tests {
         assert!(text.contains("host: site.example.i2p\r\n"));
         assert!(!text.contains("attacker.example"));
         assert!(!text.contains("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn proposal_user_agent_blocklist_is_bounded_case_sensitive_and_keeps_myob() {
+        let policy = HttpServerPolicy {
+            block_user_agents: true,
+            user_agents: vec!["crawler".to_owned(), "none".to_owned()],
+            ..HttpServerPolicy::default()
+        };
+        let blocked = parse_head(
+            "GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: Example crawler\r\n\r\n",
+        );
+        assert_eq!(
+            filter_server_request_with_policy(&blocked, "127.0.0.1:8080", &policy)
+                .expect_err("matching substring is rejected")
+                .kind,
+            HttpErrorKind::PresentationRefused
+        );
+        let case_mismatch =
+            parse_head("GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: CRAWLER\r\n\r\n");
+        assert!(
+            filter_server_request_with_policy(&case_mismatch, "127.0.0.1:8080", &policy).is_ok()
+        );
+        let default_agent = parse_head(
+            "GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: MYOB/6.66 (AN/ON)\r\n\r\n",
+        );
+        assert!(
+            filter_server_request_with_policy(&default_agent, "127.0.0.1:8080", &policy).is_ok()
+        );
+        let missing_agent = parse_head("GET / HTTP/1.1\r\nHost: example.i2p\r\n\r\n");
+        assert_eq!(
+            filter_server_request_with_policy(&missing_agent, "127.0.0.1:8080", &policy)
+                .expect_err("none rule rejects missing User-Agent")
+                .kind,
+            HttpErrorKind::PresentationRefused
+        );
+        let duplicate_agent = parse_head(
+            "GET / HTTP/1.1\r\nHost: example.i2p\r\nUser-Agent: browser\r\nUser-Agent: crawler\r\n\r\n",
+        );
+        assert_eq!(
+            filter_server_request_with_policy(&duplicate_agent, "127.0.0.1:8080", &policy)
+                .expect_err("duplicate headers cannot bypass a matching rule")
+                .kind,
+            HttpErrorKind::PresentationRefused
+        );
+        assert!(!valid_user_agent_rules(&["\r\n".to_owned()]));
+        assert!(!valid_user_agent_rules(&["x".repeat(
+            super::super::config::HTTP_USER_AGENT_RULE_MAX_BYTES + 1
+        )]));
     }
 
     #[test]
@@ -780,18 +869,14 @@ mod tests {
         assert!(open.admits(PresentationClass::Jump));
         let no_helper = HttpServerPolicy {
             address_helper: false,
-            jump_list: true,
-            block_referers: true,
-            spoofed_host: None,
+            ..HttpServerPolicy::default()
         };
         assert!(no_helper.admits(PresentationClass::Ordinary));
         assert!(!no_helper.admits(PresentationClass::Helper));
         assert!(no_helper.admits(PresentationClass::Jump));
         let no_jump = HttpServerPolicy {
-            address_helper: true,
             jump_list: false,
-            block_referers: true,
-            spoofed_host: None,
+            ..HttpServerPolicy::default()
         };
         assert!(no_jump.admits(PresentationClass::Ordinary));
         assert!(no_jump.admits(PresentationClass::Helper));

@@ -397,9 +397,7 @@ mod tests {
         let mut gated = prev.clone();
         gated.http_policy = crate::http::HttpServerPolicy {
             address_helper: false,
-            jump_list: true,
-            block_referers: true,
-            spoofed_host: None,
+            ..crate::http::HttpServerPolicy::default()
         };
         assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);
         let mut host_override = prev.clone();

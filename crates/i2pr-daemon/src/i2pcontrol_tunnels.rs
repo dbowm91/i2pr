@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 11] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 13] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -161,6 +161,8 @@ pub const SUPPORTED_323_OPTIONS: [&str; 11] = [
     "spoofed_host",
     "block_referers",
     "allow_internal_ssl",
+    "block_user_agents",
+    "user_agents",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -981,6 +983,42 @@ pub fn build_control_spec(
                     _ => unreachable!(),
                 }
             }
+            "block_user_agents" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "BlockUserAgents applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_user_agents = parse_bool_option(key, value)?;
+            }
+            "user_agents" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "UserAgents applies to HTTP server kinds only",
+                    });
+                }
+                let rules: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|rule| !rule.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if !i2pr_service_tunnels::http::valid_user_agent_rules(&rules) {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "UserAgents exceeds the bounded substring rule format",
+                    });
+                }
+                http_policy.user_agents = rules;
+            }
             "target_destination" => {
                 if !matches!(
                     kind,
@@ -1668,6 +1706,12 @@ pub fn build_control_spec(
         return Err(ControlError::ContradictoryOptions {
             name: definition.name.clone(),
             reason: "CloseTime requires Close:true",
+        });
+    }
+    if http_policy.block_user_agents && http_policy.user_agents.is_empty() {
+        return Err(ControlError::InvalidOption {
+            option: "block_user_agents".to_owned(),
+            reason: "BlockUserAgents requires at least one UserAgents rule",
         });
     }
     if (idle_reduce_timeout_ms.is_some() || idle_reduce_count.is_some()) && !idle_reduce {
@@ -4063,6 +4107,47 @@ mod tests {
             build_control_spec(&malformed),
             Err(ControlError::InvalidOption { ref option, .. }) if option == "spoofed_host"
         ));
+    }
+
+    #[test]
+    fn plan323_server_user_agent_filter_has_a_bounded_http_owner() {
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("block_user_agents".to_owned(), "true".to_owned());
+        options.insert("user_agents".to_owned(), "crawler,none".to_owned());
+        let definition = ControlDefinition {
+            name: "ua-filter".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options,
+            start_on_load: false,
+        };
+        let spec = build_control_spec(&definition).expect("HTTP server owner builds");
+        assert!(spec.http_policy.block_user_agents);
+        assert_eq!(spec.http_policy.user_agents, ["crawler", "none"]);
+
+        let mut invalid = server_options("127.0.0.1:9090");
+        invalid.insert("block_user_agents".to_owned(), "true".to_owned());
+        assert!(matches!(
+            build_control_spec(&ControlDefinition {
+                name: "ua-empty".to_owned(),
+                tunnel_type: TunnelType::HttpServer,
+                options: invalid,
+                start_on_load: false,
+            }),
+            Err(ControlError::InvalidOption { ref option, .. }) if option == "block_user_agents"
+        ));
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+        incompatible.insert("user_agents".to_owned(), "crawler".to_owned());
+        let error = build_control_spec(&ControlDefinition {
+            name: "ua-client".to_owned(),
+            tunnel_type: TunnelType::Client,
+            options: incompatible,
+            start_on_load: false,
+        })
+        .expect_err("UserAgents is rejected on client tunnels");
+        assert!(
+            matches!(error, ControlError::ContradictoryOptions { .. }),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]

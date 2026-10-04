@@ -1348,6 +1348,18 @@ impl ServiceTunnelSpec {
                 reason: "must be a bounded ASCII DNS hostname",
             });
         }
+        if !crate::http::valid_user_agent_rules(&self.http_policy.user_agents) {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "HTTP server User-Agent rules exceed their count or value bounds",
+            });
+        }
+        if self.http_policy.block_user_agents && self.http_policy.user_agents.is_empty() {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "HTTP server User-Agent blocking requires at least one rule",
+            });
+        }
         // Plan 296: multihoming consumes the server-to-target
         // dial target list, which only the masked server kinds
         // perform. The flag additionally requires at least two

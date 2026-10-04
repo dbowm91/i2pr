@@ -33,6 +33,10 @@ pub const HTTP_ERROR_RESPONSE_MAX_BYTES: usize = 1024;
 /// Maximum HTTP-specific options-set entries (e.g. CONNECT ports,
 /// allowed destinations list).
 pub const HTTP_OPTIONS_MAX_PORTS: usize = 16;
+/// Maximum substring rules for the HTTP server User-Agent filter.
+pub const HTTP_USER_AGENT_RULES_MAX: usize = 32;
+/// Maximum bytes in one User-Agent substring rule.
+pub const HTTP_USER_AGENT_RULE_MAX_BYTES: usize = 256;
 
 /// Default User-Agent substitution value used by the conservative
 /// privacy profile.
