@@ -247,6 +247,16 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("differential_corpus_against_production_composition"),
         ),
+        "i2p.router.net.tunnels.i2ptunnel" => (
+            "service tunnel inventory",
+            "startup definitions plus live manager overlay",
+            64,
+            65_536,
+            "local service names, kinds, loopback binds, and lifecycle state",
+            "point-in-time inventory snapshot",
+            SourceAvailability::Available,
+            Some("proposal_i2ptunnel_summaries_are_bounded_and_canonical"),
+        ),
         "i2p.router.addressbook.private.list"
         | "i2p.router.addressbook.local.list"
         | "i2p.router.addressbook.router.list"

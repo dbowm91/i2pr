@@ -1218,6 +1218,63 @@ fn i2ptunnel_value(handles: &InspectionHandles) -> serde_json::Value {
     })
 }
 
+/// Proposal RouterInfo quick summaries from the existing bounded
+/// I2PTunnel startup inventory and live manager overlay.
+pub(crate) fn proposal_i2ptunnel_summaries(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let key = "i2p.router.net.tunnels.i2ptunnel";
+    let inventory = i2ptunnel_value(handles);
+    let mut rows = Vec::new();
+    for side in ["client", "server"] {
+        let Some(entries) = inventory.get(side).and_then(serde_json::Value::as_object) else {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "289",
+                owner: "service tunnel inventory",
+            });
+        };
+        for (name, summary) in entries {
+            let Some(fields) = summary.as_object() else {
+                return Err(InspectionGap {
+                    key,
+                    owner_plan: "289",
+                    owner: "service tunnel summary",
+                });
+            };
+            let mut row = fields.clone();
+            row.insert("name".to_owned(), serde_json::Value::String(name.clone()));
+            row.insert(
+                "side".to_owned(),
+                serde_json::Value::String(side.to_owned()),
+            );
+            rows.push((name.clone(), serde_json::Value::Object(row)));
+        }
+    }
+    if rows.len() > i2pr_service_tunnels::MAX_SERVICE_TUNNELS * 2 {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "289",
+            owner: "service tunnel inventory ceiling",
+        });
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    let summaries: Vec<serde_json::Value> = rows.into_iter().map(|(_, row)| row).collect();
+    let value = serde_json::Value::Array(summaries);
+    if serde_json::to_vec(&value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        > 65_536
+    {
+        return Err(InspectionGap {
+            key,
+            owner_plan: "289",
+            owner: "service tunnel summary byte ceiling",
+        });
+    }
+    Ok(value)
+}
+
 /// Actual proxy state for one client profile: enabled iff any matching
 /// startup service is enabled, bind from the first enabled listener in
 /// configuration order overlaid with live manager binds.
@@ -1368,6 +1425,23 @@ mod tests {
         uptime: u64,
     ) -> serde_json::Value {
         router_info_result(selector, handles, uptime).expect("selector answers")
+    }
+
+    #[test]
+    fn proposal_i2ptunnel_summaries_are_bounded_and_canonical() {
+        let handles = test_handles();
+        let value = proposal_i2ptunnel_summaries(&handles).expect("summaries are available");
+        let rows = value.as_array().expect("object-list shape");
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["name"], "alpha-client");
+        assert_eq!(rows[0]["side"], "client");
+        assert_eq!(rows[0]["kind"], "http-client");
+        assert_eq!(rows[0]["enabled"], true);
+        assert_eq!(rows[0]["running"], false);
+        assert_eq!(rows[0]["bind"], "127.0.0.1:8080");
+        assert_eq!(rows[1]["name"], "beta-server");
+        assert_eq!(rows[1]["side"], "server");
+        assert_eq!(rows[2]["name"], "gamma-socks");
     }
 
     #[test]

@@ -1191,6 +1191,24 @@ impl I2pControlServiceState {
         let mut result = serde_json::Map::with_capacity(selection.len());
         let mut clear_logs = false;
         for field in selection {
+            if field.key == "i2p.router.net.tunnels.i2ptunnel" {
+                match crate::i2pcontrol_inspection::proposal_i2ptunnel_summaries(&self.inspection) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             if matches!(
                 field.key,
                 "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes"
