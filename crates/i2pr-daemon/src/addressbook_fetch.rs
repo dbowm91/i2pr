@@ -18,7 +18,6 @@ use i2pr_addressbook::{
 };
 
 const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
-const MAX_RESPONSE_BYTES: usize = MAX_RESPONSE_HEADER_BYTES + MAX_SUBSCRIPTION_BODY_BYTES;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum FetchError {
@@ -49,6 +48,17 @@ pub(crate) trait BoundedContentFetcher: Send + Sync {
         last_modified: Option<&'a str>,
         timeout: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>>;
+
+    /// Variant for consumers whose bounded content format has a different
+    /// maximum size than the AddressBook subscription format.
+    fn fetch_bounded<'a>(
+        &'a self,
+        url: &'a str,
+        etag: Option<&'a str>,
+        last_modified: Option<&'a str>,
+        max_body_bytes: usize,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>>;
 }
 
 pub(crate) struct LoopbackProxyFetcher {
@@ -64,26 +74,77 @@ impl BoundedContentFetcher for LoopbackProxyFetcher {
         last_modified: Option<&'a str>,
         timeout: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>> {
+        self.fetch_bounded(
+            url,
+            etag,
+            last_modified,
+            MAX_SUBSCRIPTION_BODY_BYTES,
+            timeout,
+        )
+    }
+
+    fn fetch_bounded<'a>(
+        &'a self,
+        url: &'a str,
+        etag: Option<&'a str>,
+        last_modified: Option<&'a str>,
+        max_body_bytes: usize,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>> {
         Box::pin(async move {
+            if max_body_bytes == 0 {
+                return Err(FetchError::InvalidRequest);
+            }
             let previous = SubscriptionSource {
                 entries: Default::default(),
                 etag: etag.map(str::to_owned),
                 last_modified: last_modified.map(str::to_owned),
             };
-            fetch_subscription(&self.host, self.port, url, Some(&previous), timeout).await
+            fetch_subscription_bounded(
+                &self.host,
+                self.port,
+                url,
+                Some(&previous),
+                max_body_bytes,
+                timeout,
+            )
+            .await
         })
     }
 }
 
 /// Fetches one HTTP or HTTPS URL through a loopback proxy. Redirects and
 /// compressed encodings are rejected; requests negotiate identity encoding.
-pub(crate) async fn fetch_subscription(
+#[cfg(test)]
+async fn fetch_subscription(
     proxy_host: &str,
     proxy_port: u16,
     url: &str,
     previous: Option<&SubscriptionSource>,
     timeout: Duration,
 ) -> Result<FetchResponse, FetchError> {
+    fetch_subscription_bounded(
+        proxy_host,
+        proxy_port,
+        url,
+        previous,
+        MAX_SUBSCRIPTION_BODY_BYTES,
+        timeout,
+    )
+    .await
+}
+
+async fn fetch_subscription_bounded(
+    proxy_host: &str,
+    proxy_port: u16,
+    url: &str,
+    previous: Option<&SubscriptionSource>,
+    max_body_bytes: usize,
+    timeout: Duration,
+) -> Result<FetchResponse, FetchError> {
+    if max_body_bytes == 0 {
+        return Err(FetchError::InvalidRequest);
+    }
     validate_subscription_url(url).map_err(|_| FetchError::InvalidRequest)?;
     let proxy_ip = proxy_host
         .parse::<IpAddr>()
@@ -122,12 +183,14 @@ pub(crate) async fn fetch_subscription(
             exchange(
                 stream,
                 build_request(parsed.authority, &parsed.target, previous, false)?,
+                max_body_bytes,
             )
             .await
         } else {
             exchange(
                 stream,
                 build_request(parsed.authority, &parsed.target, previous, true)?,
+                max_body_bytes,
             )
             .await
         }
@@ -265,7 +328,11 @@ fn build_request(
     Ok(request.into_bytes())
 }
 
-async fn exchange<S>(mut stream: S, request: Vec<u8>) -> Result<FetchResponse, FetchError>
+async fn exchange<S>(
+    mut stream: S,
+    request: Vec<u8>,
+    max_body_bytes: usize,
+) -> Result<FetchResponse, FetchError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -279,14 +346,22 @@ where
         .map_err(|_| FetchError::Unavailable)?;
     let mut bytes = Vec::with_capacity(8192);
     stream
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
+        .take(
+            MAX_RESPONSE_HEADER_BYTES
+                .checked_add(max_body_bytes)
+                .and_then(|limit| limit.checked_add(1))
+                .ok_or(FetchError::InvalidRequest)? as u64,
+        )
         .read_to_end(&mut bytes)
         .await
         .map_err(|_| FetchError::Unavailable)?;
-    if bytes.len() > MAX_RESPONSE_BYTES {
+    let max_response_bytes = MAX_RESPONSE_HEADER_BYTES
+        .checked_add(max_body_bytes)
+        .ok_or(FetchError::InvalidRequest)?;
+    if bytes.len() > max_response_bytes {
         return Err(FetchError::ResponseOverBound);
     }
-    parse_response(&bytes)
+    parse_response(&bytes, max_body_bytes)
 }
 
 async fn read_connect_response(stream: &mut TcpStream) -> Result<(), FetchError> {
@@ -320,7 +395,7 @@ async fn read_connect_response(stream: &mut TcpStream) -> Result<(), FetchError>
     Ok(())
 }
 
-fn parse_response(bytes: &[u8]) -> Result<FetchResponse, FetchError> {
+fn parse_response(bytes: &[u8], max_body_bytes: usize) -> Result<FetchResponse, FetchError> {
     let header_end = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -441,7 +516,7 @@ fn parse_response(bytes: &[u8]) -> Result<FetchResponse, FetchError> {
         }
     } else if status == 200 {
         let length = content_length.ok_or(FetchError::InvalidResponse)?;
-        if length > MAX_SUBSCRIPTION_BODY_BYTES {
+        if length > max_body_bytes {
             return Err(FetchError::ResponseOverBound);
         }
         if body.len() != length {
@@ -470,15 +545,27 @@ mod tests {
 
     #[test]
     fn parses_bounded_success_and_not_modified_responses() {
-        let response =
-            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nETag: \"v1\"\r\n\r\nabc")
-                .unwrap();
+        let response = parse_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nETag: \"v1\"\r\n\r\nabc",
+            3,
+        )
+        .unwrap();
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"abc");
         assert_eq!(response.etag.as_deref(), Some("\"v1\""));
-        let not_modified = parse_response(b"HTTP/1.1 304 Not Modified\r\n\r\n").unwrap();
+        let not_modified = parse_response(b"HTTP/1.1 304 Not Modified\r\n\r\n", 3).unwrap();
         assert_eq!(not_modified.status, 304);
         assert!(not_modified.body.is_empty());
+    }
+
+    #[test]
+    fn response_body_limit_is_owned_by_the_fetch_consumer() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata";
+        assert_eq!(parse_response(response, 4).unwrap().body, b"data");
+        assert_eq!(
+            parse_response(response, 3).unwrap_err(),
+            FetchError::ResponseOverBound
+        );
     }
 
     #[test]
@@ -489,14 +576,14 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
             b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Encoding: gzip\r\n\r\nx",
         ] {
-            assert!(parse_response(response).is_err());
+            assert!(parse_response(response, 16).is_err());
         }
         let oversized = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
             MAX_SUBSCRIPTION_BODY_BYTES + 1
         );
         assert_eq!(
-            parse_response(oversized.as_bytes()).unwrap_err(),
+            parse_response(oversized.as_bytes(), 2).unwrap_err(),
             FetchError::ResponseOverBound
         );
     }
