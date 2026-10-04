@@ -855,7 +855,7 @@ pub fn verify_su3_with_signers(
             expected: expected_signature_len,
         });
     }
-    verify_rsa_sha512_signature(signed, signature, trusted)
+    verify_rsa_sha512_signature(input, signed, signature, trusted, now_seconds)
         .map_err(|_| ReseedParseError::SignatureInvalid)?;
     verify_su3_archive(
         &input[parsed.content_offset..parsed.content_offset + parsed.content_length],
@@ -908,7 +908,7 @@ pub fn verify_su3(
             accepted: Vec::new(),
         });
     }
-    verify_rsa_sha512_signature(signed, signature, signer)
+    verify_rsa_sha512_signature(input, signed, signature, signer, now_seconds)
         .map_err(|_| ReseedParseError::SignatureInvalid)?;
     verify_su3_archive(
         &input[parsed.content_offset..parsed.content_offset + parsed.content_length],
@@ -918,41 +918,34 @@ pub fn verify_su3(
 }
 
 fn verify_rsa_sha512_signature(
+    input: &[u8],
     signed: &[u8],
     signature: &[u8],
     signer: &TrustedSigner,
+    now_seconds: u64,
 ) -> Result<(), ReseedParseError> {
-    use sad_rsa::pkcs1v15::{Signature, VerifyingKey};
-    use sad_rsa::sha2::Sha512;
-    use sad_rsa::signature::Verifier;
-
-    // sad-rsa's `RsaPublicKey::new` accepts `BoxedUint` (a
-    // fixed-precision heap integer from `crypto-bigint`) rather than
-    // `num-bigint::BigUint`. Convert with the bit-precision the modulus
-    // bytes already encode.
-    let modulus_bits = (signer.modulus.len() as u32).checked_mul(8).unwrap_or(0);
-    let exponent_bits = (signer.exponent.len() as u32).checked_mul(8).unwrap_or(0);
-    let n = match sad_rsa::BoxedUint::from_be_slice(&signer.modulus, modulus_bits) {
-        Ok(n) => n,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
+    let generic = i2pr_su3::RsaSha512Signer {
+        signer_id: signer.signer_id.as_str().to_owned(),
+        modulus: signer.modulus.clone(),
+        exponent: signer.exponent.clone(),
+        not_before: signer.not_before,
+        not_after: signer.not_after,
     };
-    let e = match sad_rsa::BoxedUint::from_be_slice(&signer.exponent, exponent_bits) {
-        Ok(e) => e,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    let key = match sad_rsa::RsaPublicKey::new(n, e) {
-        Ok(key) => key,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    let verifying_key = VerifyingKey::<Sha512>::new(key);
-    let signature_obj = match Signature::try_from(signature) {
-        Ok(s) => s,
-        Err(_) => return Err(ReseedParseError::SignatureInvalid),
-    };
-    if verifying_key.verify(signed, &signature_obj).is_err() {
+    let framing = i2pr_su3::parse(input, i2pr_su3::Su3Limits::default())
+        .map_err(|_| ReseedParseError::SignatureInvalid)?;
+    if framing
+        .signed_bytes(input)
+        .map_err(|_| ReseedParseError::SignatureInvalid)?
+        != signed
+        || framing
+            .signature(input)
+            .map_err(|_| ReseedParseError::SignatureInvalid)?
+            != signature
+    {
         return Err(ReseedParseError::SignatureInvalid);
     }
-    Ok(())
+    i2pr_su3::verify_rsa_sha512(input, &framing, &generic, now_seconds)
+        .map_err(|_| ReseedParseError::SignatureInvalid)
 }
 
 /// Verifies the inner ZIP archive against the Plan 104 limits and

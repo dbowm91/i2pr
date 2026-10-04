@@ -24,6 +24,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
 - `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` — runtime-neutral, no Tokio/sockets/`async fn`.
 - `i2pr-netdb`, `i2pr-netdb-persist` — RouterInfo/LeaseSet2 validation/store.
+- `i2pr-su3` — bounded, runtime-neutral SU3 framing and signature verification.
 - `i2pr-tunnel` — runtime-neutral exploratory pool, short-build, data plane.
 - `i2pr-client` — destination lifecycle, ECIES session/routing, Streaming.
 - `i2pr-api` — runtime-neutral SAM 3.1 + I2CP wire/state (no sockets).

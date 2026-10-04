@@ -26,7 +26,8 @@ expected = {
         "i2pr-transport", "i2pr-transport-ntcp2",
     },
     "i2pr-storage": {"i2pr-crypto"},
-    "i2pr-netdb": {"i2pr-crypto", "i2pr-proto"},
+    "i2pr-su3": set(),
+    "i2pr-netdb": {"i2pr-crypto", "i2pr-proto", "i2pr-su3"},
     "i2pr-netdb-persist": {
         "i2pr-crypto", "i2pr-netdb", "i2pr-proto", "i2pr-storage"
     },

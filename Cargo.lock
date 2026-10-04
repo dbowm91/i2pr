@@ -816,6 +816,7 @@ dependencies = [
  "flate2",
  "i2pr-crypto",
  "i2pr-proto",
+ "i2pr-su3",
  "rand_chacha 0.10.0",
  "rand_chacha 0.3.1",
  "rand_chacha 0.9.0",
@@ -896,6 +897,15 @@ dependencies = [
  "tempfile",
  "thiserror",
  "zeroize",
+]
+
+[[package]]
+name = "i2pr-su3"
+version = "0.1.0"
+dependencies = [
+ "sad-rsa",
+ "sha2 0.10.9",
+ "thiserror",
 ]
 
 [[package]]

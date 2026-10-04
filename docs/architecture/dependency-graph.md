@@ -16,7 +16,8 @@ from this production graph; they are allowed to support crate-local tests.
 | `i2pr-crypto` | `i2pr-proto` + `ed25519-dalek`, `x25519-dalek`, `sha2`, `subtle`, `zeroize`, `rand_core`, `thiserror`, `chacha20poly1305`, `hmac`, `elligator2` (replaces the retired `curve25519-elligator2 0.1.0-alpha.2`; Plan 131) |
 | `i2pr-storage` | `i2pr-crypto` + `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-core` | (zero deps) |
-| `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto` + `thiserror`, `base64ct`, `flate2`, `sha2`, `x509-parser`, `zip`, `sad-rsa` (renamed from `rsa`) |
+| `i2pr-su3` | (no production crate) + `sad-rsa`, `sha2`, `thiserror` |
+| `i2pr-netdb` | `i2pr-crypto`, `i2pr-proto`, `i2pr-su3` + `thiserror`, `base64ct`, `flate2`, `sha2`, `x509-parser`, `zip` |
 | `i2pr-netdb-persist` | `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-storage` + `thiserror` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-proto`, `i2pr-crypto`, `i2pr-transport` + `aes`, `chacha20poly1305`, `hmac`, `sha2`, `siphasher`, `thiserror`, `zeroize` |
@@ -98,7 +99,7 @@ Reverse edges (i.e. "may NOT depend on"):
         i2pr-storage     i2pr-netdb          i2pr-core
             |                 |
             v                 v
-   i2pr-netdb-persist  (SU3/reseed validation)
+i2pr-netdb-persist  (SU3/reseed validation)
         (cache + reseed
          composition;               +--> i2pr-tunnel (Milestone 5 substrate)
          Plan 104)                  |
@@ -118,6 +119,8 @@ Reverse edges (i.e. "may NOT depend on"):
                                     |     v
                               i2pr-client  i2pr-api (SAM 3.1)
                               (Plan 120)     (Plan 136)
+
+i2pr-netdb ------> i2pr-su3 (generic SU3 framing/signature verifier)
 
 i2pr-testkit (test/simulation only; may depend on transport crates;
               no production crate may depend on it)

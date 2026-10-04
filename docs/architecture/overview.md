@@ -74,6 +74,8 @@ crates/
   i2pr-transport-ssu2/      SSU2 v2 protocol + path/peer-test/relay machines (no I/O)
   i2pr-runtime/             Sole Tokio/socket/timer/channel owner + supervision
   i2pr-netdb/               RouterInfo + LeaseSet2 validation/store/lookup/publication
+  i2pr-su3/                 Runtime-neutral bounded SU3 framing and signature verification
+  i2pr-su3/                 Runtime-neutral bounded SU3 framing and signature verification
   i2pr-netdb-persist/       Persistent cache + SU3 reseed ingestion composition
   i2pr-tunnel/              Exploratory pool, short-build, data plane (runtime-neutral)
   i2pr-client/              Destination lifecycle, ECIES session/routing, Streaming
@@ -140,6 +142,7 @@ design choices.
 | `i2pr-transport-ssu2` | SSU2 v2 protocol | Addresses/headers/blocks, Noise XK + header protection + one-use tokens, data-phase reliability/fragmentation, path validation, peer-test/relay. No sockets. | [i2pr-transport-ssu2.md](i2pr-transport-ssu2.md) |
 | `i2pr-runtime` | Runtime owner | Only production Tokio owner: `ServiceGraph`, supervised `JoinSet`, NTCP2 link service, SSU2 UDP service, peer/relay coordinator, bounded channels/timers. | [i2pr-runtime.md](i2pr-runtime.md) |
 | `i2pr-netdb` | Local NetDB | `ValidatedRouterInfo`, bounded `RouterInfoStore`, SU3/reseed verification, peer selection, lookup/publication machines, `LeaseSet2Store`, local RouterInfo builder. | [i2pr-netdb.md](i2pr-netdb.md) |
+| `i2pr-su3` | Signed container verification | Bounded generic SU3 framing and explicit-key RSA-SHA512 verification; content-specific policy stays with callers. | [i2pr-su3.md](i2pr-su3.md) |
 | `i2pr-netdb-persist` | Cache composition | Bridges `i2pr-storage` bytes to `i2pr-netdb` validation: `CacheLoader` + `ReseedIngestor`. | [i2pr-netdb-persist.md](i2pr-netdb-persist.md) |
 | `i2pr-tunnel` | Tunnel substrate | Tunnel identity, exploratory pool, ECIES-X25519 short-build, canonical I2NP bridge, data plane, reply-path provider, NetDB-over-tunnel composition. | [i2pr-tunnel.md](i2pr-tunnel.md) |
 | `i2pr-client` | Destination runtime | Destination identity/pools/registry, Standard LeaseSet2 lifecycle, ECIES-X25519-AEAD-Ratchet sessions, garlic routing/dispatch, Streaming. | [i2pr-client.md](i2pr-client.md) |

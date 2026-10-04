@@ -12,7 +12,7 @@ base64ct = { workspace = true }
 flate2 = { workspace = true }
 i2pr-crypto = { path = "../i2pr-crypto" }
 i2pr-proto = { path = "../i2pr-proto" }
-sad-rsa = { workspace = true }
+i2pr-su3 = { path = "../i2pr-su3" }
 sha2 = { workspace = true }
 thiserror.workspace = true
 x509-parser = { workspace = true }
