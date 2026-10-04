@@ -644,6 +644,8 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
             "AccessOption":"deny", "AccessList":access_entry, "JumpList":"false",
             "ClientPerMinute":2, "ClientPerHour":10, "ClientPerDay":30,
             "TotalInPerMinute":20, "TotalInPerHour":100, "TotalInPerDay":300,
+            "PostLimit":300, "PostLimitTime":600, "PerClientPeriod":6,
+            "TotalPeriod":20, "TotalBanTime":1200,
             "StartOnLoad":false
         }),
         2,
@@ -676,6 +678,11 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     assert_eq!(raw["totalInPerMinute"], 20);
     assert_eq!(raw["totalInPerHour"], 100);
     assert_eq!(raw["totalInPerDay"], 300);
+    assert_eq!(raw["postLimit"], 300);
+    assert_eq!(raw["postLimitTime"], 600);
+    assert_eq!(raw["perClientPeriod"], 6);
+    assert_eq!(raw["totalPeriod"], 20);
+    assert_eq!(raw["totalBanTime"], 1200);
     assert_eq!(raw["startOnLoad"], false);
 }
 

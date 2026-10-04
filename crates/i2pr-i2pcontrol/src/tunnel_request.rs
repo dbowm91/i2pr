@@ -141,6 +141,11 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "TotalInPerMinute" => Some("total_in_per_minute"),
         "TotalInPerHour" => Some("total_in_per_hour"),
         "TotalInPerDay" => Some("total_in_per_day"),
+        "PostLimit" => Some("post_limit"),
+        "PostLimitTime" => Some("post_limit_time"),
+        "PerClientPeriod" => Some("per_client_period"),
+        "TotalPeriod" => Some("total_period"),
+        "TotalBanTime" => Some("total_ban_time"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
         "AllowReferer" => Some("allow_referer"),
@@ -191,6 +196,11 @@ fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelR
             | "total_in_per_minute"
             | "total_in_per_hour"
             | "total_in_per_day"
+            | "post_limit"
+            | "post_limit_time"
+            | "per_client_period"
+            | "total_period"
+            | "total_ban_time"
     ) {
         crate::tunnel_options::OptionValueType::Integer
     } else {
@@ -420,6 +430,11 @@ pub fn decode_tunnel_request(
                         | "total_in_per_minute"
                         | "total_in_per_hour"
                         | "total_in_per_day"
+                        | "post_limit"
+                        | "post_limit_time"
+                        | "per_client_period"
+                        | "total_period"
+                        | "total_ban_time"
                 ) {
                     crate::tunnel_options::OptionValueType::Integer
                 } else {

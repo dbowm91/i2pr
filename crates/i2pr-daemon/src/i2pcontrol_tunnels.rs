@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 25] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 30] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -175,6 +175,11 @@ pub const SUPPORTED_323_OPTIONS: [&str; 25] = [
     "total_in_per_minute",
     "total_in_per_hour",
     "total_in_per_day",
+    "post_limit",
+    "post_limit_time",
+    "per_client_period",
+    "total_period",
+    "total_ban_time",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -1147,6 +1152,27 @@ pub fn build_control_spec(
                     });
                 }
                 http_policy.user_agents = rules;
+            }
+            "post_limit" | "post_limit_time" | "per_client_period" | "total_period"
+            | "total_ban_time" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "POST limits apply to HTTP server tunnels only",
+                    });
+                }
+                let value = parse_rate_option(key, value)?;
+                match key.as_str() {
+                    "post_limit" => http_policy.post_limits.window_seconds = value,
+                    "post_limit_time" => http_policy.post_limits.client_ban_seconds = value,
+                    "per_client_period" => http_policy.post_limits.client_max = value,
+                    "total_period" => http_policy.post_limits.total_max = value,
+                    "total_ban_time" => http_policy.post_limits.total_ban_seconds = value,
+                    _ => unreachable!(),
+                }
             }
             "target_destination" => {
                 if !matches!(
@@ -4267,6 +4293,27 @@ mod tests {
             build_control_spec(&client),
             Err(ControlError::ContradictoryOptions { .. })
         ));
+
+        let http_server = ControlDefinition {
+            name: "http-post-rates".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options: BTreeMap::from([
+                ("target_host".to_owned(), "127.0.0.1".to_owned()),
+                ("target_port".to_owned(), "8080".to_owned()),
+                ("post_limit".to_owned(), "300".to_owned()),
+                ("post_limit_time".to_owned(), "600".to_owned()),
+                ("per_client_period".to_owned(), "6".to_owned()),
+                ("total_period".to_owned(), "20".to_owned()),
+                ("total_ban_time".to_owned(), "1200".to_owned()),
+            ]),
+            start_on_load: false,
+        };
+        let http_spec = build_control_spec(&http_server).expect("HTTP POST limits map");
+        assert_eq!(http_spec.http_policy.post_limits.window_seconds, 300);
+        assert_eq!(http_spec.http_policy.post_limits.client_ban_seconds, 600);
+        assert_eq!(http_spec.http_policy.post_limits.client_max, 6);
+        assert_eq!(http_spec.http_policy.post_limits.total_max, 20);
+        assert_eq!(http_spec.http_policy.post_limits.total_ban_seconds, 1_200);
     }
 
     #[test]

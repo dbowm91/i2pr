@@ -81,10 +81,10 @@ pub use response::{
 };
 pub use rewrite::{rewrite_headers, validate_authority_host};
 pub use server::{
-    FilteredServerRequest, HttpServerPolicy, PresentationClass, classify_presentation,
-    filter_server_request, filter_server_request_with_policy,
-    filter_server_request_with_spoofed_host, filter_server_response, valid_spoofed_host,
-    valid_user_agent_rules,
+    FilteredServerRequest, HttpPostLimiter, HttpPostLimits, HttpServerPolicy, MAX_POST_LIMIT_PEERS,
+    PresentationClass, classify_presentation, filter_server_request,
+    filter_server_request_with_policy, filter_server_request_with_spoofed_host,
+    filter_server_response, valid_spoofed_host, valid_user_agent_rules,
 };
 pub use target::{
     RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_origin_form,

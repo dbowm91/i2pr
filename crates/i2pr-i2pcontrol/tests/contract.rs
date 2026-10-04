@@ -1080,6 +1080,8 @@ fn plan289_tunnel_request_envelope_rules() {
         "TargetHost": "127.0.0.1", "TargetPort": 8080,
         "ClientPerMinute": 2, "ClientPerHour": 10, "ClientPerDay": 30,
         "TotalInPerMinute": 20, "TotalInPerHour": 100, "TotalInPerDay": 300,
+        "PostLimit": 300, "PostLimitTime": 600, "PerClientPeriod": 6,
+        "TotalPeriod": 20, "TotalBanTime": 1200,
     })))
     .expect("Proposal server rates decode into typed owner keys");
     for (key, expected) in [
@@ -1089,6 +1091,11 @@ fn plan289_tunnel_request_envelope_rules() {
         ("total_in_per_minute", "20"),
         ("total_in_per_hour", "100"),
         ("total_in_per_day", "300"),
+        ("post_limit", "300"),
+        ("post_limit_time", "600"),
+        ("per_client_period", "6"),
+        ("total_period", "20"),
+        ("total_ban_time", "1200"),
     ] {
         assert_eq!(
             server_rates.options.get(key).map(String::as_str),

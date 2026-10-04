@@ -1466,6 +1466,12 @@ impl ServiceTunnelSpec {
                 reason: "HTTP server User-Agent rules exceed their count or value bounds",
             });
         }
+        self.http_policy.post_limits.validate().map_err(|_| {
+            ServiceTunnelError::ContradictoryOptions {
+                id: id.clone(),
+                reason: "HTTP POST limits must be bounded and include their required window/count",
+            }
+        })?;
         if self.http_policy.block_user_agents && self.http_policy.user_agents.is_empty() {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id,

@@ -87,6 +87,7 @@ pub(crate) async fn run_http_server_connection(
     peer: RemoteDestination,
     cancellation: CancellationToken,
 ) -> HttpServerConnectionOutcome {
+    let peer_hash = peer.destination_hash;
     let connect_deadline = lookup_connect_timeout(&manager, &runtime.spec_id);
     let unique_local = manager.unique_local_for(&runtime.spec_id);
     let dial = timeout(
@@ -155,6 +156,8 @@ pub(crate) async fn run_http_server_connection(
         target_stream,
         endpoint,
         manager.http_policy_for(&runtime.spec_id),
+        &runtime.post_limiter,
+        peer_hash,
         &cancellation,
     )
     .await;
@@ -168,6 +171,8 @@ async fn drive_relay<S>(
     target_stream: S,
     endpoint: Arc<dyn StreamPumpEndpoint>,
     policy: i2pr_service_tunnels::HttpServerPolicy,
+    post_limiter: &std::sync::Mutex<i2pr_service_tunnels::HttpPostLimiter>,
+    peer_hash: [u8; 32],
     cancellation: &CancellationToken,
 ) -> HttpServerConnectionOutcome
 where
@@ -195,6 +200,23 @@ where
             return HttpServerConnectionOutcome::BadRequest;
         }
     };
+    if head.line.method == "POST" {
+        let now_seconds = crate::service_tunnels::service_streaming_now_ms() / 1_000;
+        let admitted = post_limiter
+            .lock()
+            .map(|mut limiter| limiter.admit_post(peer_hash, now_seconds))
+            .unwrap_or(false);
+        if !admitted {
+            admit_error(
+                endpoint.as_ref(),
+                HttpErrorKind::PresentationRefused,
+                "HTTP POST rate limit exceeded",
+                cancellation,
+            )
+            .await;
+            return HttpServerConnectionOutcome::Forbidden;
+        }
+    }
     // Same-read pipelined bytes after the head belong to the
     // request body; carry them into the body forward.
     let mut body_prefix = head.initial_body_bytes.clone();

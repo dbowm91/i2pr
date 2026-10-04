@@ -35,12 +35,153 @@
 use super::error::{HttpError, HttpErrorKind};
 use super::parser::{HeaderEntry, HeaderName, HttpRequestHead};
 use super::target::parse_origin_form;
+use std::collections::BTreeMap;
 
 /// Maximum bytes for the validated local authority replacement
 /// (`ip:port` text the daemon derives from the server target).
 pub const SERVER_AUTHORITY_MAX_BYTES: usize = 256;
 /// Maximum byte length of a Proposal `SpoofedHost` DNS host name.
 pub const SPOOFED_HOST_MAX_BYTES: usize = 253;
+/// Maximum authenticated peers retained for per-client POST limits.
+pub const MAX_POST_LIMIT_PEERS: usize = 4096;
+const MAX_POST_LIMIT_VALUE: u32 = 100_000;
+
+/// Proposal HTTP POST throttle values. Zero disables the corresponding
+/// limit; the configured window is shared by per-client and total counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HttpPostLimits {
+    /// Fixed counting window duration in seconds (`PostLimit`).
+    pub window_seconds: u32,
+    /// Per-client ban duration in seconds (`PostLimitTime`).
+    pub client_ban_seconds: u32,
+    /// Maximum POST requests per peer within one window (`PerClientPeriod`).
+    pub client_max: u32,
+    /// Maximum POST requests from all peers within one window (`TotalPeriod`).
+    pub total_max: u32,
+    /// Aggregate ban duration in seconds (`TotalBanTime`).
+    pub total_ban_seconds: u32,
+}
+
+impl HttpPostLimits {
+    /// Checks the Proposal field bounds and action pairings.
+    pub fn validate(self) -> Result<Self, crate::errors::ServiceTunnelError> {
+        if [
+            self.window_seconds,
+            self.client_ban_seconds,
+            self.client_max,
+            self.total_max,
+            self.total_ban_seconds,
+        ]
+        .iter()
+        .any(|value| *value > MAX_POST_LIMIT_VALUE)
+            || ((self.client_max != 0 || self.total_max != 0) && self.window_seconds == 0)
+            || (self.client_ban_seconds != 0 && self.client_max == 0)
+            || (self.total_ban_seconds != 0 && self.total_max == 0)
+        {
+            return Err(crate::errors::ServiceTunnelError::ContradictoryOptions {
+                id: String::new(),
+                reason: "HTTP POST limits require a bounded window and matching limits",
+            });
+        }
+        Ok(self)
+    }
+
+    /// Whether any POST throttling is configured.
+    pub fn enabled(self) -> bool {
+        self.client_max != 0 || self.total_max != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PostPeerWindow {
+    epoch: u64,
+    count: u32,
+    banned_until: u64,
+}
+
+/// Bounded authenticated-peer and aggregate POST accounting.
+#[derive(Debug)]
+pub struct HttpPostLimiter {
+    limits: HttpPostLimits,
+    total_epoch: u64,
+    total_count: u32,
+    total_banned_until: u64,
+    peers: BTreeMap<[u8; 32], PostPeerWindow>,
+}
+
+impl HttpPostLimiter {
+    /// Creates a fresh limiter for one HTTP server generation.
+    pub fn new(limits: HttpPostLimits) -> Self {
+        Self {
+            limits,
+            total_epoch: u64::MAX,
+            total_count: 0,
+            total_banned_until: 0,
+            peers: BTreeMap::new(),
+        }
+    }
+
+    /// Admits one parsed POST request using process-monotonic seconds.
+    /// At peer-table capacity, expired records are reclaimed and a new
+    /// peer fails closed if the bounded table remains full.
+    pub fn admit_post(&mut self, peer: [u8; 32], now_seconds: u64) -> bool {
+        if !self.limits.enabled() {
+            return true;
+        }
+        if self.total_banned_until > now_seconds {
+            return false;
+        }
+        let window = u64::from(self.limits.window_seconds);
+        let epoch = now_seconds / window;
+        if self.total_epoch != epoch {
+            self.total_epoch = epoch;
+            self.total_count = 0;
+        }
+        if self.limits.total_max != 0 && self.total_count >= self.limits.total_max {
+            self.total_banned_until =
+                now_seconds.saturating_add(u64::from(self.limits.total_ban_seconds));
+            return false;
+        }
+
+        let client_limit_enabled = self.limits.client_max != 0;
+        if client_limit_enabled && !self.peers.contains_key(&peer) {
+            if self.peers.len() >= MAX_POST_LIMIT_PEERS {
+                self.peers
+                    .retain(|_, state| state.epoch == epoch || state.banned_until > now_seconds);
+            }
+            if self.peers.len() >= MAX_POST_LIMIT_PEERS {
+                return false;
+            }
+        }
+        let mut client_state = self.peers.get(&peer).copied().unwrap_or_default();
+        if client_state.banned_until > now_seconds {
+            return false;
+        }
+        if client_state.epoch != epoch {
+            client_state.epoch = epoch;
+            client_state.count = 0;
+            client_state.banned_until = 0;
+        }
+        if client_limit_enabled && client_state.count >= self.limits.client_max {
+            client_state.banned_until =
+                now_seconds.saturating_add(u64::from(self.limits.client_ban_seconds));
+            self.peers.insert(peer, client_state);
+            return false;
+        }
+
+        self.total_count = self.total_count.saturating_add(1);
+        if client_limit_enabled {
+            client_state.count = client_state.count.saturating_add(1);
+            self.peers.insert(peer, client_state);
+        }
+        true
+    }
+
+    /// Number of currently retained peer records, exposed for boundedness tests.
+    pub fn tracked_peers(&self) -> usize {
+        self.peers.len()
+    }
+}
 
 /// Whether `host` is a bounded ASCII DNS name suitable for an HTTP Host
 /// field. Ports, userinfo, whitespace, and control bytes are not accepted.
@@ -90,6 +231,8 @@ pub struct HttpServerPolicy {
     pub user_agents: Vec<String>,
     /// Optional validated Host replacement for Proposal `SpoofedHost`.
     pub spoofed_host: Option<String>,
+    /// Optional Proposal POST-count and ban policy.
+    pub post_limits: HttpPostLimits,
 }
 
 impl Default for HttpServerPolicy {
@@ -102,6 +245,7 @@ impl Default for HttpServerPolicy {
             block_user_agents: false,
             user_agents: Vec::new(),
             spoofed_host: None,
+            post_limits: HttpPostLimits::default(),
         }
     }
 }
@@ -584,6 +728,46 @@ mod tests {
 
     fn parse_head(raw: &str) -> HttpRequestHead {
         parse_request_head(raw.as_bytes(), HttpLimits::defaults()).expect("head parses")
+    }
+
+    #[test]
+    fn post_limiter_enforces_client_total_bans_and_window_reset() {
+        let mut limiter = HttpPostLimiter::new(HttpPostLimits {
+            window_seconds: 300,
+            client_ban_seconds: 20,
+            client_max: 1,
+            total_max: 3,
+            total_ban_seconds: 10,
+        });
+        assert!(limiter.admit_post([1; 32], 1));
+        assert!(!limiter.admit_post([1; 32], 2));
+        assert!(!limiter.admit_post([1; 32], 21));
+        assert!(limiter.admit_post([2; 32], 22));
+        assert!(limiter.admit_post([3; 32], 23));
+        assert!(!limiter.admit_post([4; 32], 24));
+        assert!(!limiter.admit_post([2; 32], 30), "aggregate ban is shared");
+        assert!(
+            limiter.admit_post([1; 32], 300),
+            "new fixed window resets counts"
+        );
+    }
+
+    #[test]
+    fn post_limiter_bounds_peer_tracking_and_fails_closed() {
+        let mut limiter = HttpPostLimiter::new(HttpPostLimits {
+            window_seconds: 300,
+            client_max: 1,
+            ..HttpPostLimits::default()
+        });
+        for index in 0..MAX_POST_LIMIT_PEERS {
+            let mut peer = [0_u8; 32];
+            peer[..4].copy_from_slice(&(index as u32).to_be_bytes());
+            assert!(limiter.admit_post(peer, 1));
+        }
+        assert_eq!(limiter.tracked_peers(), MAX_POST_LIMIT_PEERS);
+        assert!(!limiter.admit_post([0xff; 32], 2));
+        assert!(limiter.admit_post([0xff; 32], 300));
+        assert_eq!(limiter.tracked_peers(), 1);
     }
 
     #[test]

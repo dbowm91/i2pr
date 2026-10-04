@@ -217,6 +217,8 @@ pub struct ServiceRuntime {
     pub(crate) access: i2pr_service_tunnels::ServerAccessPolicy,
     /// Bounded authenticated-peer and aggregate server connection-rate owner.
     pub(crate) connection_rate_limiter: Mutex<i2pr_service_tunnels::ServerConnectionRateLimiter>,
+    /// Bounded HTTP POST window and ban state for this HTTP server generation.
+    pub(crate) post_limiter: Mutex<i2pr_service_tunnels::HttpPostLimiter>,
     /// Policy-denied inbound connections (Plan 292 evidence;
     /// handshake failures keep using `failed_connects`).
     pub(crate) access_denied: AtomicUsize,
@@ -3380,6 +3382,9 @@ impl ServiceTunnelManager {
                     spec.access.connection_rates,
                 ),
             ),
+            post_limiter: Mutex::new(i2pr_service_tunnels::HttpPostLimiter::new(
+                spec.http_policy.post_limits,
+            )),
             access_denied: AtomicUsize::new(0),
             rate_limited: AtomicUsize::new(0),
             unique_local_fallbacks: AtomicUsize::new(0),

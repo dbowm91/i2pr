@@ -468,6 +468,52 @@ async fn proposal_spoofed_host_and_referer_policy_reach_http_server_target() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn proposal_post_limits_reject_excess_peer_requests_before_target() {
+    let directory = temp_data_dir("http-server-post-limits");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        post_limits: i2pr_service_tunnels::HttpPostLimits {
+            window_seconds: 300,
+            client_max: 1,
+            ..i2pr_service_tunnels::HttpPostLimits::default()
+        },
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
+    let (manager, mut observed, _fixture_addr) =
+        build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+
+    let mut first = TcpStream::connect(listener).await.expect("first connect");
+    first
+        .write_all(b"POST /submit HTTP/1.1\r\nHost: example.i2p\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("first post");
+    let first_response = read_head_bounded(&mut first).await;
+    assert!(
+        String::from_utf8_lossy(&first_response).starts_with("HTTP/1.1 200 OK\r\n"),
+        "first POST is admitted"
+    );
+    let _ = next_observed(&mut observed).await;
+
+    let mut second = TcpStream::connect(listener).await.expect("second connect");
+    second
+        .write_all(b"POST /submit HTTP/1.1\r\nHost: example.i2p\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("second post");
+    let second_response = read_head_bounded(&mut second).await;
+    assert!(
+        String::from_utf8_lossy(&second_response).starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "excess peer POST is rejected"
+    );
+    assert!(
+        observed.try_recv().is_err(),
+        "rejected POST never reaches target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn proposal_user_agent_blocklist_rejects_before_local_target() {
     let directory = temp_data_dir("http-server-user-agent-blocklist");
     let policy = i2pr_service_tunnels::HttpServerPolicy {
