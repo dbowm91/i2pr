@@ -27,7 +27,8 @@ page accurate for 0.9.66.
 |---|---|---|
 | Java I2P | `i2p/i2p.i2p@93eef5db87fae48025de00c0eb9b669e97b92149` (verified to be repository head on 2026-10-04) | Source-level comparison and (where buildable) executed fixtures |
 | i2pd | `PurpleI2P/i2pd@2c694149fa6996eaeb23e378d5f83c9d3232c22f` | Executed differential through `tools/i2pd-red25519-oracle.cpp` against the unmodified `libi2pd.a` |
-| Emissary | No usable pin on this host | See §5 |
+| Emissary (upstream) | `eepnet/emissary@9b43484a21d5a1291c4881cdae62a36c527f8c0f` | Checked for a Red25519 surface: **none exists** (no red25519/reddsa/blinding/b33/ELS2 symbol anywhere in the tree), corroborating the Plan 325 crates.io survey |
+| Emissary (project fork) | `eggstack/emissary@6885a945d25a5ae61bc68191d27c5816bc3df4c9` (the pin already in `docs/provenance/proposal-170-manifest.md`) | Executed black-box differential via `emissary_core::crypto::red25519` |
 
 ## 4. Executed differential summary
 
@@ -71,10 +72,55 @@ and a type-11 record published by either reference will not verify under i2pr. B
 credential-facing derivations, and the DHT storage key all agree, so address derivation and lookup
 interoperate; only the signature transcript does not.
 
-## 5. Emissary
+## 5. Emissary black-box differential (executed)
 
-No Emissary binary, source tree, or running instance is available on this host, and no network path
-to the I2P that an Emissary router would need exists here. The Plan 329 §5 quarantine is therefore
-unbroken: Emissary Red25519/ELS2 source has not been inspected, no Emissary-derived value exists in
-any fixture, and the Plan 331 post-freeze Emissary black-box differential could not be executed.
-This is recorded as an unmet closure condition, not as a pass.
+Emissary turned out to be usable as an oracle after all, which changes the branch's interop
+picture. Two repositories matter:
+
+- **Upstream `eepnet/emissary`** is a Rust project (`emissary-core`, `emissary-cli`) and contains
+  **no** Red25519, RedDSA, blinding, b33, or encrypted-LeaseSet code at all. There is nothing to
+  compare against there.
+- **The project fork `eggstack/emissary`** at the pin already recorded in this repository's
+  provenance manifest does implement it, in `emissary-core/src/crypto/red25519.rs` and
+  `emissary-core/src/crypto/els2.rs`.
+
+Method, chosen to keep the Plan 329 §5 quarantine intact:
+
+1. The differential runs **after** the Plan 330 implementation commit (`75b91b0`) was frozen, so
+   the comparison cannot have influenced i2pr's code.
+2. `emissary-core` was built unmodified as a library (`cargo build -p emissary-core --lib`).
+3. A driver crate was written **outside this repository** (`/tmp`, not committed to i2pr) that
+   depends on `emissary-core` by path and calls only its public API: `generate_alpha`,
+   `blind_public_key`, `blind_private_key_ed25519`, `derive_public`, `sign`, `sign_with_transcript`,
+   `verify`, `blinded_storage_key`.
+4. Only public `pub fn`/`pub struct` signature lines were read, which is the minimum needed to call
+   the API, plus a few adjacent guard lines visible in the same grep output. No hashing, encoding,
+   or key-derivation body was read, and no Emissary logic was copied or transliterated into i2pr.
+
+Executed result, five cases (four no-secret days plus one lookup-secret case):
+
+| Property | i2pr vs Emissary `6885a94` |
+|---|---|
+| `GENERATE_ALPHA` | byte-identical, 5/5 (including the lookup-secret case) |
+| Blinded public key | byte-identical, 5/5 |
+| Blinded private key | byte-identical, 5/5 |
+| Blinded DHT storage key | byte-identical, 5/5 |
+| Red25519 signature for a fixed 80-byte transcript | **byte-identical**, 5/5 |
+| Reference signature verifies in i2pr | yes, 5/5 |
+| Modified message / one-bit-corrupted signature | rejected in both directions |
+
+Fixture: `crates/i2pr-crypto/tests/data/red25519-emissary-differential.json`; test:
+`crates/i2pr-crypto/tests/red25519_emissary_differential.rs`.
+
+### Revised interoperability picture
+
+| Property | i2pr | Official vectors | Emissary `6885a94` | i2pd `2c69414` | Java I2P `93eef5d` |
+|---|---|---|---|---|---|
+| alpha / blinded keys / storage key | reference | — | identical | identical | not executed |
+| signature transcript | `SHA-512("I2P_Red25519H(x)" ‖ … ‖ len_u16le(m) ‖ m)` | 10/10 verify | **identical** | bare `SHA-512(T ‖ A ‖ m)` | no `I2P_Red25519H` anywhere in tree |
+
+The divergence is therefore **reference-side**, not an i2pr defect: i2pr matches the specification,
+the specification's own published vector corpus, and a deployed independent I2P router
+(Emissary) byte-for-byte. i2pd and Java I2P use a bare-SHA-512 variant that cannot verify the
+official corpus. Addressing and lookup interoperate across all three references; only the signature
+transcript splits the ecosystem, with Emissary on the specification's side.

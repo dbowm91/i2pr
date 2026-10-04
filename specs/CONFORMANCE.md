@@ -230,6 +230,29 @@ Tests must cover:
 
 Legacy algorithms required only for reading deployed data must be isolated from new identity generation and ordinary emission policy.
 
+### Red25519 (signature type 11) status
+
+`i2pr-crypto` implements the I2P Red25519 composition — domain-separated `HStar`, daily alpha
+derivation, additive re-randomization, randomized signing, and cofactor-aware verification — over
+reviewed `curve25519-dalek` arithmetic. Its status is:
+
+- **Verified against the specification's own vectors.** All ten official Red25519 vectors pass;
+  the deterministic fields compare byte-for-byte and both signature rows of every vector verify.
+- **Byte-compatible with one independent implementation.** `eggstack/emissary@6885a945` reproduces
+  the same alpha values, blinded keys, DHT storage keys, and signature bytes.
+- **Signature-type 11 is not accepted on the wire, advertised, or used for any database record.**
+  The primitive is consumed by nothing. Encrypted LeaseSet2 / DatabaseStore type 5 support is
+  **not** claimed.
+- **Known interop limitation.** `i2pd` and Java I2P sign type 11 with a bare-SHA-512 transcript
+  that omits the `I2P_Red25519H(x)` domain and the specification's length framing, and cannot
+  verify the official vector corpus. A type-5 record signed by i2pr is therefore unverifiable by
+  those two implementations today. Blinding, alpha derivation, and the DHT storage key interoperate
+  with both, so address derivation and lookup are unaffected. Any future ELS2 owner must state this
+  limitation instead of implying network interoperability.
+
+Authority: Plans 329–331 and the Plan 336 spec-first conformance decision
+(`plans/closure/i2pcontrol-proposal-170/336-closure.md`).
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

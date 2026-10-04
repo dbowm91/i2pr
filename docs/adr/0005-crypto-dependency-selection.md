@@ -83,3 +83,45 @@ Conditions on the adoption, all carried into the Plan 330 requirement set:
 
 The independent-implementation policy of Plan 329 is unaffected by this amendment: composing a
 reviewed curve library is required, and a local field/scalar/point implementation is prohibited.
+
+## Amendment (Plan 336, 2026-10-04): Red25519 transcript conformance is spec-first
+
+The I2P Red25519 transcript is the one specified in the Red25519 specification:
+
+```text
+HStar(prefix1, prefix2, m) = SHA-512("I2P_Red25519H(x)" || prefix1 || prefix2 || len_u16le(m) || m) mod L
+```
+
+This was a live decision, because the two most widely deployed I2P implementations use a different
+transcript. The evidence that settled it:
+
+- All ten official Red25519 vectors in the pinned specification verify under the specified
+  transcript. A control experiment re-verified the same ten signatures with the bare-SHA-512
+  transcript and none verified, so the domain and length framing are required by the published
+  corpus rather than optional.
+- `eggstack/emissary@6885a945` reproduces i2pr's `GENERATE_ALPHA` output, blinded public key,
+  blinded private key, DHT storage key, and **signature bytes** exactly.
+- `PurpleI2P/i2pd@2c694149` and i2p master `a1c7e60` sign type 11 as `SHA-512(T || A || M)` and
+  verify type 11 through the plain Ed25519 equation. The pinned Java I2P tree contains no
+  `I2P_Red25519H` literal at all.
+
+Consequences and constraints:
+
+- i2pr follows the specification. Dual-mode support is rejected: it would put two signature formats
+  on one key type, which the specification does not describe.
+- The official vector corpus stays the conformance gate. No vector was relaxed, and the
+  reference-compatible option was rejected precisely because it would have required reclassifying
+  that corpus as a deviation.
+- Blinding, alpha derivation, and the DHT storage key interoperate with i2pd as well, so address
+  derivation and lookup are portable across every reference. Only the signature transcript splits
+  the ecosystem, with Emissary on the specification's side.
+- A type-5 record signed by i2pr is not verifiable by i2pd or Java I2P today. Because no ELS2 owner
+  exists yet, nothing is affected in practice, and no Encrypted LeaseSet2 or DatabaseStore type 5
+  support may be claimed while that is true. Any future ELS2 owner must state this limitation
+  rather than imply network interoperability.
+- The divergence is a defect in the deviating references, not in this implementation. Reporting it
+  upstream is out of this repository's scope and is not claimed as done.
+
+Evidence: `specs/references/red25519-qualification-freeze.md` §4–§5,
+`plans/closure/i2pcontrol-proposal-170/331-status.md`, and
+`plans/closure/i2pcontrol-proposal-170/336-closure.md`.

@@ -1,6 +1,8 @@
 # Plan 336 — Red25519 transcript conformance decision and deferred reference lanes
 
-Status: **registered-red25519-transcript-conformance-decision-and-deferred-lanes**
+Status: **passed-red25519-transcript-conformance-decision-spec-first**
+
+Closure record: `plans/closure/i2pcontrol-proposal-170/336-closure.md`.
 
 Classification: architectural decision + external-evidence corrective. No production crypto code in
 this plan.

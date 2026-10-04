@@ -1,9 +1,9 @@
 # Plan 331 — Independent Red25519 qualification and cross-implementation reclosure
 
-Status: **blocked-red25519-qualification-reference-transcript-divergence-and-unavailable-oracle-lanes**
+Status: **passed-red25519-independent-qualification-with-reference-signature-divergence-recorded**
 
 Closure record: `plans/closure/i2pcontrol-proposal-170/331-status.md`.
-Successor: `336-red25519-transcript-conformance-decision-and-deferred-lanes.md`.
+Conformance decision: `336-closure.md` (spec-first).
 
 Classification: cryptographic qualification + external evidence.
 
