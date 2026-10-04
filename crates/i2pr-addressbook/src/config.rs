@@ -83,7 +83,7 @@ pub enum ConfigKey {
 }
 
 impl ConfigKey {
-    /// Exact wire spelling (matches the frozen thirteen-key inventory).
+    /// Exact owner-config spelling (Proposal wire names are projected at the daemon boundary).
     pub const fn name(self) -> &'static str {
         match self {
             Self::PrivateBook => "private_book",
@@ -115,6 +115,8 @@ impl ConfigKey {
                 | Self::PublishedBook
                 | Self::Subscriptions
                 | Self::LogFile
+                | Self::Etags
+                | Self::LastModified
         )
     }
 }
@@ -183,7 +185,7 @@ impl LogLevel {
     }
 }
 
-/// Validated thirteen-key address-book configuration.
+/// Validated address-book owner configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AddressBookConfig {
     /// Per-book snapshot artifact names (logical, confined).
@@ -240,7 +242,7 @@ impl Default for AddressBookConfig {
 }
 
 impl AddressBookConfig {
-    /// Renders all thirteen keys in canonical order for getters and
+    /// Renders all owner keys in canonical order for persistence and
     /// generation encoding.
     pub fn rendered_entries(&self) -> BTreeMap<String, String> {
         let mut map = BTreeMap::new();
@@ -469,6 +471,31 @@ mod tests {
             config.checked_update(&map(&[("nope", "1")])),
             Err(AddressBookError::UnknownConfigKey)
         );
+    }
+
+    #[test]
+    fn publication_and_validator_config_are_typed_and_confined() {
+        let config = AddressBookConfig::default();
+        let updated = config
+            .checked_update(&map(&[
+                ("should_publish", "true"),
+                ("etags", "validators.etag"),
+                ("last_modified", "validators.modified"),
+            ]))
+            .expect("valid config");
+        assert!(updated.should_publish);
+        assert_eq!(updated.etags_artifact, "validators.etag");
+        assert_eq!(updated.last_modified_artifact, "validators.modified");
+        for invalid in ["yes", "1", "true "] {
+            assert!(
+                config
+                    .checked_update(&map(&[("should_publish", invalid)]))
+                    .is_err()
+            );
+        }
+        for invalid in ["../escape", "/tmp/escape", "dir/file"] {
+            assert!(config.checked_update(&map(&[("etags", invalid)])).is_err());
+        }
     }
 
     #[test]

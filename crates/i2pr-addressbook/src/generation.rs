@@ -1,7 +1,7 @@
 //! Deterministic versioned generations: the persisted form.
 //!
 //! A generation is one complete bounded state: four books, the
-//! subscription set, and the thirteen-key configuration, plus a
+//! subscription set, and the typed owner configuration, plus a
 //! saturating revision. Serialization is deterministic JSON (fixed
 //! field order, `BTreeMap` ordering throughout). Decoding re-validates
 //! everything a live mutation would — hostnames, destinations,

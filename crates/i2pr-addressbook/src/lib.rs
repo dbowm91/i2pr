@@ -3,7 +3,7 @@
 //! This crate owns i2pr `.i2p` naming: four independent administrative
 //! books (private, local, router, published) with fixed lookup
 //! precedence, a subscription-derived table consulted last, typed
-//! hostname and full-Destination validation, the thirteen-key `SetConfig`
+//! hostname and full-Destination validation, the Proposal `SetConfig`
 //! domain, bounded subscription ingestion, deterministic versioned
 //! generations, and a narrow read-only resolver handle.
 //!
