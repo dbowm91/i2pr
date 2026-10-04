@@ -1290,6 +1290,22 @@ fn plan289_tunnel_request_envelope_rules() {
         multihoming.options.get("multihoming").map(String::as_str),
         Some("false")
     );
+    let access_mode = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "AccessOption": "deny", "AccessList": "a{}.b32.i2p",
+    })))
+    .expect("AccessOption is a typed Proposal mode");
+    assert_eq!(
+        access_mode.options.get("access_option").map(String::as_str),
+        Some("deny")
+    );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "server",
+            "AccessOption": "arbitrary",
+        }))),
+        Err(TunnelRequestError::BadValue("AccessOption".to_owned()))
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",

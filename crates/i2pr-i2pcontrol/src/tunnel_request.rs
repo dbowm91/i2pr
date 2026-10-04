@@ -120,6 +120,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
     match key {
         "Shared" => Some("shared"),
         "PersistentClientKey" => Some("persistent_client_key"),
+        "AccessOption" => Some("access_option"),
         "TargetHost" | "Host" => Some("target_host"),
         "TargetPort" => Some("target_port"),
         "Port" => Some("listen_port"),
@@ -347,6 +348,17 @@ pub fn decode_tunnel_request(
                         .as_str()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     options.insert("user_agents".to_owned(), value.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "AccessOption" {
+                    let mode = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if mode != "allow" && mode != "deny" {
+                        return Err(TunnelRequestError::BadValue(key.to_owned()));
+                    }
+                    options.insert("access_option".to_owned(), mode.to_owned());
                     options_seen = true;
                     continue;
                 }

@@ -600,7 +600,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
         serde_json::json!({
             "Action":"create", "Name":"canonical-server", "Type":"server",
             "TargetHost":"127.0.0.1", "TargetPort":9090,
-            "AccessList":access_entry,
+            "AccessOption":"deny", "AccessList":access_entry,
             "StartOnLoad":false
         }),
         2,
@@ -625,6 +625,7 @@ async fn canonical_server_policy_fields_use_service_tunnel_owners() {
     assert_eq!(raw["targetHost"], "127.0.0.1", "{fetched}");
     assert_eq!(raw["targetPort"], 9090);
     assert_eq!(raw["accessList"], access_entry);
+    assert_eq!(raw["accessOption"], "deny");
     assert_eq!(raw["startOnLoad"], false);
 }
 

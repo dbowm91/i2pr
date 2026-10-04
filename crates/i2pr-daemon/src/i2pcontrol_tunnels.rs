@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 TunnelManager metadata and runtime options with typed owners.
-pub const SUPPORTED_323_OPTIONS: [&str; 16] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 17] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -166,6 +166,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 16] = [
     "block_access_in_proxies",
     "shared",
     "persistent_client_key",
+    "access_option",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -929,6 +930,8 @@ pub fn build_control_spec(
     // name the offending key, never the value).
     let mut access_allow_sources: Vec<(String, String)> = Vec::new();
     let mut access_deny_sources: Vec<(String, String)> = Vec::new();
+    let mut proposal_access_list: Option<String> = None;
+    let mut proposal_access_option: Option<String> = None;
     // Plan 292 server dial/presentation inputs (kind-gated at
     // parse; defaults preserve the historical behavior).
     let mut unique_local_address = false;
@@ -1457,9 +1460,43 @@ pub fn build_control_spec(
                 }
                 proxy_auth_declared = Some(parse_bool_option(key, value)?);
             }
+            "access_option" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "AccessOption applies to server tunnels only",
+                    });
+                }
+                if value != "allow" && value != "deny" {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "AccessOption must be allow or deny",
+                    });
+                }
+                proposal_access_option = Some(value.clone());
+            }
             // Plan 292: inbound peer policy (server kinds only;
             // access_list unions white_list, black_list denies).
-            "access_list" | "white_list" => {
+            "access_list" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericServer
+                        | ServiceTunnelKind::HttpServer
+                        | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "access lists apply to server kinds only",
+                    });
+                }
+                proposal_access_list = Some(value.clone());
+            }
+            "white_list" => {
                 if !matches!(
                     kind,
                     ServiceTunnelKind::GenericServer
@@ -1757,6 +1794,21 @@ pub fn build_control_spec(
                 )));
             }
         }
+    }
+    if let Some(mode) = proposal_access_option {
+        let Some(value) = proposal_access_list else {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "AccessOption requires AccessList",
+            });
+        };
+        if mode == "allow" {
+            access_allow_sources.push(("access_list".to_owned(), value));
+        } else {
+            access_deny_sources.push(("access_list".to_owned(), value));
+        }
+    } else if let Some(value) = proposal_access_list {
+        access_allow_sources.push(("access_list".to_owned(), value));
     }
     if idle_close_timeout_ms.is_some() && !idle_close {
         return Err(ControlError::ContradictoryOptions {
@@ -5277,6 +5329,28 @@ mod tests {
         let spec = build_control_spec(&definition).expect("access spec builds");
         assert_eq!(spec.access.allow.len(), 2);
         assert_eq!(spec.access.deny.len(), 1);
+        let mut proposal_deny = server_options("127.0.0.1:9090");
+        proposal_deny.insert("access_option".to_owned(), "deny".to_owned());
+        proposal_deny.insert("access_list".to_owned(), hash_b.clone());
+        let denied =
+            normalize_definition("proposal-deny", TunnelType::Server, &proposal_deny, false)
+                .expect("Proposal deny list builds");
+        let denied = build_control_spec(&denied).expect("Proposal deny policy builds");
+        assert!(denied.access.allow.is_empty());
+        let expected_deny =
+            ServerAccessPolicy::parse(&[], &[&hash_b]).expect("expected access hash parses");
+        assert_eq!(denied.access.deny, expected_deny.deny);
+        let mut missing_list = server_options("127.0.0.1:9090");
+        missing_list.insert("access_option".to_owned(), "allow".to_owned());
+        assert!(matches!(
+            normalize_definition(
+                "proposal-missing-list",
+                TunnelType::Server,
+                &missing_list,
+                false
+            ),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
         // Non-hash entries fail naming the key, never the value.
         for (key, value) in [
             ("access_list", "example.i2p"),
