@@ -124,6 +124,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "ReachableBy" => Some("listen_host"),
         "Description" => Some("description"),
         "MaxConcurrentConns" => Some("max_streams"),
+        "ProxyAuth" => Some("proxy_auth"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),
@@ -255,6 +256,14 @@ pub fn decode_tunnel_request(
                         .as_u64()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     options.insert("max_streams".to_owned(), value.to_string());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "ProxyAuth" {
+                    let enabled = value
+                        .as_bool()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    options.insert("proxy_auth".to_owned(), enabled.to_string());
                     options_seen = true;
                     continue;
                 }

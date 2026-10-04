@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 1] = ["description"];
+pub const SUPPORTED_323_OPTIONS: [&str; 2] = ["description", "proxy_auth"];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
 
@@ -894,6 +894,7 @@ pub fn build_control_spec(
     // plaintext is scrubbed to the marked verifier in normalize).
     let mut proxy_username: Option<String> = None;
     let mut proxy_password: Option<String> = None;
+    let mut proxy_auth_declared: Option<bool> = None;
     // Plan 292 access inputs (raw values per source key so failures
     // name the offending key, never the value).
     let mut access_allow_sources: Vec<(String, String)> = Vec::new();
@@ -1245,6 +1246,21 @@ pub fn build_control_spec(
                 }
                 proxy_password = Some(value.clone());
             }
+            "proxy_auth" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "proxy_auth applies to proxy client kinds only",
+                    });
+                }
+                proxy_auth_declared = Some(parse_bool_option(key, value)?);
+            }
             // Plan 292: inbound peer policy (server kinds only;
             // access_list unions white_list, black_list denies).
             "access_list" | "white_list" => {
@@ -1574,6 +1590,14 @@ pub fn build_control_spec(
     };
     // Plan 292: resolve proxy credentials and the access policy.
     // Failures name the offending key, never the value.
+    if let Some(enabled) = proxy_auth_declared {
+        if enabled != (proxy_username.is_some() && proxy_password.is_some()) {
+            return Err(ControlError::ContradictoryOptions {
+                name: definition.name.clone(),
+                reason: "ProxyAuth must match the complete ProxyUsername/ProxyPassword pair",
+            });
+        }
+    }
     let proxy_auth = proxy_credentials_for(kind, proxy_username, proxy_password)?;
     let mut allow = Vec::new();
     for (key, value) in &access_allow_sources {
@@ -4555,6 +4579,7 @@ mod tests {
             let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
             options.insert("proxy_username".to_owned(), "operator".to_owned());
             options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            options.insert("proxy_auth".to_owned(), "true".to_owned());
             let definition = ControlDefinition {
                 name: name.to_owned(),
                 tunnel_type,
@@ -4588,6 +4613,24 @@ mod tests {
                 "marked verifier: {persisted}"
             );
             assert!(!persisted.contains("s3cret"));
+        }
+        for (proxy_auth, with_credentials) in [("true", false), ("false", true)] {
+            let mut options = client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0);
+            options.insert("proxy_auth".to_owned(), proxy_auth.to_owned());
+            if with_credentials {
+                options.insert("proxy_username".to_owned(), "operator".to_owned());
+                options.insert("proxy_password".to_owned(), "s3cret!".to_owned());
+            }
+            let definition = ControlDefinition {
+                name: "proxy-auth-conflict".to_owned(),
+                tunnel_type: TunnelType::Socks,
+                options,
+                start_on_load: false,
+            };
+            assert!(matches!(
+                build_control_spec(&definition),
+                Err(ControlError::ContradictoryOptions { .. })
+            ));
         }
         // Either half alone fails (both required together).
         for (key, value) in [

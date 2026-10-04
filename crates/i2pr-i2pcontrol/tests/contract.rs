@@ -1113,6 +1113,15 @@ fn plan289_tunnel_request_envelope_rules() {
         max_concurrent.options.get("max_streams").map(String::as_str),
         Some("24")
     );
+    let proxy_auth = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "socks",
+        "ProxyAuth": true,
+    })))
+    .expect("ProxyAuth has a typed proxy credential owner");
+    assert_eq!(
+        proxy_auth.options.get("proxy_auth").map(String::as_str),
+        Some("true")
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",
