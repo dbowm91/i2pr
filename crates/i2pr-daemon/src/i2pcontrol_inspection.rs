@@ -842,6 +842,37 @@ pub(crate) fn proposal_tbm_queue_depth(
         })
 }
 
+/// Serialized RouterInfo lists are empty exactly when their attested
+/// peer-hash source is empty. A populated hash snapshot requires a
+/// separate serialized RouterInfo owner and therefore fails closed.
+pub(crate) fn proposal_empty_router_info_list(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let selector = match key {
+        "i2p.router.netdb.activepeers.info" => RouterInfoSelector::NetDbActivePeers,
+        "i2p.router.netdb.peers.info" => RouterInfoSelector::NetDbKnownPeers,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "attested NetDB peer snapshot",
+            });
+        }
+    };
+    let gap = InspectionGap {
+        key,
+        owner_plan: "322",
+        owner: "serialized RouterInfo snapshot for known peers",
+    };
+    let peers = router_info_result(selector, handles, 0).map_err(|_| gap)?;
+    if peers.as_array().is_some_and(Vec::is_empty) {
+        Ok(serde_json::Value::Array(Vec::new()))
+    } else {
+        Err(gap)
+    }
+}
+
 /// Projects canonical tunnel direction counts and detail lists only
 /// when the attested aggregate owner reports no tunnels. A nonzero
 /// aggregate needs per-direction or per-tunnel data that this graph
@@ -1662,6 +1693,50 @@ mod tests {
             proposal_tbm_queue_depth(&handles).expect("published TBM queue"),
             serde_json::json!(3)
         );
+    }
+
+    #[test]
+    fn proposal_empty_router_info_lists_require_empty_attested_peer_sets() {
+        let handles = test_handles();
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert!(proposal_empty_router_info_list(key, &handles).is_err());
+        }
+        handles
+            .publish_netdb(Vec::new(), Vec::new(), FloodfillMode::Disabled)
+            .expect("empty NetDB snapshot publishes");
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert_eq!(
+                proposal_empty_router_info_list(key, &handles)
+                    .expect("empty peer set proves empty info list"),
+                serde_json::json!([]),
+                "{key}"
+            );
+        }
+        handles
+            .publish_netdb(
+                vec!["A".repeat(44)],
+                vec!["B".repeat(44)],
+                FloodfillMode::Disabled,
+            )
+            .expect("nonempty NetDB snapshot publishes");
+        for key in [
+            "i2p.router.netdb.activepeers.info",
+            "i2p.router.netdb.peers.info",
+        ] {
+            assert_eq!(
+                proposal_empty_router_info_list(key, &handles)
+                    .expect_err("hash presence does not provide serialized RouterInfo")
+                    .owner_plan,
+                "322",
+                "{key}"
+            );
+        }
     }
 
     #[test]

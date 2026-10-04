@@ -237,6 +237,19 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("differential_corpus_against_production_composition"),
         ),
+        "i2p.router.netdb.activepeers.info" | "i2p.router.netdb.peers.info" => (
+            "NetDB inspection snapshot",
+            "empty serialized list follows an attested empty peer-hash set; nonempty peer sets require serialized RouterInfo data",
+            1024,
+            65_536,
+            "public router information",
+            "latest peer snapshot; fails closed when peers exist without serialized data",
+            SourceAvailability::PublishedGated {
+                owner: "serialized RouterInfo snapshot for known peers",
+                owner_plan: "322",
+            },
+            Some("proposal_empty_router_info_lists_require_empty_attested_peer_sets"),
+        ),
         "i2p.router.net.tunnels.successrate" | "i2p.router.net.tunnels.totalsuccessrate" => (
             "ControlMetrics tunnel-build outcomes",
             "latest interval ratio / cumulative ratio; unavailable until attempted > 0",
