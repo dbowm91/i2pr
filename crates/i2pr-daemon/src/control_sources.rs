@@ -326,6 +326,9 @@ struct MetricsState {
     rates: BTreeMap<String, u64>,
     succeeded: u64,
     attempted: u64,
+    base_succeeded: u64,
+    base_attempted: u64,
+    recent_success_rate: Option<f64>,
 }
 
 impl ControlMetrics {
@@ -348,6 +351,9 @@ impl ControlMetrics {
                 rates: BTreeMap::new(),
                 succeeded: 0,
                 attempted: 0,
+                base_succeeded: 0,
+                base_attempted: 0,
+                recent_success_rate: None,
             }),
         }
     }
@@ -410,13 +416,26 @@ impl ControlMetrics {
             state.base_tx_bytes = state.tx_bytes;
             state.base_rx_dgrams = state.rx_dgrams;
             state.base_tx_dgrams = state.tx_dgrams;
+            let (succeeded_delta, attempted_delta) = (
+                state.succeeded.saturating_sub(state.base_succeeded),
+                state.attempted.saturating_sub(state.base_attempted),
+            );
+            state.base_succeeded = state.succeeded;
+            state.base_attempted = state.attempted;
             let Some(delta) = elapsed else {
                 return;
             };
             let secs = delta.as_secs_f64();
             // `partial_cmp` keeps the NaN guard explicit: a
             // non-positive or incomparable interval yields no rates.
-            if secs.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) || !state.observed {
+            if secs.partial_cmp(&0.0) != Some(core::cmp::Ordering::Greater) {
+                return;
+            }
+            if attempted_delta > 0 && succeeded_delta <= attempted_delta {
+                state.recent_success_rate =
+                    Some(succeeded_delta as f64 / attempted_delta as f64);
+            }
+            if !state.observed {
                 return;
             }
             // Per-second rates from cumulative deltas against the
@@ -466,6 +485,23 @@ impl ControlMetrics {
             .lock()
             .map(|state| (state.succeeded, state.attempted))
             .unwrap_or((0, 0))
+    }
+
+    /// Current interval and cumulative tunnel build success ratios.
+    /// Either ratio remains `None` until its denominator has been
+    /// observed; the recent interval uses the latest metrics tick.
+    pub fn success_rates(&self) -> (Option<f64>, Option<f64>) {
+        self.tick();
+        self.state
+            .lock()
+            .map(|state| {
+                (
+                    state.recent_success_rate,
+                    (state.attempted > 0 && state.succeeded <= state.attempted)
+                        .then_some(state.succeeded as f64 / state.attempted as f64),
+                )
+            })
+            .unwrap_or((None, None))
     }
 }
 
@@ -612,7 +648,26 @@ mod tests {
     fn metrics_build_outcomes_hold_until_reported() {
         let metrics = ControlMetrics::new();
         assert_eq!(metrics.success(), (0, 0));
+        assert_eq!(metrics.success_rates(), (None, None));
         metrics.observe_builds(7, 9);
         assert_eq!(metrics.success(), (7, 9));
+        assert_eq!(metrics.success_rates().1, Some(7.0 / 9.0));
+    }
+
+    #[test]
+    fn metrics_tracks_recent_build_success_ratio_per_tick() {
+        let metrics = ControlMetrics::new();
+        let first = Instant::now();
+        metrics.tick_at(first);
+        metrics.observe_builds(3, 4);
+        metrics.tick_at(first + std::time::Duration::from_secs(15));
+        assert_eq!(metrics.success_rates(), (Some(0.75), Some(0.75)));
+    }
+
+    #[test]
+    fn metrics_rejects_impossible_build_success_counts() {
+        let metrics = ControlMetrics::new();
+        metrics.observe_builds(2, 1);
+        assert_eq!(metrics.success_rates().1, None);
     }
 }

@@ -253,11 +253,12 @@ const ANSWERABLE: [&str; 10] = [
 /// Selectors that fail the whole request with an owning-plan marker
 /// under the default composition (address book disabled, transport
 /// totals and tunnel-build outcomes not yet sampled, news never served).
-const GAPPED: [(&str, Option<&str>); 10] = [
+const GAPPED: [(&str, Option<&str>); 11] = [
     ("i2p.router.news", Some("295")),
     ("i2p.router.net.total.received.bytes", Some("322")),
     ("i2p.router.net.total.sent.bytes", Some("322")),
     ("i2p.router.net.tunnels.totalsuccessrate", Some("322")),
+    ("i2p.router.net.tunnels.successrate", Some("322")),
     ("i2p.router.addressbook.private.list", None),
     ("i2p.router.addressbook.local.list", None),
     ("i2p.router.addressbook.router.list", None),
@@ -529,8 +530,8 @@ async fn differential_corpus_against_production_composition() {
     let (answered, gapped, errors, shape) = run_corpus(address, TEST_PASSWORD, true).await;
     assert_eq!(answered, 16, "10 canonical rows + 6 services answer");
     assert_eq!(
-        gapped, 10,
-        "news + 2 unsampled transport totals + unobserved build ratio + 6 address-book rows gap"
+        gapped, 11,
+        "news + 2 unsampled transport totals + 2 unobserved build ratios + 6 address-book rows gap"
     );
     assert_eq!(
         errors, 4,

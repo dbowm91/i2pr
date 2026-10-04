@@ -237,15 +237,16 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("differential_corpus_against_production_composition"),
         ),
-        "i2p.router.net.tunnels.totalsuccessrate" => (
-            "ControlMetrics cumulative build outcomes",
-            "succeeded / attempted; unavailable until attempted > 0",
+        "i2p.router.net.tunnels.successrate"
+        | "i2p.router.net.tunnels.totalsuccessrate" => (
+            "ControlMetrics tunnel-build outcomes",
+            "latest interval ratio / cumulative ratio; unavailable until attempted > 0",
             0,
             24,
             "public aggregate ratio",
             "cumulative at request time",
             SourceAvailability::PublishedGated {
-                owner: "ControlMetrics cumulative build outcomes",
+                owner: "ControlMetrics tunnel-build outcomes",
                 owner_plan: "322",
             },
             Some("proposal_total_success_rate_requires_attempts_and_reads_metrics"),

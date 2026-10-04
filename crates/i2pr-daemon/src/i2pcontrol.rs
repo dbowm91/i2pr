@@ -1295,8 +1295,13 @@ impl I2pControlServiceState {
                 result.insert(field.key.to_owned(), serde_json::Value::from(now_ms));
                 continue;
             }
-            if field.key == "i2p.router.net.tunnels.totalsuccessrate" {
-                match crate::i2pcontrol_inspection::proposal_total_tunnel_success_rate(
+            if matches!(
+                field.key,
+                "i2p.router.net.tunnels.successrate"
+                    | "i2p.router.net.tunnels.totalsuccessrate"
+            ) {
+                match crate::i2pcontrol_inspection::proposal_tunnel_success_rate(
+                    field.key,
                     &self.inspection,
                 ) {
                     Ok(value) => {

@@ -764,24 +764,38 @@ pub(crate) fn proposal_transport_total(
 /// Reads the cumulative tunnel build success ratio from the existing
 /// metrics owner. A ratio is undefined until at least one build attempt
 /// has been observed, so the unobserved state stays unavailable.
-pub(crate) fn proposal_total_tunnel_success_rate(
+pub(crate) fn proposal_tunnel_success_rate(
+    key: &'static str,
     handles: &InspectionHandles,
 ) -> Result<serde_json::Value, InspectionGap> {
-    let Some((succeeded, attempted)) = metrics_owner(handles).map(|metrics| metrics.success()) else {
+    let recent = match key {
+        "i2p.router.net.tunnels.successrate" => true,
+        "i2p.router.net.tunnels.totalsuccessrate" => false,
+        _ => {
+            return Err(InspectionGap {
+                key,
+                owner_plan: "322",
+                owner: "ControlMetrics tunnel-build outcomes",
+            });
+        }
+    };
+    let Some((recent_rate, total_rate)) =
+        metrics_owner(handles).map(|metrics| metrics.success_rates())
+    else {
         return Err(InspectionGap {
-            key: "i2p.router.net.tunnels.totalsuccessrate",
+            key,
             owner_plan: "322",
-            owner: "ControlMetrics cumulative build outcomes",
+            owner: "ControlMetrics tunnel-build outcomes",
         });
     };
-    if attempted == 0 {
-        return Err(InspectionGap {
-            key: "i2p.router.net.tunnels.totalsuccessrate",
+    match if recent { recent_rate } else { total_rate } {
+        Some(rate) => Ok(serde_json::Value::from(rate)),
+        None => Err(InspectionGap {
+            key,
             owner_plan: "322",
-            owner: "ControlMetrics cumulative build outcomes",
-        });
+            owner: "ControlMetrics tunnel-build outcomes",
+        }),
     }
-    Ok(serde_json::Value::from(succeeded as f64 / attempted as f64))
 }
 
 /// Rejects an over-ceiling publication string.
@@ -1492,19 +1506,33 @@ mod tests {
     }
 
     #[test]
-    fn proposal_total_success_rate_requires_attempts_and_reads_metrics() {
+    fn proposal_success_rates_require_attempts_and_read_metrics() {
         let handles = test_handles();
         assert_eq!(
-            proposal_total_tunnel_success_rate(&handles)
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.successrate", &handles)
                 .expect_err("0/0 has no rate")
                 .owner_plan,
             "322"
         );
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.totalsuccessrate", &handles)
+                .expect_err("0/0 has no cumulative rate")
+                .owner_plan,
+            "322"
+        );
         let metrics = Arc::new(ControlMetrics::new());
+        metrics.tick_at(std::time::Instant::now());
         metrics.observe_builds(3, 4);
+        metrics.tick_at(std::time::Instant::now() + std::time::Duration::from_secs(15));
         handles.publish_metrics(metrics);
         assert_eq!(
-            proposal_total_tunnel_success_rate(&handles).expect("observed ratio"),
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.successrate", &handles)
+                .expect("recent observed ratio"),
+            serde_json::json!(0.75)
+        );
+        assert_eq!(
+            proposal_tunnel_success_rate("i2p.router.net.tunnels.totalsuccessrate", &handles)
+                .expect("cumulative observed ratio"),
             serde_json::json!(0.75)
         );
     }
