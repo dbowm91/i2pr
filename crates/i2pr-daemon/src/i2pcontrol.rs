@@ -1320,6 +1320,26 @@ impl I2pControlServiceState {
                     }
                 }
             }
+            if field.key == "i2p.router.net.tunnels.queue" {
+                match crate::i2pcontrol_inspection::proposal_tunnel_queue_depth(
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             let Some(selector) = field.adapter else {
                 return (
                     error_envelope(

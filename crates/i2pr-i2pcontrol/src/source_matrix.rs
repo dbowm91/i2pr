@@ -249,7 +249,17 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
                 owner: "ControlMetrics tunnel-build outcomes",
                 owner_plan: "322",
             },
-            Some("proposal_total_success_rate_requires_attempts_and_reads_metrics"),
+            Some("proposal_success_rates_require_attempts_and_read_metrics"),
+        ),
+        "i2p.router.net.tunnels.queue" => (
+            "Plan 295 tunnel build-queue snapshot",
+            "attested scalar build queue depth",
+            0,
+            20,
+            "public aggregate queue depth",
+            "attested at composition and read at request time",
+            SourceAvailability::Available,
+            Some("proposal_tunnel_queue_depth_uses_attested_snapshot"),
         ),
         "i2p.router.netdb.activepeers.list" => (
             "NetDB inspection snapshot",

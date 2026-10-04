@@ -798,6 +798,25 @@ pub(crate) fn proposal_tunnel_success_rate(
     }
 }
 
+/// Reads the canonical scalar build-queue depth from the existing
+/// attested Plan 295 snapshot. The legacy selector's one-element list
+/// representation is an internal compatibility shape only.
+pub(crate) fn proposal_tunnel_queue_depth(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let value = router_info_result(RouterInfoSelector::BuildQueue, handles, 0)?;
+    value
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_u64)
+        .map(serde_json::Value::from)
+        .ok_or(InspectionGap {
+            key: "i2p.router.net.tunnels.queue",
+            owner_plan: "322",
+            owner: "attested tunnel build-queue snapshot",
+        })
+}
+
 /// Rejects an over-ceiling publication string.
 fn check_state_string(key: &'static str, value: &str) -> Result<(), PublishError> {
     if value.is_empty() || value.len() > MAX_INSPECTION_STATE_STRING {
@@ -1534,6 +1553,18 @@ mod tests {
             proposal_tunnel_success_rate("i2p.router.net.tunnels.totalsuccessrate", &handles)
                 .expect("cumulative observed ratio"),
             serde_json::json!(0.75)
+        );
+    }
+
+    #[test]
+    fn proposal_tunnel_queue_depth_uses_attested_snapshot() {
+        let handles = test_handles();
+        handles
+            .publish_tunnels(0, 0, 0, 7)
+            .expect("bounded snapshot publishes");
+        assert_eq!(
+            proposal_tunnel_queue_depth(&handles).expect("attested queue depth"),
+            serde_json::json!(7)
         );
     }
 
