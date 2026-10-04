@@ -1,10 +1,12 @@
 # Plan 320 — Exact Proposal 170 canonical wire-contract reconciliation
 
-Status: **registered-prop170-canonical-wire-reconciliation-blocked-on-plan319**
+Status: **in-progress-prop170-canonical-wire-reconciliation**
 
 Classification: protocol contract corrective. This plan changes the public control-plane contract but does not add deep router capabilities.
 
 Hard dependency: Plan 319 closed.
+
+Plan 319 closed as `passed-prop170-planning-authority-and-global-number-reconciliation` in [`plans/closure/i2pcontrol-proposal-170/319-status.md`](../../closure/i2pcontrol-proposal-170/319-status.md). Current-source check performed 2026-10-04: Proposal 170 remains Open and lists Last Updated 2026-05-20, matching the research baseline. Canonical reference: <https://www.i2p.net/en/proposals/170-i2pcontrol-expansion/>. The base API reference remains the 2025-10 page at <https://www.i2p.net/en/docs/api/i2pcontrol/>; pinned Java PR 6, Emissary fork, and i2pd commits remain those in [`docs/provenance/proposal-170-manifest.md`](../../../docs/provenance/proposal-170-manifest.md).
 
 ## Objective
 
