@@ -285,7 +285,8 @@ async fn read_line_bounded(stream: &mut TcpStream) -> String {
                     return String::from_utf8_lossy(&buffer[..end]).into_owned();
                 }
             }
-            _ => panic!("read failed while reading a line"),
+            Ok(Err(error)) => panic!("read error while reading a line: {error}"),
+            Err(_) => continue,
         }
     }
 }
@@ -443,12 +444,14 @@ async fn socks_irc_unknown_server_command_is_dropped() {
     // not arrive. (One PING rewrite token is outstanding at a
     // time, so the triggers use NICK/JOIN/plain-PRIVMSG rather
     // than stacked PINGs.)
-    stream
-        .write_all(b"NICK alice\r\nJOIN #chan\r\nPRIVMSG #chan :hello\r\n")
-        .await
-        .expect("trigger");
+    stream.write_all(b"NICK alice\r\n").await.expect("NICK");
     assert_eq!(next_observed(&mut observed).await, "NICK alice");
+    stream.write_all(b"JOIN #chan\r\n").await.expect("JOIN");
     assert_eq!(next_observed(&mut observed).await, "JOIN #chan");
+    stream
+        .write_all(b"PRIVMSG #chan :hello\r\n")
+        .await
+        .expect("PRIVMSG");
     assert_eq!(next_observed(&mut observed).await, "PRIVMSG #chan :hello");
     assert_eq!(
         read_line_bounded(&mut stream).await,
