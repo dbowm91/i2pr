@@ -12,22 +12,20 @@
 //!   the staged-download artifact consumed by the ingestion pipeline.
 //! - `refresh_interval`: integer hours, 1..=720. Drives the refresh
 //!   worker cadence.
-//! - `proxy_host`, `proxy_port`: bounded host / 1..=65535 port for the
-//!   subscription fetch path only. They never create a general proxy
-//!   capability. No downloader owner exists yet, so refresh attempts
-//!   report unavailable; the values are validated, stored, and
-//!   round-tripped for the fetch path to consume when one is composed.
+//! - `proxy_host`, `proxy_port`: loopback IP literal / 1..=65535 port
+//!   for the explicitly configured local eepProxy only. They never
+//!   create a general proxy capability or trigger name resolution.
 //! - `theme`: inert frontend metadata. Durable round-trip only; no
 //!   router, logging, or frontend side effect.
 //! - `log_level`: artifact verbosity only (`off`, `error`, `warn`,
 //!   `info`, `debug`). Never redirects or reconfigures global tracing.
-//! - `lookup_timeout`: integer seconds, 1..=300. Bounds the fetch
-//!   stages of the subscription pipeline once a downloader owner
-//!   exists; validated, stored, and round-tripped meanwhile.
+//! - `lookup_timeout`: integer seconds, 1..=300. Bounds each request
+//!   stage of the daemon-owned subscription fetch pipeline.
 //! - `max_entries`: per-book entry ceiling, 1..=[`MAX_ENTRIES_PER_BOOK`].
 //!   Enforced on mutation, import, and configuration tightening.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 
 use crate::error::AddressBookError;
 use crate::generation::MAX_ENTRIES_PER_BOOK;
@@ -430,30 +428,17 @@ fn parse_ranged_u64(text: &str, minimum: u64, maximum: u64) -> Result<u64, Addre
     Ok(value)
 }
 
-/// Validates a fetch-path proxy host: bounded IP literal or hostname,
-/// no scheme, port, userinfo, or whitespace.
+/// Validates an explicitly local proxy host without allowing DNS
+/// resolution or non-loopback proxy access.
 fn validated_proxy_host(value: &str) -> Result<String, AddressBookError> {
-    if value.len() > MAX_HOSTNAME_LEN_PLUS {
+    let address = value
+        .parse::<IpAddr>()
+        .map_err(|_| AddressBookError::InvalidConfigValue)?;
+    if !address.is_loopback() {
         return Err(AddressBookError::InvalidConfigValue);
     }
-    if value.bytes().any(|byte| {
-        byte <= 0x20
-            || byte == 0x7f
-            || byte == b'/'
-            || byte == b':'
-            || byte == b'@'
-            || byte == b'['
-            || byte == b']'
-    }) {
-        return Err(AddressBookError::InvalidConfigValue);
-    }
-    // Reuse the hostname shape where it fits; IP literals pass the
-    // character gate above and need no further structure here.
-    Ok(value.to_owned())
+    Ok(address.to_string())
 }
-
-/// Host ceiling shared with hostnames (255) plus bracket headroom.
-const MAX_HOSTNAME_LEN_PLUS: usize = 256;
 
 #[cfg(test)]
 mod tests {
@@ -572,9 +557,9 @@ mod tests {
     }
 
     #[test]
-    fn proxy_hosts_are_bounded_hosts() {
+    fn proxy_hosts_must_be_loopback_ip_literals() {
         let config = AddressBookConfig::default();
-        for good in ["proxy.i2p", "127.0.0.1", "10.0.0.7"] {
+        for good in ["127.0.0.1", "::1"] {
             assert!(
                 config.checked_update(&map(&[("proxy_host", good)])).is_ok(),
                 "{good} must pass"
@@ -582,10 +567,12 @@ mod tests {
         }
         for bad in [
             "http://proxy.i2p/",
+            "proxy.i2p",
             "proxy:8080",
             "user@proxy",
             "has space",
             "[::1]",
+            "10.0.0.7",
         ] {
             assert!(
                 config.checked_update(&map(&[("proxy_host", bad)])).is_err(),
