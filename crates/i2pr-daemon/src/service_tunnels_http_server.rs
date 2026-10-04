@@ -35,8 +35,9 @@ use i2pr_client::streaming::connection::ConnectionId;
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
-    HttpErrorKind, HttpLimits, build_error_response, classify_presentation, filter_server_response,
-    parse_origin_form, parse_request_head,
+    HttpErrorKind, HttpLimits, build_error_response, classify_presentation,
+    filter_server_request_with_policy, filter_server_response, parse_origin_form,
+    parse_request_head,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::timeout;
@@ -218,11 +219,7 @@ where
             return HttpServerConnectionOutcome::Forbidden;
         }
     }
-    let filtered = match i2pr_service_tunnels::http::filter_server_request_with_spoofed_host(
-        &head,
-        &target.to_string(),
-        policy.spoofed_host.as_deref(),
-    ) {
+    let filtered = match filter_server_request_with_policy(&head, &target.to_string(), &policy) {
         Ok(value) => value,
         Err(error) => {
             admit_error(endpoint.as_ref(), error.kind, error.reason, cancellation).await;

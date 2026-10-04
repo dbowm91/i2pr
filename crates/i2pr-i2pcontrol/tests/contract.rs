@@ -1194,12 +1194,19 @@ fn plan289_tunnel_request_envelope_rules() {
     let spoofed_host = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "web", "Type": "httpserver",
         "TargetHost": "127.0.0.1", "TargetPort": 8080,
-        "SpoofedHost": "public.example.i2p",
+        "SpoofedHost": "public.example.i2p", "BlockReferers": false,
     })))
     .expect("SpoofedHost has a typed HTTP server owner");
     assert_eq!(
         spoofed_host.options.get("spoofed_host").map(String::as_str),
         Some("public.example.i2p")
+    );
+    assert_eq!(
+        spoofed_host
+            .options
+            .get("block_referers")
+            .map(String::as_str),
+        Some("false")
     );
     let website_hostname = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "web", "Type": "httpserver",

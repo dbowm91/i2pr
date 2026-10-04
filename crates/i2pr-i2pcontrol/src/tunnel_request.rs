@@ -124,6 +124,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "ReachableBy" => Some("listen_host"),
         "Description" => Some("description"),
         "WebsiteHostname" | "SpoofedHost" => Some("spoofed_host"),
+        "BlockReferers" => Some("block_referers"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
@@ -303,14 +304,18 @@ pub fn decode_tunnel_request(
                     options_seen = true;
                     continue;
                 }
-                if matches!(key, "AllowUserAgent" | "AllowReferer" | "AllowAccept") {
+                if matches!(
+                    key,
+                    "AllowUserAgent" | "AllowReferer" | "AllowAccept" | "BlockReferers"
+                ) {
                     let enabled = value
                         .as_bool()
                         .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
                     let internal = match key {
                         "AllowUserAgent" => "allow_user_agent",
                         "AllowReferer" => "allow_referer",
-                        _ => "allow_accept",
+                        "AllowAccept" => "allow_accept",
+                        _ => "block_referers",
                     };
                     options.insert(internal.to_owned(), enabled.to_string());
                     options_seen = true;

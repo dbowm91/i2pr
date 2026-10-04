@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 9] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 10] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -159,6 +159,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 9] = [
     "reduce_time",
     "reduce_count",
     "spoofed_host",
+    "block_referers",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -1635,6 +1636,18 @@ pub fn build_control_spec(
                     });
                 }
                 http_policy.spoofed_host = Some(value.clone());
+            }
+            "block_referers" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "block_referers applies to HTTP server kinds only",
+                    });
+                }
+                http_policy.block_referers = parse_bool_option(key, value)?;
             }
             other => {
                 // Secret-classified keys are rejected here even though
@@ -3970,6 +3983,16 @@ mod tests {
                 Some("site.example.i2p")
             );
             let mut options = server_options("127.0.0.1:9090");
+            options.insert("block_referers".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "referer-policy".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("BlockReferers has an owner");
+            assert!(!spec.http_policy.block_referers);
+            let mut options = server_options("127.0.0.1:9090");
             options.insert("address_helper".to_owned(), "false".to_owned());
             options.insert("jump_list".to_owned(), "false".to_owned());
             let definition = ControlDefinition {
@@ -4002,6 +4025,24 @@ mod tests {
                 matches!(error, ControlError::ContradictoryOptions { .. }),
                 "unexpected error: {error:?}"
             );
+        }
+        for tunnel_type in [TunnelType::Server, TunnelType::Client] {
+            let mut options = if tunnel_type == TunnelType::Server {
+                server_options("127.0.0.1:9090")
+            } else {
+                client_options(&format!("{}.b32.i2p", "a".repeat(52)), 0)
+            };
+            options.insert("block_referers".to_owned(), "false".to_owned());
+            let definition = ControlDefinition {
+                name: "referer-off-kind".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            assert!(matches!(
+                build_control_spec(&definition),
+                Err(ControlError::ContradictoryOptions { .. })
+            ));
         }
         let mut options = server_options("127.0.0.1:9090");
         options.insert("spoofed_host".to_owned(), "bad host".to_owned());

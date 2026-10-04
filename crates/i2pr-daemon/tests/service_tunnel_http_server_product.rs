@@ -432,12 +432,16 @@ async fn http_server_get_roundtrip_filters() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn proposal_spoofed_host_reaches_http_server_target() {
+async fn proposal_spoofed_host_and_referer_policy_reach_http_server_target() {
     let directory = temp_data_dir("http-server-spoofed-host");
+    let policy = i2pr_service_tunnels::HttpServerPolicy {
+        block_referers: false,
+        ..i2pr_service_tunnels::HttpServerPolicy::default()
+    };
     let (manager, mut observed, _fixture_addr) = build_paired_manager_with_policy_and_spoofed_host(
         directory.path(),
         CANNED_RESPONSE.to_vec(),
-        i2pr_service_tunnels::HttpServerPolicy::default(),
+        policy,
         Some("site.example.i2p".to_owned()),
     )
     .await;
@@ -447,7 +451,7 @@ async fn proposal_spoofed_host_reaches_http_server_target() {
         .expect("listener");
     let mut stream = TcpStream::connect(listener).await.expect("connect");
     stream
-        .write_all(b"GET /path HTTP/1.1\r\nHost: attacker.example\r\n\r\n")
+        .write_all(b"GET /path HTTP/1.1\r\nHost: attacker.example\r\nReferer: https://source.example/path\r\n\r\n")
         .await
         .expect("request");
     let head = read_head_bounded(&mut stream).await;
@@ -456,6 +460,11 @@ async fn proposal_spoofed_host_reaches_http_server_target() {
     let forwarded = next_observed(&mut observed).await;
     assert!(forwarded.head.contains("host: site.example.i2p\r\n"));
     assert!(!forwarded.head.contains("attacker.example"));
+    assert!(
+        forwarded
+            .head
+            .contains("referer: https://source.example/path\r\n")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -644,6 +653,7 @@ async fn http_server_closed_helper_gate_refuses() {
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: false,
         jump_list: true,
+        block_referers: true,
         spoofed_host: None,
     };
     let (manager, mut observed, _fixture) =
@@ -711,6 +721,7 @@ async fn http_server_closed_jump_gate_refuses() {
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: true,
         jump_list: false,
+        block_referers: true,
         spoofed_host: None,
     };
     let (manager, mut observed, _fixture) =

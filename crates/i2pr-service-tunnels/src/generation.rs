@@ -398,6 +398,7 @@ mod tests {
         gated.http_policy = crate::http::HttpServerPolicy {
             address_helper: false,
             jump_list: true,
+            block_referers: true,
             spoofed_host: None,
         };
         assert_eq!(diff_spec(&prev, &gated), DiffClass::MutableInPlace);

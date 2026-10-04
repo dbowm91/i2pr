@@ -87,9 +87,10 @@ pub use http::{
     FilteredServerRequest, HeaderEntry, HeaderName, HttpClientOptions, HttpError, HttpErrorKind,
     HttpLimits, HttpRequestHead, HttpServerPolicy, ParseError, PresentationClass, PrivacyPolicy,
     RequestLine, RequestTarget, TargetKind, TargetParseError, UserAgentPolicy,
-    build_error_response, classify_presentation, filter_server_request, filter_server_response,
-    parse_authority_form, parse_origin_form, parse_request_head, parse_request_target,
-    proxy_auth_required, rewrite_headers,
+    build_error_response, classify_presentation, filter_server_request,
+    filter_server_request_with_policy, filter_server_response, parse_authority_form,
+    parse_origin_form, parse_request_head, parse_request_target, proxy_auth_required,
+    rewrite_headers,
 };
 pub use idle::{IdleSweepAction, idle_decision};
 pub use irc::{

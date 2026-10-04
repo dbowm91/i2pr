@@ -79,6 +79,8 @@ pub struct HttpServerPolicy {
     pub address_helper: bool,
     /// Forward jump class requests.
     pub jump_list: bool,
+    /// Strip the inbound Referer header before forwarding.
+    pub block_referers: bool,
     /// Optional validated Host replacement for Proposal `SpoofedHost`.
     pub spoofed_host: Option<String>,
 }
@@ -88,6 +90,7 @@ impl Default for HttpServerPolicy {
         Self {
             address_helper: true,
             jump_list: true,
+            block_referers: true,
             spoofed_host: None,
         }
     }
@@ -176,6 +179,22 @@ pub fn filter_server_request_with_spoofed_host(
     local_authority: &str,
     spoofed_host: Option<&str>,
 ) -> Result<FilteredServerRequest, HttpError> {
+    filter_server_request_with_policy(
+        head,
+        local_authority,
+        &HttpServerPolicy {
+            spoofed_host: spoofed_host.map(str::to_owned),
+            ..HttpServerPolicy::default()
+        },
+    )
+}
+
+/// Filters a request using the committed HTTP server policy.
+pub fn filter_server_request_with_policy(
+    head: &HttpRequestHead,
+    local_authority: &str,
+    policy: &HttpServerPolicy,
+) -> Result<FilteredServerRequest, HttpError> {
     let rejected = |kind, reason| HttpError::new(kind, reason);
     if head.line.method == "CONNECT" {
         return Err(rejected(
@@ -197,7 +216,11 @@ pub fn filter_server_request_with_spoofed_host(
     }
     let (_path, _query) = parse_origin_form(&head.line.target).map_err(HttpError::from)?;
     validate_local_authority(local_authority)?;
-    if spoofed_host.is_some_and(|host| !valid_spoofed_host(host)) {
+    if policy
+        .spoofed_host
+        .as_deref()
+        .is_some_and(|host| !valid_spoofed_host(host))
+    {
         return Err(rejected(
             HttpErrorKind::MalformedTarget,
             "configured SpoofedHost is not a valid DNS host",
@@ -264,9 +287,11 @@ pub fn filter_server_request_with_spoofed_host(
             | "x-forwarded-host"
             | "x-forwarded-proto"
             | "proxy-authorization"
-            | "referer"
             | "from" => continue,
             _ => {}
+        }
+        if policy.block_referers && name == "referer" {
+            continue;
         }
         if name == "content-length" {
             let length: u64 = entry.value.trim().parse().map_err(|_| {
@@ -282,7 +307,11 @@ pub fn filter_server_request_with_spoofed_host(
             if !host_inserted {
                 output.push(HeaderEntry {
                     name: HeaderName("host".to_owned()),
-                    value: spoofed_host.unwrap_or(local_authority).to_owned(),
+                    value: policy
+                        .spoofed_host
+                        .as_deref()
+                        .unwrap_or(local_authority)
+                        .to_owned(),
                 });
                 host_inserted = true;
             }
@@ -533,6 +562,36 @@ mod tests {
     }
 
     #[test]
+    fn block_referers_defaults_to_strip_and_can_be_disabled_explicitly() {
+        let head = parse_head(
+            "GET / HTTP/1.1\r\nHost: example.i2p\r\nReferer: https://source.example/path\r\n\r\n",
+        );
+        let filtered = filter_server_request_with_policy(
+            &head,
+            "127.0.0.1:8080",
+            &HttpServerPolicy::default(),
+        )
+        .expect("default filter");
+        assert!(
+            !filtered
+                .head_bytes
+                .windows(7)
+                .any(|window| window == b"referer")
+        );
+
+        let mut policy = HttpServerPolicy::default();
+        policy.block_referers = false;
+        let filtered = filter_server_request_with_policy(&head, "127.0.0.1:8080", &policy)
+            .expect("explicit forwarding policy");
+        assert!(
+            filtered
+                .head_bytes
+                .windows(b"referer: https://source.example/path".len())
+                .any(|window| window == b"referer: https://source.example/path")
+        );
+    }
+
+    #[test]
     fn spoofed_host_validation_rejects_header_injection_and_bad_labels() {
         assert!(valid_spoofed_host("service.i2p"));
         for host in [
@@ -720,6 +779,7 @@ mod tests {
         let no_helper = HttpServerPolicy {
             address_helper: false,
             jump_list: true,
+            block_referers: true,
             spoofed_host: None,
         };
         assert!(no_helper.admits(PresentationClass::Ordinary));
@@ -728,6 +788,7 @@ mod tests {
         let no_jump = HttpServerPolicy {
             address_helper: true,
             jump_list: false,
+            block_referers: true,
             spoofed_host: None,
         };
         assert!(no_jump.admits(PresentationClass::Ordinary));
