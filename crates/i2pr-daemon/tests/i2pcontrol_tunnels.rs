@@ -568,9 +568,9 @@ async fn tunnel_collision_and_startup_rejected_over_wire() {
         response["result"]["provenance"],
         serde_json::json!("startup")
     );
-    // Whole-inventory get lists both classes.
+    // The nonstandard whole-inventory get form is rejected.
     let response = tunnel(address, &token, serde_json::json!({"Action": "get"}), 5).await;
-    assert!(response["result"]["startup"]["web-client"].is_object());
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_602));
 }
 
 #[tokio::test]

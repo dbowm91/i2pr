@@ -6,7 +6,7 @@
 //! top level. The previous lowercase envelope and nested `options` map
 //! are not accepted on the default endpoint.
 //! - `Action`: required, exact [`TunnelAction`] spelling;
-//! - `Name`: required for named operations; absent on `get` selects all;
+//! - `Name`: required for every named operation, including `get`;
 //!   validated by
 //!   [`crate::tunnel::validate_tunnel_name`];
 //! - `Type`: required for `create`, forbidden otherwise (tunnel types
@@ -35,7 +35,7 @@ pub struct TunnelManagerRequest {
     pub action: TunnelAction,
     /// Apply start/stop/restart to the complete control-owned set.
     pub all: bool,
-    /// Tunnel name (absent only for whole-inventory `get`).
+    /// Tunnel name (absent only for an `All` lifecycle operation).
     pub name: Option<String>,
     /// Tunnel type (`create` only).
     pub tunnel_type: Option<TunnelType>,
@@ -220,6 +220,9 @@ pub fn decode_tunnel_request(
             if all {
                 return Err(TunnelRequestError::BadValue("All".to_owned()));
             }
+            if name.is_none() {
+                return Err(TunnelRequestError::MissingField("name"));
+            }
             if tunnel_type.is_some() {
                 return Err(TunnelRequestError::UnexpectedField("type"));
             }
@@ -266,6 +269,9 @@ pub fn decode_tunnel_request(
                 )
             {
                 return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
+            if all && name.is_some() {
+                return Err(TunnelRequestError::UnexpectedField("name"));
             }
             if !all && name.is_none() {
                 return Err(TunnelRequestError::MissingField("name"));

@@ -742,13 +742,14 @@ fn plan289_tunnel_request_envelope_rules() {
         value.as_object().expect("object").clone()
     }
 
-    // get without name selects the whole inventory.
-    let request = decode_tunnel_request(&params(serde_json::json!({
-        "Token": "t", "Action": "get",
-    })))
-    .expect("inventory get decodes");
-    assert_eq!(request.action, TunnelAction::Get);
-    assert_eq!(request.name, None);
+    // Canonical get requires a name; whole-inventory get is a nonstandard
+    // extension and is not accepted by this endpoint.
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Token": "t", "Action": "get",
+        }))),
+        Err(TunnelRequestError::MissingField("name"))
+    );
 
     // get with name selects one tunnel; type/options/new_name forbidden.
     let request = decode_tunnel_request(&params(serde_json::json!({
@@ -911,4 +912,10 @@ fn plan289_tunnel_request_envelope_rules() {
     .expect("All is a canonical stop parameter");
     assert!(all.all);
     assert_eq!(all.name, None);
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "stop", "All": true, "Name": "a",
+        }))),
+        Err(TunnelRequestError::UnexpectedField("name"))
+    );
 }
