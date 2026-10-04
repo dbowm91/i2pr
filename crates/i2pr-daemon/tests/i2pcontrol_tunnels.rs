@@ -433,6 +433,41 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     }
 }
 
+#[tokio::test]
+async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let created = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"create", "Name":"canonical-socks", "Type":"socks",
+            "TargetDestination":format!("{}.b32.i2p", "a".repeat(52)),
+            "Port":distinct_port(), "StartOnLoad":false, "ProxyAuth":true,
+            "ProxyUsername":"operator", "ProxyPassword":"s3cret!"
+        }),
+        2,
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create: {created}");
+    let fetched = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get", "Name":"canonical-socks"}),
+        3,
+    )
+    .await;
+    let info = &fetched["result"]["info"];
+    assert_eq!(info["status"], "stopped");
+    assert_eq!(info["rawConfig"]["proxyAuth"], true);
+    assert_eq!(info["rawConfig"]["proxyUsername"], "operator");
+    assert!(info["rawConfig"].get("proxyPassword").is_none());
+    assert!(!fetched.to_string().contains("s3cret!"));
+}
+
 /// Calls one TunnelManager action over the wire.
 async fn tunnel(
     address: SocketAddr,
