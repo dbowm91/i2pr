@@ -951,6 +951,7 @@ fn plan289_tunnel_request_envelope_rules() {
     let request = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "alpha", "Type": "httpclient",
         "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
+        "Profile": "interactive",
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -970,6 +971,10 @@ fn plan289_tunnel_request_envelope_rules() {
     assert_eq!(
         request.options.get("reduce_on_idle").map(String::as_str),
         Some("false")
+    );
+    assert_eq!(
+        request.options.get("profile").map(String::as_str),
+        Some("interactive")
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
