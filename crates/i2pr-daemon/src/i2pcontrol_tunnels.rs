@@ -3106,6 +3106,16 @@ impl TunnelControlState {
         &self,
         request: &TunnelManagerRequest,
     ) -> Result<serde_json::Value, ControlError> {
+        if request.all {
+            return self.dispatch_all(request.action).await;
+        }
+        self.dispatch_single(request).await
+    }
+
+    async fn dispatch_single(
+        &self,
+        request: &TunnelManagerRequest,
+    ) -> Result<serde_json::Value, ControlError> {
         match request.action {
             TunnelAction::Get => self.get(request.name.as_deref()),
             TunnelAction::Create => self.create(request).await,
@@ -3115,6 +3125,47 @@ impl TunnelControlState {
             TunnelAction::Stop => self.stop(request).await,
             TunnelAction::Restart => self.restart(request).await,
         }
+    }
+
+    /// Applies a bulk lifecycle action to a bounded, deterministic
+    /// snapshot of control-owned definitions only. Startup-owned entries
+    /// remain under their original configuration owner and are excluded.
+    async fn dispatch_all(&self, action: TunnelAction) -> Result<serde_json::Value, ControlError> {
+        if !matches!(
+            action,
+            TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart
+        ) {
+            return Err(ControlError::UnsupportedOption("All".to_owned()));
+        }
+        let names: Vec<String> = lock(&self.definitions).keys().cloned().collect();
+        if names.len() > MAX_SERVICE_TUNNELS {
+            return Err(ControlError::AggregateRejected(
+                "control-owned tunnel snapshot exceeds the service ceiling",
+            ));
+        }
+        let mut results = Vec::with_capacity(names.len());
+        for name in names {
+            let single = TunnelManagerRequest {
+                action,
+                all: false,
+                name: Some(name.clone()),
+                tunnel_type: None,
+                new_name: None,
+                options: BTreeMap::new(),
+            };
+            match self.dispatch_single(&single).await {
+                Ok(result) => results.push(serde_json::json!({
+                    "name": name,
+                    "status": "success",
+                    "result": result,
+                })),
+                Err(_) => results.push(serde_json::json!({
+                    "name": name,
+                    "status": "error",
+                })),
+            }
+        }
+        Ok(serde_json::json!({ "results": results }))
     }
 }
 
@@ -4780,6 +4831,75 @@ mod tests {
             control.get(Some("alpha")),
             Err(ControlError::UnknownTunnel("alpha".to_owned()))
         );
+    }
+
+    #[test]
+    fn plan323_all_lifecycle_uses_sorted_control_owned_snapshot() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let destination = format!("{}.b32.i2p", "a".repeat(52));
+        let ports = distinct_ports(3);
+        let startup = ServiceTunnelSet {
+            tunnels: vec![
+                build_control_spec(&ControlDefinition {
+                    name: "startup".to_owned(),
+                    tunnel_type: TunnelType::Client,
+                    options: client_options(&destination, ports[2]),
+                    start_on_load: false,
+                })
+                .expect("startup spec"),
+            ],
+        };
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, startup, test_manager(directory.path()));
+        for (name, port) in [("zeta", ports[0]), ("alpha", ports[1])] {
+            block_on(control.create(&create_request(
+                name,
+                TunnelType::Client,
+                client_options(&destination, port),
+            )))
+            .expect("create control-owned tunnel");
+        }
+        let all_start = TunnelManagerRequest {
+            action: TunnelAction::Start,
+            all: true,
+            name: None,
+            tunnel_type: None,
+            new_name: None,
+            options: BTreeMap::new(),
+        };
+        let started = block_on(control.dispatch(&all_start)).expect("bulk start");
+        let results = started["results"].as_array().expect("result array");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["name"], "alpha");
+        assert_eq!(results[1]["name"], "zeta");
+        assert!(results.iter().all(|result| result["status"] == "success"));
+        assert!(control.is_running("alpha"));
+        assert!(control.is_running("zeta"));
+        let startup_status = control.get(Some("startup")).expect("startup get");
+        assert_eq!(startup_status["provenance"], "startup");
+        assert_eq!(startup_status["enabled"], false);
+
+        let all_restart = TunnelManagerRequest {
+            action: TunnelAction::Restart,
+            ..all_start
+        };
+        let restarted = block_on(control.dispatch(&all_restart)).expect("bulk restart");
+        assert_eq!(restarted["results"].as_array().unwrap().len(), 2);
+        assert!(control.is_running("alpha"));
+        assert!(control.is_running("zeta"));
+
+        let all_stop = TunnelManagerRequest {
+            action: TunnelAction::Stop,
+            all: true,
+            name: None,
+            tunnel_type: None,
+            new_name: None,
+            options: BTreeMap::new(),
+        };
+        let stopped = block_on(control.dispatch(&all_stop)).expect("bulk stop");
+        assert_eq!(stopped["results"].as_array().unwrap().len(), 2);
+        assert!(!control.is_running("alpha"));
+        assert!(!control.is_running("zeta"));
     }
 
     #[test]

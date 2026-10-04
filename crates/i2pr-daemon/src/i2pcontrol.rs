@@ -1122,15 +1122,6 @@ impl I2pControlServiceState {
                 );
             }
         };
-        if request.all {
-            return (
-                success_envelope(
-                    id,
-                    serde_json::json!({"status": "error - TunnelManager All action is unavailable (Plan 323)"}),
-                ),
-                Duration::ZERO,
-            );
-        }
         let control = match self
             .control
             .lock()

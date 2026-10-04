@@ -87,3 +87,9 @@ Test All actions, aliases, conflicts, ranges, rates, persistence/restart, secret
 Plan 323 closes when the canonical TunnelManager public surface is operational for every non-deep field, all twelve types remain real backends, and only destination-algorithm, encrypted-LeaseSet/client-auth, or outproxy-provider cells remain dependency-gated.
 
 Closure unblocks Plans 324 and 327.
+
+## Current implementation progress
+
+- The existing top-level canonical request decoder already validates `All`; Plan 323 now executes start/stop/restart over one sorted, bounded snapshot of control-owned definitions and returns per-tunnel results. Startup-owned TOML definitions are excluded to preserve provenance and mutation ownership. The daemon dispatch no longer substitutes an unavailable marker for these actions.
+- Focused evidence: `cargo test --locked -p i2pr-daemon --lib plan323_all_lifecycle_uses_sorted_control_owned_snapshot -- --test-threads=1` covers start, restart, stop, sorted output, and startup-owned exclusion.
+- This is one Plan 323 slice only. Canonical Get/result shapes, the field×type applicability matrix, and non-deep option ownership remain open; the plan stays in progress and Plans 324/327 stay blocked.
