@@ -906,7 +906,7 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
             .count(),
-        26,
+        25,
         "unimplemented canonical fields remain explicit gaps"
     );
 }

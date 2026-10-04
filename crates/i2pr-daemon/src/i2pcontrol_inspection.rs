@@ -761,6 +761,29 @@ pub(crate) fn proposal_transport_total(
     Ok(serde_json::Value::from(value))
 }
 
+/// Reads the cumulative tunnel build success ratio from the existing
+/// metrics owner. A ratio is undefined until at least one build attempt
+/// has been observed, so the unobserved state stays unavailable.
+pub(crate) fn proposal_total_tunnel_success_rate(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let Some((succeeded, attempted)) = metrics_owner(handles).map(|metrics| metrics.success()) else {
+        return Err(InspectionGap {
+            key: "i2p.router.net.tunnels.totalsuccessrate",
+            owner_plan: "322",
+            owner: "ControlMetrics cumulative build outcomes",
+        });
+    };
+    if attempted == 0 {
+        return Err(InspectionGap {
+            key: "i2p.router.net.tunnels.totalsuccessrate",
+            owner_plan: "322",
+            owner: "ControlMetrics cumulative build outcomes",
+        });
+    }
+    Ok(serde_json::Value::from(succeeded as f64 / attempted as f64))
+}
+
 /// Rejects an over-ceiling publication string.
 fn check_state_string(key: &'static str, value: &str) -> Result<(), PublishError> {
     if value.is_empty() || value.len() > MAX_INSPECTION_STATE_STRING {
@@ -1465,6 +1488,24 @@ mod tests {
             proposal_transport_total("i2p.router.net.total.sent.bytes", &handles)
                 .expect("sent total"),
             serde_json::json!(5678)
+        );
+    }
+
+    #[test]
+    fn proposal_total_success_rate_requires_attempts_and_reads_metrics() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_total_tunnel_success_rate(&handles)
+                .expect_err("0/0 has no rate")
+                .owner_plan,
+            "322"
+        );
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.observe_builds(3, 4);
+        handles.publish_metrics(metrics);
+        assert_eq!(
+            proposal_total_tunnel_success_rate(&handles).expect("observed ratio"),
+            serde_json::json!(0.75)
         );
     }
 
