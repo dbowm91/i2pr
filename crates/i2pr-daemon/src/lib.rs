@@ -303,6 +303,9 @@ fn build_daemon_graph_inner(
     if inspection.publish_tunnels(0, 0, 0, 0).is_err() {
         tracing::warn!("tunnel attestation rejected");
     }
+    // No build coordinator is installed in this composition, so the
+    // separate Tunnel Build Message queue is authoritatively empty.
+    inspection.publish_tbm_queue(0);
 
     if config.sam.enabled {
         register_sam_service(&mut builder, config, inspection, &addressbook)?;

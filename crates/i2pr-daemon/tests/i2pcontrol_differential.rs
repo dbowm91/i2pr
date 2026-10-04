@@ -234,10 +234,10 @@ fn hex_prefix(bytes: &[u8]) -> String {
     out
 }
 
-/// Canonical selectors the default production composition answers (18 rows;
+/// Canonical selectors the default production composition answers (19 rows;
 /// address-book rows gap while the subsystem is disabled, transport totals
 /// until a source sample, and news never serves).
-const ANSWERABLE: [&str; 18] = [
+const ANSWERABLE: [&str; 19] = [
     "i2p.router.version",
     "i2p.router.status",
     "i2p.router.uptime",
@@ -248,6 +248,7 @@ const ANSWERABLE: [&str; 18] = [
     "i2p.router.netdb.activepeers.list",
     "i2p.router.net.tunnels.i2ptunnel",
     "i2p.router.net.tunnels.queue",
+    "i2p.router.net.tunnels.tbmqueue",
     "i2p.router.net.tunnels.exploratory.inbound",
     "i2p.router.net.tunnels.exploratory.outbound",
     "i2p.router.net.tunnels.exploratory.info.list",
@@ -536,7 +537,7 @@ async fn differential_corpus_against_production_composition() {
         tokio::task::yield_now().await;
     }
     let (answered, gapped, errors, shape) = run_corpus(address, TEST_PASSWORD, true).await;
-    assert_eq!(answered, 24, "18 canonical rows + 6 services answer");
+    assert_eq!(answered, 25, "19 canonical rows + 6 services answer");
     assert_eq!(
         gapped, 11,
         "news + 2 unsampled transport totals + 2 unobserved build ratios + 6 address-book rows gap"

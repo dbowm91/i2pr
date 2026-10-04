@@ -1233,6 +1233,24 @@ impl I2pControlServiceState {
                     }
                 }
             }
+            if field.key == "i2p.router.net.tunnels.tbmqueue" {
+                match crate::i2pcontrol_inspection::proposal_tbm_queue_depth(&self.inspection) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             match field.key {
                 "i2p.router.clockskew" | "i2p.router.info" => {
                     // Proposal 170 explicitly permits null when there is

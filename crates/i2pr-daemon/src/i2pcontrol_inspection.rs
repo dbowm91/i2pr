@@ -113,6 +113,8 @@ struct PublishedSnapshots {
     participating: Option<u64>,
     /// Published build-queue depth or `None`.
     build_queue: Option<u64>,
+    /// Published Tunnel Build Message queue depth or `None`.
+    tbm_queue: Option<u64>,
     /// Published authoritative ban set or `None` (Plan 295 explicit
     /// ban owner; empty means no bans, never an unowned guess).
     bans: Option<Vec<String>>,
@@ -358,6 +360,13 @@ impl InspectionHandles {
             published.build_queue = Some(build_queue);
         }
         Ok(())
+    }
+
+    /// Publishes the independently observed Tunnel Build Message queue depth.
+    pub fn publish_tbm_queue(&self, depth: u64) {
+        if let Ok(mut published) = self.published.lock() {
+            published.tbm_queue = Some(depth);
+        }
     }
 
     /// Publishes the authoritative ban set from the explicit ban
@@ -814,6 +823,22 @@ pub(crate) fn proposal_tunnel_queue_depth(
             key: "i2p.router.net.tunnels.queue",
             owner_plan: "322",
             owner: "attested tunnel build-queue snapshot",
+        })
+}
+
+/// Reads the canonical Tunnel Build Message queue depth from its own
+/// attested snapshot; it is not conflated with the tunnel-request queue.
+pub(crate) fn proposal_tbm_queue_depth(
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    handles
+        .snapshots()
+        .tbm_queue
+        .map(serde_json::Value::from)
+        .ok_or(InspectionGap {
+            key: "i2p.router.net.tunnels.tbmqueue",
+            owner_plan: "322",
+            owner: "attested Tunnel Build Message queue snapshot",
         })
 }
 
@@ -1617,6 +1642,25 @@ mod tests {
         assert_eq!(
             proposal_tunnel_queue_depth(&handles).expect("attested queue depth"),
             serde_json::json!(7)
+        );
+    }
+
+    #[test]
+    fn proposal_tbm_queue_depth_uses_independent_attested_snapshot() {
+        let handles = test_handles();
+        assert_eq!(
+            proposal_tbm_queue_depth(&handles)
+                .expect_err("unpublished queue is a gap")
+                .owner,
+            "attested Tunnel Build Message queue snapshot"
+        );
+        handles
+            .publish_tunnels(0, 0, 0, 7)
+            .expect("tunnel snapshot");
+        handles.publish_tbm_queue(3);
+        assert_eq!(
+            proposal_tbm_queue_depth(&handles).expect("published TBM queue"),
+            serde_json::json!(3)
         );
     }
 

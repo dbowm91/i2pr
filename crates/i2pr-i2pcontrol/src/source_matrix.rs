@@ -260,6 +260,16 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
             SourceAvailability::Available,
             Some("proposal_tunnel_queue_depth_uses_attested_snapshot"),
         ),
+        "i2p.router.net.tunnels.tbmqueue" => (
+            "Tunnel Build Message queue owner",
+            "independent bounded queue-depth snapshot (zero in the composed graph without a tunnel-build coordinator)",
+            0,
+            20,
+            "public aggregate queue depth",
+            "latest attested queue depth",
+            SourceAvailability::Available,
+            Some("proposal_tbm_queue_depth_uses_independent_attested_snapshot"),
+        ),
         "i2p.router.net.tunnels.exploratory.inbound"
         | "i2p.router.net.tunnels.exploratory.outbound"
         | "i2p.router.net.tunnels.exploratory.info.list"
