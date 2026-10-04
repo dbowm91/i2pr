@@ -495,6 +495,17 @@ async fn handle_connect(
         .await;
         return HttpConnectionOutcome::Forbidden;
     }
+    if authority.port == Some(443) && !options.allow_internal_ssl {
+        let _ = write_error_response(
+            &mut stream,
+            build_error_response(
+                HttpErrorKind::UnsupportedConnectPort,
+                "internal SSL is disabled for this HTTP client",
+            ),
+        )
+        .await;
+        return HttpConnectionOutcome::Forbidden;
+    }
     let target = match resolve_target_for_service(&manager, runtime.destination_id, &authority) {
         Ok(value) => value,
         Err(error) => {
@@ -856,6 +867,9 @@ pub async fn run_connect_only_connection(
         },
         destination_ports: std::collections::BTreeSet::new(),
         allowed_hosts: Vec::new(),
+        // CONNECT-only has its own HTTPS port policy and does not use
+        // Proposal 170's HTTP-client internal-SSL toggle.
+        allow_internal_ssl: true,
         // Plan 292: the strict-CONNECT executor enforces the same
         // credentials as the shared CONNECT handler.
         proxy_auth: options.proxy_auth.clone(),

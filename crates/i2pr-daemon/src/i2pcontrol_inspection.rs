@@ -337,7 +337,7 @@ impl InspectionHandles {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'~')
         {
-            return Err(PublishError::MalformedRouterInfo);
+            return Err(PublishError::MalformedHash);
         }
         if let Ok(mut published) = self.published.lock() {
             published.router_hash = Some(hash_b64.to_owned());

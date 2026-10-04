@@ -130,6 +130,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "AllowUserAgent" => Some("allow_user_agent"),
         "AllowReferer" => Some("allow_referer"),
         "AllowAccept" => Some("allow_accept"),
+        "AllowInternalSSL" => Some("allow_internal_ssl"),
         "MultiHoming" => Some("multihoming"),
         // These canonical Proposal controls already have bounded idle
         // lifecycle owners in the service-tunnel runtime.
@@ -306,7 +307,11 @@ pub fn decode_tunnel_request(
                 }
                 if matches!(
                     key,
-                    "AllowUserAgent" | "AllowReferer" | "AllowAccept" | "BlockReferers"
+                    "AllowUserAgent"
+                        | "AllowReferer"
+                        | "AllowAccept"
+                        | "AllowInternalSSL"
+                        | "BlockReferers"
                 ) {
                     let enabled = value
                         .as_bool()
@@ -315,6 +320,7 @@ pub fn decode_tunnel_request(
                         "AllowUserAgent" => "allow_user_agent",
                         "AllowReferer" => "allow_referer",
                         "AllowAccept" => "allow_accept",
+                        "AllowInternalSSL" => "allow_internal_ssl",
                         _ => "block_referers",
                     };
                     options.insert(internal.to_owned(), enabled.to_string());

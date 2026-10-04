@@ -265,10 +265,10 @@ const ANSWERABLE: [&str; 24] = [
 ];
 
 /// Selectors that fail the whole request with an owning-plan marker
-/// under the default composition (address book disabled, transport
-/// totals and tunnel-build outcomes not yet sampled, news never served).
+/// under the default composition (address book and signed NEWS source
+/// are not configured, transport totals and build outcomes not sampled).
 const GAPPED: [(&str, Option<&str>); 11] = [
-    ("i2p.router.news", Some("295")),
+    ("i2p.router.news", Some("322")),
     ("i2p.router.net.total.received.bytes", Some("322")),
     ("i2p.router.net.total.sent.bytes", Some("322")),
     ("i2p.router.net.tunnels.totalsuccessrate", Some("322")),

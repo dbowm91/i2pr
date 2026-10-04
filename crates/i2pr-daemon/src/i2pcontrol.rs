@@ -2016,6 +2016,7 @@ fn proposal_tunnel_option_name(key: &str) -> Option<String> {
         "close_on_idle" => Some("Close"),
         "reduce_on_idle" => Some("Reduce"),
         "unique_local_address" => Some("UniqueLocalAddressPerClient"),
+        "allow_internal_ssl" => Some("AllowInternalSSL"),
         "multihoming" => Some("MultiHoming"),
         _ => None,
     };

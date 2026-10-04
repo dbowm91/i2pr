@@ -20,8 +20,8 @@
 //!   headers return 400;
 //! - parser bounds are honored (every rejected input is a
 //!   typed 400/403/502, never a panic or unbounded read);
-//! - the runtime-neutral HTTP module emits a ConnectAllowed=true
-//!   bound for 443 and rejects every other port.
+//! - CONNECT requires the default port policy and HTTP-client
+//!   `AllowInternalSSL` opt-in for port 443.
 //!
 //! The full I2P Streaming byte round-trip over local TCP (Plan 176
 //! §10 items 1-5) is owned by Plan 180 reconcile work, which
@@ -378,6 +378,59 @@ async fn http_proxy_rejects_connect_with_disallowed_port() {
     assert!(
         text.starts_with("HTTP/1.1 403 Forbidden\r\n"),
         "got: {text}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_proxy_explicitly_disables_internal_ssl_without_destination_lookup() {
+    let directory = temp_data_dir("http-internal-ssl-disabled");
+    let mut spec = http_client_spec(&canonical_b32(), "127.0.0.1:0".parse().unwrap());
+    spec.http_options = Some(i2pr_service_tunnels::HttpClientOptions::defaults());
+    spec.http_options
+        .as_mut()
+        .expect("HTTP client options")
+        .allow_internal_ssl = false;
+    let manager = build_manager(directory.path(), spec);
+    let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-http")
+        .expect("listener");
+    let response = send_request_and_capture(
+        listener,
+        b"CONNECT example.i2p:443 HTTP/1.1\r\nHost: example.i2p:443\r\n\r\n",
+    )
+    .await;
+    let text = std::str::from_utf8(&response).expect("utf-8");
+    assert!(
+        text.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "got: {text}"
+    );
+    assert!(text.contains("internal SSL is disabled"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn http_proxy_allows_internal_ssl_only_when_enabled() {
+    let directory = temp_data_dir("http-internal-ssl-enabled");
+    let mut spec = http_client_spec(&canonical_b32(), "127.0.0.1:0".parse().unwrap());
+    spec.http_options = Some(i2pr_service_tunnels::HttpClientOptions::defaults());
+    spec.http_options
+        .as_mut()
+        .expect("HTTP client options")
+        .allow_internal_ssl = true;
+    let manager = build_manager(directory.path(), spec);
+    let (_scope, _cancel) = start_supervisors_for_test(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-http")
+        .expect("listener");
+    let response = send_request_and_capture(
+        listener,
+        b"CONNECT example.i2p:443 HTTP/1.1\r\nHost: example.i2p:443\r\n\r\n",
+    )
+    .await;
+    let text = std::str::from_utf8(&response).expect("utf-8");
+    assert!(
+        !text.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+        "the enabled internal-SSL policy must pass the 443 gate: {text}"
     );
 }
 

@@ -579,8 +579,10 @@ mod tests {
                 .any(|window| window == b"referer")
         );
 
-        let mut policy = HttpServerPolicy::default();
-        policy.block_referers = false;
+        let policy = HttpServerPolicy {
+            block_referers: false,
+            ..HttpServerPolicy::default()
+        };
         let filtered = filter_server_request_with_policy(&head, "127.0.0.1:8080", &policy)
             .expect("explicit forwarding policy");
         assert!(

@@ -132,6 +132,9 @@ impl PrivacyPolicy {
 pub struct HttpClientOptions {
     /// Privacy/hop-by-hop rewrite policy.
     pub privacy: PrivacyPolicy,
+    /// Proposal 170 `AllowInternalSSL`: permits HTTPS CONNECT on the
+    /// conventional TLS port for I2P destinations. Disabled by default.
+    pub allow_internal_ssl: bool,
     /// Maximum I2P destination ports to advertise via the
     /// destination reference; used by the daemon to validate that
     /// the configured remote destination accepts the requested
@@ -205,6 +208,11 @@ mod tests {
         assert!(policy.allows_connect_port(443));
         assert!(!policy.allows_connect_port(80));
         assert!(policy.validate().is_ok());
+    }
+
+    #[test]
+    fn internal_ssl_is_disabled_by_default() {
+        assert!(!HttpClientOptions::defaults().allow_internal_ssl);
     }
 
     #[test]

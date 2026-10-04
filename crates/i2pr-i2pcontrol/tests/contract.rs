@@ -971,7 +971,7 @@ fn plan289_tunnel_request_envelope_rules() {
         "Action": "create", "Name": "alpha", "Type": "httpclient",
         "Port": 8180, "StartOnLoad": true, "Close": true, "Reduce": false,
         "Profile": "interactive", "AllowUserAgent": true,
-        "AllowReferer": false, "AllowAccept": false,
+        "AllowReferer": false, "AllowAccept": false, "AllowInternalSSL": true,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -1012,6 +1012,13 @@ fn plan289_tunnel_request_envelope_rules() {
     assert_eq!(
         request.options.get("allow_accept").map(String::as_str),
         Some("false")
+    );
+    assert_eq!(
+        request
+            .options
+            .get("allow_internal_ssl")
+            .map(String::as_str),
+        Some("true")
     );
     let idle_options = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "idle-client", "Type": "client",

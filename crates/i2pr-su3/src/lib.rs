@@ -369,8 +369,10 @@ mod tests {
     #[test]
     fn rejects_content_over_limit_and_trailing_bytes() {
         let bytes = fixture();
-        let mut limits = Su3Limits::default();
-        limits.max_content_bytes = 6;
+        let limits = Su3Limits {
+            max_content_bytes: 6,
+            ..Su3Limits::default()
+        };
         assert_eq!(parse(&bytes, limits), Err(Su3Error::ContentTooLarge));
         let mut trailing = bytes;
         trailing.push(0);

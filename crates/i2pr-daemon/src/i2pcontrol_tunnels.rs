@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 10] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 11] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -160,6 +160,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 10] = [
     "reduce_count",
     "spoofed_host",
     "block_referers",
+    "allow_internal_ssl",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -912,6 +913,7 @@ pub fn build_control_spec(
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
+    let mut allow_internal_ssl: Option<bool> = None;
     // Plan 292 access inputs (raw values per source key so failures
     // name the offending key, never the value).
     let mut access_allow_sources: Vec<(String, String)> = Vec::new();
@@ -955,7 +957,7 @@ pub fn build_control_spec(
                     });
                 }
             }
-            "allow_user_agent" | "allow_referer" | "allow_accept" => {
+            "allow_user_agent" | "allow_referer" | "allow_accept" | "allow_internal_ssl" => {
                 if !matches!(
                     kind,
                     ServiceTunnelKind::HttpClient | ServiceTunnelKind::HttpBidirServer
@@ -975,6 +977,7 @@ pub fn build_control_spec(
                     "allow_user_agent" => allow_user_agent = Some(enabled),
                     "allow_referer" => allow_referer = Some(enabled),
                     "allow_accept" => allow_accept = Some(enabled),
+                    "allow_internal_ssl" => allow_internal_ssl = Some(enabled),
                     _ => unreachable!(),
                 }
             }
@@ -1842,6 +1845,7 @@ pub fn build_control_spec(
                 allow_user_agent,
                 allow_referer,
                 allow_accept,
+                allow_internal_ssl,
             );
             (Some(options), None, None, None, None)
         }
@@ -1852,6 +1856,7 @@ pub fn build_control_spec(
                 allow_user_agent,
                 allow_referer,
                 allow_accept,
+                allow_internal_ssl,
             );
             (Some(options), None, None, None, None)
         }
@@ -1978,6 +1983,7 @@ fn apply_proposal_http_filters(
     allow_user_agent: Option<bool>,
     allow_referer: Option<bool>,
     allow_accept: Option<bool>,
+    allow_internal_ssl: Option<bool>,
 ) {
     if let Some(allow) = allow_user_agent {
         options.privacy.user_agent = if allow {
@@ -1992,6 +1998,7 @@ fn apply_proposal_http_filters(
     if let Some(allow) = allow_accept {
         options.privacy.allow_accept = allow;
     }
+    options.allow_internal_ssl = allow_internal_ssl.unwrap_or(false);
 }
 
 /// Validates one control definition's options against the 289 subset and
@@ -4202,6 +4209,7 @@ mod tests {
         options.insert("allow_user_agent".to_owned(), "true".to_owned());
         options.insert("allow_referer".to_owned(), "true".to_owned());
         options.insert("allow_accept".to_owned(), "false".to_owned());
+        options.insert("allow_internal_ssl".to_owned(), "false".to_owned());
         let definition =
             normalize_definition("http-filters", TunnelType::HttpClient, &options, false)
                 .expect("Proposal filter fields are supported");
@@ -4213,12 +4221,32 @@ mod tests {
         );
         assert!(!privacy.strip_referer);
         assert!(!privacy.allow_accept);
+        assert!(
+            !spec
+                .http_options
+                .as_ref()
+                .expect("HTTP options")
+                .allow_internal_ssl
+        );
 
         let mut incompatible = client_options(&format!("{}.b32.i2p", "b".repeat(52)), 0);
         incompatible.insert("allow_referer".to_owned(), "true".to_owned());
         assert!(matches!(
             normalize_definition("socks-filter", TunnelType::Socks, &incompatible, false)
                 .and_then(|definition| build_control_spec(&definition)),
+            Err(ControlError::ContradictoryOptions { .. })
+        ));
+
+        let mut incompatible = client_options(&format!("{}.b32.i2p", "c".repeat(52)), 0);
+        incompatible.insert("allow_internal_ssl".to_owned(), "true".to_owned());
+        assert!(matches!(
+            normalize_definition(
+                "socks-internal-ssl",
+                TunnelType::Socks,
+                &incompatible,
+                false
+            )
+            .and_then(|definition| build_control_spec(&definition)),
             Err(ControlError::ContradictoryOptions { .. })
         ));
     }
