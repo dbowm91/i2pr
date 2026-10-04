@@ -403,18 +403,47 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
             "{action} response shape: {response}"
         );
     }
-    let unsupported = tunnel_raw(
+    let shared = tunnel_raw(
         address,
         &token,
-        serde_json::json!({"Action":"create","Name":"unowned","Type":"client","Shared":true}),
+        serde_json::json!({
+            "Action":"create", "Name":"shared-client", "Type":"client",
+            "TargetDestination":b32, "Port":distinct_port(),
+            "StartOnLoad":false, "Shared":true
+        }),
         9,
     )
     .await;
     assert!(
-        unsupported["result"]["status"]
+        shared["result"]["status"]
             .as_str()
             .unwrap_or_default()
-            .contains("Plan 323")
+            .contains("created tunnel shared-client"),
+        "Shared create response: {shared}"
+    );
+    let shared_info = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get","Name":"shared-client"}),
+        10,
+    )
+    .await;
+    assert_eq!(
+        shared_info["result"]["info"]["rawConfig"]["shared"],
+        serde_json::json!(true)
+    );
+    let deleted_shared = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"delete","Name":"shared-client"}),
+        12,
+    )
+    .await;
+    assert!(
+        deleted_shared["result"]["status"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("deleted tunnel shared-client")
     );
     for (name, bulk_port) in [
         ("bulk-zeta", distinct_port()),

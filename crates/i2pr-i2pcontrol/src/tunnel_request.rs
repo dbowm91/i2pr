@@ -118,6 +118,7 @@ impl core::fmt::Display for TunnelRequestError {
 
 fn canonical_option(key: &str) -> Option<&'static str> {
     match key {
+        "Shared" => Some("shared"),
         "TargetHost" | "Host" => Some("target_host"),
         "TargetPort" => Some("target_port"),
         "Port" => Some("listen_port"),
@@ -169,8 +170,14 @@ fn pascal_option_name(key: &str) -> String {
 }
 
 fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
-    let option = find_option(key).map_err(TunnelRequestError::BadOption)?;
-    let text = match (option.value_type, value) {
+    let value_type = if key == "shared" {
+        crate::tunnel_options::OptionValueType::Boolean
+    } else {
+        find_option(key)
+            .map_err(TunnelRequestError::BadOption)?
+            .value_type
+    };
+    let text = match (value_type, value) {
         (crate::tunnel_options::OptionValueType::String, serde_json::Value::String(text)) => {
             text.clone()
         }
@@ -347,11 +354,19 @@ pub fn decode_tunnel_request(
                     options_seen = true;
                     continue;
                 };
-                let option = find_option(option_key).map_err(TunnelRequestError::BadOption)?;
+                let option_value_type = if option_key == "shared" {
+                    // Proposal 170's Shared control extends the
+                    // frozen Plan 286 option table under Plan 323.
+                    crate::tunnel_options::OptionValueType::Boolean
+                } else {
+                    find_option(option_key)
+                        .map_err(TunnelRequestError::BadOption)?
+                        .value_type
+                };
                 let wire_type = crate::proposal_wire::proposal_tunnel_value_type(key)
                     .expect("Proposal field type was checked");
                 let adapter_type_matches = matches!(
-                    (wire_type, option.value_type),
+                    (wire_type, option_value_type),
                     (
                         crate::proposal_wire::ProposalTunnelValueType::String,
                         crate::tunnel_options::OptionValueType::String

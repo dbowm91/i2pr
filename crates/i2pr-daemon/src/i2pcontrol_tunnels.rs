@@ -45,13 +45,13 @@ use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
 use i2pr_service_tunnels::{
-    DEFAULT_IDLE_TIMEOUT_MS, DestinationPolicy, DestinationRef, IdleSweepAction, LocalListenerSpec,
-    MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS, MAX_SERVICE_TUNNELS,
-    MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS, MAX_TUNNEL_LENGTH_VARIANCE,
-    MAX_TUNNEL_QUANTITY, MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT, PROXY_AUTH_REALM_HTTP,
-    PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials, ServerAccessPolicy,
-    ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet, ServiceTunnelSpec,
-    TunnelShaping,
+    DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationPolicy, DestinationRef,
+    IdleSweepAction, LocalListenerSpec, MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS,
+    MAX_SERVICE_TUNNELS, MAX_TUNNEL_BACKUP_QUANTITY, MAX_TUNNEL_LENGTH_HOPS,
+    MAX_TUNNEL_LENGTH_VARIANCE, MAX_TUNNEL_QUANTITY, MIN_IDLE_TIMEOUT_MS, PROXY_AUTH_REALM_CONNECT,
+    PROXY_AUTH_REALM_HTTP, PROXY_AUTH_REALM_SOCKS, PROXY_VERIFIER_MARKER, ProxyCredentials,
+    ServerAccessPolicy, ServerTarget, ServiceTunnelId, ServiceTunnelKind, ServiceTunnelSet,
+    ServiceTunnelSpec, TunnelShaping,
 };
 
 use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 14] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 15] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -164,6 +164,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 14] = [
     "block_user_agents",
     "user_agents",
     "block_access_in_proxies",
+    "shared",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -913,6 +914,11 @@ pub fn build_control_spec(
     let mut proxy_username: Option<String> = None;
     let mut proxy_password: Option<String> = None;
     let mut proxy_auth_declared: Option<bool> = None;
+    // Proposal `Shared` places client tunnels in one explicit
+    // control-owned Destination group. The shared group is an
+    // intentional linkability domain, matching I2PTunnel's
+    // sharedClient setting.
+    let mut shared_client = false;
     let mut allow_user_agent: Option<bool> = None;
     let mut allow_referer: Option<bool> = None;
     let mut allow_accept: Option<bool> = None;
@@ -949,6 +955,23 @@ pub fn build_control_spec(
     let mut payload_limit_bytes: Option<usize> = None;
     for (key, value) in &definition.options {
         match key.as_str() {
+            "shared" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::GenericClient
+                        | ServiceTunnelKind::HttpClient
+                        | ServiceTunnelKind::Socks5Client
+                        | ServiceTunnelKind::IrcClient
+                        | ServiceTunnelKind::ConnectClient
+                        | ServiceTunnelKind::SocksIrc
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "Shared applies to client tunnels with a local Destination",
+                    });
+                }
+                shared_client = parse_bool_option(key, value)?;
+            }
             "description" => {
                 // Description is control-plane metadata: its authoritative
                 // owner is the durable definition and canonical TunnelManager
@@ -1992,7 +2015,14 @@ pub fn build_control_spec(
         target,
         targets: Vec::new(),
         destination,
-        policy: DestinationPolicy::Dedicated,
+        policy: if shared_client {
+            DestinationPolicy::SharedClientGroup(
+                DestinationGroupId::parse("i2pcontrol-shared-client")
+                    .map_err(|_| ControlError::InvalidRequest("shared group id is invalid"))?,
+            )
+        } else {
+            DestinationPolicy::Dedicated
+        },
         inbound_port: None,
         max_connections,
         max_buffered_bytes_per_direction: 65_536,
@@ -3812,6 +3842,58 @@ mod tests {
             (TunnelType::StreamrServer, ServiceTunnelKind::StreamrServer),
         ] {
             assert_eq!(map_tunnel_type(tunnel_type).expect("backend"), kind);
+        }
+    }
+
+    #[test]
+    fn plan323_shared_uses_one_explicit_client_destination_group() {
+        use i2pr_service_tunnels::{DestinationGroupKey, DestinationPolicy, ServiceTunnelSet};
+
+        let mut definitions = Vec::new();
+        for (name, tunnel_type) in [
+            ("shared-http", TunnelType::HttpClient),
+            ("shared-socks", TunnelType::Socks),
+        ] {
+            let definition = ControlDefinition {
+                name: name.to_owned(),
+                tunnel_type,
+                options: BTreeMap::from([
+                    ("shared".to_owned(), "true".to_owned()),
+                    (
+                        "target_destination".to_owned(),
+                        format!("{}.b32.i2p", "a".repeat(52)),
+                    ),
+                ]),
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("shared client spec");
+            assert!(matches!(
+                spec.policy,
+                DestinationPolicy::SharedClientGroup(_)
+            ));
+            definitions.push(spec);
+        }
+        let groups = ServiceTunnelSet {
+            tunnels: definitions,
+        }
+        .destination_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+        assert_eq!(
+            groups[0].key,
+            DestinationGroupKey::Explicit(
+                DestinationGroupId::parse("i2pcontrol-shared-client").expect("group id")
+            )
+        );
+
+        for tunnel_type in [TunnelType::Server, TunnelType::StreamrClient] {
+            let definition = ControlDefinition {
+                name: "bad-shared".to_owned(),
+                tunnel_type,
+                options: BTreeMap::from([("shared".to_owned(), "true".to_owned())]),
+                start_on_load: false,
+            };
+            assert!(build_control_spec(&definition).is_err());
         }
     }
 
