@@ -3,7 +3,7 @@
 //! `I2PR_I2PCONTROL_TARGET` / `I2PR_I2PCONTROL_PASSWORD` environment
 //! pair provisions an external router, against that target.
 //!
-//! Local mode executes the full disposition matrix (every answerable
+//! Local mode executes the current canonical disposition matrix (every answerable
 //! row answers; every unowned row fails the whole request with its
 //! owning-plan marker) and emits one sanitized `PLAN295-CORPUS` line
 //! carrying counts plus a shape hash (tokens and passwords redacted
@@ -234,46 +234,31 @@ fn hex_prefix(bytes: &[u8]) -> String {
     out
 }
 
-/// Selectors the default production composition answers (22 rows;
+/// Canonical selectors the default production composition answers (7 rows;
 /// address-book rows gap while the subsystem is disabled, identity
 /// gaps while bootstrap has not published, news never serves).
-const ANSWERABLE: [&str; 22] = [
-    "router.version",
-    "router.api_version",
-    "router.uptime",
-    "router.status",
-    "router.network_id",
-    "netdb.known_peers",
-    "netdb.active_peers",
-    "netdb.floodfill_mode",
-    "transport.ntcp2.active_peers",
-    "transport.reachability",
-    "transport.errors",
-    "tunnel.exploratory.count",
-    "tunnel.client.count",
-    "tunnel.participating.count",
-    "tunnel.build_queue",
-    "tunnel.success_rate",
-    "tunnel.bandwidth",
-    "network.clock_skew",
-    "network.rates",
-    "logs.recent",
-    "network.banned_peers",
-    "transport.ssu2.active_sessions",
+const ANSWERABLE: [&str; 7] = [
+    "i2p.router.version",
+    "i2p.router.status",
+    "i2p.router.uptime",
+    "i2p.router.net.tunnels.participating",
+    "i2p.router.netdb.peers.list",
+    "i2p.router.netdb.activepeers.list",
+    "i2p.router.clockskew",
 ];
 
 /// Selectors that fail the whole request with an owning-plan marker
 /// under the default composition (identity unpublished, address book
 /// disabled, news never served).
-const GAPPED: [(&str, &str); 8] = [
-    ("router.hash", "288"),
-    ("news.feed", "295"),
-    ("addressbook.private", "294"),
-    ("addressbook.local", "294"),
-    ("addressbook.router", "294"),
-    ("addressbook.published", "294"),
-    ("addressbook.subscriptions", "294"),
-    ("addressbook.config", "294"),
+const GAPPED: [(&str, Option<&str>); 8] = [
+    ("i2p.router.id", Some("288")),
+    ("i2p.router.news", Some("295")),
+    ("i2p.router.addressbook.private.list", None),
+    ("i2p.router.addressbook.local.list", None),
+    ("i2p.router.addressbook.router.list", None),
+    ("i2p.router.addressbook.published.list", None),
+    ("i2p.router.addressbook.subscriptions", None),
+    ("i2p.router.addressbook.config", None),
 ];
 
 /// Runs the corpus against one target and returns
@@ -313,7 +298,7 @@ async fn run_corpus(
             "missing row {selector}: {result}"
         );
         answered += 1;
-        if selector == "router.uptime" {
+        if selector == "i2p.router.uptime" {
             // Control-plane uptime advances across runs; the shape
             // hash records the numeric type, never the instant.
             assert!(result[selector].is_number(), "uptime numeric: {result}");
@@ -339,10 +324,12 @@ async fn run_corpus(
         assert!(error.is_object(), "gap is an error: {response}");
         if strict {
             assert_eq!(error["code"], serde_json::json!(-32603));
-            assert!(
-                error["message"].as_str().unwrap_or_default().contains(plan),
-                "gap names {plan}: {error}"
-            );
+            if let Some(plan) = plan {
+                assert!(
+                    error["message"].as_str().unwrap_or_default().contains(plan),
+                    "gap names {plan}: {error}"
+                );
+            }
         }
         gapped += 1;
         shapes.push_str(&shape_hash(error));
@@ -401,7 +388,7 @@ async fn run_corpus(
         &serde_json::json!({
             "jsonrpc": "2.0",
             "method": "TunnelManager",
-            "params": {"Token": token, "name": "no-such-tunnel", "action": "get"},
+            "params": {"Token": token, "Name": "no-such-tunnel", "Action": "get"},
             "id": 14,
         }),
     )
@@ -430,8 +417,8 @@ async fn run_corpus(
             "jsonrpc": "2.0",
             "method": "TunnelManager",
             "params": {
-                "Token": token, "name": "sig-probe", "action": "create",
-                "type": "client", "options": {"sig_type": "EDDSA_SHA512_ED25519"},
+                "Token": token, "Name": "sig-probe", "Action": "create",
+                "Type": "client", "SigType": "EDDSA_SHA512_ED25519",
             },
             "id": 15,
         }),
@@ -530,7 +517,7 @@ async fn differential_corpus_against_production_composition() {
         tokio::task::yield_now().await;
     }
     let (answered, gapped, errors, shape) = run_corpus(address, TEST_PASSWORD, true).await;
-    assert_eq!(answered, 28, "22 rows + 6 services answer");
+    assert_eq!(answered, 13, "7 canonical rows + 6 services answer");
     assert_eq!(gapped, 8, "hash + news + 6 address-book rows gap");
     assert_eq!(
         errors, 4,

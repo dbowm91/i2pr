@@ -21,22 +21,8 @@ pub const ADDRESS_BOOK_FIELDS: [&str; 6] = [
     "SetConfig",
 ];
 
-/// Exact frozen thirteen-key `SetConfig` inventory in canonical order.
-pub const SET_CONFIG_KEYS: [&str; 13] = [
-    "private_book",
-    "local_book",
-    "router_book",
-    "published_book",
-    "subscriptions",
-    "refresh_interval",
-    "proxy_host",
-    "proxy_port",
-    "theme",
-    "log_file",
-    "log_level",
-    "lookup_timeout",
-    "max_entries",
-];
+/// Exact Proposal 170 thirteen-key `SetConfig` inventory in specification order.
+pub const SET_CONFIG_KEYS: [&str; 13] = crate::proposal_wire::PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS;
 
 /// The four administrative books.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,7 +138,14 @@ pub fn parse_set_config_key(name: &str) -> Result<usize, ContractError> {
 pub fn is_path_like_config_key(name: &str) -> bool {
     matches!(
         name,
-        "private_book" | "local_book" | "router_book" | "published_book" | "log_file"
+        "subscriptions"
+            | "published_addressbook"
+            | "router_addressbook"
+            | "local_addressbook"
+            | "private_addressbook"
+            | "etags"
+            | "last_modified"
+            | "log"
     )
 }
 

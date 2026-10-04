@@ -383,9 +383,30 @@ fn decode_addressbook_request(
             Some(serde_json::Value::Object(map)) => map
                 .iter()
                 .map(|(key, value)| {
+                    i2pr_i2pcontrol::address_book::parse_set_config_key(key)
+                        .map_err(|_| "malformed AddressBook field")?;
+                    let internal_key = match key.as_str() {
+                        "subscriptions" => "subscriptions",
+                        "update_delay" => "refresh_interval",
+                        "published_addressbook" => "published_book",
+                        "router_addressbook" => "router_book",
+                        "local_addressbook" => "local_book",
+                        "private_addressbook" => "private_book",
+                        "proxy_port" => "proxy_port",
+                        "proxy_host" => "proxy_host",
+                        "log" => "log_file",
+                        "theme" => "theme",
+                        // These are valid Proposal keys, but their operational
+                        // owners are not present yet. Never silently persist or
+                        // discard them as if they took effect.
+                        "should_publish" | "etags" | "last_modified" => {
+                            return Err("AddressBook config field is not available");
+                        }
+                        _ => return Err("malformed AddressBook field"),
+                    };
                     value
                         .as_str()
-                        .map(|text| (key.clone(), text.to_owned()))
+                        .map(|text| (internal_key.to_owned(), text.to_owned()))
                         .ok_or("malformed AddressBook field")
                 })
                 .collect::<Result<BTreeMap<String, String>, &'static str>>()?,
@@ -1059,6 +1080,16 @@ impl I2pControlServiceState {
                 );
             }
         };
+        if request.all {
+            return (
+                error_envelope(
+                    id,
+                    JsonRpcErrorCode::InternalError.code(),
+                    "TunnelManager All action is unavailable (Plan 323)",
+                ),
+                Duration::ZERO,
+            );
+        }
         let control = match self
             .control
             .lock()
@@ -1086,12 +1117,11 @@ impl I2pControlServiceState {
         }
     }
 
-    /// Dispatches an authenticated `RouterInfo` request over the Plan 288
-    /// select form.
+    /// Dispatches an authenticated `RouterInfo` request over the base API
+    /// and Proposal 170 selector namespaces.
     ///
-    /// Selector keys carry null values; unknown keys (including every
-    /// `i2p.*` base-compatibility key, which is structurally disjoint
-    /// from the Proposal vocabulary) fail with invalid params. An empty
+    /// Selector values are ignored; unknown keys fail with invalid params.
+    /// An empty
     /// selection answers with an empty result object. Any unavailable or
     /// unpublished selection fails the whole request explicitly with the
     /// owning-plan marker; no partial response is emitted and no state is
@@ -1118,10 +1148,24 @@ impl I2pControlServiceState {
         // Control-plane uptime in whole seconds (truncating, saturating).
         let uptime_secs = now_ms / 1000;
         let mut result = serde_json::Map::with_capacity(selection.len());
-        for selector in selection {
+        for field in selection {
+            if field.key == "i2p.router.uptime" {
+                result.insert(field.key.to_owned(), serde_json::Value::from(now_ms));
+                continue;
+            }
+            let Some(selector) = field.adapter else {
+                return (
+                    error_envelope(
+                        id,
+                        JsonRpcErrorCode::InternalError.code(),
+                        "RouterInfo selector source is unavailable",
+                    ),
+                    Duration::ZERO,
+                );
+            };
             match router_info_result(selector, &self.inspection, uptime_secs) {
                 Ok(value) => {
-                    result.insert(selector.name().to_owned(), value);
+                    result.insert(field.key.to_owned(), value);
                 }
                 Err(gap) => {
                     return (

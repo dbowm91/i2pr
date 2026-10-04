@@ -2969,6 +2969,7 @@ impl TunnelControlState {
                         TunnelAction::Restart
                     }
                 },
+                all: false,
                 name: Some(decision.spec_id.clone()),
                 tunnel_type: None,
                 new_name: None,
@@ -3212,6 +3213,7 @@ mod tests {
     ) -> TunnelManagerRequest {
         TunnelManagerRequest {
             action: TunnelAction::Create,
+            all: false,
             name: Some(name.to_owned()),
             tunnel_type: Some(tunnel_type),
             new_name: None,
@@ -3222,6 +3224,7 @@ mod tests {
     fn named_request(action: TunnelAction, name: &str) -> TunnelManagerRequest {
         TunnelManagerRequest {
             action,
+            all: false,
             name: Some(name.to_owned()),
             tunnel_type: None,
             new_name: None,
@@ -4558,6 +4561,7 @@ mod tests {
         rotation.insert("proxy_username".to_owned(), "renamed".to_owned());
         let error = block_on(control.edit(&TunnelManagerRequest {
             action: TunnelAction::Edit,
+            all: false,
             name: Some("authrot".to_owned()),
             tunnel_type: None,
             new_name: None,
@@ -4574,6 +4578,7 @@ mod tests {
         rotation.insert("proxy_password".to_owned(), "n3w-secret".to_owned());
         block_on(control.edit(&TunnelManagerRequest {
             action: TunnelAction::Edit,
+            all: false,
             name: Some("authrot".to_owned()),
             tunnel_type: None,
             new_name: None,

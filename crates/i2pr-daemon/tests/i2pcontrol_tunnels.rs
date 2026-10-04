@@ -238,6 +238,13 @@ async fn tunnel(
     id: u32,
 ) -> serde_json::Value {
     let mut map = params.as_object().expect("object").clone();
+    // Keep the test fixtures readable while emitting the canonical Proposal
+    // wire shape: option fields share the top-level params object.
+    if let Some(serde_json::Value::Object(options)) = map.remove("options") {
+        for (key, value) in options {
+            assert!(map.insert(key, value).is_none(), "duplicate wire field");
+        }
+    }
     map.insert("Token".to_owned(), serde_json::json!(token));
     let (_, response) = post_json(
         address,
@@ -268,8 +275,8 @@ async fn tunnel_lifecycle_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "alpha", "type": "client",
-            "options": {"target_destination": b32, "listen_port": port},
+            "Action": "create", "Name": "alpha", "Type": "client",
+            "TargetDestination": b32, "Port": port,
         }),
         2,
     )
@@ -283,7 +290,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "alpha"}),
+        serde_json::json!({"Action": "get", "Name": "alpha"}),
         3,
     )
     .await;
@@ -305,7 +312,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "edit", "name": "alpha", "options": {"max_streams": 32}}),
+        serde_json::json!({"Action": "edit", "Name": "alpha", "MaxStreams": 32}),
         4,
     )
     .await;
@@ -313,7 +320,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "alpha"}),
+        serde_json::json!({"Action": "get", "Name": "alpha"}),
         5,
     )
     .await;
@@ -326,7 +333,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "stop", "name": "alpha"}),
+        serde_json::json!({"Action": "stop", "Name": "alpha"}),
         6,
     )
     .await;
@@ -334,7 +341,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "alpha"}),
+        serde_json::json!({"Action": "get", "Name": "alpha"}),
         7,
     )
     .await;
@@ -342,7 +349,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "start", "name": "alpha"}),
+        serde_json::json!({"Action": "start", "Name": "alpha"}),
         8,
     )
     .await;
@@ -355,7 +362,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "delete", "name": "alpha"}),
+        serde_json::json!({"Action": "delete", "Name": "alpha"}),
         9,
     )
     .await;
@@ -363,7 +370,7 @@ async fn tunnel_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "alpha"}),
+        serde_json::json!({"Action": "get", "Name": "alpha"}),
         10,
     )
     .await;
@@ -379,14 +386,14 @@ async fn tunnel_server_identity_stable_over_wire() {
     let token = authenticate(address).await;
     // Dummy loopback target for the server tunnel.
     let target = std::net::TcpListener::bind("127.0.0.1:0").expect("target binds");
-    let target_address = target.local_addr().expect("target addr").to_string();
+    let target_port = target.local_addr().expect("target addr").port();
 
     let response = tunnel(
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "srv", "type": "server",
-            "options": {"target_host": "127.0.0.1", "target_port": target_address.rsplit(':').next().expect("port")},
+            "Action": "create", "Name": "srv", "Type": "server",
+            "TargetHost": "127.0.0.1", "TargetPort": target_port,
         }),
         2,
     )
@@ -398,7 +405,7 @@ async fn tunnel_server_identity_stable_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv"}),
+        serde_json::json!({"Action": "get", "Name": "srv"}),
         3,
     )
     .await;
@@ -411,7 +418,7 @@ async fn tunnel_server_identity_stable_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "restart", "name": "srv"}),
+        serde_json::json!({"Action": "restart", "Name": "srv"}),
         4,
     )
     .await;
@@ -422,7 +429,7 @@ async fn tunnel_server_identity_stable_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv"}),
+        serde_json::json!({"Action": "get", "Name": "srv"}),
         5,
     )
     .await;
@@ -447,11 +454,11 @@ async fn tunnel_streamr_supported_and_secret_rejected_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "stream", "type": "streamrclient",
+        serde_json::json!({"Action": "create", "Name": "stream", "Type": "streamrclient",
         "options": {
-            "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
-            "local_udp_host": "127.0.0.1",
-            "local_udp_port": distinct_port(),
+            "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+            "LocalUdpHost": "127.0.0.1",
+            "LocalUdpPort": distinct_port(),
         }}),
         2,
     )
@@ -464,7 +471,7 @@ async fn tunnel_streamr_supported_and_secret_rejected_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "stream"}),
+        serde_json::json!({"Action": "get", "Name": "stream"}),
         3,
     )
     .await;
@@ -478,11 +485,11 @@ async fn tunnel_streamr_supported_and_secret_rejected_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "alpha", "type": "client",
+            "Action": "create", "Name": "alpha", "Type": "client",
             "options": {
-                "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
-                "listen_port": distinct_port(),
-                "proxy_password": "hunter2",
+                "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+                "Port": distinct_port(),
+                "ProxyPassword": "hunter2",
             },
         }),
         4,
@@ -528,8 +535,8 @@ async fn tunnel_collision_and_startup_rejected_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "web-client", "type": "client",
-            "options": {"target_destination": b32, "listen_port": distinct_port()},
+            "Action": "create", "Name": "web-client", "Type": "client",
+            "TargetDestination": b32, "Port": distinct_port(),
         }),
         2,
     )
@@ -539,7 +546,7 @@ async fn tunnel_collision_and_startup_rejected_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "delete", "name": "web-client"}),
+        serde_json::json!({"Action": "delete", "Name": "web-client"}),
         3,
     )
     .await;
@@ -553,7 +560,7 @@ async fn tunnel_collision_and_startup_rejected_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "web-client"}),
+        serde_json::json!({"Action": "get", "Name": "web-client"}),
         4,
     )
     .await;
@@ -562,7 +569,7 @@ async fn tunnel_collision_and_startup_rejected_over_wire() {
         serde_json::json!("startup")
     );
     // Whole-inventory get lists both classes.
-    let response = tunnel(address, &token, serde_json::json!({"action": "get"}), 5).await;
+    let response = tunnel(address, &token, serde_json::json!({"Action": "get"}), 5).await;
     assert!(response["result"]["startup"]["web-client"].is_object());
 }
 
@@ -575,11 +582,11 @@ async fn tunnel_envelope_rejections_over_wire() {
     let token = authenticate(address).await;
     // Missing action, unknown action, and create without type.
     for params in [
-        serde_json::json!({"name": "a"}),
-        serde_json::json!({"action": "launch", "name": "a"}),
-        serde_json::json!({"action": "create", "name": "a"}),
-        serde_json::json!({"action": "get", "unknown": 1}),
-        serde_json::json!({"action": "edit", "name": "a", "type": "client"}),
+        serde_json::json!({"Name": "a"}),
+        serde_json::json!({"Action": "launch", "Name": "a"}),
+        serde_json::json!({"Action": "create", "Name": "a"}),
+        serde_json::json!({"Action": "get", "unknown": 1}),
+        serde_json::json!({"Action": "edit", "Name": "a", "Type": "client"}),
     ] {
         let response = tunnel(address, &token, params, 2).await;
         assert_eq!(
@@ -592,7 +599,7 @@ async fn tunnel_envelope_rejections_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "missing"}),
+        serde_json::json!({"Action": "get", "Name": "missing"}),
         3,
     )
     .await;
@@ -600,7 +607,7 @@ async fn tunnel_envelope_rejections_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "start", "name": "missing"}),
+        serde_json::json!({"Action": "start", "Name": "missing"}),
         4,
     )
     .await;
@@ -613,15 +620,15 @@ async fn tunnel_restart_recovery_over_wire() {
     let text = config_text(directory.path(), TEST_PASSWORD, "");
     let config = Config::parse(&text).expect("config parses");
     let target = std::net::TcpListener::bind("127.0.0.1:0").expect("target binds");
-    let target_address = target.local_addr().expect("target addr").to_string();
+    let target_port = target.local_addr().expect("target addr").port();
     let (_state, address, _scope, _parent) = start_service(&config).await;
     let token = authenticate(address).await;
     let response = tunnel(
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "srv", "type": "server",
-            "options": {"target_host": "127.0.0.1", "target_port": target_address.rsplit(':').next().expect("port")},
+            "Action": "create", "Name": "srv", "Type": "server",
+            "TargetHost": "127.0.0.1", "TargetPort": target_port,
         }),
         2,
     )
@@ -633,7 +640,7 @@ async fn tunnel_restart_recovery_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv"}),
+        serde_json::json!({"Action": "get", "Name": "srv"}),
         3,
     )
     .await;
@@ -651,7 +658,7 @@ async fn tunnel_restart_recovery_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv"}),
+        serde_json::json!({"Action": "get", "Name": "srv"}),
         4,
     )
     .await;
@@ -732,28 +739,28 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
         (
             "cc290",
             "connectclient",
-            serde_json::json!({"target_destination": b32, "listen_port": cc_port}),
+            serde_json::json!({"TargetDestination": b32, "Port": cc_port}),
             true,
         ),
         (
             "si290",
             "socksirc",
-            serde_json::json!({"target_destination": b32, "listen_port": si_port}),
+            serde_json::json!({"TargetDestination": b32, "Port": si_port}),
             true,
         ),
         (
             "hs290",
             "httpserver",
-            serde_json::json!({"target_host": "127.0.0.1", "target_port": target_port}),
+            serde_json::json!({"TargetHost": "127.0.0.1", "TargetPort": target_port}),
             false,
         ),
         (
             "hb290",
             "httpbidirserver",
             serde_json::json!({
-                "target_host": "127.0.0.1",
-                "target_port": target_port,
-                "listen_port": hb_port,
+                "TargetHost": "127.0.0.1",
+                "TargetPort": target_port,
+                "Port": hb_port,
             }),
             true,
         ),
@@ -762,7 +769,7 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
         let response = tunnel(
             address,
             &token,
-            serde_json::json!({"action": "create", "name": name, "type": kind, "options": options}),
+            serde_json::json!({"Action": "create", "Name": name, "Type": kind, "options": options}),
             id,
         )
         .await;
@@ -775,7 +782,7 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
         let response = tunnel(
             address,
             &token,
-            serde_json::json!({"action": "get", "name": name}),
+            serde_json::json!({"Action": "get", "Name": name}),
             id,
         )
         .await;
@@ -792,7 +799,7 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
             let response = tunnel(
                 address,
                 &token,
-                serde_json::json!({"action": action, "name": name}),
+                serde_json::json!({"Action": action, "Name": name}),
                 id,
             )
             .await;
@@ -805,7 +812,7 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
         let response = tunnel(
             address,
             &token,
-            serde_json::json!({"action": "get", "name": name}),
+            serde_json::json!({"Action": "get", "Name": name}),
             id,
         )
         .await;
@@ -818,7 +825,7 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "hs-bad", "type": "httpserver"}),
+        serde_json::json!({"Action": "create", "Name": "hs-bad", "Type": "httpserver"}),
         id,
     )
     .await;
@@ -828,8 +835,8 @@ async fn tunnel_plan290_family_lifecycle_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "cc-bad", "type": "connectclient",
-            "options": {"listen_port": distinct_port()},
+            "Action": "create", "Name": "cc-bad", "Type": "connectclient",
+            "Port": distinct_port(),
         }),
         id,
     )
@@ -854,18 +861,18 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
 
     for (name, kind) in [("pub291", "streamrserver"), ("sub291", "streamrclient")] {
         let options = if kind == "streamrserver" {
-            serde_json::json!({"local_udp_host": "127.0.0.1", "local_udp_port": server_port})
+            serde_json::json!({"LocalUdpHost": "127.0.0.1", "LocalUdpPort": server_port})
         } else {
             serde_json::json!({
-                "target_destination": b32,
-                "local_udp_host": "127.0.0.1",
-                "local_udp_port": client_port,
+                "TargetDestination": b32,
+                "LocalUdpHost": "127.0.0.1",
+                "LocalUdpPort": client_port,
             })
         };
         let response = tunnel(
             address,
             &token,
-            serde_json::json!({"action": "create", "name": name, "type": kind, "options": options}),
+            serde_json::json!({"Action": "create", "Name": name, "Type": kind, "options": options}),
             id,
         )
         .await;
@@ -878,7 +885,7 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
         let response = tunnel(
             address,
             &token,
-            serde_json::json!({"action": "get", "name": name}),
+            serde_json::json!({"Action": "get", "Name": name}),
             id,
         )
         .await;
@@ -889,7 +896,7 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
             let response = tunnel(
                 address,
                 &token,
-                serde_json::json!({"action": action, "name": name}),
+                serde_json::json!({"Action": action, "Name": name}),
                 id,
             )
             .await;
@@ -905,7 +912,7 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "pub-bad", "type": "streamrserver"}),
+        serde_json::json!({"Action": "create", "Name": "pub-bad", "Type": "streamrserver"}),
         id,
     )
     .await;
@@ -915,13 +922,13 @@ async fn tunnel_plan291_streamr_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "sub-bad", "type": "streamrclient",
-        "options": {
-            "target_destination": b32,
-            "local_udp_host": "127.0.0.1",
-            "local_udp_port": distinct_port(),
-            "streamr_expiry": 90000,
-        }}),
+        serde_json::json!({"Action": "create", "Name": "sub-bad", "Type": "streamrclient",
+
+            "TargetDestination": b32,
+            "LocalUdpHost": "127.0.0.1",
+            "LocalUdpPort": distinct_port(),
+            "StreamrExpiry": 90000,
+        }),
         id,
     )
     .await;
@@ -946,16 +953,15 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "shaped", "type": "client",
-            "options": {
-                "target_destination": b32,
-                "listen_port": port,
-                "tunnel_quantity": 4,
-                "tunnel_length": 3,
-                "profile": "interactive",
-                "idle_timeout": 60000,
-                "close_on_idle": true,
-            },
+            "Action": "create", "Name": "shaped", "Type": "client",
+
+                "TargetDestination": b32,
+                "Port": port,
+                "TunnelQuantity": 4,
+                "TunnelLength": 3,
+                "Profile": "interactive",
+                "IdleTimeout": 60000,
+                "CloseOnIdle": true,
         }),
         2,
     )
@@ -970,7 +976,7 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "shaped"}),
+        serde_json::json!({"Action": "get", "Name": "shaped"}),
         3,
     )
     .await;
@@ -995,8 +1001,8 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "edit", "name": "shaped",
-            "options": {"inbound_quantity": 5, "outbound_quantity": 1}}),
+        serde_json::json!({"Action": "edit", "Name": "shaped",
+            "InboundQuantity": 5, "OutboundQuantity": 1}),
         4,
     )
     .await;
@@ -1008,7 +1014,7 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "shaped"}),
+        serde_json::json!({"Action": "get", "Name": "shaped"}),
         5,
     )
     .await;
@@ -1021,12 +1027,12 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "shaped-bad", "type": "client",
-        "options": {
-            "target_destination": b32,
-            "listen_port": distinct_port(),
-            "tunnel_quantity": 7,
-        }}),
+        serde_json::json!({"Action": "create", "Name": "shaped-bad", "Type": "client",
+
+            "TargetDestination": b32,
+            "Port": distinct_port(),
+            "TunnelQuantity": 7,
+        }),
         6,
     )
     .await;
@@ -1035,13 +1041,13 @@ async fn tunnel_plan292_shaping_lifecycle_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "shaped-split", "type": "client",
-        "options": {
-            "target_destination": b32,
-            "listen_port": distinct_port(),
-            "inbound_length": 1,
-            "outbound_length": 3,
-        }}),
+        serde_json::json!({"Action": "create", "Name": "shaped-split", "Type": "client",
+
+            "TargetDestination": b32,
+            "Port": distinct_port(),
+            "InboundLength": 1,
+            "OutboundLength": 3,
+        }),
         7,
     )
     .await;
@@ -1058,7 +1064,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let text = config_text(directory.path(), TEST_PASSWORD, "");
     let config = Config::parse(&text).expect("config parses");
     let target = std::net::TcpListener::bind("127.0.0.1:0").expect("target binds");
-    let target_port = target.local_addr().expect("target addr").port().to_string();
+    let target_port = target.local_addr().expect("target addr").port();
     let (_state, address, _scope, _parent) = start_service(&config).await;
     let token = authenticate(address).await;
     // Generic server with the deterministic source bind plus an
@@ -1067,13 +1073,13 @@ async fn tunnel_plan292_options_persist_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "srv292", "type": "server",
+            "Action": "create", "Name": "srv292", "Type": "server",
             "options": {
-                "target_host": "127.0.0.1",
-                "target_port": target_port,
-                "unique_local_address": "true",
-                "access_list": format!("{}.b32.i2p", "b".repeat(51) + "a"),
-                "black_list": format!("{}.b32.i2p", "c".repeat(51) + "a"),
+                "TargetHost": "127.0.0.1",
+                "TargetPort": target_port,
+                "UniqueLocalAddress": true,
+                "AccessList": format!("{}.b32.i2p", "b".repeat(51) + "a"),
+                "BlackList": format!("{}.b32.i2p", "c".repeat(51) + "a"),
             },
         }),
         2,
@@ -1088,13 +1094,12 @@ async fn tunnel_plan292_options_persist_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "web292", "type": "httpserver",
-            "options": {
-                "target_host": "127.0.0.1",
-                "target_port": target_port,
-                "address_helper": "false",
-                "jump_list": "false",
-            },
+            "Action": "create", "Name": "web292", "Type": "httpserver",
+
+                "TargetHost": "127.0.0.1",
+                "TargetPort": target_port,
+                "AddressHelper": false,
+                "JumpList": false,
         }),
         3,
     )
@@ -1108,12 +1113,12 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "create", "name": "sub292", "type": "streamrclient",
+        serde_json::json!({"Action": "create", "Name": "sub292", "Type": "streamrclient",
         "options": {
-            "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
-            "local_udp_host": "127.0.0.1",
-            "local_udp_port": distinct_port(),
-            "remote_udp_host": "127.0.0.2",
+            "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+            "LocalUdpHost": "127.0.0.1",
+            "LocalUdpPort": distinct_port(),
+            "RemoteUdpHost": "127.0.0.2",
         }}),
         4,
     )
@@ -1131,13 +1136,13 @@ async fn tunnel_plan292_options_persist_over_wire() {
         address,
         &token,
         serde_json::json!({
-            "action": "create", "name": "socks292", "type": "socks",
+            "Action": "create", "Name": "socks292", "Type": "socks",
             "options": {
-                "target_destination": format!("{}.b32.i2p", "a".repeat(52)),
-                "listen_port": distinct_port(),
-                "proxy_username": "operator",
-                "proxy_password": "s3cret!",
-                "start_on_load": "false",
+                "TargetDestination": format!("{}.b32.i2p", "a".repeat(52)),
+                "Port": distinct_port(),
+                "ProxyUsername": "operator",
+                "ProxyPassword": "s3cret!",
+                "StartOnLoad": false,
             },
         }),
         5,
@@ -1150,7 +1155,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv292"}),
+        serde_json::json!({"Action": "get", "Name": "srv292"}),
         6,
     )
     .await;
@@ -1171,7 +1176,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "web292"}),
+        serde_json::json!({"Action": "get", "Name": "web292"}),
         7,
     )
     .await;
@@ -1186,7 +1191,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "sub292"}),
+        serde_json::json!({"Action": "get", "Name": "sub292"}),
         8,
     )
     .await;
@@ -1197,7 +1202,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "socks292"}),
+        serde_json::json!({"Action": "get", "Name": "socks292"}),
         9,
     )
     .await;
@@ -1222,7 +1227,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "srv292"}),
+        serde_json::json!({"Action": "get", "Name": "srv292"}),
         10,
     )
     .await;
@@ -1237,7 +1242,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "web292"}),
+        serde_json::json!({"Action": "get", "Name": "web292"}),
         11,
     )
     .await;
@@ -1248,7 +1253,7 @@ async fn tunnel_plan292_options_persist_over_wire() {
     let response = tunnel(
         address,
         &token,
-        serde_json::json!({"action": "get", "name": "sub292"}),
+        serde_json::json!({"Action": "get", "Name": "sub292"}),
         12,
     )
     .await;

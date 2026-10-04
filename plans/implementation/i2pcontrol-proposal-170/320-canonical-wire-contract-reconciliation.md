@@ -6,7 +6,7 @@ Classification: protocol contract corrective. This plan changes the public contr
 
 Hard dependency: Plan 319 closed.
 
-Plan 319 closed as `passed-prop170-planning-authority-and-global-number-reconciliation` in [`plans/closure/i2pcontrol-proposal-170/319-status.md`](../../closure/i2pcontrol-proposal-170/319-status.md). Current-source check performed 2026-10-04: Proposal 170 remains Open and lists Last Updated 2026-05-20, matching the research baseline. Canonical reference: <https://www.i2p.net/en/proposals/170-i2pcontrol-expansion/>. The base API reference remains the 2025-10 page at <https://www.i2p.net/en/docs/api/i2pcontrol/>; pinned Java PR 6, Emissary fork, and i2pd commits remain those in [`docs/provenance/proposal-170-manifest.md`](../../../docs/provenance/proposal-170-manifest.md).
+Plan 319 closed as `passed-prop170-planning-authority-and-global-number-reconciliation` in [`plans/closure/i2pcontrol-proposal-170/319-status.md`](../../closure/i2pcontrol-proposal-170/319-status.md). Current-source check performed 2026-10-04: Proposal 170 remains Open and lists Last Updated 2026-05-20, matching the research baseline. Canonical reference: <https://www.i2p.net/en/proposals/170-i2pcontrol-expansion/>. The base API reference was checked 2026-10-04 and now reports Updated 2026-07-10 at <https://i2p.net/en/docs/api/i2pcontrol/>; its fourteen RouterInfo keys are recorded separately from the 43 Proposal additions. Pinned Java PR 6, Emissary fork, and i2pd commits remain those in [`docs/provenance/proposal-170-manifest.md`](../../../docs/provenance/proposal-170-manifest.md).
 
 ## Objective
 
@@ -26,6 +26,8 @@ At execution start re-fetch and pin:
 - i2pd only for the base/adopted subset it implements.
 
 If Proposal 170 materially changed from the 2026-05-20 baseline, stop and record the diff before changing code.
+
+The base API reference changed after the original planning baseline: its current page identifies itself as updated 2026-07-10 and lists the fourteen base RouterInfo fields frozen independently in `BASE_ROUTER_INFO_FIELDS`. The Proposal 170 43-addition set remains unchanged.
 
 ## Required canonical inventory
 

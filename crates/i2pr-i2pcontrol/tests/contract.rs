@@ -2,23 +2,26 @@
 //! typed literal failures, max/max+1 bounds, secret classification.
 
 use i2pr_i2pcontrol::{
-    ADDRESS_BOOK_FIELDS, AddressBookField, AuthErrorCode, BOOK_TYPES, BookType, CLIENT_SERVICES,
-    ClientService, ContractError, ContractInventory, JsonRpcErrorCode, JsonRpcRequest,
-    MAX_BATCH_ELEMENTS, MAX_DESTINATION_LEN, MAX_HOSTNAME_LEN, MAX_HTTP_BODY_BYTES,
+    ADDRESS_BOOK_FIELDS, AddressBookField, AuthErrorCode, BASE_ROUTER_INFO_FIELDS, BOOK_TYPES,
+    BookType, CLIENT_SERVICES, ClientService, ContractError, ContractInventory, JsonRpcErrorCode,
+    JsonRpcRequest, MAX_BATCH_ELEMENTS, MAX_DESTINATION_LEN, MAX_HOSTNAME_LEN, MAX_HTTP_BODY_BYTES,
     MAX_ID_STRING_LEN, MAX_INFLIGHT_REQUESTS, MAX_LIST_ITEMS, MAX_LIVE_TOKENS, MAX_MAP_ENTRIES,
     MAX_MAP_KEY_LEN, MAX_METHOD_NAME_LEN, MAX_OPTION_NAME_LEN, MAX_OPTION_VALUE_LEN,
     MAX_OPTIONS_PER_TUNNEL, MAX_PARAMS_KEYS, MAX_PASSWORD_LEN, MAX_PRESENTED_TOKEN_LEN,
     MAX_SELECTOR_LEN, MAX_STRING_LEN, MAX_SUBSCRIPTION_URL_LEN, MAX_SUBSCRIPTION_URLS,
-    MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN, METHODS, Method, ROUTER_INFO_SELECTORS, RequestId,
+    MAX_TUNNEL_DEFS, MAX_TUNNEL_NAME_LEN, METHODS, Method, PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS,
+    PROPOSAL_ROUTER_INFO_FIELDS, PROPOSAL_TUNNEL_MANAGER_FIELDS, ROUTER_INFO_SELECTORS, RequestId,
     ReturnType, RouterInfoSelector, SECRET_OPTIONS, SET_CONFIG_KEYS, TOKEN_BYTES,
     TOKEN_LIFETIME_SECS, TUNNEL_ACTIONS, TUNNEL_OPTIONS, TUNNEL_TYPES, TunnelAction, TunnelStatus,
-    TunnelType, auth, conformance, jsonrpc, limits, tunnel, tunnel_options,
+    TunnelType, auth, conformance, jsonrpc, limits, proposal_wire, tunnel, tunnel_options,
 };
 
 #[test]
 fn frozen_counts_match_plan_286() {
     assert_eq!(METHODS.len(), 5);
     assert_eq!(ROUTER_INFO_SELECTORS.len(), 30);
+    assert_eq!(PROPOSAL_ROUTER_INFO_FIELDS.len(), 43);
+    assert_eq!(BASE_ROUTER_INFO_FIELDS.len(), 14);
     assert_eq!(CLIENT_SERVICES.len(), 6);
     assert_eq!(BOOK_TYPES.len(), 4);
     assert_eq!(ADDRESS_BOOK_FIELDS.len(), 6);
@@ -35,6 +38,68 @@ fn frozen_counts_match_plan_286() {
     let first = inventory.to_canonical_json();
     let second = ContractInventory::current().to_canonical_json();
     assert_eq!(first, second);
+}
+
+#[test]
+fn proposal_170_wire_inventory_is_exact_and_unique() {
+    assert_eq!(PROPOSAL_ROUTER_INFO_FIELDS.len(), 43);
+    let mut keys = std::collections::BTreeSet::new();
+    for field in PROPOSAL_ROUTER_INFO_FIELDS {
+        assert!(
+            keys.insert(field.key),
+            "duplicate canonical key: {}",
+            field.key
+        );
+        assert!(proposal_wire::router_info_field(field.key).is_some());
+    }
+    for field in BASE_ROUTER_INFO_FIELDS {
+        assert!(
+            keys.insert(field.key),
+            "base selector overlaps proposal key: {}",
+            field.key
+        );
+        assert!(proposal_wire::router_info_field(field.key).is_some());
+    }
+    assert_eq!(
+        proposal_wire::router_info_field("i2p.router.version")
+            .unwrap()
+            .value_type,
+        proposal_wire::ProposalValueType::String
+    );
+    assert_eq!(
+        proposal_wire::router_info_field("i2p.router.netdb.isreseeding")
+            .unwrap()
+            .value_type,
+        proposal_wire::ProposalValueType::Boolean
+    );
+    assert_eq!(PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS.len(), 13);
+    assert_eq!(
+        PROPOSAL_ADDRESS_BOOK_CONFIG_KEYS,
+        [
+            "subscriptions",
+            "update_delay",
+            "published_addressbook",
+            "router_addressbook",
+            "local_addressbook",
+            "private_addressbook",
+            "proxy_port",
+            "proxy_host",
+            "should_publish",
+            "etags",
+            "last_modified",
+            "log",
+            "theme",
+        ]
+    );
+    assert!(proposal_wire::router_info_field("router.version").is_none());
+    assert!(proposal_wire::router_info_field("I2P.router.news").is_none());
+    let tunnel_fields: std::collections::BTreeSet<_> =
+        PROPOSAL_TUNNEL_MANAGER_FIELDS.iter().copied().collect();
+    assert_eq!(tunnel_fields.len(), PROPOSAL_TUNNEL_MANAGER_FIELDS.len());
+    assert!(tunnel_fields.contains(&"Action"));
+    assert!(tunnel_fields.contains(&"All"));
+    assert!(tunnel_fields.contains(&"OptionalLookup"));
+    assert!(!tunnel_fields.contains(&"options"));
 }
 
 #[test]
@@ -249,7 +314,7 @@ fn address_book_books_fields_and_config_keys() {
         Err(ContractError::CaseMismatch)
     );
     assert_eq!(
-        i2pr_i2pcontrol::address_book::parse_set_config_key("PRIVATE_BOOK"),
+        i2pr_i2pcontrol::address_book::parse_set_config_key("PRIVATE_ADDRESSBOOK"),
         Err(ContractError::CaseMismatch)
     );
     assert_eq!(
@@ -258,7 +323,7 @@ fn address_book_books_fields_and_config_keys() {
     );
     // Path-like and inert classifications are disjoint and total on their rows.
     assert!(i2pr_i2pcontrol::address_book::is_path_like_config_key(
-        "private_book"
+        "private_addressbook"
     ));
     assert!(i2pr_i2pcontrol::address_book::is_inert_config_key("theme"));
     assert!(!i2pr_i2pcontrol::address_book::is_path_like_config_key(
@@ -679,7 +744,7 @@ fn plan289_tunnel_request_envelope_rules() {
 
     // get without name selects the whole inventory.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "Token": "t", "action": "get",
+        "Token": "t", "Action": "get",
     })))
     .expect("inventory get decodes");
     assert_eq!(request.action, TunnelAction::Get);
@@ -687,27 +752,27 @@ fn plan289_tunnel_request_envelope_rules() {
 
     // get with name selects one tunnel; type/options/new_name forbidden.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "Token": "t", "action": "get", "name": "alpha",
+        "Token": "t", "Action": "get", "Name": "alpha",
     })))
     .expect("named get decodes");
     assert_eq!(request.name.as_deref(), Some("alpha"));
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "name": "alpha", "type": "client",
+            "Action": "get", "Name": "alpha", "Type": "client",
         })))
         .is_err()
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "options": {},
+            "Action": "get", "Port": 8180,
         })))
         .is_err()
     );
 
     // create requires name + type; options validated against the universe.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "action": "create", "name": "alpha", "type": "httpclient",
-        "options": {"listen_port": 8180, "start_on_load": true},
+        "Action": "create", "Name": "alpha", "Type": "httpclient",
+        "Port": 8180, "StartOnLoad": true,
     })))
     .expect("create decodes");
     assert_eq!(request.action, TunnelAction::Create);
@@ -722,14 +787,14 @@ fn plan289_tunnel_request_envelope_rules() {
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "alpha",
+            "Action": "create", "Name": "alpha",
         })))
         .is_err(),
         "create without type fails"
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "type": "client",
+            "Action": "create", "Type": "client",
         })))
         .is_err(),
         "create without name fails"
@@ -738,25 +803,23 @@ fn plan289_tunnel_request_envelope_rules() {
     // Unknown option keys fail at the envelope; values are typed.
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"no_such_option": "x"},
+            "Action": "create", "Name": "a", "Type": "client",
+            "NoSuchOption": "x",
         }))),
-        Err(TunnelRequestError::BadOption(
-            i2pr_i2pcontrol::ContractError::UnknownLiteral
-        ))
+        Err(TunnelRequestError::UnknownKey("NoSuchOption".to_owned()))
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"listen_port": null},
+            "Action": "create", "Name": "a", "Type": "client",
+            "Port": null,
         })))
         .is_err(),
         "null option value fails"
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client",
-            "options": {"listen_port": [1]},
+            "Action": "create", "Name": "a", "Type": "client",
+            "Port": [1],
         })))
         .is_err(),
         "array option value fails"
@@ -764,39 +827,39 @@ fn plan289_tunnel_request_envelope_rules() {
 
     // edit: type immutable, rename via new_name, something must change.
     let request = decode_tunnel_request(&params(serde_json::json!({
-        "action": "edit", "name": "a", "new_name": "b",
+        "Action": "edit", "Name": "a", "NewName": "b",
     })))
     .expect("rename edit decodes");
     assert_eq!(request.new_name.as_deref(), Some("b"));
     assert_eq!(
-        decode_tunnel_request(&params(serde_json::json!({"action": "edit", "name": "a"}))),
+        decode_tunnel_request(&params(serde_json::json!({"Action": "edit", "Name": "a"}))),
         Err(TunnelRequestError::NothingToChange)
     );
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "edit", "name": "a", "type": "server",
-            "options": {"target": "127.0.0.1:9"},
+            "Action": "edit", "Name": "a", "Type": "server",
+            "TargetHost": "127.0.0.1",
         })))
         .is_err(),
         "edit cannot change type"
     );
 
     // action spelling is exact and case-sensitive.
-    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "Get"}))).is_err());
-    assert!(decode_tunnel_request(&params(serde_json::json!({"action": "launch"}))).is_err());
-    assert!(decode_tunnel_request(&params(serde_json::json!({"name": "a"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Action": "Get"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Action": "launch"}))).is_err());
+    assert!(decode_tunnel_request(&params(serde_json::json!({"Name": "a"}))).is_err());
 
     // Lifecycle actions require exactly a name.
     for action in ["delete", "start", "stop", "restart"] {
         let request = decode_tunnel_request(&params(serde_json::json!({
-            "action": action, "name": "a",
+            "Action": action, "Name": "a",
         })))
         .expect("lifecycle decodes");
         assert_eq!(request.name.as_deref(), Some("a"));
-        assert!(decode_tunnel_request(&params(serde_json::json!({"action": action}))).is_err());
+        assert!(decode_tunnel_request(&params(serde_json::json!({"Action": action}))).is_err());
         assert!(
             decode_tunnel_request(&params(serde_json::json!({
-                "action": action, "name": "a", "options": {},
+                "Action": action, "Name": "a", "Port": 1,
             })))
             .is_err(),
             "{action} forbids options"
@@ -806,7 +869,7 @@ fn plan289_tunnel_request_envelope_rules() {
     // Closed envelope: unknown top-level keys fail.
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "get", "verbose": true,
+            "Action": "get", "verbose": true,
         })))
         .is_err(),
         "unknown keys fail"
@@ -815,19 +878,37 @@ fn plan289_tunnel_request_envelope_rules() {
     // Names are validated; over-ceiling option maps fail.
     assert!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "delete", "name": "a/b",
+            "Action": "delete", "Name": "a/b",
         })))
         .is_err(),
         "path separators fail"
     );
-    let mut oversized = serde_json::Map::new();
-    for n in 0..65 {
-        oversized.insert(format!("k{n}"), serde_json::json!("v"));
-    }
+    // The prior lowercase/nested-options extension is deliberately not
+    // accepted in the canonical namespace.
+    assert!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "action": "create", "name": "a", "type": "client",
+        })))
+        .is_err()
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
-            "action": "create", "name": "a", "type": "client", "options": oversized,
+            "Action": "create", "Name": "a", "Type": "client",
+            "options": {"Port": 1},
         }))),
-        Err(TunnelRequestError::TooManyOptions)
+        Err(TunnelRequestError::UnknownKey("options".to_owned()))
     );
+    assert_eq!(
+        decode_tunnel_request(&params(serde_json::json!({
+            "Action": "create", "Name": "a", "Type": "client",
+            "Host": "127.0.0.1", "TargetHost": "127.0.0.1",
+        }))),
+        Err(TunnelRequestError::DuplicateAlias("target_host".to_owned()))
+    );
+    let all = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "stop", "All": true,
+    })))
+    .expect("All is a canonical stop parameter");
+    assert!(all.all);
+    assert_eq!(all.name, None);
 }

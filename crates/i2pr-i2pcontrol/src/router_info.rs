@@ -1,9 +1,10 @@
-//! Exact Proposal 170 RouterInfo selector inventory with return types.
+//! Historical typed RouterInfo owner selectors and internal return types.
 //!
-//! Thirty frozen selectors covering router identity/publication, transport
-//! state, NetDB, tunnel state, address-book views (Plan 294-owned sources),
-//! logs/news, and network health. Unavailable sources fail whole-request in
-//! later plans; they never fabricate zero/empty (Plan 288 rule).
+//! These normalized names route internally to established owners. They are
+//! not public wire spellings and are not accepted by the canonical endpoint;
+//! see [`crate::proposal_wire`] for the external base API and Proposal 170
+//! inventories. Unavailable sources fail whole-request rather than fabricate
+//! zero/empty (Plan 288 rule).
 
 use crate::errors::ContractError;
 

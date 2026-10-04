@@ -29,8 +29,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use i2pr_i2pcontrol::{
-    ClientService, ROUTER_INFO_SOURCE_MATRIX, RouterInfoSelector, SourceAvailability, service_row,
-    source_row,
+    ClientService, PROPOSAL_ROUTER_INFO_FIELDS, ProposalRouterInfoField, ROUTER_INFO_SOURCE_MATRIX,
+    RouterInfoSelector, SourceAvailability, service_row, source_row,
 };
 use i2pr_runtime::Ssu2RuntimeService;
 
@@ -645,35 +645,41 @@ pub enum SelectError {
     /// An unknown key (including every `i2p.*` base-compatibility key,
     /// which is structurally disjoint from the Proposal vocabulary).
     UnknownKey(String),
-    /// A selector key carrying a non-null value. The canonical select
-    /// form is `"key": null`; values carry no defined meaning.
-    NonNullValue(String),
 }
 
-/// Validates the RouterInfo select form: `Token` plus selector keys with
-/// null values. Returns the selection in canonical matrix order; the
-/// JSON response object itself sorts keys lexicographically
-/// (`serde_json::Map`), so both orders are deterministic regardless of
-/// request order.
+/// Validates the canonical RouterInfo select form. Selector
+/// values carry no meaning; presence selects the field, including empty,
+/// null, and benign non-null values. Proposal additions retain proposal
+/// order; base API fields follow them in their own frozen order.
 pub fn select_router_info(
     params: &serde_json::Map<String, serde_json::Value>,
-) -> Result<Vec<RouterInfoSelector>, SelectError> {
-    use i2pr_i2pcontrol::RouterInfoSelector;
+) -> Result<Vec<&'static ProposalRouterInfoField>, SelectError> {
     let mut selected = Vec::new();
-    for (key, value) in params {
+    for key in params.keys() {
         if key == "Token" {
             continue;
         }
-        let selector = RouterInfoSelector::parse(key)
-            .map_err(|_| SelectError::UnknownKey(truncated_key(key)))?;
-        if !value.is_null() {
-            return Err(SelectError::NonNullValue(key.clone()));
-        }
-        if !selected.contains(&selector) {
-            selected.push(selector);
+        let field = i2pr_i2pcontrol::router_info_field(key)
+            .ok_or_else(|| SelectError::UnknownKey(truncated_key(key)))?;
+        if !selected
+            .iter()
+            .any(|prior: &&ProposalRouterInfoField| prior.key == field.key)
+        {
+            selected.push(field);
         }
     }
-    selected.sort_by_key(|selector| i2pr_i2pcontrol::selector_index(*selector));
+    selected.sort_by_key(|field| {
+        PROPOSAL_ROUTER_INFO_FIELDS
+            .iter()
+            .position(|candidate| candidate.key == field.key)
+            .or_else(|| {
+                i2pr_i2pcontrol::BASE_ROUTER_INFO_FIELDS
+                    .iter()
+                    .position(|candidate| candidate.key == field.key)
+                    .map(|position| PROPOSAL_ROUTER_INFO_FIELDS.len() + position)
+            })
+            .unwrap_or(usize::MAX)
+    });
     Ok(selected)
 }
 
@@ -682,15 +688,12 @@ pub fn select_client_services(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Vec<ClientService>, SelectError> {
     let mut selected = Vec::new();
-    for (key, value) in params {
+    for key in params.keys() {
         if key == "Token" {
             continue;
         }
         let service =
             ClientService::parse(key).map_err(|_| SelectError::UnknownKey(truncated_key(key)))?;
-        if !value.is_null() {
-            return Err(SelectError::NonNullValue(key.clone()));
-        }
         if !selected.contains(&service) {
             selected.push(service);
         }
@@ -1256,7 +1259,6 @@ mod tests {
 
     #[test]
     fn plan288_router_hash_gated_until_identity_published() {
-        use i2pr_i2pcontrol::RouterInfoSelector;
         let handles = test_handles();
         let gap = router_info_result(RouterInfoSelector::RouterHash, &handles, 0)
             .expect_err("hash gated before publication");
@@ -1523,56 +1525,50 @@ mod tests {
 
     #[test]
     fn plan288_select_form_validation() {
-        use i2pr_i2pcontrol::RouterInfoSelector;
         // Empty selection (token only) is valid and empty.
         let params: serde_json::Map<String, serde_json::Value> =
             [("Token".to_owned(), serde_json::json!("t"))]
                 .into_iter()
                 .collect();
-        assert_eq!(
-            select_router_info(&params).expect("empty valid"),
-            Vec::new()
-        );
-        // Canonical order regardless of request order; duplicates collapse.
+        assert!(select_router_info(&params).expect("empty valid").is_empty());
+        // Proposal order regardless of request order. Any selector value
+        // selects the field; value semantics are intentionally absent.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
-            ("router.uptime".to_owned(), serde_json::Value::Null),
-            ("router.version".to_owned(), serde_json::Value::Null),
-            ("router.version".to_owned(), serde_json::Value::Null),
+            ("i2p.router.id".to_owned(), serde_json::json!("")),
+            ("i2p.router.news".to_owned(), serde_json::Value::Null),
         ]
         .into_iter()
         .collect();
         assert_eq!(
-            select_router_info(&params).expect("ordered"),
-            vec![
-                RouterInfoSelector::RouterVersion,
-                RouterInfoSelector::RouterUptime
-            ]
+            select_router_info(&params)
+                .expect("ordered")
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            vec!["i2p.router.news", "i2p.router.id"]
         );
-        // Non-null values carry no defined meaning and are rejected.
+        // Benign non-null selector values have no defined meaning and are
+        // ignored, as specified by presence-based selection.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
-            ("router.version".to_owned(), serde_json::json!(true)),
+            ("i2p.router.news".to_owned(), serde_json::json!(true)),
         ]
         .into_iter()
         .collect();
-        assert_eq!(
-            select_router_info(&params),
-            Err(SelectError::NonNullValue("router.version".to_owned()))
-        );
-        // Unknown keys fail, including every base-compatibility key: the
-        // `i2p.*` vocabulary is structurally disjoint from Proposal keys.
+        assert_eq!(select_router_info(&params).expect("value ignored").len(), 1);
+        // Old normalized names are not aliases in the canonical namespace.
         for key in [
             "bogus",
-            "i2p.router.uptime",
-            "i2p.router.version",
-            "i2p.router.netdb.knownpeers",
+            "router.uptime",
+            "router.version",
+            "router.status",
             "Router.Version",
             "ROUTER.VERSION",
         ] {
             let params: serde_json::Map<String, serde_json::Value> = [
                 ("Token".to_owned(), serde_json::json!("t")),
-                (key.to_owned(), serde_json::Value::Null),
+                (key.to_owned(), serde_json::json!("")),
             ]
             .into_iter()
             .collect();
@@ -1582,6 +1578,20 @@ mod tests {
                 "key {key} must not select"
             );
         }
+        let base: serde_json::Map<String, serde_json::Value> = [
+            ("i2p.router.version".to_owned(), serde_json::Value::Null),
+            ("i2p.router.uptime".to_owned(), serde_json::json!("ignored")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            select_router_info(&base)
+                .expect("base API fields remain selected")
+                .iter()
+                .map(|field| field.key)
+                .collect::<Vec<_>>(),
+            vec!["i2p.router.version", "i2p.router.uptime"]
+        );
         // ClientServicesInfo shares the select rules.
         let params: serde_json::Map<String, serde_json::Value> = [
             ("Token".to_owned(), serde_json::json!("t")),
@@ -1593,6 +1603,14 @@ mod tests {
         assert_eq!(
             select_client_services(&params).expect("services select"),
             vec![ClientService::Sam, ClientService::Bob]
+        );
+        let values: serde_json::Map<String, serde_json::Value> =
+            [("I2CP".to_owned(), serde_json::json!(false))]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            select_client_services(&values),
+            Ok(vec![ClientService::I2cp])
         );
     }
 

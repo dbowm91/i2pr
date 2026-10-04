@@ -1,23 +1,23 @@
 //! Plan 289 TunnelManager request envelope: exact wire shape for the
 //! seven lifecycle actions.
 //!
-//! Wire form (named params beside `Token`):
-//! - `action`: required, exact [`TunnelAction`] spelling;
-//! - `name`: required for every action except `get` (absent `name` on
-//!   `get` selects all summaries); validated by
+//! Wire form (named params beside `Token`) uses the canonical Proposal
+//! names `Action`, `Name`, `Type`, `NewName`, and option fields at the
+//! top level. The previous lowercase envelope and nested `options` map
+//! are not accepted on the default endpoint.
+//! - `Action`: required, exact [`TunnelAction`] spelling;
+//! - `Name`: required for named operations; absent on `get` selects all;
+//!   validated by
 //!   [`crate::tunnel::validate_tunnel_name`];
-//! - `type`: required for `create`, forbidden otherwise (tunnel types
+//! - `Type`: required for `create`, forbidden otherwise (tunnel types
 //!   are immutable after creation; rename travels as `new_name` on
 //!   `edit`, preserving the pinned seven-action vocabulary instead of
 //!   inventing a rename action);
-//! - `new_name`: allowed only on `edit` (validated like `name`);
-//! - `options`: allowed only on `create`/`edit`; a bounded map whose
-//!   keys must belong to the frozen 46-option universe ([`find_option`]
-//!   rejects unknown keys, [`ContractError::CaseMismatch`] preserved) and
-//!   whose values are strings, integers, or booleans normalized to
-//!   strings (null/array/object rejected).
+//! - `NewName`: allowed only on `edit` (validated like `Name`);
+//! - option fields are top-level and mapped through an explicit canonical
+//!   alias table into existing typed domain option names.
 //!
-//! `edit` requires `new_name` or at least one option; otherwise there is
+//! `edit` requires `NewName` or at least one option; otherwise there is
 //! nothing to change. Unknown top-level keys are rejected: the envelope
 //! is closed.
 
@@ -33,6 +33,8 @@ use crate::tunnel_options::find_option;
 pub struct TunnelManagerRequest {
     /// Lifecycle action.
     pub action: TunnelAction,
+    /// Apply start/stop/restart to the complete control-owned set.
+    pub all: bool,
     /// Tunnel name (absent only for whole-inventory `get`).
     pub name: Option<String>,
     /// Tunnel type (`create` only).
@@ -67,7 +69,11 @@ pub enum TunnelRequestError {
     TooManyOptions,
     /// An unknown top-level key.
     UnknownKey(String),
-    /// `edit` carried neither `new_name` nor options.
+    /// Two aliases named the same domain option.
+    DuplicateAlias(String),
+    /// `All` selected a capability not implemented by the current owner.
+    AllUnavailable,
+    /// `edit` carried neither `NewName` nor options.
     NothingToChange,
 }
 
@@ -87,18 +93,63 @@ impl core::fmt::Display for TunnelRequestError {
             Self::TooManyOptions => write!(formatter, "options map over ceiling"),
             Self::UnknownKey(key) => write!(formatter, "unknown TunnelManager field {key}"),
             Self::NothingToChange => write!(formatter, "edit requires new_name or options"),
+            Self::DuplicateAlias(_) => write!(formatter, "duplicate TunnelManager aliases"),
+            Self::AllUnavailable => write!(formatter, "All action is not available"),
         }
     }
 }
 
-/// Returns the string form of a JSON scalar option value.
-fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
-    match value {
-        serde_json::Value::String(text) => Ok(text.clone()),
-        serde_json::Value::Number(number) => Ok(number.to_string()),
-        serde_json::Value::Bool(flag) => Ok(flag.to_string()),
-        _ => Err(TunnelRequestError::BadValue(key.to_owned())),
+fn canonical_option(key: &str) -> Option<&'static str> {
+    match key {
+        "TargetHost" | "Host" => Some("target_host"),
+        "TargetPort" => Some("target_port"),
+        "Port" => Some("listen_port"),
+        "ReachableBy" => Some("listen_host"),
+        "TargetDestination" | "Destination" => Some("target_destination"),
+        "UseSSL" => Some("use_ssl"),
+        _ => crate::tunnel_options::TUNNEL_OPTIONS
+            .iter()
+            .find(|option| pascal_option_name(option.name) == key)
+            .map(|option| option.name),
     }
+}
+
+fn pascal_option_name(key: &str) -> String {
+    let mut output = String::with_capacity(key.len());
+    let mut uppercase = true;
+    for character in key.chars() {
+        if character == '_' {
+            uppercase = true;
+        } else if uppercase {
+            output.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn scalar_string(key: &str, value: &serde_json::Value) -> Result<String, TunnelRequestError> {
+    let option = find_option(key).map_err(TunnelRequestError::BadOption)?;
+    let text = match (option.value_type, value) {
+        (crate::tunnel_options::OptionValueType::String, serde_json::Value::String(text)) => {
+            text.clone()
+        }
+        (crate::tunnel_options::OptionValueType::Integer, serde_json::Value::Number(number))
+            if number.is_i64() || number.is_u64() =>
+        {
+            number.to_string()
+        }
+        (crate::tunnel_options::OptionValueType::Boolean, serde_json::Value::Bool(flag)) => {
+            flag.to_string()
+        }
+        _ => return Err(TunnelRequestError::BadValue(key.to_owned())),
+    };
+    if text.len() > MAX_OPTION_VALUE_LEN {
+        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+    }
+    Ok(text)
 }
 
 /// Decodes and validates one TunnelManager param map (without `Token`,
@@ -112,54 +163,53 @@ pub fn decode_tunnel_request(
     let mut new_name: Option<String> = None;
     let mut options: BTreeMap<String, String> = BTreeMap::new();
     let mut options_seen = false;
+    let mut all = false;
 
     for (key, value) in params {
         match key.as_str() {
             "Token" => continue,
-            "action" => {
+            "Action" => {
                 let text = value
                     .as_str()
                     .ok_or(TunnelRequestError::BadAction(ContractError::Malformed))?;
                 action = Some(TunnelAction::parse(text).map_err(TunnelRequestError::BadAction)?);
             }
-            "name" => {
+            "Name" => {
                 let text = value.as_str().ok_or(TunnelRequestError::BadName)?;
                 validate_tunnel_name(text).map_err(|_| TunnelRequestError::BadName)?;
                 name = Some(text.to_owned());
             }
-            "type" => {
+            "Type" => {
                 let text = value
                     .as_str()
                     .ok_or(TunnelRequestError::BadType(ContractError::Malformed))?;
                 tunnel_type = Some(TunnelType::parse(text).map_err(TunnelRequestError::BadType)?);
             }
-            "new_name" => {
+            "NewName" => {
                 let text = value.as_str().ok_or(TunnelRequestError::BadName)?;
                 validate_tunnel_name(text).map_err(|_| TunnelRequestError::BadName)?;
                 new_name = Some(text.to_owned());
             }
-            "options" => {
-                let map = value
-                    .as_object()
-                    .ok_or(TunnelRequestError::BadOption(ContractError::Malformed))?;
-                if map.len() > MAX_OPTIONS_PER_TUNNEL {
-                    return Err(TunnelRequestError::TooManyOptions);
+            "All" => {
+                all = value
+                    .as_bool()
+                    .ok_or(TunnelRequestError::BadValue("All".to_owned()))?;
+            }
+            key => {
+                if key.len() > MAX_OPTION_NAME_LEN {
+                    return Err(TunnelRequestError::BadOption(ContractError::OverBound));
                 }
-                for (option_key, option_value) in map {
-                    if option_key.len() > MAX_OPTION_NAME_LEN {
-                        return Err(TunnelRequestError::BadOption(ContractError::OverBound));
-                    }
-                    find_option(option_key).map_err(TunnelRequestError::BadOption)?;
-                    let text = scalar_string(option_key, option_value)?;
-                    if text.len() > MAX_OPTION_VALUE_LEN {
-                        return Err(TunnelRequestError::ValueOverBound(option_key.clone()));
-                    }
-                    options.insert(option_key.clone(), text);
+                let option_key = canonical_option(key)
+                    .ok_or_else(|| TunnelRequestError::UnknownKey(truncated_key(key)))?;
+                find_option(option_key).map_err(TunnelRequestError::BadOption)?;
+                let text = scalar_string(option_key, value)?;
+                if options.insert(option_key.to_owned(), text).is_some() {
+                    return Err(TunnelRequestError::DuplicateAlias(option_key.to_owned()));
                 }
                 options_seen = true;
-            }
-            _ => {
-                return Err(TunnelRequestError::UnknownKey(truncated_key(key)));
+                if options.len() > MAX_OPTIONS_PER_TUNNEL {
+                    return Err(TunnelRequestError::TooManyOptions);
+                }
             }
         }
     }
@@ -167,6 +217,9 @@ pub fn decode_tunnel_request(
     let action = action.ok_or(TunnelRequestError::MissingField("action"))?;
     match action {
         TunnelAction::Get => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
             if tunnel_type.is_some() {
                 return Err(TunnelRequestError::UnexpectedField("type"));
             }
@@ -178,6 +231,9 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Create => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
             let _ = name
                 .as_ref()
                 .ok_or(TunnelRequestError::MissingField("name"))?;
@@ -189,6 +245,9 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Edit => {
+            if all {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
             if name.is_none() {
                 return Err(TunnelRequestError::MissingField("name"));
             }
@@ -200,7 +259,15 @@ pub fn decode_tunnel_request(
             }
         }
         TunnelAction::Delete | TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart => {
-            if name.is_none() {
+            if all
+                && !matches!(
+                    action,
+                    TunnelAction::Start | TunnelAction::Stop | TunnelAction::Restart
+                )
+            {
+                return Err(TunnelRequestError::BadValue("All".to_owned()));
+            }
+            if !all && name.is_none() {
                 return Err(TunnelRequestError::MissingField("name"));
             }
             if tunnel_type.is_some() {
@@ -216,6 +283,7 @@ pub fn decode_tunnel_request(
     }
     Ok(TunnelManagerRequest {
         action,
+        all,
         name,
         tunnel_type,
         new_name,
