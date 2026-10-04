@@ -493,6 +493,66 @@ async fn router_info_unavailable_fails_whole_without_partial() {
 }
 
 #[tokio::test]
+async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let (_state, address, _scope, _parent) = start_service_with_inspection(
+        config,
+        Arc::new(InspectionHandles::new(
+            2,
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            ServiceEndpoint {
+                enabled: false,
+                bind: None,
+            },
+            Vec::new(),
+        )),
+    )
+    .await;
+    let token = authenticate(address).await;
+    let gaps = [
+        "i2p.router.net.total.transit.bytes",
+        "i2p.router.net.bw.transit.15s",
+        "i2p.router.net.tunnels.shareratio",
+        "i2p.router.net.status.v6",
+        "i2p.router.net.error",
+        "i2p.router.net.error.v6",
+        "i2p.router.net.testing",
+        "i2p.router.net.testing.v6",
+    ];
+    for (id, key) in gaps.into_iter().enumerate() {
+        let (_, response) = post_json(
+            address,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "RouterInfo",
+                "params": {"Token": token, key: null},
+                "id": id,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert!(
+            response.get("result").is_none(),
+            "no partial result for {key}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains(key), "field named in {message}");
+        assert!(
+            message.contains("Plan 322"),
+            "owner plan named in {message}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn authenticated_router_info_logs_clear_clears_ring_and_returns_success() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")

@@ -866,9 +866,10 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
         assert!(row.max_bytes > 0, "{} byte ceiling", row.key);
         match row.availability {
             SourceAvailability::Unavailable { reason, .. } => {
-                assert!(
-                    row.evidence_test.is_none(),
-                    "{} has no source test",
+                assert_eq!(
+                    row.evidence_test,
+                    Some("proposal_unavailable_sources_fail_closed_over_wire"),
+                    "{} has a field-specific fail-closed wire test",
                     row.key
                 );
                 assert!(!reason.is_empty(), "{} unavailable reason", row.key);

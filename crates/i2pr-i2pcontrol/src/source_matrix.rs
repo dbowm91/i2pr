@@ -104,8 +104,8 @@ pub struct SourceRow {
 
 /// Source and availability status for one canonical Proposal 170
 /// RouterInfo addition. `evidence_test` is absent until a source-specific
-/// test proves the row; missing evidence is represented rather than
-/// replaced with a test that only checks the inventory.
+/// positive or fail-closed test proves the row; missing evidence is
+/// represented rather than replaced with an inventory-only check.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProposalSourceRow {
     /// Exact canonical Proposal key.
@@ -132,8 +132,8 @@ pub struct ProposalSourceRow {
 
 /// Current source authority for all 43 canonical RouterInfo additions.
 /// This is generated in Proposal order so inventory and source coverage
-/// cannot silently drift apart. Rows without a source remain explicitly
-/// unavailable and carry no fabricated evidence identifier.
+/// cannot silently drift apart. Unavailable rows carry evidence for their
+/// typed fail-closed response, not for a fabricated value source.
 pub fn proposal_router_info_source_matrix() -> Vec<ProposalSourceRow> {
     PROPOSAL_ROUTER_INFO_FIELDS
         .iter()
@@ -401,7 +401,7 @@ fn proposal_source_row(key: &'static str, value_type: ProposalValueType) -> Prop
                 owner_plan: "322",
                 reason: "no authoritative source is wired; zero/empty would be fabricated",
             },
-            None,
+            Some("proposal_unavailable_sources_fail_closed_over_wire"),
         ),
     };
     ProposalSourceRow {

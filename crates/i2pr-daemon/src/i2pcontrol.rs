@@ -1480,12 +1480,11 @@ impl I2pControlServiceState {
                 }
             }
             let Some(selector) = field.adapter else {
+                let message = crate::i2pcontrol_inspection::proposal_unavailable_gap(field.key)
+                    .map(|gap| gap.message())
+                    .unwrap_or_else(|| "RouterInfo selector source is unavailable".to_owned());
                 return (
-                    error_envelope(
-                        id,
-                        JsonRpcErrorCode::InternalError.code(),
-                        "RouterInfo selector source is unavailable",
-                    ),
+                    error_envelope(id, JsonRpcErrorCode::InternalError.code(), &message),
                     Duration::ZERO,
                 );
             };

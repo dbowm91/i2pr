@@ -1285,6 +1285,23 @@ fn unavailable_gap(row: i2pr_i2pcontrol::SourceRow) -> InspectionGap {
     }
 }
 
+/// Builds the canonical Proposal gap when its source matrix says there is
+/// no owner. This keeps unavailable wire failures field-specific and tied
+/// to the plan that must supply the missing source.
+pub(crate) fn proposal_unavailable_gap(key: &'static str) -> Option<InspectionGap> {
+    let row = i2pr_i2pcontrol::proposal_router_info_source_matrix()
+        .into_iter()
+        .find(|row| row.key == key)?;
+    let SourceAvailability::Unavailable { owner_plan, .. } = row.availability else {
+        return None;
+    };
+    Some(InspectionGap {
+        key,
+        owner_plan,
+        owner: row.owner,
+    })
+}
+
 /// Builds the gap for a Plan 295 owner-backed row whose owner has not
 /// published yet. Composition installs every owner, so production
 /// never takes this path; handles built without composition keep the
