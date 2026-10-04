@@ -4555,7 +4555,7 @@ mod connect_delay_buffer_tests {
     use tokio::io::{AsyncWriteExt, duplex};
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn connect_delay_collects_until_deadline_and_bounds_payload() {
+    async fn connect_delay_uses_first_read_as_flush_and_bounds_payload() {
         let (mut writer, mut reader) = duplex(usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 32);
         let input = vec![0xA5; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 7];
         writer.write_all(&input).await.expect("write initial bytes");
@@ -4582,7 +4582,7 @@ mod connect_delay_buffer_tests {
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn connect_delay_accumulates_separate_reads_before_deadline() {
+    async fn connect_delay_triggers_on_first_available_application_bytes() {
         let (mut writer, mut reader) = duplex(64);
         writer.write_all(b"first").await.expect("write first bytes");
         let reader_task = tokio::spawn(async move {
@@ -4590,12 +4590,7 @@ mod connect_delay_buffer_tests {
                 .await
                 .expect("collect payload")
         });
-        tokio::task::yield_now().await;
-        writer
-            .write_all(b" second")
-            .await
-            .expect("write second bytes");
-        assert_eq!(reader_task.await.expect("reader task"), b"first second");
+        assert_eq!(reader_task.await.expect("reader task"), b"first");
     }
 }
 
@@ -4604,20 +4599,14 @@ async fn collect_connect_delay_payload<R: AsyncRead + Unpin>(
     delay_ms: u64,
 ) -> Result<Vec<u8>, std::io::Error> {
     let mut buffer = vec![0u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)];
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
-    let mut length = 0;
-    while length < buffer.len() {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        match timeout(remaining, reader.read(&mut buffer[length..])).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(count)) => length += count,
-            Ok(Err(error)) => return Err(error),
-            Err(_) => break,
-        }
-    }
+    // A TCP peer does not expose its application-level flush calls.
+    // Treat the first readable batch as the flush trigger; if no bytes
+    // arrive, the configured delay still opens an empty Streaming SYN.
+    let length = match timeout(Duration::from_millis(delay_ms), reader.read(&mut buffer)).await {
+        Ok(Ok(length)) => length,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => 0,
+    };
     buffer.truncate(length);
     Ok(buffer)
 }
