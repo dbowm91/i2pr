@@ -1,6 +1,6 @@
 # Plan 311 — Service lifecycle startup separation and graceful drain
 
-Status at registration: **blocked-on-plan310**
+Status at registration: **blocked-on-plan310**. Current status: **passed-service-startup-separation-and-graceful-drain-lifecycle-acceptance**.
 
 Current dependency authority: **ready-after-plan315**. Plan 310 remains an immutable blocked record; Plans 314–315 are its registered corrective sequence, and Plan 315 passed.
 
