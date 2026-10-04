@@ -39,6 +39,7 @@ The complete workspace routine floor was not run; this plan changes the address-
 
 - Prior generations without per-source records remain readable; their derived subscription entries are retained until refreshed.
 - The proxy setting must be a literal loopback IP and nonzero port; subscription URLs must target `.i2p` hostnames. No proxy discovery, local DNS, direct clearnet fallback, redirect following, or content decompression is permitted.
+- Configured artifact names are unique, flat, and cannot alias the generation store's current or backup files.
 - Published output contains only the router book. Atomic replacement and restart repair keep the configured artifact aligned with the committed generation when publication is enabled.
 - Added `webpki-roots` as the Mozilla trust-anchor dataset used by existing rustls; no crypto primitive, unsafe code, or runtime boundary exception was introduced.
 - Findings: critical 0, high 0, medium 0, low 0.

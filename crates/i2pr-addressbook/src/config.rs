@@ -405,6 +405,14 @@ fn confined_path(value: &str) -> Result<String, AddressBookError> {
         // out of scope for the artifact namespace.
         return Err(AddressBookError::InvalidConfigValue);
     }
+    if matches!(
+        value,
+        "addressbook.current.json" | "addressbook.backup.json"
+    ) {
+        // These filenames belong exclusively to the opaque generation
+        // store; logical artifacts must never overwrite durable state.
+        return Err(AddressBookError::InvalidConfigValue);
+    }
     Ok(value.to_owned())
 }
 
@@ -523,6 +531,8 @@ mod tests {
             "a\\b",
             "nul\0byte",
             "tab\there",
+            "addressbook.current.json",
+            "addressbook.backup.json",
         ] {
             assert!(
                 config.checked_update(&map(&[("log_file", bad)])).is_err(),
