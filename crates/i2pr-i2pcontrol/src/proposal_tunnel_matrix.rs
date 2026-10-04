@@ -165,9 +165,10 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
             };
         }
         "EncryptLeaseSet"
+        | "OptionalLookup"
         | "LeaseSetPassword"
         | "LeaseSetBlindingSecret"
-        | "LeaseSetClientAuth" => {
+        | "LeaseSetClientAuths" => {
             return if applies(LEASESET_SERVERS) {
                 DeepPrerequisite {
                     plan: 326,
@@ -382,12 +383,18 @@ mod tests {
                 TUNNEL_TYPES.len()
             );
         }
-        assert!(cells.iter().any(|cell| {
-            cell.field == "DelayOpen"
-                && matches!(
-                    cell.disposition,
-                    ProposalTunnelCellDisposition::OwnerGap { .. }
-                )
-        }));
+        let gaps = cells
+            .iter()
+            .filter_map(|cell| match cell.disposition {
+                ProposalTunnelCellDisposition::OwnerGap { .. } => Some(cell.field),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            gaps,
+            ["DelayOpen", "MultiHoming", "PrivKeyFile", "SSLProxies"]
+                .into_iter()
+                .collect()
+        );
     }
 }
