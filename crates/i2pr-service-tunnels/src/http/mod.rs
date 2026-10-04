@@ -82,7 +82,8 @@ pub use response::{
 pub use rewrite::{rewrite_headers, validate_authority_host};
 pub use server::{
     FilteredServerRequest, HttpServerPolicy, PresentationClass, classify_presentation,
-    filter_server_request, filter_server_response,
+    filter_server_request, filter_server_request_with_spoofed_host, filter_server_response,
+    valid_spoofed_host,
 };
 pub use target::{
     RequestTarget, TargetKind, TargetParseError, parse_authority_form, parse_origin_form,

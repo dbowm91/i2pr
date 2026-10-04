@@ -149,7 +149,7 @@ pub const SUPPORTED_296_OPTIONS: [&str; 4] = [
 /// keys before any allocation).
 pub const SUPPORTED_297_OPTIONS: [&str; 1] = ["use_ssl"];
 /// Plan 323 bounded TunnelManager metadata with a real Get/rawConfig owner.
-pub const SUPPORTED_323_OPTIONS: [&str; 8] = [
+pub const SUPPORTED_323_OPTIONS: [&str; 9] = [
     "description",
     "proxy_auth",
     "allow_user_agent",
@@ -158,6 +158,7 @@ pub const SUPPORTED_323_OPTIONS: [&str; 8] = [
     "close_time",
     "reduce_time",
     "reduce_count",
+    "spoofed_host",
 ];
 /// Default per-service connection ceiling for control-created tunnels.
 pub const DEFAULT_CONTROL_MAX_CONNECTIONS: usize = 16;
@@ -1616,6 +1617,24 @@ pub fn build_control_spec(
                     });
                 }
                 http_policy.jump_list = parse_bool_option("jump_list", value)?;
+            }
+            "spoofed_host" => {
+                if !matches!(
+                    kind,
+                    ServiceTunnelKind::HttpServer | ServiceTunnelKind::HttpBidirServer
+                ) {
+                    return Err(ControlError::ContradictoryOptions {
+                        name: definition.name.clone(),
+                        reason: "spoofed_host applies to HTTP server kinds only",
+                    });
+                }
+                if !i2pr_service_tunnels::http::valid_spoofed_host(value) {
+                    return Err(ControlError::InvalidOption {
+                        option: key.clone(),
+                        reason: "must be a bounded ASCII DNS hostname",
+                    });
+                }
+                http_policy.spoofed_host = Some(value.clone());
             }
             other => {
                 // Secret-classified keys are rejected here even though
@@ -3938,6 +3957,19 @@ mod tests {
                 i2pr_service_tunnels::HttpServerPolicy::default()
             );
             let mut options = server_options("127.0.0.1:9090");
+            options.insert("spoofed_host".to_owned(), "site.example.i2p".to_owned());
+            let definition = ControlDefinition {
+                name: "spoofed".to_owned(),
+                tunnel_type,
+                options,
+                start_on_load: false,
+            };
+            let spec = build_control_spec(&definition).expect("SpoofedHost has an owner");
+            assert_eq!(
+                spec.http_policy.spoofed_host.as_deref(),
+                Some("site.example.i2p")
+            );
+            let mut options = server_options("127.0.0.1:9090");
             options.insert("address_helper".to_owned(), "false".to_owned());
             options.insert("jump_list".to_owned(), "false".to_owned());
             let definition = ControlDefinition {
@@ -3971,6 +4003,18 @@ mod tests {
                 "unexpected error: {error:?}"
             );
         }
+        let mut options = server_options("127.0.0.1:9090");
+        options.insert("spoofed_host".to_owned(), "bad host".to_owned());
+        let malformed = ControlDefinition {
+            name: "badspoof".to_owned(),
+            tunnel_type: TunnelType::HttpServer,
+            options,
+            start_on_load: false,
+        };
+        assert!(matches!(
+            build_control_spec(&malformed),
+            Err(ControlError::InvalidOption { ref option, .. }) if option == "spoofed_host"
+        ));
     }
 
     #[test]

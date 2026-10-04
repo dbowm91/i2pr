@@ -123,6 +123,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Port" => Some("listen_port"),
         "ReachableBy" => Some("listen_host"),
         "Description" => Some("description"),
+        "SpoofedHost" => Some("spoofed_host"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
         "AllowUserAgent" => Some("allow_user_agent"),
@@ -259,6 +260,17 @@ pub fn decode_tunnel_request(
                         return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
                     }
                     options.insert("description".to_owned(), text.to_owned());
+                    options_seen = true;
+                    continue;
+                }
+                if key == "SpoofedHost" {
+                    let host = value
+                        .as_str()
+                        .ok_or_else(|| TunnelRequestError::BadValue(key.to_owned()))?;
+                    if host.len() > MAX_OPTION_VALUE_LEN {
+                        return Err(TunnelRequestError::ValueOverBound(key.to_owned()));
+                    }
+                    options.insert("spoofed_host".to_owned(), host.to_owned());
                     options_seen = true;
                     continue;
                 }

@@ -458,6 +458,38 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
 }
 
 #[tokio::test]
+async fn tunnelmanager_spoofed_host_roundtrips_for_http_server() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let created = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"create", "Name":"spoofed", "Type":"httpserver",
+            "TargetHost":"127.0.0.1", "TargetPort":8080,
+            "StartOnLoad":false, "SpoofedHost":"site.example.i2p"
+        }),
+        2,
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create: {created}");
+    let fetched = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get", "Name":"spoofed"}),
+        3,
+    )
+    .await;
+    assert_eq!(
+        fetched["result"]["info"]["rawConfig"]["spoofedHost"],
+        serde_json::json!("site.example.i2p")
+    );
+}
+
+#[tokio::test]
 async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
     let directory = tempfile::tempdir().expect("tempdir");
     let config =

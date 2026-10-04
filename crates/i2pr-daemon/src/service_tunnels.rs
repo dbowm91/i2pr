@@ -3061,7 +3061,7 @@ impl ServiceTunnelManager {
     /// gates open, matching the spec default).
     pub fn http_policy_for(&self, spec_id: &str) -> i2pr_service_tunnels::HttpServerPolicy {
         self.committed_spec_for(spec_id)
-            .map(|spec| spec.http_policy)
+            .map(|spec| spec.http_policy.clone())
             .unwrap_or_default()
     }
 

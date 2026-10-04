@@ -1334,7 +1334,18 @@ impl ServiceTunnelSpec {
         {
             return Err(ServiceTunnelError::ContradictoryOptions {
                 id,
-                reason: "address_helper and jump_list apply to HTTP server kinds only",
+                reason: "HTTP server policy and SpoofedHost apply to HTTP server kinds only",
+            });
+        }
+        if self
+            .http_policy
+            .spoofed_host
+            .as_deref()
+            .is_some_and(|host| !crate::http::valid_spoofed_host(host))
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id,
+                reason: "must be a bounded ASCII DNS hostname",
             });
         }
         // Plan 296: multihoming consumes the server-to-target

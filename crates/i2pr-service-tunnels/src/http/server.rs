@@ -39,6 +39,25 @@ use super::target::parse_origin_form;
 /// Maximum bytes for the validated local authority replacement
 /// (`ip:port` text the daemon derives from the server target).
 pub const SERVER_AUTHORITY_MAX_BYTES: usize = 256;
+/// Maximum byte length of a Proposal `SpoofedHost` DNS host name.
+pub const SPOOFED_HOST_MAX_BYTES: usize = 253;
+
+/// Whether `host` is a bounded ASCII DNS name suitable for an HTTP Host
+/// field. Ports, userinfo, whitespace, and control bytes are not accepted.
+pub fn valid_spoofed_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > SPOOFED_HOST_MAX_BYTES || !host.is_ascii() {
+        return false;
+    }
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.as_bytes()[0].is_ascii_alphanumeric()
+            && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
 
 /// Presentation policy for the HTTP server profile (Plan 292
 /// `address_helper` / `jump_list`). Both gates restrict which
@@ -54,12 +73,14 @@ pub const SERVER_AUTHORITY_MAX_BYTES: usize = 256;
 /// - `jump_list`: jump class requests (the `/jump` path family
 ///   and the `jump` query key) are forwarded when true, refused
 ///   with 403 when false.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HttpServerPolicy {
     /// Forward address-helper class requests.
     pub address_helper: bool,
     /// Forward jump class requests.
     pub jump_list: bool,
+    /// Optional validated Host replacement for Proposal `SpoofedHost`.
+    pub spoofed_host: Option<String>,
 }
 
 impl Default for HttpServerPolicy {
@@ -67,6 +88,7 @@ impl Default for HttpServerPolicy {
         Self {
             address_helper: true,
             jump_list: true,
+            spoofed_host: None,
         }
     }
 }
@@ -74,7 +96,7 @@ impl Default for HttpServerPolicy {
 impl HttpServerPolicy {
     /// Whether a request class may be forwarded to the local
     /// target under this policy.
-    pub const fn admits(self, class: PresentationClass) -> bool {
+    pub const fn admits(&self, class: PresentationClass) -> bool {
         match class {
             PresentationClass::Ordinary => true,
             PresentationClass::Helper => self.address_helper,
@@ -144,6 +166,16 @@ pub fn filter_server_request(
     head: &HttpRequestHead,
     local_authority: &str,
 ) -> Result<FilteredServerRequest, HttpError> {
+    filter_server_request_with_spoofed_host(head, local_authority, None)
+}
+
+/// Filters a request using the configured `SpoofedHost` value when set;
+/// the loopback target authority remains the default Host replacement.
+pub fn filter_server_request_with_spoofed_host(
+    head: &HttpRequestHead,
+    local_authority: &str,
+    spoofed_host: Option<&str>,
+) -> Result<FilteredServerRequest, HttpError> {
     let rejected = |kind, reason| HttpError::new(kind, reason);
     if head.line.method == "CONNECT" {
         return Err(rejected(
@@ -165,6 +197,12 @@ pub fn filter_server_request(
     }
     let (_path, _query) = parse_origin_form(&head.line.target).map_err(HttpError::from)?;
     validate_local_authority(local_authority)?;
+    if spoofed_host.is_some_and(|host| !valid_spoofed_host(host)) {
+        return Err(rejected(
+            HttpErrorKind::MalformedTarget,
+            "configured SpoofedHost is not a valid DNS host",
+        ));
+    }
     // HTTP/1.1 requires Host; the parser already rejects
     // duplicate/conflicting Host headers, so at most one survives.
     let host_count = head
@@ -244,7 +282,7 @@ pub fn filter_server_request(
             if !host_inserted {
                 output.push(HeaderEntry {
                     name: HeaderName("host".to_owned()),
-                    value: local_authority.to_owned(),
+                    value: spoofed_host.unwrap_or(local_authority).to_owned(),
                 });
                 host_inserted = true;
             }
@@ -478,6 +516,38 @@ mod tests {
     }
 
     #[test]
+    fn proposal_spoofed_host_overrides_only_the_forwarded_host() {
+        let head = parse_head(
+            "GET / HTTP/1.1\r\nHost: attacker.example\r\nX-Forwarded-Host: attacker.example\r\n\r\n",
+        );
+        let filtered = filter_server_request_with_spoofed_host(
+            &head,
+            "127.0.0.1:8080",
+            Some("site.example.i2p"),
+        )
+        .expect("valid SpoofedHost filters");
+        let text = std::str::from_utf8(&filtered.head_bytes).expect("utf-8");
+        assert!(text.contains("host: site.example.i2p\r\n"));
+        assert!(!text.contains("attacker.example"));
+        assert!(!text.contains("127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn spoofed_host_validation_rejects_header_injection_and_bad_labels() {
+        assert!(valid_spoofed_host("service.i2p"));
+        for host in [
+            "",
+            "a..i2p",
+            "-bad.i2p",
+            "bad-.i2p",
+            "x.i2p:80",
+            "x.i2p\r\nX: y",
+        ] {
+            assert!(!valid_spoofed_host(host), "accepted {host:?}");
+        }
+    }
+
+    #[test]
     fn absolute_form_is_rejected() {
         let head = parse_head("GET http://example.i2p/path HTTP/1.1\r\nHost: example.i2p\r\n\r\n");
         let error = filter_server_request(&head, "127.0.0.1:8080").expect_err("absolute");
@@ -650,6 +720,7 @@ mod tests {
         let no_helper = HttpServerPolicy {
             address_helper: false,
             jump_list: true,
+            spoofed_host: None,
         };
         assert!(no_helper.admits(PresentationClass::Ordinary));
         assert!(!no_helper.admits(PresentationClass::Helper));
@@ -657,6 +728,7 @@ mod tests {
         let no_jump = HttpServerPolicy {
             address_helper: true,
             jump_list: false,
+            spoofed_host: None,
         };
         assert!(no_jump.admits(PresentationClass::Ordinary));
         assert!(no_jump.admits(PresentationClass::Helper));

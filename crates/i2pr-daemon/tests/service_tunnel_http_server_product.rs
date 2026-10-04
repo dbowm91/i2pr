@@ -262,12 +262,26 @@ async fn build_paired_manager_with_policy(
     mpsc::UnboundedReceiver<ObservedRequest>,
     SocketAddr,
 ) {
+    build_paired_manager_with_policy_and_spoofed_host(data_dir, response, policy, None).await
+}
+
+async fn build_paired_manager_with_policy_and_spoofed_host(
+    data_dir: &Path,
+    response: Vec<u8>,
+    policy: i2pr_service_tunnels::HttpServerPolicy,
+    spoofed_host: Option<String>,
+) -> (
+    Arc<ServiceTunnelManager>,
+    mpsc::UnboundedReceiver<ObservedRequest>,
+    SocketAddr,
+) {
     let (fixture_addr, observed_rx, _fixture) = start_http_fixture(response);
-    let probe = build_manager(
-        data_dir,
-        vec![http_server_spec_with_policy(fixture_addr, policy)],
-        StaticAliasTable::new(),
-    );
+    let make_server = || {
+        let mut spec = http_server_spec_with_policy(fixture_addr, policy.clone());
+        spec.http_policy.spoofed_host = spoofed_host.clone();
+        spec
+    };
+    let probe = build_manager(data_dir, vec![make_server()], StaticAliasTable::new());
     probe.prepare().await.expect("probe prepare");
     let server_b64 = probe
         .service_destination_b64("alpha-web")
@@ -276,10 +290,7 @@ async fn build_paired_manager_with_policy(
     let destination = DestinationRef::ConfiguredDestination(server_b64);
     let manager = build_manager(
         data_dir,
-        vec![
-            client_spec(destination),
-            http_server_spec_with_policy(fixture_addr, policy),
-        ],
+        vec![client_spec(destination), make_server()],
         StaticAliasTable::new(),
     );
     (manager, observed_rx, fixture_addr)
@@ -418,6 +429,33 @@ async fn http_server_get_roundtrip_filters() {
     assert!(text.contains("connection: close\r\n"), "close: {text}");
     let body = read_body_bounded(&mut stream, &head).await;
     assert_eq!(body, b"hello");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn proposal_spoofed_host_reaches_http_server_target() {
+    let directory = temp_data_dir("http-server-spoofed-host");
+    let (manager, mut observed, _fixture_addr) = build_paired_manager_with_policy_and_spoofed_host(
+        directory.path(),
+        CANNED_RESPONSE.to_vec(),
+        i2pr_service_tunnels::HttpServerPolicy::default(),
+        Some("site.example.i2p".to_owned()),
+    )
+    .await;
+    let (_scope, _cancel) = start_supervisors(&manager).await;
+    let listener = manager
+        .client_listener_address("alpha-client")
+        .expect("listener");
+    let mut stream = TcpStream::connect(listener).await.expect("connect");
+    stream
+        .write_all(b"GET /path HTTP/1.1\r\nHost: attacker.example\r\n\r\n")
+        .await
+        .expect("request");
+    let head = read_head_bounded(&mut stream).await;
+    let body = read_body_bounded(&mut stream, &head).await;
+    assert_eq!(body, b"hello");
+    let forwarded = next_observed(&mut observed).await;
+    assert!(forwarded.head.contains("host: site.example.i2p\r\n"));
+    assert!(!forwarded.head.contains("attacker.example"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -606,6 +644,7 @@ async fn http_server_closed_helper_gate_refuses() {
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: false,
         jump_list: true,
+        spoofed_host: None,
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;
@@ -672,6 +711,7 @@ async fn http_server_closed_jump_gate_refuses() {
     let policy = i2pr_service_tunnels::HttpServerPolicy {
         address_helper: true,
         jump_list: false,
+        spoofed_host: None,
     };
     let (manager, mut observed, _fixture) =
         build_paired_manager_with_policy(directory.path(), CANNED_RESPONSE.to_vec(), policy).await;

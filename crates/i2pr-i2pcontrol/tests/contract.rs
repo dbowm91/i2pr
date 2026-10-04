@@ -1191,6 +1191,16 @@ fn plan289_tunnel_request_envelope_rules() {
         description.options.get("description").map(String::as_str),
         Some("valid Proposal field")
     );
+    let spoofed_host = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "web", "Type": "httpserver",
+        "TargetHost": "127.0.0.1", "TargetPort": 8080,
+        "SpoofedHost": "public.example.i2p",
+    })))
+    .expect("SpoofedHost has a typed HTTP server owner");
+    assert_eq!(
+        spoofed_host.options.get("spoofed_host").map(String::as_str),
+        Some("public.example.i2p")
+    );
     let max_concurrent = decode_tunnel_request(&params(serde_json::json!({
         "Action": "create", "Name": "a", "Type": "server",
         "MaxConcurrentConns": 24,
