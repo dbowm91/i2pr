@@ -61,7 +61,7 @@ use i2pr_storage::{
 use i2pr_transport::Deadline;
 use i2pr_tunnel::TunnelId;
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
@@ -4525,27 +4525,112 @@ async fn run_client_connection(
     mut stream: TcpStream,
     cancellation: CancellationToken,
 ) -> Result<(), BoxError> {
-    let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let connect_delay_ms = lookup_streaming_connect_delay(&manager, &runtime.spec_id);
-    let mut initial_payload = Vec::new();
     if let Some(delay_ms) = connect_delay_ms {
-        let mut buffer = vec![0u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)];
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
-        while initial_payload.len() < buffer.len() {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            match timeout(remaining, stream.read(&mut buffer[initial_payload.len()..])).await {
-                Ok(Ok(0)) => break,
-                Ok(Ok(count)) => initial_payload.extend_from_slice(
-                    &buffer[initial_payload.len()..initial_payload.len() + count],
-                ),
-                Ok(Err(error)) => return Err(Box::new(error)),
-                Err(_) => break,
-            }
+        let initial_payload = collect_connect_delay_payload(&mut stream, delay_ms).await?;
+        return run_client_connection_with_initial_payload(
+            manager,
+            runtime,
+            target,
+            stream,
+            cancellation,
+            initial_payload,
+        )
+        .await;
+    }
+    run_client_connection_with_initial_payload(
+        manager,
+        runtime,
+        target,
+        stream,
+        cancellation,
+        Vec::new(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod connect_delay_buffer_tests {
+    use super::*;
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_collects_until_deadline_and_bounds_payload() {
+        let (mut writer, mut reader) = duplex(usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 32);
+        let input = vec![0xA5; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD) + 7];
+        writer.write_all(&input).await.expect("write initial bytes");
+        let started = tokio::time::Instant::now();
+        let output = collect_connect_delay_payload(&mut reader, 500)
+            .await
+            .expect("collect bounded payload");
+        assert_eq!(output, input[..usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)]);
+        assert_eq!(tokio::time::Instant::now(), started);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_emits_empty_payload_at_deadline() {
+        let (_writer, mut reader) = duplex(32);
+        let started = tokio::time::Instant::now();
+        let output = collect_connect_delay_payload(&mut reader, 500)
+            .await
+            .expect("timer expires without local data");
+        assert!(output.is_empty());
+        assert_eq!(
+            tokio::time::Instant::now().duration_since(started),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn connect_delay_accumulates_separate_reads_before_deadline() {
+        let (mut writer, mut reader) = duplex(64);
+        writer.write_all(b"first").await.expect("write first bytes");
+        let reader_task = tokio::spawn(async move {
+            collect_connect_delay_payload(&mut reader, 500)
+                .await
+                .expect("collect payload")
+        });
+        tokio::task::yield_now().await;
+        writer
+            .write_all(b" second")
+            .await
+            .expect("write second bytes");
+        assert_eq!(reader_task.await.expect("reader task"), b"first second");
+    }
+}
+
+async fn collect_connect_delay_payload<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    delay_ms: u64,
+) -> Result<Vec<u8>, std::io::Error> {
+    let mut buffer = vec![0u8; usize::from(DEFAULT_ADVERTISED_MAX_PAYLOAD)];
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
+    let mut length = 0;
+    while length < buffer.len() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match timeout(remaining, reader.read(&mut buffer[length..])).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(count)) => length += count,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => break,
         }
     }
+    buffer.truncate(length);
+    Ok(buffer)
+}
+
+async fn run_client_connection_with_initial_payload(
+    manager: Arc<ServiceTunnelManager>,
+    runtime: Arc<ServiceRuntime>,
+    target: ClientTarget,
+    stream: TcpStream,
+    cancellation: CancellationToken,
+    initial_payload: Vec<u8>,
+) -> Result<(), BoxError> {
+    let connect_timeout_ms = lookup_connect_timeout(&manager, &runtime.spec_id);
     let identity_arc =
         manager.with_destination_bridge(runtime.destination_id, |bridge| bridge.identity());
     let Some(identity_arc) = identity_arc else {
