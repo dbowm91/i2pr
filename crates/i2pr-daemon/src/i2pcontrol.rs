@@ -1317,6 +1317,24 @@ impl I2pControlServiceState {
                 }
             }
         }
+        let shapes_valid = result
+            .iter()
+            .all(|(key, value)| proposal_router_info_value_matches(key, value))
+            && (!clear_logs
+                || proposal_router_info_value_matches(
+                    "i2p.router.logs.clear",
+                    &serde_json::Value::String("success".to_owned()),
+                ));
+        if !shapes_valid {
+            return (
+                error_envelope(
+                    id,
+                    JsonRpcErrorCode::InternalError.code(),
+                    "RouterInfo owner returned a value outside the canonical Proposal type",
+                ),
+                Duration::ZERO,
+            );
+        }
         // Defer the side effect until every requested value has resolved,
         // so a mixed selection cannot partially mutate on an error.
         if clear_logs {
@@ -1554,6 +1572,42 @@ impl I2pControlServiceState {
                 AuthErrorCode::ExpiredToken.message(),
             )),
         }
+    }
+}
+
+/// Checks one returned canonical Proposal field against its frozen JSON
+/// type. Only the three Proposal-nullable fields accept JSON null.
+fn proposal_router_info_value_matches(key: &str, value: &serde_json::Value) -> bool {
+    if value.is_null() {
+        return matches!(
+            key,
+            "i2p.router.id" | "i2p.router.clockskew" | "i2p.router.info"
+        );
+    }
+    let Some(field) = i2pr_i2pcontrol::PROPOSAL_ROUTER_INFO_FIELDS
+        .iter()
+        .find(|field| field.key == key)
+    else {
+        // Base API selectors have their own frozen inventory and are
+        // validated by their existing typed adapters.
+        return true;
+    };
+    use i2pr_i2pcontrol::ProposalValueType as T;
+    match field.value_type {
+        T::String => value.is_string(),
+        T::Integer => value.is_i64() || value.is_u64(),
+        T::Boolean => value.is_boolean(),
+        T::Double => value.is_f64(),
+        T::StringList => value
+            .as_array()
+            .is_some_and(|values| values.iter().all(serde_json::Value::is_string)),
+        T::Object => value.is_object(),
+        T::ObjectList => value
+            .as_array()
+            .is_some_and(|values| values.iter().all(serde_json::Value::is_object)),
+        T::NestedObject => value
+            .as_object()
+            .is_some_and(|map| map.values().all(|nested| nested.as_object().is_some())),
     }
 }
 
@@ -2113,6 +2167,44 @@ mod tests {
 
     /// Loopback test password (never logged; redaction asserted below).
     const TEST_PASSWORD: &str = "correct-horse-battery-staple-i2pcontrol";
+
+    #[test]
+    fn proposal_router_info_shape_guard_matches_every_declared_json_type() {
+        use i2pr_i2pcontrol::ProposalValueType as T;
+        for field in i2pr_i2pcontrol::PROPOSAL_ROUTER_INFO_FIELDS {
+            let sample = match field.value_type {
+                T::String => serde_json::json!("value"),
+                T::Integer => serde_json::json!(1),
+                T::Boolean => serde_json::json!(true),
+                T::Double => serde_json::json!(1.5),
+                T::StringList => serde_json::json!(["value"]),
+                T::Object => serde_json::json!({"key": "value"}),
+                T::ObjectList => serde_json::json!([{"key": "value"}]),
+                T::NestedObject => serde_json::json!({"peer": {"reason": "value"}}),
+            };
+            assert!(
+                proposal_router_info_value_matches(field.key, &sample),
+                "declared shape rejected for {}",
+                field.key
+            );
+        }
+        for key in ["i2p.router.id", "i2p.router.clockskew", "i2p.router.info"] {
+            assert!(proposal_router_info_value_matches(
+                key,
+                &serde_json::Value::Null
+            ));
+        }
+        for key in ["i2p.router.news", "i2p.router.logs.clear"] {
+            assert!(!proposal_router_info_value_matches(
+                key,
+                &serde_json::Value::Null
+            ));
+        }
+        assert!(!proposal_router_info_value_matches(
+            "i2p.router.netdb.peers",
+            &serde_json::json!({"wrong": "shape"})
+        ));
+    }
 
     #[test]
     fn proposal_tunnel_raw_config_omits_secret_values() {
