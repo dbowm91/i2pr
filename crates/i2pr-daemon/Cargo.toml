@@ -53,6 +53,8 @@ i2pr-transport = { path = "../i2pr-transport" }
 i2pr-tunnel = { path = "../i2pr-tunnel" }
 rand_chacha = "0.9"
 rand_core = { version = "0.9", features = ["std", "os_rng"] }
+rand_chacha_10 = { package = "rand_chacha", version = "0.10" }
+sad-rsa = { workspace = true, features = ["encoding"] }
 tempfile = "3.14"
 x25519-dalek.workspace = true
 zeroize.workspace = true

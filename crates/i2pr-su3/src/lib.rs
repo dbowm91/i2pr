@@ -168,11 +168,20 @@ pub fn rsa_signer_from_certificate(
     }
     Ok(RsaSha512Signer {
         signer_id: signer_id.to_owned(),
-        modulus: rsa.modulus.to_vec(),
-        exponent: rsa.exponent.to_vec(),
+        modulus: unsigned_big_endian(rsa.modulus),
+        exponent: unsigned_big_endian(rsa.exponent),
         not_before,
         not_after,
     })
+}
+
+fn unsigned_big_endian(integer: &[u8]) -> Vec<u8> {
+    let significant = integer
+        .iter()
+        .position(|byte| *byte != 0)
+        .map(|offset| &integer[offset..])
+        .unwrap_or(&integer[integer.len().saturating_sub(1)..]);
+    significant.to_vec()
 }
 
 /// Validates SU3 framing without imposing a content/file type policy.

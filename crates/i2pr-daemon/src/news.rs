@@ -874,6 +874,7 @@ fn validate_timestamp(value: &str) -> Result<(), NewsError> {
 mod tests {
     use super::*;
     use crate::addressbook_fetch::FetchError;
+    use sad_rsa::signature::{SignatureEncoding, Signer};
     use std::future::Future;
     use std::pin::Pin;
 
@@ -884,6 +885,65 @@ mod tests {
     <summary>News <b>item</b>.</summary>
   </entry>
 </feed>"#;
+
+    struct SignedNewsIdentity {
+        private_key: sad_rsa::RsaPrivateKey,
+        certificate_der: Vec<u8>,
+    }
+
+    fn signed_news_identity() -> SignedNewsIdentity {
+        use rsa_rand_core::SeedableRng;
+        use sad_rsa::pkcs8::EncodePrivateKey;
+        use sad_rsa::rand_core as rsa_rand_core;
+
+        let mut rng = rand_chacha_10::ChaCha8Rng::seed_from_u64(0x170_322);
+        let private_key = sad_rsa::RsaPrivateKey::new(&mut rng, 2048).expect("test RSA key");
+        let pkcs8 = private_key.to_pkcs8_der().expect("PKCS8 key");
+        let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.as_bytes());
+        let key_pair =
+            rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&key_der, &rcgen::PKCS_RSA_SHA512)
+                .expect("rcgen reads RSA test key");
+        let certificate = rcgen::CertificateParams::new(vec!["router-news".to_owned()])
+            .expect("certificate params")
+            .self_signed(&key_pair)
+            .expect("self-signed test certificate");
+        SignedNewsIdentity {
+            private_key,
+            certificate_der: certificate.der().to_vec(),
+        }
+    }
+
+    fn signed_news_container(
+        identity: &SignedNewsIdentity,
+        signer_id: &str,
+        content_type: u8,
+        file_type: u8,
+        content: &[u8],
+    ) -> Vec<u8> {
+        let signing_key = sad_rsa::pkcs1v15::SigningKey::<sad_rsa::sha2::Sha512>::new(
+            identity.private_key.clone(),
+        );
+        // The fixture key is generated as RSA-2048.
+        let signature_length = 256_usize;
+        let mut signed = Vec::new();
+        signed.extend_from_slice(b"I2Psu3");
+        signed.push(1);
+        signed.extend_from_slice(&[0; 3]);
+        signed.extend_from_slice(&6_u16.to_le_bytes());
+        signed.extend_from_slice(&(signature_length as u16).to_le_bytes());
+        signed.extend_from_slice(&(content.len() as u32).to_le_bytes());
+        signed.push(file_type);
+        signed.push(content_type);
+        signed.extend_from_slice(&[0; 3]);
+        signed.extend_from_slice(&1_u16.to_le_bytes());
+        signed.push(b'1');
+        signed.extend_from_slice(&(signer_id.len() as u16).to_le_bytes());
+        signed.extend_from_slice(signer_id.as_bytes());
+        signed.extend_from_slice(content);
+        let signature = signing_key.sign(&signed);
+        signed.extend_from_slice(&signature.to_bytes());
+        signed
+    }
 
     #[test]
     fn parses_and_sanitizes_bounded_atom_feed() {
@@ -1021,6 +1081,244 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>> {
             self.fetch(url, etag, last_modified, timeout)
         }
+    }
+
+    struct ResponseFetcher {
+        response: Mutex<Option<FetchResponse>>,
+        validators: Mutex<Vec<(Option<String>, Option<String>)>>,
+    }
+
+    impl ResponseFetcher {
+        fn one(response: FetchResponse) -> Self {
+            Self {
+                response: Mutex::new(Some(response)),
+                validators: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl BoundedContentFetcher for ResponseFetcher {
+        fn fetch<'a>(
+            &'a self,
+            url: &'a str,
+            etag: Option<&'a str>,
+            last_modified: Option<&'a str>,
+            timeout: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>> {
+            self.fetch_bounded(url, etag, last_modified, MAX_NEWS_SU3_BYTES, timeout)
+        }
+
+        fn fetch_bounded<'a>(
+            &'a self,
+            _url: &'a str,
+            etag: Option<&'a str>,
+            last_modified: Option<&'a str>,
+            _max_body_bytes: usize,
+            _timeout: Duration,
+        ) -> Pin<Box<dyn Future<Output = Result<FetchResponse, FetchError>> + Send + 'a>> {
+            self.validators
+                .lock()
+                .unwrap()
+                .push((etag.map(str::to_owned), last_modified.map(str::to_owned)));
+            let response = self.response.lock().unwrap().take();
+            Box::pin(async move { response.ok_or(FetchError::Unavailable) })
+        }
+    }
+
+    fn news_test_config(_data_dir: &std::path::Path, certificate_path: PathBuf) -> NewsConfig {
+        NewsConfig {
+            enabled: true,
+            source_url: Some("http://news.i2p/feed.su3".to_owned()),
+            signer_id: Some("router-news".to_owned()),
+            certificate_path: Some(certificate_path),
+            proxy_host: "127.0.0.1".parse().unwrap(),
+            proxy_port: 4444,
+            max_su3_bytes: MAX_NEWS_SU3_BYTES,
+            refresh_interval: Duration::from_secs(3600),
+        }
+    }
+
+    fn write_test_certificate(directory: &std::path::Path, certificate: &[u8]) -> PathBuf {
+        let path = directory.join("router-news.der");
+        fs::write(&path, certificate).unwrap();
+        path
+    }
+
+    fn response(status: u16, body: Vec<u8>, etag: Option<&str>) -> FetchResponse {
+        FetchResponse {
+            status,
+            body,
+            etag: etag.map(str::to_owned),
+            last_modified: Some("Sun, 04 Oct 2026 12:00:00 GMT".to_owned()),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_news_verifies_before_parse_and_survives_304_restart() {
+        let identity = signed_news_identity();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_path = write_test_certificate(directory.path(), &identity.certificate_der);
+        let body = signed_news_container(
+            &identity,
+            "router-news",
+            NEWS_CONTENT_TYPE,
+            NEWS_FILE_TYPE_XML,
+            VALID_ATOM.as_bytes(),
+        );
+        let frame = i2pr_su3::parse(&body, i2pr_su3::Su3Limits::default()).unwrap();
+        let signer =
+            i2pr_su3::rsa_signer_from_certificate("router-news", &identity.certificate_der)
+                .unwrap();
+        assert_eq!(
+            frame.signed_bytes(&body).unwrap().len() + frame.signature(&body).unwrap().len(),
+            body.len()
+        );
+        assert_eq!(frame.signature_length, signer.modulus.len());
+        i2pr_su3::verify_rsa_sha512(&body, &frame, &signer, now_unix_seconds()).unwrap();
+        let first_fetch = Arc::new(ResponseFetcher::one(response(
+            200,
+            body.clone(),
+            Some("\"v1\""),
+        )));
+        let manager = NewsManager::new(
+            news_test_config(directory.path(), certificate_path.clone()),
+            directory.path().to_owned(),
+            first_fetch,
+        );
+        assert_eq!(manager.refresh_once().await, NewsRefreshResult::Updated);
+        let published = manager.snapshot(now_unix_seconds()).expect("verified feed");
+        assert!(published.rendered.contains("Router & network"));
+
+        let unchanged_fetch = Arc::new(ResponseFetcher::one(response(304, Vec::new(), None)));
+        let restarted = NewsManager::new(
+            news_test_config(directory.path(), certificate_path),
+            directory.path().to_owned(),
+            unchanged_fetch.clone(),
+        );
+        assert_eq!(
+            restarted.refresh_once().await,
+            NewsRefreshResult::NotModified
+        );
+        assert_eq!(
+            unchanged_fetch.validators.lock().unwrap()[0].0.as_deref(),
+            Some("\"v1\"")
+        );
+        let after_restart = restarted
+            .snapshot(now_unix_seconds())
+            .expect("cached signature reverified on restart");
+        assert_eq!(after_restart.rendered, published.rendered);
+
+        let mut invalid_update = body;
+        *invalid_update.last_mut().unwrap() ^= 1;
+        let failed_refresh = NewsManager::new(
+            news_test_config(directory.path(), directory.path().join("router-news.der")),
+            directory.path().to_owned(),
+            Arc::new(ResponseFetcher::one(response(
+                200,
+                invalid_update,
+                Some("\"v2\""),
+            ))),
+        );
+        assert_eq!(
+            failed_refresh.refresh_once().await,
+            NewsRefreshResult::Failed(NewsError::UntrustedSignature)
+        );
+        assert_eq!(
+            failed_refresh
+                .snapshot(now_unix_seconds())
+                .expect("prior verified feed retained")
+                .rendered,
+            published.rendered
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_news_rejects_wrong_signer_signature_and_file_type() {
+        let identity = signed_news_identity();
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_path = write_test_certificate(directory.path(), &identity.certificate_der);
+        let valid = signed_news_container(
+            &identity,
+            "router-news",
+            NEWS_CONTENT_TYPE,
+            NEWS_FILE_TYPE_XML,
+            VALID_ATOM.as_bytes(),
+        );
+        let wrong_signer = signed_news_container(
+            &identity,
+            "attacker",
+            NEWS_CONTENT_TYPE,
+            NEWS_FILE_TYPE_XML,
+            VALID_ATOM.as_bytes(),
+        );
+        let wrong_type = signed_news_container(
+            &identity,
+            "router-news",
+            NEWS_CONTENT_TYPE,
+            2,
+            VALID_ATOM.as_bytes(),
+        );
+        let wrong_content_type = signed_news_container(
+            &identity,
+            "router-news",
+            3,
+            NEWS_FILE_TYPE_XML,
+            VALID_ATOM.as_bytes(),
+        );
+        let mut invalid_signature = valid;
+        *invalid_signature.last_mut().unwrap() ^= 1;
+        for body in [
+            wrong_signer,
+            invalid_signature,
+            wrong_type,
+            wrong_content_type,
+        ] {
+            let manager = NewsManager::new(
+                news_test_config(directory.path(), certificate_path.clone()),
+                directory.path().to_owned(),
+                Arc::new(ResponseFetcher::one(response(200, body, None))),
+            );
+            assert!(matches!(
+                manager.refresh_once().await,
+                NewsRefreshResult::Failed(
+                    NewsError::UntrustedSignature | NewsError::WrongContainerType
+                )
+            ));
+            assert!(manager.snapshot(now_unix_seconds()).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_news_rejects_expired_pinned_certificate() {
+        let identity = signed_news_identity();
+        let mut expired_certificate = identity.certificate_der.clone();
+        let current_not_after = b"40960101000000Z";
+        let expiry_offset = expired_certificate
+            .windows(current_not_after.len())
+            .position(|window| window == current_not_after)
+            .expect("test certificate has generalized-time expiry");
+        expired_certificate[expiry_offset..expiry_offset + current_not_after.len()]
+            .copy_from_slice(b"20200101000000Z");
+
+        let directory = tempfile::tempdir().unwrap();
+        let certificate_path = write_test_certificate(directory.path(), &expired_certificate);
+        let body = signed_news_container(
+            &identity,
+            "router-news",
+            NEWS_CONTENT_TYPE,
+            NEWS_FILE_TYPE_XML,
+            VALID_ATOM.as_bytes(),
+        );
+        let manager = NewsManager::new(
+            news_test_config(directory.path(), certificate_path),
+            directory.path().to_owned(),
+            Arc::new(ResponseFetcher::one(response(200, body, None))),
+        );
+        assert_eq!(
+            manager.refresh_once().await,
+            NewsRefreshResult::Failed(NewsError::UntrustedSignature)
+        );
+        assert!(manager.snapshot(now_unix_seconds()).is_none());
     }
 
     #[tokio::test]
