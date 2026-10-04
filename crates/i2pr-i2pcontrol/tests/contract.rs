@@ -1125,6 +1125,15 @@ fn plan289_tunnel_request_envelope_rules() {
         proxy_auth.options.get("proxy_auth").map(String::as_str),
         Some("true")
     );
+    let multihoming = decode_tunnel_request(&params(serde_json::json!({
+        "Action": "create", "Name": "a", "Type": "server",
+        "MultiHoming": false,
+    })))
+    .expect("MultiHoming has an explicit capitalization adapter");
+    assert_eq!(
+        multihoming.options.get("multihoming").map(String::as_str),
+        Some("false")
+    );
     assert_eq!(
         decode_tunnel_request(&params(serde_json::json!({
             "Action": "create", "Name": "a", "Type": "server",

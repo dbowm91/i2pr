@@ -125,6 +125,7 @@ fn canonical_option(key: &str) -> Option<&'static str> {
         "Description" => Some("description"),
         "MaxConcurrentConns" => Some("max_streams"),
         "ProxyAuth" => Some("proxy_auth"),
+        "MultiHoming" => Some("multihoming"),
         "TargetDestination" | "Destination" => Some("target_destination"),
         "UseSSL" => Some("use_ssl"),
         "UniqueLocalAddressPerClient" => Some("unique_local_address"),

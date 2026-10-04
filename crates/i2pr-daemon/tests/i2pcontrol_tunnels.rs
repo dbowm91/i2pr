@@ -317,6 +317,13 @@ async fn tunnelmanager_emits_canonical_proposal_result_and_redacts_secrets() {
     assert!(
         created["result"]["status"]
             .as_str()
+            .unwrap_or_default()
+            .starts_with("success"),
+        "create status: {created}"
+    );
+    assert!(
+        created["result"]["status"]
+            .as_str()
             .unwrap_or("")
             .starts_with("success - created tunnel"),
         "{created}"
@@ -456,6 +463,13 @@ async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
     )
     .await;
     assert!(created.get("error").is_none(), "create: {created}");
+    assert!(
+        created["result"]["status"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("success"),
+        "create status: {created}"
+    );
     let fetched = tunnel_raw(
         address,
         &token,
@@ -469,6 +483,48 @@ async fn canonical_proxy_auth_uses_owned_credentials_and_redacts_password() {
     assert_eq!(info["rawConfig"]["proxyUsername"], "operator");
     assert!(info["rawConfig"].get("proxyPassword").is_none());
     assert!(!fetched.to_string().contains("s3cret!"));
+}
+
+#[tokio::test]
+async fn canonical_server_policy_fields_use_service_tunnel_owners() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let config =
+        Config::parse(&config_text(directory.path(), TEST_PASSWORD, "")).expect("config parses");
+    let (_state, address, _scope, _parent) = start_service(&config).await;
+    let token = authenticate(address).await;
+    let access_entry = format!("{}.b32.i2p", "b".repeat(51) + "a");
+    let created = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({
+            "Action":"create", "Name":"canonical-server", "Type":"server",
+            "TargetHost":"127.0.0.1", "TargetPort":9090,
+            "AccessList":access_entry,
+            "StartOnLoad":false
+        }),
+        2,
+    )
+    .await;
+    assert!(created.get("error").is_none(), "create: {created}");
+    assert!(
+        created["result"]["status"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("success"),
+        "server create status: {created}"
+    );
+    let fetched = tunnel_raw(
+        address,
+        &token,
+        serde_json::json!({"Action":"get", "Name":"canonical-server"}),
+        3,
+    )
+    .await;
+    let raw = &fetched["result"]["info"]["rawConfig"];
+    assert_eq!(raw["targetHost"], "127.0.0.1", "{fetched}");
+    assert_eq!(raw["targetPort"], 9090);
+    assert_eq!(raw["accessList"], access_entry);
+    assert_eq!(raw["startOnLoad"], false);
 }
 
 /// Calls one TunnelManager action over the wire.
