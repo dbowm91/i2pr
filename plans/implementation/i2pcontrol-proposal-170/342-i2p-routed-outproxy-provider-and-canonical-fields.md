@@ -10,7 +10,82 @@ blocked.
 
 Subsystem: `i2pcontrol-proposal-170`.
 
-## Objective
+## Design decisions settled by the Plan 343/344 groundwork (2026-10-05)
+
+These were worked out against the real code, not assumed. Recording them here
+so the next pass starts from decisions rather than re-deriving them, and
+because two of them rule out the obvious implementation order.
+
+### The secret store has to reach the request path, and that is the gate
+
+`RouterBoundOutboundSecrets` (Plan 341) is currently constructed nowhere. Two
+structural problems stand between it and a real route:
+
+- `normalize_definition_with_filter_root(name, tunnel_type, options,
+  start_on_load, filter_root)` is a free function with no store parameter, and
+  every caller would need one.
+- The store is keyed by the router's persisted signing seed, which lives inside
+  `RouterIdentityBundle`. **`RouterIdentityBundle` exposes no accessor for it
+  today.** It needs a *closure-based* one — `with_signing_seed(|seed| ...)` —
+  not a getter, because the seed is the root of every router identity
+  credential and a returned value can be copied, printed, or stored. The
+  closure bounds the exposure to a single expression, which is enough to
+  derive a domain-separated key and nothing more.
+
+So the store must be derived once at the composition root and threaded as
+`Arc<dyn OutboundSecretStore>` into both the definition builder (to seal
+`OutproxyPassword` into its stored form) and the per-tunnel runtime (to open it
+when a request is actually going upstream). **This is the first thing to
+build**, because everything else depends on it.
+
+### The policy goes on the options value; the credential does not
+
+`HttpClientOptions`, `ConnectClientOptions`, and `Socks5ClientOptions` each gain
+`outproxy: Option<OutproxyConfig>` — the route policy only. The credential
+stays in Plan 341's owner and is opened only while a header is being built, so
+an options value remains safe to `Clone` into a snapshot and to `Debug`. The
+sealed stored form is scrubbed into the definition's options map exactly the
+way Plan 292 scrubs `proxy_password`, so it round-trips through an edit
+untouched.
+
+### The route decision is a pure function
+
+The load-bearing property — a clearnet target has exactly **one** route, and
+that route is an outproxy — is decidable without a socket, so it must be
+decidable without one. `classify_connect_target` returns an enum
+(`Direct` | `ViaOutproxy` | `Refused`) and the order is the guarantee:
+`.i2p` authority first and no provider consulted, then the outproxy grammar,
+then a refusal. There is no fourth branch, and no branch that opens a clearnet
+socket. This is the row to write first, because it is what makes "no direct
+fallback" checkable rather than asserted.
+
+### The pump hand-off has a concrete requirement
+
+Plan 343's `open_via_outproxy` returns a `connection_id` **and** a
+`tunnel_prefix`: bytes a proxy pushed in the same burst as its `CONNECT` 200.
+`run_stream_pump` and `ServicePumpEndpoint` must be able to adopt that
+connection **and prepend the prefix to the pump's first read**, or the first
+request on any outproxy that pipelines is corrupted. Adopting the connection
+alone is not enough.
+
+### All seven fields or none — a subset is the inert-acceptance trap
+
+The obvious sequencing is "accept the three non-secret route fields now, the
+four credential fields later". **That must not be done.** Accepting
+`ProxyList` / `UseOutproxyPlugin` / `OutproxyType` alone produces a tunnel that
+looks egress-capable and is not: the options parse, the policy validates, the
+policy is stored — and nothing ever opens a route. That is precisely the failure
+Plan 344 found in the LeaseSet mode table, where
+`encrypted with per-user key (psk)` passed on parser acceptance alone, and it
+is what Plan 326 means by "no mode may pass from parser acceptance or inert
+storage". A control client that sets `ProxyList` and gets an accepted response
+would reasonably conclude it has egress.
+
+So the ordering is forced: **store plumbing first, then all seven fields, then
+the request path, then the wire lane.** Nothing in the option surface is
+accepted until the route behind it exists.
+
+## Classify the work
 
 Give Plan 170's outproxy-related TunnelManager fields real semantics, on top of
 the secret owner Plan 341 landed. This is Plan 327's remaining scope.
@@ -31,6 +106,13 @@ Still outstanding, and still the point of this plan:
 
 **The provider is not reachable from any request path**, so this document
 remains a plan of record rather than a claim, and Plan 327 remains blocked.
+
+An implementation attempt on 2026-10-05 was **started and reverted in full**,
+with nothing landed. It reached the request-path hand-off and found that the
+credential store is not yet reachable from there, and that the pump cannot yet
+adopt an already-negotiated connection. Rather than land an option surface that
+would parse and store a policy with no route behind it, the attempt was reverted
+and the five design decisions above were recorded. The tree is unchanged by it.
 
 ## Provider architecture
 
