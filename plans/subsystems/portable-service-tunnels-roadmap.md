@@ -1,6 +1,6 @@
 # Portable Service-Tunnel Core Roadmap
 
-Status: active — Plans 349–351 registered as a new parallel portability/reuse work line. This workstream does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
+Status: active — Plan 349 passed; Plan 350 is ready; Plan 351 remains blocked on Plan 350. This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -65,7 +65,7 @@ M10 is closed at Plan 215. The reusable core already exists and is unusually clo
 - It forbids unsafe code and currently owns no sockets, Tokio tasks, timers, filesystem access, NetDB mutation, transport internals, or Garlic/I2NP construction.
 - Its modules include access/auth/config/connect/destination/events/generation/http/irc/socks5/streamr/outproxy and related privacy/resource policy.
 - The package is currently `publish = false`.
-- Its Cargo manifest declares a path dependency on `i2pr-proto`; registration-time source review found no direct production-code use of `i2pr_proto` in the top-level modules inspected, so Plan 350 must prove whether that dependency is dead before removing it.
+- At registration, its Cargo manifest declared `i2pr-proto`; the Plan 350 full-tree audit will determine whether that dependency is dead before removal.
 - The repository explicitly has no selected repository-wide license. Public package publication therefore cannot be enabled merely as a mechanical Cargo change.
 - External-consumer conformance is not currently part of the test floor; existing verification is primarily workspace/internal composition.
 
@@ -109,14 +109,14 @@ Destination-group semantics are part of the portable contract. A downstream adap
             -> future separate SAM repository (unregistered here)
 ```
 
-Plan 349 is dependency-ready. Plans 350 and 351 are registered but blocked on their predecessor's closure so API/package work does not outrun the ownership contract.
+Plan 349 passed and froze the ownership contract. Plan 350 is ready; Plan 351 remains blocked until package/API stabilization closes.
 
 ## 7. Milestones
 
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
-| 349 | ready | `registered-portable-service-tunnel-boundary` | invariant + infrastructure | `plans/implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md` | future `plans/closure/portable-service-tunnels/349-status.md` |
-| 350 | blocked | `registered-portable-service-tunnel-package-api-stabilization-blocked-on-349` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | future `plans/closure/portable-service-tunnels/350-status.md` |
+| 349 | closed | `passed-portable-service-tunnel-boundary-and-ownership-contract` | invariant + infrastructure | `plans/implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md` | `plans/closure/portable-service-tunnels/349-status.md` |
+| 350 | ready | `registered-portable-service-tunnel-package-api-stabilization` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | future `plans/closure/portable-service-tunnels/350-status.md` |
 | 351 | blocked | `registered-portable-service-tunnel-external-adapter-conformance-blocked-on-350` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | future `plans/closure/portable-service-tunnels/351-status.md` |
 
 ## 8. Cross-cutting requirements
@@ -171,9 +171,9 @@ This workstream is complete when:
 
 ## 12. Milestone status summary
 
-Plan 349 is ready. It freezes the ownership/public-contract boundary and decides whether any internal split is actually required.
+Plan 349 passed. ADR 0032 and the portable-core reference freeze the ownership/public-contract boundary; no internal crate split is required.
 
-Plan 350 is registered but blocked on Plan 349. It performs package/dependency/API stabilization and must treat licensing as an explicit publication gate, not an assumption.
+Plan 350 is ready. It performs package/dependency/API stabilization and must treat licensing as an explicit publication gate, not an assumption.
 
 Plan 351 is registered but blocked on Plan 350. It proves the public boundary from a true external-consumer fixture and produces the clean downstream handoff for a future independent SAM library/tunnel-manager repository.
 
