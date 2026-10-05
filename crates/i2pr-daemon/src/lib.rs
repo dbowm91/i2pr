@@ -28,6 +28,7 @@ pub mod netdb_tunnels;
 mod news;
 pub mod outbound_lookup;
 pub mod outbound_secret;
+pub mod outproxy_route;
 pub mod peer_test;
 pub mod router_i2np;
 pub mod sam;
