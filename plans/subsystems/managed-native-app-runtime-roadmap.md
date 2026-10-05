@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345 and 349 are closed; Plan 352 is active to correct the mapped-IPv6 representation-confusion defect found after Plan 349. Plan 353 remains ready and separately owns branch integration/planning-authority cleanup before this work line is merge-ready. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345 and 349 are closed; Plans 352 and 353 are active. Plan 352 corrects the mapped-IPv6 representation-confusion defect found after Plan 349. Plan 353 owns branch integration/planning-authority cleanup before this work line is merge-ready. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -137,7 +137,7 @@ The scoped Proposal 170 adapter remains separately blocked on canonical Proposal
 | 345 | closed | `passed-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | `plans/closure/managed-native-app-runtime/345-status.md` |
 | 349 | closed | `passed-managed-app-v1-direction-broker-network-policy-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md` | `plans/closure/managed-native-app-runtime/349-status.md` |
 | 352 | active | `in-progress-managed-app-mapped-ipv6-policy-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md` | future `plans/closure/managed-native-app-runtime/352-status.md` |
-| 353 | ready | `registered-plan349-branch-integration-reconciliation` | corrective invariant + polish/integration | `plans/implementation/managed-native-app-runtime/353-plan349-branch-integration-and-planning-authority-reconciliation.md` | future `plans/closure/managed-native-app-runtime/353-status.md` |
+| 353 | active | `in-progress-plan349-branch-integration-reconciliation` | corrective invariant + polish/integration | `plans/implementation/managed-native-app-runtime/353-plan349-branch-integration-and-planning-authority-reconciliation.md` | future `plans/closure/managed-native-app-runtime/353-status.md` |
 
 Future capability milestone classes remain unnumbered until bounded implementation plans are written. The router-side app principal gateway and package/lifecycle manager with AppManager API are blocked on Plan 352. Plan 353 must also close before this combined branch is considered merge-ready. Later classes remain sequenced behind those owners:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;
