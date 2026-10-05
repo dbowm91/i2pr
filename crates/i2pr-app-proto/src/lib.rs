@@ -2084,6 +2084,9 @@ mod tests {
 
         let ipv4: IpAddr = "8.8.8.8".parse().unwrap();
         let mapped: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        // The pre-fix raw IpAddr comparison treated these as distinct and
+        // missed the IPv4 rule when the resolver supplied the mapped form.
+        assert_ne!(ipv4, mapped);
         let hostname = rule(
             DestinationSelector::Hostname("allowed.example".into()),
             RuleAction::Allow,
