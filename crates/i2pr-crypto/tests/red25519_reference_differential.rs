@@ -4,8 +4,15 @@
 //! unmodified i2pd reference library at `2c694149fa6996eaeb23e378d5f83c9d3232c22f`. The test
 //! proves three separate agreements: that i2pr derives the same blinded keys and storage key
 //! from the same destination, that i2pr accepts the reference's blinded private key as a valid
-//! key for the reference's blinded public key, and that i2pr verifies a signature the reference
-//! produced with its blinded key.
+//! key for the reference's blinded public key, and — as a classified divergence rather than an
+//! agreement — that the reference's own type-11 signature does **not** verify under the
+//! specification's equation.
+//!
+//! The reference implements the Red25519/ELS2 domain in full: it blinds to signature type 11,
+//! derives the same alpha and the same DHT storage key, and signs with the bare Zcash transcript
+//! `SHA-512(T ‖ A ‖ M)` / `SHA-512(R ‖ A ‖ M)`, verifying type 11 through a plain Ed25519
+//! verifier. Only the transcript differs from the specification, and
+//! `red25519_plain_ed25519_divergence.rs` pins that boundary in both directions.
 //!
 //! Randomized signatures are compared by acceptance, never by byte equality, because Red25519
 //! signing is randomized by design.

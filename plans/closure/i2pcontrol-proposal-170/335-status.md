@@ -1,11 +1,137 @@
-# Plan 335 status — blocked: the two named references do not implement the domain, and no Java build is provisionable here
+# Plan 335 status — blocked: the Java live lane is unprovisioned; the i2pd type-11 transcript incompatibility is measured
 
 - Plan: [`plans/implementation/i2pcontrol-proposal-170/335-encrypted-leaseset-live-interoperability.md`](../../implementation/i2pcontrol-proposal-170/335-encrypted-leaseset-live-interoperability.md)
-- Status: **`blocked-live-lanes-unrunnable-references-lack-the-red25519-els2-domain`**
-- Decision date: 2026-10-05
+- Status: **`blocked-java-lane-unprovisioned-i2pd-type-11-transcript-incompatible`**
+- Decision date: 2026-10-05 (corrected 2026-10-05 — see the correction below)
 - Evaluation head: **`3c138a9`** (Plan 334 reclosed passed)
 - Classification: external interoperability + branch closure. It promotes **no** capability
   advertisement and does **not** close the branch.
+
+## Correction, 2026-10-05 — the original diagnosis was wrong
+
+The original version of this record claimed that the two named references **do not implement the
+Red25519/ELS2 domain at all**, and therefore that the overlapping feature set was empty and that
+provisioning a Java router "would not help". **That claim was false and is retracted.** The
+original text is preserved verbatim at the end of this file rather than rewritten, so the error
+and its correction both stay visible.
+
+**The error.** The evidence offered for Java I2P was the absence of the literal `I2P_Red25519H`
+from the tree. That string is the *specification's hash domain*, not a class name or a feature
+marker; searching for it and concluding the scheme was missing inverted the finding. The only
+valid inference from that absence is that Java does not apply the specified *domain* — a
+transcript statement, not an implementation statement. The i2pd evidence was the same class of
+mistake: a case-insensitive search for the literal `red25519` returned nothing because i2pd calls
+the scheme **RedDSA**.
+
+**The domain is present in both references.**
+
+| Reference | Pin | Implementation found in the tree |
+|---|---|---|
+| i2pd | `2c694149fa6996eaeb23e378d5f83c9d3232c22f` | `libi2pd/Identity.h:93` `SIGNING_KEY_TYPE_REDDSA_SHA512_ED25519 = 11`; `libi2pd/Signature.h:583-611` `RedDSA25519Signer` / `RedDSA25519Verifier` / `CreateRedDSA25519RandomKeys`; `libi2pd/Ed25519.cpp:169` `SignRedDSA`; `libi2pd/Blinding.cpp:37,88,148,166` blinding to type 11; `libi2pd/LeaseSet.h:295-301` with `LeaseSet.cpp:981,1086,1101` `LocalEncryptedLeaseSet2` and `CreateClientAuthData`; `libi2pd/Destination.cpp:1618` wrapping a LeaseSet2 into an ELS2 at publish; `tests/test-blinding.cpp:40` a RedDSA blind test. |
+| Java I2P | `93eef5db87fae48025de00c0eb9b669e97b92149` | `net/i2p/crypto/eddsa/RedDSAEngine.java:44` `public final class RedDSAEngine extends EdDSAEngine`, signing with an 80-byte nonce (`digest.getDigestLength() + 16`); `net/i2p/data/SigType.java:74` `RedDSA_SHA512_Ed25519(11, ...)` since 0.9.39; `net/i2p/data/EncryptedLeaseSet.java:182-184` accepting both `EdDSA_SHA512_Ed25519` and `RedDSA_SHA512_Ed25519`; plus `Blinding`, `BlindingInfoMessage`, `CreateLeaseSet2Message`. |
+
+Both references implement blinding, alpha derivation, the daily storage key, ELS2 framing, and
+client authorization. `specs/references/red25519-qualification-freeze.md` already said as much —
+its item 4 names Java's `RedDSAEngine` and its 80-byte nonce. **This closure record contradicted
+the repository's own governing freeze record**, which is how the error survived review.
+
+## What the live lane actually is, now measured
+
+The lane is runnable, and the cryptographic boundary has been executed against the real reference
+library. A C++ driver linked the unmodified `libi2pd.a` from the pinned i2pd revision and used
+i2pd's own `IdentityEx::CreateVerifier(11)` factory, so the verdicts below are i2pd's:
+
+| # | Signer | Verifier | Result |
+|---|---|---|---|
+| 1 | i2pd | i2pd | **ACCEPT** (control — i2pd's own RedDSA round trip) |
+| 2 | i2pd | i2pr | **REJECT** |
+| 3 | i2pr | i2pd | **REJECT** |
+| 4 | i2pr | i2pr | **ACCEPT** (control) |
+
+The blinded public keys the two implementations derived from the same scalar were **identical**.
+
+The cause is structural and it is present in both references: i2pd's `RedDSA25519Verifier` is a
+`typedef` of the plain `EDDSA25519Verifier`, and Java's `RedDSAEngine` overrides only
+`digestInitSign` and never the verify path. Both therefore sign type 11 with the bare Zcash
+transcript `SHA-512(T ‖ A ‖ M)` / `SHA-512(R ‖ A ‖ M)` and verify type 11 with plain Ed25519,
+while i2pr uses the specification's `I2P_Red25519H(x)` domain and 2-byte length framing on both
+hashes. The incompatibility is **symmetric** — each implementation accepts only its own form.
+
+Direction 2 was already pinned by `red25519_reference_differential.rs`. **Direction 3 had no
+executable coverage anywhere in the repository.** It is now pinned by
+`crates/i2pr-crypto/tests/red25519_plain_ed25519_divergence.rs` — three rows, verified to fail when
+the specification domain and length framing are removed from `h_star`. A first teeth experiment
+that removed only the domain did *not* trip the rows, which is itself worth recording: the 2-byte
+length framing alone is enough to break plain verification, so the domain and the framing break
+plain verification together, not independently.
+
+## Why this plan is still blocked
+
+One half of the acceptance is now measured and complete. The remainder is blocked on provisioning,
+not on the ecosystem:
+
+1. **The Java lane** needs a provisioned controlled Java I2P build. This host has no gradle, no
+   `i2p.jar`, and no Java I2P checkout (Java 25.0.4.1 is present; the I2P build toolchain is not).
+   The *feature* exists at the pin, so — unlike the original claim — provisioning is now the only
+   obstacle. Java's behavior remains source-level evidence, not an executed differential.
+2. **The negative / interoperability matrix** is partially unlocked: the type-11 signature rows are
+   now runnable against i2pd, and the blinding, storage-key, and address rows already agree. The
+   rows that need a second implementation to attack a *complete* ELS2 record still need the live
+   routers.
+
+## Support-floor consequences — still NOT applied
+
+Unchanged, because the "on pass" clause remains untriggered:
+
+- Plan 281 / M12 support authority was **not** updated to un-defer DatabaseStore type 5.
+- `specs/CONFORMANCE.md` and `specs/support.toml` were **not** given qualified ELS2 capabilities.
+  The surface `control.i2pcontrol-leaseset-modes` keeps
+  `ready-control-plane-and-publication-complete-black-box-evidence-landed` with
+  **`advertised = false`**.
+- Plans 325 and 326 were **not** recorded as superseded.
+- **The encrypted-LeaseSet branch is not marked complete.**
+
+## What is left, precisely
+
+1. Provision a Java I2P build and execute the Java half of the lane. The feature is present there;
+   this is a build/provisioning task, not an ecosystem gap.
+2. Execute the full live ELS2 exchange against both references, so the negative matrix has a second
+   implementation attacking a complete record.
+3. **Upstream reporting of the type-11 transcript divergence is still not done** and remains outside
+   this repository's scope. It is now a concrete, reproducible defect report: Java I2P and i2pd
+   verify type 11 through a plain Ed25519 verifier and therefore reject every
+   specification-conformant type-5 record. Emissary — also a Java implementation — is byte-identical
+   to i2pr, so the specification form already has independent support inside the Java ecosystem.
+
+## Routine floor at this evaluation
+
+- `cargo fmt --all --check`; `cargo check --locked --workspace --all-targets`;
+  `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`;
+  `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`: all clean.
+- `cargo test --locked --workspace --all-targets -- --test-threads=1`: **3,961 passed / 0 failed /
+  35 ignored / 146 suites** (3,958 / 145 before this correction; +3 rows and +1 suite from
+  `red25519_plain_ed25519_divergence.rs`).
+- `cargo test --locked --workspace --doc`: 19 binaries, 0 failures.
+- `cargo deny check advisories bans sources`: clean. **No dependency changed**, and no production
+  Rust source changed — this correction is a test plus records.
+- All boundary, vector, fixture, and acceptance-evidence scripts: clean.
+
+## Effect on the line
+
+**This line is still not complete.** The Proposal 170 / Red25519 + encrypted-LeaseSet2 branch is
+implemented and internally qualified, agrees byte-exactly with Emissary, and its type-11 signatures
+are mutually unverifiable with both second-family implementations that exist today — now
+*measured in both directions* rather than asserted, and for a reason that is a reference-side
+transcript defect against a published specification, not a missing feature. That is the honest
+state of the ecosystem, recorded here rather than papered over.
+
+---
+
+# Original text, preserved verbatim (2026-10-05, superseded)
+
+Retained so the error and its correction stay visible. **The central claim below — that the
+references contain no Red25519/ELS2 implementation, and that provisioning would not help — is
+retracted; see the correction at the top of this file.**
 
 ## Why this plan is blocked rather than passed
 

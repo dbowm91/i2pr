@@ -83,6 +83,15 @@ host — so Java's behavior is evidenced by tree-wide absence of the `I2P_Red255
 than by an executed differential. That gap is real, is named here, and belongs to Plan 335's live
 lane, which needs a controlled Java router in any case.
 
+> **Addendum, 2026-10-05.** The evidence in this paragraph is about the *transcript*, not about
+> whether Java implements the scheme, and Plan 335's first closure misread it that way before being
+> retracted. Java implements the full domain: `net.i2p.crypto.eddsa.RedDSAEngine`,
+> `SigType.RedDSA_SHA512_Ed25519` (11), and `net.i2p.data.EncryptedLeaseSet` accepting a RedDSA
+> signing key. Absence of the `I2P_Red25519H` literal shows only that Java does not apply the
+> specified domain. See the correction in
+> [`plans/closure/i2pcontrol-proposal-170/335-status.md`](335-status.md) and item 5 of
+> `specs/references/red25519-qualification-freeze.md`.
+
 ## Crypto review
 
 | Area | Finding |

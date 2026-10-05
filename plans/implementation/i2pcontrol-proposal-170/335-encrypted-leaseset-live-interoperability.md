@@ -1,14 +1,20 @@
 # Plan 335 — Live Encrypted LeaseSet interoperability and Plan 326 successor reclosure
 
-Status: **closed-blocked-live-lanes-unrunnable-references-lack-the-red25519-els2-domain**
+Status: **closed-blocked-java-lane-unprovisioned-i2pd-type-11-transcript-incompatible**
 
 Classification: external interoperability + branch closure.
 
 Hard dependency: Plan 334 passed. **Satisfied.**
 
 Outcome: closed `blocked` on 2026-10-05. The Emissary black-box differential ran and passed byte-exact
-(90 rows). The Java I2P and i2pd lanes **cannot** be satisfied against the pinned references, which
-contain no Red25519/ELS2 implementation at all, so the overlapping feature set is empty. See
+(90 rows). **Corrected the same day:** the original closure claimed the Java I2P and i2pd lanes were
+unsatisfiable because the pinned references "contain no Red25519/ELS2 implementation at all". That was
+wrong — the search used the specification's `I2P_Red25519H` hash-domain literal as a feature marker,
+and i2pd names the scheme `RedDSA` while Java names it `RedDSAEngine`. Both references implement the
+full domain. The live lane was then executed at the cryptographic boundary against the real
+`libi2pd.a` and measured symmetric incompatibility on type 11: i2pd→i2pr REJECT and i2pr→i2pd REJECT,
+with both controls ACCEPT and the blinded public keys identical. The remaining obstacle is
+provisioning a Java I2P build. See
 [`plans/closure/i2pcontrol-proposal-170/335-status.md`](../closure/i2pcontrol-proposal-170/335-status.md).
 
 ## Objective

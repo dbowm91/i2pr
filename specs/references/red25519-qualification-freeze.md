@@ -64,6 +64,30 @@ Executed and classified, not waived:
    I2P tree, so Java's type-11 engine cannot be applying the specified domain either. Java's
    `RedDSAEngine` mixes an 80-byte nonce and the public key into a SHA-512 digest, matching the
    same bare form.
+5. **Both references implement the domain in full.** Absence of the `I2P_Red25519H` literal is a
+   statement about the *transcript*, never about whether the scheme is implemented, and reading it
+   as an implementation statement is a mistake this repository has already made once: Plan 335's
+   first closure concluded from it that "the references contain no Red25519/ELS2 implementation at
+   all", which was false and is retracted in that record. The implementations are i2pd
+   `RedDSA25519Signer`/`RedDSA25519Verifier` with `LocalEncryptedLeaseSet2` and
+   `CreateClientAuthData`, and Java `net.i2p.crypto.eddsa.RedDSAEngine` with
+   `net.i2p.data.EncryptedLeaseSet` accepting `SigType.RedDSA_SHA512_Ed25519` (11).
+6. The divergence is **symmetric**, and both directions are now executed. A driver linked the
+   unmodified `libi2pd.a` at `2c694149` and used i2pd's own `IdentityEx::CreateVerifier(11)`:
+
+   | signer → verifier | result |
+   |---|---|
+   | i2pd → i2pd | ACCEPT (control) |
+   | i2pd → i2pr | REJECT |
+   | i2pr → i2pd | REJECT |
+   | i2pr → i2pr | ACCEPT (control) |
+
+   The blinded public keys derived by the two implementations from the same scalar were identical.
+   Direction 2 was already pinned by `red25519_reference_differential.rs`; direction 3 — which had
+   no executable coverage — is now pinned by `red25519_plain_ed25519_divergence.rs`, whose rows
+   were verified to fail when the specification domain and length framing are removed from `h_star`.
+   Removing only the domain is *not* sufficient to break plain verification: the specification's
+   2-byte length framing alone also breaks it, so the two are effective together.
 
 Normative specification plus its own published vector corpus decide, so i2pr keeps the specified
 transcript. The consequence for the branch is real and is carried into the Plan 331 closure
