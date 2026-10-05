@@ -2851,7 +2851,8 @@ pub struct TunnelControlState {
     store: ControlStore,
     /// Startup-owned inventory (inspectable, never mutated).
     startup: ServiceTunnelSet,
-    /// The one M10 manager (control-owned specs only).
+    /// The one M10 manager (Plan 337: shared with the product layer, not
+    /// control-only).
     manager: Arc<ServiceTunnelManager>,
     /// Serializes all mutations (same-name and cross-name).
     op_lock: tokio::sync::Mutex<()>,
@@ -3252,8 +3253,75 @@ impl TunnelControlState {
         for name in names {
             lock(&self.transitioning).remove(name);
         }
+        // Plan 337: with the manager committed, every control-owned
+        // service's persisted identity exists, so encrypted-LeaseSet2
+        // publication material can be derived and handed to the product's
+        // publication path. A failure here reconciles back rather than
+        // leaving a definition whose record can never be published.
+        if let Err(error) = self.sync_els2_materials() {
+            let back = self.reconcile_back().await;
+            return Err(ControlError::PublishFailed {
+                reason: static_control_reason(&error),
+                reconciled_back: back,
+            });
+        }
         self.verify_agreement()?;
         Ok((staged, outcome.diff))
+    }
+
+    /// Installs or drops encrypted-LeaseSet2 publication material for every
+    /// control-owned definition (Plan 337).
+    ///
+    /// A definition whose resolved mode publishes a type-5 record gets
+    /// material derived from **its own** persisted identity, so the
+    /// published address names the destination its inner LeaseSet2 is
+    /// signed by. A definition that publishes nothing has its material
+    /// dropped, which is what makes a mode edit or a delete take effect.
+    ///
+    /// Fails closed: if a type-5 definition's identity record cannot be
+    /// read, the caller reconciles back rather than silently publishing an
+    /// ordinary LeaseSet2 for a service the operator configured as
+    /// encrypted.
+    fn sync_els2_materials(&self) -> Result<(), ControlError> {
+        let definitions = lock(&self.definitions).clone();
+        let running = lock(&self.running).clone();
+        for (name, definition) in definitions.iter() {
+            let plan = definition.lease_set_security()?;
+            if !running.contains(name) || !plan.publishes_type5() {
+                self.manager.remove_els2_material(name);
+                continue;
+            }
+            let material = crate::service_els2::load_service_els2_material(
+                self.manager.data_dir(),
+                name,
+                &plan,
+                &definition.options,
+            )
+            .map_err(|error| {
+                // Static reasons only: an ELS2 failure must never carry
+                // the lookup secret, a client key, or a service name
+                // into a response, an error string, or a log line.
+                use crate::service_els2::ServiceEls2Error as E;
+                ControlError::Manager(match error {
+                    E::IdentityUnavailable { .. } => "service identity record unavailable",
+                    E::AuthorizationMissing { .. } => "client authorization block missing",
+                    E::AuthorizationUnexpected { .. } => {
+                        "client authorization block not permitted by mode"
+                    }
+                    E::MalformedClientKey { .. } => "client authorization key malformed",
+                    E::Els2 { .. } | E::Address { .. } => "encrypted leaseset material rejected",
+                })
+            })?;
+            // `None` means the plan publishes no type-5 record after all
+            // (already handled above); treat it as "no material" rather
+            // than publishing an ordinary record for an encrypted service.
+            if let Some(material) = material {
+                self.manager.install_els2_material(name, Arc::new(material));
+            } else {
+                self.manager.remove_els2_material(name);
+            }
+        }
+        Ok(())
     }
 
     /// Best-effort wait for listener sockets to free before staging.
@@ -3509,6 +3577,30 @@ impl TunnelControlState {
                 "lease_set_security".to_owned(),
                 lease_set_security_projection(definition),
             );
+            // Plan 337: a service that publishes an encrypted LeaseSet now
+            // has a real published address, so the control surface reports
+            // it. Without this an operator has no way to hand a client
+            // something that resolves. The address is a public
+            // destination with flag bits — never the lookup secret, the
+            // client keys, or any signing material — and it is absent (not
+            // null, not empty) for an ordinary service, so the existing
+            // output shape of every non-encrypted tunnel is unchanged.
+            if let Some(material) = self.manager.els2_material_for_spec(name) {
+                match material.address() {
+                    Ok(address) => {
+                        object.insert(
+                            "encrypted_address".to_owned(),
+                            serde_json::Value::String(address),
+                        );
+                    }
+                    Err(_) => {
+                        // A material that cannot encode an address is a
+                        // publication the operator must see as absent, not
+                        // as a silently wrong address.
+                        object.remove("encrypted_address");
+                    }
+                }
+            }
         }
         response
     }
@@ -4352,19 +4444,13 @@ mod tests {
         let store = ControlStore::open(directory.path()).expect("store opens");
         let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
 
-        // A control-created encrypted server: real definition, type-5
-        // posture resolved by Plan 334's mode mapping.
-        let mut options = server_options("127.0.0.1:8080");
-        options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
-        block_on(control.create(&create_request("encsrv", TunnelType::HttpServer, options)))
-            .expect("control create succeeds");
-        let definition = lock(&control.definitions)
-            .get("encsrv")
-            .cloned()
-            .expect("definition is durable");
-        let plan = definition.lease_set_security().expect("the block is valid");
-        assert!(plan.publishes_type5());
-        assert_eq!(plan.spelling(), Some("blinded"));
+        block_on(control.create(&create_request(
+            "encsrv",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:8080"),
+        )))
+        .expect("control create succeeds");
+        assert!(shared.has_runtime("encsrv"));
 
         // The shared manager now owns a server runtime, and the product
         // layer's sweep discovers it from the committed generation. This
@@ -4382,6 +4468,71 @@ mod tests {
                 .iter()
                 .any(|current| current.destination_id == runtime.destination_id),
             "the control-created destination must appear in the sweep's runtime list"
+        );
+    }
+
+    /// Plan 337 fail-closed: a control-created **encrypted** server is
+    /// refused, not silently downgraded to an ordinary LeaseSet2.
+    ///
+    /// The ELS2 identity is derived from the service's persisted identity
+    /// record, and a control-created server cannot currently request one:
+    /// Plan 323's persistent-identity options are client-only, and a
+    /// non-persistent dedicated group generates its identity in memory. So
+    /// the material cannot be built, and the transaction reconciles back
+    /// with a typed reason.
+    ///
+    /// The alternative — publishing an ordinary LeaseSet2 for a service the
+    /// operator configured as encrypted — would be the far worse failure: it
+    /// would look like success and hand clients an unencrypted service. This
+    /// row pins the refusal. The capability gap itself is Plan 338's, not
+    /// this plan's.
+    #[test]
+    fn plan337_encrypted_control_server_without_a_persisted_identity_fails_closed() {
+        let directory = TempDir::new().expect("temp dir");
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+
+        let mut options = server_options("127.0.0.1:8080");
+        options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
+        let refused =
+            block_on(control.create(&create_request("encsrv", TunnelType::HttpServer, options)));
+        assert!(
+            refused.is_err(),
+            "an encrypted server with no persisted identity must be refused, not downgraded"
+        );
+        // No durable definition and no publication material survive a
+        // refused encrypted create.
+        assert!(
+            lock(&control.definitions).get("encsrv").is_none(),
+            "a refused encrypted create must not leave a durable definition behind"
+        );
+        assert!(
+            shared.els2_material_for_spec("encsrv").is_none(),
+            "no publication material may be installed for a refused service"
+        );
+        // The reason is static text: never a secret, never a service name.
+        let reason = match refused {
+            Err(ControlError::PublishFailed { reason, .. }) => reason,
+            Err(other) => panic!("expected a publish failure, got {other:?}"),
+            Ok(_) => unreachable!("the create must be refused"),
+        };
+        assert_eq!(reason, "service identity record unavailable");
+
+        // KNOWN GAP (Plan 338, not this plan): the coordinator's
+        // `rollback_state` rewrites the in-memory mirror but never
+        // reconciles the manager, so a runtime staged by the reconcile
+        // inside `commit_locked` survives a post-reconcile failure. That
+        // hole is pre-existing -- `sync_names` and store-publish failures
+        // reach it too -- and Plan 337 only made it reachable for an
+        // encrypted create. Fixing it means changing every rollback path
+        // in the Plan 289 coordinator, which is exactly the kind of
+        // coordinator change this plan must not smuggle in. The row below
+        // pins the current behaviour so the gap is visible rather than
+        // latent; Plan 338 owns the fix.
+        assert!(
+            shared.has_runtime("encsrv"),
+            "KNOWN GAP: a post-reconcile failure leaves the staged runtime installed (Plan 338)"
         );
     }
 

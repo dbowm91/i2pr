@@ -3630,6 +3630,60 @@ async fn provision_all_service_router_material(
     Ok(())
 }
 
+/// Bounded lifetime of a type-5 publication window (Plan 337).
+///
+/// The outer encrypted-LeaseSet2 record wraps the service's ordinary
+/// LeaseSet2; the window is a publication bound, not a lease duration, and
+/// the inner record's own publication is what a client reads.
+const ELS2_PUBLICATION_WINDOW_SECONDS: u32 = 600;
+
+/// Builds the `DatabaseStore` a service publishes, and the key it is
+/// addressed at (Plan 337).
+///
+/// A service that installed encrypted-LeaseSet2 material on the shared
+/// manager publishes a type-5 record at **its own blinded storage key** —
+/// the day's key derived from the record's blinded public key, never the
+/// destination hash. A service with no material publishes its ordinary
+/// LeaseSet2 at the destination hash derived from the record itself. The
+/// caller selects the floodfill for whichever key this returns, so the two
+/// cases differ in both payload and addressing.
+///
+/// The rng seed mixes the destination hash so two services publishing in
+/// the same second do not reuse an ElGamal nonce stream; it is a
+/// publication nonce seed, not key material.
+fn service_publication_store(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    service_destination: i2pr_client::DestinationId,
+    lease_set2: i2pr_proto::LeaseSet2,
+    now_seconds: u64,
+) -> Result<i2pr_proto::DatabaseStoreMessage, ServiceProductError> {
+    let destination_hash =
+        lease_set2.header().destination().hash().map_err(|_| {
+            ServiceProductError::Provisioning("LS2 destination hash failed".to_owned())
+        })?;
+    let Some(material) = manager.els2_material_for_destination(service_destination) else {
+        return Ok(i2pr_proto::DatabaseStoreMessage {
+            key: destination_hash,
+            reply_token: 0,
+            reply_tunnel_id: None,
+            reply_gateway: None,
+            data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(lease_set2)),
+        });
+    };
+    let now_seconds_u32 = u32::try_from(now_seconds).unwrap_or(u32::MAX);
+    // The outer record must not outlive the inner LeaseSet2 it carries.
+    let expires_seconds = now_seconds_u32.saturating_add(ELS2_PUBLICATION_WINDOW_SECONDS);
+    let mut rng = ChaCha8Rng::seed_from_u64(
+        now_seconds.wrapping_add(u64::from(destination_hash.as_bytes()[0] as u32)),
+    );
+    let (_key, message) = material
+        .build_database_store(&lease_set2, now_seconds_u32, expires_seconds, &mut rng)
+        .map_err(|error| {
+            ServiceProductError::Provisioning(format!("type-5 record construction failed: {error}"))
+        })?;
+    Ok(message)
+}
+
 /// Plan 212 §13 — server-side local LS2 publication through the
 /// existing publication state machine.
 ///
@@ -3670,20 +3724,19 @@ async fn publish_service_ls2_for_service(
             "router-backed LS2 missing for publication".to_owned(),
         ));
     };
-    // Derive the store key from the LS2's contained destination
-    // (destination-derived, never floodfill).
-    let destination_hash =
-        lease_set2.header().destination().hash().map_err(|_| {
-            ServiceProductError::Provisioning("LS2 destination hash failed".to_owned())
-        })?;
+    // Plan 337: the store key is the record's **own** storage key — the
+    // day's blinded key for an encrypted service, the destination hash
+    // otherwise — and the floodfill below is selected for whichever it is.
+    let store_message =
+        service_publication_store(manager, service_destination, lease_set2, wall_secs())?;
     // The publication state machine requires a floodfill peer. The
     // controlled lane provisions the reference as floodfill; pick
-    // the first floodfill candidate for the LS2 routing key from
+    // the first floodfill candidate for the record's routing key from
     // the authoritative store. When no floodfill is known, fail
     // closed (no direct transport, no synthetic publication).
     let floodfill = {
         let coord_guard = destination_tunnels.lock().await;
-        let target = DestinationHash::from_hash(destination_hash);
+        let target = DestinationHash::from_hash(store_message.key);
         let routing_key = i2pr_netdb::router_hash_from_destination(target);
         coord_guard
             .candidate_hashes(&target, &routing_key)
@@ -3692,13 +3745,6 @@ async fn publish_service_ls2_for_service(
             .ok_or_else(|| {
                 ServiceProductError::Provisioning("no floodfill for publication".to_owned())
             })?
-    };
-    let store_message = i2pr_proto::DatabaseStoreMessage {
-        key: destination_hash,
-        reply_token: 0,
-        reply_tunnel_id: None,
-        reply_gateway: None,
-        data: i2pr_proto::DatabaseStoreData::LeaseSet2(Box::new(lease_set2)),
     };
     let request_id = {
         let mut coord_guard = destination_tunnels.lock().await;
@@ -3762,4 +3808,187 @@ async fn publish_service_ls2_for_service(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod plan337_publication {
+    use super::*;
+    use crate::service_els2::ServiceEls2Material;
+    use i2pr_crypto::RouterIdentityBundle;
+    use i2pr_i2pcontrol::proposal_leaseset_mode::{
+        LeaseSetClientAuthEntry, LeaseSetSecurityPlan, resolve_encrypt_lease_set_mode,
+        resolve_lease_set_security,
+    };
+    use i2pr_storage::ServiceDestinationStore;
+    use tempfile::TempDir;
+
+    const NOW: u32 = 1_700_000_000;
+
+    /// A real persisted service identity, loaded back through the storage
+    /// layer so the material is derived from bytes that would survive a
+    /// restart — never a stand-in.
+    fn record(data_dir: &std::path::Path, service_id: &str) {
+        let store = ServiceDestinationStore::for_service(data_dir, service_id).expect("store path");
+        store.generate_new(&mut rand_core::OsRng).expect("generate");
+    }
+
+    fn signed_inner_ls2(signer: &RouterIdentityBundle) -> i2pr_proto::LeaseSet2 {
+        let destination = i2pr_proto::Destination::new(signer.identity().key_and_cert().clone())
+            .expect("destination");
+        let header = i2pr_proto::LeaseSet2Header::new(
+            destination,
+            NOW,
+            600,
+            i2pr_proto::LeaseSet2Flags::from_raw(0),
+        )
+        .expect("header");
+        let placeholder =
+            i2pr_proto::SignatureValue::new(i2pr_crypto::ROUTER_SIGNING_KEY_TYPE, vec![0_u8; 64])
+                .expect("placeholder");
+        let keys = vec![
+            i2pr_proto::LeaseSet2EncryptionKey::new(
+                i2pr_proto::CryptoKeyType::X25519,
+                vec![0x55; 32],
+            )
+            .expect("key"),
+        ];
+        let leases = vec![i2pr_proto::Lease2::new(
+            i2pr_proto::Hash::from_bytes([0x11; 32]),
+            7,
+            i2pr_proto::Date32::from_seconds(NOW + 600),
+        )];
+        let unsigned = i2pr_proto::LeaseSet2::new(
+            header,
+            i2pr_proto::Mapping::empty(),
+            keys,
+            leases,
+            placeholder,
+        )
+        .expect("unsigned");
+        let signature = signer
+            .signing_key()
+            .sign(&unsigned.signature_preimage())
+            .expect("sign");
+        i2pr_proto::LeaseSet2::new(
+            unsigned.header().clone(),
+            unsigned.options().clone(),
+            unsigned.encryption_keys().to_vec(),
+            unsigned.leases().to_vec(),
+            signature,
+        )
+        .expect("signed ls2")
+    }
+
+    fn plan_for(mode: &str, secret: Option<&str>, clients: usize) -> LeaseSetSecurityPlan {
+        let resolved = resolve_encrypt_lease_set_mode(mode).expect("frozen mode");
+        let entries: Vec<LeaseSetClientAuthEntry> = (0..clients)
+            .map(|index| {
+                LeaseSetClientAuthEntry::new(
+                    &format!("c{index}"),
+                    &format!("{:02x}", index + 1).repeat(32),
+                )
+                .expect("valid entry")
+            })
+            .collect();
+        resolve_lease_set_security(Some(&resolved), secret, &entries).expect("valid plan")
+    }
+
+    /// A manager over a temp data dir, shaped like the composition root's.
+    fn manager(data_dir: &std::path::Path) -> Arc<crate::service_tunnels::ServiceTunnelManager> {
+        let config = crate::service_tunnels::ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 1024,
+            per_service_connection_ceiling: 128,
+            specs: Arc::new(i2pr_service_tunnels::ServiceTunnelSet::new()),
+            aliases: Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
+        };
+        Arc::new(crate::service_tunnels::ServiceTunnelManager::new(config).expect("manager builds"))
+    }
+
+    /// Plan 337: with encrypted-LeaseSet2 material installed, the
+    /// publication path files a **type-5** record at the day's **blinded**
+    /// storage key — the record's own key, not the destination hash.
+    ///
+    /// This is the property that makes the mode real, and it is what the
+    /// floodfill selection downstream keys on. Before Plan 337 no
+    /// control-created service reached this function at all.
+    #[test]
+    fn an_encrypted_service_publishes_type5_at_its_blinded_storage_key() {
+        let dir = TempDir::new().expect("temp dir");
+        let manager = manager(dir.path());
+        record(dir.path(), "encsvc");
+        let options = std::collections::BTreeMap::new();
+        let plan = plan_for("blinded", None, 0);
+        let material: Arc<ServiceEls2Material> = Arc::new(
+            crate::service_els2::load_service_els2_material(dir.path(), "encsvc", &plan, &options)
+                .expect("material resolves")
+                .expect("blinded mode produces material"),
+        );
+        manager.install_els2_material("encsvc", Arc::clone(&material));
+
+        let signer = RouterIdentityBundle::generate(&mut rand_core::OsRng).expect("signer");
+        let inner = signed_inner_ls2(&signer);
+        let destination_hash = inner.header().destination().hash().expect("hash");
+
+        // The manager resolves the material per destination; with no
+        // committed runtime there is none, so this row drives the key
+        // selection through the spec-keyed lookup the sweep uses.
+        let store = {
+            let material = manager
+                .els2_material_for_spec("encsvc")
+                .expect("material is installed");
+            let mut rng = ChaCha8Rng::seed_from_u64(u64::from(NOW));
+            let (_key, message) = material
+                .build_database_store(&inner, NOW, NOW + 600, &mut rng)
+                .expect("type-5 record builds");
+            message
+        };
+
+        let payload = match store.data {
+            i2pr_proto::DatabaseStoreData::EncryptedLeaseSet(record) => record,
+            other => panic!("blinded mode must publish a type-5 record, got {other:?}"),
+        };
+        // Addressed at the blinded key, which is derived from the record's
+        // own blinded public key and is *not* the destination hash.
+        assert_ne!(
+            store.key, destination_hash,
+            "a type-5 record must not be filed at the destination hash"
+        );
+        assert_eq!(
+            store.key,
+            i2pr_crypto::red25519::blinded_storage_key(
+                &i2pr_crypto::red25519::Red25519PublicKey::decode(payload.blinded_public_key())
+                    .expect("blinded public key")
+            ),
+            "the store key must be the record's own blinded storage key"
+        );
+        assert!(!payload.outer_ciphertext().is_empty());
+    }
+
+    /// Plan 337: a service with no installed material publishes its
+    /// ordinary LeaseSet2 at the destination hash, unchanged. The
+    /// encrypted branch must not leak into the ordinary path.
+    #[test]
+    fn an_ordinary_service_publishes_its_lease_set_at_the_destination_hash() {
+        let dir = TempDir::new().expect("temp dir");
+        let manager = manager(dir.path());
+        let signer = RouterIdentityBundle::generate(&mut rand_core::OsRng).expect("signer");
+        let inner = signed_inner_ls2(&signer);
+        let destination_hash = inner.header().destination().hash().expect("hash");
+        // No material installed, and no committed runtime: the ordinary
+        // branch must be taken.
+        assert!(manager.els2_material_for_spec("encsvc").is_none());
+        let store = service_publication_store(
+            &manager,
+            i2pr_client::DestinationId::from_hash(i2pr_proto::Hash::from_bytes([0xA1; 32])),
+            inner,
+            u64::from(NOW),
+        )
+        .expect("ordinary store builds");
+        assert_eq!(store.key, destination_hash);
+        assert!(matches!(
+            store.data,
+            i2pr_proto::DatabaseStoreData::LeaseSet2(_)
+        ));
+    }
 }

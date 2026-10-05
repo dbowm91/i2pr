@@ -437,6 +437,19 @@ pub struct ServiceTunnelManager {
     deferred_activation_tx: mpsc::Sender<DeferredActivationRequest>,
     deferred_activation_rx: Mutex<Option<mpsc::Receiver<DeferredActivationRequest>>>,
     deferred_activation_enabled: AtomicBool,
+    /// Plan 337 — per-spec-id encrypted-LeaseSet2 publication material,
+    /// installed by the I2PControl control state for a definition whose
+    /// resolved mode publishes a type-5 record, and consumed by the
+    /// product layer's publication path.
+    ///
+    /// The manager is the shared owner of every service runtime (Plan
+    /// 289), so it is the one place both the control plane and the
+    /// publication path can reach. Entries hold an `Arc` handle to a
+    /// single material: the type-5 identity is derived from the
+    /// service's persisted Ed25519 seed, so there is exactly one per
+    /// service and an `Arc` clone is another handle to *that* identity,
+    /// never a second copy of it.
+    els2_materials: Mutex<HashMap<String, Arc<crate::service_els2::ServiceEls2Material>>>,
 }
 
 const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
@@ -524,6 +537,7 @@ impl ServiceTunnelManager {
             deferred_activation_tx,
             deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
             deferred_activation_enabled: AtomicBool::new(false),
+            els2_materials: Mutex::new(HashMap::new()),
         })
     }
 
@@ -656,7 +670,12 @@ impl ServiceTunnelManager {
         &self.config
     }
 
-    /// Returns the router data directory.
+    /// Returns the router data directory, which is also where each
+    /// service's persisted identity record lives.
+    ///
+    /// Plan 337 derives encrypted-LeaseSet2 publication material from that
+    /// record, so the manager — not the control store path — is the single
+    /// authority for where a service's identity lives.
     pub fn data_dir(&self) -> &std::path::Path {
         &self.config.data_dir
     }
@@ -3170,6 +3189,69 @@ impl ServiceTunnelManager {
             .lock()
             .expect("service TLS policy poisoned")
             .clone()
+    }
+
+    /// Installs (or replaces) the encrypted-LeaseSet2 publication material
+    /// for one control-owned service (Plan 337).
+    ///
+    /// Called by the control state after a transaction commits, because the
+    /// material is derived from the service's persisted identity record,
+    /// which only exists once the runtime has been reconciled. A definition
+    /// whose mode does not publish a type-5 record installs nothing, and the
+    /// service publishes its ordinary LeaseSet2 instead.
+    pub fn install_els2_material(
+        &self,
+        spec_id: &str,
+        material: Arc<crate::service_els2::ServiceEls2Material>,
+    ) {
+        self.els2_materials
+            .lock()
+            .expect("ELS2 material registry poisoned")
+            .insert(spec_id.to_owned(), material);
+    }
+
+    /// Returns the encrypted-LeaseSet2 publication material for one spec,
+    /// if it publishes a type-5 record (Plan 337).
+    pub fn els2_material_for_spec(
+        &self,
+        spec_id: &str,
+    ) -> Option<Arc<crate::service_els2::ServiceEls2Material>> {
+        self.els2_materials
+            .lock()
+            .expect("ELS2 material registry poisoned")
+            .get(spec_id)
+            .cloned()
+    }
+
+    /// Returns the encrypted-LeaseSet2 material for the first committed
+    /// runtime belonging to `destination` (Plan 337).
+    ///
+    /// The publication path is driven per *destination*, while the material
+    /// is installed per *spec*: a destination group can hold several server
+    /// services, and each carries its own LeaseSet security block.
+    pub fn els2_material_for_destination(
+        &self,
+        destination: DestinationId,
+    ) -> Option<Arc<crate::service_els2::ServiceEls2Material>> {
+        let runtimes = self.all_service_runtimes();
+        let spec_id = runtimes
+            .iter()
+            .find(|runtime| runtime.destination_id == destination)
+            .map(|runtime| runtime.spec_id.clone())?;
+        self.els2_material_for_spec(&spec_id)
+    }
+
+    /// Drops the encrypted-LeaseSet2 material for one spec, returning it so
+    /// the caller can keep consuming it if a transition is still in flight
+    /// (Plan 337).
+    pub fn remove_els2_material(
+        &self,
+        spec_id: &str,
+    ) -> Option<Arc<crate::service_els2::ServiceEls2Material>> {
+        self.els2_materials
+            .lock()
+            .expect("ELS2 material registry poisoned")
+            .remove(spec_id)
     }
 
     /// Whether one destination's outbound sweep may bundle
