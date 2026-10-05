@@ -43,7 +43,11 @@ routable resolution by itself, but a matching IP/CIDR deny still wins and every
 non-global resolution requires an explicit IP/CIDR allow. IPv4/IPv6 special
 purpose ranges are frozen in the language-neutral reference against the IANA
 registries retrieved 2026-10-05. IPv4-mapped IPv6 inherits the mapped IPv4
-classification. The evaluator performs neither DNS nor networking.
+classification. Plan 352 freezes the corresponding policy identity rule:
+mapped targets canonicalize to IPv4 before exact/CIDR matching, while mapped
+IPv6 exact and CIDR policy selectors are invalid. Scope and rule evaluation
+therefore make the same decision for mapped and ordinary IPv4 forms. The
+evaluator performs neither DNS nor networking.
 The `Secured` attestation checks that every required property is asserted; it
 does not verify an operating-system backend. This crate does not establish a
 usable application capability, containment, anonymity, or privacy guarantee.

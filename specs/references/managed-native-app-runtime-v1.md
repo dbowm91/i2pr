@@ -201,6 +201,16 @@ conservatively non-global even when IANA marks a particular block globally
 reachable. IPv4-mapped IPv6 inherits the mapped IPv4 classification. New or
 unrecognized address families/classification inputs fail closed.
 
+For every IP/CIDR authorization decision, an IPv4-mapped IPv6 target is
+canonicalized to its embedded IPv4 address before matching. Scope classification
+and rule matching therefore use the same canonical address identity, and the
+unmapped IPv4 and mapped IPv6 runtime forms of the same address have identical
+policy results. Policy selectors must themselves be canonical: exact mapped
+IPv6 selectors and CIDR selectors whose network is IPv4-mapped IPv6 are invalid
+in v1 and must be rejected during policy validation. Administrators express
+IPv4 policy using ordinary IPv4 selectors. Native IPv6 targets and selectors
+retain their IPv6 identity.
+
 IPv4 non-global blocks: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`,
 `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`,
 `192.0.2.0/24`, `192.31.196.0/24`, `192.52.193.0/24`, `192.88.99.0/24`,
