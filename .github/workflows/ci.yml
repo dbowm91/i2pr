@@ -79,6 +79,8 @@ jobs:
       - name: Check runtime boundaries
         if: runner.os == 'Linux'
         run: bash scripts/check-runtime-boundaries.sh
+      - name: Check managed-app private client seams
+        run: python3 scripts/check-managed-app-private-client-seams.py
       - name: Check fixture manifest
         if: runner.os == 'Linux'
         run: bash scripts/check-fixture-manifest.sh

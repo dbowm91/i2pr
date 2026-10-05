@@ -80,6 +80,7 @@ python3 scripts/check-portable-service-tunnel-api.py
 bash scripts/check-portable-service-tunnel-consumer.sh
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
+python3 scripts/check-managed-app-private-client-seams.py
 bash scripts/check-service-tunnel-boundaries.sh
 bash scripts/check-m11-per-epoch-composition.sh
 bash scripts/check-service-anonymity-boundaries.sh

@@ -44,13 +44,22 @@ use i2pr_client::DestinationId;
 use i2pr_client::streaming::connection::{ConnectionId, ConnectionState};
 use i2pr_client::streaming::manager::RemoteDestination;
 use i2pr_runtime::CancellationToken;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, warn};
 
 use crate::destination_streaming::{
     PumpConfig, PumpEndpointError, PumpSendDisposition, StreamPumpEndpoint, run_stream_pump,
 };
 use crate::sam::{SamServiceState, sam_now_seconds, streaming_now_ms};
+
+/// Async byte stream accepted by the daemon-owned SAM connection driver.
+/// The trait object keeps listener and private transports on the same path.
+pub trait SamAsyncStream: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> SamAsyncStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+/// Erased owned stream used across the SAM command-to-raw transition.
+pub type SamIoStream = Box<dyn SamAsyncStream>;
 
 /// Direction of the underlying Streaming connection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,7 +80,7 @@ pub enum RawDirection {
 pub struct RawStreamHandoff {
     /// Owned TCP socket. The command-mode task relinquishes every
     /// reference to this socket before constructing the handoff.
-    pub stream: TcpStream,
+    pub stream: SamIoStream,
     /// Owning SAM session identifier.
     pub session_id: SamSessionId,
     /// Owning local destination identifier.

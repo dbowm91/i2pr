@@ -1,9 +1,9 @@
-//! Plan 137 supervised loopback SAM v3.1 service.
+//! Plan 137 supervised SAM v3.1 service with loopback and private stream origins.
 //!
 //! The service is the single composition root for the SAM protocol in
 //! `i2pr`. It owns:
 //!
-//! - the loopback [`TcpListener`];
+//! - the optional loopback [`TcpListener`] admission adapter;
 //! - one [`SamSessionRegistry`] for the SAM session-ID/destination-ID
 //!   map (Plan 137 §7);
 //! - one router-local [`DestinationRegistry`] for the underlying
@@ -15,7 +15,9 @@
 //!
 //! The runtime-neutral command/parser/state-machine/registry surface
 //! lives in `i2pr-api`. This module is the runtime-neutral seam that
-//! maps the API into a Tokio-driven supervised service.
+//! maps the API into a Tokio-driven supervised service. Listener and trusted
+//! private streams use the same connection driver; a private origin cannot
+//! request host-target FORWARD.
 
 #![forbid(unsafe_code)]
 
@@ -83,7 +85,7 @@ pub use faults::{FaultPacketClass, SamDeliveryFaultCounters, SamDeliveryFaultPro
 pub(crate) use raw_stream::RawStreamCleanup;
 pub use raw_stream::{
     RawDirection, RawStreamError, RawStreamHandoff, RawStreamHandoffResolved, RawStreamOutcome,
-    run_raw_stream,
+    SamAsyncStream, SamIoStream, run_raw_stream,
 };
 pub use streams::{
     BridgeDeliveryError, BridgeDiagnostics, InboundTunnelBuildError, InboundTunnelFactory,
@@ -272,6 +274,7 @@ impl Default for StreamingPools {
 #[derive(Debug)]
 pub struct SamServiceState {
     config: SamConfig,
+    connection_permits: Arc<tokio::sync::Semaphore>,
     session_registry: Arc<SamSessionRegistry>,
     destination_registry: Arc<Mutex<DestinationRegistry>>,
     streaming_pools: Arc<Mutex<StreamingPools>>,
@@ -328,8 +331,12 @@ impl SamServiceState {
         let destination_drivers = Arc::new(Mutex::new(HashMap::new()));
         let delivery_counters = Arc::new(Mutex::new(HashMap::new()));
         let fault_profile = Arc::new(Mutex::new(SamDeliveryFaultProfile::disabled()));
+        let connection_permits = Arc::new(tokio::sync::Semaphore::new(usize::from(
+            config.limits.max_clients,
+        )));
         Ok(Self {
             config,
+            connection_permits,
             session_registry,
             destination_registry,
             streaming_pools,
@@ -1033,9 +1040,7 @@ impl SamServiceState {
             "SAM v3.1 loopback listener bound"
         );
 
-        let client_permits = Arc::new(tokio::sync::Semaphore::new(usize::from(
-            self.config.limits.max_clients,
-        )));
+        let client_permits = Arc::clone(&self.connection_permits);
 
         let child_token = cancellation.child_token();
         loop {
@@ -1046,7 +1051,7 @@ impl SamServiceState {
                     break;
                 }
                 accept = listener.accept() => {
-                    let (stream, _peer) = match accept {
+                    let (stream, peer) = match accept {
                         Ok(value) => value,
                         Err(error) => {
                             warn!(error = %error, "sam accept failed");
@@ -1060,17 +1065,21 @@ impl SamServiceState {
                             continue;
                         }
                     };
+                    let origin = SamConnectionOrigin::Loopback {
+                        peer_ip: peer.ip(),
+                    };
                     let state = Arc::clone(&self);
                     let child_token_for_task = child_token.clone();
                     let permit_for_task: OwnedSemaphorePermit = permit;
                     let children_for_task = children.clone();
                     if let Err(error) = children_for_task.clone().spawn(move |task_cancellation| {
-                        let _permit = permit_for_task;
                         let raw_scope = children_for_task.clone();
                         async move {
                             handle_connection(
                                 state,
-                                stream,
+                                Box::new(stream),
+                                origin,
+                                permit_for_task,
                                 task_cancellation,
                                 child_token_for_task,
                                 raw_scope,
@@ -1087,6 +1096,48 @@ impl SamServiceState {
         let _ = child_token.cancel(i2pr_core::CancellationReason::ParentScope);
         Ok(())
     }
+
+    /// Drives one private SAM connection without binding or connecting a
+    /// host socket. The caller owns task supervision; admission uses the
+    /// same bounded connection ceiling as the loopback listener.
+    #[allow(dead_code)] // The registered Plan 355 gateway is the production caller.
+    pub(crate) async fn drive_private_connection(
+        self: Arc<Self>,
+        stream: SamIoStream,
+        cancellation: CancellationToken,
+        service_cancellation: CancellationToken,
+        raw_children: ChildScope,
+    ) -> Result<(), PrivateConnectionAdmissionError> {
+        let permit = Arc::clone(&self.connection_permits)
+            .try_acquire_owned()
+            .map_err(|_| PrivateConnectionAdmissionError::AtCapacity)?;
+        handle_connection(
+            self,
+            stream,
+            SamConnectionOrigin::ManagedAppPrivate,
+            permit,
+            cancellation,
+            service_cancellation,
+            raw_children,
+        )
+        .await;
+        Ok(())
+    }
+}
+
+/// Admission failure for the narrow private SAM connection seam.
+#[allow(dead_code)] // Consumed by the registered Plan 355 gateway.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PrivateConnectionAdmissionError {
+    /// The configured per-service concurrent connection ceiling is full.
+    AtCapacity,
+}
+
+#[allow(dead_code)] // ManagedAppPrivate is activated by the registered Plan 355 gateway.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SamConnectionOrigin {
+    Loopback { peer_ip: IpAddr },
+    ManagedAppPrivate,
 }
 
 fn encode_public_for(identity: &DestinationIdentity) -> String {
@@ -1280,15 +1331,13 @@ enum ConnectionFailure {
 
 async fn handle_connection(
     state: Arc<SamServiceState>,
-    mut stream: TcpStream,
+    mut stream: SamIoStream,
+    origin: SamConnectionOrigin,
+    _connection_permit: OwnedSemaphorePermit,
     cancellation: CancellationToken,
     service_cancellation: CancellationToken,
     raw_children: ChildScope,
 ) {
-    let peer_ip = stream
-        .peer_addr()
-        .map(|address| address.ip())
-        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let connection_owner = state.next_forward_owner();
     let hello_timeout = state.config.limits.hello_timeout;
     let command_timeout = state.config.limits.command_timeout;
@@ -1323,8 +1372,8 @@ async fn handle_connection(
                     connection_state.clone(),
                     &outcome,
                     &mut stream,
+                    origin,
                     true,
-                    peer_ip,
                     connection_owner,
                     &raw_children,
                     connection_cancellation.clone(),
@@ -1361,8 +1410,8 @@ async fn handle_connection(
                         connection_state.clone(),
                         &outcome,
                         &mut stream,
+                        origin,
                         false,
-                        peer_ip,
                         connection_owner,
                         &raw_children,
                         connection_cancellation.clone(),
@@ -1494,7 +1543,7 @@ fn apply_disposition(
 }
 
 async fn receive_command(
-    stream: &mut TcpStream,
+    stream: &mut SamIoStream,
     reader: &mut LineReader,
     deadline: Duration,
 ) -> Result<String, ConnectionFailure> {
@@ -1587,9 +1636,9 @@ async fn dispatch_command(
     state: Arc<SamServiceState>,
     state_conn: ServerConnectionState,
     outcome: &CommandOutcome,
-    stream: &mut TcpStream,
+    stream: &mut SamIoStream,
+    origin: SamConnectionOrigin,
     _is_first: bool,
-    peer_ip: IpAddr,
     connection_owner: u64,
     raw_children: &ChildScope,
     session_cancellation: CancellationToken,
@@ -1704,7 +1753,17 @@ async fn dispatch_command(
         DispatchOutcome::RequireStreamForward { request } => {
             let request = *request;
             let session_id = SamSessionId::new(request.session_id.clone());
-            let mut outcome = execute_stream_forward(&state, request, peer_ip, connection_owner);
+            let mut outcome = match origin {
+                SamConnectionOrigin::ManagedAppPrivate => {
+                    Err(i2pr_api::sam::server_state::StreamForwardFailed {
+                        result: ReplyResult::I2pError,
+                        message: "STREAM FORWARD is unavailable on private connections".to_owned(),
+                    })
+                }
+                SamConnectionOrigin::Loopback { peer_ip } => {
+                    execute_stream_forward(&state, request, peer_ip, connection_owner)
+                }
+            };
             if outcome.is_ok()
                 && let Some(session_id) = session_id
                 && let Some(registration) = state.forward_registration(&session_id)
@@ -1770,7 +1829,7 @@ async fn dispatch_command(
 ///   `<raw bytes>` (no OK line and no peer-Destination line)
 async fn handle_stream_connect_outcome(
     outcome: DispatchOutcome,
-    stream: &mut TcpStream,
+    stream: &mut SamIoStream,
     state_conn: ServerConnectionState,
 ) -> Result<ConnectionDisposition, ConnectionFailure> {
     use i2pr_api::sam::reply::StreamStatus;
@@ -1868,7 +1927,7 @@ async fn handle_stream_connect_outcome(
     }
 }
 
-async fn write_reply(stream: &mut TcpStream, reply: &Reply) -> Result<(), ConnectionFailure> {
+async fn write_reply(stream: &mut SamIoStream, reply: &Reply) -> Result<(), ConnectionFailure> {
     let line = reply.encode();
     stream
         .write_all(line.as_bytes())
@@ -2898,7 +2957,7 @@ async fn run_forward_worker(
             }
         };
         let handoff = RawStreamHandoff {
-            stream: raw_stream,
+            stream: Box::new(raw_stream),
             session_id: registration.session_id.clone(),
             destination_id,
             attachment_id: attachment.stream_id,
@@ -3052,7 +3111,7 @@ async fn run_destination_driver(
 /// CSPRNG. Returns the same connection state.
 async fn handle_dest_generate(
     state_conn: ServerConnectionState,
-    stream: &mut TcpStream,
+    stream: &mut SamIoStream,
 ) -> Result<ServerConnectionState, ConnectionFailure> {
     let mut rng = OsRng;
     let outcome = dest_generate(
@@ -3075,6 +3134,96 @@ async fn handle_dest_generate(
     };
     write_reply(stream, &reply).await?;
     Ok(state_conn)
+}
+
+#[cfg(test)]
+mod private_connection_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn private_config() -> SamConfig {
+        SamConfig {
+            enabled: false,
+            bind_address: "127.0.0.1".parse().expect("loopback IP"),
+            port: 0,
+            limits: SamLimits::loopback_test_profile(),
+        }
+    }
+
+    async fn read_line(stream: &mut tokio::io::DuplexStream) -> String {
+        let mut line = Vec::new();
+        loop {
+            let mut byte = [0_u8; 1];
+            stream.read_exact(&mut byte).await.expect("reply byte");
+            line.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
+        }
+        String::from_utf8(line).expect("SAM reply is UTF-8")
+    }
+
+    #[tokio::test]
+    async fn private_connection_uses_sam_driver_without_listener_and_denies_forward() {
+        let mut config = private_config();
+        config.limits.hello_timeout = Duration::MAX;
+        config.limits.command_timeout = Duration::MAX;
+        let state = Arc::new(SamServiceState::new(config).expect("service state"));
+        let parent = CancellationToken::new();
+        let children = ChildScope::for_test(&parent, i2pr_runtime::ChildFailurePolicy::FailParent);
+        let (mut client, router) = tokio::io::duplex(4096);
+        let driver = tokio::spawn(Arc::clone(&state).drive_private_connection(
+            Box::new(router),
+            parent.child_token(),
+            parent.clone(),
+            children,
+        ));
+
+        client
+            .write_all(b"HELLO VERSION MIN=3.1 MAX=3.1\n")
+            .await
+            .expect("write HELLO");
+        assert!(
+            read_line(&mut client)
+                .await
+                .contains("HELLO REPLY RESULT=OK")
+        );
+        client
+            .write_all(b"STREAM FORWARD ID=private PORT=1 HOST=127.0.0.1\n")
+            .await
+            .expect("write FORWARD");
+        let reply = read_line(&mut client).await;
+        assert!(
+            reply.contains("RESULT=I2P_ERROR"),
+            "unexpected reply: {reply}"
+        );
+        assert!(
+            state
+                .forwardings
+                .lock()
+                .expect("forwardings lock")
+                .is_empty()
+        );
+
+        drop(client);
+        driver
+            .await
+            .expect("connection task join")
+            .expect("admission");
+        assert!(
+            state
+                .forwardings
+                .lock()
+                .expect("forwardings lock")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn raw_handoff_accepts_in_memory_transport_type() {
+        let (_client, router) = tokio::io::duplex(64);
+        let _: SamIoStream = Box::new(router);
+    }
 }
 
 #[cfg(test)]

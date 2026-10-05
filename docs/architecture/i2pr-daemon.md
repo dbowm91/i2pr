@@ -167,10 +167,10 @@ mode transfers the generic transport into the same supervised raw driver.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/sam.rs` | 3 189 | Plans 137–149 supervised loopback SAM 3.1 listener and composition root; Plan 294 canonical address-book step in `NAMING LOOKUP` (session/Base32 paths precede it; inactive stays `KeyNotFound`). `FORWARD_COPY_CHUNK = 16 * 1024` | `SamServiceState`, `SamServiceError`, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
+| `src/sam.rs` | 3 335 | Plans 137–149 supervised SAM 3.1 composition root; listener adapter and private async-stream entry share one driver; private SAM denies `STREAM FORWARD`; Plan 294 canonical address-book step in `NAMING LOOKUP` | `SamServiceState`, `SamServiceError`, private connection seam, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
 | `src/sam/fabric.rs` | 457 | Plan 149 localhost product fabric: OS-CSPRNG tunnel material, signed LeaseSet2, per-destination runtime-driver factory, typed delivery sweep counters | `SamLocalProductFabric`, `LocalDestinationProduct`, `LocalhostInboundTunnelFactory`, `DeliverySweepCounters`, `LocalDeliveryDegradation` |
 | `src/sam/streams.rs` | 2 038 | Plans 138/143/144 SAM Streaming bridge; Plan 129 destination stack drives the live bridge through `i2pr_client::deliver`, canonical-streaming routing for SYN responses | `SamDestinationBridge`, `SamDestinations`, `bridge_to_peer`, `BridgeDiagnostics`, `SamDestinationHandle::lookup_by_peer_hash`, `receiver_streaming`, `peer_destination_hash` |
-| `src/sam/raw_stream.rs` | 821 | Plan 147 dedicated raw STREAM socket driver (the Plan 143 command-mode regression fix: real TCP <-> `StreamingManager` loop, CSPRNG CONNECT path) | raw-stream types |
+| `src/sam/raw_stream.rs` | 830 | Plan 147 dedicated raw STREAM driver over an owned async byte stream (the Plan 143 command-mode regression fix: real byte-stream <-> `StreamingManager` loop, CSPRNG CONNECT path) | `SamAsyncStream`, `SamIoStream`, raw-stream types |
 | `src/sam/faults.rs` | 464 | Plan 151 §8 deterministic pre-start delivery fault seam for adversarial tests (packet-level faults a TCP SAM client can never observe) | fault types |
 
 ### I2CP
@@ -183,7 +183,7 @@ the existing daemon `ChildScope` ownership and service limits.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
-| `src/i2cp.rs` | 2 516 | Plan 167 supervised loopback I2CP v0.9.67 listener; Plan 168 bounded per-session message/data plane; Plan 169 reconfigure transaction handler + synchronous destroy drain; **Plan 171 explicit `stream.shutdown()` on the common per-connection terminal path**; Plan 170 `ReplyAndFollowup` `RequestVariableLeaseSet` | `I2cpServiceState`, `I2cpServiceError`, `I2cpServiceSnapshot`, `I2cpSessionState`, `handle_connection`, `handle_connection_inner`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `drop_connection` |
+| `src/i2cp.rs` | 2 616 | Plan 167 supervised I2CP listener adapter and private async-stream entry share one connection driver; Plan 168 bounded per-session message/data plane; Plan 169 reconfigure transaction handler + synchronous destroy drain; **Plan 171 explicit `stream.shutdown()` on terminal paths**; Plan 170 `ReplyAndFollowup` `RequestVariableLeaseSet` | `I2cpServiceState`, `I2cpServiceError`, `I2cpServiceSnapshot`, `I2cpSessionState`, private connection seam, `handle_connection`, `handle_connection_inner`, `install_client_lease_set2`, `reserve_client_destination`, `handle_send_message`, `handle_send_message_expires`, `handle_dest_lookup`, `derive_bandwidth_reply`, `handle_reconfigure_session`, `handle_destroy_session`, `apply_reconfigure`, `ReconfigurationOutcome`, `teardown_connection`, `drop_connection` |
 
 ### I2PControl
 
