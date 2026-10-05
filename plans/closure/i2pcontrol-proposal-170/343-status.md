@@ -120,8 +120,8 @@ under saturation, which is what forced the linear ramp.
 | `cargo check --locked --workspace --all-targets` | pass |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | pass |
 | `cargo test --locked -p i2pr-service-tunnels` | 339 passed, 0 failed (was 313; +26) |
-| `cargo test --locked -p i2pr-daemon --lib` | 549 passed, 0 failed (was 538; +11) |
-| `cargo test --locked --workspace --all-targets -- --test-threads=1` | see the floor section below |
+| `cargo test --locked -p i2pr-daemon --lib` | 550 passed, 0 failed (was 538; +12) |
+| `cargo test --locked --workspace --all-targets -- --test-threads=1` | **4,055 passed, 0 failed, 35 ignored across 147 suites**, `EXIT=0`. Plan 341's floor was 4,018 / 0 / 35 across the same 147 suites, so **+37 rows and +0 suites**. |
 | `bash scripts/check-dependency-direction.sh` | pass |
 | `bash scripts/check-runtime-boundaries.sh` | pass |
 | `bash scripts/check-service-tunnel-boundaries.sh` | pass, including new rules 9-11 |
@@ -130,9 +130,24 @@ under saturation, which is what forced the linear ramp.
 All commands above were run locally on Linux. No hosted CI run backs this record.
 
 **Evidence-ordering caveat, stated rather than glossed.** The full serial floor
-ran at the implementation state (`4dc69d0` plus the guard script); the record
-files in this commit touch no `crates/*/src`, so they cannot affect the result.
-The floor was not re-run at the exact closure commit.
+ran at the implementation state (`4dc69d0` plus the guard script) and finished at
+**4,055 / 0 / 35 across 147 suites**. Two later commits touch the tree without
+re-running it:
+
+- the guard script and the record files, which touch no `crates/*/src` and
+  therefore cannot change a test result — re-verified directly with
+  `check-service-tunnel-boundaries.sh`, the planning unittests, the
+  plan-number checker, and the two evidence checkers;
+- one corrective fix landed after the floor started: `open_via_outproxy`'s
+  comment claimed the last attempt's reason was "kept alongside the
+  exhaustion" while the code discarded it via `let _ = last;`. The code now
+  records it through `note_exhausted`, with a row asserting both facts are
+  counted. That row is the one test the floor did not see; it was verified
+  separately in the daemon lib (12 outproxy rows, 550 lib rows, clippy
+  `-D warnings` clean).
+
+The floor was **not** re-run at the exact closure commit, and the honest
+floor number is therefore 4,055, not 4,056.
 
 ## Invariant, failure, migration, and security review
 

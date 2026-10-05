@@ -452,12 +452,22 @@ pub async fn open_via_outproxy(
             }
         }
     }
-    // Every attempt was spent. The reason the *last* one failed is kept
-    // alongside the exhaustion, because "the outproxy rejected the
-    // credential four times" is a more useful diagnosis than "exhausted".
-    let _ = last;
-    note(counters, |c| c.attempts_exhausted += 1);
+    // Every attempt was spent. The last attempt's reason is recorded
+    // alongside the exhaustion rather than discarded, because "the outproxy
+    // rejected the credential N times" is a far more useful diagnosis than
+    // "exhausted" and the counters are the only surface that carries it.
+    note_exhausted(counters, last);
     Err(OutproxyFailure::AttemptsExhausted)
+}
+
+/// Records an exhausted request: the terminal reason of the last attempt and
+/// the exhaustion itself. Split out so the composition is testable without a
+/// live route.
+fn note_exhausted(counters: &std::sync::Mutex<OutproxyCounters>, last: OutproxyFailure) {
+    note(counters, |c| {
+        c.note(last);
+        c.attempts_exhausted += 1;
+    });
 }
 
 /// One connect-and-negotiate attempt.
@@ -924,6 +934,18 @@ mod tests {
         let mut subset = config();
         subset.tunnelled = OutproxyList::parse("absent.example.i2p").expect("absent");
         assert!(RouterOutproxyProvider::new(subset, Arc::new(NoOutboundSecrets), None).is_err());
+    }
+
+    #[test]
+    fn an_exhausted_request_records_both_its_last_reason_and_the_exhaustion() {
+        let counters = std::sync::Mutex::new(OutproxyCounters::default());
+        note_exhausted(&counters, OutproxyFailure::AuthenticationRejected);
+        let guard = counters.lock().expect("counters");
+        // A wrong password N times is the diagnosis; "exhausted" alone would
+        // hide it, so both facts are recorded.
+        assert_eq!(guard.authentication_rejected, 1);
+        assert_eq!(guard.attempts_exhausted, 1);
+        assert_eq!(guard.connect_attempts, 0);
     }
 
     #[test]
