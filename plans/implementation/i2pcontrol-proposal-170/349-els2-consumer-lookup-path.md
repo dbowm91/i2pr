@@ -1,6 +1,6 @@
 # Plan 349 — i2pr encrypted LeaseSet2 consumer lookup path
 
-Status: **registered-type5-consumer-path-missing-on-the-i2pr-side-ready**
+Status: **in-progress-owner-implemented-and-proven-no-production-caller-yet; service-consumer-wiring-remains**
 
 Classification: capability (the consumer half of the type-5 lifecycle) + architecture gap
 closure. Origin: the classified boundary in
@@ -159,6 +159,14 @@ Rows must drive the production composition root, not private helpers: the existi
 `i2pr-daemon`'s black-box suites, which drive behaviour only through a real listener or the
 real composition, and `sam_stream_self_composed.rs`, which must not call private bridge or
 driver APIs.
+
+> **Progress.** The bounded owner (`EncryptedServiceResolver`,
+> `crates/i2pr-daemon/src/encrypted_service_resolver.rs`) and its 17 rows are done and green. The
+> plan is **not** closed, because the owner has **no production caller**: a service-tunnel
+> destination is a raw 32-byte `DestinationId`, so pointing one at a b33 address needs new
+> configuration surface, secret storage, and tunnel-lifecycle integration. The remaining work and
+> the requirement matrix are in
+> [`349-status.md`](../../closure/i2pcontrol-proposal-170/349-status.md).
 
 ## Acceptance criteria
 
