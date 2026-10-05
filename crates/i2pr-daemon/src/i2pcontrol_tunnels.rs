@@ -17,11 +17,11 @@
 //! same runtime the product layer delivers and publishes through. Two
 //! consequences are load-bearing and must not be undone:
 //!
-//! - [`Self::candidate_set`] describes the **whole** manager surface, carrying
+//! - `candidate_set` describes the **whole** manager surface, carrying
 //!   startup-owned specs through verbatim and adding control-owned running
 //!   specs. `reconcile` is a whole-set transactional replace, so a
 //!   control-only candidate would silently remove every startup-owned runtime.
-//! - [`Self::verify_agreement`] scopes its "no extra runtime" rule to names this
+//! - `verify_agreement` scopes its "no extra runtime" rule to names this
 //!   coordinator does not own, because the manager is now shared.
 //!
 //! The rest of this module implements durable administrative ownership over a
