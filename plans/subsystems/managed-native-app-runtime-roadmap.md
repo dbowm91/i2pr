@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: parallel — Plans 345 and 349 are closed; Plans 352 and 353 are active. Plan 352 corrects the mapped-IPv6 representation-confusion defect found after Plan 349. Plan 353 owns branch integration/planning-authority cleanup before this work line is merge-ready. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
+Status: parallel — Plans 345, 349, and 352 are closed. Plan 352 corrected the mapped-IPv6 representation-confusion defect found after Plan 349. Plan 353 remains active for branch integration/planning-authority cleanup before this work line is merge-ready. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -77,7 +77,7 @@ The current repository already has the protocol-side prerequisites needed for a 
 
 Plan 345 now provides the runtime-neutral `i2pr-app-proto` foundation: application/publisher/instance principals, requested/granted/effective capability types, bounded frame/control vocabulary, manifest/UI descriptors, pure network-policy decisions, resource ceilings, and sandbox-attestation vocabulary. It deliberately provides no transport owner, process supervisor, network broker, package lifecycle owner, or console UI host.
 
-Post-closure review found four contract defects before any runtime consumer existed: hostname rules required a second public-IP allow; the IP classifier treated some non-global/special-purpose ranges as public by fall-through; role-separated messages were not direction/reply complete; and `brokered_tcp` was openable without a defined connect transaction. Plan 349 corrected those defects; see `plans/closure/managed-native-app-runtime/349-status.md`. A later review found one remaining representation-confusion defect: IPv4-mapped IPv6 targets inherit IPv4 scope classification but are not canonicalized before exact IPv4/CIDR rule matching, so an explicit IPv4 deny may be bypassed by the mapped representation. Plan 352 owns that correction. The Plan-345 and Plan-349 closures remain authoritative for the evidence they ran, but downstream policy/API stability is re-blocked until Plan 352 closes.
+Post-closure review found four contract defects before any runtime consumer existed: hostname rules required a second public-IP allow; the IP classifier treated some non-global/special-purpose ranges as public by fall-through; role-separated messages were not direction/reply complete; and `brokered_tcp` was openable without a defined connect transaction. Plan 349 corrected those defects; see `plans/closure/managed-native-app-runtime/349-status.md`. A later review found a representation-confusion defect: IPv4-mapped IPv6 targets inherited IPv4 scope classification but were not canonicalized before exact IPv4/CIDR rule matching. Plan 352 closed that gap by canonicalizing targets and rejecting mapped policy selectors; see `plans/closure/managed-native-app-runtime/352-status.md`. The Plan-345 and Plan-349 closures remain authoritative for the evidence they ran. Bounded planning of the router gateway and package/lifecycle owner is unblocked; implementation still requires its own plan and this branch's separate Plan 353 integration closure.
 
 For planning purposes, this roadmap assumes Proposal 170 will reach the required complete/stable interface before the future managed-app Proposal-170 adapter is claimed complete. Plans 345, 349, and 352 do not depend on current Proposal-170 closure and may not falsify its current support state.
 
@@ -108,12 +108,12 @@ Future console UI assets are package-relative static resources under a distinct 
 
 ## 6. Dependency graph
 
-Plans 345 and 349 are closed. Plans 352 and 353 are registered correctives. Later capability milestones receive global numbers only when their implementation plans are written.
+Plans 345, 349, and 352 are closed. Plan 353 is the active integration corrective. Later capability milestones receive global numbers only when their implementation plans are written.
 
 ```text
 345 architecture + runtime-neutral app contract foundation (closed)
   -> 349 v1 direction/reply + broker reservation + network-policy corrective (closed)
-       -> 352 mapped-IPv6 policy canonicalization corrective (ready)
+       -> 352 mapped-IPv6 policy canonicalization corrective (closed)
             -> router app-principal gateway
                  - virtual/private SAM and I2CP transport adapters
                  - scoped Proposal 170 adapter after its stable contract is ready
@@ -126,7 +126,7 @@ Plans 345 and 349 are closed. Plans 352 and 353 are registered correctives. Late
 353 branch integration/planning-authority reconciliation (ready; merge-hygiene prerequisite, not a runtime capability dependency)
 ```
 
-Plan 352 reopens the interface gate for the router-gateway and package/lifecycle branches because mapped IPv6 can currently evade an IPv4 exact/CIDR rule match. Those successors are blocked until Plan 352 closes. Plan 353 is separate integration hygiene: it blocks merging this combined branch, but it does not define runtime semantics. OS sandbox qualification remains required before third-party applications may be described as securely contained.
+Plan 352 closed the mapped-address policy gap and unblocks bounded planning for the router-gateway and package/lifecycle branches. Plan 353 is separate integration hygiene: it blocks merging this combined branch, but it does not define runtime semantics. OS sandbox qualification remains required before third-party applications may be described as securely contained.
 
 The scoped Proposal 170 adapter remains separately blocked on canonical Proposal 170 completion; the current registry still has Plan 348 blocked on Plans 342 and 347. OS sandbox, broker, SDK, and UI-host plans remain sequenced behind their runtime/gateway owners as shown above.
 
@@ -136,10 +136,10 @@ The scoped Proposal 170 adapter remains separately blocked on canonical Proposal
 |---|---|---|---|---|---|
 | 345 | closed | `passed-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | `plans/closure/managed-native-app-runtime/345-status.md` |
 | 349 | closed | `passed-managed-app-v1-direction-broker-network-policy-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md` | `plans/closure/managed-native-app-runtime/349-status.md` |
-| 352 | active | `in-progress-managed-app-mapped-ipv6-policy-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md` | future `plans/closure/managed-native-app-runtime/352-status.md` |
+| 352 | closed | `passed-managed-app-mapped-ipv6-policy-canonicalization` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/352-managed-app-mapped-ipv6-policy-canonicalization-corrective.md` | `plans/closure/managed-native-app-runtime/352-status.md` |
 | 353 | active | `in-progress-plan349-branch-integration-reconciliation` | corrective invariant + polish/integration | `plans/implementation/managed-native-app-runtime/353-plan349-branch-integration-and-planning-authority-reconciliation.md` | future `plans/closure/managed-native-app-runtime/353-status.md` |
 
-Future capability milestone classes remain unnumbered until bounded implementation plans are written. The router-side app principal gateway and package/lifecycle manager with AppManager API are blocked on Plan 352. Plan 353 must also close before this combined branch is considered merge-ready. Later classes remain sequenced behind those owners:
+Future capability milestone classes remain unnumbered until bounded implementation plans are written. Bounded planning for the router-side app principal gateway and package/lifecycle manager with AppManager API is unblocked by Plan 352; implementation remains separately scoped. Plan 353 must also close before this combined branch is considered merge-ready. Later classes remain sequenced behind those owners:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;
 - package/lifecycle manager and administrator API;
 - Linux/macOS/Windows sandbox backends plus launch attestation;
@@ -218,6 +218,6 @@ Plan 345 remains closed as `passed-managed-native-app-runtime-contract-foundatio
 
 Plan 349 corrected the four pre-runtime API defects without invalidating Plan 345's executed infrastructure evidence: hostname grants now handle globally routable results with explicit-deny protection, non-global address classification is frozen and fail-closed, control messages have directional correlated outcomes, and `brokered_tcp` is reserved until a connect transaction is designed. Its closure remains authoritative for those corrections.
 
-Plan 352 is now the active interface corrective because IPv4-mapped IPv6 targets can be scope-classified as IPv4 while still missing IPv4 exact/CIDR policy rules. The SAM/I2CP gateway and package/lifecycle + AppManager branches are blocked on Plan 352. Plan 353 separately owns branch-integration hygiene: remove tracked Cargo `target/` output, reconcile the qualified Plan-349 collision across planning authorities, give the later portable-service-tunnel ADR a unique identifier, integrate current `main`, and verify from the integrated head. Proposal 170 integration remains gated on canonical Proposal 170 completion. No runtime owner or user-visible managed-app capability exists yet.
+Plan 352 passed as `passed-managed-app-mapped-ipv6-policy-canonicalization`: mapped targets canonicalize to IPv4 before exact/CIDR matching, and mapped selectors fail validation. Router-gateway and package/lifecycle + AppManager plan drafting is unblocked; no runtime owner or user-visible capability exists yet. Plan 353 separately owns branch-integration hygiene: remove tracked Cargo `target/` output, reconcile the qualified Plan-349 collision across planning authorities, give the later portable-service-tunnel ADR a unique identifier, integrate current `main`, and verify from the integrated head. Proposal 170 integration remains gated on canonical Proposal 170 completion.
 
 Future app implementation must wait for Plan 352 to close and must preserve the existing router ownership boundaries; this branch must also pass Plan 353 before merge.
