@@ -314,6 +314,21 @@ Current graph (`passed` / `ready` / `blocked`):
    pinned reference implements, so i2pr defines and labels it
    locally and fails closed without an attested denominator.)
 
+341 active   restart-safe non-echoing outbound proxy secret owner
+  (the prerequisite Plan 327's closure named as its blocker.
+   ProxyCredentials is a ONE-WAY inbound verifier and cannot
+   produce the password an I2P-routed outproxy must send, so no
+   provider is buildable first. Runtime-neutral capability trait in
+   i2pr-service-tunnels + router-bound ChaCha20-Poly1305 in the
+   daemon, keyed by HKDF over the persisted signing seed.
+   No pinned reference is authority: pinned i2pd's outproxy is
+   clearnet-only, and the Java at-rest scheme is unverified here.)
+
+342 registered  I2P-routed outproxy provider + canonical fields
+  (Plan 342: the provider itself, ProxyList / UseOutproxyPlugin /
+   OutproxyAuth / OutproxyType / SSLProxies semantics, and HTTP /
+   CONNECT / SOCKS integration. Blocked on Plan 341.
+
 PLAN 322 GAP CENSUS: ZERO. Plan 322 was amended to passed on
 2026-10-05; all 43 canonical RouterInfo additions now have a named
 owner. The transit-participation POSTURE is unchanged and stays a
