@@ -142,11 +142,36 @@ if missing:
     raise SystemExit(f"app-proto boundary checker positive control missed: {sorted(missing)}")
 
 bad = []
+contract_sources = []
 for path in source.rglob("*.rs"):
-    for category in violations(path.read_text(encoding="utf-8")):
+    text = path.read_text(encoding="utf-8")
+    contract_sources.append(text)
+    for category in violations(text):
         bad.append(f"{path.relative_to(root)}: forbidden {category} API")
 if bad:
     raise SystemExit("i2pr-app-proto runtime/OS boundary violation:\n" + "\n".join(bad))
+
+contract_text = "\n".join(contract_sources)
+directional_contract = (
+    "pub enum AppToHostMessage",
+    "pub enum HostToAppMessage",
+    "pub enum AdminToHostMessage",
+    "pub enum HostToAdminMessage",
+    "pub fn decode_app_to_host_control",
+    "pub fn decode_host_to_app_control",
+    "pub fn decode_admin_to_host_control",
+    "pub fn decode_host_to_admin_control",
+    "pub struct RequestId",
+    "pub enum RequestErrorCode",
+)
+missing_contract = [item for item in directional_contract if item not in contract_text]
+if missing_contract:
+    raise SystemExit(
+        "i2pr-app-proto directional contract surface missing: "
+        + ", ".join(missing_contract)
+    )
+if re.search(r"pub enum AppService\s*\{[^}]*BrokeredTcp", contract_text, re.S):
+    raise SystemExit("i2pr-app-proto must not expose brokered_tcp as an openable service")
 
 manifest = (root / "crates/i2pr-app-proto/Cargo.toml").read_text(encoding="utf-8")
 if re.search(r"^(tokio|tokio-util|rustix|libloading|nix|windows|objc)\s*=", manifest, re.M):
