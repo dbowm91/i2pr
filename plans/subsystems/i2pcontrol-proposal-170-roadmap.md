@@ -324,10 +324,32 @@ Current graph (`passed` / `ready` / `blocked`):
    No pinned reference is authority: pinned i2pd's outproxy is
    clearnet-only, and the Java at-rest scheme is unverified here.)
 
-342 registered  I2P-routed outproxy provider + canonical fields
-  (Plan 342: the provider itself, ProxyList / UseOutproxyPlugin /
-   OutproxyAuth / OutproxyType / SSLProxies semantics, and HTTP /
-   CONNECT / SOCKS integration. Blocked on Plan 341.
+343 passed   I2P-routed outproxy provider policy + route owner
+  (The provider Plan 327's record diagnosed as absent, in both
+   halves: a runtime-neutral policy layer plus a daemon route owner.
+   The no-direct-clearnet invariant is enforced STRUCTURALLY (an
+   outproxy entry that is not an I2P destination is refused, so one
+   cannot even name a non-I2P target), BEHAVIOURALLY (a clearnet
+   target with no provider is a typed refusal, never a direct route),
+   and STATICALLY (rules 9-11 of check-service-tunnel-boundaries.sh
+   scan both files for socket/resolver/plugin spellings, with a
+   positive control; all three inversions fail closed). The outproxy
+   clearnet target is a SEPARATE grammar from http::target, so the
+   direct path's .i2p-only enforcement is not weakened. Four defects
+   were caught by its own rows, including SOCKS5 IPv4/IPv6 reply
+   framing two bytes short. NOT reachable from any request path:
+   infrastructure, not a capability.)
+
+342 registered  outproxy option surface + request paths + wire lane
+  (Plan 342 retains the remainder after Plan 343: ProxyList /
+   UseOutproxyPlugin / OutproxyAuth / OutproxyUsername /
+   OutproxyPassword / OutproxyType / SSLProxies semantics with
+   transactional reconfiguration, HTTP / CONNECT request-path
+   integration and the Proposal-applicable SOCKS families, and the
+   self-composed in-tree loopback outproxy wire lane -- loopback
+   evidence, NOT interoperability, per the Plan 339 decision.
+   Plan 327 stays BLOCKED: the provider exists but no client can
+   reach it.)
 
 PLAN 322 GAP CENSUS: ZERO. Plan 322 was amended to passed on
 2026-10-05; all 43 canonical RouterInfo additions now have a named

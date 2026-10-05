@@ -544,6 +544,59 @@ What is claimed, and what is not:
   at-rest scheme was not verified, so no interoperability claim about credential
   storage format is made.
 
+## I2P-routed outproxy provider (Plan 343)
+
+Plan 327 was blocked on a missing outproxy. The provider now exists in both
+halves — a runtime-neutral policy layer and a daemon route owner — so a later
+plan has something to wire a request path to. See
+[`specs/references/proposal-170-outproxy-provider.md`](references/proposal-170-outproxy-provider.md).
+
+What is claimed, and what is not:
+
+- **The provider exists; no request path uses it.** No Proposal 170 option sets
+  an outproxy and no HTTP or SOCKS handler consults the provider, so the code is
+  exercised only by its own tests. This is infrastructure, **not** a capability:
+  the option surface, the request-path integration, and the loopback outproxy
+  wire lane are Plan 342, and **Plan 327 remains blocked**. No outproxy
+  capability is advertised in `specs/support.toml`.
+- **No direct clearnet capability exists, in any path, including failures.**
+  There is no fallback branch because there is never a fallback. This is
+  enforced three ways: `OutproxyEndpoint::parse` refuses any outproxy entry that
+  is not an I2P destination; a clearnet target with no provider is a typed
+  refusal rather than a direct route; and rules 9-11 of
+  `scripts/check-service-tunnel-boundaries.sh` scan both outproxy files for
+  socket, resolver, and plugin spellings, with a positive control so the guard
+  cannot silently become vacuous. All three static inversions were shown to fail
+  closed.
+- **The direct path's `.i2p`-only grammar is not weakened.** The outproxy
+  clearnet target is a **separate grammar** that shares no parse result with
+  `http::target`; the pre-existing `absolute_form_rejects_clearnet` and
+  `authority_form_rejects_clearnet` rows are unchanged and green.
+- **An `.i2p` target is never routed through an outproxy.** The bypass is
+  decided from the target's own spelling, before any provider is consulted, and
+  is re-checked inside the route opener rather than trusted from the caller. The
+  `.i2p` spelling is accepted by the outproxy grammar precisely so this decision
+  lives in one enforced place instead of in every call site.
+- **No resolver and no DNS leak.** The clearnet host is an opaque label that the
+  **outproxy** resolves. i2pr performs no name resolution, and IP literals are
+  refused outright — an outproxy can reach them, and relaying them would be a
+  port-scan primitive.
+- **Selection, retry, backoff, connect timeout, and handshake read are all
+  bounded**, and every operator input is clamped to a hard ceiling rather than
+  rejected, so no configuration can produce an unbounded loop or socket wait.
+- **The credential moves through Plan 341's owner and nowhere else.** The stored
+  form is opened only while building the header, an armed credential that cannot
+  be recovered is an error rather than an unauthenticated request, and a SOCKS
+  outproxy refuses an HTTP Basic credential instead of dropping it.
+- **`OutproxyType` is a closed vocabulary**, not a provider name and never a
+  command, path, or module, so no spelling reaches anything executable.
+  `UseOutproxyPlugin` semantics are not implemented here.
+- **No pinned reference is authority for this design.** Pinned i2pd `2c69414` has
+  no I2P-routed outproxy at all — its outproxy is a clearnet upstream defaulting
+  to `127.0.0.1:9050` — and the Java spellings for these fields were not
+  verified, so the `OutproxyType` vocabulary and the `SSLProxies` subset rule are
+  **i2pr's own locally defined design** and no interoperability claim is made.
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

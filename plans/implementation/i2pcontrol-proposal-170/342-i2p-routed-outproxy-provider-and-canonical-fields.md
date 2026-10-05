@@ -1,11 +1,12 @@
 # Plan 342 — I2P-routed outproxy provider and canonical proxy field completion
 
-Status: **registered-routed-outproxy-provider-awaits-no-implementation**
+Status: **registered-provider-delivered-awaits-option-surface-request-paths-and-wire-evidence**
 
 Classification: capability + security boundary (completes Plan 327).
 
-Hard dependencies: Plan 341 passed (the outbound secret owner); Plan 323 closed;
-Plan 327 closed blocked.
+Hard dependencies: Plan 343 passed (the provider policy and route owner);
+Plan 341 passed (the outbound secret owner); Plan 323 closed; Plan 327 closed
+blocked.
 
 Subsystem: `i2pcontrol-proposal-170`.
 
@@ -14,8 +15,22 @@ Subsystem: `i2pcontrol-proposal-170`.
 Give Plan 170's outproxy-related TunnelManager fields real semantics, on top of
 the secret owner Plan 341 landed. This is Plan 327's remaining scope.
 
-**Nothing here is implemented yet.** This document is the registered plan of
-record for the work, not a claim about it.
+**Partly implemented; the rest is not.** Plan 343 delivered the provider itself
+in both halves — the runtime-neutral policy layer
+(`crates/i2pr-service-tunnels/src/outproxy.rs`) and the daemon route owner
+(`crates/i2pr-daemon/src/outproxy_route.rs`), plus static guards on the
+no-direct-clearnet invariant. See
+[`343-status.md`](../../closure/i2pcontrol-proposal-170/343-status.md).
+
+Still outstanding, and still the point of this plan:
+
+- the seven canonical option fields and their transactional reconfiguration;
+- the HTTP and CONNECT request-path integration, and the Proposal-applicable
+  SOCKS families;
+- the self-composed loopback outproxy wire lane and its evidence checker.
+
+**The provider is not reachable from any request path**, so this document
+remains a plan of record rather than a claim, and Plan 327 remains blocked.
 
 ## Provider architecture
 

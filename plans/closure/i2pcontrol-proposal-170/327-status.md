@@ -53,3 +53,33 @@ guardrails, and says so rather than implying interoperability.
 
 **Status token deliberately unchanged.** Plan 327 is still blocked; only its
 blocker list shrank. Plan 328 remains blocked on 326 and 327.
+
+## Correction, 2026-10-05 — the provider now exists, but is not reachable (dated; the text above is preserved)
+
+Plan 343 closed the *shape* of the missing outproxy: a runtime-neutral policy
+layer and a daemon route owner, with the no-direct-clearnet invariant enforced
+structurally, behaviourally, and statically. See
+[`343-status.md`](343-status.md) and
+[`specs/references/proposal-170-outproxy-provider.md`](../../../specs/references/proposal-170-outproxy-provider.md).
+
+**Still blocked, and unchanged:** there is no outproxy a client can use. No
+Proposal 170 option sets one, and no HTTP or SOCKS request path consults the
+provider, so the code is exercised only by its own tests. Nothing routes
+anywhere. The blocker above is therefore **not discharged**; what changed is
+that the remaining work is now the option surface plus the request-path
+integration plus the wire lane, rather than an undesigned provider. That
+remainder stays **Plan 342**.
+
+**The substantive answer to this record's diagnosis.** The record said the
+provider must "never fall back to an OS socket". That is now a checked property
+rather than an intention: `OutproxyEndpoint::parse` refuses any outproxy entry
+that is not an I2P destination, so an outproxy cannot even *name* something
+reachable outside I2P; a clearnet target with no provider is a typed refusal;
+and rules 9-11 of `scripts/check-service-tunnel-boundaries.sh` scan both
+outproxy files for socket, resolver, and plugin spellings, with a positive
+control so the guard cannot silently become vacuous. All three static
+inversions were shown to fail closed.
+
+**Status token deliberately unchanged.** Plan 327 is still blocked. Only the
+description of the remaining work sharpened. Plan 328 remains blocked on 326
+and 327.
