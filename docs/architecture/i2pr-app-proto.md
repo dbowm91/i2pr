@@ -12,7 +12,8 @@ resource IDs, app principals, requested/granted/effective capability types,
 application and administrator message enums, a role handshake, a 12-byte
 frame envelope, strict bounded JSON control/manifest decoders, package-relative
 resource paths, pure default-deny TCP policy evaluation, sandbox requirement
-attestation validation, and resource ceilings. The language-neutral authority
+attestation validation, and resource ceilings. `PrincipalOwnedResource`
+always pairs an opaque resource handle with its app principal. The language-neutral authority
 is [`managed-native-app-runtime-v1.md`](../../specs/references/managed-native-app-runtime-v1.md),
 not serde tags or Rust layout.
 

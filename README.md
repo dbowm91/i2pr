@@ -29,6 +29,7 @@ Plan 248 / ADR 0026 separate experimental progression from full two-family route
 ```text
 crates/
   i2pr-proto/               Bounded wire codecs, typed errors, no I/O
+  i2pr-app-proto/           Runtime-neutral managed-application contract, no I/O or process owner
   i2pr-crypto/              Protocol-specific cryptographic wrappers
   i2pr-storage/             Atomic persistence and migration support
   i2pr-core/                Shared contracts, lifecycle, budgets, health

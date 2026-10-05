@@ -177,7 +177,7 @@ ceilings or denies launch. They cannot raise limits. Fixed ceilings:
 | frame payload / control JSON | 65,536 / 16,384 bytes |
 | live streams / in-flight requests | 128 / 64 |
 | UI message / diagnostic string | 16,384 / 1,024 bytes |
-| attestation fields / resource entries | 16 / 16 |
+| sandbox properties / resource entries | 16 / 16 |
 | resource request value | 1,099,511,627,776 |
 | network rules' port range | 1–65,535 |
 
