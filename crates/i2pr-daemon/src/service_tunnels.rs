@@ -3672,13 +3672,69 @@ impl ServiceTunnelManager {
         Ok(())
     }
 
-    async fn create_bridge_for_group(
+    /// Resolves the **persisted** identity for one service, or `None` when
+    /// its ownership policy is ephemeral (Plan 338).
+    ///
+    /// This is the single owner of "where does this service's identity live".
+    /// `create_bridge_for_group` calls it to build the runtime, and
+    /// `service_identity_record` calls it so the encrypted-LeaseSet2
+    /// material for the same spec reads the record the runtime actually
+    /// used. Two copies of this path would be a latent bug: a record written
+    /// where the publication cannot find it publishes an address that names
+    /// an identity the service is not using.
+    pub fn service_identity_record(
+        &self,
+        spec_id: &str,
+    ) -> Result<Option<ServiceDestinationRecord>, ServiceTunnelError> {
+        let committed = self
+            .committed_generation
+            .lock()
+            .expect("committed generation poisoned");
+        let Some(committed) = committed.as_ref() else {
+            return Ok(None);
+        };
+        let specs = committed.committed_specs.tunnels.clone();
+        let spec = specs
+            .iter()
+            .find(|spec| spec.id.as_str() == spec_id)
+            .ok_or_else(|| {
+                ServiceTunnelError::InvalidConfig(format!(
+                    "{spec_id} is not a committed service spec"
+                ))
+            })?;
+        let group_key = spec.policy.group_key(&spec.id);
+        let group_specs: HashMap<DestinationGroupKey, DestinationGroupSpec> = committed
+            .committed_specs
+            .destination_groups()
+            .into_iter()
+            .map(|group| (group.key.clone(), group))
+            .collect();
+        let group_spec = group_specs.get(&group_key).ok_or_else(|| {
+            ServiceTunnelError::InvalidConfig(format!("{spec_id} has no destination group"))
+        })?;
+        self.load_or_create_identity_record(spec, group_spec)
+    }
+
+    /// The store-resolution half of [`Self::create_bridge_for_group`].
+    fn resolve_persisted_identity(
         &self,
         spec: &i2pr_service_tunnels::ServiceTunnelSpec,
         group_spec: &DestinationGroupSpec,
-    ) -> Result<BridgeData, ServiceTunnelError> {
-        let now_seconds = service_now_seconds();
-        let identity = if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) =
+    ) -> Result<Option<DestinationIdentity>, ServiceTunnelError> {
+        self.load_or_create_identity_record(spec, group_spec)?
+            .map(|record| identity_from_record(&record, spec.id.as_str()))
+            .transpose()
+    }
+
+    /// Loads the persisted identity record for a persistent service, or
+    /// `None` when the service's identity is ephemeral. Generates the record
+    /// on first use so a restart never rotates an existing identity.
+    fn load_or_create_identity_record(
+        &self,
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+        group_spec: &DestinationGroupSpec,
+    ) -> Result<Option<ServiceDestinationRecord>, ServiceTunnelError> {
+        if let i2pr_service_tunnels::DestinationPolicy::KeyReference(key_ref) =
             spec.policy.ownership()
         {
             let store = ServiceDestinationStore::for_key_reference(
@@ -3687,50 +3743,66 @@ impl ServiceTunnelManager {
                 key_ref.as_str(),
             )
             .map_err(ServiceTunnelError::Storage)?;
-            let record = if store.exists() {
+            return Ok(Some(if store.exists() {
                 store.load().map_err(ServiceTunnelError::Storage)?
             } else {
                 let mut rng = OsRng;
                 store
                     .generate_new(&mut rng)
                     .map_err(ServiceTunnelError::Storage)?
-            };
-            identity_from_record(&record, spec.id.as_str())?
-        } else if group_spec.persistent {
-            let group_name = match &group_spec.key {
-                DestinationGroupKey::Dedicated(id) => id.as_str(),
-                DestinationGroupKey::Explicit(id) => id.as_str(),
-            };
-            let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
-                .map_err(ServiceTunnelError::Storage)?;
-            let legacy = match &group_spec.key {
-                DestinationGroupKey::Dedicated(id) => Some(
-                    ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
-                        .map_err(ServiceTunnelError::Storage)?,
-                ),
-                DestinationGroupKey::Explicit(_) => None,
-            };
-            let record: ServiceDestinationRecord = if store.exists() {
-                store.load().map_err(ServiceTunnelError::Storage)?
-            } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
-                store
-                    .migrate_from(&legacy)
-                    .map_err(ServiceTunnelError::Storage)?
-            } else {
-                let mut rng = OsRng;
-                store
-                    .generate_new(&mut rng)
-                    .map_err(ServiceTunnelError::Storage)?
-            };
-            identity_from_record(&record, spec.id.as_str())?
+            }));
+        }
+        if !group_spec.persistent {
+            return Ok(None);
+        }
+        let group_name = match &group_spec.key {
+            DestinationGroupKey::Dedicated(id) => id.as_str(),
+            DestinationGroupKey::Explicit(id) => id.as_str(),
+        };
+        let store = ServiceDestinationStore::for_group(&self.config.data_dir, group_name)
+            .map_err(ServiceTunnelError::Storage)?;
+        let legacy = match &group_spec.key {
+            DestinationGroupKey::Dedicated(id) => Some(
+                ServiceDestinationStore::for_service(&self.config.data_dir, id.as_str())
+                    .map_err(ServiceTunnelError::Storage)?,
+            ),
+            DestinationGroupKey::Explicit(_) => None,
+        };
+        Ok(Some(if store.exists() {
+            store.load().map_err(ServiceTunnelError::Storage)?
+        } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
+            store
+                .migrate_from(&legacy)
+                .map_err(ServiceTunnelError::Storage)?
         } else {
             let mut rng = OsRng;
-            DestinationIdentity::generate(&mut rng).map_err(|error| {
-                ServiceTunnelError::InvalidConfig(format!(
-                    "{} ephemeral identity generation failed: {error}",
-                    spec.id.as_str()
-                ))
-            })?
+            store
+                .generate_new(&mut rng)
+                .map_err(ServiceTunnelError::Storage)?
+        }))
+    }
+
+    async fn create_bridge_for_group(
+        &self,
+        spec: &i2pr_service_tunnels::ServiceTunnelSpec,
+        group_spec: &DestinationGroupSpec,
+    ) -> Result<BridgeData, ServiceTunnelError> {
+        let now_seconds = service_now_seconds();
+        // Plan 338: the store resolution has exactly one owner, so the
+        // ELS2 material built later for this same spec reads the record
+        // the runtime actually used rather than re-deriving a path that
+        // could drift from it.
+        let identity = match self.resolve_persisted_identity(spec, group_spec)? {
+            Some(identity) => identity,
+            None => {
+                let mut rng = OsRng;
+                DestinationIdentity::generate(&mut rng).map_err(|error| {
+                    ServiceTunnelError::InvalidConfig(format!(
+                        "{} ephemeral identity generation failed: {error}",
+                        spec.id.as_str()
+                    ))
+                })?
+            }
         };
         validate_destination_crypto_policy(&identity, group_spec.crypto, spec.id.as_str())?;
         let fabric = SamLocalProductFabric::new();

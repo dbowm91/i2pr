@@ -123,15 +123,22 @@ the drift this plan exists to remove. Their positive replacements are the rows a
 Two defects were found by the rows above and are pinned rather than worked around. Both are recorded
 as **Plan 338**.
 
-1. **A control-created server cannot hold a persisted identity, so every encrypted mode refuses.** The
-   ELS2 identity is derived from the service's persisted `ServiceDestinationRecord`. Plan 323's
-   persistent-identity options are validated against client tunnels only, and a non-persistent dedicated
-   group generates its identity in memory, so no record is written and the material cannot be built. The
-   create is refused with the static reason `service identity record unavailable`. That refusal is the
-   correct outcome — publishing an ordinary LeaseSet2 for a service configured as encrypted would look
-   like success and hand clients an unencrypted service. **The practical consequence is that no
-   encrypted mode Plan 334 maps is yet usable through the control surface**, even though the mapping,
-   validation, persistence, redaction, and record builder all work.
+1. **An encrypted control-created server was refused because the ELS2 loader read the wrong store.**
+   > **Corrected 2026-10-05 by Plan 338.** The diagnosis written here at Plan 337 closure time was
+   > **wrong**, and is recorded here rather than silently replaced. Plan 337 claimed a control-created
+   > server *cannot hold a persisted identity* because Plan 323's persistent-identity options are
+   > client-only and a non-persistent group generates its identity in memory. Both premises are false:
+   > `ServiceTunnelSet::destination_groups` sets `group.persistent` for `kind.is_server()`, so **every**
+   > server group is persistent, and the manager has always written a `ServiceDestinationRecord` for a
+   > control-created server. The real cause was a **store-path mismatch** — the runtime wrote the record
+   > at `for_group(data_dir, spec_id)` while `load_service_els2_material` read
+   > `for_service(data_dir, spec_id)`, so the material lookup found nothing. Plan 338 fixed it by
+   > routing the loader through `ServiceTunnelManager::service_identity_record`, the same code that
+   > wrote the record. No capability was missing; the capability was always there and looked in the
+   > wrong place. An encrypted control-created server now publishes a type-5 record and exposes a
+   > resolving address. The lesson for the record: the refusal was real and correctly fail-closed, but a
+   > fail-closed outcome was treated as a missing capability without first checking what the manager
+   > actually writes.
 
 2. **A failed control transaction can leave a runtime with no durable definition.** `rollback_state`
    rewrites the in-memory mirror but never reconciles the manager, and the reconcile-back inside

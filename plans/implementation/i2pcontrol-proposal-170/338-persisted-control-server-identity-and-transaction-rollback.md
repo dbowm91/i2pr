@@ -1,14 +1,14 @@
 # Plan 338 — Persisted service identity for a control-owned server, and rollback that reaches the manager
 
-Status: **registered-control-servers-have-no-persisted-identity-and-rollback-leaves-ghost-runtimes**
+Status: **in-progress-els2-loader-read-the-wrong-identity-store-and-rollback-leaves-ghost-runtimes**
 
-Classification: **corrective pass** against Plan 289 (coordinator) and Plan 323
-(persistent identity), on the Proposal 170 / I2PControl line.
+Classification: **corrective pass** against Plan 289 (coordinator) and Plan 334 (ELS2 material
+resolution), on the Proposal 170 / I2PControl line.
 Discovered while implementing Plan 337. Plan 337 closed with both of these pinned
 as known gaps; neither is fixable inside Plan 337's ownership boundary.
 
 Hard dependencies: Plan 289 (the coordinator whose rollback path is incomplete),
-Plan 323 (the persistent-identity options, currently client-only).
+Plan 334 (the ELS2 material loader whose store resolution was wrong).
 Interface dependencies: Plan 324 (destination signing/encryption policy),
 Plan 334 (the LeaseSet security block whose modes require a persisted identity),
 Plan 337 (the shared manager and the publication path this plan feeds).
@@ -20,32 +20,32 @@ service tunnel created through TunnelManager finally reaches the publication pat
 That work exposed two further defects, both found by the Plan 337 evidence rows and
 both pinned by them rather than worked around.
 
-### Gap 1 — a control-created server cannot have a persisted identity, so ELS2 refuses it
+### Gap 1 — the ELS2 loader read a store the runtime never wrote, so every encrypted mode refused
 
-An encrypted-LeaseSet2 identity is derived from the service's **persisted** identity
-record: `service_els2::build_service_els2_material` reads
-`ServiceDestinationRecord::signing_seed` so the published address names the
-destination the inner LeaseSet2 is signed by. A control-created server has no such
-record:
+> **Corrected during implementation, 2026-10-05.** This plan was registered from Plan 337's closure
+> claiming a control-created server *cannot hold a persisted identity*, because Plan 323's
+> persistent-identity options are client-only and a non-persistent group keeps its identity in memory.
+> **Both premises are false.** `ServiceTunnelSet::destination_groups` sets
+> `group.persistent |= service.kind.is_server()`, so every server group is persistent, and
+> `ServiceTunnelManager::create_bridge_for_group` has always written a
+> `ServiceDestinationRecord` for a control-created server. The cause was a **store-path mismatch**:
 
-- Plan 323's persistent-identity options (`PersistentClientKey`, `priv_key_file`) are
-  validated against **client** tunnels only — `normalize_definition` rejects them for
-  a server with `"PersistentClientKey applies to client tunnels only"`.
-- A non-persistent dedicated destination group generates its identity in memory.
-  `ServiceTunnelManager::create_bridge_for_group` touches
-  `ServiceDestinationStore` only for a `KeyReference` policy or a `persistent` group,
-  so a default control-created server writes no record at all.
+  | | Path |
+  |---|---|
+  | Where the runtime wrote the record | `ServiceDestinationStore::for_group(data_dir, spec_id)` |
+  | Where `load_service_els2_material` read | `ServiceDestinationStore::for_service(data_dir, service_id)` |
 
-So `sync_els2_materials` cannot build material, and the create is refused with the
-static reason `service identity record unavailable`. That refusal is correct and is
-pinned by `plan337_encrypted_control_server_without_a_persisted_identity_fails_closed`:
-publishing an ordinary LeaseSet2 for a service the operator configured as encrypted
-would look like success and hand clients an unencrypted service.
+  A `KeyReference` policy writes at `for_key_reference` — a third path. The loader found nothing at
+  `for_service`, so `sync_els2_materials` could not build material and the create was refused with the
+  static reason `service identity record unavailable`. The refusal itself was correct and fail-closed:
+  publishing an ordinary LeaseSet2 for a service the operator configured as encrypted would look like
+  success and hand clients an unencrypted service.
 
-The consequence is that **no encrypted mode Plan 334 maps is usable through the
-control surface at all**, even though the mapping, the validation, the persistence,
-the redaction, and the record builder all work. This is the last gap between Plan
-334's control surface and a real encrypted service.
+  The lesson is recorded because it is a reusable trap: **a fail-closed outcome was read as a missing
+  capability without first asking what the manager actually writes.** Three distinct store paths exist
+  for one concept, and the ELS2 loader had duplicated the resolution instead of asking the owner.
+
+  No capability was missing. The fix is a single owner for "where does this service's identity live".
 
 ### Gap 2 — a failed control transaction can leave a runtime with no durable definition
 
@@ -81,9 +81,9 @@ outcome of every refused encrypted service.
   generation, which the rollback path does restore. None inspects the manager after a
   *failed* transaction, because a successful transaction leaves the manager agreeing
   with the mirror and a failed one is only checked for the returned error.
-- Plan 323's persistent-identity rows cover client tunnels, which is the only case
-  its options admit, so the client-only restriction was never exercised from the
-  server side.
+- Plan 323's persistent-identity rows cover client tunnels, so the client-only
+  restriction was never exercised from the server side — and the server path turned
+  out not to need a new option at all.
 - Nothing before Plan 337 could reach either path: no control-created service reached
   the publication path, so no ELS2 material was ever requested, and no shared manager
   meant a ghost runtime was invisible next to a sibling the product layer owned.

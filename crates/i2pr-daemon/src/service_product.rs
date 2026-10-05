@@ -3819,17 +3819,83 @@ mod plan337_publication {
         LeaseSetClientAuthEntry, LeaseSetSecurityPlan, resolve_encrypt_lease_set_mode,
         resolve_lease_set_security,
     };
-    use i2pr_storage::ServiceDestinationStore;
     use tempfile::TempDir;
 
     const NOW: u32 = 1_700_000_000;
 
-    /// A real persisted service identity, loaded back through the storage
-    /// layer so the material is derived from bytes that would survive a
-    /// restart — never a stand-in.
-    fn record(data_dir: &std::path::Path, service_id: &str) {
-        let store = ServiceDestinationStore::for_service(data_dir, service_id).expect("store path");
-        store.generate_new(&mut rand_core::OsRng).expect("generate");
+    /// A real persistent server spec: `PersistentClient` ownership with a
+    /// dedicated group, so the manager writes a persisted identity record and
+    /// the ELS2 material is derivable from it. This is the shape a
+    /// control-created encrypted server has once Plan 338 lands.
+    fn persistent_generic_server(service_id: &str) -> i2pr_service_tunnels::ServiceTunnelSpec {
+        i2pr_service_tunnels::ServiceTunnelSpec {
+            id: i2pr_service_tunnels::ServiceTunnelId::parse(service_id).expect("id"),
+            kind: i2pr_service_tunnels::ServiceTunnelKind::GenericServer,
+            enabled: true,
+            listener: None,
+            target: Some(i2pr_service_tunnels::ServerTarget::LoopbackTcp(
+                "127.0.0.1:9".parse().expect("target"),
+            )),
+            targets: Vec::new(),
+            destination: None,
+            policy: i2pr_service_tunnels::DestinationPolicy::PersistentClient,
+            inbound_port: Some(9_090),
+            max_connections: 2,
+            max_buffered_bytes_per_direction: 65_536,
+            timeouts: i2pr_service_tunnels::ServiceTimeouts::defaults(),
+            shaping: i2pr_service_tunnels::TunnelShaping::balanced(),
+            streaming_interactive: false,
+            idle: i2pr_service_tunnels::IdlePolicy::disabled(),
+            access: i2pr_service_tunnels::ServerAccessPolicy::default(),
+            unique_local_address: false,
+            multihoming: false,
+            reply_bundling: false,
+            use_ssl: false,
+            http_options: None,
+            http_policy: i2pr_service_tunnels::HttpServerPolicy::default(),
+            socks5_options: None,
+            irc_options: None,
+            connect_options: None,
+            streamr_options: None,
+        }
+    }
+
+    /// A manager holding one **persistent** server spec, prepared so the
+    /// service's identity record is written and committed. This is the shape
+    /// a control-created encrypted server has once Plan 338 lands, and it is
+    /// what makes the ELS2 material derivable at all.
+    fn persistent_server_manager(
+        data_dir: &std::path::Path,
+        service_id: &str,
+    ) -> Arc<crate::service_tunnels::ServiceTunnelManager> {
+        let set = i2pr_service_tunnels::ServiceTunnelSet {
+            tunnels: vec![persistent_generic_server(service_id)],
+        };
+        let config = crate::service_tunnels::ServiceTunnelManagerConfig {
+            data_dir: data_dir.to_path_buf(),
+            aggregate_connection_ceiling: 1024,
+            per_service_connection_ceiling: 128,
+            specs: Arc::new(set),
+            aliases: Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
+        };
+        let manager = Arc::new(
+            crate::service_tunnels::ServiceTunnelManager::new(config).expect("manager builds"),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(manager.prepare())
+            .expect("the persistent server prepares");
+        assert_eq!(runtime.len(), 1, "one prepared runtime");
+        assert!(
+            manager
+                .service_identity_record(service_id)
+                .expect("record resolves")
+                .is_some(),
+            "a persistent server must have a persisted identity record"
+        );
+        manager
     }
 
     fn signed_inner_ls2(signer: &RouterIdentityBundle) -> i2pr_proto::LeaseSet2 {
@@ -3915,12 +3981,15 @@ mod plan337_publication {
     #[test]
     fn an_encrypted_service_publishes_type5_at_its_blinded_storage_key() {
         let dir = TempDir::new().expect("temp dir");
-        let manager = manager(dir.path());
-        record(dir.path(), "encsvc");
+        // A real persistent server spec, committed through the manager, so
+        // the identity record exists where the manager says it does. Plan
+        // 338 routes the ELS2 material through that same resolution rather
+        // than re-deriving a store path here.
+        let manager = persistent_server_manager(dir.path(), "encsvc");
         let options = std::collections::BTreeMap::new();
         let plan = plan_for("blinded", None, 0);
         let material: Arc<ServiceEls2Material> = Arc::new(
-            crate::service_els2::load_service_els2_material(dir.path(), "encsvc", &plan, &options)
+            crate::service_els2::load_service_els2_material(&manager, "encsvc", &plan, &options)
                 .expect("material resolves")
                 .expect("blinded mode produces material"),
         );

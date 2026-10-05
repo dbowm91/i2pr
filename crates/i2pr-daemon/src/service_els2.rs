@@ -43,7 +43,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 use i2pr_crypto::red25519::derive_public_key;
 use i2pr_i2pcontrol::proposal_leaseset_mode::{
@@ -55,7 +54,9 @@ use i2pr_netdb::{
     unblinded_scalar_from_ed25519_seed,
 };
 use i2pr_proto::SigningKeyType;
-use i2pr_storage::{ServiceDestinationRecord, ServiceDestinationStore};
+use i2pr_storage::ServiceDestinationRecord;
+#[cfg(test)]
+use i2pr_storage::ServiceDestinationStore;
 use rand_core::TryCryptoRng;
 use thiserror::Error;
 
@@ -385,8 +386,15 @@ fn els2_reason(error: &Els2Error) -> &'static str {
 ///
 /// `Ok(None)` means the plan does not publish a type-5 record, in which case
 /// the stored identity is not read at all.
+///
+/// The record is resolved by the **manager**, not by a path re-derived here.
+/// The manager owns "where does this service's identity live" — it wrote the
+/// record — so a second copy of that path could read a store the runtime does
+/// not use and publish an address naming the wrong identity. `Ok(None)` from
+/// the manager means the service's identity is ephemeral, which cannot produce
+/// a stable type-5 address and is reported as unavailable.
 pub fn load_service_els2_material(
-    data_dir: &Path,
+    manager: &crate::service_tunnels::ServiceTunnelManager,
     service_id: &str,
     plan: &LeaseSetSecurityPlan,
     options: &BTreeMap<String, String>,
@@ -394,17 +402,15 @@ pub fn load_service_els2_material(
     if !plan.publishes_type5() {
         return Ok(None);
     }
-    let store = ServiceDestinationStore::for_service(data_dir, service_id).map_err(|_| {
-        ServiceEls2Error::IdentityUnavailable {
-            service_id: service_id.to_owned(),
-            reason: "per-service identity path rejected",
-        }
-    })?;
-    let record = store
-        .load()
+    let record = manager
+        .service_identity_record(service_id)
         .map_err(|_| ServiceEls2Error::IdentityUnavailable {
             service_id: service_id.to_owned(),
-            reason: "per-service identity file unreadable",
+            reason: "service identity store rejected",
+        })?
+        .ok_or_else(|| ServiceEls2Error::IdentityUnavailable {
+            service_id: service_id.to_owned(),
+            reason: "service identity is ephemeral",
         })?;
     build_service_els2_material(service_id, plan, options, &record)
 }
@@ -449,15 +455,29 @@ mod tests {
         (dir, loaded)
     }
 
+    /// A manager over a temp dir with **no** committed generation, so no
+    /// service spec — and therefore no identity record — can be found. Any
+    /// path that consulted the store would fail here.
+    fn empty_manager(dir: &std::path::Path) -> crate::service_tunnels::ServiceTunnelManager {
+        let config = crate::service_tunnels::ServiceTunnelManagerConfig {
+            data_dir: dir.to_path_buf(),
+            aggregate_connection_ceiling: 16,
+            per_service_connection_ceiling: 4,
+            specs: std::sync::Arc::new(i2pr_service_tunnels::ServiceTunnelSet::new()),
+            aliases: std::sync::Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
+        };
+        crate::service_tunnels::ServiceTunnelManager::new(config).expect("manager builds")
+    }
+
     #[test]
     fn an_ordinary_plan_needs_no_material_and_reads_no_identity() {
         let plan = plan_for("disable", None, 0);
         let options = BTreeMap::new();
-        // No data dir is consulted: a path that does not exist is proof the
-        // ordinary path never touches the identity store.
-        let missing = Path::new("/nonexistent-i2pr-els2-root");
+        // No identity is consulted: with no committed spec the store cannot
+        // be resolved at all, so an ordinary plan must still resolve.
+        let dir = TempDir::new().expect("temp dir");
         assert!(
-            load_service_els2_material(missing, "svc", &plan, &options)
+            load_service_els2_material(&empty_manager(dir.path()), "svc", &plan, &options)
                 .expect("ordinary plan resolves")
                 .is_none()
         );

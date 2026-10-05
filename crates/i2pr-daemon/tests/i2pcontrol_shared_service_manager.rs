@@ -208,14 +208,14 @@ fn plan337_a_control_owned_server_survives_a_restart_without_rotating_its_identi
     assert!(second.store_generation() > 0);
 }
 
-/// Plan 337 secrets: nothing secret from the LeaseSet block reaches a
-/// control response, a `Debug` rendering, or an error string.
+/// Plan 338 secrets: nothing secret from the LeaseSet block reaches a control
+/// response, a `Debug` rendering, or an error string — now that an encrypted
+/// control-created service actually publishes and exposes a live address.
 ///
-/// Plan 334 guarantees this for the stored definition; this row checks the
-/// value now that the address and the publication material are live, since
-/// both are new surfaces a secret could leak through.
+/// Plan 334 guarantees this for the stored definition. This row re-checks it on
+/// the two surfaces Plan 337 added, because a secret could leak through either.
 #[test]
-fn plan337_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering() {
+fn plan338_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering() {
     let data = tempfile::tempdir().expect("temp data dir");
     let config = config(data.path());
     let manager = i2pr_daemon::build_shared_service_manager(&config)
@@ -225,7 +225,7 @@ fn plan337_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering()
     let control = i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(&config, manager)
         .expect("control builds");
 
-    let lookup_secret = "plan337-lookup-secret-value";
+    let lookup_secret = "plan338-lookup-secret-value";
     let client_key = "ab".repeat(32);
     let mut options = std::collections::BTreeMap::new();
     options.insert("target_host".to_owned(), "127.0.0.1".to_owned());
@@ -239,35 +239,44 @@ fn plan337_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering()
         "leaseset_client_auth".to_owned(),
         format!("client0:{client_key}"),
     );
-    let envelope = TunnelManagerRequest {
+    let accepted = block_on(control.create(&TunnelManagerRequest {
         action: TunnelAction::Create,
         all: false,
         name: Some("secretsrv".to_owned()),
         tunnel_type: Some(TunnelType::HttpServer),
         new_name: None,
         options,
-    };
-    // This create is refused (no persisted identity yet — Plan 338), which
-    // is itself part of the contract: nothing durable is written.
-    let refused = block_on(control.create(&envelope));
+    }));
     assert!(
-        refused.is_err(),
-        "encrypted create without identity is refused"
+        accepted.is_ok(),
+        "an authorized encrypted control-created server is accepted: {accepted:?}"
     );
 
-    // The inventory projection, and the manager's own Debug, must both be
-    // free of the secret and of the client key.
-    let inventory = control.get(None).expect("inventory get");
-    let inventory_text = inventory.to_string();
-    for (label, needle) in [
-        ("lookup secret", lookup_secret),
-        ("client key", client_key.as_str()),
-    ] {
-        assert!(
-            !inventory_text.contains(needle),
-            "the {label} must never appear in a control response"
-        );
+    // The live surface: a `get` carries the published address, the client
+    // count, and the resolved posture. None of it may carry a secret.
+    let inventory = control.get(None).expect("inventory get").to_string();
+    let detail = control.get(Some("secretsrv")).expect("get").to_string();
+    for surface in [inventory.as_str(), detail.as_str()] {
+        for (label, needle) in [
+            ("lookup secret", lookup_secret),
+            ("client key", client_key.as_str()),
+        ] {
+            assert!(
+                !surface.contains(needle),
+                "the {label} must never appear in a control response"
+            );
+        }
     }
+    // The address is present and real, so the redaction is not achieved by
+    // omission.
+    assert!(
+        detail.contains("encrypted_address"),
+        "the encrypted address must be reported: {detail}"
+    );
+
+    // The manager's own Debug carries the ELS2 material registry, whose values
+    // hold the blinding identity. `ServiceEls2Material` has a redacted Debug,
+    // so a secret cannot surface through it.
     let manager_debug = format!("{owned:?}");
     for (label, needle) in [
         ("lookup secret", lookup_secret),
@@ -278,15 +287,6 @@ fn plan337_no_lease_set_secret_reaches_a_control_response_or_a_debug_rendering()
             "the {label} must never appear in a Debug rendering"
         );
     }
-    // The refusal reason is static text: no secret, no service name.
-    let reason = match refused {
-        Err(i2pr_daemon::i2pcontrol_tunnels::ControlError::PublishFailed { reason, .. }) => reason,
-        Err(other) => panic!("expected a publish failure, got {other:?}"),
-        Ok(_) => unreachable!("the create must be refused"),
-    };
-    assert_eq!(reason, "service identity record unavailable");
-    assert!(!reason.contains(lookup_secret));
-    assert!(!reason.contains("secretsrv"));
 }
 
 fn request(name: &str, target: &str) -> TunnelManagerRequest {

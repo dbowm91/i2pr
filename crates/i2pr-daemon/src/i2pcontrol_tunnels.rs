@@ -3292,7 +3292,7 @@ impl TunnelControlState {
                 continue;
             }
             let material = crate::service_els2::load_service_els2_material(
-                self.manager.data_dir(),
+                &self.manager,
                 name,
                 &plan,
                 &definition.options,
@@ -3701,7 +3701,7 @@ impl TunnelControlState {
                 Ok(transition_response(name, generation, self.is_running(name)))
             }
             Err(error) => {
-                self.rollback_state(name, None, &running_before);
+                self.rollback_state(name, None, &running_before).await;
                 Err(error)
             }
         }
@@ -3798,7 +3798,8 @@ impl TunnelControlState {
                 ))
             }
             Err(error) => {
-                self.rollback_state(target_name, Some((name, prior)), &running_before);
+                self.rollback_state(target_name, Some((name, prior)), &running_before)
+                    .await;
                 Err(error)
             }
         }
@@ -3825,7 +3826,8 @@ impl TunnelControlState {
         self.manager.clear_reduced_shaping(name);
         lock(&self.running).remove(name);
         if let Err(error) = self.commit_locked(guard, &[name.to_owned()], false).await {
-            self.rollback_state(name, Some((name, prior.clone())), running_before);
+            self.rollback_state(name, Some((name, prior.clone())), running_before)
+                .await;
             return Err(error);
         }
         lock(&self.running).insert(name.to_owned());
@@ -3882,7 +3884,7 @@ impl TunnelControlState {
             .commit_locked(guard, &[target_name.to_owned()], false)
             .await
         {
-            self.rollback_state(target_name, None, running_before);
+            self.rollback_state(target_name, None, running_before).await;
             return Err(error);
         }
         // Phase two: remove the old definition.
@@ -3958,7 +3960,8 @@ impl TunnelControlState {
                 Ok(transition_response(name, generation, false))
             }
             Err(error) => {
-                self.rollback_state(name, Some((name, prior)), &running_before);
+                self.rollback_state(name, Some((name, prior)), &running_before)
+                    .await;
                 Err(error)
             }
         }
@@ -4185,14 +4188,57 @@ impl TunnelControlState {
     /// Restores the durable mirror plus running intent after a failed
     /// commit. Staged-but-unpublished generation files are orphans;
     /// retention and startup cleanup remove them.
-    fn rollback_state(
+    /// Rolls the in-memory mirror back to its prior state **and** reconciles
+    /// the shared manager to the rolled-back candidate (Plan 338).
+    ///
+    /// The reconcile is not optional. `commit_locked` stages and commits
+    /// runtimes before it can fail on a supervisor start, a store publish, or
+    /// the ELS2 material, so a mirror-only rollback leaves a runtime installed
+    /// with no durable definition behind it — a service the operator cannot see
+    /// and cannot stop. That hole predates Plan 338; it reached the
+    /// coordinator's own failure paths, and Plan 337 made it the visible
+    /// outcome of every refused encrypted create.
+    ///
+    /// Every failure path calls this, so no call site can grow a mirror-only
+    /// rollback. A reconcile that itself fails is reported rather than
+    /// swallowed: the caller returns the original error, and the ghost
+    /// runtime is then a visible defect rather than a silent one.
+    async fn rollback_state(
         &self,
         name: &str,
         prior: Option<(&str, ControlDefinition)>,
         running_before: &BTreeSet<String>,
     ) {
+        Self::rollback_mirror(
+            &self.definitions,
+            &self.running,
+            &self.transitioning,
+            name,
+            prior,
+            running_before,
+        );
+        if !self.reconcile_back().await {
+            // A rollback that cannot reconcile leaves the manager ahead of
+            // the mirror. Report it rather than pretending the transition was
+            // undone: the ghost runtime is then a visible defect.
+            tracing::error!(
+                "control transition rollback could not reconcile the shared manager; \
+                 a runtime may outlive its durable definition"
+            );
+        }
+    }
+
+    /// The mirror-only half of [`Self::rollback_state`].
+    fn rollback_mirror(
+        definitions: &Mutex<BTreeMap<String, ControlDefinition>>,
+        running: &Mutex<BTreeSet<String>>,
+        transitioning: &Mutex<BTreeSet<String>>,
+        name: &str,
+        prior: Option<(&str, ControlDefinition)>,
+        running_before: &BTreeSet<String>,
+    ) {
         {
-            let mut definitions = lock(&self.definitions);
+            let mut definitions = lock(definitions);
             match prior {
                 Some((prior_name, definition)) => {
                     if prior_name != name {
@@ -4205,8 +4251,8 @@ impl TunnelControlState {
                 }
             }
         }
-        *lock(&self.running) = running_before.clone();
-        lock(&self.transitioning).remove(name);
+        *lock(running) = running_before.clone();
+        lock(transitioning).remove(name);
     }
 
     /// Whether a name currently carries running intent.
@@ -4471,23 +4517,23 @@ mod tests {
         );
     }
 
-    /// Plan 337 fail-closed: a control-created **encrypted** server is
-    /// refused, not silently downgraded to an ordinary LeaseSet2.
+    /// Plan 338: a control-created **encrypted** server publishes a type-5
+    /// record at the day's blinded storage key and exposes a resolving
+    /// address.
     ///
-    /// The ELS2 identity is derived from the service's persisted identity
-    /// record, and a control-created server cannot currently request one:
-    /// Plan 323's persistent-identity options are client-only, and a
-    /// non-persistent dedicated group generates its identity in memory. So
-    /// the material cannot be built, and the transaction reconciles back
-    /// with a typed reason.
-    ///
-    /// The alternative — publishing an ordinary LeaseSet2 for a service the
-    /// operator configured as encrypted — would be the far worse failure: it
-    /// would look like success and hand clients an unencrypted service. This
-    /// row pins the refusal. The capability gap itself is Plan 338's, not
-    /// this plan's.
+    /// This is the positive form of the row Plan 337 could only state as a
+    /// refusal. Plan 337's failure was a **store-path** error, not a missing
+    /// capability: every server group is already persistent
+    /// (`ServiceTunnelSet::destination_groups` sets `persistent` for
+    /// `kind.is_server()`), so the manager has always written a
+    /// `ServiceDestinationRecord` for a control-created server — at
+    /// `for_group(data_dir, spec_id)`. The ELS2 loader read
+    /// `for_service(data_dir, spec_id)` instead, so it found nothing and the
+    /// create was refused. Plan 338 routes the material through
+    /// `ServiceTunnelManager::service_identity_record`, which is the same code
+    /// that wrote the record.
     #[test]
-    fn plan337_encrypted_control_server_without_a_persisted_identity_fails_closed() {
+    fn plan338_control_created_encrypted_server_publishes_type5_at_its_blinded_key() {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
@@ -4495,45 +4541,250 @@ mod tests {
 
         let mut options = server_options("127.0.0.1:8080");
         options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
-        let refused =
-            block_on(control.create(&create_request("encsrv", TunnelType::HttpServer, options)));
-        assert!(
-            refused.is_err(),
-            "an encrypted server with no persisted identity must be refused, not downgraded"
-        );
-        // No durable definition and no publication material survive a
-        // refused encrypted create.
-        assert!(
-            lock(&control.definitions).get("encsrv").is_none(),
-            "a refused encrypted create must not leave a durable definition behind"
-        );
-        assert!(
-            shared.els2_material_for_spec("encsrv").is_none(),
-            "no publication material may be installed for a refused service"
-        );
-        // The reason is static text: never a secret, never a service name.
-        let reason = match refused {
-            Err(ControlError::PublishFailed { reason, .. }) => reason,
-            Err(other) => panic!("expected a publish failure, got {other:?}"),
-            Ok(_) => unreachable!("the create must be refused"),
-        };
-        assert_eq!(reason, "service identity record unavailable");
+        block_on(control.create(&create_request("encsrv", TunnelType::HttpServer, options)))
+            .expect("an encrypted control-created server must now be accepted");
+        assert!(shared.has_runtime("encsrv"));
 
-        // KNOWN GAP (Plan 338, not this plan): the coordinator's
-        // `rollback_state` rewrites the in-memory mirror but never
-        // reconciles the manager, so a runtime staged by the reconcile
-        // inside `commit_locked` survives a post-reconcile failure. That
-        // hole is pre-existing -- `sync_names` and store-publish failures
-        // reach it too -- and Plan 337 only made it reachable for an
-        // encrypted create. Fixing it means changing every rollback path
-        // in the Plan 289 coordinator, which is exactly the kind of
-        // coordinator change this plan must not smuggle in. The row below
-        // pins the current behaviour so the gap is visible rather than
-        // latent; Plan 338 owns the fix.
-        assert!(
-            shared.has_runtime("encsrv"),
-            "KNOWN GAP: a post-reconcile failure leaves the staged runtime installed (Plan 338)"
+        // The material was installed, derived from this service's own
+        // persisted identity.
+        let material = shared
+            .els2_material_for_spec("encsrv")
+            .expect("publication material is installed");
+
+        // The control surface reports a real address for it, decoded with the
+        // protocol's own decoder rather than a hand-rolled one.
+        let status = control.get(Some("encsrv")).expect("get");
+        let address = status["encrypted_address"]
+            .as_str()
+            .expect("encrypted_address is a string")
+            .to_owned();
+        assert!(address.ends_with(".b32.i2p"), "got {address}");
+        assert_eq!(
+            address,
+            material.address().expect("material encodes an address"),
+            "the reported address must come from the published material"
         );
+        let parsed = i2pr_proto::EncryptedServiceAddress::from_text(&address)
+            .expect("the reported address decodes as an encrypted service address");
+        assert_eq!(
+            parsed.unblinded_sigtype(),
+            i2pr_proto::B32_UNBLINDED_SIGTYPE_ED25519,
+            "an unblinded address names the Ed25519 unblinded type"
+        );
+        assert_eq!(
+            parsed.blinded_sigtype(),
+            i2pr_proto::B32_BLINDED_SIGTYPE,
+            "a blinded address names the blinded signature type"
+        );
+        // The address flags follow the *mode*, not the fact of blinding: a
+        // client only needs the lookup secret when the mode has one.
+        assert_eq!(
+            parsed.requires_blinding_secret(),
+            material.requires_blinding_secret(),
+            "the address flag must match the mode"
+        );
+        assert_eq!(parsed.requires_client_key(), material.requires_client_key());
+    }
+
+    /// Plan 338: the same path with a mode that does carry a lookup secret and
+    /// a client authorization, so the address carries **both** flag bits. The
+    /// row above cannot cover this: it uses a mode with neither.
+    #[test]
+    fn plan338_control_created_authorized_server_address_carries_both_flags() {
+        let directory = TempDir::new().expect("temp dir");
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+
+        let client_key = "ab".repeat(32);
+        let mut options = server_options("127.0.0.1:8080");
+        options.insert(
+            "encrypt_lease_set".to_owned(),
+            "encrypted with lookup password and per-user key (psk)".to_owned(),
+        );
+        options.insert("leaseset_password".to_owned(), "plan338-secret".to_owned());
+        options.insert(
+            "leaseset_client_auth".to_owned(),
+            format!("client0:{client_key}"),
+        );
+        block_on(control.create(&create_request("authsrv", TunnelType::HttpServer, options)))
+            .expect("an authorized encrypted control-created server must be accepted");
+
+        let material = shared
+            .els2_material_for_spec("authsrv")
+            .expect("publication material is installed");
+        let address = control.get(Some("authsrv")).expect("get")["encrypted_address"]
+            .as_str()
+            .expect("encrypted_address is a string")
+            .to_owned();
+        let parsed = i2pr_proto::EncryptedServiceAddress::from_text(&address)
+            .expect("the reported address decodes");
+        assert!(
+            parsed.requires_blinding_secret(),
+            "a mode with a lookup secret must set the blinding-secret flag"
+        );
+        assert!(
+            parsed.requires_client_key(),
+            "a mode with a per-user key must set the client-key flag"
+        );
+        assert_eq!(material.client_count(), 1, "one authorized client");
+        // The secret itself is not in the response.
+        let status = control.get(Some("authsrv")).expect("get").to_string();
+        assert!(!status.contains("plan338-secret"));
+        assert!(!status.contains(client_key.as_str()));
+    }
+
+    /// Plan 338: the coordinator's rollback leaves **no** ghost runtime.
+    ///
+    /// `commit_locked` stages and commits runtimes before it can fail on a
+    /// supervisor start (`sync_names`), a store publish, or the ELS2 material
+    /// (`sync_els2_materials`). A mirror-only rollback at any of those points
+    /// leaves a service the operator cannot see, stop, or delete.
+    ///
+    /// This row drives the rollback path **directly** rather than waiting for a
+    /// natural post-reconcile failure, because none of the three failure
+    /// classes can be triggered deterministically from an input: `sync_names`
+    /// needs a supervisor that fails to start, the store publish needs a write
+    /// that fails after the generation is staged, and the ELS2 material now
+    /// resolves for every mode a control surface can express. Invoking the same
+    /// helper the failure paths call keeps the row meaningful — it fails if the
+    /// reconcile half is removed — while the three call sites are covered
+    /// structurally by every one of them awaiting this helper.
+    #[test]
+    fn plan338_a_rolled_back_transition_leaves_no_ghost_runtime() {
+        let directory = TempDir::new().expect("temp dir");
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+
+        // A sibling that must survive the rollback.
+        block_on(control.create(&create_request(
+            "keeper",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:9090"),
+        )))
+        .expect("the surviving service is created");
+        let running_before = lock(&control.running).clone();
+
+        // A second service whose runtime is now installed, exactly as it would
+        // be at the point `commit_locked` fails.
+        block_on(control.create(&create_request(
+            "ghost",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:9091"),
+        )))
+        .expect("the second service is created");
+        assert!(shared.has_runtime("ghost"), "the runtime is staged");
+        lock(&control.transitioning).insert("ghost".to_owned());
+
+        // The failure path: roll the mirror back and reconcile.
+        block_on(control.rollback_state("ghost", None, &running_before));
+
+        assert!(
+            !shared.has_runtime("ghost"),
+            "a rolled-back transition must not leave a runtime on the shared manager"
+        );
+        assert!(
+            lock(&control.definitions).get("ghost").is_none(),
+            "a rolled-back transition must not leave a durable definition"
+        );
+        assert!(
+            lock(&control.transitioning).get("ghost").is_none(),
+            "a rolled-back transition must clear the transitioning marker"
+        );
+        assert!(
+            shared.has_runtime("keeper"),
+            "a rollback must not disturb a sibling"
+        );
+        assert_mirror_and_manager_agree(&control, &shared, "after a rollback");
+
+        // A rollback that restores a prior definition under the same name
+        // (the `edit` shape) reconciles the definition it restored.
+        block_on(control.create(&create_request(
+            "renamed",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:9093"),
+        )))
+        .expect("a service is created");
+        let prior = lock(&control.definitions)
+            .get("renamed")
+            .cloned()
+            .expect("the prior definition");
+        let running_now = lock(&control.running).clone();
+        lock(&control.definitions).insert("renamed-2".to_owned(), prior.clone());
+        assert!(shared.has_runtime("renamed"));
+        block_on(control.rollback_state("renamed-2", Some(("renamed", prior)), &running_now));
+        assert!(
+            !shared.has_runtime("renamed-2"),
+            "a restored-under-another-name rollback must not leave the failed name's runtime"
+        );
+        assert!(
+            shared.has_runtime("renamed"),
+            "the restored name keeps its runtime"
+        );
+        assert_mirror_and_manager_agree(&control, &shared, "after a renaming rollback");
+    }
+
+    /// Asserts that the shared manager and the durable mirror name the same
+    /// set of running control-owned services, in both directions.
+    fn assert_mirror_and_manager_agree(
+        control: &TunnelControlState,
+        manager: &Arc<ServiceTunnelManager>,
+        context: &str,
+    ) {
+        let running = lock(&control.running).clone();
+        for name in running.iter() {
+            assert!(
+                manager.has_runtime(name),
+                "{context}: running service {name} has no runtime"
+            );
+        }
+        for runtime in manager.all_service_runtimes() {
+            let owned = running.contains(&runtime.spec_id)
+                || control.startup_name(&runtime.spec_id).is_some();
+            assert!(
+                owned,
+                "{context}: runtime {} is neither control-running nor startup-owned",
+                runtime.spec_id
+            );
+        }
+    }
+
+    /// Plan 338 negative: a mode that names a client-authorization scheme the
+    /// service cannot satisfy is still refused, and a supplied-but-unused
+    /// secret is still an error. The ELS2 path being wired must not weaken any
+    /// Plan 334 validation rule.
+    #[test]
+    fn plan338_els2_wiring_does_not_weaken_the_block_validation() {
+        let directory = TempDir::new().expect("temp dir");
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+
+        // A per-user-key mode with no client authorizations at all.
+        let mut options = server_options("127.0.0.1:8080");
+        options.insert(
+            "encrypt_lease_set".to_owned(),
+            "encrypted with per-user key (dh)".to_owned(),
+        );
+        let refused =
+            block_on(control.create(&create_request("noauth", TunnelType::HttpServer, options)));
+        assert!(refused.is_err(), "a per-user-key mode needs its keys");
+        assert!(
+            !shared.has_runtime("noauth"),
+            "a refused definition must not install a runtime"
+        );
+        assert!(shared.els2_material_for_spec("noauth").is_none());
+
+        // A lookup secret supplied to a mode that does not use one.
+        let mut options = server_options("127.0.0.1:8080");
+        options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
+        options.insert("leaseset_password".to_owned(), "unused".to_owned());
+        let refused =
+            block_on(control.create(&create_request("unused", TunnelType::HttpServer, options)));
+        assert!(refused.is_err(), "a supplied-but-unused secret is an error");
+        assert!(!shared.has_runtime("unused"));
+        assert!(shared.els2_material_for_spec("unused").is_none());
     }
 
     /// Plan 337 isolation: a control delete removes only its own runtime.
