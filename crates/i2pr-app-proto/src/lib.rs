@@ -1114,9 +1114,13 @@ impl NetworkPolicy {
                 DestinationSelector::Cidr(cidr) => {
                     if matches!(cidr.network, IpAddr::V4(_)) && cidr.prefix > 32
                         || matches!(cidr.network, IpAddr::V6(_)) && cidr.prefix > 128
+                        || is_ipv4_mapped_ipv6(cidr.network)
                     {
                         return Err(ContractError::InvalidPolicy);
                     }
+                }
+                DestinationSelector::Ip(ip) if is_ipv4_mapped_ipv6(*ip) => {
+                    return Err(ContractError::InvalidPolicy);
                 }
                 DestinationSelector::Ip(_) => {}
             }
@@ -1150,6 +1154,7 @@ impl NetworkPolicy {
         if self.validate().is_err() || protocol != NetworkProtocol::Tcp || port == 0 {
             return PolicyDecision::Deny;
         }
+        let ip = canonical_policy_ip(ip);
         let scope = address_scope(ip);
         let matching = self.matching_ip_rules(protocol, ip, port);
         if scope != AddressScope::Global && !matching.iter().any(|r| r.action == RuleAction::Allow)
@@ -1175,6 +1180,7 @@ impl NetworkPolicy {
         {
             return PolicyDecision::Deny;
         }
+        let ip = canonical_policy_ip(ip);
         let matching = self.matching_ip_rules(protocol, ip, port);
         if matching.iter().any(|rule| rule.action == RuleAction::Deny) {
             return PolicyDecision::Deny;
@@ -1236,6 +1242,21 @@ fn valid_hostname(host: &str) -> bool {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     })
 }
+
+fn canonical_policy_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(value) => value
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(value)),
+        IpAddr::V4(_) => ip,
+    }
+}
+
+fn is_ipv4_mapped_ipv6(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V6(value) if value.to_ipv4_mapped().is_some())
+}
+
 pub fn address_scope(ip: IpAddr) -> AddressScope {
     match ip {
         IpAddr::V4(v) => {
@@ -2048,6 +2069,226 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn mapped_ipv6_targets_share_ipv4_policy_identity() {
+        fn rule(destination: DestinationSelector, action: RuleAction) -> NetworkRule {
+            NetworkRule {
+                protocol: NetworkProtocol::Tcp,
+                destination,
+                ports: PortSelector::Single(443),
+                action,
+            }
+        }
+
+        let ipv4: IpAddr = "8.8.8.8".parse().unwrap();
+        let mapped: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        let hostname = rule(
+            DestinationSelector::Hostname("allowed.example".into()),
+            RuleAction::Allow,
+        );
+
+        for (action, expected) in [
+            (RuleAction::Allow, PolicyDecision::Allow),
+            (RuleAction::Deny, PolicyDecision::Deny),
+        ] {
+            let exact = NetworkPolicy {
+                rules: vec![rule(DestinationSelector::Ip(ipv4), action)],
+            };
+            assert_eq!(exact.validate(), Ok(()));
+            for target in [ipv4, mapped] {
+                assert_eq!(
+                    exact.evaluate_requested_ip(NetworkProtocol::Tcp, target, 443),
+                    expected
+                );
+            }
+
+            let cidr = NetworkPolicy {
+                rules: vec![rule(
+                    DestinationSelector::Cidr(IpCidr {
+                        network: "8.8.8.0".parse().unwrap(),
+                        prefix: 24,
+                    }),
+                    action,
+                )],
+            };
+            assert_eq!(cidr.validate(), Ok(()));
+            for target in [ipv4, mapped] {
+                assert_eq!(
+                    cidr.evaluate_requested_ip(NetworkProtocol::Tcp, target, 443),
+                    expected
+                );
+            }
+        }
+
+        let exact_deny = NetworkPolicy {
+            rules: vec![
+                hostname.clone(),
+                rule(DestinationSelector::Ip(ipv4), RuleAction::Deny),
+            ],
+        };
+        let cidr_deny = NetworkPolicy {
+            rules: vec![
+                hostname,
+                rule(
+                    DestinationSelector::Cidr(IpCidr {
+                        network: "8.8.8.0".parse().unwrap(),
+                        prefix: 24,
+                    }),
+                    RuleAction::Deny,
+                ),
+            ],
+        };
+        for policy in [&exact_deny, &cidr_deny] {
+            for target in [ipv4, mapped] {
+                assert_eq!(
+                    policy.evaluate_resolved_address(
+                        NetworkProtocol::Tcp,
+                        "allowed.example",
+                        target,
+                        443,
+                    ),
+                    PolicyDecision::Deny
+                );
+            }
+        }
+
+        for raw in ["10.1.2.3", "192.0.2.1"] {
+            let ipv4: IpAddr = raw.parse().unwrap();
+            let mapped = match ipv4 {
+                IpAddr::V4(v4) => IpAddr::V6(v4.to_ipv6_mapped()),
+                IpAddr::V6(_) => unreachable!(),
+            };
+            assert_eq!(address_scope(ipv4), address_scope(mapped));
+            let deny_by_default = NetworkPolicy {
+                rules: vec![rule(
+                    DestinationSelector::Hostname("allowed.example".into()),
+                    RuleAction::Allow,
+                )],
+            };
+            for target in [ipv4, mapped] {
+                assert_eq!(
+                    deny_by_default.evaluate_resolved_address(
+                        NetworkProtocol::Tcp,
+                        "allowed.example",
+                        target,
+                        443,
+                    ),
+                    PolicyDecision::Deny
+                );
+            }
+            let explicit_ipv4_allow = NetworkPolicy {
+                rules: vec![rule(
+                    DestinationSelector::Cidr(IpCidr {
+                        network: ipv4,
+                        prefix: 32,
+                    }),
+                    RuleAction::Allow,
+                )],
+            };
+            for target in [ipv4, mapped] {
+                assert_eq!(
+                    explicit_ipv4_allow.evaluate_requested_ip(NetworkProtocol::Tcp, target, 443,),
+                    PolicyDecision::Allow
+                );
+            }
+        }
+
+        let mapped_exact = NetworkPolicy {
+            rules: vec![rule(DestinationSelector::Ip(mapped), RuleAction::Allow)],
+        };
+        let mapped_cidr = NetworkPolicy {
+            rules: vec![rule(
+                DestinationSelector::Cidr(IpCidr {
+                    network: "::ffff:8.8.8.0".parse().unwrap(),
+                    prefix: 120,
+                }),
+                RuleAction::Allow,
+            )],
+        };
+        assert_eq!(mapped_exact.validate(), Err(ContractError::InvalidPolicy));
+        assert_eq!(mapped_cidr.validate(), Err(ContractError::InvalidPolicy));
+        assert_eq!(
+            mapped_exact.evaluate_requested_ip(NetworkProtocol::Tcp, ipv4, 443),
+            PolicyDecision::Deny
+        );
+        assert_eq!(
+            mapped_cidr.evaluate_requested_ip(NetworkProtocol::Tcp, ipv4, 443),
+            PolicyDecision::Deny
+        );
+
+        let native_ipv6: IpAddr = "2001:4860::1".parse().unwrap();
+        let native_ipv6_policy = NetworkPolicy {
+            rules: vec![rule(
+                DestinationSelector::Ip(native_ipv6),
+                RuleAction::Allow,
+            )],
+        };
+        assert_eq!(native_ipv6_policy.validate(), Ok(()));
+        assert_eq!(
+            native_ipv6_policy.evaluate_requested_ip(NetworkProtocol::Tcp, native_ipv6, 443),
+            PolicyDecision::Allow
+        );
+
+        // Deterministically exercise all addresses in a representative /24
+        // against exact and CIDR allow/deny selectors and hostname post-resolution.
+        for last_octet in 0..=u8::MAX {
+            let target_v4 = IpAddr::V4(Ipv4Addr::new(8, 8, 8, last_octet));
+            let target_mapped = match target_v4 {
+                IpAddr::V4(v4) => IpAddr::V6(v4.to_ipv6_mapped()),
+                IpAddr::V6(_) => unreachable!(),
+            };
+            let action = if last_octet % 2 == 0 {
+                RuleAction::Deny
+            } else {
+                RuleAction::Allow
+            };
+            let exact = NetworkPolicy {
+                rules: vec![
+                    rule(
+                        DestinationSelector::Hostname("allowed.example".into()),
+                        RuleAction::Allow,
+                    ),
+                    rule(DestinationSelector::Ip(target_v4), action),
+                ],
+            };
+            let cidr = NetworkPolicy {
+                rules: vec![
+                    rule(
+                        DestinationSelector::Hostname("allowed.example".into()),
+                        RuleAction::Allow,
+                    ),
+                    rule(
+                        DestinationSelector::Cidr(IpCidr {
+                            network: "8.8.8.0".parse().unwrap(),
+                            prefix: 24,
+                        }),
+                        action,
+                    ),
+                ],
+            };
+            for policy in [&exact, &cidr] {
+                assert_eq!(
+                    policy.evaluate_requested_ip(NetworkProtocol::Tcp, target_v4, 443),
+                    policy.evaluate_requested_ip(NetworkProtocol::Tcp, target_mapped, 443)
+                );
+                assert_eq!(
+                    policy.evaluate_resolved_address(
+                        NetworkProtocol::Tcp,
+                        "allowed.example",
+                        target_v4,
+                        443,
+                    ),
+                    policy.evaluate_resolved_address(
+                        NetworkProtocol::Tcp,
+                        "allowed.example",
+                        target_mapped,
+                        443,
+                    )
+                );
+            }
+        }
     }
 
     #[test]
