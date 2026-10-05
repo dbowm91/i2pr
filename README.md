@@ -1,87 +1,180 @@
 # i2pr
 
-An experimental I2P router written in Rust. **Not production-ready.** Not suitable for anonymity, privacy, censorship resistance, or any security-sensitive workload. NTCP2 stays experimental and non-advertised.
+An experimental I2P router written in Rust. **Not production-ready.** It makes no
+anonymity, privacy, or censorship-resistance claim and is not suitable for any
+security-sensitive workload.
 
-## Status
+Loopback-only by default. SAM, I2CP, I2PControl, and service tunnels are
+disabled by default and non-advertised when enabled. NTCP2 is experimental and
+non-advertised. A result on `127.0.0.1` is **not** router-to-router
+interoperability evidence.
 
-Experimental router. **Not production-ready**, with no anonymity or privacy
-claim. Loopback-only by default: SAM, I2CP, and service tunnels stay disabled
-by default and non-advertised when enabled; NTCP2 stays experimental and
-non-advertised. No localhost result is router-to-router interoperability
-evidence.
+## Quickstart
 
-| Milestone | Scope | State |
-| --- | --- | --- |
-| M6 local product | Destinations, garlic, LeaseSet2, Streaming (loopback) | Closed |
-| M7 SAM 3.1 | Localhost SAM product plus external-client evidence | Closed |
-| M8 SSU2 v2 | Direct-session interop against exact-pinned i2pd over loopback UDP | Closed (bounded scope) |
-| M9 I2CP | Loopback server product plus independent LeaseSet2 lifecycle | Closed |
-| M10 service tunnels | Local product plus remote generic / HTTP / IRC application closure | Closed via Plans 214/215 |
-| M6 mixed-router progression | i2pd first-family Streaming | Closed for experimental progression via Plan 193; Java full-router compatibility retained/deferred at Plan 247 |
-| M11 transit tunnels | Accept/forward tunnels for other routers | Plan 268 passed: receipt family closed 3/8 on `cc9b40c` (zero i2pr semantic failures, composition passed, exact-head CI green); one-family experimental qualification complete, transit remains non-advertised |
+Requires Rust 1.95.0 (pinned by `rust-toolchain.toml`).
 
-Interoperability beyond the rows above is not claimed. M12 floodfill Plans 270–276 have passed on the type-5-deferred floor; Plans 277–282 stopped with retained publication, rotation, route/delivery, and lifecycle work. Plan 283 passed third-class evidence (Option 3 peer-test driver) plus activation/withdrawal completion. Plan 278 built and ran its exact-pinned i2pd lane and stopped at the reference-client RouterInfo-acceptance boundary before any matrix row; Plan 284 is the registered corrective. Plan 279 remains blocked, and no broad floodfill advertisement is active.
+### 1. Build
 
-Plan 248 / ADR 0026 separate experimental progression from full two-family router conformance. Exact-pinned i2pd Plan 193 is the M6 external progression authority. The Java full-router lane remains unpassed and retained as nonblocking compatibility debt at Plan 247; no Java result is relabeled. Full two-family router conformance is not claimed.
-
-## Workspace
-
-```text
-crates/
-  i2pr-proto/               Bounded wire codecs, typed errors, no I/O
-  i2pr-crypto/              Protocol-specific cryptographic wrappers
-  i2pr-su3/                 Bounded SU3 envelope framing + RSA signature verification
-  i2pr-storage/             Atomic persistence and migration support
-  i2pr-core/                Shared contracts, lifecycle, budgets, health
-  i2pr-transport/           Transport-neutral link management
-  i2pr-transport-ntcp2/     NTCP2 protocol implementation (no I/O)
-  i2pr-transport-ssu2/      SSU2 v2 protocol (runtime-neutral), path validation/publication, peer-test/relay/introducers
-  i2pr-runtime/             Tokio-owned supervision, cancellation, transport I/O
-  i2pr-netdb/               RouterInfo + LeaseSet2/ELS2 validation, store, lookup, publication
-  i2pr-netdb-persist/       Persistent cache + bounded SU3 reseed ingestion + floodfill records
-  i2pr-tunnel/              Tunnel identity, exploratory/transit pool, ECIES-X25519 short-build, runtime-neutral data plane
-  i2pr-client/              Destinations, ECIES-X25519-AEAD-Ratchet session layer, routing, I2P Streaming
-  i2pr-api/                 Runtime-neutral application-protocol adapters (SAM 3.1 plus the M9 I2CP wire/profile foundation; no sockets)
-  i2pr-addressbook/         Canonical `.i2p` naming owner: books, precedence, subscriptions, generations (no I/O)
-  i2pr-i2pcontrol/          Proposal 170 JSON-RPC 2.0 wire/domain contract (no I/O)
-  i2pr-service-tunnels/     Runtime-neutral M10 service-tunnel config/policy (no sockets; generic client/server tunnel composition lives in i2pr-daemon)
-  i2pr-daemon/              CLI, configuration, composition, supervision, application listener ownership
-  i2pr-testkit/             Deterministic simulation and adversarial fixtures
-tools/
-  i2pr-interop/             Non-production interop launcher (test only)
+```sh
+cargo build --locked -p i2pr-daemon --bin i2pr
+./target/debug/i2pr --help
 ```
 
-The dependency direction is enforced by `scripts/check-dependency-direction.sh`. Architecture deep-dives live under [`docs/architecture/`](docs/architecture/); the index is [`docs/architecture/overview.md`](docs/architecture/overview.md).
+The executable is named `i2pr` (the crate is `i2pr-daemon`). Subcommands:
+`check-config`, `identity generate`, `identity inspect`, `run`. Examples below
+write it as `i2pr`; substitute `./target/debug/i2pr` if you have not put it on
+`PATH`.
 
-Global implementation-plan number ownership is enforced by `scripts/check-global-plan-number-uniqueness.py`; the finite historical 296/297 collision is recorded in [`plans/global-number-collision-ledger.md`](plans/global-number-collision-ledger.md).
+### 2. Write a config
 
-## Build, test, lint
+`schema_version` and `router.data_dir` are the only required fields; everything
+else has a default. Loopback-only and disabled-by-default is the default posture,
+so this validates as-is:
 
-Requires Rust 1.95.0 (pinned via `rust-toolchain.toml`); MSRV is 1.88.
+```toml
+schema_version = 1
+
+[router]
+data_dir = "/absolute/path/to/state"
+```
+
+Two things that are easy to get wrong:
+
+- **`data_dir` resolves against the process working directory, not the location of
+  the config file.** Use an absolute path.
+- **The directory must be mode `0700`.** Identity storage refuses to run in a
+  group- or world-accessible directory. `/tmp` is `0777`, so a scratch directory
+  under `/tmp` must be `chmod 700` first.
+
+### 3. Create and inspect a router identity
+
+```sh
+chmod 700 /path/to/state
+i2pr check-config    --config config.toml
+i2pr identity generate --config config.toml
+i2pr identity inspect  --config config.toml
+```
+
+`identity inspect` reports the algorithm types and never prints private material.
+Expected output:
 
 ```text
+configuration is valid; no network or persistent state was touched
+router identity generated and stored at /path/to/state/router.identity
+router identity is valid at /path/to/state/router.identity; signing algorithm type 7, encryption algorithm type 4; private material was not displayed
+```
+
+### 4. Validate without touching the network
+
+```sh
+i2pr run --dry-run --config config.toml
+```
+
+```text
+configuration is valid; dry run complete (no network or persistent state was touched)
+```
+
+### 5. Talk SAM 3.1 over loopback
+
+`i2pr run` does **not** currently reach a serving state — see *Known limitation*
+below. To exercise the real SAM 3.1 listener, use the harness example, which
+binds an ephemeral loopback port and prints it as JSON:
+
+```sh
+cargo run --locked -p i2pr-daemon --example sam_loopback_listener -- --port 0
+```
+
+```text
+{"port":61008,"pid":17897}
+```
+
+Then, with that port:
+
+```sh
+printf 'HELLO VERSION MIN=3.0 MAX=3.1\nSESSION CREATE STYLE=STREAM ID=demo DESTINATION=TRANSIENT\nNAMING LOOKUP NAME=ME\n' \
+  | nc 127.0.0.1 61008
+```
+
+`DESTINATION=TRANSIENT` tells the router to self-compose a fresh destination, so
+no prior key material is needed. Verified replies (the destination is truncated
+here; the real value runs to several hundred base64 characters):
+
+```text
+HELLO REPLY RESULT=OK VERSION=3.1
+SESSION STATUS RESULT=OK DESTINATION=7E5IGOAPci23ST0Z9zgztSgRVCa6eycYZwv...
+NAMING REPLY RESULT=OK VALUE=7E5IGOAPci23ST0Z9zgztSgRVCa6eycYZwv...
+```
+
+Notes for the SAM surface: the only accepted session style is `STREAM` —
+`STREAMING`, `DATAGRAM`, and `RAW` are rejected as unsupported; `SESSION CREATE`
+requires `DESTINATION=`; and `NAMING LOOKUP NAME=ME` is only valid inside a
+session.
+
+## Known limitation: `i2pr run` fails startup
+
+`i2pr run` (without `--dry-run`) starts, then shuts down after 30 seconds:
+
+```text
+error: supervisor terminated: supervisor failed: service lifecycle failed during startup: ReadinessTimeout
+```
+
+The Essential `lifecycle` service awaits cancellation and never signals initial
+readiness, so the supervisor's readiness timeout fires before `sam-bridge` starts.
+**No listener is ever opened and the router does not run.** `check-config`,
+`identity generate|inspect`, and `run --dry-run` all work; use the
+`sam_loopback_listener` example above for a live SAM listener.
+
+Exit codes: `0` success, `10` config unreadable, `11` bad TOML/schema, `12` config
+semantically invalid, `20` capability not in this milestone, `30` identity
+storage, `46` supervisor terminated. Full set in
+`crates/i2pr-daemon/src/error.rs`.
+
+## Documentation
+
+| Topic | Document |
+| --- | --- |
+| What is implemented vs. only planned | [`docs/protocol-support.md`](docs/protocol-support.md) |
+| Crate boundaries, ownership, data flow | [`docs/architecture.md`](docs/architecture.md) |
+| Per-crate deep dives | [`docs/architecture/`](docs/architecture/) |
+| Security boundaries, threat model | [`docs/security-model.md`](docs/security-model.md) |
+| Scripts, fixtures, evidence lanes, CI | [`docs/architecture/tooling.md`](docs/architecture/tooling.md) |
+| Architecture decisions (ADR 0000–0031) | [`docs/adr/`](docs/adr/) |
+| Controlled testnet boundary | [`docs/private-testnet.md`](docs/private-testnet.md) |
+| Contributing conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Non-negotiable guardrails | [`GUARDRAILS.md`](GUARDRAILS.md) |
+| Full build/test/lint floor, agent skills | [`AGENTS.md`](AGENTS.md) |
+
+## Repository layout
+
+19 crates: 18 production plus `i2pr-testkit` (deterministic fixtures, which no
+production crate may depend on), plus the non-production `tools/i2pr-interop`
+launcher. `i2pr-runtime` is the only production owner of Tokio, sockets, timers,
+and channels; `i2pr-api`, `i2pr-i2pcontrol`, `i2pr-addressbook`, and
+`i2pr-service-tunnels` are runtime-neutral by construction. Crate index and
+enforced dependency allowlist:
+[`docs/architecture/`](docs/architecture/).
+
+## Development
+
+```sh
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
-cargo test --locked --workspace --all-targets -- --test-threads=1
+cargo test  --locked --workspace --all-targets -- --test-threads=1
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
-bash scripts/check-dependency-direction.sh
-python3 scripts/check-global-plan-number-uniqueness.py
-python3 -m unittest discover -s tests/planning -p 'test_*.py'
-bash scripts/check-runtime-boundaries.sh
 ```
 
-Use `--test-threads=1` locally for the `i2pr-daemon`/`i2pr-runtime` loopback
-suites. This is an abbreviated subset; the full routine floor (including every
-evidence-integrity checker) is the single source of truth in
-[`AGENTS.md`](AGENTS.md), together with the known checker coverage gaps.
-
-## OpenCode skills
-
-Loadable skill bundles under [`.opencode/skills/`](.opencode/skills/) cover the routine development seam ([`i2pr-local-dev`](.opencode/skills/i2pr-local-dev/SKILL.md)), documentation navigation ([`i2pr-architecture`](.opencode/skills/i2pr-architecture/SKILL.md)), planning register/close mechanics ([`i2pr-planning`](.opencode/skills/i2pr-planning/SKILL.md)), the closed NTCP2 interop lane ([`i2pr-ntcp2-interop`](.opencode/skills/i2pr-ntcp2-interop/SKILL.md)), the historical rootless sandbox ([`i2pr-rootless-sandbox`](.opencode/skills/i2pr-rootless-sandbox/SKILL.md)), and the historical Multipass recovery guest ([`i2pr-multipass-recovery`](.opencode/skills/i2pr-multipass-recovery/SKILL.md)). Load the matching skill before touching its surface.
+Use `--test-threads=1` for the `i2pr-daemon` and `i2pr-runtime` loopback suites.
+The full routine floor — every evidence-integrity checker, plus the known checker
+coverage gaps — is in [`AGENTS.md`](AGENTS.md). Plan-of-record:
+[`plans/registry.md`](plans/registry.md), with closure records in
+`plans/closure/`.
 
 ## License
 
-No repository-wide license has been selected yet. Do not copy code from external router implementations unless provenance and compatibility have been reviewed and explicitly authorized.
-
-A narrow project-owned exception is recorded in ADR 0028 for the Proposal 170 / I2PControl work in `eggstack/emissary`: that fork-specific work was authored for this project, is not present in the current `eepnet/emissary` upstream tree, and may be reused for i2pr's Proposal 170 implementation with provenance and applicable notice preservation. This exception does not cover unrelated Emissary/upstream code, I2P+, i2pd, Java I2P, or other routers. Specifications and observed behavior remain valid clean-room sources.
+No repository-wide license has been selected yet. Do not copy code from external
+router implementations unless provenance and compatibility have been reviewed
+and explicitly authorized. A narrow, project-owned exception is recorded in
+[ADR 0028](docs/adr/0028-i2pcontrol-proposal-170-control-plane.md) for the
+Proposal 170 / I2PControl work in `eggstack/emissary`; it does not cover
+unrelated Emissary or upstream code, I2P+, i2pd, or Java I2P. Specifications and
+observed behavior remain valid clean-room sources.

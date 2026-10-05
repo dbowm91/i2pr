@@ -85,6 +85,27 @@ filesystem (51 rows).
 
 ### CLI and configuration
 
+**Verified defect (2026-10-05): `i2pr run` cannot start the router.** Without
+`--dry-run`, `run_daemon` registers `lifecycle` (Essential) before `sam-bridge`
+(Optional), and both the `lifecycle` and `netdb-bootstrap` service bodies are
+`cancellation.cancelled().await` — they never report initial readiness. The
+supervisor starts services in `startup_order()` and waits for each one's
+`wait_for_initial_ready`, so the 30-second readiness timeout on `lifecycle` fires
+first and, because the service is Essential, the supervisor tears the whole
+daemon down:
+
+```text
+error: supervisor terminated: supervisor failed: service lifecycle failed during startup: ReadinessTimeout
+```
+
+No listener is opened. `check-config`, `identity generate`, `identity inspect`,
+and `run --dry-run` all succeed. For a live SAM 3.1 listener use
+`cargo run --locked -p i2pr-daemon --example sam_loopback_listener -- --port 0`,
+which binds an ephemeral loopback port and prints `{"port":NNN,"pid":PPP}`.
+Closing this needs a plan-of-record: either the `lifecycle` service must signal
+readiness once the bootstrap pipeline is observably complete, or the graph must
+not gate `sam-bridge` behind a never-ready Essential service.
+
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |

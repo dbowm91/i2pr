@@ -3,9 +3,12 @@
 Current authority through Plan 283 (2026-10-02): M11 one-family experimental
 progression is passed, while public transit remains disabled, non-advertised, and
 unclaimed. Plan 342 is the ready plan (Proposal 170 outproxy option surface and
-request paths). Plans 270-279 are registered as a dependency-ordered M12 floodfill sequence and remain
-blocked until their predecessors close. M12 implementation and floodfill advertisement
-have not begun. The Plan 118 and earlier M6 passages below are historical support detail;
+request paths). The M12 floodfill sequence is dependency-ordered and partly
+executed: Plans 270–276, 283, and 284–285 have passed or are retained-closed, while
+277/278/279/306 stopped with retained work. M12 **advertisement** has not begun and
+no broad `caps=f` claim exists — the honest product baseline for the three transit
+selectors is `0` / `0` / `0.0`, because enabling transit is a production posture
+change rather than a missing snapshot. The Plan 118 and earlier M6 passages below are historical support detail;
 old “next plan” language in those passages is not current execution authority. Plan 119
 closed as `passed-leaseset2-protocol-foundation` per
 [`plans/closure/destination-streaming/119-status.md`](../plans/closure/destination-streaming/119-status.md); the ordinary
