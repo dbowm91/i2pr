@@ -1,6 +1,6 @@
 # Plan 351 — external adapter conformance and SAM handoff contract
 
-Status: **registered-portable-service-tunnel-external-adapter-conformance-blocked-on-350**.
+Status: **ready-portable-service-tunnel-external-adapter-conformance**.
 
 Classification: **infrastructure**. This plan proves that the stabilized service-tunnel core can be consumed outside the i2pr workspace and freezes a downstream transport-adapter handoff, using a future clean-room SAM client/tunnel manager as the motivating consumer without implementing SAM in i2pr.
 
@@ -34,7 +34,7 @@ This plan must add a deterministic external-consumer/conformance fixture that:
 
 No live SAM router is required for this plan. The proof target is API sufficiency and semantic reuse, not SAM interoperability.
 
-## Why this plan is blocked pending 350
+## Why this plan was blocked pending 350
 
 A true external fixture is meaningful only against a frozen supported API/package boundary. Building it earlier would cause the fixture itself to drive accidental API design and could stabilize private M10 details by convenience.
 
