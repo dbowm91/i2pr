@@ -302,6 +302,17 @@ Current graph (`passed` / `ready` / `blocked`):
    state i2pr already maintains. The three TRANSIT selectors stay
    Plan 322 Group A: that is a transit-participation posture
    change, not a missing snapshot.)
+
+340 active   transit volume / bandwidth / share owners
+  (takes Plan 322 Group A's three selectors:
+   net.total.transit.bytes / net.bw.transit.15s / net.tunnels.shareratio.
+   Ownership only. The participation posture is NOT changed:
+   TransitParticipation::Disabled is the enforced production state
+   and holds no counters, so it cannot report non-zero volume.
+   Honest production baseline is 0 / 0 / 0.0. shareratio is the one
+   key the Proposal does not mark "(adopted from i2pd)" and that no
+   pinned reference implements, so i2pr defines and labels it
+   locally and fails closed without an attested denominator.)
 ```
 
 Every obstacle found on this control path is now removed: one manager, a
@@ -343,6 +354,24 @@ failed, and the source was restored with an empty diff. Normative vocabulary and
 emission policy live in
 [`specs/references/proposal-170-network-status-error-testing.md`](../../specs/references/proposal-170-network-status-error-testing.md).
 Group A is the remaining Plan 322 work.
+
+**Plan 340 registered `active` on 2026-10-05, taking Group A's ownership half.**
+The split above was correct that Group A is *not* a missing snapshot, and Plan
+340 takes the part that follows from that: a router that relays nothing still
+has to be able to say so truthfully. `TransitParticipation` is installed by the
+composition root in its `Disabled` state, which holds no counters at all — so
+the production answer of `0` / `0` / `0.0` is a property of the enforced
+posture rather than a default, and a participating router's numbers come from
+counters the real `TunnelData` forward path advances.
+
+The participation posture itself stays exactly where Plan 268/269 left it:
+disabled, non-advertised, unclaimed. The 2026-10-05 correction in
+[`265-status.md`](../../closure/transit-tunnels/265-status.md) is what makes
+that non-negotiable rather than merely cautious — the retained M11 qualification
+is demonstrably bound to `6ab9dc2d`, not to the current tree, so it cannot
+justify a posture change here. `shareratio` additionally gets an explicit
+definition, because Proposal 170 leaves its arithmetic unspecified and no
+pinned reference implements it.
 
 **Plan 334 reclosed `passed` on 2026-10-05.** Its own black-box, rollback, and restart
 evidence landed in `db63bc0`, and writing it found one more real gap: Plan 337 had added the
