@@ -503,6 +503,12 @@ mod tests {
                 true,
                 true,
             ),
+            // Plan 344: this spelling previously had no material row, so it
+            // passed on parser acceptance alone. Its behaviour is its twin's
+            // by the frozen mapping, but the mapping is not the evidence: the
+            // publication path is. Three clients, so it cannot pass by
+            // accident against the single-client cases either side of it.
+            ("encrypted with per-user key (psk)", None, 3, true, false),
             ("encrypted with per-user key (dh)", None, 3, true, false),
             (
                 "encrypted with lookup password and per-user key (dh)",
@@ -628,6 +634,9 @@ mod tests {
             ("blinded", None, 0),
             ("blinded with lookup password", Some("pw"), 0),
             ("encrypted (psk)", None, 1),
+            // Plan 344: the record half of the same spelling, so the gap is
+            // closed on both sides of the publication path.
+            ("encrypted with per-user key (psk)", None, 3),
             (
                 "encrypted with lookup password and per-user key (psk)",
                 Some("pw"),

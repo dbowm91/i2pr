@@ -1,6 +1,12 @@
 # Plan 326 — Encrypted LeaseSet2 and client authorization disposition
 
-Status: **blocked-prop170-encrypted-leaseset-awaiting-qualified-red25519-provider**
+Status: **blocked-prop170-encrypted-leaseset-awaiting-external-type11-transcript**
+
+> **Token corrected 2026-10-05 by Plan 344.** The previous token named
+> Plan 325's Red25519 provider qualification as the gate. That question was
+> superseded for forward architecture by Plan 331, which passed. The true gate
+> is Plan 335's external type-11 transcript divergence. The original token and
+> all text below are preserved; see the dated correction at the end of this file.
 
 Implementation commits: none. Plans 323 and 324 are passed; Plan 325's provider qualification closed blocked.
 
@@ -46,3 +52,54 @@ reopening it on Plan 325. Plan 335's measured type-11 transcript incompatibility
 is a separate defect on the interoperability axis and is not a Plan 326
 dependency.
 
+
+## Correction, 2026-10-05 — the recorded blocker was superseded, and the true gate is the external transcript
+
+Plan 344 performed the re-audit this record recommended, against the acceptance
+criteria in this plan's own plan of record rather than against the three
+sub-items listed above. See
+[`344-status.md`](344-status.md).
+
+**The status token above was wrong.** `blocked-prop170-encrypted-leaseset-awaiting-qualified-red25519-provider`
+named Plan 325 as the gate. Plan 325's own successor note defers to Plan 331,
+which **passed**; the provider question is answered by i2pr's own qualified
+implementation. A reader following the token would have chased a closed question.
+**The token is corrected to name the real gate**, and the original text above is
+preserved rather than rewritten.
+
+**All three sub-items listed above are now closed:**
+
+| Sub-item | Closed by |
+|---|---|
+| Plan 325 provider question | Plan 331 (passed) — superseded for forward architecture |
+| "all ten encryption modes" breadth | Plan 344, after finding and fixing a real gap |
+| Control-plane publication evidence | Plans 337 and 338, and re-verified green in Plan 344 |
+
+**And one real gap was found.** Of the ten canonical `EncryptLeaseSet`
+spellings, `encrypted with per-user key (psk)` had **only ever passed at the
+parser** — it had no ELS2 material row and no type-5 record row. This plan says
+outright, *"No mode may pass from parser acceptance or inert storage"*, and the
+frozen mapping's argument that the spelling is covered by its behavioural twin is
+exactly the reasoning this plan forbids: the mapping is the design, not the
+evidence. The spelling is now exercised in both publication-path rows, with three
+client authorizations, and an inversion that breaks its mapping fails exactly
+those two rows and no others.
+
+**Plan 326 is still blocked**, and the reason is now stated precisely. This
+plan's acceptance criteria require that "the encrypted-LS2 path works end-to-end
+through real publication and lookup" and that there be "external
+lookup/publication against at least one independent implementation before
+capability claim". The type-11 outer signature is verified by the floodfill
+that accepts a publication and produced by the publisher, so the external
+requirement fails in **both** directions: the pinned Java I2P and i2pd reject a
+type-5 record signed with the transcript the Red25519 specification mandates, and
+they cannot produce one i2pr will accept.
+
+**True remaining gate: Plan 335's external type-11 transcript divergence.** It
+is a measured result, not an untested guess, and no local work removes it.
+
+**Consequence worth stating plainly:** Plan 328, the full-conformance gate,
+remains blocked on 326 and 327. Because 326's remainder is external, **Plan 328
+cannot be unblocked by any purely local plan.** The gate is reachable, but not
+from inside this repository alone. Plan 342 is the local half and remains
+unblocked and unimplemented.

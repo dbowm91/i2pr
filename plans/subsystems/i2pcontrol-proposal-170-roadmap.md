@@ -324,6 +324,23 @@ Current graph (`passed` / `ready` / `blocked`):
    No pinned reference is authority: pinned i2pd's outproxy is
    clearnet-only, and the Java at-rest scheme is unverified here.)
 
+344 passed   Plan 326 re-audit
+  (The re-audit 326's own record recommended, run against its actual
+   acceptance criteria. TWO findings. First, 326's recorded blocker
+   was SUPERSEDED: the token named Plan 325's Red25519 provider, which
+   Plan 331 already answered (passed); the token is corrected. Second,
+   a REAL gap: of the ten canonical EncryptLeaseSet spellings,
+   "encrypted with per-user key (psk)" had only ever passed at the
+   PARSER -- no ELS2 material row, no type-5 record row -- and 326 says
+   "no mode may pass from parser acceptance or inert storage". The
+   frozen mapping's claim that the spelling is covered by its
+   behavioural twin is the exact reasoning that forbids; the mapping is
+   the design, not the evidence. Fixed in both publication-path rows
+   with three client authorizations, and an inversion breaking its
+   mapping fails exactly those two rows and no others. Test-only.
+   CONSEQUENCE: 326's remaining gap is EXTERNAL, so Plan 328 cannot be
+   unblocked by any purely local plan. See the 326 rows below.)
+
 343 passed   I2P-routed outproxy provider policy + route owner
   (The provider Plan 327's record diagnosed as absent, in both
    halves: a runtime-neutral policy layer plus a daemon route owner.
