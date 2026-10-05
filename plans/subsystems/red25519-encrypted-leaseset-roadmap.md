@@ -181,7 +181,10 @@ transcript is a separate composition, reachable only from the ELS2 type-5 verifi
 typed signed region and no generic dual-transcript verifier.
 
 Plan 347 must then prove the real cross-router lifecycle, not only signature
-cross-verification. **This remains open and is now the branch's only gate.** A signature
+cross-verification. **It stopped at a classified boundary rather than passing**: the signature
+stage is closed, but the matrix needs an i2pr-side consumer path (Plan 349) and a Java
+bandwidth-tier design that does not exist. **The branch's remaining work is Plan 349 followed
+by a Plan 347 re-attempt for the i2pd directions.** A signature
 harness — even one that cross-verifies against executed Java I2P and i2pd output in both
 directions, which Plan 346's is — is not sufficient: Plan 347 must show a real
 `DatabaseStore` publication, an independent-router NetDB store and lookup, layer-1/layer-2
@@ -191,7 +194,8 @@ i2pr↔reference directions.
 | Plan | State | Purpose |
 |---|---|---|
 | 346 | **passed** | ELS2 type-11 transcript authority + deployed Java/i2pd compatibility corrective. Delivered as ADR 0032. The cryptographic boundary is closed in both directions; the strict primitive is unchanged and still byte-exact. |
-| 347 | **ready** (was blocked on 346) | bidirectional Java/i2pd DatabaseStore type-5 publication, lookup, decrypt, inner-LS2 and streaming/application qualification. This is now the **sole remaining gate** for the branch. |
+| 347 | **stopped** (0 of 4 directions) | Bidirectional Java/i2pd type-5 publication, lookup, decrypt, inner-LS2 and streaming/application qualification. Closed with a stage-classified boundary: the **signature stage is closed** by Plan 346, and the pinned i2pd 2.61.0 `SignRedDSA` source confirms the deployed transcript. Blocked on (a) i2pr having **no type-5 consumer path** — `EncryptedLeaseSet2Resolver` has zero production callers, so `i2pd → i2pr` is structurally unreachable, and (b) stock Java I2P refusing to dial i2pr without a bandwidth tier ADR 0030 forbids inventing (Plan 306, exhausted), which is a RouterInfo advertisement policy question, not an ELS2 one. Closure: `plans/closure/i2pcontrol-proposal-170/347-status.md` |
+| 349 | **ready** | Corrective from 347's boundary: the i2pr ELS2 **consumer** lookup path — address → secret → daily blinded key → storage key → `DatabaseLookup` over the existing key-agnostic composer → `ValidatedEncryptedLeaseSet2` → layer decrypt → inner `LeaseSet2` → service. Makes `i2pd → i2pr` reachable and `i2pr → i2pd` executable. Does **not** attempt the Java bandwidth-tier design. Plan: `plans/implementation/i2pcontrol-proposal-170/349-els2-consumer-lookup-path.md` |
 
 The Emissary source quarantine remains unchanged. Emissary may continue to serve as a post-freeze
 black-box strict-profile oracle, but Java+i2pd deployment interoperability is the external network
