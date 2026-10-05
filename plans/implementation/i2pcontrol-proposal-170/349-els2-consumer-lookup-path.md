@@ -167,6 +167,17 @@ driver APIs.
 > configuration surface, secret storage, and tunnel-lifecycle integration. The remaining work and
 > the requirement matrix are in
 > [`349-status.md`](../../closure/i2pcontrol-proposal-170/349-status.md).
+>
+> **Scope conflict, and a successor.** The Out-of-scope item "New daemon configuration
+> surface, I2PControl options, or any advertisement" (line 97) conflicts with acceptance
+> criterion 1, which requires a production owner reaching an inner `LeaseSet2` a service
+> can use. This plan therefore cannot close as written. Per `plans/README.md:68` the
+> corrective is a separate plan, not an amendment, so this plan's status token is unchanged
+> and it stays `in-progress` until the work lands. See
+> [`351-els2-consumer-service-wiring.md`](351-els2-consumer-service-wiring.md), which
+> re-scopes the surface explicitly and supplies the missing production caller, and
+> [`352-config-secret-hygiene.md`](352-config-secret-hygiene.md), an independent
+> pre-existing config-secret defect that Plan 351's design must route around.
 
 ## Acceptance criteria
 

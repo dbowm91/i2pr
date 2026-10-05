@@ -172,3 +172,41 @@ on the new head. A full-floor re-run is required before Plan 349 can close.
 `Java → i2pr` rows remain gated on this plan reaching a production caller; its `i2pr → i2pd` and
 `i2pr → Java` rows were unblocked by Plan 350 and now need only the reference-side ELS2 drivers.
 No historical closure was rewritten.
+
+## Successor corrective: Plan 351
+
+This record's remaining-work list is **not implementable under this plan's own scope**, and
+that is a defect in the plan rather than in the work. The Out-of-scope section of
+`349-els2-consumer-lookup-path.md:97` forbids "New daemon configuration surface,
+I2PControl options, or any advertisement", while acceptance criterion 1 requires a
+production owner reaching an inner `LeaseSet2` a service can use — and item 1 of the
+remaining work above is a configuration surface. The plan forbids the work its closure
+record requires.
+
+Per `plans/README.md:68` a corrective is a new plan, not an amendment, so **this record's
+status token is unchanged and remains `in-progress`**. Plan
+[`351-els2-consumer-service-wiring.md`](../../implementation/i2pcontrol-proposal-170/351-els2-consumer-service-wiring.md)
+re-scopes the surface explicitly and supplies the missing production caller; Plan 349 can
+then be re-closed on its own evidence.
+
+Three findings made while scoping 351 refine, and partly correct, the framing above. They
+are recorded here rather than only in 351 so the correction is visible at the plan it
+corrects:
+
+1. **The remaining work is larger than "wiring".** The scope note at lines 36-37 says
+   nothing wires `current_storage_key` into the composer. The measured situation is
+   stronger: a blinded key cannot be *requested* at all. `netdb_seam.rs:328-332` re-derives
+   the lookup identity from a `DestinationHash`, and `lookup_engine.rs:606-613` refuses any
+   reply that is not type 3. The scoped netdb delta is one `LookupResult` variant plus one
+   type-5 arm that delegates policy upward — smaller than the earlier framing implied, but
+   not zero, and it is a protocol-layer change rather than composition.
+2. **No new `LookupKind` is required, and that is a positive finding.** `LookupKind::LeaseSet2`
+   already encodes `wire_code() == 1`, which is exactly the lookup type a reference client
+   issues for a blinded resolve (`floodfill_service.rs:372-375`). The wire side was never
+   the problem.
+3. **The secret must not go into the config at all.** Item 2 of the remaining work above
+   ("Secret storage") is better satisfied by *not* storing it in config: a TOML parse error
+   prints the entire offending source line and a type mismatch prints the value, both
+   reaching stderr. That pre-existing defect is registered as Plan
+   [`352-config-secret-hygiene.md`](../../implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md),
+   which is independent of 351 and live today for `I2pControlPassword`.
