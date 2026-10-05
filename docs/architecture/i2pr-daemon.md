@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 52 `.rs` files, 78 213 lines of `src` (48 at the crate root + 4 under `src/sam/`).
+**Size:** 52 `.rs` files, 78 256 lines of `src` (48 at the crate root + 4 under `src/sam/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -173,7 +173,7 @@ exact byte-stream mapping are specified in
 
 | File | Lines | Responsibility | Key types |
 | --- | --- | --- | --- |
-| `src/app_gateway.rs` | 661 | Plan 355 per-principal authorization, capability-first service admission, isolated private SAM/I2CP state, bounded supervised byte-stream ownership, and no listener fallback | `AppGatewayAuthorization`, `AppGatewayLimits`, `AppGatewaySession`, `AppGatewayConnection`, `AppGatewayError` |
+| `src/app_gateway.rs` | 704 | Plan 355 per-principal authorization, capability-first service admission, isolated private SAM/I2CP state, bounded supervised byte-stream ownership, and no listener fallback | `AppGatewayAuthorization`, `AppGatewayLimits`, `AppGatewaySession`, `AppGatewayConnection`, `AppGatewayConnectionEnd`, `AppGatewayError` |
 
 ### SAM 3.1
 
