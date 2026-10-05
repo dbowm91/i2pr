@@ -108,7 +108,7 @@ Future console UI assets are package-relative static resources under a distinct 
 
 ## 6. Dependency graph
 
-Only Plan 345 is currently numbered and registered. Later milestones receive global numbers only when their implementation plans are written.
+Plans 345 and 349 are numbered and registered. Later milestones receive global numbers only when their implementation plans are written.
 
 ```text
 345 architecture + runtime-neutral app contract foundation (closed)
@@ -213,4 +213,4 @@ Plan 345 remains closed as `passed-managed-native-app-runtime-contract-foundatio
 
 Plan 349 corrected the four pre-runtime API defects without invalidating Plan 345's executed infrastructure evidence: hostname grants now handle globally routable results with explicit-deny protection, non-global address classification is frozen and fail-closed, control messages have directional correlated outcomes, and `brokered_tcp` is reserved until a connect transaction is designed. Its closure is authoritative for the correction. The SAM/I2CP gateway and package/lifecycle + AppManager branches are unblocked for plan drafting; Proposal 170 integration remains gated on canonical Proposal 170 completion. No runtime owner or user-visible managed-app capability exists yet.
 
-No downstream app implementation should begin against private router internals or the uncorrected Plan-345 v1 surface.
+Future app implementation must use the corrected v1 contract and preserve the existing router ownership boundaries; bounded gateway and package/lifecycle plans are the next planning step.
