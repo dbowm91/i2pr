@@ -1,6 +1,6 @@
 # Plan 345 — managed native app runtime foundation and capability contract
 
-Status: **in-progress-managed-native-app-runtime-contract-foundation**.
+Status: **passed-managed-native-app-runtime-contract-foundation**.
 
 Classification: **invariant + infrastructure**. This plan establishes a security/ownership boundary and a runtime-neutral application ABI. It does **not** establish a user-visible application capability, process sandbox, firewall, package installer, console, or anonymity claim.
 

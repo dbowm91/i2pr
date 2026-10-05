@@ -122,13 +122,20 @@ Only Plan 345 is currently numbered and registered. Later milestones receive glo
 
 The router-gateway and package/lifecycle branches may proceed independently after Plan 345 if their interfaces remain exactly within the frozen contract. OS sandbox qualification is required before third-party applications may be described as securely contained.
 
+Plan 345 is closed. The router-side SAM/I2CP app-principal gateway and the
+package/lifecycle + AppManager owner are each **ready to plan** against the
+frozen v1 contract. The scoped Proposal 170 adapter remains blocked on the
+canonical Proposal 170 completion gate; the current registry still has Plan
+348 blocked on Plans 342 and 347. OS sandbox, broker, SDK, and UI-host plans
+remain sequenced behind their runtime/gateway owners as shown above.
+
 ## 7. Milestones
 
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
-| 345 | active | `in-progress-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | future `plans/closure/managed-native-app-runtime/345-status.md` |
+| 345 | closed | `passed-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | `plans/closure/managed-native-app-runtime/345-status.md` |
 
-Future milestone classes are intentionally unnumbered until Plan 345 freezes the contract and ownership boundary:
+Future milestone classes remain unnumbered until bounded implementation plans are written. With Plan 345 closed, the router-side app principal gateway and package/lifecycle manager with AppManager API are ready to plan. Later classes remain sequenced behind those owners:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;
 - package/lifecycle manager and administrator API;
 - Linux/macOS/Windows sandbox backends plus launch attestation;
@@ -203,6 +210,6 @@ This completion boundary is independent of whether any mail/IRC/torrent applicat
 
 ## 12. Milestone status summary
 
-Plan 345 is ready and is the sole registered milestone in this new parallel workstream. It owns the durable architecture decision(s), the runtime-neutral `i2pr-app-proto` contract, the app/admin principal split, default-deny policy semantics, package/UI descriptors, ceilings, and static boundary enforcement. It must not launch processes or claim sandbox/network containment.
+Plan 345 is closed as `passed-managed-native-app-runtime-contract-foundation`. ADR 0032 and the v1 contract are frozen; `i2pr-app-proto` implements the identity/capability split, framing and control vocabularies, manifest/UI descriptors, default-deny policy, resource limits, sandbox-attestation vocabulary, and static boundary enforcement. It does not launch processes or establish sandbox/network containment. The SAM/I2CP gateway and package/lifecycle + AppManager branches are ready to plan; Proposal 170 integration remains gated on canonical completion.
 
 No downstream app implementation should begin against private router internals. Downstream work should wait for the relevant public app contract from Plan 345, then depend only on that contract/SDK.
