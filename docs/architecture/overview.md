@@ -172,7 +172,7 @@ Flattened allowlist (the exact set the checker enforces per crate):
 | `i2pr-tunnel` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto` |
 | `i2pr-client` | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` |
 | `i2pr-api` | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` |
-| `i2pr-service-tunnels` | `i2pr-client`, `i2pr-proto` (allowlist permits `i2pr-client`; not currently linked); reusable policy core per ADR 0032 |
+| `i2pr-service-tunnels` | No internal crate dependencies; reusable policy core per ADR 0032 |
 | `i2pr-addressbook` | `i2pr-proto` |
 | `i2pr-testkit` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` |
 | `i2pr-daemon` | `i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`, `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`, `i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel` |

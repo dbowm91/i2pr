@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Runtime-neutral Milestone 10 service-tunnel configuration, destination references, and policy"
+description = "Runtime-neutral I2P service-tunnel policy, destination groups, and protocol filters"
+readme = "README.md"
+keywords = ["i2p", "proxy", "tunnel"]
+categories = ["network-programming"]
 publish = false
 
 [dependencies]
 base64ct.workspace = true
-i2pr-proto = { path = "../i2pr-proto" }
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true

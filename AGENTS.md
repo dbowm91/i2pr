@@ -76,6 +76,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
 python3 scripts/check-global-plan-number-uniqueness.py
+python3 scripts/check-portable-service-tunnel-api.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh
