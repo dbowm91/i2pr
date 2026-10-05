@@ -476,3 +476,62 @@ dependency graph.
 - No plan is unblocked that depends on the unmet `receipt` criterion.
   Specifically: nothing downstream of "M11 experimental qualification passed"
   moves, because ADR 0026 is not marked passed.
+
+## Correction, 2026-10-05 — the zero-production-diff guard was fail open (dated; the text above is preserved)
+
+Re-audit while registering Plan 340 found that this plan's headline
+mechanism — the `PLAN265_PRODUCTION_BASELINE` guard that re-proves the
+Plan 262 production-source equivalence on every run — **could not fail**.
+
+The guard diffed with the pathspec `'crates/*/src'`. Git's default
+pathspec matching resolves such a pattern against the whole path, and the
+`src` component never matches a file *inside* the directory, so the
+pattern selected nothing at all:
+
+```text
+$ git ls-files 'crates/*/src'        | wc -l      # 0
+$ git ls-files ':(glob)crates/*/src/**' | wc -l    # 325
+$ git diff --name-only 514bf12..HEAD -- 'crates/*/src'          | wc -l   # 0   (vacuous)
+$ git diff --name-only 514bf12..HEAD -- ':(glob)crates/*/src/**' | wc -l  # 151
+```
+
+Both call sites were affected: the shell guard in
+`tests/integration/m11-transit/run-i2pd.sh` and the manifest /
+composition-gate `prod_diff` in the same runner's driver heredoc.
+
+**What was and was not proven, stated precisely.**
+
+- The *substantive* claim survives. The retained Plan 264 evidence was
+  produced at qualification SHA `6ab9dc2dd80526ce38e62014635ec3e3ad5521f5`,
+  and re-running the guard with a **working** pathspec over
+  `514bf12..6ab9dc2d` returns **0** changed crate production sources. The
+  evidence really was collected on the byte-identical Plan 262 production
+  tree, and this is now independently re-proved rather than assumed.
+- The *verification* claim does not survive. "Re-proved mechanically on
+  every one of the 8 runs" describes a check that was never exercised; it
+  returned the right answer for the wrong reason. Plans 266, 267, and 268
+  repeat that phrasing and are corrected by cross-reference.
+- The guard was fail open for the whole drift since that SHA. The first
+  production-source change after the retained evidence is `740e8ff`
+  ("netdb: add bounded provenance eligibility model"); 86 commits touching
+  `crates/*/src` have landed since, and the guard would have reported
+  "Plan 262 production authority retained" through all of them.
+
+**Corrective applied.** Both call sites now use
+`:(glob)crates/*/src/**`. With the corrected pathspec the lane fails
+closed on the current tree (151 changed sources), which is the intended
+behaviour. `scripts/check-m11-transit-boundaries.sh` rule 39 now carries
+teeth for the repair itself: a positive control requiring the corrected
+pathspec to select files in this tree, a negative control requiring the
+bare form to select none, and a non-comment scan of the runner requiring
+the corrected spec at both call sites and the vacuous spec nowhere in
+code. Reverting either call site makes the boundary checker fail; both
+reverts were executed and both failed closed before the sources were
+restored.
+
+**Not changed by this correction.** The Plan 265 status token, the frozen
+attempt budget, the closed terminal vocabulary, the opportunity ladder, and
+every retained evidence row are untouched. No milestone, readiness, or
+support claim moves. See also the 2026-10-05 addendum in
+[`268-status.md`](268-status.md) for the consequence for the M11
+authority transition.

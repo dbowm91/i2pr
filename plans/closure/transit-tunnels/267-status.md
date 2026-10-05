@@ -332,3 +332,13 @@ roadmap dependency graph.
 - No plan is unblocked that depends on the unmet `receipt`
   criterion. Nothing downstream of "M11 experimental
   qualification passed" moves; ADR 0026 is not marked passed.
+
+## Correction cross-reference, 2026-10-05
+
+The phrase "**zero production `crates/*/src` diff** from Plan 262
+`514bf12` (re-proved mechanically on every one of the 8 runs)" above is
+corrected by the dated correction in [`265-status.md`](265-status.md): the
+guard's pathspec matched nothing, so it could not fail. The substantive
+claim survives — the retained evidence SHA `6ab9dc2d` is re-proved
+byte-identical to `514bf12` over crate production sources with a working
+pathspec. Nothing in this plan's disposition changes.

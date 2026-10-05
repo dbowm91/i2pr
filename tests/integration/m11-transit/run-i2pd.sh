@@ -817,15 +817,24 @@ exact_row "m11-i2pd-b-sam-missing-env-fails" \
 # retained Plan 264 five-epoch evidence stays valid only while the
 # production tree is byte-identical, so every run re-proves the diff
 # instead of trusting a closure-time assertion.
+#
+# Plan 340 correction: this pathspec was `'crates/*/src'`, which git's
+# default (WM_PATHNAME) matching resolves against the *whole* path and
+# therefore matched nothing at all — `git ls-files 'crates/*/src'` returns
+# 0 entries. The guard was fail-open: it reported "Plan 262 production
+# authority retained" no matter how far the production tree had drifted.
+# `:(glob)crates/*/src/**` is the pathspec that actually selects crate
+# production sources, including files nested below `src/`. The guard's
+# intent is unchanged and strictly stronger: it can now fail.
 PLAN265_PROD_DIFF="$(git -C "${REPO_ROOT}" diff --name-only \
-  "${PLAN265_PRODUCTION_BASELINE}..HEAD" -- 'crates/*/src' 2>/dev/null || true)"
+  "${PLAN265_PRODUCTION_BASELINE}..HEAD" -- ':(glob)crates/*/src/**' 2>/dev/null || true)"
 if [[ -z "${PLAN265_PROD_DIFF}" ]]; then
   record_guarded "m11-i2pd-plan265-production-source-lock" \
-    "git diff --name-only ${PLAN265_PRODUCTION_BASELINE}..HEAD -- 'crates/*/src' is empty (Plan 262 production authority retained)" \
+    "git diff --name-only ${PLAN265_PRODUCTION_BASELINE}..HEAD -- ':(glob)crates/*/src/**' is empty (Plan 262 production authority retained)" \
     "0"
 else
   record_guarded "m11-i2pd-plan265-production-source-lock" \
-    "production crates/*/src changed since Plan 262: ${PLAN265_PROD_DIFF}" \
+    "crate production sources changed since Plan 262: ${PLAN265_PROD_DIFF}" \
     "1"
 fi
 # Plan 265 sections 1/4: the attempt budget is frozen at eight and can
@@ -1379,7 +1388,12 @@ dirty = sp.run(
 prod_diff = sp.run(
     [
         "git", "-C", repo_root, "diff", "--name-only",
-        f"{PRODUCTION_BASELINE}..HEAD", "--", "crates/*/src",
+        # Plan 340 correction: argv is passed without shell globbing, so
+        # the pathspec must carry git's `:(glob)` magic itself to select
+        # crate production sources including files nested below `src/`.
+        # The bare `crates/*/src` form matched nothing and made both the
+        # manifest field and the composition gate fail open.
+        f"{PRODUCTION_BASELINE}..HEAD", "--", ":(glob)crates/*/src/**",
     ],
     capture_output=True,
     text=True,

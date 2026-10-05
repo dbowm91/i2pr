@@ -540,4 +540,46 @@ if [[ ! -f "$root/plans/closure/transit-tunnels/265-retained-plan264-evidence.ts
     fail "retained Plan 264 evidence index missing: plans/closure/transit-tunnels/265-retained-plan264-evidence.tsv"
 fi
 
+# 39. Plan 340 correction: the Plan 265 zero-production-diff guard must
+#     actually be able to fail. Its pathspec was `crates/*/src`, which
+#     git's default matching resolves against the whole path and so
+#     selected nothing; the guard then reported "Plan 262 production
+#     authority retained" regardless of how far production drifted.
+#     Two independent teeth:
+#       a. positive control — the corrected pathspec must select crate
+#          production sources in this very tree;
+#       b. the vacuous form must select nothing, so the difference is
+#          proven here rather than assumed;
+#       c. the runner must use the corrected form at both call sites
+#          (the shell guard and the manifest/composition gate).
+if ! command -v git >/dev/null 2>&1; then
+    fail "git is required to prove the production-source guard pathspec is not vacuous"
+fi
+prod_spec_corrected=':(glob)crates/*/src/**'
+prod_spec_vacuous='crates/*/src'
+prod_src_selected="$(git -C "$root" ls-files -- "$prod_spec_corrected" | wc -l | tr -d ' ')"
+vacuous_selected="$(git -C "$root" ls-files -- "$prod_spec_vacuous" | wc -l | tr -d ' ')"
+if [[ -z "$prod_src_selected" || "$prod_src_selected" -eq 0 ]]; then
+    fail "corrected production-source pathspec ${prod_spec_corrected} selected no files; the guard cannot detect drift"
+fi
+if [[ "$vacuous_selected" -ne 0 ]]; then
+    fail "expected the bare ${prod_spec_vacuous} pathspec to match nothing, but it selected ${vacuous_selected} paths; re-derive the Plan 340 correction"
+fi
+# The runner quotes the spec in shell single quotes at one call site and
+# in Python double quotes at the other, and the explanatory comments name
+# both forms. Count only non-comment lines so a prose mention can never
+# satisfy this check. The corrected spec *contains* the vacuous one as a
+# substring, so the vacuous form is matched as a complete git argument
+# (end of token or closing quote) rather than as free text.
+runner_code="$(mktemp)"
+grep -v -E '^[[:space:]]*#' "$external_runner" > "$runner_code"
+corrected_in_code="$(grep -cF -- "$prod_spec_corrected" "$runner_code" || true)"
+vacuous_in_code="$(grep -cE "crates/\\*/src(['\"]|\$|[[:space:]])" "$runner_code" || true)"
+if [[ "$vacuous_in_code" -ne 0 ]]; then
+    fail "external runner code still passes the vacuous ${prod_spec_vacuous} pathspec to git (${vacuous_in_code} site(s)); the Plan 265 guard fails open"
+fi
+if [[ "$corrected_in_code" -lt 2 ]]; then
+    fail "external runner must pass the corrected production-source pathspec at both call sites (found ${corrected_in_code} in code, expected at least 2)"
+fi
+
 echo "check-m11-transit-boundaries: passed"

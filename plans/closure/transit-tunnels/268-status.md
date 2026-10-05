@@ -336,3 +336,34 @@ roadmap dependency graph.
   continuation of this chain.
 - No plan remains blocked on an unmet criterion: all ten Plan 268
   §8 criteria pass with executed evidence.
+
+## Addendum, 2026-10-05 — retained evidence stands; the mechanism behind it was fail open (dated)
+
+This record's claim that its instrument "landed with **zero production
+`crates/*/src` diff** from Plan 262 `514bf12` (re-proved mechanically on
+every one of the 8 runs)" rests on a guard that could not fail. The
+pathspec `'crates/*/src'` matches no path in this repository. The
+authoritative diagnosis, the corrected pathspec, and the repair's own
+teeth are recorded in the 2026-10-05 correction in
+[`265-status.md`](265-status.md).
+
+Two consequences, kept separate on purpose:
+
+1. **The M11 one-family experimental qualification result is not
+   withdrawn.** Its evidence was collected at qualification SHA
+   `6ab9dc2d`, and a *working* pathspec now re-proves that the crate
+   production sources at that SHA are byte-identical to the Plan 262
+   baseline `514bf12` (0 changed files). The result stands as evidence
+   about that tree. The status token of this record is unchanged.
+2. **The lane can no longer certify an arbitrary tree.** Because the
+   guard was fail open, no run after the first production change
+   (`740e8ff`) could have detected drift. A future M11 external
+   qualification on the current tree now fails closed on real drift, as it
+   should. Any M11-dependent claim about a tree other than `6ab9dc2d` —
+   including any claim that transit participation is qualified — requires
+   a fresh qualification run.
+
+This is why Plan 340 (Plan 322 Group A) adds transit volume owners
+**without** enabling production transit participation: the binding M11
+evidence is not demonstrably attached to the current tree, so the
+posture decision cannot be justified by it today.

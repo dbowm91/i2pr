@@ -14,6 +14,14 @@
 # plans/closure/transit-tunnels/264-status.md. Composition re-supplies
 # those ten manifests as directories and the gate verifies each digest
 # before any Plan 265 family count is accepted.
+#
+# 2026-10-05 correction: the "production diff is empty" assertion above was
+# re-proved with a working pathspec rather than the vacuous one the lane
+# used. Every row's implementation_sha is 6ab9dc2dd80526ce38e62014635ec3e3ad5521f5,
+# and `git diff --name-only 514bf12..6ab9dc2d -- ':(glob)crates/*/src/**'`
+# is empty: the retained evidence was collected on the byte-identical Plan
+# 262 production tree. The lane's own guard was fail open and is corrected
+# in 265-status.md; no row, digest, or status in this file changes.
 obep	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep/build-accepted	f782469a8cda6d3714d7bed8c7835cc02f57a155f29efda7640a10483f7d5ea6
 obep	2	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	obep/build-accepted	8fef6d77c4b8008b3d9869eebc63a2c2c7f18f4fc189b570578f1df56d1fbecc
 ibgw	1	6ab9dc2dd80526ce38e62014635ec3e3ad5521f5	passed	ibgw/build-accepted	b590caa338aa1cd9cfa987f500aa1a8236a989a208654388b0378bd4af96b719
