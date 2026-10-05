@@ -1,6 +1,22 @@
 # Plan 340 — Transit volume, transit bandwidth, and tunnel share owners
 
-Status: **registered-transit-volume-owners-without-changing-the-participation-posture**
+Status: **passed-transit-volume-owners-with-participation-posture-unchanged**
+
+Closure record:
+[`plans/closure/i2pcontrol-proposal-170/340-status.md`](../../closure/i2pcontrol-proposal-170/340-status.md)
+
+## Current implementation progress
+
+Completed and closed on 2026-10-05. All work packages A-E landed; the canonical
+RouterInfo gap census is zero. Two defects in this plan's own code were found and
+fixed at the source before closure: the window ring stored epochs modulo the ring
+size (so reused slots accumulated), and the window's writer and reader used two
+different clock bases (so a live window could only read empty). Teeth were
+verified at three layers by five inversions. See the closure record for the
+requirement matrix, the teeth table, and the two-defect account.
+
+The one claim that did **not** change: transit participation stays disabled, and
+the honest product baseline is `0` / `0` / `0.0`.
 
 Classification: capability + source-ownership completion (reopen of Plan 322, Group A).
 

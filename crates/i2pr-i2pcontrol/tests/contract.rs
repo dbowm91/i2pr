@@ -908,18 +908,38 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
             .find(|row| row.key == key)
             .expect("canonical field")
     };
-    assert_eq!(
-        gap_owner("i2p.router.net.total.transit.bytes").owner,
-        "controlled TransitBuildService qualification gate"
-    );
-    assert_eq!(
-        gap_owner("i2p.router.net.bw.transit.15s").owner,
-        "transit bandwidth sampler"
-    );
-    assert_eq!(
-        gap_owner("i2p.router.net.tunnels.shareratio").owner,
-        "transit participation metrics"
-    );
+    for (key, evidence) in [
+        (
+            "i2p.router.net.total.transit.bytes",
+            "proposal_transit_volume_reflects_the_published_posture_over_wire",
+        ),
+        (
+            "i2p.router.net.bw.transit.15s",
+            "proposal_transit_volume_reflects_the_published_posture_over_wire",
+        ),
+        (
+            "i2p.router.net.tunnels.shareratio",
+            "proposal_transit_share_ratio_requires_an_attested_denominator_over_wire",
+        ),
+    ] {
+        let row = gap_owner(key);
+        assert_ne!(row.owner, "Plan 322 source not implemented", "{key}");
+        assert!(
+            matches!(
+                row.availability,
+                SourceAvailability::PublishedGated {
+                    owner_plan: "340",
+                    ..
+                }
+            ),
+            "{key} must name the Plan 340 transit volume owner, not stay a gap"
+        );
+        assert_eq!(
+            row.evidence_test,
+            Some(evidence),
+            "{key} must carry its own source evidence"
+        );
+    }
     for key in [
         "i2p.router.net.status.v6",
         "i2p.router.net.error",
@@ -949,22 +969,17 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
             .count(),
-        3,
-        "only the three transit selectors remain explicit gaps"
+        0,
+        "Plan 340 closed Plan 322 Group A: every canonical addition now has a named owner"
     );
     let remaining_gaps: Vec<_> = rows
         .iter()
         .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
         .map(|row| row.key)
         .collect();
-    assert_eq!(
-        remaining_gaps,
-        [
-            "i2p.router.net.total.transit.bytes",
-            "i2p.router.net.bw.transit.15s",
-            "i2p.router.net.tunnels.shareratio",
-        ],
-        "Plan 322 Group A stays blocked: transit participation is a posture change, not a snapshot"
+    assert!(
+        remaining_gaps.is_empty(),
+        "no canonical Proposal 170 RouterInfo addition may remain an explicit gap: {remaining_gaps:?}"
     );
 }
 

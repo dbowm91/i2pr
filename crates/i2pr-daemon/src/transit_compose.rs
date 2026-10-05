@@ -100,6 +100,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use i2pr_proto::{
     DeferredBuildRecords, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE, TunnelDataMessage,
@@ -120,6 +121,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 
 use crate::router_i2np::{RouterDeliveryOutcome, RouterDeliveryService};
+use crate::transit_volume::TransitVolumeCounters;
 
 /// Maximum record count the daemon transit composition accepts in
 /// a single inbound STBM. Mirrors the
@@ -615,6 +617,12 @@ pub struct TransitBuildService {
     admission: TransitAdmissionState,
     router_delivery: RouterDeliveryService,
     counters: TransitCounters,
+    /// Plan 340: the shared transit-volume handle. Volume is advanced
+    /// only by a real `TunnelData` forward dispatch, so the counters a
+    /// controlled lane publishes are the ones the data plane produced.
+    /// The handle is shared because the volume is written on the inbound
+    /// data path and read from the I2PControl request path.
+    volume: Arc<Mutex<TransitVolumeCounters>>,
     /// Bounded slot of decoded `next_router` -> `PeerId` mappings
     /// the daemon-owned router delivery service knows about. The
     /// slot enforces the [`MAX_TRANSIT_PEER_INDEX`] ceiling through
@@ -776,9 +784,39 @@ impl TransitBuildService {
             admission: TransitAdmissionState::default(),
             router_delivery,
             counters: TransitCounters::default(),
+            volume: Arc::new(Mutex::new(TransitVolumeCounters::default())),
             peer_index: TransitPeerIndex::default(),
             cancelled: false,
         })
+    }
+
+    /// Returns the shared transit-volume handle a controlled lane
+    /// publishes to the inspection surface.
+    ///
+    /// Only a router that actually constructs this service can hold one,
+    /// which is what keeps the product posture (no service, no
+    /// counters) and the controlled lane (real counters) from being
+    /// confused for one another.
+    pub fn volume_handle(&self) -> Arc<Mutex<TransitVolumeCounters>> {
+        Arc::clone(&self.volume)
+    }
+
+    /// Advances the shared transit-volume counters by one canonical cell.
+    ///
+    /// The stamp comes from [`crate::transit_volume::wall_seconds`] rather
+    /// than from this function's `now_ms`, because the reader on the
+    /// I2PControl request path has no access to the transit ingress clock
+    /// base. One shared clock is what makes a trailing window meaningful.
+    ///
+    /// A poisoned lock is not a condition the data plane can act on: the
+    /// cell has already been transformed and must still be forwarded, so
+    /// the counter is skipped and the volume is under-reported for the
+    /// rest of the process. Dropping the cell instead would trade a
+    /// diagnostic undercount for a real delivery failure.
+    fn record_transit_forward(&self) {
+        if let Ok(mut counters) = self.volume.lock() {
+            counters.record_forward(crate::transit_volume::wall_seconds());
+        }
     }
 
     /// Returns whether the service has been cancelled.
@@ -1258,6 +1296,11 @@ impl TransitBuildService {
             }) => {
                 self.counters.forwarded_tunnel_data =
                     self.counters.forwarded_tunnel_data.saturating_add(1);
+                // Plan 340: this is the only site that advances transit
+                // volume. A `Forward` is a cell relayed onward for another
+                // router; the OBEP `Deliver` arm below terminates a tunnel
+                // destined for this router and is therefore not transit.
+                self.record_transit_forward();
                 TransitTunnelDataDispatch::Forward {
                     next_router,
                     next_tunnel,
@@ -3107,6 +3150,81 @@ mod tests {
             other => panic!("expected Forward, got {other:?}"),
         }
         assert_eq!(service.counters.forwarded_tunnel_data(), 1);
+    }
+
+    /// Plan 340: only a real forward advances transit volume. A dropped
+    /// cell — unknown receive id, wrong peer, or replay — must leave the
+    /// counters untouched, and the advance must be exactly one accounted
+    /// cell. This is the row that fails if the accounting stops being
+    /// `Forward`-only or starts counting drops.
+    #[test]
+    fn transit_volume_advances_only_on_a_forward() {
+        use crate::transit_volume::TRANSIT_CELL_ACCOUNTED_BYTES;
+
+        let mut service = service_for_test();
+        let volume = service.volume_handle();
+        let forwarded_bytes = || volume.lock().expect("unpoisoned").total_forwarded_bytes();
+
+        // A cell for an unregistered receive id is dropped, never counted.
+        let unknown = TunnelDataMessage {
+            tunnel_id: 0x9999,
+            data: [0; 1024],
+        };
+        assert!(matches!(
+            service.route_tunnel_data(&unknown, &dispatch_peer(), 60_000),
+            TransitTunnelDataDispatch::Drop
+        ));
+        assert_eq!(forwarded_bytes(), 0, "a dropped cell is not relay volume");
+
+        let cryptography = EciesX25519BuildCryptography::new();
+        let responder_priv = privkey(0xA3);
+        let hop_identity = *service.hop_identity();
+        let record = ShortRequestRecord::try_new(
+            TunnelId::new(0x1000).expect("id"),
+            TunnelId::new(0x2000).expect("id"),
+            Hash::from_bytes([0xAA; 32]),
+            HopRole::Participant,
+            LayerEncryptionType::Aes,
+            i2pr_proto::Date::from_millis(60_000),
+            REQUEST_EXPIRATION_SECONDS,
+            0x1234_5678,
+            BuildOptions::empty(),
+        )
+        .expect("record");
+        let mut rng = ChaCha8Rng::seed_from_u64(0xCAFE);
+        let payload = make_stbm_with_local_slot(
+            &cryptography,
+            &responder_priv,
+            &hop_identity,
+            &record,
+            &mut rng,
+        );
+        let _ = service.route_short_build(&payload, &dispatch_peer(), 60, &mut rng);
+
+        let cell = TunnelDataMessage {
+            tunnel_id: 0x1000,
+            data: [0xAA; 1024],
+        };
+        assert!(matches!(
+            service.route_tunnel_data(&cell, &dispatch_peer(), 60_000),
+            TransitTunnelDataDispatch::Forward { .. }
+        ));
+        assert_eq!(
+            forwarded_bytes(),
+            TRANSIT_CELL_ACCOUNTED_BYTES,
+            "one forward accounts exactly one canonical cell"
+        );
+
+        // A replay of the same cell is dropped and adds no volume.
+        assert!(matches!(
+            service.route_tunnel_data(&cell, &dispatch_peer(), 60_000),
+            TransitTunnelDataDispatch::Drop
+        ));
+        assert_eq!(
+            forwarded_bytes(),
+            TRANSIT_CELL_ACCOUNTED_BYTES,
+            "a replay is not relay volume"
+        );
     }
 
     /// 32. Unknown id, wrong peer, expired, malformed, duplicate,

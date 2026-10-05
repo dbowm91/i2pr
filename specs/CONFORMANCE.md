@@ -460,9 +460,49 @@ What is claimed, and what is not:
   claim about the NetDB, and an absent observation is not evidence of an empty
   one. Gating is per key: the two `error` rows fail closed without an attested
   NetDB while `status.v6` and `testing.v6` still answer.
-- **The three transit selectors are still gaps** and are not covered here. See
-  `specs/references/proposal-170-network-status-error-testing.md` for the
-  normative vocabulary and emission policy.
+- **The three transit selectors are owned by Plan 340**, below.
+
+## Transit volume, bandwidth, and share (Plan 340)
+
+The last three canonical Proposal 170 `RouterInfo` selectors —
+`i2p.router.net.total.transit.bytes`, `i2p.router.net.bw.transit.15s`, and
+`i2p.router.net.tunnels.shareratio` — have bounded production owners. The first
+two are *"(adopted from i2pd)"*; the third is not, and no pinned reference
+implements it. See
+[`specs/references/proposal-170-transit-volume-and-share.md`](references/proposal-170-transit-volume-and-share.md)
+for the normative record.
+
+What is claimed, and what is not:
+
+- **The honest product baseline is `0`, `0`, and `0.0`.** Production profiles
+  never construct a transit data-plane owner, so a product i2pr router relays
+  nothing and says so. The disabled posture holds **no counters at all**, so it
+  is structurally incapable of reporting a non-zero volume: the zero is a
+  property of the enforced posture, not a measurement substituted for a missing
+  one. This advertises the *absence* of transit participation.
+- **Transit participation is not enabled and is not advertised.** Enabling it is
+  a separate product-posture decision gated by M11 re-qualification; the retained
+  M11 evidence is bound to qualification SHA `6ab9dc2d` and not to the current
+  tree (see the 2026-10-05 addendum in
+  `plans/closure/transit-tunnels/268-status.md`).
+- **Volume is counted only where i2pd counts it.** One relayed `TunnelData` cell
+  accounts 1028 bytes (`TUNNEL_DATA_PAYLOAD_SIZE + 4`, matching i2pd's
+  `TUNNEL_DATA_MSG_SIZE`), counted only on a `Forward` dispatch. An OBEP delivery
+  terminating a tunnel addressed to this router is not transit and is not
+  counted.
+- **The 15-second figure is a trailing-window mean computed at request time**,
+  not i2pd's one-hertz timer sample; the two differ only in the first second
+  after a change of rate. No timer was added.
+- **`tunnels.shareratio` is locally defined and labelled as such.** The Proposal
+  leaves its arithmetic unspecified, so i2pr defines it as transit bytes over the
+  attested cumulative sent total, clamped to `1.0`. A router that does not
+  participate reports `0.0`; a router that does participate **fails closed**
+  without an attested denominator rather than publishing a guess. A client
+  needing the configured bandwidth-share percentage must read the RouterInfo
+  `share` option.
+- **An absent owner is a gap, never a zero.** An unpublished posture, an
+  unreadable counter, or a missing denominator fails the whole request closed
+  with the field and owning plan named, and never returns a partial RouterInfo.
 
 ## Interoperability matrix
 

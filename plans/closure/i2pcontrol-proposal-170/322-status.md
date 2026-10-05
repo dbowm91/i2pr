@@ -1,5 +1,33 @@
 # Plan 322 — RouterInfo canonical sources and signed news disposition
 
+## Current authority amendment — 2026-10-05, Plan 340 closed Group A
+
+Status: **passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged**
+
+Every requirement row of this record is now satisfied, and the canonical
+Proposal 170 RouterInfo gap census is **zero**, asserted by
+`plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps`.
+
+- The five per-family selectors closed by **Plan 339**.
+- The three transit selectors closed by **Plan 340**.
+
+The single claim this plan can no longer make is the one its original body made
+about transit: those selectors do not report measured relay traffic on a product
+router, because **production transit participation is still disabled**. Plan 340
+gave them truthful owners anyway — a router that relays nothing reports zero, and
+the disabled posture owns no counters at all, so the zero is a property of the
+enforced posture rather than a value substituted for a missing measurement.
+Nothing in this amendment enables participation, advertises transit capability,
+or touches M11, SSU2, or NetDB behavior. The 2026-10-05 correction in
+[`transit-tunnels/265-status.md`](../../closure/transit-tunnels/265-status.md)
+records why a posture change cannot be justified by the retained M11 evidence
+today.
+
+The original disposition, the requirement matrix, and both dated corrections
+below are preserved unchanged as history.
+
+---
+
 Status: **blocked-prop170-production-transit-and-ipv6-source-owners**
 
 Implementation commits: prior Plan 322 implementation commits are recorded in repository history and the implementation plan. This disposition adds no implementation commit.
@@ -64,3 +92,25 @@ Updated by the 2026-10-05 correction above: the per-family half was reopened
 and closed by Plan 339, so Plan 322 now remains blocked on the three **transit**
 selectors only, and the reopen condition is production transit participation
 rather than per-family lifecycle owners.
+
+## Amendment, 2026-10-05 — Group A closed by Plan 340 (dated; everything above is preserved)
+
+The 2026-10-05 correction above reduced this record's blockers from eight rows to
+three and reclassified the remainder as a transit-participation posture change.
+That reclassification was right about the difficulty and wrong about the
+consequence: a posture change and an ownership gap are separable, and only the
+first of them needs a product decision.
+
+**Plan 340 took the ownership half.** `TransitParticipation` is installed by the
+composition root in its `Disabled` state, which owns no counters, so all three
+transit selectors answer truthfully for a router that relays nothing. The
+participation posture itself is untouched.
+
+Reopen condition, restated: no RouterInfo source work remains for this plan. A
+future change that wants to report **non-zero** transit volume must first enable
+production transit participation, which is a separate product-posture decision
+requiring M11 re-qualification bound to the current tree, and then must re-verify
+that the counters it publishes are counters a real forward dispatch advances.
+
+Plan 328's dependency on this plan is discharged; 328 remains blocked on Plans
+326 and 327.

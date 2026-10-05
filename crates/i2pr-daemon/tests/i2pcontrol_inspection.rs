@@ -492,37 +492,259 @@ async fn router_info_unavailable_fails_whole_without_partial() {
     }
 }
 
+/// The three canonical selectors Plan 322 Group A left open.
+const TRANSIT_VOLUME_KEYS: [&str; 3] = [
+    "i2p.router.net.total.transit.bytes",
+    "i2p.router.net.bw.transit.15s",
+    "i2p.router.net.tunnels.shareratio",
+];
+
+/// Inspection handles that publish only what a transit-volume projection
+/// may read. `participation` is published exactly as given, so a test can
+/// leave it unpublished to exercise the fail-closed path.
+fn transit_volume_handles(
+    participation: Option<i2pr_daemon::transit_volume::TransitParticipation>,
+    sent_total: Option<(u64, u64)>,
+) -> Arc<InspectionHandles> {
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    if let Some(participation) = participation {
+        inspection.publish_transit_participation(participation);
+    }
+    if let Some((received, sent)) = sent_total {
+        let metrics = Arc::new(ControlMetrics::new());
+        metrics.observe_transport(received, sent, 0, 0);
+        inspection.publish_metrics(metrics);
+    }
+    inspection
+}
+
+/// Plan 340: a product router publishes the disabled posture, and all
+/// three selectors answer with the truth about a router that relays
+/// nothing. The zeros are not substituted for a missing measurement — the
+/// disabled posture owns no counters at all.
 #[tokio::test]
-async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire() {
+async fn proposal_transit_volume_reflects_the_published_posture_over_wire() {
     let config = Config::parse(&config_text(TEST_PASSWORD))
         .expect("config parses")
         .i2pcontrol;
-    let (_state, address, _scope, _parent) = start_service_with_inspection(
-        config,
-        Arc::new(InspectionHandles::new(
-            2,
-            ServiceEndpoint {
-                enabled: false,
-                bind: None,
+    let handles = transit_volume_handles(
+        Some(i2pr_daemon::transit_volume::TransitParticipation::Disabled),
+        None,
+    );
+    let (_state, address, _scope, _parent) = start_service_with_inspection(config, handles).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.total.transit.bytes": null,
+                "i2p.router.net.bw.transit.15s": null,
+                "i2p.router.net.tunnels.shareratio": null,
             },
-            ServiceEndpoint {
-                enabled: false,
-                bind: None,
-            },
-            Vec::new(),
-        )),
+            "id": 7,
+        }),
+        &[],
     )
     .await;
+    let result = &response["result"];
+    assert_eq!(
+        result["i2p.router.net.total.transit.bytes"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        result["i2p.router.net.bw.transit.15s"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        result["i2p.router.net.tunnels.shareratio"],
+        serde_json::json!(0.0),
+        "a router that relays nothing shares none of its bandwidth"
+    );
+}
+
+/// Plan 340: a participating router reports the volume its forward path
+/// actually measured, and the share ratio is measured against the attested
+/// sent total rather than assumed.
+#[tokio::test]
+async fn proposal_transit_volume_reports_a_participating_router_measured_volume() {
+    use std::sync::{Arc as StdArc, Mutex};
+
+    use i2pr_daemon::transit_volume::{
+        TRANSIT_CELL_ACCOUNTED_BYTES, TransitParticipation, TransitVolumeCounters,
+    };
+
+    // The projection reads the request's own clock, so the recorded
+    // seconds must be the trailing fifteen real ones rather than a fixed
+    // epoch the window could not contain.
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_secs();
+    let counters = StdArc::new(Mutex::new(TransitVolumeCounters::default()));
+    {
+        let mut guard = counters.lock().expect("unpoisoned");
+        for second in 0..15_u64 {
+            guard.record_forward(now_seconds - (14 - second));
+        }
+    }
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let handles = transit_volume_handles(
+        Some(TransitParticipation::Enabled(StdArc::clone(&counters))),
+        // Ten times the relayed volume, so the measured share is 0.1.
+        Some((0, 10 * TRANSIT_CELL_ACCOUNTED_BYTES * 15)),
+    );
+    let (_state, address, _scope, _parent) = start_service_with_inspection(config, handles).await;
     let token = authenticate(address).await;
-    // Plan 322 Group A only: the three transit selectors remain gaps.
-    // Group B moved to Plan 339 and is covered by
-    // `proposal_per_family_network_condition_over_wire`.
-    let gaps = [
-        "i2p.router.net.total.transit.bytes",
-        "i2p.router.net.bw.transit.15s",
-        "i2p.router.net.tunnels.shareratio",
-    ];
-    for (id, key) in gaps.into_iter().enumerate() {
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.total.transit.bytes": null,
+                "i2p.router.net.bw.transit.15s": null,
+                "i2p.router.net.tunnels.shareratio": null,
+            },
+            "id": 8,
+        }),
+        &[],
+    )
+    .await;
+    let result = &response["result"];
+    assert_eq!(
+        result["i2p.router.net.total.transit.bytes"],
+        serde_json::json!(15 * TRANSIT_CELL_ACCOUNTED_BYTES),
+        "cumulative volume must equal what the forward path recorded"
+    );
+    assert_eq!(
+        result["i2p.router.net.bw.transit.15s"],
+        serde_json::json!(TRANSIT_CELL_ACCOUNTED_BYTES),
+        "one cell per second across the window averages to one cell per second"
+    );
+    let ratio = result["i2p.router.net.tunnels.shareratio"]
+        .as_f64()
+        .expect("double share ratio");
+    assert!(
+        (ratio - 0.1).abs() < f64::EPSILON,
+        "measured share must track the attested denominator, got {ratio}"
+    );
+}
+
+/// Plan 340: a ratio needs a denominator. While the router participates,
+/// an unattested sent total is a gap, not a `0.0` — while the two byte
+/// counters keep answering, because they do not need one.
+#[tokio::test]
+async fn proposal_transit_share_ratio_requires_an_attested_denominator_over_wire() {
+    use std::sync::{Arc as StdArc, Mutex};
+
+    use i2pr_daemon::transit_volume::{TransitParticipation, TransitVolumeCounters};
+
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("wall clock")
+        .as_secs();
+    let counters = StdArc::new(Mutex::new(TransitVolumeCounters::default()));
+    counters
+        .lock()
+        .expect("unpoisoned")
+        .record_forward(now_seconds);
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let handles = transit_volume_handles(
+        Some(TransitParticipation::Enabled(StdArc::clone(&counters))),
+        None,
+    );
+    let (_state, address, _scope, _parent) = start_service_with_inspection(config, handles).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.tunnels.shareratio": null,
+            },
+            "id": 9,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+    assert!(
+        response.get("result").is_none(),
+        "no partial result when the ratio has no denominator"
+    );
+    let message = response["error"]["message"]
+        .as_str()
+        .expect("error message");
+    assert!(message.contains("i2p.router.net.tunnels.shareratio"));
+    assert!(
+        message.contains("Plan 340"),
+        "owner plan named in {message}"
+    );
+
+    // The same owner answers the two counters that need no denominator.
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.total.transit.bytes": null,
+                "i2p.router.net.bw.transit.15s": null,
+            },
+            "id": 10,
+        }),
+        &[],
+    )
+    .await;
+    let result = &response["result"];
+    assert_eq!(
+        result["i2p.router.net.total.transit.bytes"],
+        serde_json::json!(i2pr_daemon::transit_volume::TRANSIT_CELL_ACCOUNTED_BYTES)
+    );
+    // One cell inside the window floors to 68 bytes/second, which proves
+    // the window reads real recorded volume rather than a default.
+    assert_eq!(
+        result["i2p.router.net.bw.transit.15s"],
+        serde_json::json!(i2pr_daemon::transit_volume::TRANSIT_CELL_ACCOUNTED_BYTES / 15)
+    );
+}
+
+/// The canonical fail-closed proof the source matrix's `Unavailable`
+/// invariant names: with no published transit posture there is no owner to
+/// answer from, and every selector fails closed naming its field and the
+/// owning plan, with no partial RouterInfo result. An absent owner is
+/// never read as a router relaying nothing.
+#[tokio::test]
+async fn proposal_unavailable_sources_fail_closed_over_wire() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let handles = transit_volume_handles(None, None);
+    let (_state, address, _scope, _parent) = start_service_with_inspection(config, handles).await;
+    let token = authenticate(address).await;
+    for (id, key) in TRANSIT_VOLUME_KEYS.into_iter().enumerate() {
         let (_, response) = post_json(
             address,
             &serde_json::json!({
@@ -534,7 +756,11 @@ async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire(
             &[],
         )
         .await;
-        assert_eq!(response["error"]["code"], serde_json::json!(-32_603));
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!(-32_603),
+            "{key}"
+        );
         assert!(
             response.get("result").is_none(),
             "no partial result for {key}"
@@ -544,7 +770,7 @@ async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire(
             .expect("error message");
         assert!(message.contains(key), "field named in {message}");
         assert!(
-            message.contains("Plan 322"),
+            message.contains("Plan 340"),
             "owner plan named in {message}"
         );
     }

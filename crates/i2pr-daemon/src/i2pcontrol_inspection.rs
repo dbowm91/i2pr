@@ -39,6 +39,7 @@ use crate::control_sources::{ControlMetrics, LogRing};
 use crate::i2cp::I2cpServiceState;
 use crate::sam::SamServiceState;
 use crate::service_tunnels::ServiceTunnelManager;
+use crate::transit_volume::{TransitParticipation, transit_share_ratio};
 
 /// Control-plane API version declared by `router.api_version`.
 pub const ROUTER_API_VERSION: u64 = 1;
@@ -230,6 +231,12 @@ pub struct InspectionHandles {
     ssu2_live: Mutex<Option<Ssu2RuntimeService>>,
     /// Authenticated router NEWS owner, published by the daemon worker.
     news_live: Mutex<Option<Arc<crate::news::NewsManager>>>,
+    /// Transit participation posture, published by the composition root
+    /// (Plan 340). The product publishes
+    /// [`TransitParticipation::Disabled`], which owns no counters and so
+    /// cannot report non-zero volume; a controlled lane publishes the
+    /// counters its real forward path advances.
+    transit_live: Mutex<Option<TransitParticipation>>,
 }
 
 impl InspectionHandles {
@@ -254,6 +261,7 @@ impl InspectionHandles {
             metrics_live: Mutex::new(None),
             ssu2_live: Mutex::new(None),
             news_live: Mutex::new(None),
+            transit_live: Mutex::new(None),
         }
     }
 
@@ -480,6 +488,27 @@ impl InspectionHandles {
         if let Ok(mut live) = self.metrics_live.lock() {
             *live = Some(metrics);
         }
+    }
+
+    /// Publishes the authoritative transit participation posture
+    /// (called once by the composition root, Plan 340).
+    ///
+    /// The product publishes [`TransitParticipation::Disabled`]: the
+    /// enforced posture that no product profile relays transit traffic.
+    /// Publishing it is what makes the three transit selectors answerable
+    /// rather than a gap, and the disabled variant reports zero because it
+    /// owns no counters, not because a zero was substituted for a missing
+    /// measurement.
+    pub fn publish_transit_participation(&self, participation: TransitParticipation) {
+        if let Ok(mut live) = self.transit_live.lock() {
+            *live = Some(participation);
+        }
+    }
+
+    /// Reads the published transit participation posture. A poisoned lock
+    /// or an unpublished slot is a gap, never a zero.
+    pub(crate) fn transit_participation(&self) -> Option<TransitParticipation> {
+        self.transit_live.lock().ok().and_then(|live| live.clone())
     }
 
     pub(crate) fn publish_news_manager(&self, manager: Arc<crate::news::NewsManager>) {
@@ -855,6 +884,58 @@ pub(crate) fn proposal_network_condition_value(
         _ => return Err(gap()),
     };
     Ok(serde_json::Value::from(value))
+}
+
+/// Reads the three transit-volume selectors through the published
+/// participation posture (Plan 340).
+///
+/// The value is a property of the enforced transit posture, not a
+/// substituted placeholder. A product router publishes
+/// `TransitParticipation::Disabled`, which owns no counters, so the zeros
+/// it reports are the truth about a router that relays nothing. A
+/// participating router reports counters its real `TunnelData` forward
+/// dispatches advanced.
+///
+/// Per-key gating is deliberate: `tunnels.shareratio` is a ratio, so while
+/// the router actually participates it additionally needs an attested
+/// cumulative sent total as its denominator and fails closed without one.
+/// A disabled router short-circuits to `0.0`, which is true regardless of
+/// the denominator. An unpublished posture, an unreadable counter, or a
+/// missing denominator is a gap — never a zero.
+pub(crate) fn proposal_transit_volume(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let gap = || InspectionGap {
+        key,
+        owner_plan: "340",
+        owner: "transit participation posture and volume counters",
+    };
+    let participation = handles.transit_participation().ok_or_else(gap)?;
+    // Same clock base the forward path stamps the ring with; see
+    // `crate::transit_volume::wall_seconds`.
+    let snapshot = participation
+        .volume_snapshot(crate::transit_volume::wall_seconds())
+        .ok_or_else(gap)?;
+    let value = match key {
+        "i2p.router.net.total.transit.bytes" => {
+            serde_json::Value::from(snapshot.total_transit_bytes)
+        }
+        "i2p.router.net.bw.transit.15s" => serde_json::Value::from(snapshot.transit_bandwidth_15s),
+        "i2p.router.net.tunnels.shareratio" => {
+            let sent_total = if snapshot.participating {
+                metrics_owner(handles)
+                    .and_then(|metrics| metrics.transport_totals())
+                    .map(|(_, sent)| sent)
+            } else {
+                None
+            };
+            let ratio = transit_share_ratio(&snapshot, sent_total).ok_or_else(gap)?;
+            serde_json::Value::from(ratio)
+        }
+        _ => return Err(gap()),
+    };
+    Ok(value)
 }
 
 /// Reads canonical cumulative SSU2 byte counters through the metrics

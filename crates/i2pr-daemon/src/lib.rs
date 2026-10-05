@@ -47,6 +47,7 @@ pub mod service_tunnels_streamr;
 pub mod service_tunnels_tls;
 pub mod transit_compose;
 pub mod transit_owner;
+pub mod transit_volume;
 pub mod tunnel_liveness;
 
 pub use error::DaemonError;
@@ -282,6 +283,15 @@ fn build_daemon_graph_inner(
     // default graph), never fabricated.
     inspection.publish_log_ring(crate::control_sources::LogRing::global());
     inspection.publish_metrics(Arc::new(crate::control_sources::ControlMetrics::new()));
+    // Plan 340: the product's transit participation posture. Production
+    // composition never constructs a transit data-plane owner — the
+    // inbound path consults `controlled_transit_disabled_probe` instead —
+    // so this router relays nothing and says so. The `Disabled` variant
+    // owns no counters, so the zeros the three transit selectors report
+    // are a property of the enforced posture rather than a substituted
+    // measurement. Enabling participation is a separate decision and is
+    // deliberately not reachable from here.
+    inspection.publish_transit_participation(crate::transit_volume::TransitParticipation::Disabled);
     let bans = crate::control_sources::BanLedger::new();
     if inspection.publish_bans(bans.attested()).is_err() {
         tracing::warn!("ban attestation rejected");

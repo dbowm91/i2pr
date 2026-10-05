@@ -1227,6 +1227,36 @@ impl I2pControlServiceState {
             }
             if matches!(
                 field.key,
+                "i2p.router.net.total.transit.bytes"
+                    | "i2p.router.net.bw.transit.15s"
+                    | "i2p.router.net.tunnels.shareratio"
+            ) {
+                // Plan 340: the value is the transit participation posture
+                // and the volume its forward path measured. Any gap fails
+                // the whole request closed rather than returning a partial
+                // RouterInfo result.
+                match crate::i2pcontrol_inspection::proposal_transit_volume(
+                    field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
+            if matches!(
+                field.key,
                 "i2p.router.net.total.received.bytes" | "i2p.router.net.total.sent.bytes"
             ) {
                 match crate::i2pcontrol_inspection::proposal_transport_total(

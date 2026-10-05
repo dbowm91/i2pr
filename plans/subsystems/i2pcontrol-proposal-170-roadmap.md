@@ -303,7 +303,7 @@ Current graph (`passed` / `ready` / `blocked`):
    Plan 322 Group A: that is a transit-participation posture
    change, not a missing snapshot.)
 
-340 active   transit volume / bandwidth / share owners
+340 passed   transit volume / bandwidth / share owners
   (takes Plan 322 Group A's three selectors:
    net.total.transit.bytes / net.bw.transit.15s / net.tunnels.shareratio.
    Ownership only. The participation posture is NOT changed:
@@ -313,6 +313,11 @@ Current graph (`passed` / `ready` / `blocked`):
    key the Proposal does not mark "(adopted from i2pd)" and that no
    pinned reference implements, so i2pr defines and labels it
    locally and fails closed without an attested denominator.)
+
+PLAN 322 GAP CENSUS: ZERO. Plan 322 was amended to passed on
+2026-10-05; all 43 canonical RouterInfo additions now have a named
+owner. The transit-participation POSTURE is unchanged and stays a
+separate decision requiring M11 re-qualification bound to this tree.
 ```
 
 Every obstacle found on this control path is now removed: one manager, a
