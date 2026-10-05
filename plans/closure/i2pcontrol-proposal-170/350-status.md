@@ -125,8 +125,8 @@ does not implement each make it exit 1.
 
 | Commit | Content |
 |---|---|
-| `c7a1e4b` | Implementation: store refusal removed, type 5 added to both lookup lists, named constants, new guard script, new integration test suite, `AGENTS.md` floor entry |
-| `9e5b2c1` | Closure record, registry and roadmap update |
+| `cca872e` | Implementation: store refusal removed, type 5 added to both lookup lists, named constants, new guard script, new integration test suite, `AGENTS.md` floor entry, plus the Plan 347 and Plan 350 boundary corrections |
+| *(this commit)* | Closure record, registry and roadmap update |
 
 ## Commands run
 
