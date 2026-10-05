@@ -3074,6 +3074,33 @@ impl TunnelControlState {
             .await;
     }
 
+    /// The published `.b32.i2p` address for one control-owned service, if it
+    /// publishes an encrypted LeaseSet (Plan 334).
+    ///
+    /// Returns `None` for a service that publishes nothing, for a stopped
+    /// service, and for a name this coordinator does not own — so a caller
+    /// cannot learn a startup-owned service's address through the control
+    /// surface.
+    pub fn encrypted_address_for(&self, name: &str) -> Option<String> {
+        if !lock(&self.definitions).contains_key(name) {
+            return None;
+        }
+        self.manager.els2_material_for_spec(name)?.address().ok()
+    }
+
+    /// The published addresses of every control-owned encrypted service,
+    /// keyed by name (Plan 334). Bounded by the number of definitions.
+    pub fn encrypted_addresses(&self) -> std::collections::BTreeMap<String, String> {
+        let names: Vec<String> = lock(&self.definitions).keys().cloned().collect();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                self.encrypted_address_for(&name)
+                    .map(|address| (name, address))
+            })
+            .collect()
+    }
+
     /// Finds a startup-owned spec kind by name.
     fn startup_name(&self, name: &str) -> Option<ServiceTunnelKind> {
         self.startup

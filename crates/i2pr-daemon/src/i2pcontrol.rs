@@ -1141,13 +1141,29 @@ impl I2pControlServiceState {
             }
         };
         match control.dispatch(&request).await {
-            Ok(value) => (
-                success_envelope(
-                    id,
-                    proposal_tunnel_manager_result(request.action, request.name.as_deref(), value),
-                ),
-                Duration::ZERO,
-            ),
+            Ok(value) => {
+                // Plan 334: resolve the published address for this name so
+                // the wire view can report it. Absent for a service that
+                // publishes an ordinary LeaseSet, and the field is then
+                // omitted rather than null.
+                let encrypted_address = request
+                    .name
+                    .as_deref()
+                    .and_then(|name| control.encrypted_address_for(name))
+                    .or_else(|| control.encrypted_addresses().into_values().next());
+                (
+                    success_envelope(
+                        id,
+                        proposal_tunnel_manager_result(
+                            request.action,
+                            request.name.as_deref(),
+                            value,
+                            encrypted_address,
+                        ),
+                    ),
+                    Duration::ZERO,
+                )
+            }
             Err(error) => (
                 success_envelope(
                     id,
@@ -1819,6 +1835,7 @@ fn proposal_tunnel_manager_result(
     action: i2pr_i2pcontrol::TunnelAction,
     name: Option<&str>,
     value: serde_json::Value,
+    encrypted_address: Option<String>,
 ) -> serde_json::Value {
     use i2pr_i2pcontrol::TunnelAction;
 
@@ -1964,6 +1981,22 @@ fn proposal_tunnel_manager_result(
                 "rawConfig".to_owned(),
                 serde_json::Value::Object(raw_config),
             );
+            // Plan 334: the resolved LeaseSet security posture and the
+            // published `.b32.i2p` address must reach the **wire**, not only
+            // the in-process control response. Without this a client cannot
+            // discover the address it needs to look the service up, and the
+            // mode mapping has no observable effect for a JSON-RPC client.
+            // The posture is counts and flags only, and the address is a
+            // public destination; neither carries a secret.
+            if let Some(posture) = value.get("lease_set_security") {
+                info.insert("lease_set_security".to_owned(), posture.clone());
+            }
+            if let Some(address) = encrypted_address {
+                info.insert(
+                    "encryptedAddress".to_owned(),
+                    serde_json::Value::String(address.to_owned()),
+                );
+            }
             serde_json::json!({
                 "status": format!("success - options for {name}"),
                 "info": info,
@@ -2484,6 +2517,7 @@ mod tests {
                     "persistent_client_key":"true"
                 }
             }),
+            None,
         );
         let rendered = result.to_string();
         for secret in ["proxy-secret", "outproxy-secret", "private-key-path"] {

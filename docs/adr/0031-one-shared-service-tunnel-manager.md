@@ -88,8 +88,11 @@ the integration lanes want; only production composition injects the shared insta
 - `ServiceTunnelManager` gained a per-spec encrypted-LeaseSet2 material registry. Entries are `Arc`
   handles to a single material per service: the type-5 identity is derived from the service's persisted
   Ed25519 seed, so an `Arc` clone is another handle to *that* identity, never a second copy of it.
-- Two further defects became reachable and are owned by **Plan 338**, not by this decision: a
-  control-created server cannot hold a persisted identity (so encrypted modes refuse), and the
-  coordinator's `rollback_state` never reconciles the manager (so a failed transaction can leave a
-  runtime with no durable definition). Both are recorded in
-  `plans/closure/i2pcontrol-proposal-170/337-status.md`.
+- Two further defects became reachable and were owned by **Plan 338**, which passed: the ELS2 material
+  loader read `for_service` while the runtime writes `for_group` (three store paths exist for one
+  concept, and the loader had duplicated the resolution instead of asking the owner), and the
+  coordinator's `rollback_state` did not reconcile the manager (so a failed transaction could leave a
+  runtime with no durable definition). Plan 338 made `ServiceTunnelManager` the single owner of the
+  identity store resolution and made the rollback reconcile. See
+  `plans/closure/i2pcontrol-proposal-170/337-status.md` for the original, partly incorrect diagnosis and
+  its dated correction.

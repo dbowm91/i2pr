@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329, 330, 331, 332, 333, 336, and 337 passed. Plan 334 is blocked (control plane complete; a control-created tunnel now publishes, but it has no **persisted identity** to derive an encrypted one from — Plan 338); Plan 335 remains blocked
+Status: Plans 329, 330, 331, 332, 333, 336, 337, and 338 passed. Plan 334's implementation is complete (a control-created encrypted server publishes type-5 at the record's own blinded storage key and exposes a resolving `.b32.i2p`); only its black-box I2PControl evidence remains before reclosure. Plan 335 remains blocked
 behind it.
 
 Parent roadmap:
@@ -54,7 +54,7 @@ Plan 329 must re-freeze all of these before implementation.
                            -> 335 live ELS2 interoperability + blocked-326 successor reclosure
 
 337 passed  one shared ServiceTunnelManager (corrective pass on Plan 289)
-  -> 338 registered  persisted control-server identity + transaction rollback
+  -> 338 passed  one owner for the service identity store + transaction rollback
 ```
 
 Plan 335 closes only the encrypted-LeaseSet/Red25519 branch. Full Proposal 170 still requires
@@ -125,10 +125,10 @@ No custom field/bignum/curve formulas are permitted.
 | 331 | passed | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
 | 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
-| 334 | blocked on 338 | exact Proposal 170 mode/field mapping; control plane complete, the ELS2 record builder lands, and since Plan 337 a control-created tunnel is on the publication path and a type-5 record is filed at the record's own blinded storage key. What remains is a persisted identity for an encrypted control server, plus this plan's black-box I2CP evidence |
-| 335 | blocked on 334, which is blocked on 338 | live interop and successor reclosure for blocked Plan 326 |
+| 334 | ready | exact Proposal 170 mode/field mapping; control plane complete, the ELS2 record builder lands, a control-created tunnel is on the publication path, a type-5 record is filed at the record's own blinded storage key, and a control-created encrypted server exposes a resolving `.b32.i2p`. Only the black-box I2PControl evidence (JSON-RPC round trip, rollback, restart) remains before reclosure |
+| 335 | blocked on 334 (implementation complete, awaiting its black-box evidence) | live interop and successor reclosure for blocked Plan 326 |
 | 337 | passed | corrective pass on Plan 289: the composition root now builds the one `ServiceTunnelManager` and injects the same `Arc` into the control state and the product, so a control-created tunnel is the same runtime and publishes through the existing sweep (ADR 0031, closure: `plans/closure/i2pcontrol-proposal-170/337-status.md`) |
-| 338 | registered | corrective pass on Plans 289 and 323, found while implementing 337: a control-created server cannot hold a **persisted identity** (Plan 323's persistent-identity options are client-only; a non-persistent group generates its identity in memory), so every encrypted-LeaseSet mode is **refused** rather than silently downgraded; and `rollback_state` never reconciles the manager, so a failed transaction can leave a runtime with no durable definition. Blocks 334, and therefore 335. Plan: `plans/implementation/i2pcontrol-proposal-170/338-persisted-control-server-identity-and-transaction-rollback.md` |
+| 338 | passed | corrective pass on Plans 289 and 334, found while implementing 337, and it **corrects Plan 337's own diagnosis**: every server group is already persistent, so a control-created server always had a persisted identity record — the ELS2 loader read `for_service` while the runtime wrote `for_group`. `ServiceTunnelManager` is now the single owner of that resolution, and `rollback_state` reconciles the shared manager as well as the mirror, so a failed transaction leaves no ghost runtime. Closure: `plans/closure/i2pcontrol-proposal-170/338-status.md` |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |
 
 ## 7. Completion boundary

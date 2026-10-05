@@ -275,22 +275,28 @@ Current graph (`passed` / `ready` / `blocked`):
        -> 331 passed  independent qualification
             -> 332 passed  type-5 ELS2 foundation
                  -> 333 passed  PSK/DH client auth
-                      -> 334 blocked on 338 (control plane
-                                                complete, record builder
-                                                lands, and since 337 a
-                                                control-created tunnel
-                                                publishes; what is left is
-                                                a persisted identity for
-                                                an encrypted control server
-                                                plus black-box evidence)
+                      -> 334 ready (implementation complete:
+                                   a control-created encrypted server
+                                   publishes type-5 at the record's own
+                                   blinded key and exposes a resolving
+                                   address; only black-box I2PControl
+                                   evidence remains)
                            -> 335 blocked on 334  live ELS2 interoperability/reclosure
 
 337 passed  control-owned service tunnels reach the product layer
   (corrective pass on Plan 289: two ServiceTunnelManager instances, the
   control-owned one never given a router delivery capability)
-  -> 338 registered  persisted control-server identity + transaction rollback
-       (corrective pass on Plans 289 and 323, found while implementing 337)
+  -> 338 passed  one owner for the service identity store + transaction rollback
+       (corrective pass on Plans 289 and 334, found while implementing 337;
+        also corrects 337's own gap-1 diagnosis)
 ```
+
+Every obstacle found on this control path is now removed: one manager, a
+publication path a control-created service reaches, a type-5 record at the
+record's own blinded storage key, a resolving `.b32.i2p`, and transactions
+that leave nothing behind when they fail. **Plan 334's remaining scope is its
+black-box I2PControl evidence**, and that is the only thing between this line
+and Plan 335.
 
 Plan 337 was the real blocker behind Plan 334, and it was older and broader than the ELS2 work. A
 service tunnel created through TunnelManager was reconciled onto a `ServiceTunnelManager` built by
@@ -305,23 +311,26 @@ Plan 334 pinned it with two negative rows; Plan 337 made Plan 289's stated invar
 source (ADR 0031) and **deleted** those two rows rather than rewording them, replacing them with
 eleven positive ones.
 
-**Plan 337 passed, and found the next blocker.** The composition root now builds the one
+**Plan 338 passed, and corrected the record twice.** The composition root now builds the one
 `ServiceTunnelManager` and injects the same `Arc` into both owners, `i2pcontrol` declares
 `depends_on("ssu2-router")` so the product prepares the manager and installs the delivery backend
 before any control reconcile, the product gate widened to cover a router whose only route to a
 service tunnel is the control plane, and a type-5 record is filed at the record's own blinded storage
 key with a `.b32.i2p` exposed. Two defects became reachable and are Plan 338's:
 
-- **A control-created server has no persisted identity.** ELS2 is defined over the service's persisted
-  `ServiceDestinationRecord`; Plan 323's persistent-identity options are client-only, and a
-  non-persistent dedicated group generates its identity in memory. So an encrypted create is
-  **refused** with a static reason rather than downgraded to an ordinary LeaseSet2. The mapping,
-  validation, persistence, redaction, and record builder all work; what is missing is an identity to
-  derive them from.
-- **`rollback_state` never reconciles the manager.** A failed transaction can leave a runtime
+- **The ELS2 loader read a store the runtime never writes to.** Plan 337 diagnosed this as a missing
+  capability — "a control-created server cannot hold a persisted identity" — and that diagnosis was
+  **wrong**. `ServiceTunnelSet::destination_groups` sets `group.persistent` for `kind.is_server()`, so
+  every server group is persistent and the manager always wrote a `ServiceDestinationRecord`; the
+  loader read `for_service` while the runtime wrote `for_group` (a `KeyReference` policy writes a third
+  path). Three store paths for one concept, and the loader had duplicated the resolution instead of
+  asking the owner. The refusal itself was correct and fail-closed; only the reading of it as a missing
+  capability was wrong. `ServiceTunnelManager` is now the single owner of that resolution, and both the
+  Plan 337 closure and the Plan 338 plan of record carry a dated correction rather than a silent edit.
+- **`rollback_state` never reconciled the manager.** A failed transaction could leave a runtime
   installed with no durable definition behind it. Pre-existing — `sync_names` and store-publish
   failures reach it too — and Plan 337 only made it the visible outcome of every refused encrypted
-  create.
+  create. All five call sites now await a rollback that reconciles.
 
 Plan 335 carries three named obligations that earlier plans did not resolve: the Java I2P
 authorization lane and the i2pd authorization lane, both unexecuted; the type-11 signature
