@@ -51,7 +51,7 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-client` (Plans 120/121) | `i2pr-core`, `i2pr-crypto`, `i2pr-netdb`, `i2pr-proto`, `i2pr-tunnel` | same | `rand_chacha`, `rand_core`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-api` (Plan 136; extended Plan 164+) | `i2pr-client`, `i2pr-crypto`, `i2pr-proto`, `i2pr-tunnel` | same | `rand_core`, `thiserror`, `zeroize` |
 | `i2pr-runtime` | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2` | same | `futures-util`, `rand_core`, `tokio`, `tokio-util`, `tracing`, `zeroize` |
-| `i2pr-service-tunnels` (Plans 174/175) | `i2pr-client`, `i2pr-proto` | `i2pr-proto` only — **`i2pr-client` is allowed-but-unused** | `base64ct`, `sha2`, `subtle`, `thiserror`, `zeroize` (Plan 341) |
+| `i2pr-service-tunnels` (Plans 174/175; portability Plans 349–351) | `i2pr-client`, `i2pr-proto` | `i2pr-proto` only — **`i2pr-client` is allowed-but-unused** | `base64ct`, `i2pr-proto`, `sha2`, `subtle`, `thiserror`, `zeroize` |
 | `i2pr-daemon` | 15 crates — enumerated in full in the [next section](#i2pr-daemon-composition-root) | same 15 | `chacha20poly1305`, `clap`, `flate2`, `quick-xml`, `rand_chacha`, `rand_core`, `rcgen` (Plan 287), `rustix`, `rustls`, `rustls-pki-types`, `serde`, `serde_json`, `subtle`, `thiserror`, `tokio`, `tokio-rustls`, `toml`, `tracing`, `tracing-subscriber`, `webpki-roots`, `x509-parser`, `zeroize` (`rustls-pemfile` was removed before Plan 287 closure for RUSTSEC-2025-0134) |
 | `i2pr-testkit` (test-only) | `i2pr-core`, `i2pr-crypto`, `i2pr-proto`, `i2pr-runtime`, `i2pr-transport`, `i2pr-transport-ntcp2` | same | `rand_chacha`, `rand_core`, `sha2`, `tokio` |
 
@@ -59,6 +59,10 @@ Notes on the allowlisted-but-unused and legacy rows:
 
 - `i2pr-service-tunnels` may depend on `i2pr-client` but
   `crates/i2pr-service-tunnels/Cargo.toml` declares only `i2pr-proto`.
+  ADR 0032 and `specs/references/portable-service-tunnel-core-v1.md`
+  freeze this crate as the reusable policy/filter owner; adapters retain
+  socket, runtime, persistence, and transport lifecycle ownership. Plan 350
+  owns the full dependency-use proof and any dead-dependency removal.
   The `i2pr-client` edge is explicitly allowed for future
   destination/Streaming reuse. Plan 341 added `zeroize` for the
   runtime-neutral outbound-secret policy and deliberately did **not** add
