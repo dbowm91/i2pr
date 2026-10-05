@@ -157,6 +157,16 @@ still to fix the boundary, never to weaken a script.
   superseded by ADR 0030" ambiguous. `check-global-plan-number-uniqueness.py`
   scans `plans/` only.
 
+Separately, a product-path defect found 2026-10-05 (not a checker gap, but the
+same "verified, do not rediscover" category): **`i2pr run` does not start the
+router.** The Essential `lifecycle` service awaits cancellation and never
+signals initial readiness, so the supervisor's 30-second readiness timeout fires
+before `sam-bridge` starts and it exits with `ReadinessTimeout`. No listener is
+opened. `check-config`, `identity generate|inspect`, and `run --dry-run` all
+work. Use `cargo run --locked -p i2pr-daemon --example sam_loopback_listener --
+--port 0` for a live SAM listener. Closing it needs a plan-of-record; details in
+`docs/architecture/i2pr-daemon.md` → "CLI and configuration".
+
 ## Testing quirks agents miss
 
 - Runtime tests: prefer `#[tokio::test(start_paused = true)]` / manual clock + explicit bounded deadlines; never wall-clock sleeps for overload/state-machine tests. Socket tests use `127.0.0.1:0` (OS port) and loopback only.
