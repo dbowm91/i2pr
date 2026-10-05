@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: active — Plan 345 registered as the foundation/invariant milestone. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
+Status: active — Plan 345 closed the initial contract foundation; post-closure review found four pre-runtime v1 defects and Plan 349 is registered as the corrective authority. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -15,7 +15,7 @@ Long-term references:
 
 Related ADRs:
 - [ADR 0032](../../docs/adr/0032-managed-native-app-process-and-capability-boundary.md) freezes the managed-app trust/process boundary and default-deny network-capability model.
-- The language-neutral wire/manifest contract is frozen in [Managed native application contract v1](../../specs/references/managed-native-app-runtime-v1.md).
+- The Plan-345 language-neutral wire/manifest contract is recorded in [Managed native application contract v1](../../specs/references/managed-native-app-runtime-v1.md). Plan 349 is the registered pre-runtime corrective for its direction/reply semantics, broker reservation, and network-policy classification before downstream API stability is claimed.
 
 ## 1. Purpose and ownership boundary
 
@@ -75,9 +75,11 @@ The current repository already has the protocol-side prerequisites needed for a 
 - `i2pr-daemon` is the composition root and does not expose a global `RouterContext`.
 - Current client/admin listeners are loopback-oriented network services, which is not sufficient for a hostile-app sandbox because loopback itself may provide a clearnet escape through local proxies/helpers.
 
-There is no application principal model, package/manifest contract, app-specific capability channel, app permission owner, native process supervisor, network broker, sandbox attestation, or console UI-plugin contract.
+Plan 345 now provides the runtime-neutral `i2pr-app-proto` foundation: application/publisher/instance principals, requested/granted/effective capability types, bounded frame/control vocabulary, manifest/UI descriptors, pure network-policy decisions, resource ceilings, and sandbox-attestation vocabulary. It deliberately provides no transport owner, process supervisor, network broker, package lifecycle owner, or console UI host.
 
-For planning purposes, this roadmap assumes Proposal 170 will reach the required complete/stable interface before the future managed-app Proposal-170 adapter is claimed complete. Plan 345 does not depend on current Proposal-170 closure and must not falsify its current support state.
+Post-closure review found four contract defects before any runtime consumer exists: hostname rules currently require a second public-IP allow; the IP classifier treats some non-global/special-purpose ranges as public by fall-through; role-separated messages are not direction/reply complete; and `brokered_tcp` is openable without a defined connect transaction. Plan 349 owns those corrections. The Plan-345 closure remains authoritative for the evidence it ran, but downstream API stability is gated on Plan 349.
+
+For planning purposes, this roadmap assumes Proposal 170 will reach the required complete/stable interface before the future managed-app Proposal-170 adapter is claimed complete. Neither Plan 345 nor Plan 349 depends on current Proposal-170 closure and neither may falsify its current support state.
 
 ## 5. Target architecture
 
@@ -109,33 +111,30 @@ Future console UI assets are package-relative static resources under a distinct 
 Only Plan 345 is currently numbered and registered. Later milestones receive global numbers only when their implementation plans are written.
 
 ```text
-345 architecture + runtime-neutral app contract foundation
-  -> router app-principal gateway
-       - virtual/private SAM and I2CP transport adapters
-       - scoped Proposal 170 adapter after its stable contract is ready
-  -> package/lifecycle + AppManager administrative owner
-       -> OS sandbox + process-tree/resource containment
-            -> brokered clearnet policy/DNS/TCP
-                 -> SDK + embedded-UI host contract implementation
-                      -> adversarial cross-platform qualification
+345 architecture + runtime-neutral app contract foundation (closed)
+  -> 349 v1 direction/reply + broker reservation + network-policy corrective (ready)
+       -> router app-principal gateway
+            - virtual/private SAM and I2CP transport adapters
+            - scoped Proposal 170 adapter after its stable contract is ready
+       -> package/lifecycle + AppManager administrative owner
+            -> OS sandbox + process-tree/resource containment
+                 -> brokered clearnet policy/DNS/TCP
+                      -> SDK + embedded-UI host contract implementation
+                           -> adversarial cross-platform qualification
 ```
 
-The router-gateway and package/lifecycle branches may proceed independently after Plan 345 if their interfaces remain exactly within the frozen contract. OS sandbox qualification is required before third-party applications may be described as securely contained.
+Plan 349 is now a hard interface prerequisite for both the router-gateway and package/lifecycle branches. Those successors were provisionally ready after Plan 345, but must not be planned/implemented against the known-defective v1 message/network contract. OS sandbox qualification remains required before third-party applications may be described as securely contained.
 
-Plan 345 is closed. The router-side SAM/I2CP app-principal gateway and the
-package/lifecycle + AppManager owner are each **ready to plan** against the
-frozen v1 contract. The scoped Proposal 170 adapter remains blocked on the
-canonical Proposal 170 completion gate; the current registry still has Plan
-348 blocked on Plans 342 and 347. OS sandbox, broker, SDK, and UI-host plans
-remain sequenced behind their runtime/gateway owners as shown above.
+The scoped Proposal 170 adapter remains separately blocked on canonical Proposal 170 completion; the current registry still has Plan 348 blocked on Plans 342 and 347. OS sandbox, broker, SDK, and UI-host plans remain sequenced behind their runtime/gateway owners as shown above.
 
 ## 7. Milestones
 
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
 | 345 | closed | `passed-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | `plans/closure/managed-native-app-runtime/345-status.md` |
+| 349 | ready | `registered-managed-app-v1-contract-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md` | future `plans/closure/managed-native-app-runtime/349-status.md` |
 
-Future milestone classes remain unnumbered until bounded implementation plans are written. With Plan 345 closed, the router-side app principal gateway and package/lifecycle manager with AppManager API are ready to plan. Later classes remain sequenced behind those owners:
+Future milestone classes remain unnumbered until bounded implementation plans are written. The router-side app principal gateway and package/lifecycle manager with AppManager API are blocked on Plan 349's corrected contract. Later classes remain sequenced behind those owners:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;
 - package/lifecycle manager and administrator API;
 - Linux/macOS/Windows sandbox backends plus launch attestation;
@@ -210,6 +209,8 @@ This completion boundary is independent of whether any mail/IRC/torrent applicat
 
 ## 12. Milestone status summary
 
-Plan 345 is closed as `passed-managed-native-app-runtime-contract-foundation`. ADR 0032 and the v1 contract are frozen; `i2pr-app-proto` implements the identity/capability split, framing and control vocabularies, manifest/UI descriptors, default-deny policy, resource limits, sandbox-attestation vocabulary, and static boundary enforcement. It does not launch processes or establish sandbox/network containment. The SAM/I2CP gateway and package/lifecycle + AppManager branches are ready to plan; Proposal 170 integration remains gated on canonical completion.
+Plan 345 remains closed as `passed-managed-native-app-runtime-contract-foundation`: ADR 0032 and the initial v1 contract landed with `i2pr-app-proto`, identity/capability separation, framing/control vocabulary, manifest/UI descriptors, pure network policy, resource limits, sandbox-attestation vocabulary, fuzzing, and static boundary enforcement. It does not launch processes or establish sandbox/network containment.
 
-No downstream app implementation should begin against private router internals. Downstream work should wait for the relevant public app contract from Plan 345, then depend only on that contract/SDK.
+Post-closure review found four pre-runtime API defects that do not invalidate Plan 345's executed infrastructure evidence but do prevent downstream stability: hostname rules require redundant public-IP grants, special-purpose address classification is incomplete, message direction/reply correlation is underspecified, and `brokered_tcp` is openable without a connect protocol. Plan 349 is ready and is the sole corrective authority. The SAM/I2CP gateway and package/lifecycle + AppManager branches are now blocked on Plan 349; Proposal 170 integration also remains gated on canonical Proposal 170 completion.
+
+No downstream app implementation should begin against private router internals or the uncorrected Plan-345 v1 surface.
