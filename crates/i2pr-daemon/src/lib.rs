@@ -31,6 +31,7 @@ pub mod peer_test;
 pub mod router_i2np;
 pub mod sam;
 pub mod service_delivery;
+pub mod service_els2;
 pub mod service_generation;
 mod service_lifecycle;
 pub mod service_product;
