@@ -1,6 +1,6 @@
 # Plan 355 — router app-principal gateway over private SAM/I2CP seams
 
-Status: **registered-managed-app-principal-gateway-on-plan354**.
+Status: **in-progress-managed-app-principal-gateway**.
 
 Classification: **infrastructure + invariant + bounded capability plumbing**. This plan creates the router-side managed-app gateway that binds a trusted app principal and effective capabilities to the private SAM/I2CP connection seams delivered by Plan 354.
 
