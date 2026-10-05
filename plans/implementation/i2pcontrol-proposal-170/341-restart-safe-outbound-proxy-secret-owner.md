@@ -1,6 +1,19 @@
 # Plan 341 — Restart-safe non-echoing outbound proxy secret owner
 
-Status: **registered-outbound-secret-owner-precedes-any-outproxy-provider**
+Status: **passed-outbound-secret-owner-with-no-routing-and-no-outproxy-claim**
+
+Closure record:
+[`plans/closure/i2pcontrol-proposal-170/341-status.md`](../../closure/i2pcontrol-proposal-170/341-status.md)
+
+## Current implementation progress
+
+Completed and closed on 2026-10-05. All work packages A-C landed. The owner
+seals and opens an outbound credential across a restart, under a key derived from
+the router's own persisted signing seed, and never echoes plaintext. Three teeth
+inversions (key derivation, authenticator enforcement, nonce freshness) each
+fail the corresponding row; two further inversions are recorded as redundant
+defense layers without isolated evidence. Nothing routes anywhere: the provider
+and the canonical field semantics are Plan 342, registered and not implemented.
 
 Classification: capability + security boundary (prerequisite reopen of Plan 327).
 

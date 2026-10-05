@@ -58,6 +58,7 @@ pub mod generation;
 pub mod http;
 pub mod idle;
 pub mod irc;
+pub mod outbound_secret;
 pub mod socks5;
 pub mod streamr;
 

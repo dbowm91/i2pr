@@ -314,7 +314,7 @@ Current graph (`passed` / `ready` / `blocked`):
    pinned reference implements, so i2pr defines and labels it
    locally and fails closed without an attested denominator.)
 
-341 active   restart-safe non-echoing outbound proxy secret owner
+341 passed   restart-safe non-echoing outbound proxy secret owner
   (the prerequisite Plan 327's closure named as its blocker.
    ProxyCredentials is a ONE-WAY inbound verifier and cannot
    produce the password an I2P-routed outproxy must send, so no

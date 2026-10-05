@@ -504,6 +504,46 @@ What is claimed, and what is not:
   unreadable counter, or a missing denominator fails the whole request closed
   with the field and owning plan named, and never returns a partial RouterInfo.
 
+## Outbound proxy secret owner (Plan 341)
+
+Plan 327 was blocked on a credential it could not produce. The inbound
+`ProxyCredentials` is **deliberately one-way** — it keeps
+`SHA-256(username:realm:password)` and drops the password — which is correct for
+a listener that only verifies presented pairs, and useless for an outproxy the
+router must *authenticate to*. A restart-safe, non-echoing owner now exists. See
+[`specs/references/proposal-170-outbound-secret-owner.md`](references/proposal-170-outbound-secret-owner.md).
+
+What is claimed, and what is not:
+
+- **The owner exists; no outproxy does.** Nothing routes anywhere yet. The
+  provider, the HTTP/CONNECT/SOCKS request integration, and the canonical
+  `ProxyList` / `UseOutproxyPlugin` / `OutproxyAuth` / `OutproxyType` /
+  `SSLProxies` semantics are Plan 342, and no tunnel option reads this store yet.
+  **Plan 327 remains blocked** and no outproxy capability is advertised in
+  `specs/support.toml`.
+- **Stored outbound secrets are router-bound and non-transferable.** The key is
+  `HKDF-SHA256(salt = "", ikm = router signing seed, info = "i2pr:outproxy:secret-box:v1")`
+  over the identity already persisted and reloaded every start, so a restart
+  recovers the credential with no new key file, and a sealed form copied into
+  another router's configuration derives a different key and fails to open.
+- **Inbound and outbound stored forms are different values.** `$i2pr1$` marks a
+  one-way inbound verifier; `$i2pr1o$` marks a sealed outbound secret. Neither is
+  ever reinterpreted as the other, and the inbound path is unchanged and still
+  one-way.
+- **Nothing echoes.** Plaintext lives only in a fixed-size zeroizing buffer with
+  no `Debug`, `Display`, or `Clone`; `open` returns that type rather than a
+  `String`, so a recovered credential cannot be formatted into a log by an
+  ordinary `{:?}`. Errors are fixed strings.
+- **Every path fails closed.** Unmarked, oversized, truncated, padded, tampered,
+  wrong-router, invalid-UTF-8, and empty results are all errors with no partial
+  plaintext, and there is no best-effort path. A fresh CSPRNG nonce is drawn per
+  seal, because nonce reuse under a fixed key would leak plaintext pairs.
+- **No pinned reference is authority for this construction.** Pinned i2pd
+  `2c69414` has no I2P-routed outproxy at all — its outproxy is a clearnet
+  upstream defaulting to `127.0.0.1:9050` with no stored password — and the Java
+  at-rest scheme was not verified, so no interoperability claim about credential
+  storage format is made.
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

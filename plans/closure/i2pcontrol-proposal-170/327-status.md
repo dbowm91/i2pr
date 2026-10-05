@@ -23,3 +23,33 @@ Findings by severity: critical 0; high 0; medium 0; low 0. The missing durable o
 ## Roadmap disposition
 
 Plan 327 is closed as blocked, not passed. To reopen, establish a reviewed non-echoing, restart-safe outbound-secret owner and implement the static I2P destination provider plus HTTP/CONNECT/SOCKS request semantics. Provider selection must route only through the existing Destination/Streaming path and must never fall back to an OS socket. Plan 328 remains blocked on Plans 322, 326, and 327. No full-Proposal claim is supported.
+
+## Correction, 2026-10-05 — one of the two blockers is gone (dated; the text above is preserved)
+
+Re-auditing this record while registering Plan 341 confirmed the diagnosis and
+narrowed the blocker list from two items to one.
+
+**Still blocked, and unchanged:** there is no outproxy provider. Nothing selects
+an outproxy, opens a route to one, retries across them, or translates
+`ProxyList` / `OutproxyType` / `UseOutproxyPlugin` / `SSLProxies` into
+behaviour, and no request path performs HTTP, CONNECT, or SOCKS outproxy
+semantics. That work is now registered as **Plan 342**.
+
+**No longer a blocker:** the durable outbound credential owner. The record said
+an in-memory or plaintext-persisted password would fail the restart and
+secret-handling requirements — that remains true, and Plan 341 solved it the
+only acceptable way. A ChaCha20-Poly1305 sealed form under a key derived by HKDF
+from the router's own persisted signing seed is restart-safe, inert in a copied
+configuration file, and never echoes plaintext. See
+[`341-status.md`](341-status.md) and
+[`specs/references/proposal-170-outbound-secret-owner.md`](../../../specs/references/proposal-170-outbound-secret-owner.md).
+
+**One finding the original audit could not have made.** The plan assumed a
+reference implementation would supply the design. There is none: pinned i2pd
+`2c69414` has no I2P-routed outproxy at all — its outproxy is a clearnet upstream
+defaulting to `127.0.0.1:9050`, with no stored password — and the pinned Java
+at-rest scheme was not verified. i2pr therefore designs this from its own
+guardrails, and says so rather than implying interoperability.
+
+**Status token deliberately unchanged.** Plan 327 is still blocked; only its
+blocker list shrank. Plan 328 remains blocked on 326 and 327.
