@@ -176,6 +176,48 @@ recorded as a finding rather than papered over with an invented rule.
 5. **Not advertised, not live-verified, not interoperable.** Nothing in this plan changes what
    i2pr claims on the wire.
 
+## Routine floor
+
+Run from the repository root at the closure commit. All local; the CI labels in `AGENTS.md` do not
+apply to a single-host run.
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo check --locked --workspace --all-targets` | PASS |
+| `cargo test --locked --workspace --all-targets -- --test-threads=1` | **PASS — 3,939 passed, 0 failed, 35 ignored across 143 suites.** Exactly +19 over Plan 333's 3,920, which is the 12 new contract rows plus the 7 new `service_els2` rows; no pre-existing row was removed or weakened. |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps` | PASS |
+| `cargo test --locked --workspace --doc` | PASS |
+| `bash scripts/check-dependency-direction.sh` | PASS |
+| `bash scripts/check-runtime-boundaries.sh` | PASS |
+| `bash scripts/check-service-tunnel-boundaries.sh` | PASS |
+| `bash scripts/check-fixture-manifest.sh` | PASS |
+| `bash scripts/check-global-plan-number-uniqueness.py` | PASS |
+| `python3 -m unittest discover -s tests/planning -p 'test_*.py'` | PASS — 6 tests |
+| `bash scripts/check-ntcp2-vectors.sh` | PASS |
+| `bash scripts/check-ssu2-vectors.sh` | PASS |
+| `bash scripts/check-i2cp-vectors.sh` | PASS |
+| `bash scripts/check-ntcp2-interoperability.sh` | PASS — Plan 099 static check |
+| `bash scripts/check-constrained-host-lane-boundary.sh` | PASS |
+| `bash scripts/check-m11-transit-boundaries.sh` | PASS |
+| `bash scripts/check-m11-transit-qualification-evidence.sh` | PASS |
+| `bash scripts/check-sam-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-ssu2-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-i2cp-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-i2pcontrol-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-service-tunnel-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-exploratory-tunnel-evidence.sh` | PASS |
+| `bash scripts/check-netdb-tunnel-evidence.sh` | PASS |
+| `bash scripts/check-destination-tunnel-evidence.sh` | PASS |
+| `bash scripts/check-streaming-tunnel-evidence.sh` | PASS |
+| `bash scripts/check-m6-mixed-router-acceptance-evidence.sh` | PASS |
+| `bash scripts/check-m12-floodfill-qualification-evidence.sh --self-test` | PASS |
+| `python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_execution_lane.py'` | PASS — 18 tests |
+| `cargo deny check advisories bans sources` | PASS |
+
+No committed fixture bytes changed, so no fixture manifest or vector regeneration was required.
+
 ## Unblock audit
 
 Run per the planning process. The plan's own blocker is the unwired runtime publication; the audit
