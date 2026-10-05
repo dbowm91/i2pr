@@ -60,6 +60,7 @@ operation.
 
 **Application → host** messages:
 
+- `hello` `{type, request_id, app_id, instance_id, protocol_major, protocol_minor}`
 - `open` `{type, request_id, stream_id, service}`
 - `permission_request` `{type, request_id, capabilities[]}`
 - `close` `{type, stream_id}`
@@ -68,15 +69,19 @@ operation.
 
 **Host → application** messages:
 
-- `reply` `{type, request_id, outcome}` for an `open` request
+- `reply` `{type, request_id, outcome}` for a `hello` or `open` request
 - `permission_reply` `{type, request_id, status}`
+- `stream_closed` `{type, stream_id}`
+- `stream_reset` `{type, stream_id, reason}`
 - `capabilities` `{type, capabilities[]}` — effective, administrator-granted
   capabilities only
 - `health` `{type, state, detail?}` — unsolicited host event, never a reply
 
 `service` is one of `sam`, `i2cp`, or `control_scoped`. `brokered_tcp` is not
 an openable v1 service. `status` is one of `pending`, `denied`, or `recorded`;
-it is not a grant. `outcome` is either `succeeded` or a typed error object.
+it is not a grant. Application reply `outcome` is either
+`{"outcome":"succeeded"}` or
+`{"outcome":"failed","error":{"code":<error-code>,"diagnostic":<string-or-null>}}`.
 
 **Administrator → host** has one structurally representable request:
 
@@ -102,7 +107,11 @@ expect completion cannot be fire-and-forget. Error codes are a closed enum:
 text is at most 1,024 UTF-8 bytes and is never a machine decision key. Events
 are distinct message types and cannot be decoded as replies.
 
-The superseded Plan-345 `hello`, `accept`, `permission_status`, and
+`hello` declares the app and instance identity for the application session; it
+is not authentication proof. A future trusted transport owner must bind that
+claim to its authenticated process/IPC principal before authorizing access.
+
+The Plan-345 `hello` without a request ID, `accept`, `permission_status`, and
 directionless role enums are not accepted aliases. Version 1 remains at
 major/minor `1.0` because Plan 345's form was explicitly an unreleased draft
 and no consumer can observe it. This is a pre-release correction, not a wire
@@ -200,11 +209,12 @@ IPv4 non-global blocks: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`,
 broadcast). The first and last addresses of every listed prefix are covered.
 
 IPv6 non-global blocks include `::/128`, `::1/128`, `::ffff:0:0/96`,
-`64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64`, `2001::/23`,
-`2001:db8::/32`, `2002::/16`, `fc00::/7`, `fe80::/10`, and `ff00::/8`.
-In addition, all IPv6 outside `2000::/3` is non-global. The overlap in this
-list is intentional; tests exercise the most-specific named boundary and its
-adjacent controls where meaningful.
+`64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64`, `100:0:0:1::/64`,
+`2001::/23` (including `2001:2::/48` benchmarking), `2001:db8::/32`,
+`2002::/16`, `3fff::/20` (documentation), `5f00::/16`, `fc00::/7`,
+`fe80::/10`, and `ff00::/8`. In addition, all IPv6 outside `2000::/3` is
+non-global. The overlap in this list is intentional; tests exercise the
+most-specific named boundary and its adjacent controls where meaningful.
 
 Registry provenance: [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry)
 and [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry).
