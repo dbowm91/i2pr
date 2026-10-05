@@ -29,6 +29,13 @@ loader, client adapters, local service boundary, and daemon composition root.
 Each future boundary must validate input before handing a narrower capability to
 the next subsystem.
 
+Plan 345 adds the `i2pr-app-proto` contract boundary for future managed native
+applications. App, publisher, launch-instance, router, and I2P Destination
+identities remain separate; app permission requests are inert; and the secured
+network policy defaults to deny, including loopback. The crate does not launch
+or contain processes, perform DNS/network I/O, or verify an OS sandbox. See
+ADR 0032 and `specs/references/managed-native-app-runtime-v1.md`.
+
 Service-tunnel HTTP/IRC profiles remove router-specific branding from their
 router-generated application bytes. HTTP remote `Host` uses the resolved
 Destination's canonical Base32 name, independent of a local address-book alias.

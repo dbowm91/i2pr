@@ -35,14 +35,14 @@ support claim.
 
 `i2pr` is an experimental I2P router written in Rust, organized as a
 **modular monolith**: one daemon process, one crate per subsystem, a
-strictly enforced dependency DAG. 19 workspace crates plus one
+strictly enforced dependency DAG. 20 workspace crates plus one
 non-production launcher tool.
 
 Five conceptual planes cut across the crates:
 
 | Plane | Responsibility | Representative crates |
 | --- | --- | --- |
-| Foundation | Wire codecs, crypto wrappers, service contracts, signed containers | `i2pr-proto`, `i2pr-crypto`, `i2pr-core`, `i2pr-su3` |
+| Foundation | Wire codecs, crypto wrappers, service contracts, signed containers, managed-app contract | `i2pr-proto`, `i2pr-app-proto`, `i2pr-crypto`, `i2pr-core`, `i2pr-su3` |
 | Data | Authenticated links, I2NP messages, tunnel traffic, garlic, streaming packets | `i2pr-transport`, `i2pr-transport-ntcp2`, `i2pr-transport-ssu2`, `i2pr-tunnel`, `i2pr-client` |
 | Network state | RouterInfo / LeaseSet2 validation, store, lookup, publication, floodfill records, tunnel construction | `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-tunnel` |
 | Control | Config, identity persistence, Tokio/socket/timer ownership, supervision, composition | `i2pr-storage`, `i2pr-runtime`, `i2pr-daemon` |
@@ -77,6 +77,7 @@ Hard boundaries (CI-enforced; fix code, never weaken scripts):
 ```text
 crates/
   i2pr-core/                Runtime-neutral contracts/budgets/health (zero deps)
+  i2pr-app-proto/           Runtime-neutral managed-app protocol/capability contract (no I/O)
   i2pr-proto/               Bounded wire codecs, typed errors, no I/O
   i2pr-crypto/              Protocol crypto wrappers (no local primitives)
   i2pr-su3/                 Bounded SU3 framing + RSA signature verification
@@ -92,6 +93,7 @@ crates/
   i2pr-service-tunnels/     Runtime-neutral tunnel config/policy (no sockets)
   i2pr-addressbook/         Canonical `.i2p` naming owner (no I/O)
   i2pr-i2pcontrol/          Proposal 170 wire/domain contract (no I/O)
+  i2pr-app-proto/           Managed-app protocol/capability contract (no I/O)
   i2pr-runtime/             Sole Tokio/socket/timer/channel owner + supervision
   i2pr-daemon/              CLI/config/composition root; owns all listeners
   i2pr-testkit/             Deterministic fixtures only (test-only)
@@ -158,6 +160,7 @@ Flattened allowlist (the exact set the checker enforces per crate):
 | `i2pr-proto` | — (dev-only on `i2pr-crypto`) |
 | `i2pr-su3` | — |
 | `i2pr-i2pcontrol` | — |
+| `i2pr-app-proto` | — |
 | `i2pr-crypto` | `i2pr-proto` |
 | `i2pr-transport` | `i2pr-core`, `i2pr-proto` |
 | `i2pr-transport-ntcp2` | `i2pr-crypto`, `i2pr-proto`, `i2pr-transport` |
@@ -206,6 +209,7 @@ design choices. Every workspace crate appears exactly once.
 | 21 | `scripts/` + `tests/` + `fuzz/` | Tooling | Guardrail checkers, fixture corpora, integration lanes, fuzz targets, CI gates. | [tooling.md](tooling.md) |
 | 22 | Dependency graph | Boundary detail | Per-crate allowlist + ASCII graph backing `check-dependency-direction.sh`. | [dependency-graph.md](dependency-graph.md) |
 | 23 | Interop apparatus | Harness boundary | Reference-router harness, evidence classes, sanitization, Multipass/rootless lanes (historical NTCP2 surface). | [interop-apparatus.md](interop-apparatus.md) |
+| 24 | `i2pr-app-proto` | App contract | Managed native-app v1 protocol, capabilities, manifest, default-deny policy and sandbox attestation vocabulary. No OS/runtime owner. | [i2pr-app-proto.md](i2pr-app-proto.md) |
 
 ## 4. Discrete module overviews
 

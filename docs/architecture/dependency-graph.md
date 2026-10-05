@@ -15,7 +15,7 @@ actual-vs-allowed notes below matter to a reviewer.
 
 Scope of enforcement:
 
-- The checker iterates the keys of `expected` (18 crates).
+- The checker iterates the keys of `expected` (19 crates).
 - `crates/` contains **19** crates. **`i2pr-tunnel` is not a key** in
   `expected`, so its own edge set is not policed by this script. Its
   edges are constrained only by prose and by the tests. See
@@ -38,6 +38,7 @@ checker filters `kind in (None, "normal")` — and are listed separately in
 | `i2pr-core` | (none) | none | (none) |
 | `i2pr-su3` | (none) | none | `sad-rsa`, `sha2`, `thiserror`, `x509-parser` |
 | `i2pr-i2pcontrol` (Plan 286) | (none) | none | `serde`, `serde_json`, `thiserror` |
+| `i2pr-app-proto` (Plan 345) | (none) | none | `serde`, `serde_json`, `thiserror` |
 | `i2pr-crypto` | `i2pr-proto` | same | `chacha20`, `chacha20poly1305`, `curve25519-dalek` (Plan 330), `ed25519-dalek`, `elligator2` (Plan 131; replaces the retired `curve25519-elligator2 0.1.0-alpha.2`), `hmac`, `rand_core`, `sha2`, `subtle`, `thiserror`, `x25519-dalek`, `zeroize` |
 | `i2pr-addressbook` (Plan 294) | `i2pr-proto` | same | `base64ct`, `serde`, `serde_json`, `thiserror` |
 | `i2pr-storage` | `i2pr-crypto` | same | `rand_core`, `thiserror`, `zeroize` |
@@ -142,6 +143,7 @@ enforced rule.
 ```text
 Tier 0 — zero workspace production dependencies
   i2pr-proto          i2pr-core          i2pr-su3          i2pr-i2pcontrol
+  i2pr-app-proto
 
 Tier 1
   i2pr-crypto         --> i2pr-proto

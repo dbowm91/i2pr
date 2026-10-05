@@ -19,6 +19,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 ## Workspace boundaries
 
 - `i2pr-proto` — bounded wire codecs, typed errors, no I/O.
+- `i2pr-app-proto` — runtime-neutral managed-app contract for identity, capabilities, framing, manifests, policy, and attestation; no OS/runtime ownership or production workspace dependencies.
 - `i2pr-crypto` — protocol crypto wrappers (no local primitives).
 - `i2pr-storage` — identity/key persistence.
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
@@ -39,7 +40,7 @@ Enforced by `scripts/check-dependency-direction.sh` and `scripts/check-runtime-b
 ## Skills and architecture index
 
 - Skill bundles live in `.opencode/skills/` (canonical); `.agents/skills` is a symlink to the same directory — there is no separate `.skills/` directory. Load `i2pr-architecture` for ADR/plan navigation and doc-vs-source audits, `i2pr-local-dev` before touching product/SSU2/SAM/I2CP/tunnel code, `i2pr-planning` when registering or closing out an implementation plan (roadmap/registry/closure mechanics). The NTCP2/rootless/Multipass skills are historical (closed Plans 038–100/046/048 lanes) — read-only for archaeology, never for routine work.
-- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives); `docs/adr/` (decisions 0000–0025); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory).
+- Architecture entry points: `docs/architecture/overview.md` (crate index, data flow); `docs/architecture/dependency-graph.md` (dependency allowlist, mirrors `check-dependency-direction.sh`); `docs/architecture/tooling.md` (scripts, fixtures, lanes, CI); `docs/architecture/i2pr-<crate>.md` (per-crate deep-dives); `docs/adr/` (decisions 0000–0032); `specs/CONFORMANCE.md` (what counts as evidence); `specs/support.toml` (machine-readable support inventory).
 
 ## Hard boundaries (CI-enforced — fix code, never weaken scripts)
 
@@ -62,7 +63,7 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
-bash scripts/check-global-plan-number-uniqueness.py
+python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh

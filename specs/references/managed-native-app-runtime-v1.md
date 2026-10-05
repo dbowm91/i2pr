@@ -7,7 +7,7 @@ provide an app runtime, transport, sandbox, DNS resolver, or network broker.
 
 ## 1. Versions and identities
 
-The app channel handshake starts with the fixed 8-byte preamble `I2PA`,
+The app channel handshake starts with the fixed 9-byte preamble `I2PA`,
 protocol major `1`, protocol minor `0`, role byte (`1` Application, `2`
 Administrator), and two zero reserved bytes. Reserved bytes MUST be zero.
 Only one role is selected per connection; role changes require a new
@@ -101,7 +101,7 @@ future explicit administrator owner. Capability scope is associated with an
 
 ## 5. Manifest v1
 
-Manifest JSON is UTF-8, at most 65,536 bytes, a single object with duplicate
+Manifest JSON is UTF-8, at most 65,536 bytes and 16 top-level fields, a single object with duplicate
 and unknown keys rejected, and no trailing data. Top-level fields are exactly:
 `schema_version` (integer `1`), `app_id`, `publisher_id`, `version`, `name`,
 `description`, `host_protocol_min`, `host_protocol_max`, `entrypoints`,
@@ -112,8 +112,9 @@ and `restart_requested`.
 ranges are two `(major, minor)` pairs and minimum must not exceed maximum.
 `entrypoints` has 1–8 `{target, path}` entries. Targets are unique bounded
 ASCII identifiers. Paths are slash-separated package-relative components;
-absolute paths, empty components, `.`/`..`, backslash, colon, control bytes,
-URL schemes, host/port forms, and NUL are rejected. Entrypoints name the app
+absolute paths, non-ASCII or characters outside ASCII alphanumeric plus `._-`,
+empty components, `.`/`..`, backslash, colon, percent-encoding, query/fragment,
+control bytes, URL schemes, host/port forms, and NUL are rejected. Entrypoints name the app
 executable only; they do not authorize shell or installer hooks.
 
 `requested_capabilities` has at most 32 unique v1 capability literals.
@@ -132,7 +133,8 @@ these semantics. Package archive and signature formats are unspecified.
 
 ## 6. UI messages and network policy
 
-UI messages carry opaque UTF-8 JSON payloads no larger than 16,384 bytes.
+UI messages carry UTF-8 text containing one valid JSON value, no larger than
+16,384 bytes.
 Descriptors only identify package-relative static resources. A future console
 host treats UI as the app principal: no admin token, console DOM authority, or
 independent direct network access.
@@ -140,7 +142,7 @@ independent direct network access.
 Direct networking defaults to deny, including DNS/resolution, public, private,
 loopback, link-local, multicast, and unspecified addresses. I2P router access
 is represented by separate capabilities. The policy vocabulary supports TCP
-(UDP is reserved and unsupported), exact hostname, exact IP, or CIDR selector,
+(UDP is reserved and unsupported), exact lowercase ASCII DNS hostname, exact IP, or CIDR selector,
 and a single port or inclusive port range. Rules are administrator-owned;
 deny takes precedence. A hostname request must pass hostname policy and then a
 second pure check of every resolved IP address and address scope. Hostname
@@ -169,6 +171,7 @@ ceilings or denies launch. They cannot raise limits. Fixed ceilings:
 | --- | ---: |
 | identifier bytes | 64 |
 | manifest bytes | 65,536 |
+| manifest top-level fields | 16 |
 | manifest entrypoints / resources | 8 / 16 |
 | capabilities / network rules | 32 / 64 |
 | frame payload / control JSON | 65,536 / 16,384 bytes |
