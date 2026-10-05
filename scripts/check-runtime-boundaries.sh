@@ -108,6 +108,52 @@ if grep -REn 'tokio::|TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream|to
   exit 1
 fi
 
+# Plan 345: application protocol is a data/policy contract, never an OS or
+# runtime owner. std::net address *values* are permitted; socket/DNS APIs are not.
+python3 - "$root" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+source = root / "crates/i2pr-app-proto/src"
+patterns = {
+    "tokio": r"tokio::|async\s+fn|async_trait",
+    "sockets": r"TcpStream|TcpListener|UdpSocket|UnixStream|UnixListener|TcpSocket",
+    "process": r"std::process|Command::new|\.spawn\s*\(",
+    "filesystem": r"std::fs|OpenOptions|File::open|File::create",
+    "resolver": r"ToSocketAddrs|to_socket_addrs|lookup_host|\b(dns|resolve_hostname)\s*\(",
+    "dynamic loader": r"libloading|dlopen\s*\(|LoadLibrary",
+    "sandbox backend": r"seccomp|landlock|AppContainer|Seatbelt|NetworkNamespace",
+}
+
+def violations(text):
+    return [name for name, pattern in patterns.items() if re.search(pattern, text)]
+
+# Positive control: every forbidden category must be detectable, proving these
+# checks remain live if the source scan is edited later.
+positive_control = """
+tokio::spawn(async move {}); TcpStream::connect(addr);
+std::process::Command::new(\"x\").spawn(); std::fs::read(\"x\");
+name.to_socket_addrs(); libloading::Library::new(\"x\"); seccomp::apply();
+"""
+missing = set(patterns) - set(violations(positive_control))
+if missing:
+    raise SystemExit(f"app-proto boundary checker positive control missed: {sorted(missing)}")
+
+bad = []
+for path in source.rglob("*.rs"):
+    for category in violations(path.read_text(encoding="utf-8")):
+        bad.append(f"{path.relative_to(root)}: forbidden {category} API")
+if bad:
+    raise SystemExit("i2pr-app-proto runtime/OS boundary violation:\n" + "\n".join(bad))
+
+manifest = (root / "crates/i2pr-app-proto/Cargo.toml").read_text(encoding="utf-8")
+if re.search(r"^(tokio|tokio-util|rustix|libloading|nix|windows|objc)\s*=", manifest, re.M):
+    raise SystemExit("i2pr-app-proto must not depend on runtime/OS backend crates")
+print("i2pr-app-proto runtime/OS boundary: ok (positive control passed)")
+PY
+
 # std::net::IpAddr/SocketAddr values are allowed as validated data, but
 # listener/stream ownership is forbidden in the runtime-neutral crate.
 if grep -REn 'TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream' \

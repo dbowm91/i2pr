@@ -14,7 +14,8 @@ Long-term references:
 - `plans/subsystems/i2pcontrol-proposal-170-roadmap.md`
 
 Related ADRs:
-- Plan 345 must add the durable ADR(s) for the managed-app trust/process boundary and the default-deny network-capability model before production implementation begins.
+- [ADR 0032](../../docs/adr/0032-managed-native-app-process-and-capability-boundary.md) freezes the managed-app trust/process boundary and default-deny network-capability model.
+- The language-neutral wire/manifest contract is frozen in [Managed native application contract v1](../../specs/references/managed-native-app-runtime-v1.md).
 
 ## 1. Purpose and ownership boundary
 
@@ -125,7 +126,7 @@ The router-gateway and package/lifecycle branches may proceed independently afte
 
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
-| 345 | ready | `registered-managed-native-app-runtime-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | future `plans/closure/managed-native-app-runtime/345-status.md` |
+| 345 | active | `in-progress-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | future `plans/closure/managed-native-app-runtime/345-status.md` |
 
 Future milestone classes are intentionally unnumbered until Plan 345 freezes the contract and ownership boundary:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;

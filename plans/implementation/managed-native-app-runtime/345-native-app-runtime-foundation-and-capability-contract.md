@@ -1,6 +1,6 @@
 # Plan 345 — managed native app runtime foundation and capability contract
 
-Status: **registered-managed-native-app-runtime-foundation**.
+Status: **in-progress-managed-native-app-runtime-contract-foundation**.
 
 Classification: **invariant + infrastructure**. This plan establishes a security/ownership boundary and a runtime-neutral application ABI. It does **not** establish a user-visible application capability, process sandbox, firewall, package installer, console, or anonymity claim.
 
@@ -459,7 +459,7 @@ cargo clippy --locked -p i2pr-app-proto --all-targets --all-features -- -D warni
 RUSTDOCFLAGS="-D warnings" cargo doc --locked -p i2pr-app-proto --no-deps
 bash scripts/check-dependency-direction.sh
 bash scripts/check-runtime-boundaries.sh
-bash scripts/check-global-plan-number-uniqueness.py
+python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 ```
 
@@ -473,7 +473,7 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo test --locked --workspace --doc
 bash scripts/check-dependency-direction.sh
-bash scripts/check-global-plan-number-uniqueness.py
+python3 scripts/check-global-plan-number-uniqueness.py
 python3 -m unittest discover -s tests/planning -p 'test_*.py'
 bash scripts/check-runtime-boundaries.sh
 bash scripts/check-service-tunnel-boundaries.sh

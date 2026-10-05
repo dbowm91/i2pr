@@ -45,3 +45,7 @@ environments, set `LSAN_OPTIONS=detect_leaks=0`; this disables only the runner's
 known LeakSanitizer shutdown incompatibility and does not alter the fuzz
 target. These campaigns are pure local evidence and do not replace the
 required Java I2P/i2pd controlled interoperability lane.
+
+Plan 345 adds `app_contract`, which fuzzes the app/admin bounded JSON
+decoders, manifest decoder, handshake, identifier constructor, and frame
+decoder. Inputs are rejected above the contract ceilings before decoding.

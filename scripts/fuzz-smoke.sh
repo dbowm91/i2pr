@@ -7,6 +7,7 @@ TARGETS=(
   destination router_address router_info lease lease_set leaseset2 metaleaseset
   i2np_standard i2np_bodies i2np_short_ssu i2np_short_transport
   ntcp2_transcript ntcp2_storage ntcp2_handshake ntcp2_blocks ntcp2_frames
+  app-contract
 )
 
 if ! command -v cargo-fuzz >/dev/null 2>&1; then

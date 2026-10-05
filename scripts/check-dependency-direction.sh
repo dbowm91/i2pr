@@ -11,6 +11,7 @@ metadata = json.load(sys.stdin)
 packages = {package["name"]: package for package in metadata["packages"]}
 
 expected = {
+    "i2pr-app-proto": set(),
     "i2pr-proto": set(),
     "i2pr-crypto": {"i2pr-proto"},
     "i2pr-core": set(),

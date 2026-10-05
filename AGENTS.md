@@ -19,6 +19,7 @@ Pinned Rust `1.95.0` (`rust-toolchain.toml`); MSRV `1.88` (`cargo check --locked
 ## Workspace boundaries
 
 - `i2pr-proto` — bounded wire codecs, typed errors, no I/O.
+- `i2pr-app-proto` — runtime-neutral managed-app contract for identity, capabilities, framing, manifests, policy, and attestation; no OS/runtime ownership or production workspace dependencies.
 - `i2pr-crypto` — protocol crypto wrappers (no local primitives).
 - `i2pr-storage` — identity/key persistence.
 - `i2pr-core` — runtime-neutral contracts/budgets/health.
