@@ -50,6 +50,20 @@ The pre-existing, unrelated `parse_configured_destination` substring defect is s
 unfixed and is recorded in the Plan 333 and 338 closures as well.
 
 
+## Routine floor at reclosure
+
+- `cargo fmt --all --check`; `cargo check --locked --workspace --all-targets`;
+  `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`;
+  `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps`; all clean.
+- `cargo test --locked --workspace --all-targets -- --test-threads=1`: **3,958 passed / 0 failed /
+  35 ignored / 145 suites** (was 3,941 / 143 at the original closure; +17 rows, +2 suites).
+- `cargo test --locked --workspace --doc`: 19 doc-test binaries, clean.
+- Boundary scripts (`check-dependency-direction`, `check-runtime-boundaries`,
+  `check-service-tunnel-boundaries`), the fixture manifest, the NTCP2/SSU2/I2CP vector scripts, all
+  fifteen acceptance-evidence scripts, the planning tests, the plan-number uniqueness check, and the
+  NTCP2 harness lane: clean.
+- `cargo deny check advisories bans sources`: clean. No dependency changed, no edge changed.
+
 ## Why this plan is blocked rather than passed
 
 The plan's acceptance criterion has two halves. The first — "Proposal 170 can configure every
