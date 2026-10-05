@@ -15,6 +15,7 @@ pub mod control_sources;
 pub mod destination_peers;
 pub mod destination_streaming;
 pub mod destination_tunnels;
+pub mod encrypted_service_resolver;
 pub mod error;
 pub mod exploratory_build;
 pub mod floodfill;
