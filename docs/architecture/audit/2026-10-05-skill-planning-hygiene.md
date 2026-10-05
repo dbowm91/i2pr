@@ -112,6 +112,34 @@ traded ~59 KB for real loss. Kept and corrected:
   lane and that this seam is what routine work uses (it is not — that is
   `i2pr-local-dev`). Reworded.
 
+## Post-rebase reconciliation (4 upstream commits landed mid-pass)
+
+`git push` was rejected; `origin/main` had advanced past the audit's base by
+four commits (`e86f3a05`, `50e98f3c`, `b4e0d6f1`, `d363c94e`). They touched
+`plans/**` only, so the rebase was conflict-free and the disjointness is itself
+evidence: this pass owned the skills/docs/specs layer, upstream owned planning.
+
+Upstream invalidated three orientation values written minutes earlier, all of
+them the kind this pass had just argued should not be duplicated:
+
+- A **16th roadmap** appeared (`managed-native-app-runtime`, Plan 345 ready,
+  contract foundation only — no launcher, sandbox, or clearnet brokering).
+- **`plan_322` became `passed-canonical-routerinfo-sources-with-the-transit-
+  participation-posture-unchanged`** (Plans 339/340 closed its eight selectors;
+  the three transit ones stay at zero because enabling transit is a production
+  posture change, not a missing snapshot). It had been written as blocked.
+- **Plan 346/347/348** reframed the ELS2 transcript. The Plan 335 *measurement*
+  stands (i2pd and Java verify each other, both reject i2pr's former strict-only
+  form, blinded keys identical) but its *interpretation* is superseded: a
+  specification/deployment split, not a reference defect.
+
+All three were corrected. This is a small live demonstration of the failure mode
+this pass removed, and the reason the orientation block is labelled "read the
+registry for the current value" rather than presented as current: it rotted
+within the hour, exactly as the two deleted ledgers had. The lesson recorded in
+`i2pr-planning` ("never mirror plan state outside `plans/`") is why this was three
+line edits and not a re-audit.
+
 ## Unpatched defects recorded rather than fixed
 
 Closing these means changing a script or the DAG allowlist, which needs a

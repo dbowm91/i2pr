@@ -31,10 +31,11 @@ Read the live index, not this file. In order:
 1. [`plans/registry.md`](../../../plans/registry.md) — active roadmaps, current
    milestone authorities, ready plans, blockers. Maintained with the code.
 2. `plans/subsystems/<subsystem>-roadmap.md` — the workstream and its
-   milestone table. 15 roadmaps: workspace-foundation, ntcp2-transport, netdb,
+   milestone table. 16 roadmaps: workspace-foundation, ntcp2-transport, netdb,
    exploratory-tunnels, destination-streaming, sam, ssu2, i2cp,
    service-tunnels, mixed-router-interop, transit-tunnels, floodfill,
-   i2pcontrol-proposal-170, red25519-encrypted-leaseset, anonymity.
+   i2pcontrol-proposal-170, red25519-encrypted-leaseset, anonymity,
+   managed-native-app-runtime.
 3. `plans/closure/<subsystem>/<newest>-status.md` — **authoritative**. The token
    there beats this skill, the registry prose, and `specs/support.toml`.
 4. `specs/support.toml` + `specs/CONFORMANCE.md` before claiming any support.
@@ -44,16 +45,19 @@ lanes. Orientation only, as of this pass:
 
 ```text
 active_plan                        = plan284   (M12 floodfill, registry)
-next ready (Proposal 170 lane)     = plan342   (outproxy option surface + request paths)
+ready (Proposal 170 outproxy lane) = plan342   (option surface + request paths + wire lane)
+ready (ELS2 transcript)            = plan346   (ELS2-only deployed-compatibility profile)
+ready (app runtime, parallel)      = plan345   (contract foundation only, no launcher/sandbox)
 M11 transit                        = one-family experimental qualification passed
                                      (Plan 268); transit stays non-advertised,
                                      TransitParticipation::Disabled is enforced
 M12 floodfill                      = Plans 270-276 passed; 277/278/279/306 stopped
                                      with retained work; 283/284/285 passed;
                                      broad caps advertisement still forbidden
-Proposal 170 / I2PControl          = 319-321, 323-324, 329-333, 337-341, 343-344
-                                     passed; 322/327 blocked; 326/335 blocked on
-                                     the external type-11 transcript
+Proposal 170 / I2PControl          = 319-321, 322(passed 2026-10-05), 323-324,
+                                     329-333, 337-341, 343-344 passed; 325/327/328
+                                     blocked; 326/335 blocked historical with
+                                     successors 346 -> 347 registered; 348 blocked
 Anonymity lane                     = 311-316, 318 passed; 308/310/317 blocked
                                      history; 313 ready; parallel, does not gate M12
 ```
@@ -74,6 +78,14 @@ earlier ledger in this file that had gone stale:
   — not "reactivated", and it is historical.
 - `milestone10_final_acceptance` is `closed-via-plan215`.
 - There is no `plan_208` ambiguity to resolve.
+- **`plan_322` is `passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged`**
+  (amended 2026-10-05; Plans 339/340 closed its five per-family and three transit
+  selectors, leaving the honest product baseline at `0`/`0`/`0.0`). It is not a
+  blocker. The three transit selectors stay at zero because enabling transit is a
+  production posture change, not a missing snapshot.
+- **`plan_335` is `blocked-measured-type-11-transcript-incompatible-with-both-named-references`,
+  but its *interpretation* is superseded by Plan 346.** The measurement stands;
+  "the references have a defect" does not. It is a specification/deployment split.
 
 Closed-era milestones, for orientation only: M6 local Plan 134 (Plan 152
 retained corrective); M7 SAM Plan 151; M8 SSU2 Plans 161+162; M9 I2CP Plan 172;
@@ -455,10 +467,18 @@ records are the authority for which plans passed.
 - The Proposal 170 outproxy has **policy and a route owner but no reachable
   request path** (`open_via_outproxy` has zero callers). It is infrastructure,
   not capability, and there is no direct clearnet fallback.
-- ELS2/Red25519 type-5 LeaseSets are implemented in-repo, but the transcript is
-  i2pr-only: per ADR 0005 and Plan 336/335, i2pd and Java I2P verify each other
-  and both reject i2pr. No interoperability is claimed and
-  `common.leaseset2-family` stays `advertised = false`.
+- ELS2/Red25519 type-5 LeaseSets are implemented in-repo. The measured result
+  stands: i2pd and Java I2P verify **each other's** type-11 signatures and both
+  reject i2pr's former strict-only form, with blinded public keys identical
+  across all three (Plan 335). **But do not call that a reference defect** —
+  the interpretation is superseded by Plan 346: Proposal 146/standalone Red25519
+  specifies domain- and length-framed HStar, while the Encrypted-LS2 spec and
+  deployed Java/i2pd use randomized RedDSA without those additions. It is a
+  specification/deployment split. Plan 346 (ready) will add an ELS2-only
+  deployed-compatibility profile while leaving strict Proposal-146 Red25519
+  unchanged; Plan 347 owns live cross-router proof. Until then no
+  interoperability is claimed and `common.leaseset2-family` stays
+  `advertised = false`.
 - Self-composed rows are never substituted for interop. Raw reference logs are
   never evidence; only sanitized counts/hashes reach evidence files.
 - Do not advance `advertised = true` without `specs/CONFORMANCE.md` evidence.
