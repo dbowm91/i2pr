@@ -6,14 +6,14 @@ Plan of record: [`349-portable-service-tunnel-boundary-and-ownership-contract.md
 
 ## Implementation
 
-- `1eb1a7c` — added ADR 0032, the portable-core contract and module/export inventory, architecture references, and Plan 349 runtime/dependency boundary checks with positive controls.
+- `1eb1a7c` — added the portable policy decision (now ADR 0033), the portable-core contract and module/export inventory, architecture references, and Plan 349 runtime/dependency boundary checks with positive controls.
 - This closure commit updates this record, the portable roadmap, and `plans/registry.md`.
 
 ## Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| Durable ownership and dependency direction | [ADR 0032](../../../docs/adr/0032-portable-service-tunnel-policy-core-and-adapters.md); [portable-core contract](../../../specs/references/portable-service-tunnel-core-v1.md) | Pass |
+| Durable ownership and dependency direction | [ADR 0033](../../../docs/adr/0033-portable-service-tunnel-policy-core-and-adapters.md); [portable-core contract](../../../specs/references/portable-service-tunnel-core-v1.md) | Pass |
 | Public/internal module classification | Contract § Module and export inventory lists every current public root re-export grouped by module, and classifies every production module | Pass |
 | Adapter metadata, authenticated identity, linkability, lifecycle | Contract § Adapter inputs and outputs | Pass |
 | Runtime/router ownership prohibited by static checks | `scripts/check-service-tunnel-boundaries.sh`; dependency/runtime boundary checks | Pass |

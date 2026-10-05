@@ -22,9 +22,9 @@ Observed branch baseline before this plan:
 - 231 tracked files are under `tests/portable-service-tunnel-consumer/target/`;
 - managed-native-app-runtime and portable-service-tunnels both own global Plan 349;
 - both Plan-349 authorities are already closed and cross-referenced;
-- `docs/adr/` contains both:
-  - `0032-managed-native-app-process-and-capability-boundary.md`;
-  - `0032-portable-service-tunnel-policy-core-and-adapters.md`;
+- `docs/adr/` contains two accepted ADR 0032 files: the managed-app process/capability
+  decision and the portable-service-tunnel policy decision (renamed to ADR 0033 at
+  closure).
 - `plans/README.md` still documents only the older 296/297 collision even though the collision ledger/checker now also encode the qualified 349 collision.
 
 The branch must not merge while generated build outputs are tracked or while planning/ADR authority is internally contradictory.
@@ -162,12 +162,12 @@ Do not spread current plan-state tables into skills/README; this is a durable nu
 ### C. Reconcile ADR 0032
 
 1. Establish commit-order evidence showing managed-app ADR 0032 predates the portable-service-tunnel ADR.
-2. `git mv` the later portable ADR to:
-   `docs/adr/0033-portable-service-tunnel-policy-core-and-adapters.md`
-   if 0033 remains free at execution time.
+2. `git mv` the later portable ADR to the unique ADR 0033 filename:
+   `docs/adr/0033-portable-service-tunnel-policy-core-and-adapters.md`.
 3. Update its internal title/identifier only as needed to identify it as ADR 0033.
 4. Update all references in architecture docs, roadmap/plans, README/specs, and source comments if any.
-5. Search for the old filename and portable-service-tunnel "ADR 0032" wording; no live reference may remain.
+5. Search for obsolete portable ADR filenames and labels; current architecture, source,
+   README, roadmap, specification, and closure references must use ADR 0033.
 6. Leave the older duplicate ADR 0030 records untouched and explicitly record that limitation.
 
 If ADR 0033 is no longer free at execution time, stop before renaming and choose the next unique ADR number in the same commit, documenting the reason in closure.
@@ -221,8 +221,9 @@ This plan changes repository metadata/history integration, not runtime behavior.
 ### ADR authority
 
 - portable service-tunnel ADR has a unique number;
-- no live reference to its old `0032-portable-service-tunnel-policy-core-and-adapters.md` path remains;
-- no live prose calls the portable decision "ADR 0032";
+- no current architecture, source, README, roadmap, specification, or closure document
+  references the former portable ADR filename;
+- no current documentation identifies the portable decision as ADR 0032;
 - managed-app ADR 0032 references remain intact;
 - existing ADR 0030 duplication is recorded as pre-existing/out-of-scope, not accidentally "fixed" without a plan.
 

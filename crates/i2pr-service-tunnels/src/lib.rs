@@ -11,7 +11,7 @@
 //! addresses are not substitutes. This crate contains no SAM protocol/session
 //! implementation and is not a standalone tunnel product.
 //!
-//! The ownership contract is defined by ADR 0032 and
+//! The ownership contract is defined by ADR 0033 and
 //! `specs/references/portable-service-tunnel-core-v1.md` in the i2pr repository.
 //! The public API is frozen for the repository's `0.1.x` development line by Plan 350;
 //! source-breaking changes require explicit review and migration.

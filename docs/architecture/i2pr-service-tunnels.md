@@ -1,6 +1,6 @@
 # `i2pr-service-tunnels` — Deep Dive
 
-Portability ownership is defined by [ADR 0032](../adr/0032-portable-service-tunnel-policy-core-and-adapters.md)
+Portability ownership is defined by [ADR 0033](../adr/0033-portable-service-tunnel-policy-core-and-adapters.md)
 and [`portable-service-tunnel-core-v1`](../../specs/references/portable-service-tunnel-core-v1.md).
 This crate owns reusable, runtime-neutral service-tunnel policy and filters; adapters own
 transport, sockets, clocks, persistence, and lifecycle. The public API is not considered
@@ -1004,7 +1004,7 @@ registry row, for Proposal 170 state.
 - [0028 — i2pcontrol / Proposal 170 control plane](../adr/0028-i2pcontrol-proposal-170-control-plane.md)
 - [0030 — Destination linkability domains / service lifecycle](../adr/0030-destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md)
 - [0031 — One shared service tunnel manager](../adr/0031-one-shared-service-tunnel-manager.md)
-- [0032 — Portable service-tunnel policy core and adapters](../adr/0032-portable-service-tunnel-policy-core-and-adapters.md)
+- [0033 — Portable service-tunnel policy core and adapters](../adr/0033-portable-service-tunnel-policy-core-and-adapters.md)
 
 **Plans and closure records**
 

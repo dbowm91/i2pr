@@ -13,7 +13,7 @@ Plan of record: [`350-service-tunnel-package-api-and-dependency-stabilization.md
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| Plan 349 boundary is authoritative | Plans 349 closure, ADR 0032, and portable-core contract v1 | Pass |
+| Plan 349 boundary is authoritative | Plans 349 closure, ADR 0033, and portable-core contract v1 | Pass |
 | Remove unused internal dependency | `rtk cargo tree -p i2pr-service-tunnels --edges normal`; full `rg` audit; Cargo.lock diff; checker rejects every direct `i2pr-*` dependency | Pass: five third-party production deps only |
 | Durable package metadata and docs | crate `Cargo.toml`, `README.md`, root rustdoc, `cargo metadata --no-deps` | Pass |
 | Reviewed public API snapshot | `crates/i2pr-service-tunnels/API-SNAPSHOT.txt`; checker positive-control fixture; wired in CI and floor | Pass: 678 public declaration entries |

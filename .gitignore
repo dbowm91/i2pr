@@ -6,5 +6,6 @@ __pycache__/
 /fuzz/corpus/*/leak-*
 /fuzz/corpus/*/timeout-*
 /fuzz/target/
+/tests/**/target/
 /tests/integration/**/reference/*.class
 /tests/integration/sam/build/

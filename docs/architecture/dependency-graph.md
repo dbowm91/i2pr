@@ -59,7 +59,7 @@ Notes on the allowlisted-but-unused and legacy rows:
 
 - `i2pr-service-tunnels` may depend on `i2pr-client` but has no internal
   production dependencies after Plan 350's full-tree audit.
-  ADR 0032 and `specs/references/portable-service-tunnel-core-v1.md`
+  ADR 0033 and `specs/references/portable-service-tunnel-core-v1.md`
   freeze this crate as the reusable policy/filter owner; adapters retain
   socket, runtime, persistence, and transport lifecycle ownership. Plan 350
   completed the full dependency-use proof and removed the unused path edge.

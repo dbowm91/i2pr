@@ -171,7 +171,7 @@ This workstream is complete when:
 
 ## 12. Milestone status summary
 
-Plan 349 passed. ADR 0032 and the portable-core reference freeze the ownership/public-contract boundary; no internal crate split is required.
+Plan 349 passed. ADR 0033 and the portable-core reference freeze the ownership/public-contract boundary; no internal crate split is required.
 
 Plan 350 passed its package/API stabilization. The package remains unpublished with `publish = false` until the owner selects a license.
 

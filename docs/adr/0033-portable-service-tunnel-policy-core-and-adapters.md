@@ -1,4 +1,4 @@
-# ADR 0032: Portable service-tunnel policy core and transport adapters
+# ADR 0033: Portable service-tunnel policy core and transport adapters
 
 - Status: Accepted
 - Date: 2026-10-05
