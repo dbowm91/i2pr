@@ -16,6 +16,10 @@ from pathlib import Path
 
 
 HISTORICAL_COLLISIONS = {
+    "349": {
+        "implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md",
+        "implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md",
+    },
     "296": {
         "implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md",
         "implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md",

@@ -1,9 +1,13 @@
 # Managed native application contract v1
 
-Status: frozen by ADR 0032 and Plan 345. This document is the language-neutral
-contract; Rust enum tags, memory layout, and serializer defaults are not wire
-ABI. Plan 345 implements vocabulary and pure validation only. It does not
-provide an app runtime, transport, sandbox, DNS resolver, or network broker.
+Status: Plan 345 froze the initial unreleased draft; Plan 349 corrects that
+draft before any runtime owner or external consumer exists. The v1 contract is
+still pre-release and has never been shipped. No downstream consumer may rely
+on the superseded Plan-345 message shapes or policy algorithm. This document
+is the language-neutral contract; Rust enum tags, memory layout, and serializer
+defaults are not wire ABI. The implementation remains vocabulary and pure
+validation only. It does not provide an app runtime, transport, sandbox, DNS
+resolver, or network broker.
 
 ## 1. Versions and identities
 
@@ -46,41 +50,63 @@ members, no duplicate keys, no unknown fields, and no trailing non-whitespace
 bytes. String fields are bounded by the limits in §7. The `type` literal is
 case-sensitive. Unknown literals fail closed.
 
-## 3. Control vocabulary and roles
+## 3. Directional control vocabulary
 
-Every control message has a required string field `type`. Application-role
-messages:
+Every control object has a required string `type`. Direction is represented by
+four disjoint decoders; a message from one direction is never accepted by
+another direction's decoder. The connection handshake selects the application
+or administrator role. It does not select message direction or authorize an
+operation.
 
-- `hello` `{type, app_id, instance_id, protocol_major, protocol_minor}`
-- `capabilities` `{type, capabilities[]}`
+**Application → host** messages:
+
 - `open` `{type, request_id, stream_id, service}`
-- `accept` `{type, request_id, stream_id}`
+- `permission_request` `{type, request_id, capabilities[]}`
 - `close` `{type, stream_id}`
 - `reset` `{type, stream_id, reason}`
-- `permission_request` `{type, request_id, capabilities[]}`
-- `permission_status` `{type, request_id, status}`
 - `ui_message` `{type, message_id, payload}`
-- `health` `{type, state, detail?}`
 
-`service` is one of `sam`, `i2cp`, `control_scoped`, or `brokered_tcp`.
-`status` is one of `pending`, `denied`, or `recorded`; it is not a grant.
-The app role has no grant, revoke, policy mutation, firewall disable, direct
-network switch, install, update, or other-app mutation message.
+**Host → application** messages:
 
-Administrator-role messages use a disjoint vocabulary:
+- `reply` `{type, request_id, outcome}` for an `open` request
+- `permission_reply` `{type, request_id, status}`
+- `capabilities` `{type, capabilities[]}` — effective, administrator-granted
+  capabilities only
+- `health` `{type, state, detail?}` — unsolicited host event, never a reply
 
-- `admin_hello` `{type, protocol_major, protocol_minor}`
-- `install_request` / `update_request` / `uninstall_request` `{type, app_id}`
-- `launch_request` / `stop_request` `{type, app_id}`
-- `grant_request` / `revoke_request` `{type, app_id, capabilities[]}`
-- `network_policy_request` `{type, app_id, rules[]}`
-- `launch_profile_request` `{type, app_id, profile}`
-- `resource_policy_request` `{type, app_id, resources}`
-- `inspect_request` `{type, app_id}`
+`service` is one of `sam`, `i2cp`, or `control_scoped`. `brokered_tcp` is not
+an openable v1 service. `status` is one of `pending`, `denied`, or `recorded`;
+it is not a grant. `outcome` is either `succeeded` or a typed error object.
 
-This describes future structural messages only; Plan 345 defines no handler or
-side effect. A message valid for one role is invalid for the other. Numeric
-substitution cannot change role or message meaning.
+**Administrator → host** has one structurally representable request:
+
+- `reserved_request` `{type, request_id, operation}`
+
+`operation` is a closed enum covering `install`, `update`, `uninstall`,
+`launch`, `stop`, `grant`, `revoke`, `network_policy`, `launch_profile`,
+`resource_policy`, and `inspect`. All of these operations are reserved and
+unsupported in this pre-runtime contract. No package or AppManager semantics
+are implied.
+
+**Host → administrator** messages:
+
+- `reply` `{type, request_id, error}`; reserved administrator operations MUST
+  receive the typed `unsupported_operation` error and MUST have no side effect.
+
+Every request ID is an unsigned, nonzero 32-bit integer. It is unique among at
+most 64 active requests in its session. A response echoes exactly one active
+request ID; an unknown, completed, or duplicate ID is rejected. Requests that
+expect completion cannot be fire-and-forget. Error codes are a closed enum:
+`unsupported_operation`, `permission_denied`, `invalid_request`,
+`resource_limit`, `conflict`, `not_found`, and `internal`. Optional diagnostic
+text is at most 1,024 UTF-8 bytes and is never a machine decision key. Events
+are distinct message types and cannot be decoded as replies.
+
+The superseded Plan-345 `hello`, `accept`, `permission_status`, and
+directionless role enums are not accepted aliases. Version 1 remains at
+major/minor `1.0` because Plan 345's form was explicitly an unreleased draft
+and no consumer can observe it. This is a pre-release correction, not a wire
+migration.
 
 Stream ids are unique and nonzero within a session. Open must precede data;
 duplicate open is an error. `close` and `reset` are idempotently representable.
@@ -95,9 +121,12 @@ unique and have at most 32 entries. Unknown literals are rejected.
 `RequestedCapability` is inert app/package input. `GrantedCapability` is
 administrator-origin policy state. `EffectiveCapabilities` is a bounded,
 read-only runtime-produced view and cannot be constructed from manifest bytes
-or application messages. Any conversion from requested to granted requires a
-future explicit administrator owner. Capability scope is associated with an
-`AppPrincipal` and never implies a general Proposal 170 credential.
+or application messages. `brokered_tcp` is reserved/requestable only: it
+cannot be granted or appear in effective capabilities until a later broker
+plan defines its connect transaction. Any other conversion from requested to
+granted requires a future explicit administrator owner. Capability scope is
+associated with an `AppPrincipal` and never implies a general Proposal 170
+credential.
 
 ## 5. Manifest v1
 
@@ -142,14 +171,43 @@ independent direct network access.
 Direct networking defaults to deny, including DNS/resolution, public, private,
 loopback, link-local, multicast, and unspecified addresses. I2P router access
 is represented by separate capabilities. The policy vocabulary supports TCP
-(UDP is reserved and unsupported), exact lowercase ASCII DNS hostname, exact IP, or CIDR selector,
-and a single port or inclusive port range. Rules are administrator-owned;
-deny takes precedence. A hostname request must pass hostname policy and then a
-second pure check of every resolved IP address and address scope. Hostname
-permission never implies permission for a forbidden resolved scope. IPv4
-private includes RFC1918; IPv6 private includes ULA. IPv4-mapped IPv6 is
-classified by its mapped IPv4 address. Loopback and private/LAN scopes require
-an explicit administrator allow rule; no scope is implicitly safe.
+(UDP is reserved and unsupported), exact lowercase ASCII DNS hostname, exact
+IP, or CIDR selector, and a single port or inclusive port range. Rules are
+administrator-owned; deny takes precedence.
+
+For a hostname request, an exact hostname allow rule authorizes the named
+service. Each resolved address is still classified independently. A globally
+routable address may pass on hostname authorization alone unless a matching
+IP/CIDR deny exists. Every non-global address remains denied unless a matching
+explicit IP/CIDR allow exists; any matching deny wins. The pure policy does not
+resolve names, choose among answers, or race connections. A future broker must
+apply this decision to each address it selects.
+
+For broker policy, "global" means ordinary public unicast space outside the
+special-purpose and non-global ranges listed below. Every address outside the
+IPv4 ordinary-unicast space and outside IPv6 `2000::/3` is non-global. The
+classification is frozen against the IANA IPv4 and IPv6 Special-Purpose
+Address Registries as retrieved 2026-10-05; special-purpose blocks are
+conservatively non-global even when IANA marks a particular block globally
+reachable. IPv4-mapped IPv6 inherits the mapped IPv4 classification. New or
+unrecognized address families/classification inputs fail closed.
+
+IPv4 non-global blocks: `0.0.0.0/8`, `10.0.0.0/8`, `100.64.0.0/10`,
+`127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.0.0.0/24`,
+`192.0.2.0/24`, `192.31.196.0/24`, `192.52.193.0/24`, `192.88.99.0/24`,
+`192.168.0.0/16`, `192.175.48.0/24`, `198.18.0.0/15`, `198.51.100.0/24`,
+`203.0.113.0/24`, `224.0.0.0/4`, and `240.0.0.0/4` (including limited
+broadcast). The first and last addresses of every listed prefix are covered.
+
+IPv6 non-global blocks include `::/128`, `::1/128`, `::ffff:0:0/96`,
+`64:ff9b::/96`, `64:ff9b:1::/48`, `100::/64`, `2001::/23`,
+`2001:db8::/32`, `2002::/16`, `fc00::/7`, `fe80::/10`, and `ff00::/8`.
+In addition, all IPv6 outside `2000::/3` is non-global. The overlap in this
+list is intentional; tests exercise the most-specific named boundary and its
+adjacent controls where meaningful.
+
+Registry provenance: [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry)
+and [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry).
 
 The launch profile is either `Secured` or explicit operator-selected
 `UnsafeDirect`. `UnsafeDirect` is a distinct profile, never a partial secured
