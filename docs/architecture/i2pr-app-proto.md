@@ -29,7 +29,14 @@ side-effect owner. The four decoders are app-to-host, host-to-app,
 admin-to-host, and host-to-admin; cross-direction and cross-role inputs fail
 closed. Request/reply IDs are nonzero and session accounting rejects duplicate,
 unknown, completed, and over-limit IDs. Proposal 170 adaptation is a future
-interface dependency and is not implemented here.
+interface dependency and is not implemented here. The language-neutral v1
+reference also freezes the router service-stream mapping: a successful SAM or
+I2CP open is one exact-byte protocol connection, while stream-id multiplexing
+and process identity proof remain trusted-runtime responsibilities. The daemon
+gateway accepts only trusted composition authority and keeps service contexts
+private to one app launch instance; app `hello` fields are never credentials.
+`control_scoped` remains unavailable at that gateway until a separately gated
+Proposal 170 adapter exists.
 
 The app `hello` declares an app and instance identity but proves neither; a
 future trusted transport owner must bind it to an authenticated process/IPC

@@ -155,6 +155,22 @@ not gate `sam-bridge` behind a never-ready Essential service.
 | `src/destination_streaming.rs` | 708 | Plan 174 **shared** daemon Streaming byte pump (`run_stream_pump`, generic over `AsyncRead + AsyncWrite` with bounded chunk, negotiated segmentation, backpressure, sibling-isolated drain, cancel/EOF/terminal convergence). Reused by SAM and every service-tunnel executor — there is no second byte pump | shared pump types |
 | `src/service_delivery.rs` | 819 | Plan 202/206 M10 production remote Destination/Streaming delivery capability: typed `RoutingDecision`, bounded `RemoteDeliveryCounters`, in-flight resolution table, and the executable `RemoteDestinationBackend` | `ServiceDestinationDelivery`, `RoutingDecision`, `RemoteDeliveryCounters`, `RemoteDestinationBackend`, `PendingRemoteResolution`, `RemoteResolutionIdAllocator`, `RemoteDeliveryError`, `classify_destination`, `destination_hash_bytes`, `destination_hash_from_slice`, `destination_hash_as_router_hash`, `tunnel_id_from_bytes` |
 
+### Managed application router gateway
+
+The `app_gateway` module is the narrow router-side boundary for a future
+trusted managed-app runtime. It accepts a non-deserializable authorization
+value produced by trusted composition, binds one immutable effective
+capability set to one `AppPrincipal` launch instance, and owns separate private
+SAM and I2CP client contexts and supervised byte-stream connections. Service
+capability checks precede context or task allocation. SAM naming receives the
+canonical `SharedAddressBook`; neither protocol path uses a loopback listener
+fallback. `control_scoped` is typed unavailable until a separately gated
+Proposal 170 adapter is available. Process authentication, package/grant
+management, outer framing/multiplexing, launch, and sandboxing belong to the
+future trusted runtime and are not provided by this gateway. The contract and
+exact byte-stream mapping are specified in
+[`managed-native-app-runtime-v1.md`](../../specs/references/managed-native-app-runtime-v1.md).
+
 ### SAM 3.1
 
 The TCP listener is an admission adapter over one SAM connection driver. The
