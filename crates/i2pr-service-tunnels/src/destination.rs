@@ -7,6 +7,8 @@
 
 #![forbid(unsafe_code)]
 
+use i2pr_proto::{EncryptedServiceAddress, is_encrypted_service_address};
+
 use crate::errors::ServiceTunnelError;
 
 /// Canonical I2P Base32 suffix for destination hashes.
@@ -28,6 +30,13 @@ pub const MAX_CONFIGURED_DESTINATION_LEN: usize = 4096;
 /// canonical Base32 `.b32.i2p` hashes, bounded static aliases from
 /// strict configuration, and explicitly configured full Destination
 /// material carried only as public data.
+///
+/// Plan 351 adds a fourth: an encrypted-service base-32 address. It is
+/// **not** a fourth kind of hash — it carries the unblinded *signing*
+/// public key plus both signature types, and its storage key is derived
+/// per UTC day from that key plus an optional lookup secret. It therefore
+/// has no destination hash at all, which is exactly why it gets its own
+/// variant rather than being folded into [`Self::Base32Hash`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DestinationRef {
     /// Canonical 52-character Base32 label plus `.b32.i2p`.
@@ -42,12 +51,28 @@ pub enum DestinationRef {
     /// Explicitly configured full Destination material as public
     /// data. Never carries private destination material.
     ConfiguredDestination(String),
+    /// Plan 351: a validated encrypted-service address. This is *not*
+    /// a destination hash and must never be treated as one — see
+    /// [`EncryptedServiceAddress`], whose own documentation says the
+    /// same thing at the protocol layer.
+    EncryptedService {
+        /// Lower-case canonical label without the `.b32.i2p` suffix
+        /// (56 or 60 characters).
+        label: String,
+        /// Validated address: unblinded signing public key, both
+        /// signature types, and the two structural flags.
+        address: EncryptedServiceAddress,
+    },
 }
 
 impl DestinationRef {
     /// Parses one destination reference string structurally.
     ///
     /// Dispatch:
+    /// - an encrypted-service address (56- or 60-character
+    ///   `.b32.i2p` body) -> [`Self::EncryptedService`], checked
+    ///   **before** the 52-character Base32 branch so a valid b33 is
+    ///   recognised rather than reported as a malformed Base32 label;
     /// - ends with `.b32.i2p` -> [`Self::Base32Hash`];
     /// - ends with `.i2p` -> [`Self::StaticAlias`];
     /// - otherwise -> [`Self::ConfiguredDestination`] when the value
@@ -79,6 +104,14 @@ impl DestinationRef {
                 reason: "IP literals are rejected for I2P destination references",
             });
         }
+        // Plan 351: an encrypted-service address is dispatched before the
+        // 52-character Base32 branch. Without this, `parse_base32_hash`
+        // rejects a valid 56/60-character b33 with the misleading reason
+        // "Base32 label must be exactly 52 characters" — a b33 is not a
+        // malformed Base32 hash, it is a different kind of value.
+        if is_encrypted_service_address(value) {
+            return parse_encrypted_service(value);
+        }
         if let Some(label) = value.strip_suffix(B32_SUFFIX) {
             return parse_base32_hash(label, value);
         }
@@ -106,16 +139,32 @@ impl DestinationRef {
             Self::Base32Hash { label, .. } => label,
             Self::StaticAlias(alias) => alias,
             Self::ConfiguredDestination(material) => material,
+            Self::EncryptedService { label, .. } => label,
         }
     }
 
     /// Returns the full canonical spelling including suffix for the
-    /// Base32 and alias forms.
+    /// Base32, encrypted-service, and alias forms.
     pub fn canonical_string(&self) -> String {
         match self {
             Self::Base32Hash { label, .. } => format!("{label}{B32_SUFFIX}"),
             Self::StaticAlias(alias) => alias.clone(),
             Self::ConfiguredDestination(material) => material.clone(),
+            Self::EncryptedService { label, .. } => format!("{label}{B32_SUFFIX}"),
+        }
+    }
+
+    /// Returns the validated encrypted-service address, if this is one.
+    ///
+    /// The single accessor for the variant, so a caller that wants the
+    /// address has to ask for it explicitly rather than pattern-matching
+    /// the variant into existence. `i2pr-service-tunnels` never derives a
+    /// blinded storage key; that is the daemon owner's job, and it owns the
+    /// lookup secret as well.
+    pub fn encrypted_service(&self) -> Option<&EncryptedServiceAddress> {
+        match self {
+            Self::EncryptedService { address, .. } => Some(address),
+            _ => None,
         }
     }
 }
@@ -202,6 +251,31 @@ fn parse_base32_hash(label: &str, full: &str) -> Result<DestinationRef, ServiceT
         label: label.to_owned(),
         hash,
     })
+}
+
+/// Parses and validates one encrypted-service base-32 address (Plan 351).
+///
+/// `EncryptedServiceAddress::from_text` is the whole policy: the body
+/// length, the Base32 alphabet, canonical trailing bits, the CRC-32
+/// checksum, both signature types, and the two reserved flags. This
+/// function adds nothing to it and therefore cannot weaken it — it only
+/// maps the protocol error onto the service-layer error, and it is
+/// reached only when the 56/60-character length already matched.
+fn parse_encrypted_service(value: &str) -> Result<DestinationRef, ServiceTunnelError> {
+    let rejected = |reason: &'static str| ServiceTunnelError::InvalidDestinationRef {
+        value: truncated(value),
+        reason,
+    };
+    let address = EncryptedServiceAddress::from_text(value)
+        .map_err(|_| rejected("encrypted-service address is malformed"))?;
+    // `from_text` lower-cases before decoding, so the canonical label is
+    // re-derived rather than sliced out of the caller's spelling.
+    let label = value
+        .to_ascii_lowercase()
+        .strip_suffix(B32_SUFFIX)
+        .map(str::to_owned)
+        .ok_or_else(|| rejected("encrypted-service address must end with .b32.i2p"))?;
+    Ok(DestinationRef::EncryptedService { label, address })
 }
 
 fn parse_configured_destination(value: &str) -> Result<DestinationRef, ServiceTunnelError> {
@@ -331,6 +405,23 @@ impl StaticAliasTable {
                 value: truncated(inner),
                 reason: "alias target is malformed",
             })?;
+        }
+        // Plan 351 Gate 1: an encrypted-service address must not be
+        // reachable through a static alias. The containment rule is a
+        // *per-service* property — an encrypted remote target is only
+        // permitted on a `DelayOpen` client — and an alias is global. If
+        // an alias could name a b33, the rule would be enforced on the
+        // alias spelling rather than on the address the service
+        // actually resolves, and a service without `delay_open` could
+        // reach the encrypted path by naming an alias instead of the
+        // address. Making the pair unrepresentable is the honest
+        // containment: it closes the bypass instead of trusting every
+        // caller to re-check after resolution.
+        if matches!(target, DestinationRef::EncryptedService { .. }) {
+            return Err(ServiceTunnelError::InvalidAlias {
+                value: truncated(alias),
+                reason: "an encrypted-service address must not be reachable through a static alias",
+            });
         }
         self.entries.push((alias.to_owned(), target));
         Ok(())

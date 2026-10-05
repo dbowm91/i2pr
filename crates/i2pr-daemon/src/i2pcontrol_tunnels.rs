@@ -291,6 +291,25 @@ impl ControlDefinition {
 pub fn lease_set_security_plan(
     options: &BTreeMap<String, String>,
 ) -> Result<LeaseSetSecurityPlan, ControlError> {
+    // Plan 351 Gate 2 — the consumer shape is exempt from the *publisher* LeaseSet security
+    // block, because a client that consumes a `.b33` publishes nothing.
+    //
+    // Without this exemption the block validator refuses a client for configuring
+    // `leaseset_password` at all, with "OptionalLookup is not used by EncryptLeaseSet
+    // 'disable'". That refusal is correct about the publisher reading and wrong about the
+    // consumer one: the option is the same secret, but it participates in deriving the *lookup*
+    // key this router asks a floodfill for, not the key it publishes under.
+    //
+    // Narrowly scoped on purpose. The shape is only recognised when the definition supplies
+    // exactly the consumer pairing — a lookup secret and an encrypted-service target — and
+    // `encrypt_lease_set` is absent, because a definition that publishes is a publisher no matter
+    // what it also consumes and must go through the full block rule. A `leaseset_password` on a
+    // client with an ordinary target never reaches here: the mask and pairing rules reject it
+    // first, in `build_control_spec`.
+    if is_encrypted_consumer(options) {
+        return Ok(i2pr_i2pcontrol::resolve_lease_set_security(None, None, &[])
+            .expect("the ordinary security block is valid by construction"));
+    }
     if !options.contains_key("encrypt_lease_set")
         && !options.contains_key("leaseset_password")
         && !options.contains_key("leaseset_client_auth")
@@ -308,6 +327,21 @@ pub fn lease_set_security_plan(
         };
         ControlError::LeaseSetSecurityRejected(reason)
     })
+}
+
+/// Plan 351 Gate 2 — whether one options map is an ELS2 **consumer** shape.
+///
+/// True only when the map supplies a lookup secret and names an encrypted-service target and
+/// does not publish. Deliberately computable from options alone, so `normalize_definition` and
+/// the product reconciliation agree without either one consulting the other.
+fn is_encrypted_consumer(options: &BTreeMap<String, String>) -> bool {
+    if options.contains_key("encrypt_lease_set") || !options.contains_key("leaseset_password") {
+        return false;
+    }
+    options
+        .get("target_destination")
+        .and_then(|value| DestinationRef::parse(value).ok())
+        .is_some_and(|reference| matches!(reference, DestinationRef::EncryptedService { .. }))
 }
 
 /// Projects one definition's resolved LeaseSet security posture for a control
@@ -2227,14 +2261,44 @@ pub fn build_control_spec_with_filter_root(
             // no LeaseSet" is a more fundamental objection than "this mode
             // does not use this secret".
             "encrypt_lease_set" | "leaseset_password" | "leaseset_client_auth" => {
-                if !matches!(
+                let publisher_kind = matches!(
                     kind,
                     ServiceTunnelKind::GenericServer
                         | ServiceTunnelKind::IrcServer
                         | ServiceTunnelKind::HttpServer
                         | ServiceTunnelKind::HttpBidirServer
                         | ServiceTunnelKind::StreamrServer
-                ) {
+                );
+                // Plan 351 Gate 2: a client may also need the lookup secret,
+                // but as a *consumer* rather than a publisher — it is what
+                // derives the blinded storage key it must look up. That is the
+                // same secret and the same option name, so this is symmetric
+                // with the server rule above rather than a new option.
+                //
+                // The other two keys stay refused on clients: `encrypt_lease_set`
+                // describes what to publish and `leaseset_client_auth` describes
+                // which per-client credentials *this* service will accept. Both
+                // are publisher-side, and Plan 351 defers consumer credentials
+                // (PSK/DH) entirely, so allowing them here would accept a
+                // configuration whose effect is a silent no-op.
+                //
+                // The pairing rule — this key requires an encrypted target and a
+                // delay-open client — needs `destination`, which is parsed later
+                // in this loop (`target_destination` sorts after
+                // `leaseset_password`). It is enforced after the loop, alongside
+                // the `timeouts.delay_open` assignment, so the error names the
+                // real rule instead of the mask.
+                let consumer_kind = key == "leaseset_password"
+                    && matches!(
+                        kind,
+                        ServiceTunnelKind::GenericClient
+                            | ServiceTunnelKind::HttpClient
+                            | ServiceTunnelKind::Socks5Client
+                            | ServiceTunnelKind::IrcClient
+                            | ServiceTunnelKind::ConnectClient
+                            | ServiceTunnelKind::SocksIrc
+                    );
+                if !publisher_kind && !consumer_kind {
                     return Err(ControlError::UnsupportedOption(key.clone()));
                 }
             }
@@ -2622,6 +2686,34 @@ pub fn build_control_spec_with_filter_root(
             Some(i2pr_service_tunnels::DEFAULT_STREAMING_CONNECT_DELAY_MS);
     }
     timeouts.delay_open = delay_open;
+    // Plan 351 Gate 2 — the consumer-side counterpart of the mask rule that
+    // let `leaseset_password` through for a client kind. Both cross-field
+    // conditions are checked here rather than inside the option loop because
+    // `target_destination` sorts after `leaseset_password`, so `destination` is
+    // only known once the loop has finished.
+    //
+    // `ServiceTunnelSpec::validate` enforces the same pairing. This duplicate
+    // exists so the operator gets a named rule instead of a generic spec
+    // error; both must agree, and the guard script
+    // `scripts/check-encrypted-service-consumer-caller.sh` fails if either is
+    // removed without the other.
+    if definition.options.contains_key("leaseset_password")
+        && matches!(
+            kind,
+            ServiceTunnelKind::GenericClient
+                | ServiceTunnelKind::HttpClient
+                | ServiceTunnelKind::Socks5Client
+                | ServiceTunnelKind::IrcClient
+                | ServiceTunnelKind::ConnectClient
+                | ServiceTunnelKind::SocksIrc
+        )
+        && !matches!(destination, Some(DestinationRef::EncryptedService { .. }))
+    {
+        return Err(ControlError::ContradictoryOptions {
+            name: definition.name.clone(),
+            reason: "leaseset_password on a client tunnel requires target_destination to be an encrypted-service address (.b33.i2p)",
+        });
+    }
     let mut destination_policy = if let Some(key_reference) = priv_key_file {
         DestinationPolicy::KeyReference(key_reference)
     } else {
@@ -3292,6 +3384,19 @@ impl TunnelControlState {
                 reconciled_back: back,
             });
         }
+        // Plan 351: the consumer-side mirror runs in the same reconciliation
+        // and with the same rollback semantics. A definition that has been
+        // published but whose consumer secret could not be installed would
+        // otherwise look configured while resolving against the address-only
+        // key — the most confusing possible failure, because it succeeds
+        // against the wrong key for a bounded window.
+        if let Err(error) = self.sync_encrypted_target_secrets() {
+            let back = self.reconcile_back().await;
+            return Err(ControlError::PublishFailed {
+                reason: static_control_reason(&error),
+                reconciled_back: back,
+            });
+        }
         self.verify_agreement()?;
         Ok((staged, outcome.diff))
     }
@@ -3347,6 +3452,62 @@ impl TunnelControlState {
             } else {
                 self.manager.remove_els2_material(name);
             }
+        }
+        Ok(())
+    }
+
+    /// Plan 351 Gate 2 — installs the ELS2 **consumer** lookup secret for
+    /// every control-owned definition that names an encrypted-service target,
+    /// and drops it for every definition that does not.
+    ///
+    /// The exact mirror image of [`Self::sync_els2_materials`], and it runs in
+    /// the same reconciliation, so the two can never drift: a definition that
+    /// stops naming a b33 loses its publisher material and its consumer secret
+    /// in the same pass, and a deleted definition loses both.
+    ///
+    /// An **absent** `leaseset_password` is not an error and installs nothing.
+    /// A `.b33` address alone derives today's blinded storage key; the secret
+    /// only participates when the publisher configured one. The product layer
+    /// resolves that case as a real lookup against the address-only key.
+    ///
+    /// An **over-long** secret is a configuration error, not a truncation: the
+    /// same `MAX_LOOKUP_SECRET_LENGTH` bound the publisher applies, so the
+    /// consumer and publisher cannot disagree about which value is legal.
+    fn sync_encrypted_target_secrets(&self) -> Result<(), ControlError> {
+        let definitions = lock(&self.definitions).clone();
+        for (name, definition) in definitions.iter() {
+            // `ControlDefinition` keeps only the option map, so the target is
+            // re-parsed rather than read from a field. A definition that has
+            // been through `normalize_definition` always parses cleanly; an
+            // unparseable value is treated as "not an encrypted target", which
+            // drops the secret and therefore fails closed.
+            let names_encrypted_target = definition
+                .options
+                .get("target_destination")
+                .and_then(|value| DestinationRef::parse(value).ok())
+                .is_some_and(|reference| {
+                    matches!(reference, DestinationRef::EncryptedService { .. })
+                });
+            let Some(raw) = definition.options.get("leaseset_password") else {
+                self.manager.remove_encrypted_target_secret(name);
+                continue;
+            };
+            if !names_encrypted_target {
+                // `normalize_definition` already rejects this pairing, so
+                // reaching it means a stored definition predates the rule. Drop
+                // the secret rather than install a value nothing will read.
+                self.manager.remove_encrypted_target_secret(name);
+                continue;
+            }
+            let secret = i2pr_crypto::red25519::LookupSecret::from_str(raw).map_err(|_| {
+                // Static reason only. `LookupSecret::from_str` reports the
+                // offending length, and even that is not echoed here: an
+                // error string that reaches a client reply or a log line
+                // must not be able to carry configuration bytes.
+                ControlError::Manager("encrypted consumer lookup secret is not usable")
+            })?;
+            self.manager
+                .install_encrypted_target_secret(name, Arc::new(secret));
         }
         Ok(())
     }
@@ -6062,6 +6223,29 @@ mod tests {
                         reason: "proxy_username and proxy_password are both required",
                     }
                 );
+            } else if secret == "leaseset_password" {
+                // Plan 351 Gate 2 — an intentional change to this row, not a
+                // regression.
+                //
+                // `leaseset_password` on a client is no longer refused by the
+                // *mask* (the key is out of scope for the kind); a client may
+                // need it as a **consumer** to derive the blinded storage key
+                // for a `.b33` target. It is still refused here — the
+                // `target_destination` in these options is an ordinary `.b32`,
+                // so the cross-field pairing rule fires instead of the mask.
+                //
+                // Both paths reject before storage and neither accepts the
+                // configuration, which is the property Plan 289 asserted. What
+                // changed is only which rule speaks, and the new rule names the
+                // actual objection ("this secret is useless on this client")
+                // rather than "this key is out of scope", which was never true.
+                assert_eq!(
+                    error,
+                    ControlError::ContradictoryOptions {
+                        name: "alpha".to_owned(),
+                        reason: "leaseset_password on a client tunnel requires target_destination to be an encrypted-service address (.b33.i2p)",
+                    }
+                );
             } else {
                 assert_eq!(error, ControlError::UnsupportedOption(secret.to_owned()));
             }
@@ -7825,5 +8009,91 @@ mod tests {
             control.get(Some("missing")),
             Err(ControlError::UnknownTunnel("missing".to_owned()))
         );
+    }
+
+    // --- Plan 351 Gate 2: the control surface --------------------------------------------------
+
+    /// A structurally valid `.b33` address, built through the protocol constructor.
+    fn plan351_encrypted_address() -> String {
+        i2pr_proto::EncryptedServiceAddress::new(7, 11, [0x77; 32], false, false)
+            .expect("address")
+            .to_text()
+            .expect("address text")
+    }
+
+    /// Gate 2: the consumer lookup secret is accepted on a client **only** in the one shape where
+    /// it has meaning, and refused everywhere else.
+    ///
+    /// The rule has three outcomes and all three are asserted, because the two refusals fail for
+    /// different reasons and a row that only checked one would let the other regress:
+    ///
+    /// - a `.b33` target with `delay_open` -> accepted (this is the one legal combination);
+    /// - an ordinary `.b32` target -> refused, because the secret derives a *blinded storage key*
+    ///   and there is no blinded key in an ordinary lookup, so the value would be inert;
+    /// - a `.b33` without `delay_open` -> refused by Gate 1's spec-level rule, which is the
+    ///   containment: an eager client cannot isolate its own failure.
+    ///
+    /// Without the second row the secret would be accepted as a silent no-op, which is the worst
+    /// of the three outcomes: the operator believes the lookup is protected and it is not.
+    #[test]
+    fn plan351_consumer_lookup_secret_requires_an_encrypted_target() {
+        let address = plan351_encrypted_address();
+
+        // (a) the legal combination.
+        let mut options = client_options(&address, 0);
+        options.insert("delay_open".to_owned(), "true".to_owned());
+        options.insert("leaseset_password".to_owned(), "correct horse".to_owned());
+        let spec = normalize_definition("enc", TunnelType::Client, &options, true)
+            .and_then(|definition| build_control_spec(&definition))
+            .expect("a delay-open client with an encrypted target is the legal shape");
+        assert!(
+            spec.destination
+                .as_ref()
+                .and_then(|reference| reference.encrypted_service())
+                .is_some(),
+            "the committed spec must carry the encrypted reference"
+        );
+        assert!(spec.timeouts.delay_open);
+
+        // (b) an ordinary target: the secret is inert, so it is refused.
+        let ordinary = format!("{}.b32.i2p", i2pr_proto::base32_encode(&[0x62; 32]));
+        let mut options = client_options(&ordinary, 0);
+        options.insert("delay_open".to_owned(), "true".to_owned());
+        options.insert("leaseset_password".to_owned(), "correct horse".to_owned());
+        let error = normalize_definition("plain", TunnelType::Client, &options, true)
+            .expect_err("a consumer secret on an ordinary target must be refused");
+        assert!(
+            matches!(error, ControlError::ContradictoryOptions { .. }),
+            "expected the pairing rule, got {error:?}"
+        );
+
+        // (c) an encrypted target without delay open: refused by Gate 1 at the spec layer.
+        let mut options = client_options(&address, 0);
+        options.insert("leaseset_password".to_owned(), "correct horse".to_owned());
+        assert!(
+            normalize_definition("eager", TunnelType::Client, &options, true).is_err(),
+            "an encrypted target on an eager client must be refused even with a valid secret"
+        );
+    }
+
+    /// The publisher-side secret keys keep their existing meaning on a server, and the two
+    /// client-inapplicable keys stay refused there.
+    ///
+    /// Plan 351 widened exactly one key's reach (`leaseset_password`, as a consumer). A widening
+    /// is the kind of change that quietly carries others along with it, so the untouched keys are
+    /// asserted rather than assumed.
+    #[test]
+    fn plan351_only_the_lookup_secret_widened() {
+        for secret in ["encrypt_lease_set", "leaseset_client_auth"] {
+            let mut options = client_options(&plan351_encrypted_address(), 0);
+            options.insert("delay_open".to_owned(), "true".to_owned());
+            options.insert(secret.to_owned(), "x".to_owned());
+            let error = normalize_definition("narrow", TunnelType::Client, &options, true)
+                .expect_err("publisher-only keys stay refused on a client");
+            assert!(
+                matches!(error, ControlError::UnsupportedOption(ref option) if option == secret),
+                "expected UnsupportedOption({secret}), got {error:?}"
+            );
+        }
     }
 }

@@ -334,9 +334,37 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
   the record. It does not enter the credential or subcredential, so a party that already holds both
   the record bytes and the address can decrypt them. See
   `specs/references/red25519-algorithm-worksheet.md` §14.14.
+- **Consumer-side wiring, added by Plan 351 / ADR 0033; resolve-on-demand only, no live claim.**
+  Plan 349 built the bounded `EncryptedServiceResolver` with **zero** production callers. Plan 351
+  supplies one, and three facts about it are recorded here because each changes what a reader may
+  assume:
+  - A `.b33` is its **own** destination-reference kind. Its value carries the unblinded signing
+    public key, which is *not* a `Destination` hash — the protocol layer says so explicitly, and
+    the address lacks the ECIES public key, certificate, and padding a `Destination` encoding needs.
+  - The lookup key is the day's **blinded storage key**, supplied verbatim. The wire lookup type is
+    unchanged (`LookupKind::LeaseSet2`, code `1`), because a reference client issues that same type
+    for an encrypted service; no new wire type is introduced.
+  - A fetched record is installed under the **inner record's own destination hash**, gated on that
+    record signing with the unblinded public key the `.b33` names. The gate is what makes this
+    trustworthy: the hash comes from the record, so it is trusted through a signature against a key
+    obtained out of band, not because the record said so.
+  - The type-7 relationship is **not** general. Plan 351's publisher emits type 7, where
+    `DERIVE_PUBLIC(CONVERT_ED25519_PRIVATE(seed))` reproduces the destination's Ed25519 public key,
+    so the address and the inner record agree by construction. A type-11 `.b33` has no such
+    relationship — its unblinded key signs only the outer record.
+  - Containment (ADR 0033 Gate 1–3): an encrypted remote target is refused on any service that is
+    not a `DelayOpen` client, a static alias may not name a `.b33`, the consumer secret arrives
+    through the I2PControl definition options (no TOML field, no inline config secret), and a
+    failure is recorded on a closed per-service status surface and never propagated into the
+    provisioning pass — two of its three production callers tear the product down on any error.
+  - **Not claimed:** PSK/DH consumer authorization; daily rollover re-resolution; a cross-router
+    result; any Java or i2pd direction of Plan 347. The blinding rotates daily and there is no
+    periodic re-resolution, so a resolution computed before a midnight boundary addresses the
+    **wrong DHT key**. That is a recorded limitation, not rollover support.
 
-Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`), Plan 333, Plan 344, and
-Plan 346 / ADR 0032 (`plans/closure/i2pcontrol-proposal-170/346-status.md`).
+Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`), Plan 333, Plan 344,
+Plan 346 / ADR 0032 (`plans/closure/i2pcontrol-proposal-170/346-status.md`), and Plan 351 / ADR 0033
+(`plans/closure/i2pcontrol-proposal-170/351-status.md`).
 
 ### Encrypted LeaseSet2 per-client authorization status
 

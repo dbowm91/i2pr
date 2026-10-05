@@ -992,6 +992,54 @@ and `334-status.md` was reclosed 2026-10-05 as
 `passed-mode-mapping-and-control-surface-complete`. Read the closure records, not that
 registry row, for Proposal 170 state.
 
+## Destination references and the encrypted-service kind (Plan 351)
+
+`DestinationRef` has four variants, and the fourth is not a kind of hash:
+
+| Variant | Carries |
+| --- | --- |
+| `Base32Hash` | a 52-character label and 32 bytes — the destination hash |
+| `StaticAlias` | a bounded `.i2p` alias name, resolved through `StaticAliasTable` |
+| `ConfiguredDestination` | bounded public Destination material, never private material |
+| `EncryptedService` | a validated `EncryptedServiceAddress` — **not a hash** |
+
+`EncryptedService` is dispatched by `EncryptedServiceAddress::is_encrypted_service_address`
+**before** the `.b32.i2p` branch. That ordering is load-bearing: without it a valid `.b33` is
+rejected as "Base32 label must be exactly 52 characters", which is true of the length and useless
+as a diagnosis. `EncryptedServiceAddress::from_text` is the whole parser — body length, alphabet,
+canonical trailing bits, CRC-32, both signature types, both flags — and this crate adds nothing to
+it, so it cannot weaken it.
+
+This crate **never** derives a blinded storage key and never sees the lookup secret. Both belong to
+the daemon's ELS2 owner. The variant exists so the *kind* is representable and so the containment
+rules below can be enforced on it.
+
+### Gate 1: an encrypted remote target requires a `DelayOpen` client
+
+`ServiceTunnelSpec::validate` refuses an encrypted `destination` unless the service is a client
+kind with `timeouts.delay_open` set.
+
+The rule is containment, not preference. Two of the three production callers of the
+router-material provisioning pass shut the manager down, cancel the operator token, and shut the
+SSU2 handle down on *any* resolution failure. An accepted `.b33` on an eager service would let one
+unreachable remote endpoint take down every configured service in the product. `DelayOpen` groups
+already carry proven per-destination isolation: a failed deferred activation stays confined to the
+oneshot that requested it.
+
+### The static-alias bypass is closed
+
+`StaticAliasTable::insert` refuses an alias whose target is an encrypted-service address.
+
+Gate 1 is a *per-service* property and an alias is global. If an alias could name a `.b33`, the
+rule would be enforced on the alias spelling rather than on the address the service resolves, and an
+eager service could reach the encrypted path by naming the alias instead of the address. Making the
+pair unrepresentable closes the bypass instead of trusting every caller to re-check after
+resolution.
+
+Both rules are asserted by `plan351_encrypted_target_requires_a_delay_open_client` and
+`plan351_a_static_alias_may_not_name_an_encrypted_address` in `src/config.rs`, and both are
+enforced statically by `scripts/check-encrypted-service-consumer-caller.sh`.
+
 ## Cross-references
 
 **ADRs**

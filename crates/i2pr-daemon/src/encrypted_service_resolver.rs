@@ -501,3 +501,50 @@ pub fn record_within_bound(message: &DatabaseStoreMessage) -> bool {
         _ => false,
     }
 }
+
+/// Plan 351 — binds an unwrapped inner LeaseSet2 to the `.b33` address it must belong to,
+/// returning the destination hash the record should be installed under.
+///
+/// # Why the address cannot supply the hash
+///
+/// `EncryptedServiceAddress` carries the **unblinded signing public key** plus both signature
+/// types. The protocol layer's own documentation says the value is not a `Destination` hash and
+/// must never be treated as one. A `Destination` hash is the SHA-256 of a canonical `Destination`
+/// encoding, which needs the ECIES public key, the signing key, the certificate, and the padding
+/// — and the address publishes only one of those four. So the hash can only come from the inner
+/// record, which is signed.
+///
+/// # Why that is not a trust problem
+///
+/// Because the inner record supplies the hash, the hash would otherwise be whatever any valid
+/// LeaseSet2 claimed to be — and a publisher could hand a consumer a perfectly valid, working
+/// record for a *different* destination than the `.b33` names. The two checks below close that.
+///
+/// ```text
+/// b33 signing key  ==  inner Destination.signing_key     ==>  the hash may be trusted
+/// b33 unblinded sigtype  ==  inner signing key type       ==>  no declared-type ambiguity
+/// ```
+///
+/// The binding is therefore transitive through a signature: the hash is not trusted because the
+/// record says so, it is trusted because the record's signature is checked against a key the
+/// operator obtained out of band from the address.
+///
+/// Both checks are fail-closed and neither has a fallback. Returns the inner destination's hash,
+/// or `None` when the record does not belong to this address.
+pub fn bind_inner_to_address(
+    address: &EncryptedServiceAddress,
+    inner: &i2pr_proto::LeaseSet2,
+) -> Option<i2pr_netdb::DestinationHash> {
+    let destination = inner.header().destination();
+    let signing_key = destination.signing_key();
+    if signing_key.as_bytes() != address.public_key() {
+        return None;
+    }
+    if signing_key.key_type().code() != address.unblinded_sigtype() {
+        return None;
+    }
+    destination
+        .hash()
+        .ok()
+        .map(i2pr_netdb::DestinationHash::from_hash)
+}

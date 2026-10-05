@@ -325,11 +325,41 @@ impl NetDbSeam {
         target: DestinationHash,
         routing_key: &RouterHash,
     ) -> LookupAction {
-        let lookup_id = LookupId::new(
+        self.begin_lease_set2_lookup_for_key_with_store(
+            store,
             request_id,
-            LookupKind::LeaseSet2,
             router_hash_from_destination(target),
-        );
+            routing_key,
+        )
+    }
+
+    /// Plan 351: begin a LeaseSet2-kind lookup whose **key is supplied
+    /// verbatim**, with floodfill candidate selection against the
+    /// authoritative store.
+    ///
+    /// This is the sibling `begin_lease_set2_lookup_with_store` had to
+    /// become. The ordinary path derives the lookup key from a
+    /// `DestinationHash` because in that world the LS2 is filed under its own
+    /// destination hash. An encrypted-service record is filed under the
+    /// **day's blinded storage key**, which is not a destination hash and is
+    /// not derivable from one — there is no `Destination` in hand to hash. So
+    /// the ordinary path's re-derivation is exactly the coupling Plan 351 has
+    /// to break, and it is broken here by taking the key as a parameter rather
+    /// than by adding a second state machine.
+    ///
+    /// The lookup **kind** is deliberately still `LookupKind::LeaseSet2`
+    /// (wire code `1`): a reference client issues that same lookup type when
+    /// resolving an encrypted service, because the record is filed under its
+    /// blinded storage key. No new wire type is introduced, so this changes
+    /// nothing a peer can observe.
+    pub fn begin_lease_set2_lookup_for_key_with_store(
+        &mut self,
+        store: &RouterInfoStore,
+        request_id: u64,
+        lookup_key: RouterHash,
+        routing_key: &RouterHash,
+    ) -> LookupAction {
+        let lookup_id = LookupId::new(request_id, LookupKind::LeaseSet2, lookup_key);
         let outcome = self.lease_set2_lookup.start(
             // The LeaseSet2 lookup state machine carries the
             // router-side `RouterInfoStore` for floodfill selection.
@@ -356,6 +386,14 @@ impl NetDbSeam {
                     i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
                     i2pr_netdb::LookupResult::Success { .. }
                     | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                    // Plan 351: a type-5 reply filed under a blinded storage key
+                    // is a success for the lookup state machine, which knows only
+                    // that the key matched. ELS2 policy, unwrapping, and the b33
+                    // identity binding belong to the owner that receives the
+                    // message; none of them are inferred here.
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
                         LookupFinalState::Success
                     }
                 };
@@ -401,6 +439,14 @@ impl NetDbSeam {
                     i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
                     i2pr_netdb::LookupResult::Success { .. }
                     | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                    // Plan 351: a type-5 reply filed under a blinded storage key
+                    // is a success for the lookup state machine, which knows only
+                    // that the key matched. ELS2 policy, unwrapping, and the b33
+                    // identity binding belong to the owner that receives the
+                    // message; none of them are inferred here.
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
                         LookupFinalState::Success
                     }
                 };
@@ -568,6 +614,14 @@ impl NetDbSeam {
                     | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
                         LookupFinalState::Success
                     }
+                    // Plan 351: a type-5 reply filed under a blinded storage key
+                    // is a success for the lookup state machine, which knows only
+                    // that the key matched. ELS2 policy, unwrapping, and the b33
+                    // identity binding belong to the owner that receives the
+                    // message; none of them are inferred here.
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
                 };
                 LookupAction::Complete {
                     lookup_id,
@@ -605,6 +659,14 @@ impl NetDbSeam {
                     i2pr_netdb::LookupResult::Failure { final_state, .. } => final_state,
                     i2pr_netdb::LookupResult::Success { .. }
                     | i2pr_netdb::LookupResult::LeaseSet2Success { .. } => {
+                        LookupFinalState::Success
+                    }
+                    // Plan 351: a type-5 reply filed under a blinded storage key
+                    // is a success for the lookup state machine, which knows only
+                    // that the key matched. ELS2 policy, unwrapping, and the b33
+                    // identity binding belong to the owner that receives the
+                    // message; none of them are inferred here.
+                    i2pr_netdb::LookupResult::EncryptedLeaseSet2Success { .. } => {
                         LookupFinalState::Success
                     }
                 };

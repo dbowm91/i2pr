@@ -1142,6 +1142,39 @@ impl ServiceTunnelSpec {
                 reason: "delay open applies to client service tunnels only",
             });
         }
+        // Plan 351 Gate 1 — an encrypted remote target is permitted only on
+        // a client whose remote peer may fail independently of the product.
+        //
+        // This is a containment rule answering a measured defect, not a
+        // preference. Two of the three production callers of the router
+        // material provisioning pass treat *any* resolution failure as fatal
+        // to the whole service-tunnel product: they shut the manager down,
+        // cancel the operator token, and shut the SSU2 handle down. A b33
+        // target introduces a resolution step that can fail for reasons a
+        // b32 target cannot — a stale daily storage key, a missing lookup
+        // secret, a publisher that has not rotated yet — and an unowned
+        // remote endpoint is exactly such a failure. `DelayOpen` groups
+        // already carry proven per-destination isolation: a failed deferred
+        // activation stays confined to the oneshot that requested it and is
+        // discarded at the product boundary.
+        if matches!(
+            self.destination,
+            Some(DestinationRef::EncryptedService { .. })
+        ) && !(matches!(
+            self.kind,
+            ServiceTunnelKind::GenericClient
+                | ServiceTunnelKind::HttpClient
+                | ServiceTunnelKind::Socks5Client
+                | ServiceTunnelKind::IrcClient
+                | ServiceTunnelKind::ConnectClient
+                | ServiceTunnelKind::SocksIrc
+        ) && self.timeouts.delay_open)
+        {
+            return Err(ServiceTunnelError::ContradictoryOptions {
+                id: self.id.as_str().to_owned(),
+                reason: "an encrypted-service remote target requires a client service tunnel with delay open set, so its resolution failure stays isolated to that destination",
+            });
+        }
         TunnelShaping::try_new(
             self.shaping.inbound_quantity,
             self.shaping.outbound_quantity,
@@ -1794,6 +1827,19 @@ fn truncated(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A structurally valid `.b33` address for configuration rows.
+    ///
+    /// Built through the protocol constructor rather than typed out: a hand-written 56-character
+    /// label would be rejected for a non-canonical checksum, so a literal here would make every
+    /// row below fail for the wrong reason. Type 7 unblinded is the shape `service_els2.rs`
+    /// publishes.
+    fn encrypted_address() -> String {
+        i2pr_proto::EncryptedServiceAddress::new(7, 11, [0x77; 32], false, false)
+            .expect("address")
+            .to_text()
+            .expect("address text")
+    }
 
     fn client_spec(id: &str, listener: &str, destination: &str) -> ServiceTunnelSpec {
         ServiceTunnelSpec {
@@ -2559,5 +2605,90 @@ mod tests {
         spec.kind = ServiceTunnelKind::GenericClient;
         spec.listener = Some(LocalListenerSpec::parse_socket("127.0.0.1:8080").expect("listener"));
         assert!(spec.validate().is_err());
+    }
+
+    // --- Plan 351: Gate 1, the containment rule, as a negative configuration row ---------------
+
+    /// The headline negative row.
+    ///
+    /// An encrypted remote target is refused on a client that cannot isolate its own failure. The
+    /// reason this must be a configuration-time refusal rather than a runtime tolerance is
+    /// measured: two of the three production callers of the router-material provisioning pass
+    /// shut the manager down, cancel the operator token, and shut the SSU2 handle down on *any*
+    /// error. An accepted `.b33` on an eager service would therefore let one unreachable remote
+    /// endpoint take down every configured service in the product.
+    ///
+    /// Each variant below is a distinct way of failing the rule, so the row fails if the rule
+    /// ever narrows to one of them.
+    #[test]
+    fn plan351_encrypted_target_requires_a_delay_open_client() {
+        let address = encrypted_address();
+
+        // (a) the plain eager client: refused.
+        let mut spec = client_spec("a1", "127.0.0.1:0", &address);
+        spec.timeouts.delay_open = false;
+        assert!(
+            spec.validate().is_err(),
+            "an encrypted target on an eager client must be refused"
+        );
+
+        // (b) the same client with delay open: accepted.
+        let mut spec = client_spec("a2", "127.0.0.1:0", &address);
+        spec.timeouts.delay_open = true;
+        assert!(
+            spec.validate().is_ok(),
+            "a delay-open client is the contained shape and must be accepted"
+        );
+
+        // (c) a delay-open *server* is still refused: delay open alone is not the rule, the
+        // pairing is. Without this, a future widening of `delay_open` to servers would quietly
+        // make encrypted targets legal there.
+        let mut spec = server_spec(
+            "a3",
+            "127.0.0.1:9090",
+            DestinationGroupId::parse("g1").expect("group"),
+            9_090,
+        );
+        spec.timeouts.delay_open = true;
+        spec.destination = Some(DestinationRef::parse(&address).expect("address"));
+        assert!(
+            spec.validate().is_err(),
+            "a server must not carry a remote encrypted target even with delay open"
+        );
+
+        // (d) an ordinary `.b32` is untouched by the rule: the ordinary client still validates.
+        let ordinary = format!("{}.b32.i2p", i2pr_proto::base32_encode(&[0x62; 32]));
+        let mut spec = client_spec("a4", "127.0.0.1:0", &ordinary);
+        spec.timeouts.delay_open = false;
+        assert!(
+            spec.validate().is_ok(),
+            "an ordinary base32 target must remain valid on an eager client"
+        );
+    }
+
+    /// The static-alias bypass is closed.
+    ///
+    /// Gate 1 is a *per-service* property; an alias is global. If an alias could name a `.b33`,
+    /// the rule would be enforced on the alias spelling rather than on the address the service
+    /// resolves, and an eager service could reach the encrypted path by naming the alias instead
+    /// of the address. Making the pair unrepresentable closes the bypass rather than trusting
+    /// every caller to re-check after resolution.
+    #[test]
+    fn plan351_a_static_alias_may_not_name_an_encrypted_address() {
+        let mut table = crate::StaticAliasTable::new();
+        let error = table
+            .insert(
+                "mirror",
+                DestinationRef::parse(&encrypted_address()).expect("address"),
+            )
+            .expect_err("an encrypted address must not be reachable through an alias");
+        assert!(
+            matches!(error, ServiceTunnelError::InvalidAlias { .. }),
+            "expected InvalidAlias, got {error:?}"
+        );
+        assert!(
+            table.get("mirror").is_none(),
+            "a refused alias must not be installed"
+        );
     }
 }

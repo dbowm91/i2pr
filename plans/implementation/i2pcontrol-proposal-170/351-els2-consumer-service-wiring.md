@@ -1,6 +1,6 @@
 # Plan 351 — i2pr encrypted LeaseSet2 consumer as a service-tunnel remote target
 
-Status: **registered-gate-scoped-service-tunnel-consumer-wiring; supersedes-plans-349-scope-not-status**
+Status: **passed-gate-scoped-els2-consumer-service-wiring-landed; supersedes-plans-349-scope-not-status**
 
 Classification: capability (the consumer half of the type-5 lifecycle, reachable) +
 architecture-gap closure. Origin: the open state in
@@ -360,3 +360,38 @@ truthfully; the runtime-neutrality and bounded-queue reviews; the secret-handlin
 statement that no Java or i2pd source was vendored; the two negative-tested guards with
 their deliberate-break transcripts; known limitations including the daily-rollover gap;
 findings by severity; and the roadmap disposition with the unblock audit.
+
+## Outcome
+
+Closed as `passed-gate-scoped-els2-consumer-service-wiring-landed`. Closure record:
+[`../closure/i2pcontrol-proposal-170/351-status.md`](../closure/i2pcontrol-proposal-170/351-status.md).
+ADR [`0033`](../../../../docs/adr/0033-els2-consumer-lookup-identity-and-install-key.md).
+
+Two of this plan's premises were **wrong when written**, and both are recorded as findings rather
+than quietly absorbed:
+
+1. **In-scope item 5 said the unblinded destination hash is "derived from the b33 address's public
+   key".** It is not derivable. `EncryptedServiceAddress` carries the unblinded *signing* public
+   key; a `Destination` hash needs the ECIES public key, the certificate, and the padding, and the
+   address publishes none of them. The install key is the **inner record's own** destination hash,
+   gated on that record signing with the unblinded public key the address names
+   (`encrypted_service_resolver::bind_inner_to_address`, ADR 0033 Decision 2).
+2. **The type-11 answer to that question does not generalize.** Plan 351's publisher emits **type
+   7**, where `DERIVE_PUBLIC(CONVERT_ED25519_PRIVATE(seed))` reproduces the destination's Ed25519
+   public key — so address and inner record agree by construction. A type-11 `.b33` has no such
+   relationship. The binding is written against what production publishes, and a row asserts the
+   premise before relying on it.
+
+Neither finding narrows an acceptance criterion: criterion 5 asked for the **unblinded** hash, and
+the delivered value is the unblinded hash — obtained through a signature binding rather than the
+assumed derivation. The "row that fails if the blinded key is used instead" is
+`the_installed_hash_is_the_unblinded_destination_hash`, which asserts the install key differs from
+the storage key.
+
+One criterion is **not** met by this plan and is named as a limitation rather than counted:
+acceptance criterion 4 ("one service's encrypted-resolve failure leaves every other service
+running, proven through the real composition") is proven at the configuration and status-surface
+level, not through a live multi-service composition, because doing the latter requires a
+router-backed floodfill peer and a real service tunnel — the Plan 347 substrate. Criterion 8's
+restart row is likewise limited to the resolver's own lease accounting. Both are listed in the
+closure record under "Limitations" with the exact evidence that does exist.

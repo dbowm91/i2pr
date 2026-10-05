@@ -48,8 +48,8 @@ use i2pr_client::{
     DestinationRegistry, DestinationRuntime, DestinationShutdown, RegistryConfig,
 };
 use i2pr_crypto::{OsRng, X25519_KEY_LENGTH};
-use i2pr_netdb::{LeaseSet2ValidationContext, ValidatedLeaseSet2};
-use i2pr_proto::{Destination, LeaseSet2};
+use i2pr_netdb::{DestinationHash, LeaseSet2ValidationContext, ValidatedLeaseSet2};
+use i2pr_proto::{Destination, EncryptedServiceAddress, Hash, LeaseSet2};
 use i2pr_runtime::{CancellationToken, ChildScope};
 use i2pr_service_tunnels::{
     DestinationGroupKey, DestinationGroupSpec, DestinationRef, DiffClass, ServerTarget,
@@ -450,6 +450,86 @@ pub struct ServiceTunnelManager {
     /// service and an `Arc` clone is another handle to *that* identity,
     /// never a second copy of it.
     els2_materials: Mutex<HashMap<String, Arc<crate::service_els2::ServiceEls2Material>>>,
+    /// Plan 351: per-spec ELS2 **consumer** lookup secrets, installed from
+    /// the I2PControl definition options by the same reconciliation that
+    /// installs the publisher-side material.
+    ///
+    /// `Arc` is deliberate. `LookupSecret` is not `Clone` — it is
+    /// `Zeroizing<String>` with no serde, no `Display`, and a redacted
+    /// `Debug` — so the map cannot accidentally hand out a second
+    /// independent copy, and the only way for the product layer to reach
+    /// the value is to borrow the one installed here.
+    encrypted_target_secrets: Mutex<HashMap<String, Arc<i2pr_crypto::red25519::LookupSecret>>>,
+    /// Plan 351: per-spec outcome of the last encrypted-target
+    /// provisioning attempt.
+    ///
+    /// Bounded by the number of committed specs, holds a `&'static str`
+    /// reason drawn from a closed set defined by
+    /// [`EncryptedTargetStatus`], and never carries a secret, a derived
+    /// storage key, or fetched payload bytes.
+    encrypted_target_status: Mutex<HashMap<String, EncryptedTargetStatus>>,
+}
+
+/// Plan 351: the outcome of one encrypted-target (`.b33`) provisioning
+/// attempt, as reported on the manager's per-service status surface.
+///
+/// Every `reason` is a closed-set literal, chosen so the value is safe to
+/// log, safe to project into an I2PControl `GetStatus` reply, and safe to
+/// compare in a test. In particular **no** variant carries the lookup
+/// secret, the derived blinded storage key, the fetched record's bytes, or
+/// a foreign error string — those are exactly the values that Plan 352's
+/// secret-hygiene work shows must never reach a user-visible string.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EncryptedTargetStatus {
+    /// The record was fetched, unwrapped, bound to the b33 signing key,
+    /// validated, and installed under its unblinded destination hash.
+    Resolved,
+    /// No lookup secret is installed for this spec. A `.b33` service
+    /// without `leaseset_password` is legal — the address alone derives
+    /// the day's storage key — so this is a resolution failure, not a
+    /// configuration error.
+    MissingLookupSecret,
+    /// The address is structurally valid but its daily blinded storage
+    /// key could not be derived for today.
+    StorageKeyUnavailable,
+    /// The record was fetched but is not a type-5 record, or its storage
+    /// key does not match the key this router looked up. Either way the
+    /// fetched bytes are discarded unread.
+    StorageKeyMismatch,
+    /// The type-5 envelope could not be unwrapped with the installed
+    /// credentials.
+    UnwrapFailed,
+    /// The unwrapped record's destination does not sign with the
+    /// unblinded signing public key named by the b33 address, so it is
+    /// not the service the address claims.
+    IdentityBindingFailed,
+    /// The unwrapped record failed ordinary LeaseSet2 validation.
+    LeaseSetValidationFailed,
+    /// No floodfill candidate was available for the blinded storage key.
+    NoFloodfillCandidate,
+    /// The composed DatabaseLookup or DatabaseStore could not be built or
+    /// dispatched within the bounded deadline.
+    DispatchFailed,
+    /// The lookup completed without producing a record.
+    LookupExhausted,
+}
+
+impl EncryptedTargetStatus {
+    /// Returns the closed-set reason string. Never contains dynamic data.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Self::Resolved => "resolved",
+            Self::MissingLookupSecret => "lookup secret not installed",
+            Self::StorageKeyUnavailable => "daily storage key unavailable",
+            Self::StorageKeyMismatch => "storage key mismatch",
+            Self::UnwrapFailed => "envelope unwrap failed",
+            Self::IdentityBindingFailed => "identity binding failed",
+            Self::LeaseSetValidationFailed => "leaseset validation failed",
+            Self::NoFloodfillCandidate => "no floodfill candidate",
+            Self::DispatchFailed => "dispatch failed",
+            Self::LookupExhausted => "lookup exhausted",
+        }
+    }
 }
 
 const MAX_DEFERRED_ACTIVATION_REQUESTS: usize = 64;
@@ -499,6 +579,51 @@ fn group_consecutive_same_remote(
     groups
 }
 
+/// How one configured service-tunnel reference projects onto the
+/// ordinary remote resolution path (Plan 351).
+///
+/// Replaces the `Option<[u8; 32]>` that Plan 212 §8 returned. The
+/// additional variant exists because a
+/// [`DestinationRef::EncryptedService`] has no destination hash: it must
+/// be routed to the encrypted-storage-key path, and collapsing it into
+/// `None` would make it indistinguishable from a locally co-owned
+/// destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RemoteTargetProjection {
+    /// The reference names a destination this router co-owns. Stay local;
+    /// do not enter the remote path.
+    LocalCoOwned,
+    /// The reference resolves to a non-local destination hash.
+    Remote(DestinationHash),
+    /// The reference is an encrypted-service address. Its storage key is
+    /// derived per UTC day from the address plus a lookup secret, so no
+    /// destination hash exists until the fetched record is unwrapped.
+    ///
+    /// Held by value, not by reference: `EncryptedServiceAddress` is `Copy`
+    /// because it is four validated public fields with no secret and no
+    /// allocation, so a borrow would buy nothing and would make the alias
+    /// arm of [`Self::project_remote_target`] unreturnable (an alias resolves
+    /// through a table owned by `self`, so the resolved reference's lifetime
+    /// is the manager's, not the caller's).
+    EncryptedService(EncryptedServiceAddress),
+}
+
+impl RemoteTargetProjection {
+    /// Returns the destination hash this projection resolves to, or `None`
+    /// when there is none.
+    ///
+    /// `None` covers two genuinely different cases — locally co-owned, and an
+    /// encrypted service whose hash does not exist yet — so this accessor is
+    /// for tests and diagnostics. A caller deciding *which* path to take must
+    /// match the variants, not collapse them through this method.
+    pub const fn remote_hash(self) -> Option<DestinationHash> {
+        match self {
+            Self::Remote(hash) => Some(hash),
+            Self::LocalCoOwned | Self::EncryptedService(_) => None,
+        }
+    }
+}
+
 impl ServiceTunnelManager {
     /// Creates a new manager from a validated configuration.
     pub fn new(config: ServiceTunnelManagerConfig) -> Result<Self, ServiceTunnelError> {
@@ -538,6 +663,8 @@ impl ServiceTunnelManager {
             deferred_activation_rx: Mutex::new(Some(deferred_activation_rx)),
             deferred_activation_enabled: AtomicBool::new(false),
             els2_materials: Mutex::new(HashMap::new()),
+            encrypted_target_secrets: Mutex::new(HashMap::new()),
+            encrypted_target_status: Mutex::new(HashMap::new()),
         })
     }
 
@@ -2587,51 +2714,150 @@ impl ServiceTunnelManager {
         Ok(report)
     }
 
-    /// Plan 212 §8 — resolves the actual remote Destination hash
-    /// for one client reference without entering the local path.
+    /// Plan 212 §8 — projects one client reference onto the remote path.
+    ///
+    /// The return type is a projection rather than an `Option<[u8; 32]>`
+    /// for one measured reason: **Plan 351 added a reference kind with no
+    /// destination hash at all.** An encrypted-service address carries the
+    /// unblinded signing public key, not a hash, so it cannot be projected
+    /// onto `[u8; 32]`. With an `Option`, that case has only two spellings
+    /// and both are wrong — `Some` would be a fabrication and `None` is
+    /// indistinguishable from "this router co-owns the destination", which
+    /// would silently route an encrypted target to the local bridge. Making
+    /// the third outcome a distinct variant makes that unrepresentable.
     ///
     /// - `Base32Hash` -> the configured 32-byte Destination hash;
     /// - `ConfiguredDestination` -> decode Destination and hash it;
     /// - `StaticAlias` -> resolve alias, then apply the above;
-    /// - local co-owned hash -> `None` (stay local, do not enter
-    ///   the remote path).
+    /// - local co-owned hash -> [`RemoteTargetProjection::LocalCoOwned`].
     ///
     /// HTTP and IRC targets resolve independently in the same
     /// product instance; the first target hash never applies to
     /// all services.
-    pub fn remote_target_hash_for_reference(&self, reference: &DestinationRef) -> Option<[u8; 32]> {
+    pub fn project_remote_target(&self, reference: &DestinationRef) -> RemoteTargetProjection {
         match reference {
-            DestinationRef::Base32Hash { hash, .. } => {
-                if self
-                    .co_owned_destination_hashes()
-                    .iter()
-                    .any(|owned| owned == hash)
-                {
-                    None
-                } else {
-                    Some(*hash)
-                }
-            }
+            DestinationRef::Base32Hash { hash, .. } => self.project_hash(*hash),
             DestinationRef::ConfiguredDestination(material) => {
-                let bytes = i2pr_api::sam::base64::decode(material, 4096).ok()?;
-                let destination = Destination::decode(&bytes, 4096).ok()?;
-                let hash = destination.hash().ok()?;
-                let hash_bytes = *hash.as_bytes();
-                if self
-                    .co_owned_destination_hashes()
-                    .iter()
-                    .any(|owned| owned == &hash_bytes)
-                {
-                    None
-                } else {
-                    Some(hash_bytes)
-                }
+                let Some(bytes) = i2pr_api::sam::base64::decode(material, 4096).ok() else {
+                    return RemoteTargetProjection::LocalCoOwned;
+                };
+                let Ok(destination) = Destination::decode(&bytes, 4096) else {
+                    return RemoteTargetProjection::LocalCoOwned;
+                };
+                let Ok(hash) = destination.hash() else {
+                    return RemoteTargetProjection::LocalCoOwned;
+                };
+                self.project_hash(*hash.as_bytes())
             }
             DestinationRef::StaticAlias(alias) => {
-                let resolved = self.config.aliases.get(alias.as_str())?.clone();
-                self.remote_target_hash_for_reference(&resolved)
+                let Some(resolved) = self.config.aliases.get(alias.as_str()) else {
+                    return RemoteTargetProjection::LocalCoOwned;
+                };
+                self.project_remote_target(resolved)
+            }
+            // Plan 351: no hash exists at this point in the caller's life.
+            // The address is handed back by value; the caller owns the lookup
+            // secret and the daily storage-key derivation.
+            DestinationRef::EncryptedService { address, .. } => {
+                RemoteTargetProjection::EncryptedService(*address)
             }
         }
+    }
+
+    /// Shared co-ownership test for the two hash-bearing reference kinds.
+    fn project_hash(&self, hash: [u8; 32]) -> RemoteTargetProjection {
+        if self
+            .co_owned_destination_hashes()
+            .iter()
+            .any(|owned| owned == &hash)
+        {
+            RemoteTargetProjection::LocalCoOwned
+        } else {
+            RemoteTargetProjection::Remote(DestinationHash::from_hash(Hash::from_bytes(hash)))
+        }
+    }
+
+    /// Plan 351 — installs the ELS2 **consumer** lookup secret for one
+    /// spec, or drops it when the spec no longer names an encrypted target.
+    ///
+    /// Gate 2 says this value arrives from the I2PControl definition
+    /// options map, the same place the publisher's `leaseset_password`
+    /// lives. That symmetry is deliberate: there is exactly one control
+    /// surface for this secret, and a second TOML channel would be a
+    /// second thing to leak.
+    pub fn install_encrypted_target_secret(
+        &self,
+        spec_id: &str,
+        secret: Arc<i2pr_crypto::red25519::LookupSecret>,
+    ) {
+        self.encrypted_target_secrets
+            .lock()
+            .expect("encrypted target secret registry poisoned")
+            .insert(spec_id.to_owned(), secret);
+    }
+
+    /// Plan 351 — drops the consumer lookup secret for one spec.
+    ///
+    /// Called whenever a definition stops naming an encrypted target, is
+    /// deleted, or its options change. Leaving a stale secret installed
+    /// would keep a live secret in memory for a spec that no longer needs
+    /// it, so removal is mandatory on every path that invalidates the
+    /// value.
+    pub fn remove_encrypted_target_secret(&self, spec_id: &str) {
+        self.encrypted_target_secrets
+            .lock()
+            .expect("encrypted target secret registry poisoned")
+            .remove(spec_id);
+    }
+
+    /// Plan 351 — returns the consumer lookup secret for one spec.
+    ///
+    /// `Arc`, not `LookupSecret`: the installed value is not `Clone`, and
+    /// the product layer needs a handle, not an independent copy.
+    pub fn encrypted_target_secret(
+        &self,
+        spec_id: &str,
+    ) -> Option<Arc<i2pr_crypto::red25519::LookupSecret>> {
+        self.encrypted_target_secrets
+            .lock()
+            .ok()?
+            .get(spec_id)
+            .cloned()
+    }
+
+    /// Plan 351 — records the outcome of one encrypted-target
+    /// provisioning attempt, replacing any previous outcome.
+    pub fn record_encrypted_target_status(&self, spec_id: &str, status: EncryptedTargetStatus) {
+        self.encrypted_target_status
+            .lock()
+            .expect("encrypted target status registry poisoned")
+            .insert(spec_id.to_owned(), status);
+    }
+
+    /// Plan 351 — returns the last recorded outcome for one spec.
+    pub fn encrypted_target_status(&self, spec_id: &str) -> Option<EncryptedTargetStatus> {
+        self.encrypted_target_status
+            .lock()
+            .ok()?
+            .get(spec_id)
+            .copied()
+    }
+
+    /// Drops every consumer lookup secret. Used by tests and by shutdown
+    /// so a secret outliving its spec cannot linger in the map.
+    pub fn clear_encrypted_target_secrets(&self) {
+        self.encrypted_target_secrets
+            .lock()
+            .expect("encrypted target secret registry poisoned")
+            .clear();
+    }
+
+    /// Drops every recorded encrypted-target status.
+    pub fn clear_encrypted_target_statuses(&self) {
+        self.encrypted_target_status
+            .lock()
+            .expect("encrypted target status registry poisoned")
+            .clear();
     }
 
     /// Plan 212 §10 — returns the live service runtime for one
@@ -3892,6 +4118,11 @@ impl ServiceTunnelManager {
                             })
                     }
                     DestinationRef::StaticAlias(_) => None,
+                    // Plan 351: an encrypted-service address carries no
+                    // destination hash, so there is no hash to classify a
+                    // routing decision against. `RemoteUnresolved` is the
+                    // correct answer, not a guess.
+                    DestinationRef::EncryptedService { .. } => None,
                 };
                 let decision = match hash_opt {
                     Some(hash) => self.routing_decision_for(&hash),
@@ -3958,6 +4189,19 @@ impl ServiceTunnelManager {
                         signing_public_key: signing_key,
                         static_public_key: static_out,
                     },
+                })
+            }
+            // Plan 351: unreachable from a correctly written caller. The
+            // provisioning loop takes the encrypted branch from
+            // `project_remote_target` before it reaches `resolve_reference`.
+            // This arm fails closed rather than fabricating a
+            // `ClientTarget` from an address that carries no destination
+            // hash — the `Destination` exists only inside the sealed
+            // record, and inventing one would defeat the binding check
+            // that binds the fetched record to the b33 signing key.
+            DestinationRef::EncryptedService { label, .. } => {
+                Err(DestinationFailure::EncryptedServiceRequiresKeyedLookup {
+                    label: label.clone(),
                 })
             }
         }
@@ -4108,6 +4352,20 @@ pub enum DestinationFailure {
     /// Destination decode.
     #[error("configured destination structural decode failed: {0}")]
     InvalidMaterialDecode(String),
+    /// Plan 351: an encrypted-service address cannot be projected onto
+    /// a `ClientTarget` here, because that type needs a decoded
+    /// `Destination` and a `RemoteDestination` keyed by destination
+    /// hash, and an encrypted-service address carries the unblinded
+    /// *signing* public key rather than any hash. The `Destination` only
+    /// exists inside the sealed record. Reaching this variant is a
+    /// programming error in the caller, which must route the reference to
+    /// the keyed-lookup path first — `project_remote_target` reports it as
+    /// [`RemoteTargetProjection::EncryptedService`] so the branch is
+    /// visible at the call site.
+    #[error(
+        "encrypted-service address {label} requires the keyed lookup path, not destination projection"
+    )]
+    EncryptedServiceRequiresKeyedLookup { label: String },
 }
 
 /// Intermediate bridge construction payload.
@@ -8604,10 +8862,16 @@ mod plan212_router_backed_service_destination_tests {
             label: "b".repeat(52),
             hash: second,
         };
-        let http_hash = manager.remote_target_hash_for_reference(&http_ref);
-        let irc_hash = manager.remote_target_hash_for_reference(&irc_ref);
-        assert_eq!(http_hash, Some(first));
-        assert_eq!(irc_hash, Some(second));
+        let http_hash = manager.project_remote_target(&http_ref);
+        let irc_hash = manager.project_remote_target(&irc_ref);
+        assert_eq!(
+            http_hash.remote_hash(),
+            Some(DestinationHash::from_hash(Hash::from_bytes(first)))
+        );
+        assert_eq!(
+            irc_hash.remote_hash(),
+            Some(DestinationHash::from_hash(Hash::from_bytes(second)))
+        );
         assert_ne!(http_hash, irc_hash);
     }
 
@@ -8630,21 +8894,23 @@ mod plan212_router_backed_service_destination_tests {
             label: "d".repeat(52),
             hash: irc,
         };
-        let http_resolved = manager
-            .remote_target_hash_for_reference(&http_ref)
-            .expect("http resolves");
-        let irc_resolved = manager
-            .remote_target_hash_for_reference(&irc_ref)
-            .expect("irc resolves");
-        assert_eq!(http_resolved, http);
-        assert_eq!(irc_resolved, irc);
+        let http_resolved = manager.project_remote_target(&http_ref);
+        let irc_resolved = manager.project_remote_target(&irc_ref);
+        assert_eq!(
+            http_resolved.remote_hash(),
+            Some(DestinationHash::from_hash(Hash::from_bytes(http)))
+        );
+        assert_eq!(
+            irc_resolved.remote_hash(),
+            Some(DestinationHash::from_hash(Hash::from_bytes(irc)))
+        );
         // The routing key derives from the target hash, not from a
         // router identity.
         let http_key = i2pr_netdb::router_hash_from_destination(
-            i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(http_resolved)),
+            i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(http)),
         );
         let irc_key = i2pr_netdb::router_hash_from_destination(
-            i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(irc_resolved)),
+            i2pr_netdb::DestinationHash::from_hash(i2pr_proto::Hash::from_bytes(irc)),
         );
         assert_ne!(http_key, irc_key);
     }

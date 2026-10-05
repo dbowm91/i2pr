@@ -947,6 +947,83 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
 
 ---
 
+## The encrypted-service consumer path (Plan 351, ADR 0033)
+
+Plan 349 built `encrypted_service_resolver.rs` with **zero** production callers. Plan 351 supplies
+one, and this section exists because every layer here had a hidden assumption that a `.b33` broke.
+
+### The chain
+
+```text
+I2PControl definition options          target_destination = <b33>, delay_open = true,
+                                       leaseset_password = <optional lookup secret>
+        |  (Gate 2; symmetric with the publisher's slot)
+        v
+ServiceTunnelSpec::validate           Gate 1: encrypted target requires a DelayOpen client
+        |
+        v
+project_remote_target                  Three outcomes; a .b33 is never Remote or LocalCoOwned
+        |  EncryptedService(address)
+        v
+resolve_encrypted_destination_for_service
+        |
+        +--> EncryptedServiceResolver::begin        today's blinded storage key
+        +--> begin_encrypted_lease_lookup           key supplied VERBATIM, kind still LeaseSet2
+        +--> ingest_tunnel_lease_store             -> EncryptedLeaseSet2Ready
+        +--> resolver.ingest_store                  unwrap (ADR 0032 profile lives in here)
+        +--> bind_inner_to_address                  signing-key + sigtype gate
+        +--> ValidatedLeaseSet2 + install            under the INNER destination hash
+```
+
+### Three decisions a reader will otherwise get wrong
+
+**The lookup key is not a destination hash.** Every ordinary lookup derives its key from a
+`DestinationHash`; a blinded storage key cannot be derived from one, because no `Destination` exists
+at lookup time. `NetDbSeam::begin_lease_set2_lookup_for_key_with_store` takes the key verbatim
+instead. The lookup *kind* is unchanged — a reference client issues `LeaseSet2` (code `1`) for an
+encrypted service — so **no new wire type is introduced**.
+
+**The install key is the inner record's own destination hash, gated by a signature.** A `.b33`
+carries the unblinded signing public key, which is *not* a `Destination` hash: the address lacks the
+ECIES public key, the certificate, and the padding a `Destination` encoding needs. The hash can only
+come from the record. `bind_inner_to_address` therefore compares the inner `Destination`'s signing
+key and sigtype against the address, and only then returns the hash. Trust is transitive through a
+signature against a key obtained out of band — not "the record said so". Without the gate, any valid
+`LeaseSet2` for any destination would pass.
+
+**The type-7 relationship does not generalize.** `service_els2.rs` publishes type 7, where
+`DERIVE_PUBLIC(CONVERT_ED25519_PRIVATE(seed))` reproduces the destination's Ed25519 public key, so
+address and inner record agree by construction. A type-11 `.b33` has no such relationship. The
+binding is written against what production publishes, and
+`the_installed_hash_is_the_unblinded_destination_hash` asserts the premise before using it.
+
+### The failure cannot escape
+
+`resolve_encrypted_destination_for_service` returns `Result<(), EncryptedTargetStatus>` — never a
+`ServiceProductError`. That is a deliberate narrowing: this path runs where a propagated error shuts
+the product down, so what can escape is a closed enum whose reasons are `&'static str` and which
+cannot carry a secret, a derived key, or a fetched payload.
+`provision_encrypted_service_target` records the outcome and returns `()`.
+
+`EncryptedServiceResolver::cancel` runs on every early return, and `ingest_store` removes the
+request from its table before it can fail, so the in-flight lease is released on every outcome.
+
+### The secret
+
+The consumer lookup secret arrives through the I2PControl definition options in the same
+`leaseset_password` slot the publisher uses, is installed by the same reconciliation that installs
+publisher material, and is held as `Arc<LookupSecret>` — `Zeroizing`, not `Clone`, no serde, redacted
+`Debug`. It is never placed in `Config`, in a `Raw*Config` struct, or in a `DestinationRef`.
+`scripts/check-config-secret-hygiene.sh` enforces that, and also records the pre-existing leak paths
+that motivate it (see Plan 352).
+
+### What this does not claim
+
+No PSK/DH consumer authorization, no daily rollover re-resolution, no cross-router result, no Java
+or i2pd direction of Plan 347. The blinding rotates daily and there is no periodic re-resolution, so
+a resolution computed before a midnight boundary addresses the **wrong DHT key**.
+Type 5 stays `advertised = false`.
+
 ## Cross-references
 
 ### Deep dives

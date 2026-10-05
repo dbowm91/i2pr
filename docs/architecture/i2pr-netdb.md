@@ -958,6 +958,37 @@ control to be exercised by its callers rather than internally.
     render as `X(..)` in `Debug`, and `RecordId`'s key renders as
     `"[redacted]"`, so a log line cannot leak identity.
 
+## LeaseSet2-kind lookups against a non-destination key (Plan 351, ADR 0033)
+
+`LookupKind::LeaseSet2` codes to `1`, and that is also what a reference client issues when
+resolving an encrypted service — the record is filed under its **blinded storage key** rather than
+a destination hash. Plan 351 relies on that being correct rather than inventing a lookup type: no
+new wire type is introduced, so nothing a peer can observe changes.
+
+The consequence inside this crate is that a `LeaseSet2`-kind lookup's `RouterHash` is no longer
+always derivable from a `DestinationHash`. `handle_database_store` gained one arm:
+
+- the key match at the top of the function is unchanged and is the only check that applies;
+- a `DatabaseStoreData::EncryptedLeaseSet` record then produces
+  `LookupResult::EncryptedLeaseSet2Success { lookup_id, message }` carrying the **raw** message.
+
+That arm deliberately does **not** validate, decrypt, or install:
+
+- the closed type-11 signature profile is ADR 0032's policy and stays with the ELS2 owner;
+- unwrapping needs the daily blinding material and, for an authorized service, per-client key
+  material that this crate has no business holding;
+- the identity binding — that the unwrapped record signs with the unblinded public key the `.b33`
+  names — cannot be checked here at all, because this crate never sees the address.
+
+A caller that matches only `LeaseSet2Success` therefore treats a type-5 reply as a non-match and
+keeps waiting, which is the correct fail-closed outcome for an ordinary consumer. No
+`store.insert` happens on the encrypted arm: the `LeaseSet2Store` is keyed by destination hash and a
+blinded storage key is not one. The unwrapped record is installed by the owner under the
+unblinded destination hash the record itself carries.
+
+`scripts/check-encrypted-service-consumer-caller.sh` fails if this arm ever starts validating,
+unwrapping, or inserting.
+
 ## Cross-references
 
 **ADRs**

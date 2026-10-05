@@ -210,3 +210,30 @@ corrects:
    reaching stderr. That pre-existing defect is registered as Plan
    [`352-config-secret-hygiene.md`](../../implementation/i2pcontrol-proposal-170/352-config-secret-hygiene.md),
    which is independent of 351 and live today for `I2pControlPassword`.
+
+## Superseded by Plan 351
+
+Plan 351 has landed and supplied the caller this record says is missing.
+See [`351-status.md`](351-status.md).
+
+**This record's status token is superseded, not corrected.** It reads
+`in-progress-owner-implemented-and-proven-no-production-caller-yet`, and after Plan 351 the
+"no production caller yet" half is false — so the token is recorded as
+`superseded-by-plan351-with-caller-landed` in `plans/registry.md` rather than rewritten here.
+Everything above is left exactly as written, including the 17 rows and the owner description,
+because it remains the record of *what Plan 349 found that Plan 351 could not have found*: the
+bounded in-flight table, the fail-closed ingest ordering, lease release on every outcome, and the
+owned zeroizing credential.
+
+Plan 351's own findings, which correct two framings used in this record's item 1 above:
+
+1. **"The scoped netdb delta is one `LookupResult` variant plus one type-5 arm" was right, and
+   that is what landed** — one variant, one arm, no new wire lookup type. Finding 2 above was
+   confirmed exactly.
+2. **The install key is not the destination hash of the address, and cannot be.** A `.b33`
+   carries the unblinded *signing* public key; a `Destination` hash needs the ECIES public key,
+   the certificate, and the padding, none of which the address publishes. The install key is the
+   **inner record's own** destination hash, gated on that record signing with the unblinded public
+   key the address names. Recorded at Plan 351 because Plan 349 never asserted otherwise; noted
+   here because "install under the unblinded key" appears throughout this line of work as though
+   the address supplied it.

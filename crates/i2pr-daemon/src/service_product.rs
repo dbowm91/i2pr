@@ -59,7 +59,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use i2pr_crypto::RouterIdentityBundle;
-use i2pr_netdb::{DestinationHash, LookupPolicy, RouterHash, RouterInfoStoreConfig};
+use i2pr_netdb::{
+    DestinationHash, LeaseSet2ValidationContext, LookupPolicy, RouterHash, RouterInfoStoreConfig,
+    ValidatedLeaseSet2,
+};
 use i2pr_proto::{Date, Hash, I2npBody, I2npMessage, MAX_I2NP_PAYLOAD_SIZE};
 use i2pr_runtime::{CancellationToken, ChildFailurePolicy, ChildScope, Ssu2InboundI2np};
 use i2pr_service_tunnels::{ServiceTunnelSet, StaticAliasTable};
@@ -77,6 +80,9 @@ use crate::destination_peers::{DestinationPeerCandidate, select_destination_path
 use crate::destination_tunnels::{
     DestinationTunnelCoordinator, LeaseStoreIngestOutcome, reply_path_for_inbound_route,
 };
+use crate::encrypted_service_resolver::{
+    EncryptedServiceConsumerError, EncryptedServiceResolver, bind_inner_to_address,
+};
 use crate::exploratory_build::{
     BuildCoordinatorOutcome, BuildDirection, DestinationBuildRequest, ExploratoryBuildCoordinator,
     PeerBuildMaterial,
@@ -90,7 +96,8 @@ use crate::service_delivery::{
     RemoteDeliveryCounters, RemoteDestinationBackend, RoutingDecision, ServiceDestinationDelivery,
 };
 use crate::service_tunnels::{
-    DeferredActivationRequest, ServiceTunnelManager, ServiceTunnelManagerConfig,
+    DeferredActivationRequest, EncryptedTargetStatus, RemoteTargetProjection, ServiceTunnelManager,
+    ServiceTunnelManagerConfig,
 };
 
 /// Plan 212 §9 — per-process tunnel-id allocator for real
@@ -3611,10 +3618,38 @@ async fn provision_all_service_router_material(
         let Some(reference) = manager.spec_reference_for_service(&spec_id) else {
             continue;
         };
-        let Some(target_hash) = manager.remote_target_hash_for_reference(&reference) else {
-            // Local co-owned hash -> stay local, do not enter the
-            // remote path.
-            continue;
+        // Plan 351 Gate 1 in force: `ServiceTunnelSpec::validate` has
+        // already rejected an encrypted-service address on a spec that is
+        // not a `delay_open` client, so by the time this loop runs the
+        // `EncryptedService` projection can only belong to a spec whose
+        // remote peer fails independently of the product. That is what
+        // makes `record_and_continue` below the safe spelling: it is not
+        // a failure being tolerated, it is the only permitted failure
+        // mode being tolerated.
+        let target = match manager.project_remote_target(&reference) {
+            RemoteTargetProjection::LocalCoOwned => {
+                // Local co-owned hash -> stay local, do not enter the
+                // remote path.
+                continue;
+            }
+            RemoteTargetProjection::Remote(destination_hash) => destination_hash,
+            RemoteTargetProjection::EncryptedService(address) => {
+                // Never propagates. Every failure mode is recorded on the
+                // manager's per-service status surface and the loop moves
+                // to the next service.
+                provision_encrypted_service_target(
+                    manager,
+                    coordinator,
+                    destination_tunnels,
+                    ssu2_handle,
+                    runtime.destination_id,
+                    &spec_id,
+                    address,
+                    options,
+                )
+                .await;
+                continue;
+            }
         };
         resolve_remote_destination_for_service(
             manager,
@@ -3622,10 +3657,344 @@ async fn provision_all_service_router_material(
             destination_tunnels,
             ssu2_handle,
             runtime.destination_id,
-            DestinationHash::from_hash(Hash::from_bytes(target_hash)),
+            target,
             options,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Plan 351 — provisions one encrypted-service (`.b33`) client target.
+///
+/// **This function never returns `Err` and never propagates.** The two
+/// production callers of [`provision_all_service_router_material`] shut
+/// the manager down, cancel the operator token, and shut the SSU2 handle
+/// down on any error, so a single unreachable b33 would otherwise take
+/// down every configured service in the product. `DelayOpen` clients are
+/// the only kind allowed to name one (Gate 1), and they already carry
+/// per-destination isolation, so this is exactly where the containment is
+/// real rather than asserted.
+///
+/// Failure is visible through two independent, non-secret surfaces:
+/// `ServiceTunnelManager::record_encrypted_target_status`, which the
+/// I2PControl `GetStatus` and the daemon log both read, and the bounded
+/// `RemoteDeliveryCounters` series in `service_delivery.rs`. Neither
+/// carries the lookup secret, the derived storage key, or any fetched
+/// payload bytes.
+#[allow(clippy::too_many_arguments)]
+async fn provision_encrypted_service_target(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &mut Ssu2DaemonHandle,
+    service_destination: i2pr_client::DestinationId,
+    spec_id: &str,
+    address: i2pr_proto::EncryptedServiceAddress,
+    options: ServiceProductOptions,
+) {
+    // Every outcome is recorded on the manager's per-service status surface
+    // before this function returns. `let _ =` rather than `?` is the point of
+    // the function: this is the only place a resolution failure is allowed to
+    // stop, and stopping here means exactly one `.b33` service is unavailable.
+    if let Err(status) = resolve_encrypted_destination_for_service(
+        manager,
+        coordinator,
+        destination_tunnels,
+        ssu2_handle,
+        service_destination,
+        spec_id,
+        address,
+        options,
+    )
+    .await
+    {
+        manager.record_encrypted_target_status(spec_id, status);
+        if let Some(capability) = manager.router_delivery() {
+            capability
+                .record_observation("encrypted_target_failed")
+                .await;
+        }
+    }
+}
+
+/// Plan 351 — resolves one encrypted-service target and installs its inner
+/// LeaseSet2 under the **unblinded** destination hash.
+///
+/// `Err` is always a `EncryptedTargetStatus`, never a `ServiceProductError`,
+/// and never a foreign error string. That is a deliberate narrowing: this path
+/// runs where a propagated error would shut the whole product down, so the
+/// set of things that can escape it is a closed enum with no ability to carry a
+/// secret, a derived key, or a fetched payload.
+///
+/// The sequence, and why each step is where it is:
+///
+/// 1. read the installed lookup secret (Gate 2: I2PControl definition options);
+/// 2. derive **today's** blinded storage key — the record is filed under this
+///    key, and it is not a destination hash;
+/// 3. begin the lookup against that key verbatim, through the same
+///    coordinator, floodfill policy, reply-path selection, tunnel composition,
+///    and delivery service as an ordinary lookup;
+/// 4. on a type-5 reply, unwrap through `EncryptedServiceResolver`, which owns
+///    ADR 0032's type-11 profile policy;
+/// 5. bind the unwrapped record to the `.b33` address — see
+///    `encrypted_service_resolver::bind_inner_to_address`;
+/// 6. validate it as an ordinary `LeaseSet2` and install under the destination
+///    hash that record names.
+#[allow(clippy::too_many_arguments)]
+async fn resolve_encrypted_destination_for_service(
+    manager: &Arc<crate::service_tunnels::ServiceTunnelManager>,
+    coordinator: &mut ExploratoryBuildCoordinator,
+    destination_tunnels: &Arc<Mutex<DestinationTunnelCoordinator>>,
+    ssu2_handle: &mut Ssu2DaemonHandle,
+    service_destination: i2pr_client::DestinationId,
+    spec_id: &str,
+    address: i2pr_proto::EncryptedServiceAddress,
+    options: ServiceProductOptions,
+) -> Result<(), EncryptedTargetStatus> {
+    let now_secs = wall_secs() as u32;
+    let now_ms = wall_ms();
+    let deadline_ms = now_ms.saturating_add(
+        options
+            .tunnel_deadline
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64,
+    );
+
+    // Step 1 — the consumer credential. `None` is legal and means the address
+    // alone derives today's key; it is not an error.
+    let secret = manager.encrypted_target_secret(spec_id);
+
+    // Step 2 — one resolver per attempt. It is `!Sync` by construction
+    // (`PskClientKey` / `X25519PrivateKey` inside), so it stays on this task's
+    // stack and is dropped with it.
+    let mut resolver = EncryptedServiceResolver::default();
+    let secret_option = secret.as_ref().and_then(|held| held.as_option());
+    let (resolve_id, storage_key) = resolver
+        .begin(&address, secret_option, now_secs, deadline_ms)
+        .map_err(|error| match error {
+            // A `b33` that requires per-client authorization cannot be
+            // resolved without a credential. Plan 351 defers consumer
+            // credentials (PSK/DH) on purpose, so this is reported as a
+            // resolution failure rather than pretending it succeeded.
+            EncryptedServiceConsumerError::CredentialNotCopyable(_)
+            | EncryptedServiceConsumerError::NotAuthorized => EncryptedTargetStatus::UnwrapFailed,
+            EncryptedServiceConsumerError::TooManyResolves => EncryptedTargetStatus::DispatchFailed,
+            _ => EncryptedTargetStatus::StorageKeyUnavailable,
+        })?;
+    let storage_key_hash = *storage_key.as_hash();
+
+    // Step 3 — the lookup. `routing_key` is the same value: a blinded storage
+    // key has no separate routing key to derive, and inventing one would make
+    // floodfill selection disagree with the key the record is filed under.
+    let routing_key = RouterHash::from_hash(storage_key_hash);
+    let receive_ids = manager
+        .with_destination_bridge(service_destination, |bridge| {
+            bridge.router_inbound_receive_ids()
+        })
+        .unwrap_or_default();
+    let Some(local_receive_for_lookup) = receive_ids.first().copied() else {
+        // Release the slot before returning: every exit path must, so an
+        // abandoned future cannot strand the bounded table.
+        let _ = resolver.cancel(resolve_id);
+        return Err(EncryptedTargetStatus::DispatchFailed);
+    };
+    let Ok(local_receive) = TunnelId::new(local_receive_for_lookup) else {
+        let _ = resolver.cancel(resolve_id);
+        return Err(EncryptedTargetStatus::DispatchFailed);
+    };
+    let Ok(reply_path) = reply_path_for_inbound_route(coordinator.registry(), local_receive) else {
+        let _ = resolver.cancel(resolve_id);
+        return Err(EncryptedTargetStatus::NoFloodfillCandidate);
+    };
+    let (_request_id, action) = {
+        let mut coord_guard = destination_tunnels.lock().await;
+        match coord_guard.begin_encrypted_lease_lookup(storage_key_hash, &routing_key, reply_path) {
+            Ok(pair) => pair,
+            Err(_) => {
+                let _ = resolver.cancel(resolve_id);
+                return Err(EncryptedTargetStatus::NoFloodfillCandidate);
+            }
+        }
+    };
+
+    // Bounded re-query, mirroring the ordinary path: a floodfill that has not
+    // settled the reply tunnel's inbound side answers into a black hole, so a
+    // later copy is sent after a bounded settle delay.
+    const MAX_LOOKUP_ATTEMPTS: u64 = 3;
+    const LOOKUP_ATTEMPT_WINDOW: Duration = Duration::from_secs(25);
+    const LOOKUP_SETTLE_DELAY: Duration = Duration::from_secs(5);
+
+    let mut attempts: u64 = 0;
+    let mut resolved_message: Option<i2pr_proto::DatabaseStoreMessage> = None;
+    let mut tunnel_rng = ChaCha8Rng::seed_from_u64(wall_secs().wrapping_add(7));
+    while resolved_message.is_none() && attempts < MAX_LOOKUP_ATTEMPTS {
+        attempts += 1;
+        {
+            let coord_guard = destination_tunnels.lock().await;
+            let delivery = ssu2_handle.delivery().clone();
+            let Ok(deadline) = Deadline::new(options.tunnel_deadline) else {
+                break;
+            };
+            let dispatch = manager
+                .with_destination_bridge(service_destination, |bridge| {
+                    if !bridge.has_router_network_state(wall_ms()) {
+                        return None;
+                    }
+                    let role = bridge.router_outbound_role_ref(wall_ms())?;
+                    let (dispatch, _proof) = coord_guard
+                        .compose_lookup_via_tunnel(
+                            &action,
+                            role.role(),
+                            0x51A7_9201,
+                            wall_ms() + 60_000,
+                            deadline,
+                            &mut tunnel_rng,
+                            0,
+                        )
+                        .ok()?;
+                    Some(dispatch)
+                })
+                .flatten();
+            let Some(dispatch) = dispatch else {
+                break;
+            };
+            let mut admitted = true;
+            for cell_delivery in &dispatch.deliveries {
+                let Ok(request) = crate::router_i2np::RouterDeliveryRequest::new(
+                    cell_delivery.target(),
+                    cell_delivery.message_bytes().to_vec(),
+                    options.delivery_timeout,
+                ) else {
+                    admitted = false;
+                    break;
+                };
+                let outcome = delivery.deliver(request, &CancellationToken::new());
+                if !matches!(outcome, crate::router_i2np::RouterDeliveryOutcome::Accepted) {
+                    admitted = false;
+                    break;
+                }
+            }
+            if !admitted {
+                break;
+            }
+        }
+        let attempt_deadline = tokio::time::Instant::now() + LOOKUP_ATTEMPT_WINDOW;
+        while tokio::time::Instant::now() < attempt_deadline && resolved_message.is_none() {
+            let next =
+                tokio::time::timeout(options.poll_interval, ssu2_handle.next_inbound()).await;
+            let Ok(Some(inbound)) = next else {
+                continue;
+            };
+            let Ok(message) = decode_inbound_ssu2_i2np(&inbound.bytes) else {
+                continue;
+            };
+            let cell = match message.body() {
+                I2npBody::TunnelData(cell) => cell.clone(),
+                _ => continue,
+            };
+            let Ok(outcome) = inbound_dispatch::dispatch_inbound_tunnel_data(
+                coordinator.registry_mut(),
+                &cell,
+                wall_ms(),
+            ) else {
+                continue;
+            };
+            let bytes = match outcome {
+                InboundDispatchOutcome::DatabaseStoreComplete { bytes }
+                | InboundDispatchOutcome::DatabaseSearchReplyComplete { bytes }
+                | InboundDispatchOutcome::DeliveryStatusComplete { bytes }
+                | InboundDispatchOutcome::GarlicComplete { bytes } => bytes,
+                _ => continue,
+            };
+            let Ok(envelope) = I2npMessage::decode_standard(&bytes, MAX_I2NP_PAYLOAD_SIZE) else {
+                continue;
+            };
+            let now_secs = wall_secs() as u32;
+            let ingest = {
+                let mut coord_guard = destination_tunnels.lock().await;
+                coord_guard.ingest_tunnel_lease_store(_request_id, &envelope, now_secs)
+            };
+            match ingest {
+                Ok(LeaseStoreIngestOutcome::EncryptedLeaseSet2Ready { message, .. }) => {
+                    resolved_message = Some(*message);
+                }
+                Ok(LeaseStoreIngestOutcome::Completed { .. }) => {
+                    // A Standard LeaseSet2 arrived under a blinded storage key.
+                    // That is not the service; fail closed rather than
+                    // installing a record the `.b33` did not name.
+                    return Err(EncryptedTargetStatus::StorageKeyMismatch);
+                }
+                Ok(LeaseStoreIngestOutcome::Continue) | Ok(LeaseStoreIngestOutcome::Ignored) => {}
+                Err(_) => {}
+            }
+        }
+        if resolved_message.is_none() && attempts < MAX_LOOKUP_ATTEMPTS {
+            tokio::time::sleep(LOOKUP_SETTLE_DELAY).await;
+        }
+    }
+
+    let Some(message) = resolved_message else {
+        // Nothing installed. The lookup engine already released its slot when
+        // it produced the terminal failure; cancel releases the resolver's.
+        let _ = resolver.cancel(resolve_id);
+        return Err(EncryptedTargetStatus::LookupExhausted);
+    };
+
+    // Step 4 — unwrap. `ingest_store` takes the request out of the table before
+    // it can fail, so the lease is released on every outcome including a bad
+    // reply.
+    let resolved = resolver.ingest_store(resolve_id, &message, wall_secs() as u32);
+    let resolved = match resolved {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return Err(match error {
+                EncryptedServiceConsumerError::NotEncryptedLeaseSet
+                | EncryptedServiceConsumerError::KeyMismatch => {
+                    EncryptedTargetStatus::StorageKeyMismatch
+                }
+                EncryptedServiceConsumerError::RecordTooLarge => {
+                    EncryptedTargetStatus::StorageKeyMismatch
+                }
+                EncryptedServiceConsumerError::RecordRejected { .. } => {
+                    EncryptedTargetStatus::LeaseSetValidationFailed
+                }
+                EncryptedServiceConsumerError::NotAuthorized => EncryptedTargetStatus::UnwrapFailed,
+                _ => EncryptedTargetStatus::UnwrapFailed,
+            });
+        }
+    };
+
+    // Step 5 — bind the unwrapped record to the address. This is the step the
+    // b33 format exists to make possible and the step nothing else performs.
+    let inner = resolved.inner_lease_set2();
+    // Step 5's policy lives with the rest of the ELS2 consumer policy in
+    // `encrypted_service_resolver::bind_inner_to_address`, where it is directly
+    // testable and where a future second consumer cannot reimplement it wrong.
+    let destination_hash = bind_inner_to_address(&address, inner)
+        .ok_or(EncryptedTargetStatus::IdentityBindingFailed)?;
+
+    // Step 6 — ordinary validation, then install under the destination hash the
+    // inner record itself names. That hash is the service's real Base32
+    // address, which is what the rest of the delivery path looks up.
+    let now_secs = wall_secs() as u32;
+    let validated = ValidatedLeaseSet2::from_lease_set2(
+        inner.clone(),
+        Some(destination_hash),
+        LeaseSet2ValidationContext::new(now_secs),
+    )
+    .map_err(|_| EncryptedTargetStatus::LeaseSetValidationFailed)?;
+    manager
+        .with_destination_bridge(service_destination, |bridge| {
+            bridge.install_remote_lease_set2_into_router_state(validated, wall_ms())
+        })
+        .ok_or(EncryptedTargetStatus::LeaseSetValidationFailed)?
+        .map_err(|_| EncryptedTargetStatus::LeaseSetValidationFailed)?;
+
+    if let Some(capability) = manager.router_delivery() {
+        capability
+            .record_observation("encrypted_target_resolved")
+            .await;
     }
     Ok(())
 }
