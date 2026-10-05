@@ -1,6 +1,31 @@
 # Plan 342 — I2P-routed outproxy provider and canonical proxy field completion
 
-Status: **registered-provider-delivered-awaits-option-surface-request-paths-and-wire-evidence**
+Status: **in-progress-option-surface-and-request-paths-landed-awaits-self-composed-wire-lane**
+
+Progress (2026-10-05, commit `cf13e1b`): the ordered work below is recorded in
+reverse order because steps 2 and 3 landed together, deliberately. The plan's
+own sequencing rule -- *"Nothing in the option surface is accepted until the
+route behind it exists"* -- means splitting them across commits would put an
+egress-looking option surface on a tree that could not carry a request.
+
+1. **Step 1, landed as `e9ffe40`.** `RouterIdentityBundle::with_signing_seed`
+   (a closure, not a getter) and `RouterBoundOutboundSecrets::from_router_identity`;
+   `build_outbound_secret_store` derives one store at the composition root and
+   threads a single `Arc`; `OutproxyRoute::Refused(OutproxyFailure)` added so
+   the enum can say "no" instead of claiming `DirectI2p` for a clearnet target.
+2. **Steps 2 and 3, landed as `cf13e1b`.** All seven canonical fields admitted
+   as one all-or-none block with `OutproxyPassword` sealed at normalize time;
+   `classify_client_target` made the single Direct / ViaOutproxy / Refused
+   decision for the HTTP, CONNECT, and SOCKS5 request paths, each matching it
+   exhaustively before opening anything; the handshake prefix carried into the
+   pump's **inbound** direction. Pinned by `scripts/check-outproxy-request-path.sh`
+   (24/24 mutations) and by classifier unit rows.
+3. **Step 4, NOT DONE.** The self-composed loopback outproxy wire lane, its
+   evidence checker, and this plan's closure record remain. No live route has
+   been exercised end to end, so the loopback evidence the plan asks for does
+   not exist and no capability is claimed. Plan 327 stays blocked.
+
+Full routine floor 39/39 PASS and 4184 tests green at `cf13e1b`, all local.
 
 Classification: capability + security boundary (completes Plan 327).
 
