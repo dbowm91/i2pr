@@ -557,6 +557,17 @@ impl I2cpServiceState {
             .unwrap_or(0)
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_connection_ids_for_test(&self) -> Vec<u32> {
+        let mut ids = self
+            .active_connections
+            .lock()
+            .map(|active| active.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    }
+
     /// Returns the number of committed I2CP sessions.
     pub fn session_count(&self) -> usize {
         self.session_registry

@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 51 `.rs` files, 77 270 lines of `src` (47 at the crate root + 4 under `src/sam/`).
+**Size:** 52 `.rs` files, 78 213 lines of `src` (48 at the crate root + 4 under `src/sam/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -170,6 +170,10 @@ management, outer framing/multiplexing, launch, and sandboxing belong to the
 future trusted runtime and are not provided by this gateway. The contract and
 exact byte-stream mapping are specified in
 [`managed-native-app-runtime-v1.md`](../../specs/references/managed-native-app-runtime-v1.md).
+
+| File | Lines | Responsibility | Key types |
+| --- | --- | --- | --- |
+| `src/app_gateway.rs` | 661 | Plan 355 per-principal authorization, capability-first service admission, isolated private SAM/I2CP state, bounded supervised byte-stream ownership, and no listener fallback | `AppGatewayAuthorization`, `AppGatewayLimits`, `AppGatewaySession`, `AppGatewayConnection`, `AppGatewayError` |
 
 ### SAM 3.1
 
@@ -779,11 +783,11 @@ outproxy's network.
 
 ### Production (`crates/i2pr-daemon/Cargo.toml`)
 
-**37 production dependencies: 15 workspace path crates + 22 external.** The path crates are
+**38 production dependencies: 16 workspace path crates + 22 external.** The path crates are
 the full composition edge set, matching the allowlist in
 [`scripts/check-dependency-direction.sh:34`](../../scripts/check-dependency-direction.sh):
 
-`i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`,
+`i2pr-addressbook`, `i2pr-app-proto`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`,
 `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`,
 `i2pr-storage`, `i2pr-su3`, `i2pr-transport`, `i2pr-tunnel`.
 

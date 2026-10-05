@@ -34,6 +34,7 @@ expected = {
     },
     "i2pr-daemon": {
         "i2pr-addressbook",
+        "i2pr-app-proto",
         "i2pr-api",
         "i2pr-client",
         "i2pr-core",

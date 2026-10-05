@@ -8,6 +8,7 @@
 
 pub mod addressbook;
 mod addressbook_fetch;
+pub mod app_gateway;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
