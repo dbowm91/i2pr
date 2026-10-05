@@ -504,8 +504,13 @@ async fn differential_corpus_against_production_composition() {
         i2pr_daemon::build_daemon_graph_with_inspection(&config).expect("graph builds");
     // Mirror the production i2pcontrol factory: control state plus
     // the disabled address-book manager, then control startup.
+    // Plan 337: production construction builds the one shared manager
+    // and injects it into the control state.
+    let manager = i2pr_daemon::build_shared_service_manager(&config)
+        .expect("shared manager builds")
+        .expect("control implies a shared manager");
     let control = Arc::new(
-        i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(&config)
+        i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(&config, manager)
             .expect("control builds for config"),
     );
     let addressbook = Arc::new(i2pr_daemon::addressbook::AddressBookManager::activate(

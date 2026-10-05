@@ -240,6 +240,21 @@ pub struct ServiceProductSpec {
     /// default; install the active subsystem's shared handle to let
     /// alias misses resolve through the same owner SAM uses.
     pub addressbook: crate::addressbook::SharedAddressBook,
+    /// The one shared service manager (Plan 337), when the composition
+    /// root has already built it.
+    ///
+    /// `None` builds a private manager, which is what the controlled
+    /// helper and the integration lanes want. Production composition
+    /// passes the **same** `Arc` it hands the I2PControl control state,
+    /// so exactly one manager owns every service runtime: a
+    /// control-created server is delivered and published through the
+    /// same path as a startup-configured one, and Plan 289's "one
+    /// existing `ServiceTunnelManager`" invariant holds in the source.
+    ///
+    /// The supplied manager is prepared here and gains the executable
+    /// router delivery backend before any control reconcile can run —
+    /// the SSU2 service starts ahead of the I2PControl service.
+    pub shared_manager: Option<Arc<ServiceTunnelManager>>,
 }
 
 /// Reference peer the controlled lane dials + bootstraps.
@@ -414,6 +429,7 @@ mod normal_daemon_owner_tests {
                 config.addressbook.clone(),
             )
             .shared(),
+            shared_manager: None,
         };
         let result = ServiceProduct::start_over_existing_daemon(
             spec,
@@ -489,6 +505,7 @@ mod normal_daemon_owner_tests {
                 config.addressbook.clone(),
             )
             .shared(),
+            shared_manager: None,
         };
         let router_infos = Vec::new();
         let mut product = ServiceProduct::start_over_existing_daemon(
@@ -964,18 +981,25 @@ impl ServiceProduct {
 
         // Build the manager, install the backend, and prepare
         // service identities/listeners WITHOUT starting
-        // supervisors yet.
-        let manager_config = ServiceTunnelManagerConfig {
-            data_dir: spec.data_dir.clone(),
-            aggregate_connection_ceiling: spec.aggregate_connection_ceiling,
-            per_service_connection_ceiling: spec.per_service_connection_ceiling,
-            specs: Arc::clone(&spec.service_tunnels),
-            aliases: Arc::clone(&spec.aliases),
+        // supervisors yet. Plan 337: production composition injects the
+        // one shared manager so the control plane reconciles onto this
+        // instance; the private build stays for the controlled helper.
+        let manager = match &spec.shared_manager {
+            Some(shared) => Arc::clone(shared),
+            None => {
+                let manager_config = ServiceTunnelManagerConfig {
+                    data_dir: spec.data_dir.clone(),
+                    aggregate_connection_ceiling: spec.aggregate_connection_ceiling,
+                    per_service_connection_ceiling: spec.per_service_connection_ceiling,
+                    specs: Arc::clone(&spec.service_tunnels),
+                    aliases: Arc::clone(&spec.aliases),
+                };
+                Arc::new(
+                    ServiceTunnelManager::new(manager_config)
+                        .map_err(|error| ServiceProductError::ManagerBuild(error.to_string()))?,
+                )
+            }
         };
-        let manager = Arc::new(
-            ServiceTunnelManager::new(manager_config)
-                .map_err(|error| ServiceProductError::ManagerBuild(error.to_string()))?,
-        );
         manager.install_router_delivery(capability);
         manager.set_addressbook_handle(spec.addressbook.clone());
         let runtimes = manager
@@ -1185,14 +1209,19 @@ impl ServiceProduct {
             specs: Arc::clone(&spec.service_tunnels),
             aliases: Arc::clone(&spec.aliases),
         };
-        let manager = match ServiceTunnelManager::new(manager_config) {
-            Ok(manager) => Arc::new(manager),
-            Err(error) => {
-                token.cancel(i2pr_core::CancellationReason::OperatorRequest);
-                ssu2_handle.shutdown();
-                let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
-                return Err(ServiceProductError::ManagerBuild(error.to_string()));
-            }
+        let manager = match &spec.shared_manager {
+            // Plan 337: the one shared manager, built by the composition
+            // root and also handed to the I2PControl control state.
+            Some(shared) => Arc::clone(shared),
+            None => match ServiceTunnelManager::new(manager_config) {
+                Ok(manager) => Arc::new(manager),
+                Err(error) => {
+                    token.cancel(i2pr_core::CancellationReason::OperatorRequest);
+                    ssu2_handle.shutdown();
+                    let _ = tokio::time::timeout(Duration::from_secs(10), scope.shutdown()).await;
+                    return Err(ServiceProductError::ManagerBuild(error.to_string()));
+                }
+            },
         };
         manager.install_router_delivery(capability);
         manager.set_addressbook_handle(spec.addressbook.clone());

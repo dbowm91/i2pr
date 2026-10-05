@@ -600,6 +600,7 @@ async fn plan212_router_backed_generic_directions() {
         reference: Some(reference),
         options: Default::default(),
         addressbook: i2pr_daemon::addressbook::SharedAddressBook::new(),
+        shared_manager: None,
     };
     let mut product = match ServiceProduct::start(spec).await {
         Ok(product) => product,

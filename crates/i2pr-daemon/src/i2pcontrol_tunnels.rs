@@ -1,30 +1,33 @@
 //! Plan 289 TunnelManager control state and existing service-runtime adapter.
 //!
-//! # KNOWN DRIFT (recorded by Plan 334 — the two claims below are false)
+//! # Ownership (Plan 337 — one manager, as Plan 289 required)
 //!
-//! This module header and Plan 289's plan-of-record both state that the control
-//! plane owns "the one existing M10 [`ServiceTunnelManager`]" and "never
-//! creates a second service/destination/tunnel runtime". The source does not
-//! match. `for_config` builds a **separate** `ServiceTunnelManager` over an
-//! empty `ServiceTunnelSet`, while `ServiceProduct::new` builds the one
-//! `publish_service_ls2_for_service` is handed; and no production call site
-//! installs a router delivery capability on the control-owned manager, so its
-//! service runtimes cannot publish a LeaseSet2 at all. Per `plans/README.md`
-//! the source wins, and these two paragraphs are wrong.
+//! This module owns "the one existing M10 [`ServiceTunnelManager`]" and never
+//! creates a second service/destination/tunnel runtime. That claim was false
+//! from Plan 289 until Plan 337: `for_config` used to build a **separate**
+//! manager over an empty `ServiceTunnelSet` while `ServiceProduct::new` built
+//! the one `publish_service_ls2_for_service` is handed, and no production call
+//! site installed a router delivery capability on the control-owned manager —
+//! so a control-created server published no LeaseSet2 at all. Plan 334 recorded
+//! that as doc-versus-source drift (`plans/closure/i2pcontrol-proposal-170/
+//! 334-status.md`) rather than rewriting Plan 289's invariant.
 //!
-//! The defect is pre-existing, belongs to Plan 289's subsystem, and is **not**
-//! fixed here. It is pinned by
-//! `plan334_control_manager_is_separate_from_the_product_manager` and
-//! `plan334_control_created_server_is_validated_but_not_published`, and carried
-//! in `plans/closure/i2pcontrol-proposal-170/334-status.md`. The paragraphs are
-//! left in place rather than rewritten, because changing another plan's
-//! architectural invariant is not this plan's call; the correct fix is a plan
-//! that unifies the two managers.
+//! Plan 337 made the source match. The composition root now builds the manager
+//! **once** and injects it into both owners, so a control-created runtime is the
+//! same runtime the product layer delivers and publishes through. Two
+//! consequences are load-bearing and must not be undone:
+//!
+//! - [`Self::candidate_set`] describes the **whole** manager surface, carrying
+//!   startup-owned specs through verbatim and adding control-owned running
+//!   specs. `reconcile` is a whole-set transactional replace, so a
+//!   control-only candidate would silently remove every startup-owned runtime.
+//! - [`Self::verify_agreement`] scopes its "no extra runtime" rule to names this
+//!   coordinator does not own, because the manager is now shared.
 //!
 //! The rest of this module implements durable administrative ownership over a
 //! control-owned service runtime. Every lifecycle action validates a candidate
 //! control-owned definition, stages a versioned persistence generation,
-//! reconciles its manager, publishes the durable generation, and returns
+//! reconciles the shared manager, publishes the durable generation, and returns
 //! success only when durable intent and the authoritative runtime generation
 //! agree.
 //!
@@ -75,7 +78,7 @@ use i2pr_service_tunnels::{
     ServiceTunnelSpec, TunnelShaping,
 };
 
-use crate::service_tunnels::{ServiceTunnelManager, ServiceTunnelManagerConfig};
+use crate::service_tunnels::ServiceTunnelManager;
 
 /// Schema version of the control generation files.
 pub const CONTROL_SCHEMA_VERSION: u8 = 1;
@@ -2938,35 +2941,21 @@ impl TunnelControlState {
         }
     }
 
-    /// Builds control state from the validated daemon configuration:
-    /// store beneath the router data dir, startup inventory from the
-    /// configured service set, and a fresh manager holding no specs yet
-    /// (control generations arrive through the store at startup).
-    pub fn for_config(config: &crate::config::Config) -> Result<Self, ControlError> {
+    /// Builds control state from the validated daemon configuration and the
+    /// **one** shared service manager, with the store beneath the router data
+    /// dir and the startup inventory from the configured service set.
+    ///
+    /// Plan 337: the manager is no longer constructed here. The composition
+    /// root builds it once and injects the same instance into the product
+    /// layer, so a control-created runtime is the same runtime the product
+    /// delivers and publishes through. The startup inventory stays a read-only
+    /// copy of daemon configuration; control generations still arrive through
+    /// the store at startup.
+    pub fn for_config(
+        config: &crate::config::Config,
+        manager: Arc<ServiceTunnelManager>,
+    ) -> Result<Self, ControlError> {
         let store = ControlStore::open(&config.router.data_dir).map_err(ControlError::Store)?;
-        let manager_config = ServiceTunnelManagerConfig {
-            data_dir: config.router.data_dir.clone(),
-            aggregate_connection_ceiling: config
-                .service_tunnels
-                .limits
-                .max_active_connections_aggregate,
-            per_service_connection_ceiling: config
-                .service_tunnels
-                .limits
-                .max_active_connections_per_service,
-            specs: Arc::new(ServiceTunnelSet::new()),
-            aliases: Arc::new(config.service_tunnels.aliases.clone()),
-        };
-        let manager = Arc::new(
-            ServiceTunnelManager::new(manager_config)
-                .map_err(|error| ControlError::Manager(static_manager_reason(&error)))?,
-        );
-        // Plan 297: install the explicit TLS identity/trust policy
-        // before any service prepares, so `use_ssl` tunnels dial
-        // under it from their first connection.
-        if let Some(policy) = &config.service_tunnels.tls_policy {
-            manager.set_service_tls_policy(policy.policy());
-        }
         Ok(Self::new(
             store,
             config.service_tunnels.tunnels.clone(),
@@ -3066,9 +3055,22 @@ impl TunnelControlState {
         failures
     }
 
-    /// Stops every control runtime (manager-wide shutdown).
+    /// Stops every **control-owned** runtime by reconciling the shared
+    /// manager back to the startup-owned set.
+    ///
+    /// Plan 337: this is deliberately not a manager-wide shutdown. The
+    /// manager is the one shared product-layer instance, so tearing it
+    /// down would stop startup-owned services and any sibling the product
+    /// layer owns. Reconciling to the startup-only set removes exactly the
+    /// runtimes this coordinator created.
     pub async fn shutdown(&self) {
-        self.manager.shutdown().await;
+        let candidate = ServiceTunnelSet {
+            tunnels: self.startup.tunnels.clone(),
+        };
+        let _ = self
+            .manager
+            .reconcile(Arc::new(candidate), CONTROL_DRAIN_DEADLINE)
+            .await;
     }
 
     /// Finds a startup-owned spec kind by name.
@@ -3088,6 +3090,15 @@ impl TunnelControlState {
     /// persisted intent lives on the definition.)
     fn candidate_set(&self) -> Result<ServiceTunnelSet, ControlError> {
         let mut tunnels = Vec::new();
+        // Plan 337: this manager is the one shared product-layer manager,
+        // and `reconcile` is a whole-set transactional replace. The
+        // candidate must therefore describe the entire runtime surface it
+        // owns. Startup-owned specs are carried through **verbatim** as
+        // daemon configuration produced them (`enabled` included) so the
+        // diff reports them unchanged and no startup-owned runtime is
+        // removed or restaged by a control transaction. They are never
+        // mutated here; this coordinator only adds names it owns.
+        tunnels.extend(self.startup.tunnels.iter().cloned());
         {
             let definitions = lock(&self.definitions);
             let running = lock(&self.running);
@@ -3106,9 +3117,10 @@ impl TunnelControlState {
         candidate
             .validate()
             .map_err(|error| ControlError::AggregateRejected(static_manager_reason2(&error)))?;
-        // Cross-class bind collisions fail closed even though startup
-        // services never run under this manager: a listener address is
-        // a machine-wide exclusive resource.
+        // Cross-class bind collisions fail closed: a listener address is
+        // a machine-wide exclusive resource, so a control-owned name may
+        // never shadow a startup-owned socket. Startup-owned entries are
+        // themselves in the candidate now, so they are skipped here.
         self.reject_cross_class_collisions(&candidate)?;
         Ok(candidate)
     }
@@ -3127,6 +3139,12 @@ impl TunnelControlState {
             }
         }
         for spec in &candidate.tunnels {
+            // Plan 337: the candidate carries startup-owned specs verbatim
+            // (see `candidate_set`); comparing one against itself is not
+            // a collision.
+            if self.startup_name(spec.id.as_str()).is_some() {
+                continue;
+            }
             if let Some(listener) = spec.listener
                 && startup_listeners.contains(&listener.socket())
             {
@@ -3301,7 +3319,12 @@ impl TunnelControlState {
     }
 
     /// Verifies durable intent and runtime generation agree: every
-    /// running name has a manager runtime and no extra runtimes exist.
+    /// running control-owned name has a manager runtime, and no runtime
+    /// exists that this coordinator does not own.
+    ///
+    /// Plan 337: the manager is shared with the product layer, so a
+    /// startup-owned runtime is not an "extra" runtime for this
+    /// coordinator. Any other unexplained spec id still is.
     fn verify_agreement(&self) -> Result<(), ControlError> {
         let running = lock(&self.running);
         for name in running.iter() {
@@ -3310,9 +3333,13 @@ impl TunnelControlState {
             }
         }
         for runtime in self.manager.all_service_runtimes() {
-            if !running.contains(&runtime.spec_id) {
-                return Err(ControlError::Manager("extra runtime after transition"));
+            if running.contains(&runtime.spec_id) {
+                continue;
             }
+            if self.startup_name(&runtime.spec_id).is_some() {
+                continue;
+            }
+            return Err(ControlError::Manager("extra runtime after transition"));
         }
         Ok(())
     }
@@ -4241,11 +4268,18 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_manager(data_dir: &Path) -> Arc<ServiceTunnelManager> {
-        let config = ServiceTunnelManagerConfig {
+        test_manager_with(data_dir, ServiceTunnelSet::new())
+    }
+
+    /// A manager built exactly as the composition root builds the shared
+    /// one: over an explicit startup spec set, so `prepare` produces the
+    /// startup-owned runtimes the product layer would produce.
+    fn test_manager_with(data_dir: &Path, specs: ServiceTunnelSet) -> Arc<ServiceTunnelManager> {
+        let config = crate::service_tunnels::ServiceTunnelManagerConfig {
             data_dir: data_dir.to_path_buf(),
             aggregate_connection_ceiling: 1024,
             per_service_connection_ceiling: 128,
-            specs: Arc::new(ServiceTunnelSet::new()),
+            specs: Arc::new(specs),
             aliases: Arc::new(i2pr_service_tunnels::StaticAliasTable::new()),
         };
         Arc::new(ServiceTunnelManager::new(config).expect("manager builds"))
@@ -4256,103 +4290,171 @@ mod tests {
         TunnelControlState::new(store, ServiceTunnelSet::new(), test_manager(data_dir))
     }
 
-    /// Plan 334: the control-owned manager is a **separate instance** from the
-    /// one the product layer publishes through, and it never receives a
-    /// router delivery backend.
+    /// Plan 337: exactly **one** manager owns every service runtime.
     ///
-    /// This is the finding that blocks Plan 334's ELS2 publication work, and
-    /// it is upstream of ELS2 entirely. `publish_service_ls2_for_service` lives
-    /// in `service_product.rs`, which only ever holds the manager built from
-    /// `config.service_tunnels.tunnels`; a tunnel created through
-    /// TunnelManager is reconciled onto the fresh control-only manager that
-    /// `for_config` builds. So a control-created *server* tunnel publishes no
-    /// LeaseSet2 at all — encrypted or ordinary — and no ELS2 mode can change
-    /// what it publishes, because there is nothing there to change.
-    ///
-    /// The module documentation above claims "durable administrative ownership
-    /// over the one existing M10 [`ServiceTunnelManager`]". That claim is
-    /// contradicted by the source, and this test is the executable form of the
-    /// contradiction. The defect is pre-existing and belongs to Plan 289's
-    /// subsystem, not to Plan 334.
+    /// This is the positive form of the row Plan 334 could only state
+    /// negatively. `TunnelControlState` is handed the composition root's
+    /// manager and keeps exactly that `Arc`, so a runtime created through
+    /// TunnelManager is the same runtime the product layer delivers and
+    /// publishes through. The manager can hold a delivery capability —
+    /// the product installs one on this same instance — so the row is
+    /// about construction and injection, not about the type.
     #[test]
-    fn plan334_control_manager_is_separate_from_the_product_manager() {
+    fn plan337_control_reconciles_onto_the_product_manager() {
         let directory = TempDir::new().expect("temp dir");
-        let control = test_control(directory.path());
-
-        // The control-owned manager has no executable router backend, so its
-        // runtimes cannot deliver over the network and cannot publish.
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
         assert!(
-            !control.manager.has_router_delivery_backend(),
-            "the control-owned manager must not be assumed router-backed"
-        );
-        // It has no delivery *capability* at all: nothing in the production
-        // call sites installs one on it. `uninstall_router_delivery` returns
-        // the previously installed capability, so `None` is the absence probe.
-        assert!(
-            control.manager.uninstall_router_delivery().is_none(),
-            "the control-owned manager must carry no delivery capability"
+            Arc::ptr_eq(&control.manager, &shared),
+            "the control state must hold the composition root's manager instance"
         );
 
-        // A manager built the way the product layer builds one can hold a
-        // capability, so the asymmetry is in the construction, not the type.
-        // The capability this test can build is deliberately backend-less —
-        // the product layer attaches the executable backend with
-        // `with_backend` — which is why `has_router_delivery_backend` stays
-        // false here and the absence probe below is the one that separates
-        // the two managers.
-        let product_spec_dir = TempDir::new().expect("temp dir");
-        let product = test_manager(product_spec_dir.path());
-        assert!(product.uninstall_router_delivery().is_none());
-        product.install_router_delivery(crate::service_delivery::ServiceDestinationDelivery::new());
+        // The same instance accepts a delivery capability, which is what
+        // the product installs once SSU2 starts. Before Plan 337 the
+        // control built a private manager that nothing ever gave one.
+        assert!(shared.uninstall_router_delivery().is_none());
+        shared.install_router_delivery(crate::service_delivery::ServiceDestinationDelivery::new());
         assert!(
-            product.uninstall_router_delivery().is_some(),
-            "a manager can hold a delivery capability"
+            shared.uninstall_router_delivery().is_some(),
+            "the shared manager must be able to carry the product's delivery capability"
         );
 
-        // Two independently constructed managers are not the same instance, and
-        // the control state keeps its own: the product layer's manager is
-        // reachable only through the composition root, never through the
-        // control state.
+        // A control-created server lands on that shared manager.
+        block_on(control.create(&create_request(
+            "srv337",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:8080"),
+        )))
+        .expect("control create succeeds");
         assert!(
-            !Arc::ptr_eq(&control.manager, &product),
-            "control and product managers must be distinct instances"
+            shared.has_runtime("srv337"),
+            "a control-created runtime must be owned by the shared manager"
         );
     }
 
-    /// Plan 334: a control-created server tunnel is a real, validated
-    /// definition — so the control surface is not inert — but it is not on the
-    /// publication path. This pins the boundary so the gap stays visible
-    /// instead of being read as ELS2-only.
+    /// Plan 337: a control-owned server is a real definition **and** it
+    /// reaches the product layer's publication path, because the manager
+    /// it reconciles onto is the one the product layer sweeps.
+    ///
+    /// The product's publication driver reads the manager's **committed
+    /// generation** (`destination_group_runtimes` /
+    /// `destination_group_has_server`), not the manager's original
+    /// configured spec set. That is what makes a later control reconcile
+    /// visible to it: the generation changes, the product rebuilds its
+    /// destination lists, and the new server destination is marked
+    /// publishable. This row pins that visibility, which Plan 334's
+    /// negative pin could only show was absent.
     #[test]
-    fn plan334_control_created_server_is_validated_but_not_published() {
+    fn plan337_control_created_server_reaches_the_product_publication_sweep() {
         let directory = TempDir::new().expect("temp dir");
-        let control = test_control(directory.path());
-        let mut options = BTreeMap::new();
-        options.insert("target_host".to_owned(), "127.0.0.1".to_owned());
-        options.insert("target_port".to_owned(), "8080".to_owned());
+        let shared = test_manager(directory.path());
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+
+        // A control-created encrypted server: real definition, type-5
+        // posture resolved by Plan 334's mode mapping.
+        let mut options = server_options("127.0.0.1:8080");
         options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
-        let request = create_request("encsrv", TunnelType::HttpServer, options);
-        // The definition is accepted and its posture is resolved.
-        let definition =
-            normalize_definition("encsrv", TunnelType::HttpServer, &request.options, true)
-                .expect("control-created encrypted server normalizes");
+        block_on(control.create(&create_request("encsrv", TunnelType::HttpServer, options)))
+            .expect("control create succeeds");
+        let definition = lock(&control.definitions)
+            .get("encsrv")
+            .cloned()
+            .expect("definition is durable");
         let plan = definition.lease_set_security().expect("the block is valid");
         assert!(plan.publishes_type5());
         assert_eq!(plan.spelling(), Some("blinded"));
 
-        // But the spec it builds carries no publication intent, and the
-        // manager that would own it has no router backend. The absence of a
-        // field here is the finding: nothing in the spec tells the product
-        // layer to publish a type-5 record for this service.
-        let spec = build_control_spec(&definition).expect("spec builds");
-        let serialized = format!("{spec:?}");
-        for needle in ["encrypt_lease_set", "leaseset", "type5", "b33", "blinded"] {
-            assert!(
-                !serialized.to_lowercase().contains(needle),
-                "the spec must not carry LeaseSet publication intent: found {needle:?}"
-            );
-        }
-        assert!(!control.manager.has_router_delivery_backend());
+        // The shared manager now owns a server runtime, and the product
+        // layer's sweep discovers it from the committed generation. This
+        // is the seam that was never reached before Plan 337.
+        let runtime = shared
+            .service_runtime_for_spec("encsrv")
+            .expect("the shared manager owns the control-created runtime");
+        assert!(
+            shared.destination_group_has_server(runtime.destination_id),
+            "the product sweep must see the control-created server as publishable"
+        );
+        assert!(
+            shared
+                .destination_group_runtimes()
+                .iter()
+                .any(|current| current.destination_id == runtime.destination_id),
+            "the control-created destination must appear in the sweep's runtime list"
+        );
+    }
+
+    /// Plan 337 isolation: a control delete removes only its own runtime.
+    /// A startup-owned sibling sharing the manager survives untouched —
+    /// the property that made a shared manager safe to adopt.
+    #[test]
+    fn plan337_control_delete_leaves_a_startup_sibling_intact() {
+        let directory = TempDir::new().expect("temp dir");
+        let mut startup_specs = vec![
+            build_control_spec(&ControlDefinition {
+                name: "startup-srv".to_owned(),
+                tunnel_type: TunnelType::HttpServer,
+                options: server_options("127.0.0.1:9090"),
+                start_on_load: false,
+            })
+            .expect("startup spec"),
+        ];
+        // Daemon configuration marks a startup tunnel enabled; the
+        // control-side builder leaves it off, so mirror the configured
+        // shape the shared manager is actually constructed over.
+        startup_specs[0].enabled = true;
+        let startup = ServiceTunnelSet {
+            tunnels: startup_specs,
+        };
+        let startup_spec = startup.tunnels[0].clone();
+        let shared = test_manager_with(directory.path(), startup.clone());
+        // Prepare the shared manager the way the product does, so the
+        // startup-owned spec is a live runtime before control touches it.
+        block_on(async {
+            let runtimes = shared
+                .prepare()
+                .await
+                .expect("the shared manager prepares startup-owned specs");
+            assert_eq!(runtimes.len(), 1, "one startup-owned runtime");
+        });
+        let store = ControlStore::open(directory.path()).expect("store opens");
+        let control = TunnelControlState::new(store, startup, Arc::clone(&shared));
+        let generation_before = shared.committed_generation_id();
+
+        block_on(control.create(&create_request(
+            "ctrl-srv",
+            TunnelType::HttpServer,
+            server_options("127.0.0.1:9091"),
+        )))
+        .expect("control create succeeds");
+        assert!(shared.has_runtime("startup-srv"));
+        assert!(shared.has_runtime("ctrl-srv"));
+        assert_ne!(
+            shared.committed_generation_id(),
+            generation_before,
+            "a control reconcile must advance the shared manager's generation"
+        );
+
+        block_on(control.delete(&name_request(TunnelAction::Delete, "ctrl-srv")))
+            .expect("control delete succeeds");
+        assert!(
+            !shared.has_runtime("ctrl-srv"),
+            "the control-owned runtime is gone"
+        );
+        assert!(
+            shared.has_runtime("startup-srv"),
+            "a startup-owned sibling must survive a control delete"
+        );
+        // The sibling's spec is untouched: a shared manager must not
+        // rewrite startup configuration through a control transaction.
+        assert_eq!(
+            shared
+                .service_runtime_for_spec("startup-srv")
+                .expect("startup runtime survives")
+                .spec_id,
+            startup_spec.id.as_str()
+        );
     }
 
     fn create_request(
@@ -4367,6 +4469,19 @@ mod tests {
             tunnel_type: Some(tunnel_type),
             new_name: None,
             options,
+        }
+    }
+
+    /// A name-only request for the actions that take no type or options
+    /// (delete / start / stop / restart).
+    fn name_request(action: TunnelAction, name: &str) -> TunnelManagerRequest {
+        TunnelManagerRequest {
+            action,
+            all: false,
+            name: Some(name.to_owned()),
+            tunnel_type: None,
+            new_name: None,
+            options: BTreeMap::new(),
         }
     }
 

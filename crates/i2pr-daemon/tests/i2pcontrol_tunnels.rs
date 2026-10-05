@@ -163,8 +163,14 @@ async fn start_service(
     ChildScope,
     CancellationToken,
 ) {
-    let control =
-        Arc::new(TunnelControlState::for_config(config).expect("control builds for config"));
+    // Plan 337: production construction builds the one shared manager
+    // and injects it into the control state.
+    let manager = i2pr_daemon::build_shared_service_manager(config)
+        .expect("shared manager builds")
+        .expect("control implies a shared manager");
+    let control = Arc::new(
+        TunnelControlState::for_config(config, manager).expect("control builds for config"),
+    );
     let inspection = Arc::new(InspectionHandles::from_config(config));
     let state = Arc::new(
         I2pControlServiceState::new_with_inspection(config.i2pcontrol.clone(), inspection)

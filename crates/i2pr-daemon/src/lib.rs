@@ -309,6 +309,19 @@ fn build_daemon_graph_inner(
     // separate Tunnel Build Message queue is authoritatively empty.
     inspection.publish_tbm_queue(0);
 
+    // Plan 337: build the ONE service-tunnel manager here and inject the
+    // same `Arc` into both owners — the I2PControl control state and the
+    // destination-group product. Plan 289 required "one existing M10
+    // `ServiceTunnelManager`"; until now each owner built a private one,
+    // so a control-created server was never on the publication path.
+    //
+    // Construction is filesystem-only and touches no network. The
+    // executable router delivery backend is installed by the product when
+    // the SSU2 service starts, which the graph now orders ahead of the
+    // I2PControl service, so a control reconcile can never land on a
+    // manager that cannot deliver.
+    let shared_service_manager = build_shared_service_manager(config)?;
+
     if config.sam.enabled {
         register_sam_service(&mut builder, config, inspection, &addressbook)?;
     }
@@ -318,7 +331,12 @@ fn build_daemon_graph_inner(
     }
 
     if config.i2pcontrol.enabled {
-        register_i2pcontrol_service(&mut builder, config, inspection, &addressbook)?;
+        let manager = shared_service_manager.clone().ok_or_else(|| {
+            DaemonError::RuntimeSupervisorFailed(
+                "I2PControl requires the shared service-tunnel manager".to_owned(),
+            )
+        })?;
+        register_i2pcontrol_service(&mut builder, config, inspection, &addressbook, manager)?;
     }
 
     if addressbook.is_active() {
@@ -337,6 +355,7 @@ fn build_daemon_graph_inner(
             &addressbook,
             bootstrap,
             group_lifecycle,
+            shared_service_manager,
         )?;
     }
 
@@ -490,6 +509,82 @@ fn register_i2cp_service(
     Ok(())
 }
 
+/// Builds the one shared service-tunnel manager (Plan 337), or `None`
+/// when this configuration can never own a service runtime.
+///
+/// Both owners receive the same instance: the I2PControl control state
+/// and the destination-group product. Exactly one manager therefore owns
+/// every service runtime, and a control-created server is delivered and
+/// published through the same path as a startup-configured one.
+///
+/// Plan 297: the explicit TLS identity/trust policy is installed here,
+/// before any service prepares, so `use_ssl` tunnels dial under it from
+/// their first connection. While each owner built a private manager only
+/// the control-owned one ever saw the policy, so startup-owned `use_ssl`
+/// services silently ran without it.
+///
+/// Construction is filesystem-only and touches no network. The executable
+/// router delivery backend is installed later, by the product, when the
+/// SSU2 service starts; the graph orders that service ahead of
+/// I2PControl, so a control reconcile can never land on a manager that
+/// cannot deliver.
+pub fn build_shared_service_manager(
+    config: &Config,
+) -> Result<Option<Arc<crate::service_tunnels::ServiceTunnelManager>>, DaemonError> {
+    if !(config.i2pcontrol.enabled || (config.ssu2.enabled && service_tunnels_active(config))) {
+        return Ok(None);
+    }
+    let manager = crate::service_tunnels::ServiceTunnelManager::new(
+        crate::service_tunnels::ServiceTunnelManagerConfig {
+            data_dir: config.router.data_dir.clone(),
+            aggregate_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_aggregate,
+            per_service_connection_ceiling: config
+                .service_tunnels
+                .limits
+                .max_active_connections_per_service,
+            specs: Arc::new(config.service_tunnels.tunnels.clone()),
+            aliases: Arc::new(config.service_tunnels.aliases.clone()),
+        },
+    )
+    .map_err(|error| {
+        DaemonError::RuntimeSupervisorFailed(format!(
+            "failed to build the shared service-tunnel manager: {error}"
+        ))
+    })?;
+    if let Some(policy) = &config.service_tunnels.tls_policy {
+        manager.set_service_tls_policy(policy.policy());
+    }
+    Ok(Some(Arc::new(manager)))
+}
+
+/// Whether the service-tunnel runtime must come up for this configuration.
+///
+/// Plan 337: the destination-group product owns the one shared
+/// `ServiceTunnelManager`, so it must exist whenever a service tunnel can
+/// be created — including through the I2PControl control plane, which is
+/// how an operator adds the *first* service tunnel to a router that has
+/// none configured. Before Plan 337 the gate was "at least one startup
+/// tunnel is enabled", which meant a control-created tunnel had no product
+/// to be published through. I2PControl is disabled by default, so an
+/// ordinary profile is unaffected.
+fn service_tunnels_active(config: &Config) -> bool {
+    config.i2pcontrol.enabled
+        || config
+            .service_tunnels
+            .tunnels
+            .tunnels
+            .iter()
+            .any(|tunnel| tunnel.enabled)
+}
+
+/// Stable identifier of the supervised SSU2 router service. Plan 337
+/// makes the I2PControl service depend on it, so the two must not drift
+/// apart; [`register_ssu2_service`] registers this exact name.
+const SSU2_SERVICE_NAME: &str = "ssu2-router";
+
 /// Registers the supervised I2PControl HTTPS service in the supplied
 /// builder. The factory captures the [`I2pControlServiceState`] so the
 /// per-connection tokio tasks own Arc clones that share the same token
@@ -501,17 +596,17 @@ fn register_i2pcontrol_service(
     config: &Config,
     inspection: &Arc<InspectionHandles>,
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
+    manager: Arc<crate::service_tunnels::ServiceTunnelManager>,
 ) -> Result<(), DaemonError> {
     let i2pcontrol_config = config.i2pcontrol.clone();
     let address = i2pcontrol_config.bind_socket();
     let i2pcontrol_name = ServiceName::new("i2pcontrol").expect("valid service name");
-    // Plan 289: the control-owned service manager is built here (store
-    // beneath the router data dir, fresh control-only manager) and
-    // installed on the service state before serving. Construction
-    // touches only the filesystem; definitions load and reconcile at
-    // service startup. A construction failure fails the service
-    // fail-closed without touching the network.
-    let control = match i2pcontrol_tunnels::TunnelControlState::for_config(config) {
+    // Plan 289/337: the control state is built here over the **one**
+    // shared manager the product layer also owns, with the store beneath
+    // the router data dir. Construction touches only the filesystem;
+    // definitions load and reconcile at service startup. A construction
+    // failure fails the service fail-closed without touching the network.
+    let control = match i2pcontrol_tunnels::TunnelControlState::for_config(config, manager) {
         Ok(control) => Arc::new(control),
         Err(error) => {
             return Err(DaemonError::RuntimeSupervisorFailed(format!(
@@ -521,65 +616,68 @@ fn register_i2pcontrol_service(
     };
     let inspection = Arc::clone(inspection);
     let addressbook = Arc::clone(addressbook);
-    builder
-        .register(ServiceSpec::new(
-            i2pcontrol_name,
-            ServiceClassification::Optional,
-            move |ctx| {
-                let i2pcontrol_config = i2pcontrol_config.clone();
-                let inspection = Arc::clone(&inspection);
-                let addressbook = Arc::clone(&addressbook);
-                let control = Arc::clone(&control);
-                let cancellation = ctx.cancellation().clone();
-                let children = ctx.children();
-                Box::pin(async move {
-                    let state = match I2pControlServiceState::new_with_inspection(
-                        i2pcontrol_config,
-                        inspection,
-                    ) {
-                        Ok(state) => Arc::new(state),
-                        Err(error) => {
-                            let detail = i2pr_core::HealthDetail::new(format!(
-                                "I2PControl service construction failed: {error}"
-                            ))
-                            .ok();
-                            return i2pr_runtime::ServiceResult::Failed(
-                                i2pr_core::ServiceFailure::new(
-                                    i2pr_core::ServiceFailureCategory::InvalidState,
-                                    detail,
-                                ),
-                            );
-                        }
-                    };
-                    state.set_control_manager(Arc::clone(&control));
-                    state.set_addressbook_manager(Arc::clone(&addressbook));
-                    let token = cancellation.clone();
-                    let join_result =
-                        i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
-                            state.run(address, children, token).await
-                        })
-                        .await;
-                    if join_result.is_err() {
-                        let detail = i2pr_core::HealthDetail::new(
-                            "I2PControl listener failed to start within the bounded timeout",
-                        )
+    let mut spec = ServiceSpec::new(
+        i2pcontrol_name,
+        ServiceClassification::Optional,
+        move |ctx| {
+            let i2pcontrol_config = i2pcontrol_config.clone();
+            let inspection = Arc::clone(&inspection);
+            let addressbook = Arc::clone(&addressbook);
+            let control = Arc::clone(&control);
+            let cancellation = ctx.cancellation().clone();
+            let children = ctx.children();
+            Box::pin(async move {
+                let state = match I2pControlServiceState::new_with_inspection(
+                    i2pcontrol_config,
+                    inspection,
+                ) {
+                    Ok(state) => Arc::new(state),
+                    Err(error) => {
+                        let detail = i2pr_core::HealthDetail::new(format!(
+                            "I2PControl service construction failed: {error}"
+                        ))
                         .ok();
                         return i2pr_runtime::ServiceResult::Failed(
                             i2pr_core::ServiceFailure::new(
-                                i2pr_core::ServiceFailureCategory::Internal,
+                                i2pr_core::ServiceFailureCategory::InvalidState,
                                 detail,
                             ),
                         );
                     }
-                    i2pr_runtime::ServiceResult::RequestedShutdown
+                };
+                state.set_control_manager(Arc::clone(&control));
+                state.set_addressbook_manager(Arc::clone(&addressbook));
+                let token = cancellation.clone();
+                let join_result = i2pr_runtime::bounded_timeout(Duration::from_secs(1), async {
+                    state.run(address, children, token).await
                 })
-            },
-        ))
-        .map_err(|e| {
-            DaemonError::RuntimeSupervisorFailed(format!(
-                "failed to register I2PControl service: {e}"
-            ))
-        })?;
+                .await;
+                if join_result.is_err() {
+                    let detail = i2pr_core::HealthDetail::new(
+                        "I2PControl listener failed to start within the bounded timeout",
+                    )
+                    .ok();
+                    return i2pr_runtime::ServiceResult::Failed(i2pr_core::ServiceFailure::new(
+                        i2pr_core::ServiceFailureCategory::Internal,
+                        detail,
+                    ));
+                }
+                i2pr_runtime::ServiceResult::RequestedShutdown
+            })
+        },
+    );
+    // Plan 337: the graph's default order is lexical, which starts
+    // `i2pcontrol` before `ssu2`. The control state reconciles onto the
+    // shared manager, so it must run after the product has prepared that
+    // manager and installed the executable router delivery backend.
+    // Declaring the dependency is only valid when SSU2 is actually
+    // registered, so it is conditional on the same configuration.
+    if config.ssu2.enabled {
+        spec = spec.depends_on(ServiceName::new(SSU2_SERVICE_NAME).expect("valid service name"));
+    }
+    builder.register(spec).map_err(|e| {
+        DaemonError::RuntimeSupervisorFailed(format!("failed to register I2PControl service: {e}"))
+    })?;
     Ok(())
 }
 /// Registers the Plan 321 subscription-refresh worker. The manager owns
@@ -868,6 +966,7 @@ fn register_ssu2_service(
     addressbook: &Arc<crate::addressbook::AddressBookManager>,
     bootstrap: Option<Arc<Mutex<bootstrap::Bootstrap>>>,
     group_lifecycle: crate::service_lifecycle::ServiceLifecycleController,
+    shared_service_manager: Option<Arc<crate::service_tunnels::ServiceTunnelManager>>,
 ) -> Result<(), DaemonError> {
     use crate::router_i2np::{
         Ssu2DaemonService, dispatch_router_i2np, generate_controlled_identity,
@@ -878,10 +977,13 @@ fn register_ssu2_service(
     let router_info_store_config =
         RouterInfoStoreConfig::new(config.netdb.max_records, config.netdb.max_encoded_bytes);
     let service_tunnels = config.service_tunnels.clone();
+    // Plan 337: resolved once at composition, since the gate depends only
+    // on validated configuration and not on runtime state.
+    let service_runtime_active = service_tunnels_active(config);
     let addressbook = Arc::clone(addressbook);
     let floodfill_enabled = config.floodfill.enabled;
     let floodfill_config_path = config.source_path.clone();
-    let ssu2_name = ServiceName::new("ssu2-router").expect("valid service name");
+    let ssu2_name = ServiceName::new(SSU2_SERVICE_NAME).expect("valid service name");
     let inspection = Arc::clone(inspection);
     builder
         .register(ServiceSpec::new(
@@ -894,9 +996,11 @@ fn register_ssu2_service(
                 let inspection = Arc::clone(&inspection);
                 let floodfill_config_path = floodfill_config_path.clone();
                 let service_tunnels = service_tunnels.clone();
+                let service_runtime_active = service_runtime_active;
                 let bootstrap = bootstrap.clone();
                 let addressbook = Arc::clone(&addressbook);
                 let group_lifecycle = group_lifecycle.clone();
+                let shared_service_manager = shared_service_manager.clone();
                 let cancellation = ctx.cancellation().clone();
                 let children = ctx.children();
                 let readiness = ctx.readiness();
@@ -1086,11 +1190,11 @@ fn register_ssu2_service(
                     group_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     let pump_started = tokio::time::Instant::now();
                     let token = cancellation.clone();
-                    let has_enabled_groups = service_tunnels
-                        .tunnels
-                        .tunnels
-                        .iter()
-                        .any(|tunnel| tunnel.enabled);
+                    // Plan 337: the destination-group product must come
+                    // up whenever a service tunnel can exist at all,
+                    // including when the only way to create one is
+                    // I2PControl. See `service_tunnels_active`.
+                    let has_enabled_groups = service_runtime_active;
                     let mut owner = if has_enabled_groups {
                         let Some(bootstrap) = bootstrap.as_ref() else {
                             handle.shutdown();
@@ -1149,6 +1253,9 @@ fn register_ssu2_service(
                             reference: None,
                             options: crate::service_product::ServiceProductOptions::default(),
                             addressbook: addressbook.shared(),
+                            // Plan 337: the one shared manager, also held
+                            // by the I2PControl control state.
+                            shared_manager: shared_service_manager.clone(),
                         };
                         match crate::service_product::ServiceProduct::start_over_existing_daemon(
                             spec,
