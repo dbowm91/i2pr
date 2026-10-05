@@ -1,6 +1,6 @@
 # Plan 354 — listener-independent SAM/I2CP private connection seams
 
-Status: **registered-managed-app-private-client-transport-seams**.
+Status: **in-progress-managed-app-private-client-transport-seams**.
 
 Classification: **infrastructure + invariant**. This plan extracts private, listener-independent connection drivers from the existing daemon-owned SAM and I2CP services so a later managed-app gateway can reuse the exact protocol implementations without granting an application a loopback socket.
 

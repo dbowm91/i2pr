@@ -157,6 +157,14 @@ not gate `sam-bridge` behind a never-ready Essential service.
 
 ### SAM 3.1
 
+The TCP listener is an admission adapter over one SAM connection driver. The
+same driver accepts an injected bounded async byte stream and an explicit
+connection profile. Listener clients retain the ordinary loopback `STREAM
+FORWARD` behavior; private managed-app connections deny host-target forwarding
+before registration or any host connect. The private seam binds no listener,
+requires no listener config, and never uses a localhost socket pair. Raw STREAM
+mode transfers the generic transport into the same supervised raw driver.
+
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |
 | `src/sam.rs` | 3 189 | Plans 137–149 supervised loopback SAM 3.1 listener and composition root; Plan 294 canonical address-book step in `NAMING LOOKUP` (session/Base32 paths precede it; inactive stays `KeyNotFound`). `FORWARD_COPY_CHUNK = 16 * 1024` | `SamServiceState`, `SamServiceError`, `StreamingPools`, `execute_session_create`, `execute_stream_connect`, `execute_stream_accept`, `set_addressbook_handle` |
@@ -166,6 +174,12 @@ not gate `sam-bridge` behind a never-ready Essential service.
 | `src/sam/faults.rs` | 464 | Plan 151 §8 deterministic pre-start delivery fault seam for adversarial tests (packet-level faults a TCP SAM client can never observe) | fault types |
 
 ### I2CP
+
+The TCP listener is an admission adapter over one I2CP connection driver. The
+driver also accepts an injected bounded async byte stream, preserving the same
+protocol byte, frame, timeout, inbound notification, and teardown behavior.
+Private connections require no listener config or host socket and remain under
+the existing daemon `ChildScope` ownership and service limits.
 
 | File | Lines | Responsibility | Key public types |
 | --- | --- | --- | --- |

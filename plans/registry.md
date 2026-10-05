@@ -90,7 +90,7 @@ Parallel anonymity work is beside, not beneath, M12. Plans 297–305 remain stop
 
 | Subsystem | Plan | State | Handoff | Dependencies / handoff note |
 |---|---|---|---|---|
-| Managed native app runtime | 354 listener-independent SAM/I2CP private connection seams | ready | `plans/implementation/managed-native-app-runtime/354-listener-independent-sam-i2cp-private-connection-seams.md` | Plans 352 and 353 closed. Extract one connection driver per protocol, keep listener adapters, and deny managed-app SAM `STREAM FORWARD`/host-target access. |
+| Managed native app runtime | 354 listener-independent SAM/I2CP private connection seams | active | `plans/implementation/managed-native-app-runtime/354-listener-independent-sam-i2cp-private-connection-seams.md` | Plans 352 and 353 closed. Extract one connection driver per protocol, keep listener adapters, and deny managed-app SAM `STREAM FORWARD`/host-target access. |
 | Portable service-tunnel core | 351 external adapter conformance and SAM handoff contract | passed | `plans/closure/portable-service-tunnels/351-status.md` | Exact Plan 350 Git revision/API snapshot consumed; no license selection or crates.io publication required. |
 | M12 floodfill | 275 direct replication and routing-key rollover | passed | `plans/closure/floodfill/275-status.md` | Bounded direct zero-token actions; Plan 276 ready. |
 | M12 floodfill | 276 persistence/maintenance/resource governance | passed | `plans/closure/floodfill/276-status.md` | Versioned/revalidated record envelopes; bounded maintenance and resource leases; Plan 277 stopped at runtime integration. |
