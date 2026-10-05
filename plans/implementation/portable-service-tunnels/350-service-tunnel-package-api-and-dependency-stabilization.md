@@ -1,6 +1,6 @@
 # Plan 350 — service-tunnel package API and dependency stabilization
 
-Status: **registered-portable-service-tunnel-package-api-stabilization-blocked-on-349**.
+Status: **ready-portable-service-tunnel-package-api-stabilization**.
 
 Classification: **infrastructure + polish**. This plan turns the Plan-349-frozen reusable boundary into an externally consumable Rust package/API without changing service-tunnel semantics.
 
@@ -31,7 +31,7 @@ The pass must:
 
 No downstream SAM implementation is part of this plan.
 
-## Why this plan is blocked pending 349
+## Why this plan was blocked pending 349
 
 Package/API work creates durable compatibility obligations. It must not proceed until Plan 349 identifies which current exports are intentionally reusable and which are internal accidents.
 
