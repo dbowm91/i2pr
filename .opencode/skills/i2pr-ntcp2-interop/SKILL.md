@@ -1,6 +1,6 @@
 ---
 name: i2pr-ntcp2-interop
-description: Operate, diagnose, or extend the repository's historical Plan 038/040/041/043/044/045/046/048/049/050/051/052/053/054/055/058/059/060/062/063/064/065/066/067/068/069/075/076/077/080/081/082/083/084/085/086/087/088/090/091/092/093/094/095/096/097/098/099/100 NTCP2 interoperability harness. The active development interop lane is closed; the retained NTCP2 development result is `protocol-defect-localized` at `noise_authenticated` (Plan 099/100, normal-daemon NTCP2 disabled per Plan 101). Use when an agent is asked to read or reproduce the historical harness surface, run a bounded interop profile on a host where the active sequence is executable, prepare or validate reference routers, add or modify a scenario, or validate evidence. Do not activate NTCP2 in the production daemon; do not extend the historical lane without a new plan-of-record.
+description: HISTORICAL, ARCHAEOLOGY-ONLY (closed lane). Read, diagnose, or reconstruct context from the repository's historical Plan 038/040/041/043/044/045/046/048/049/050/051/052/053/054/055/058/059/060/062/063/064/065/066/067/068/069/075/076/077/080/081/082/083/084/085/086/087/088/090/091/092/093/094/095/096/097/098/099/100 NTCP2 interoperability harness. The active development interop lane is closed; the retained NTCP2 development result is `protocol-defect-localized` at `noise_authenticated` (Plan 099/100, normal-daemon NTCP2 disabled per Plan 101). Use when an agent is asked to read or reproduce the historical harness surface, understand why `noise_authenticated` is the terminal state, or validate historical evidence. Do not add or modify a scenario, activate NTCP2 in the production daemon, or extend the historical lane without a new plan-of-record.
 ---
 
 # I2PR NTCP2 Interop (host harness, Plans 038/040/041/043/045/055/058/059/081/082/083/084)
@@ -23,8 +23,8 @@ closed; NTCP2 remains experimental and non-advertised.** The Plan
 boundary; the normal daemon does not activate NTCP2.
 
 Read `AGENTS.md`,
-[`docs/architecture/interop-apparatus.md`](../../docs/architecture/interop-apparatus.md),
-[`docs/architecture/tooling.md`](../../docs/architecture/tooling.md#testsintegrationntcp2--synthetic-interoperability-lane-plan-036),
+[`docs/architecture/interop-apparatus.md`](../../../docs/architecture/interop-apparatus.md),
+[`docs/architecture/tooling.md`](../../../docs/architecture/tooling.md#testsintegrationntcp2-synthetic-interoperability-lane-plan-036),
 the relevant `plans/038-..`, `plans/040-..`, `plans/041-..`,
 `plans/043-..`, `plans/044-..`, `plans/045-..`, `plans/046-..`,
 `plans/048-..`, `plans/049-..`, `plans/050-..`, `plans/051-..`,
@@ -53,7 +53,7 @@ Locked source objects:
 
 Abbreviated revisions are not valid cache or evidence inputs.
 
-## Authoritative terminal state (the closed result)
+## Terminal state of the closed lane
 
 ```text
 plan_099            = closed-protocol-defect-localized
@@ -68,6 +68,10 @@ normal_daemon_activation = disabled
 exact_wire_stage    = noise_authenticated
 external_netdb_over_ntcp2 = blocked
 compact_summary     = target/interop/evidence/milestone-3/31521642090/plan099-summary.json
+                         # gitignored build output; ABSENT on a clean
+                         # checkout and never tracked. The status of
+                         # record is the plan closure record below, not
+                         # this path.
 ```
 
 The cross-side defect is recorded as a localized protocol defect;
@@ -76,7 +80,7 @@ remains experimental and non-advertised. **Do not promote a typed
 blocker, a reference-only control record, a parser-only result, or a
 testkit result into interoperability evidence.**
 
-The active development interop surface is intentionally small and
+The retained interop surface of this closed lane is intentionally small and
 bounded:
 
 - `scripts/interop/run-minimal-i2pd-host-loopback-probe.py` — the
@@ -326,8 +330,11 @@ python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_executi
 ## Plan 099 / 100 closed status (canonical)
 
 The Plan 099/100 closed status is the authoritative terminal state.
-The compact sanitized summary is preserved at
-`target/interop/evidence/milestone-3/31521642090/plan099-summary.json`.
+The compact sanitized summary was written to
+`target/interop/evidence/milestone-3/31521642090/plan099-summary.json` —
+**gitignored build output that does not exist on a clean checkout and was
+never tracked in git**, so it cannot be recovered from the repository. Treat
+the plan closure record as the status of record instead.
 
 ```text
 plan_099 = closed-protocol-defect-localized
@@ -345,9 +352,10 @@ exact_wire_stage = noise_authenticated
 external_netdb_over_ntcp2 = blocked
 ```
 
-The active development interop surface is small and bounded (see
-the **Authoritative terminal state** section above). The focused
-local seam is sufficient for routine development. The full historical
+The retained interop surface of this closed lane is small and bounded (see
+the **Terminal state of the closed lane** section above). This seam is a
+*historical* record only — it is not what routine development uses, and this
+skill is not the entry point for product work (load `i2pr-local-dev`). The full historical
 plan-specific Python matrix, rootless checker, Multipass checker,
 and release-certificate validator are not required for Plan 100
 closure; they remain available via git history for forensic
@@ -437,7 +445,7 @@ bash scripts/check-ntcp2-interoperability.sh  # when ntcp2 evidence/manifest cha
 python3 -m unittest discover -s tests/integration/ntcp2/harness -p 'test_*.py'
 ```
 
-The focused local seam (sufficient for routine development):
+The focused local seam (historical; routine product development uses the `i2pr-local-dev` skill instead):
 
 ```text
 cargo fmt --all --check
@@ -552,12 +560,12 @@ table:
 
 ## Cross-references
 
-- [`AGENTS.md`](../../AGENTS.md)
-- [`README.md`](../../README.md)
-- [`docs/architecture/interop-apparatus.md`](../../docs/architecture/interop-apparatus.md)
-- [`docs/architecture/tooling.md`](../../docs/architecture/tooling.md)
-- [`specs/support.toml`](../../specs/support.toml)
-- [`tests/integration/ntcp2/README.md`](../../tests/integration/ntcp2/README.md)
+- [`AGENTS.md`](../../../AGENTS.md)
+- [`README.md`](../../../README.md)
+- [`docs/architecture/interop-apparatus.md`](../../../docs/architecture/interop-apparatus.md)
+- [`docs/architecture/tooling.md`](../../../docs/architecture/tooling.md)
+- [`specs/support.toml`](../../../specs/support.toml)
+- [`tests/integration/ntcp2/README.md`](../../../tests/integration/ntcp2/README.md)
 - [`.opencode/skills/i2pr-rootless-sandbox/`](../i2pr-rootless-sandbox/)
 - [`.opencode/skills/i2pr-multipass-recovery/`](../i2pr-multipass-recovery/)
 - [`.opencode/skills/i2pr-local-dev/`](../i2pr-local-dev/)

@@ -22,7 +22,13 @@ Load this skill when working on:
   `in-progress-*`, `registered-*`) and their codegg-state projection
 
 For crate/ADR/spec navigation and doc-vs-source audits, see `i2pr-architecture`. For
-product/SSU2/SAM/I2CP/tunnel implementation rules, see `i2pr-local-dev`.
+product/SSU2/SAM/I2CP/I2PControl/tunnel/transit/floodfill implementation rules, see
+`i2pr-local-dev`. The NTCP2/rootless/Multipass skills are historical (closed Plans
+038–100/046/048) — archaeology only, never routine work.
+
+Canonical: [`plans/README.md`](../../../plans/README.md),
+[`plans/registry.md`](../../../plans/registry.md),
+[`plans/global-number-collision-ledger.md`](../../../plans/global-number-collision-ledger.md).
 
 ## Authority order (non-negotiable)
 
@@ -145,6 +151,41 @@ active roadmaps, dependency-ready plans, active/closing work, blocked work with 
 recently closed work with commits, execution sequences, verification policy, deferred
 work. Remove closed rows from active sections after recording them under recently
 closed. Do not copy milestone requirements into the registry.
+
+## Never mirror plan state outside `plans/`
+
+The registry is the live index and is maintained with the code. **Do not copy
+plan numbers, status tokens, or a plan ledger into a skill, `README.md`, or an
+architecture deep-dive.** Duplicated state goes stale silently and then
+contradicts the authority. This is not hypothetical: a 342-line plan ledger in
+`i2pr-local-dev` and a 376-line one in `i2pr-architecture` had both gone ~90
+plans out of date while `plans/closure/` moved on. The fix in the 2026-10-05
+pass was to delete both and leave a navigation pointer.
+
+What is safe to state outside `plans/`, and must be re-derived when you touch it:
+
+- A *pointer* to the authority ("read `plans/registry.md`").
+- Durable constraints that never change (reference pins, evidence rules).
+- A short orientation block explicitly labelled "read the registry for the
+  current value".
+
+What is not safe: `plan_NNN = <token>` tables, "currently ready: planNNN",
+per-plan status narratives, and copied `active_plan` values. When you catch
+one, delete it rather than refreshing it — a refreshed copy is a fresh
+guarantee that it will rot again.
+
+## Numbering and uniqueness
+
+Global plan numbers are keyed across `registry.md`, status records, evidence
+checkers, and doc/spec cross-references, so they are never renumbered. Guard
+with `python3 scripts/check-global-plan-number-uniqueness.py` (run it with
+`python3`; `bash` garbles it and exits 2).
+
+**Known gap (2026-10-05): ADR numbers have no uniqueness checker**, and
+`docs/adr/` currently holds two `0030-*` records, both `Accepted`, which makes
+ADR 0029's "partially superseded by ADR 0030" ambiguous. Cite ADR 0030 by full
+filename. Renumbering an accepted ADR needs a plan-of-record and must not
+rewrite predecessor text.
 
 ## Review checklist before handoff
 

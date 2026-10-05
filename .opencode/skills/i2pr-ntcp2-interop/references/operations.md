@@ -1,4 +1,14 @@
-# Plans 038/040/041/043 host operations reference
+# Plans 038/040/041/043 host operations reference (HISTORICAL — archaeology only)
+
+> **This lane is closed.** The retained NTCP2 development result is
+> `protocol-defect-localized` at `noise_authenticated` (Plans 099/100), and
+> normal-daemon NTCP2 is disabled (Plan 101). The commands below are a
+> *historical record* of how the lane was driven, not a procedure to run.
+>
+> **`root`, `sudo`, Linux namespaces, containers, VMs/Multipass, systemd, and
+> the public I2P network are forbidden for routine acceptance by `AGENTS.md`.**
+> The `sudo` lines below exist only to document a closed lane. Do not execute
+> them. Do not extend this lane without a new plan-of-record.
 
 Run commands from the repository root. The authoritative harness instructions
 are in `tests/integration/ntcp2/README.md`; this reference is a compact routing
@@ -6,6 +16,29 @@ guide for an agent. Plan 046 (rootless sealed-namespace lane) and Plan
 048/049/050/051 (Multipass recovery lane) are intentionally **not** in this
 file — load the `i2pr-rootless-sandbox` and `i2pr-multipass-recovery`
 companion skills for those lanes.
+
+## Pruned local artifacts (do not expect these on disk)
+
+The Plan 099 harness reduction (`c04da77a`, 2026-08-11) removed 25 harness
+files. Anything below marked **[pruned]** no longer exists:
+
+```text
+tests/integration/ntcp2/harness/java_matrix.py          [pruned]
+tests/integration/ntcp2/harness/java_startup_probe.py   [pruned]
+tests/integration/ntcp2/harness/observation_catalog.py  [pruned]
+tests/integration/ntcp2/harness/observation_helpers.py  [pruned]
+tests/integration/ntcp2/harness/mixed_runner.py         [pruned]
+```
+
+A `unittest discover -p 'test_planNNN.py'` line naming any of
+`test_plan095`..`test_plan098`, or a reference to
+`scripts/check-plan095-workflow.sh`, is likewise pruned.
+
+Paths under `target/` (`target/interop/evidence/`, `target/interop/runs/`,
+`target/interop/cache/current-cache.json`) are gitignored build output and are
+absent on a clean checkout. Sanitized evidence lives in
+`tests/integration/ntcp2/evidence/`, and the authoritative status is the plan
+closure record — not an artifact path.
 
 ## Plan 043 gate order
 
@@ -159,33 +192,36 @@ remediation, and the `dispatch-gate.sh` Plan 051 troubleshooting bridge.
 ## Plan 054 Java startup and reference-observation qualification
 
 Plan 054 closes the two Plan 052 evidence gates that depend on a live
-Java reference and a per-side observation marker. The local artifacts:
+Java reference and a per-side observation marker. The local artifacts
+**as they were at Plan 054/055** (five of them are **[pruned]** by the Plan 099
+harness reduction and no longer exist):
 
-- `tests/integration/ntcp2/harness/java_matrix.py` — 16-cell matrix
+- `tests/integration/ntcp2/harness/java_matrix.py` **[pruned]** — 16-cell matrix
   driver with three isolated attempts per cell and a ten-consecutive
   qualification mode. Never launch the frozen template directly
   (`template-launch-forbidden`).
-- `tests/integration/ntcp2/harness/java_startup_probe.py` — adds
+- `tests/integration/ntcp2/harness/java_startup_probe.py` **[pruned]** — added
   the `seeded-clone` data state, the bounded entropy probe, and the
   twelve typed failure stages.
-- `tests/integration/ntcp2/reference-observation-catalog.toml` —
+- `tests/integration/ntcp2/reference-observation-catalog.toml` — (still present)
   machine-readable catalog (schema
   `i2pr-reference-observation-catalog-v1`) binding every marker to
   its exact source path, symbol, marker text, and sanitization rule.
-- `tests/integration/ntcp2/harness/observation_catalog.py` and
-  `observation_helpers.py` — TOML load/validate/drift and the shared
+- `tests/integration/ntcp2/harness/observation_catalog.py` **[pruned]** and
+  `observation_helpers.py` **[pruned]** — TOML load/validate/drift and the shared
   `LogCursor` / `build_observation` helpers.
-- `scripts/interop/java-prepare-template.py` — preparation-phase
+- `scripts/interop/java-prepare-template.py` — (still present) preparation-phase
   command. Only this path may install Java; the execution phase is
   restricted to `seeded-clone` clones.
 
-The Java and i2pd adapters expose `collect_observation()` and return
-finalized observation-v2 records. `mixed_runner._evaluate_plan052_predicate`
-now applies the `receiver_passes_data_phase` predicate against those
-records; the Plan 053 pipeline accepts the live records through
+At Plan 054 the Java and i2pd adapters exposed `collect_observation()` and
+`mixed_runner._evaluate_plan052_predicate` applied the
+`receiver_passes_data_phase` predicate against those records; the Plan 053
+pipeline accepted the live records through
 `write_direction_artifacts(..., i2pr_observation=...,
-reference_observation=...)`. The synthetic builder remains the typed
-fallback for blocked and rejected directions.
+reference_observation=...)`. **[pruned]** — `mixed_runner.py` no longer exists.
+The synthetic builder remains the typed fallback for blocked and rejected
+directions.
 
 External qualification (the complete 48-start matrix, the ten
 consecutive rootless starts, and the seven control experiments)

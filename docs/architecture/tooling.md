@@ -41,9 +41,9 @@ lives in [interop-apparatus.md](interop-apparatus.md).
 | `scripts/check-runtime-boundaries.sh` | Grep-based audit: unbounded channels, wall-clock sleeps, raw `JoinHandle`s, ownerless `tokio::spawn`, `async fn` in transport contracts, Tokio deps in wrong crates, `std::net`/`std::fs` in transport, `i2pr-testkit` referenced by a production crate. | yes | yes |
 | `scripts/check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants: no Tokio/sockets in `i2pr-service-tunnels`, no Garlic/I2NP construction, single shared `run_stream_pump`, no unbounded Tokio channels, exactly one `register_service_tunnel_manager` entry point. **Rules 9–11 (Plan 343)**: the outproxy policy/route-owner pair (`i2pr-service-tunnels/src/outproxy.rs` + `i2pr-daemon/src/outproxy_route.rs`) must both exist; neither may name a clearnet socket type, resolver, or TLS-to-clearnet client (`TcpStream\|TcpListener\|UdpSocket\|to_socket_addrs\|lookup_host\|TcpSocket\|openssl\|native_tls\|reqwest\|hyper`) — `std::net::IpAddr` is deliberately *not* matched, because parsing an address is how the target grammar refuses IP literals; neither may load a plugin or spawn a process (`libloading\|dlopen\|Library::new\|Command::new\|std::process`), since `UseOutproxyPlugin` is a wire boolean, not a module to load. **Rule 10 is a positive control**: `service_tunnels_http.rs` must still match `TcpStream\|TcpListener`, because that local listener is what proves rule 9 is not vacuous — if it ever stops matching, the guard has rotted rather than the code having become safe. | yes | **no** |
 | `scripts/check-m11-transit-boundaries.sh` | Plan 264/265 M11 transit runtime-neutrality and static boundary invariants. | yes | yes |
-| `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the LeaseSet2 type-5 deferred path must not enter server-authority NetDB storage. | **no** | **no** |
-| `scripts/check-m11-per-epoch-composition.sh` | Plan 264 §work-package-A per-epoch fresh-mesh composition gate, extended by Plan 265 into the fixed-budget opportunity-qualified closure composer (three frozen scenario families, exactly eight retained fresh-mesh attempts). | **no** | **no** |
-| `scripts/check-service-anonymity-boundaries.sh` | Plan 307 service-boundary matrix and leak regression checker: rejects `i2pr/<version>`-style product sentinels (`Proxy-Agent: i2pr`, `DEFAULT_QUIT_REASON`, product/build/router/transport/hostname/IP/path/destination-alias/raw-error sentinels) across the service-tunnel HTTP/SOCKS/IRC source set. | **no** | **no** |
+| `scripts/check-m12-floodfill-boundaries.sh` | M12 floodfill runtime-neutrality: `i2pr-netdb` must not import `i2pr-daemon`/`i2pr-runtime` effects, no `tokio::`/`std::{net,fs}::`/sockets/`JoinHandle`/`tokio::spawn` under `crates/i2pr-netdb/src`, and the LeaseSet2 type-5 deferred path must not enter server-authority NetDB storage. **Currently exits 1** — that type-5 rule is stale: Plans 332/333/334 legitimately put `EncryptedLeaseSet` into NetDB storage. Not in the floor or CI, so the failure is silent. Do not add it to the floor until a plan corrects the rule. | **no** | **no** |
+| `scripts/check-m11-per-epoch-composition.sh` | Plan 264 §work-package-A per-epoch fresh-mesh composition gate, extended by Plan 265 into the fixed-budget opportunity-qualified closure composer (three frozen scenario families, exactly eight retained fresh-mesh attempts). | yes | **no** |
+| `scripts/check-service-anonymity-boundaries.sh` | Plan 307 service-boundary matrix and leak regression checker: rejects `i2pr/<version>`-style product sentinels (`Proxy-Agent: i2pr`, `DEFAULT_QUIT_REASON`, product/build/router/transport/hostname/IP/path/destination-alias/raw-error sentinels) across the service-tunnel HTTP/SOCKS/IRC source set. | yes | **no** |
 | `scripts/check-rootless-interop-boundary.sh` | Plan 046 rootless sealed-namespace lane boundary. Forbids `sudo`/`ip netns`/`nft`/`setcap`/`--privileged`/`--network host` and silent fallback to the privileged backend. | **no** | no — `ntcp2-interop-rootless.yml` only |
 | `scripts/check-multipass-interop-boundary.sh` | Plan 048/049/050/051 Multipass recovery lane boundary. Forbids host-policy mutations and global `multipass purge` outside an atomic reservation. | **no** | **no** |
 | `scripts/check-constrained-host-lane-boundary.sh` | Plan 077 constrained-host selection-order boundary (rootful Docker `--network none` → QEMU TCG `-nic none` → reduced inherited descriptors + seccomp → manual remote Linux → typed `no-full-runtime-lane` result). | yes | yes |
@@ -161,24 +161,32 @@ integrity. `fuzz-smoke.sh` delegates to `cargo fuzz run`.
 Every `AGENTS.md` floor command still maps to a script that exists —
 no floor entry is missing. The gaps run in the other direction.
 
-**In the floor but not in `ci.yml` (2):**
+Recomputed from disk and both files on 2026-10-05: 25 floor checkers,
+22 in `ci.yml`, 33 `check-*` files on disk.
+
+**In the floor but not in `ci.yml` (4):**
 
 - `bash scripts/check-service-tunnel-boundaries.sh`
 - `bash scripts/check-m11-transit-qualification-evidence.sh`
+- `bash scripts/check-m11-per-epoch-composition.sh`
+- `bash scripts/check-service-anonymity-boundaries.sh`
 
 **In `ci.yml` but not in the floor (1):**
 
 - `bash scripts/check-java-source-lock-gating.sh`
 
-**On disk but in neither the floor nor `ci.yml` (8):**
+**On disk but in neither the floor nor `ci.yml` (9):**
 
-- `scripts/check-m12-floodfill-boundaries.sh`
-- `scripts/check-m11-per-epoch-composition.sh`
-- `scripts/check-service-anonymity-boundaries.sh`
-- `scripts/check-streaming-fingerprint-evidence.sh`
+- `scripts/check-m12-floodfill-boundaries.sh` — **currently exits 1**; its
+  LeaseSet2 type-5 rule is stale against Plans 332/333/334. Keep it out of the
+  floor until a plan corrects it.
+- `scripts/check-streaming-fingerprint-evidence.sh` — takes a plan argument.
 - `scripts/check-http-anonymity-evidence.sh` and
-  `scripts/check-http-anonymity-evidence.py`
-- `scripts/check-multipass-interop-boundary.sh`
+  `scripts/check-http-anonymity-evidence.py` — need a Plan 308 manifest that
+  does not exist (Plan 308 blocked).
+- `scripts/check-rootless-interop-boundary.sh`
+- `scripts/check-multipass-interop-boundary.sh` — both historical-lane
+  checkers, green; they police closed Plans 046/048 lanes.
 - `scripts/interop/check-m6-java-response-source-lock.sh`
 - `scripts/interop/check-p243-host-qualified.sh`
 
