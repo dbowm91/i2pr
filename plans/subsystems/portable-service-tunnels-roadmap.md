@@ -1,6 +1,6 @@
 # Portable Service-Tunnel Core Roadmap
 
-Status: active — Plan 349 passed; Plan 350 is ready; Plan 351 remains blocked on Plan 350. This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
+Status: active — Plans 349–350 passed; Plan 351 is ready. Plan 350's public package publication remains blocked pending license selection. This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -116,8 +116,8 @@ Plan 349 passed and froze the ownership contract. Plan 350 is ready; Plan 351 re
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
 | 349 | closed | `passed-portable-service-tunnel-boundary-and-ownership-contract` | invariant + infrastructure | `plans/implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md` | `plans/closure/portable-service-tunnels/349-status.md` |
-| 350 | ready | `registered-portable-service-tunnel-package-api-stabilization` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | future `plans/closure/portable-service-tunnels/350-status.md` |
-| 351 | blocked | `registered-portable-service-tunnel-external-adapter-conformance-blocked-on-350` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | future `plans/closure/portable-service-tunnels/351-status.md` |
+| 350 | closed | `passed-portable-service-tunnel-package-api-stabilization-publication-blocked-by-license-selection` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | `plans/closure/portable-service-tunnels/350-status.md` |
+| 351 | ready | `registered-portable-service-tunnel-external-adapter-conformance` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | future `plans/closure/portable-service-tunnels/351-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -173,8 +173,8 @@ This workstream is complete when:
 
 Plan 349 passed. ADR 0032 and the portable-core reference freeze the ownership/public-contract boundary; no internal crate split is required.
 
-Plan 350 is ready. It performs package/dependency/API stabilization and must treat licensing as an explicit publication gate, not an assumption.
+Plan 350 passed its package/API stabilization. The package remains unpublished with `publish = false` until the owner selects a license.
 
-Plan 351 is registered but blocked on Plan 350. It proves the public boundary from a true external-consumer fixture and produces the clean downstream handoff for a future independent SAM library/tunnel-manager repository.
+Plan 351 is ready. It proves the public boundary from a true external-consumer fixture and produces the clean downstream handoff for a future independent SAM library/tunnel-manager repository.
 
 No SAM implementation or new user-visible tunnel product is authorized by these registrations.

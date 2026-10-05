@@ -1,6 +1,6 @@
 # Plan 349 — portable service-tunnel boundary and ownership contract
 
-Status: **registered-portable-service-tunnel-boundary**.
+Status: **passed-portable-service-tunnel-boundary-and-ownership-contract**.
 
 Classification: **invariant + infrastructure**. This plan freezes the reusable ownership boundary around `i2pr-service-tunnels`. It does not implement a SAM client, tunnel daemon, Python/C binding, WebUI, application sidecar, or new router capability.
 
