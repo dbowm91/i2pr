@@ -72,8 +72,9 @@ which middleware cannot read, so the handler verifies it with the same
 `verify_csrf` before the state change.
 
 **Script execution.** CSP is `default-src 'none'` with `script-src 'self'`,
-`style-src 'self'`, `frame-ancestors 'none'`, `form-action 'self'`, and
-`base-uri 'none'`. There is no `unsafe-inline` and no `unsafe-eval`; the shell
+`style-src 'self'`, `img-src 'self'`, `font-src 'self'`, `connect-src 'self'`,
+`frame-ancestors 'none'`, `form-action 'self'`, `base-uri 'none'`, and
+`object-src 'none'`. There is no `unsafe-inline` and no `unsafe-eval`; the shell
 ships no inline script, so the escape hatch is never needed. `console.js` is
 dependency-free and uses `AbortController` with a single in-flight request, so a
 hidden or backgrounded tab cannot fan out requests.

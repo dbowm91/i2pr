@@ -138,9 +138,13 @@ introduce CORS. Redirects are constructed through it rather than via
 `axum::response::Redirect`, which would bypass the policy.
 
 CSP is `default-src 'none'` with `script-src 'self'`, `style-src 'self'`,
-`frame-ancestors 'none'`, `form-action 'self'`, `base-uri 'none'` and **no
-`unsafe-inline`** — the shell ships no inline code, so the escape hatch is
-never needed.
+`img-src 'self'`, `font-src 'self'`, `connect-src 'self'`,
+`frame-ancestors 'none'`, `form-action 'self'`, `base-uri 'none'`,
+`object-src 'none'` and **no `unsafe-inline`** — the shell ships no inline code,
+so the escape hatch is never needed. It travels with `Referrer-Policy:
+no-referrer`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, and a
+`Permissions-Policy`.
 
 ## 5. Read-only control boundary
 

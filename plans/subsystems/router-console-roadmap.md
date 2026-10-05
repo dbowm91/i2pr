@@ -1,6 +1,6 @@
 # Router Console Roadmap
 
-Status: parallel — Plan 356 is ready. Plans 357 and 358 are registered behind it. This line establishes a localhost-only, self-contained web console over I2PControl / Proposal 170 without changing router protocol support or exposing router internals.
+Status: parallel — **Plans 356, 357, and 358 are all passed.** The initial console foundation milestone is implemented. This line establishes a localhost-only, self-contained web console over I2PControl / Proposal 170 without changing router protocol support or exposing router internals. The console remains experimental, loopback-only, disabled by default, and non-advertised, and is not reachable through `i2pr run` while that pre-existing startup defect stands.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -203,11 +203,14 @@ If implementation demonstrates that generic capability discovery is required, re
 
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
-| 356 | ready | `registered-router-console-http-theme-foundation` | infrastructure + invariant | `plans/implementation/router-console/356-eggserve-axum-self-contained-console-foundation.md` | future `plans/closure/router-console/356-status.md` |
-| 357 | blocked on 356 | `blocked-router-console-browser-security-on-plan356` | invariant + infrastructure | `plans/implementation/router-console/357-loopback-browser-security-and-optional-authentication.md` | future `plans/closure/router-console/357-status.md` |
-| 358 | blocked on 356,357 | `blocked-router-console-prop170-overview-on-plans356-357` | capability + infrastructure | `plans/implementation/router-console/358-prop170-control-client-and-read-only-overview.md` | future `plans/closure/router-console/358-status.md` |
+| 356 | passed | `passed-eggserve-axum-self-contained-console-foundation` | infrastructure + invariant | `plans/implementation/router-console/356-eggserve-axum-self-contained-console-foundation.md` | `plans/closure/router-console/356-status.md` (implementation `73506b38`) |
+| 357 | passed | `passed-loopback-browser-security-and-optional-authentication` | invariant + infrastructure | `plans/implementation/router-console/357-loopback-browser-security-and-optional-authentication.md` | `plans/closure/router-console/357-status.md` (implementation `73506b38`) |
+| 358 | passed | `passed-prop170-control-client-and-read-only-overview` | capability + infrastructure | `plans/implementation/router-console/358-prop170-control-client-and-read-only-overview.md` | `plans/closure/router-console/358-status.md` (implementation `73506b38`) |
 
-Later functional pages remain unnumbered until the first vertical slice proves the browser/control boundary and identifies exact missing standard control methods.
+Later functional pages remain unnumbered. The first vertical slice has now
+proved the browser/control boundary; the control-gap matrix in
+`plans/closure/router-console/358-status.md` identifies the exact missing
+standard control methods and is the input to that next registration.
 
 ## 8. Cross-cutting requirements
 
@@ -307,8 +310,46 @@ Full Java/I2P+ functional parity is not part of this initial completion definiti
 
 ## 12. Milestone status summary
 
-Plan 356 is ready and establishes the reusable HTTP/application boundary: direct EggServe H1 transport, Axum routing through `TowerToEggserve`, an `i2pr-console` crate, compile-time browser assets, Halloy-compatible theme translation, and hard separation from future eepsite serving.
+**Plans 356, 357, and 358 are passed.** Implementation landed together in
+`73506b38` because each plan is only meaningful with the others present and
+because Plan 358's `ControlDispatcher` extraction is a precondition for the
+console's data path; the closure records separate what each plan contributed.
 
-Plan 357 is blocked on Plan 356 and hardens the loopback browser boundary with strict bind/Host/Origin policy, security headers, optional authentication, bounded sessions/throttling, and CSRF protection before mutating routes are permitted.
+Plan 356 established the reusable HTTP/application boundary: direct EggServe H1
+transport, Axum routing through `TowerToEggserve`, the `i2pr-console` crate
+(zero workspace dependencies, no socket, `axum` built without `tokio`),
+compile-time browser assets, and a bounded Halloy-compatible theme adapter.
+Three original i2pr palettes ship; **the 50-theme EggPool import was not
+performed** because its licence could not be established, and that blocked
+follow-up is recorded in `crates/i2pr-console/assets/themes/PROVENANCE.md`.
 
-Plan 358 is blocked on Plans 356 and 357 and supplies the first end-to-end control-plane consumer: backend-only I2PControl authentication, canonical Proposal-170 requests, capability/unavailability handling, and a truthful read-only router overview. Missing standard administrative methods are recorded as control-plane work rather than bypassed with console-private router access.
+Plan 357 hardened the loopback browser boundary with an exact `Host` allow-list
+derived from the bound address and resolved port, Origin validation for unsafe
+methods, centralized CSP/hardening headers with no `unsafe-inline` and no
+`Server` header, optional Argon2id authentication with bounded concurrency,
+bounded opaque sessions with revocation, CSRF, and a console-wide login throttle
+(the substrate exposes no unforgeable per-client identity, so the throttle bounds
+delay rather than attributing it per client).
+
+Plan 358 supplied the first end-to-end control-plane consumer. `ControlDispatcher`
+was extracted from `I2pControlServiceState` so the console and the external
+listener share **one** implementation of every handler; `LocalConsolePrincipal` is
+a daemon-issuable closed allow-set limited to `RouterInfo` and `ClientServicesInfo`
+that bypasses only the external bearer-token step. Local-vs-wire parity is proved
+by test. Enabling the console requires **no** external I2PControl listener,
+password, or token. Missing standard administrative methods remain recorded as
+control-plane work rather than bypassed with console-private router access.
+
+**Two consequences outside this subsystem.** First, the workspace MSRV moved
+`1.88` → `1.89`, because every published `eggserve-server` release (0.2.0–0.4.0)
+and `eggserve-primitives` 0.2.2 declares `rust-version = "1.89"` and the rest of
+the locked graph tops out at exactly 1.88.0. Second, Plan 356 closed a
+pre-existing gap in `check-dependency-direction.sh`: the map now has one
+`expected` key per workspace member (22 for 22), and `check-console-boundaries.sh`
+rule 7 asserts that, so the gap cannot silently reopen.
+
+**Honest current posture.** The console has **no product-reachable path**, because
+`i2pr run` does not open any listener — the pre-existing Essential-`lifecycle`
+readiness defect recorded in `README.md` and `AGENTS.md`. The console is
+reachable only through tests and direct `ConsoleServiceState` use. Closing that
+defect needs its own plan-of-record and is not part of this line.
