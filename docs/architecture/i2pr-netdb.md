@@ -734,9 +734,13 @@ What is **not** claimed, stated explicitly:
   `common.leaseset2-family` with `advertised = false` and the note "No
   floodfill serving is claimed"; the type-5 surface is `status =
   "experimental"`.
-- **No interoperability.** Per ADR 0005 and Plan 336, neither i2pd nor
-  Java I2P can verify the type-5 transcript today, so the transcript is
-  i2pr-only. See
+- **No live interoperability yet, but the transcript is no longer i2pr-only.** Per
+  ADR 0032 and Plan 346, the ELS2 network use of type 11 is a bounded
+  compatibility profile: `els2_transcript` owns it, outbound records carry the
+  deployed Java/i2pd transcript, and inbound records accept both that and the
+  Proposal-146 strict transcript, reporting a typed four-state result and
+  failing closed on an ambiguous match. Plan 347 owns the still-unexecuted live
+  evidence. See
   [`332-status.md`](../../plans/closure/i2pcontrol-proposal-170/332-status.md)
   and
   [`333-status.md`](../../plans/closure/i2pcontrol-proposal-170/333-status.md):
@@ -964,8 +968,11 @@ control to be exercised by its callers rather than internally.
   — the bound-everything posture.
 - [ADR 0004 — Router identity algorithms](../../docs/adr/0004-router-identity-algorithms.md).
 - [ADR 0005 — Crypto dependency selection](../../docs/adr/0005-crypto-dependency-selection.md)
-  — external crypto only; the reason the type-5 transcript is
-  i2pr-only and unverifiable by i2pd and Java I2P.
+  — external crypto only; amended by ADR 0032 for the ELS2 use of type 11.
+- [ADR 0032 — The encrypted LeaseSet2 type-11 signature-profile
+  boundary](../../docs/adr/0032-els2-type11-signature-profile-boundary.md) —
+  the strict primitive stays byte-exact; the deployed Java/i2pd transcript is a
+  separate, bounded, ELS2-owned profile with no generic dual-transcript verifier.
 - [ADR 0010 — Transport contracts and crate boundaries](../../docs/adr/0010-transport-contracts-and-crate-boundaries.md).
 - [ADR 0027 — Floodfill role, provenance, and advertisement](../../docs/adr/0027-floodfill-role-provenance-and-advertisement.md)
   — the type-5 deferral floor as originally written (later superseded

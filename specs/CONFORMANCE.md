@@ -240,18 +240,61 @@ reviewed `curve25519-dalek` arithmetic. Its status is:
   the deterministic fields compare byte-for-byte and both signature rows of every vector verify.
 - **Byte-compatible with one independent implementation.** `eggstack/emissary@6885a945` reproduces
   the same alpha values, blinded keys, DHT storage keys, and signature bytes.
-- **Signature-type 11 is not accepted on the wire, advertised, or used for any database record.**
-  The primitive is consumed by nothing. Encrypted LeaseSet2 / DatabaseStore type 5 support is
-  **not** claimed.
-- **Known interop limitation.** `i2pd` and Java I2P sign type 11 with a bare-SHA-512 transcript
-  that omits the `I2P_Red25519H(x)` domain and the specification's length framing, and cannot
-  verify the official vector corpus. A type-5 record signed by i2pr is therefore unverifiable by
-  those two implementations today. Blinding, alpha derivation, and the DHT storage key interoperate
-  with both, so address derivation and lookup are unaffected. Any future ELS2 owner must state this
-  limitation instead of implying network interoperability.
+- **Signature-type 11 is used for one thing only: the encrypted LeaseSet2 type-5 outer
+  signature.** It is not advertised, and no other database record uses it. A second, explicitly
+  bounded profile now exists for that one use; see below.
+- **Known interop limitation, corrected by Plan 346.** `i2pd` and Java I2P sign type 11 with a bare
+  SHA-512 transcript that omits the `I2P_Red25519H(x)` domain and the specification's length
+  framing, and cannot verify the official vector corpus. Under a strict-only policy an i2pr type-5
+  record was therefore unverifiable by both. Plan 346 keeps the strict primitive byte-exact and adds
+  the deployed ELS2 transcript as a **separate, bounded profile owned by the type-5 verifier** (ADR
+  0032). A type-5 record i2pr publishes is now signed with the transcript those two routers verify,
+  and a record either of them publishes is readable by i2pr. Blinding, alpha derivation, and the DHT
+  storage key interoperated with both before this change and are unchanged.
 
-Authority: Plans 329–331 and the Plan 336 spec-first conformance decision
-(`plans/closure/i2pcontrol-proposal-170/336-closure.md`).
+Authority: Plans 329–331, the Plan 336 spec-first conformance decision
+(`plans/closure/i2pcontrol-proposal-170/336-closure.md`), and Plan 346 / ADR 0032
+(`plans/closure/i2pcontrol-proposal-170/346-status.md`). Plan 335's measured-negative boundary is
+preserved as history and is superseded for forward execution by Plans 346–347; Plan 346 passes does
+not itself claim cross-router interoperability, which is Plan 347's evidence.
+
+#### The two type-11 transcripts (ADR 0032)
+
+- **Strict (Proposal 146) is unchanged and still the only meaning of the generic primitive.**
+  `i2pr_crypto::red25519::{sign, verify, sign_with_nonce, verify_blinded}` keep the
+  `I2P_Red25519H(x)` domain prefix and the two-byte little-endian message-length framing, and all
+  ten official Red25519 vectors still pass byte-for-byte.
+- **Deployed (Encrypted LeaseSet2) is a separate composition, not a redefinition.**
+  `i2pr_crypto::red25519_deployed` implements `r = SHA-512(T || A || m)`, `c = SHA-512(R || A || m)`,
+  `S = r + c·a` over the same reviewed `curve25519-dalek` arithmetic, sharing its point, scalar, and
+  equation code rather than duplicating it. Cross-verified against **executed** output from
+  `i2p/i2p.i2p@93eef5db…` and `PurpleI2P/i2pd@2c694149…` in both directions.
+- **There is no wire discriminator between the two definitions.** A type-5 record names signature
+  type 11 and carries 64 bytes; nothing says which transcript produced them.
+- **No generic dual-transcript type-11 verifier exists.** The common signature layer
+  (`i2pr_crypto::verify_signature`) has no type-11 path at all, so the deployed transcript is
+  reachable only from the ELS2 type-5 owner. Enforced statically by
+  `scripts/check-els2-type11-transcript-boundary.sh`.
+- **Outbound records use the deployed profile; inbound records accept both, only inside the bounded
+  verifier.** Acceptance is a typed four-state result (`deployed` / `strict` / `none` /
+  `ambiguous`) reported to the type-5 owner, and an `ambiguous` match is **rejected**, not resolved.
+  Strict acceptance is retained only so records published under the previous policy, and the
+  independent Emissary oracle's output, stay parseable. i2pr does not publish strict records.
+- **The signed region is a type.** `i2pr_proto::Els2SignedRegion` can only be built from a decoded
+  `EncryptedLeaseSet2` or `EncryptedLeaseSet2OfflineKeys` and has no byte-slice constructor, so no
+  application message and no transcript selector can reach the ELS2 signer or verifier.
+- **This is a compatibility tradeoff, not equivalent security semantics.** The deployed transcript
+  omits the domain separator and length framing. The compensating constraints are the typed signed
+  region, the record-length ceiling enforced before hashing, transcript selection that never comes
+  from the network or I2PControl, no automatic downgrade or retry outside the ELS2 verifier, and
+  randomized signing that still requires a CSPRNG.
+- **A deliberate, recorded overlap.** Because the deployed challenge hash `SHA-512(R || A || M)` is
+  the plain Ed25519 challenge, a deployed signature is also a valid Ed25519 signature and vice versa.
+  What differs between the two type-11 transcripts is the **signing** transcript, not the
+  verification equation. The deployed verifier is therefore not a stricter check than type 7 and no
+  such claim is made; the protection that holds is that the ELS2 owner dispatches on the record's
+  own `sigtype` and refuses a type-5 record declaring a non-11 blinded sigtype before any transcript
+  is consulted.
 
 ### Encrypted LeaseSet2 (DatabaseStore type 5) status
 
@@ -278,17 +321,22 @@ freshness validation, the bounded store, the per-UTC-day blinding schedule, and 
   record. `i2pr-client` *builds* the `DatabaseStoreMessage`; the daemon still has nothing that
   publishes it. Per-client authorization is implemented (see below) but remains unreachable from
   any daemon configuration.
-- **Known interop limitation, unchanged and still decisive.** The type-11 signature divergence
-  recorded above means an i2pr-signed type-5 record is unverifiable by `i2pd` and Java I2P. Live
-  interoperability is Plan 335 and is expected to be blocked on that until a follow-up plan changes
-  the conformance decision.
+- **Known interop limitation, corrected at the policy level by Plan 346; end-to-end proof is still
+  Plan 347.** Under the strict-only decision an i2pr-signed type-5 record was unverifiable by
+  `i2pd` and Java I2P. Plan 346 makes the ELS2 use of type 11 an explicit bounded compatibility
+  profile (ADR 0032): i2pr now publishes the deployed transcript and accepts both. That is a
+  **cryptographic-boundary** result, measured against executed Java I2P and i2pd output. It is not
+  yet a **live** result: no stock router has published, stored, looked up, decrypted, and used a
+  type-5 record end to end in either direction. Plan 347 owns that evidence, and until it passes
+  no cross-router ELS2 interoperability is claimed and `advertised` stays `false`.
 - **The lookup secret is a discovery control, not a content control.** It changes the daily blinded
   key and therefore the DHT storage key, so a party with the address but not the secret cannot find
   the record. It does not enter the credential or subcredential, so a party that already holds both
   the record bytes and the address can decrypt them. See
   `specs/references/red25519-algorithm-worksheet.md` §14.14.
 
-Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`).
+Authority: Plan 332 (`plans/closure/i2pcontrol-proposal-170/332-status.md`), Plan 333, Plan 344, and
+Plan 346 / ADR 0032 (`plans/closure/i2pcontrol-proposal-170/346-status.md`).
 
 ### Encrypted LeaseSet2 per-client authorization status
 
@@ -422,13 +470,19 @@ Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its s
 - **At-rest protection for the lookup secret and the client list is not claimed.** Both live in the
   durable control definition. That is the same posture as the existing per-service Ed25519 seed
   files: at-rest encryption remains `i2pr-storage`'s responsibility.
-- **No live interoperability is claimed.** The Java I2P and i2pd differential is unexecuted (no
-  runnable Java I2P build is provisioned) and the i2pd/Java type-11 signature transcript is
-  unverifiable by both (ADR 0005, Plan 336). Plan 335 owns that lane.
+- **No live interoperability is claimed.** The cryptographic-boundary differential against Java
+  I2P and i2pd is now **executed** and passes in both directions (Plan 346, ADR 0032): a type-5
+  record these control-created services publish carries the transcript both routers verify, and a
+  record either of them publishes is readable by i2pr. What is still unexecuted is the **live**
+  path — stock routers publishing, storing, looking up, decrypting, and using a type-5 record end
+  to end — which is Plan 347. A control-created encrypted service is therefore *implemented* but
+  still **non-advertised** and not live-qualified, and the same is true of ordinary type 7/3
+  publication, whose external lane is unexecuted for unrelated reasons.
 
 Authority: Plan 334 (`plans/closure/i2pcontrol-proposal-170/334-status.md`), with Plan 337
 (`337-status.md`, ADR 0031) and Plan 338 (`338-status.md`) for the publication path and transaction
-correctness underneath it.
+correctness underneath it, and Plan 346 / ADR 0032 (`346-status.md`) for the corrected type-11
+transcript profile.
 
 ### Per-family network condition codes (Plan 339)
 

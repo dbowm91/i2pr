@@ -36,10 +36,13 @@
 //!
 //! # What this does not claim
 //!
-//! A record produced here is signed with i2pr's Red25519 type-5 transcript.
-//! Per ADR 0005 and Plan 336, i2pd and Java I2P cannot verify that transcript
-//! today, so publishing a type-5 record is a local, self-consistent act and not
-//! an interoperability claim. Plan 335 owns the live lane.
+//! A record produced here is signed under the bounded ELS2 type-11 signature
+//! profile. Per ADR 0032 and Plan 346 that is the deployed Java/i2pd transcript,
+//! cross-verified against executed output from both references, so the record is
+//! no longer unreadable to the rest of the network. What is still unproven is the
+//! **live** path: no stock router has been observed publishing, storing, looking
+//! up, decrypting, and using a type-5 record end to end in either direction. That
+//! is Plan 347, so nothing here is advertised and no interoperability is claimed.
 
 use std::collections::BTreeMap;
 use std::fmt;

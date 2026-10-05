@@ -29,18 +29,18 @@
 
 use core::fmt;
 
-use i2pr_crypto::red25519::{BlindingDay, Red25519PrivateScalar, Red25519PublicKey, sign};
+use i2pr_crypto::red25519::{BlindingDay, Red25519PrivateScalar, Red25519PublicKey};
 use i2pr_netdb::{
     BlindedStorageKey, BlindingIdentity, BlindingSchedule, BlindingScheduleConfig, DecryptedEls2,
     DestinationHash, Els2AuthError, Els2Error, Els2ValidationError, LeaseSet2ValidationContext,
     LeaseSet2ValidationError, OwnerBlinding, ValidatedEncryptedLeaseSet2, ValidatedLeaseSet2,
     decrypt_no_auth_outer_ciphertext, decrypt_outer_ciphertext, encrypt_no_auth_outer_ciphertext,
-    encrypt_outer_ciphertext,
+    encrypt_outer_ciphertext, sign_type11_deployed,
 };
 use i2pr_proto::{
     B32_BLINDED_SIGTYPE, B32_UNBLINDED_SIGTYPE_ED25519, B32_UNBLINDED_SIGTYPE_RED25519,
     DatabaseStoreData, DatabaseStoreMessage, ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
-    EncryptedLeaseSet2, EncryptedServiceAddress, INNER_LEASE_SET2_STORE_TYPE,
+    Els2SignedRegion, EncryptedLeaseSet2, EncryptedServiceAddress, INNER_LEASE_SET2_STORE_TYPE,
     INNER_META_LEASE_SET2_STORE_TYPE, LeaseSet2, MAX_COMMON_STRUCTURE_SIZE,
 };
 use rand_core::TryCryptoRng;
@@ -275,8 +275,15 @@ impl<'a> EncryptedLeaseSet2Publisher<'a> {
             outer_ciphertext,
             vec![0_u8; 64],
         )?;
-        let signature = sign(owner.blinded_private_key(), probe.signed_bytes(), rng)
-            .map_err(|_| EncryptedLeaseSetError::RandomnessUnavailable)?;
+        // Plan 346 / ADR 0032: the outer type-11 signature is always produced under
+        // the deployed Java/i2pd ELS2 transcript, through the bounded ELS2 profile
+        // owner. A publisher never selects its own transcript.
+        let signature = sign_type11_deployed(
+            owner.blinded_private_key(),
+            Els2SignedRegion::of_record(&probe),
+            rng,
+        )
+        .map_err(|_| EncryptedLeaseSetError::RandomnessUnavailable)?;
         EncryptedLeaseSet2::new(
             ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
             daily.blinded_public_key().as_bytes().to_vec(),
@@ -630,8 +637,15 @@ impl<'a> EncryptedLeaseSet2Publisher<'a> {
             outer_ciphertext,
             vec![0_u8; 64],
         )?;
-        let signature = sign(owner.blinded_private_key(), probe.signed_bytes(), rng)
-            .map_err(|_| EncryptedLeaseSetError::RandomnessUnavailable)?;
+        // Plan 346 / ADR 0032: the outer type-11 signature is always produced under
+        // the deployed Java/i2pd ELS2 transcript, through the bounded ELS2 profile
+        // owner. A publisher never selects its own transcript.
+        let signature = sign_type11_deployed(
+            owner.blinded_private_key(),
+            Els2SignedRegion::of_record(&probe),
+            rng,
+        )
+        .map_err(|_| EncryptedLeaseSetError::RandomnessUnavailable)?;
         EncryptedLeaseSet2::new(
             ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
             daily.blinded_public_key().as_bytes().to_vec(),

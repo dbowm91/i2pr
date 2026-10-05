@@ -20,6 +20,7 @@ mod base64;
 mod databaselookup;
 mod els2;
 mod els2_auth;
+mod els2_transcript;
 pub use els2_auth::{
     AuthBlock, AuthClientEntry, AuthClientMaterial, AuthClientPublicKey, AuthCookie, ClientName,
     ELS2_AUTH_CLIENT_ID_LENGTH, ELS2_AUTH_COOKIE_LENGTH, ELS2_AUTH_OKM_LENGTH,
@@ -65,6 +66,10 @@ pub use els2::{
     decrypt_no_auth_outer_ciphertext, decrypt_outer_ciphertext, derive_els2_credentials,
     encrypt_no_auth_outer_ciphertext, encrypt_outer_ciphertext, next_utc_day_boundary_seconds,
     unblinded_scalar_from_ed25519_seed, utc_blinding_day,
+};
+pub use els2_transcript::{
+    Els2RecordSignatureProfile, Els2Type11Profile, classify_type11, sign_type11_deployed,
+    verify_type11,
 };
 pub use floodfill_role::{
     FloodfillAdvertisementPermit, FloodfillEligibilitySnapshot, FloodfillRoleController,

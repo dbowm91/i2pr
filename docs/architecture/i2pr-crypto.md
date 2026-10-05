@@ -319,15 +319,20 @@ What it explicitly **does not** claim or do:
   qualified it. No floodfill serving, `caps=f` claim, or M12 advertisement
   follows from that — see `specs/CONFORMANCE.md` §"Red25519 (signature type
   11) status" and `specs/support.toml` `m12_type11_red25519`.
-- **There is no live interoperability claim for the type-11 transcript.**
-  Plan 335 closed as
+- **There is still no live interoperability claim for the type-11 transcript, but the
+  cryptographic boundary is now closed in both directions.** Plan 335 closed as
   `blocked-measured-type-11-transcript-incompatible-with-both-named-references`:
-  i2pr follows the specification's `I2P_Red25519H(x)` domain, while i2pd and
+  i2pr followed the specification's `I2P_Red25519H(x)` domain, while i2pd and
   Java I2P sign type 11 with the bare Zcash transcript and verify through a
   plain Ed25519 verifier. Blinding, alpha derivation, the storage key, and the
-  ELS2 framing all agree; only the transcript differs, so the references
-  cannot verify an i2pr type-5 record. Plan 336 recorded this as a spec-first
-  conformance decision.
+  ELS2 framing all agreed; only the transcript differed, so the references could
+  not verify an i2pr type-5 record. Plan 336 recorded that as a spec-first
+  conformance decision. ADR 0032 and Plan 346 correct the policy without
+  touching the strict primitive: `red25519_deployed` is a separate composition
+  over the same `curve25519-dalek` arithmetic, owned only by the ELS2 type-5
+  verifier, cross-verified against executed output from both references in both
+  directions. What remains unproven is the live end-to-end path (Plan 347), so
+  nothing is advertised.
 - `LookupSecret` lives here rather than in `i2pr-netdb` because it is a
   key-derivation input and `i2pr-netdb` has no `zeroize` dependency. The
   256-byte `MAX_LOOKUP_SECRET_LENGTH` is an i2pr resource decision, not a

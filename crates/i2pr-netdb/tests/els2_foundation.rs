@@ -22,13 +22,13 @@ use std::collections::BTreeMap;
 use i2pr_crypto::RouterIdentityBundle;
 use i2pr_crypto::red25519::{
     BlindingDay, Red25519PrivateScalar, Red25519PublicKey, blind_private_key, generate_alpha,
-    generate_private, sign,
+    generate_private,
 };
 use i2pr_proto::{
-    CryptoKeyType, Date32, ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE, EncryptedLeaseSet2,
-    EncryptedLeaseSet2OfflineKeys, Hash, INNER_LEASE_SET2_STORE_TYPE, Lease2, LeaseSet2,
-    LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header, MAX_COMMON_STRUCTURE_SIZE, Mapping,
-    SignatureValue, SigningKeyType,
+    CryptoKeyType, Date32, ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE, Els2SignedRegion,
+    EncryptedLeaseSet2, EncryptedLeaseSet2OfflineKeys, Hash, INNER_LEASE_SET2_STORE_TYPE, Lease2,
+    LeaseSet2, LeaseSet2EncryptionKey, LeaseSet2Flags, LeaseSet2Header, MAX_COMMON_STRUCTURE_SIZE,
+    Mapping, SignatureValue, SigningKeyType,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
@@ -38,7 +38,7 @@ use i2pr_netdb::{
     Els2InsertOutcome, Els2Store, Els2StoreConfig, Els2ValidationContext, Els2ValidationError,
     LeaseSet2ValidationContext, LookupSecret, MAX_ELS2_INNER_LEASE_SET_LENGTH, OwnerBlinding,
     ValidatedEncryptedLeaseSet2, decrypt_no_auth_outer_ciphertext, derive_els2_credentials,
-    encrypt_no_auth_outer_ciphertext, next_utc_day_boundary_seconds,
+    encrypt_no_auth_outer_ciphertext, next_utc_day_boundary_seconds, sign_type11_deployed,
     unblinded_scalar_from_ed25519_seed, utc_blinding_day,
 };
 
@@ -159,8 +159,15 @@ fn build_record(
         vec![0_u8; 64],
     )
     .expect("probe");
-    let signature =
-        sign(owner.blinded_private_key(), probe.signed_bytes(), &mut rng).expect("sign type 5");
+    // Plan 346 / ADR 0032: an outbound type-5 record is signed under the deployed
+    // Java/i2pd ELS2 transcript, through the bounded ELS2 profile owner. The strict
+    // Proposal-146 transcript stays accepted on the inbound path only.
+    let signature = sign_type11_deployed(
+        owner.blinded_private_key(),
+        Els2SignedRegion::of_record(&probe),
+        &mut rng,
+    )
+    .expect("sign type 5");
     EncryptedLeaseSet2::new(
         ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
         owner.daily().blinded_public_key().as_bytes().to_vec(),
@@ -1243,14 +1250,21 @@ fn offline_key_block_is_parsed_and_its_delegation_is_verified() {
         .expect("transient public key")
         .as_bytes()
         .to_vec();
-    let mut offline_signature_input = Vec::new();
-    offline_signature_input.extend_from_slice(&(PUBLISHED + 3_600).to_be_bytes());
-    offline_signature_input.extend_from_slice(&7_u16.to_be_bytes());
-    offline_signature_input.extend_from_slice(&transient);
     let mut rng = ChaCha8Rng::seed_from_u64(41);
-    let offline_signature = sign(
+    // The delegation is signed with the *blinded* type-11 key, so it follows the same
+    // bounded ELS2 transcript policy as the record's own signature (Plan 346). The block
+    // is built once with a placeholder to obtain the exact signed region, then rebuilt
+    // with the real signature.
+    let offline_probe = EncryptedLeaseSet2OfflineKeys::new(
+        PUBLISHED + 3_600,
+        SigningKeyType::EdDsaSha512Ed25519,
+        transient.to_vec(),
+        vec![0_u8; 64],
+    )
+    .expect("offline probe");
+    let offline_signature = sign_type11_deployed(
         owner.blinded_private_key(),
-        &offline_signature_input,
+        Els2SignedRegion::of_offline_keys(&offline_probe),
         &mut rng,
     )
     .expect("offline signature");
@@ -1293,13 +1307,16 @@ fn offline_key_block_is_parsed_and_its_delegation_is_verified() {
     assert!(validate(with_offline.clone(), PUBLISHED).is_ok());
 
     // An expired delegation is refused.
-    let mut expired_signature_input = Vec::new();
-    expired_signature_input.extend_from_slice(&(PUBLISHED - 1).to_be_bytes());
-    expired_signature_input.extend_from_slice(&7_u16.to_be_bytes());
-    expired_signature_input.extend_from_slice(&transient);
-    let expired_signature = sign(
+    let expired_offline_probe = EncryptedLeaseSet2OfflineKeys::new(
+        PUBLISHED - 1,
+        SigningKeyType::EdDsaSha512Ed25519,
+        transient.to_vec(),
+        vec![0_u8; 64],
+    )
+    .expect("expired offline probe");
+    let expired_signature = sign_type11_deployed(
         owner.blinded_private_key(),
-        &expired_signature_input,
+        Els2SignedRegion::of_offline_keys(&expired_offline_probe),
         &mut rng,
     )
     .expect("expired signature");

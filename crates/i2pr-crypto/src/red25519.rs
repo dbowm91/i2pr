@@ -262,7 +262,7 @@ impl BlindedPrivateScalar {
         self.0
     }
 
-    fn as_scalar(&self) -> Scalar {
+    pub(crate) fn as_scalar(&self) -> Scalar {
         Scalar::from_bytes_mod_order(self.0)
     }
 }
@@ -303,7 +303,7 @@ impl Red25519PublicKey {
             .map_err(|_| Red25519Error::ProtocolKeyRejected)
     }
 
-    fn as_point(&self) -> Result<EdwardsPoint, Red25519Error> {
+    pub(crate) fn as_point(&self) -> Result<EdwardsPoint, Red25519Error> {
         point_from_bytes(&self.0)
     }
 
@@ -726,24 +726,56 @@ fn verify_equation(
     let r_bytes: [u8; PUBLIC_KEY_LENGTH] = signature.0[..PUBLIC_KEY_LENGTH]
         .try_into()
         .map_err(|_| ())?;
-    let big_r = point_from_bytes(&r_bytes).map_err(|_| ())?;
+    // vkBytes is ENCODE_POINT(vk), so the transcript always uses the canonical encoding.
+    let vk_bytes = public_point.compress().to_bytes();
+    let c = h_star(&r_bytes, &vk_bytes, message).map_err(|_| ())?;
+    check_equation(public_point, &r_bytes, signature, &c)
+}
+
+/// The shared EdDSA/Schnorr verification equation, shared by every type-11 transcript.
+///
+/// The transcript differs between the Proposal-146 strict profile and the deployed
+/// Java/i2pd Encrypted-LeaseSet2 profile only in how the challenge scalar `c` is
+/// derived; the equation `(-[S]B) + R + [c]vk == identity`, its point decoding, its
+/// canonical-scalar check, its cofactoring, and its constant-time comparison are
+/// identical. Sharing them is what keeps the two transcripts from drifting apart in
+/// arithmetic, and keeps field/curve work out of the profile module.
+pub(crate) fn check_equation(
+    public_point: EdwardsPoint,
+    r_bytes: &[u8; PUBLIC_KEY_LENGTH],
+    signature: &Red25519Signature,
+    challenge: &Scalar,
+) -> Result<(), ()> {
+    let big_r = point_from_bytes(r_bytes).map_err(|_| ())?;
     let s_bytes: [u8; SCALAR_LENGTH] = signature.0[PUBLIC_KEY_LENGTH..]
         .try_into()
         .map_err(|_| ())?;
     let s = Option::<Scalar>::from(Scalar::from_canonical_bytes(s_bytes)).ok_or(())?;
-    // vkBytes is ENCODE_POINT(vk), so the transcript always uses the canonical encoding.
-    let vk_bytes = public_point.compress().to_bytes();
-    let c = h_star(&r_bytes, &vk_bytes, message).map_err(|_| ())?;
     // ((-[S]B) + R + ([c]vk) * h) == identity. Every operand here is public, so the
     // variable-time double-scalar path is appropriate.
     let candidate =
-        EdwardsPoint::vartime_double_scalar_mul_basepoint(&c, &public_point, &(-s)) + big_r;
+        EdwardsPoint::vartime_double_scalar_mul_basepoint(challenge, &public_point, &(-s)) + big_r;
     let cofactored = candidate.mul_by_cofactor();
     if bool::from(cofactored.ct_eq(&EdwardsPoint::default())) {
         Ok(())
     } else {
         Err(())
     }
+}
+
+/// Splits a signature into its `R` point bytes and `S` scalar bytes.
+///
+/// Returns `None` for a signature that is not exactly 64 bytes, which every caller
+/// treats as a non-match rather than as a protocol error to be retried.
+pub(crate) fn split_signature(signature: &Red25519Signature) -> Option<[u8; PUBLIC_KEY_LENGTH]> {
+    signature.as_bytes()[..PUBLIC_KEY_LENGTH].try_into().ok()
+}
+
+/// The public key bytes a type-11 transcript hashes: `ENCODE_POINT([sk]B)`.
+pub(crate) fn public_bytes_of(blinded_key: &BlindedPrivateScalar) -> [u8; PUBLIC_KEY_LENGTH] {
+    (ED25519_BASEPOINT_TABLE * &blinded_key.as_scalar())
+        .compress()
+        .to_bytes()
 }
 
 /// The blinded DHT storage key: `SHA-256(0x000b || blinded public key)`.

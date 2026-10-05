@@ -35,9 +35,8 @@ use crate::els2_auth::{
 pub use i2pr_crypto::red25519::LookupSecret;
 use i2pr_crypto::red25519::{
     BLINDED_SIGNING_KEY_TYPE, BlindedPrivateScalar, BlindingDay, BlindingScalar, PUBLIC_KEY_LENGTH,
-    Red25519Error, Red25519PrivateScalar, Red25519PublicKey, Red25519Signature, blind_private_key,
-    blind_public_key, blinded_storage_key, convert_ed25519_private, derive_blinded_public_key,
-    generate_alpha,
+    Red25519Error, Red25519PrivateScalar, Red25519PublicKey, blind_private_key, blind_public_key,
+    blinded_storage_key, convert_ed25519_private, derive_blinded_public_key, generate_alpha,
 };
 use i2pr_crypto::{
     CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, ChachaError, CryptoError, LayerCipherKey,
@@ -45,8 +44,8 @@ use i2pr_crypto::{
 };
 use i2pr_proto::{
     ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE, ENCRYPTED_LEASE_SET2_MAX_EXPIRES_OFFSET,
-    ENCRYPTED_LEASE_SET2_SALT_LENGTH, ENCRYPTED_LEASE_SET2_UNBLINDED_SIGTYPES, EncryptedLeaseSet2,
-    EncryptedLeaseSet2OfflineKeys, Hash, INNER_LEASE_SET2_STORE_TYPE,
+    ENCRYPTED_LEASE_SET2_SALT_LENGTH, ENCRYPTED_LEASE_SET2_UNBLINDED_SIGTYPES, Els2SignedRegion,
+    EncryptedLeaseSet2, EncryptedLeaseSet2OfflineKeys, Hash, INNER_LEASE_SET2_STORE_TYPE,
     INNER_META_LEASE_SET2_STORE_TYPE, LeaseSet2, MAX_COMMON_STRUCTURE_SIZE, MetaLeaseSet,
     SignatureValue, SigningKeyType, SigningPublicKey,
 };
@@ -135,6 +134,14 @@ pub enum Els2Error {
         /// The rejected signature type code.
         code: u16,
     },
+    /// A type-11 signature matched neither the deployed nor the strict transcript, or matched
+    /// both.
+    ///
+    /// The two are reported together on purpose: an ambiguous match is rejected rather than
+    /// resolved, so a caller must not be able to tell from the error whether the failure was a
+    /// plain non-match or a contradiction between the two transcripts.
+    #[error("encrypted LeaseSet2 type-11 signature rejected by the bounded transcript policy")]
+    Type11SignatureRejected,
     /// A layer key derivation produced the wrong amount of material.
     #[error(
         "encrypted LeaseSet2 layer key derivation returned {actual} bytes, expected {expected}"
@@ -1413,6 +1420,7 @@ pub struct ValidatedEncryptedLeaseSet2 {
     record: EncryptedLeaseSet2,
     storage_key: BlindedStorageKey,
     encoded_len: usize,
+    signature_profile: crate::els2_transcript::Els2RecordSignatureProfile,
 }
 
 impl ValidatedEncryptedLeaseSet2 {
@@ -1467,8 +1475,7 @@ impl ValidatedEncryptedLeaseSet2 {
             validate_offline_block(&blinded_public_key, offline, context)?;
         }
 
-        verify_record_signature(&record, &blinded_public_key)?;
-
+        let signature_profile = verify_record_signature(&record, &blinded_public_key)?;
         let now_secs = context.now_seconds;
         let published_secs = record.published_seconds();
         if published_secs > now_secs {
@@ -1491,12 +1498,23 @@ impl ValidatedEncryptedLeaseSet2 {
             record,
             storage_key,
             encoded_len,
+            signature_profile,
         })
     }
 
     /// Returns the DHT storage key the record is filed under.
     pub const fn storage_key(&self) -> BlindedStorageKey {
         self.storage_key
+    }
+
+    /// Returns which signature form this record's outer signature used.
+    ///
+    /// This is evidence, not policy: the record is already validated, so the value is
+    /// always an accepting outcome. It exists so a floodfill or an interoperability
+    /// harness can report *which* type-11 transcript a stored record was made under
+    /// instead of inferring it from the bytes.
+    pub const fn signature_profile(&self) -> crate::els2_transcript::Els2RecordSignatureProfile {
+        self.signature_profile
     }
 
     /// Returns the blinded public key named by the record.
@@ -1544,21 +1562,23 @@ fn validate_offline_block(
         return Err(Els2ValidationError::OfflineSignatureExpired);
     }
     // The delegation signature is made with the *blinded* key, not with the
-    // transient key it authorizes.
+    // transient key it authorizes. A blinded type-11 key therefore follows the
+    // same bounded ELS2 transcript policy as the record's own signature.
     verify_with_sigtype(
         blinded_public_key,
         BLINDED_SIGNING_KEY_TYPE,
-        offline.signed_bytes(),
+        Els2SignedRegion::of_offline_keys(offline),
         offline.signature(),
     )
+    .map(|_| ())
     .map_err(|_| Els2ValidationError::InvalidOfflineSignature)
 }
 
 fn verify_record_signature(
     record: &EncryptedLeaseSet2,
     blinded_public_key: &Red25519PublicKey,
-) -> Result<(), Els2ValidationError> {
-    let signed_bytes = record.signed_bytes();
+) -> Result<crate::els2_transcript::Els2RecordSignatureProfile, Els2ValidationError> {
+    let region = Els2SignedRegion::of_record(record);
     let signature = record.signature();
     let outcome = match record.offline_keys() {
         // With offline keys the record itself is signed by the transient key,
@@ -1567,12 +1587,12 @@ fn verify_record_signature(
         Some(offline) => {
             let transient = Red25519PublicKey::decode(offline.public_key())
                 .map_err(|_| Els2ValidationError::InvalidSignature)?;
-            verify_with_sigtype(&transient, offline.sigtype(), signed_bytes, signature)
+            verify_with_sigtype(&transient, offline.sigtype(), region, signature)
         }
         None => verify_with_sigtype(
             blinded_public_key,
             ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE,
-            signed_bytes,
+            region,
             signature,
         ),
     };
@@ -1586,15 +1606,24 @@ fn verify_record_signature(
 /// Red25519. Every other signature type is refused rather than routed to a
 /// generic verifier, because a generic path would accept an algorithm the
 /// encrypted-LeaseSet2 specification never defines for this record.
+///
+/// Type 11 — whether it is the record's own blinded signature or a transient
+/// offline-delegation key — is routed to the bounded
+/// [`crate::els2_transcript`] profile policy rather than to the strict
+/// [`i2pr_crypto::red25519::verify_blinded`] alone, because that is the only
+/// place a type-5 signature is allowed to be checked against the deployed
+/// Java/i2pd transcript. Type 7 is untouched: it is ordinary Ed25519 and has no
+/// second definition.
 fn verify_with_sigtype(
     public_key: &Red25519PublicKey,
     sigtype: SigningKeyType,
-    message: &[u8],
+    region: Els2SignedRegion<'_>,
     signature: &[u8],
-) -> Result<(), ()> {
+) -> Result<crate::els2_transcript::Els2RecordSignatureProfile, ()> {
     if sigtype == ENCRYPTED_LEASE_SET2_BLINDED_SIGTYPE {
-        let parsed = Red25519Signature::decode(signature).map_err(|_| ())?;
-        return i2pr_crypto::red25519::verify_blinded(public_key, message, &parsed).map_err(|_| ());
+        return crate::els2_transcript::verify_type11(public_key, region, signature)
+            .map(crate::els2_transcript::Els2RecordSignatureProfile::Type11)
+            .map_err(|_| ());
     }
     if sigtype != i2pr_crypto::red25519::ED25519_SIGNING_KEY_TYPE {
         return Err(());
@@ -1602,7 +1631,9 @@ fn verify_with_sigtype(
     let signing_public_key =
         SigningPublicKey::new(sigtype, public_key.as_bytes().to_vec()).map_err(|_| ())?;
     let signature_value = SignatureValue::new(sigtype, signature.to_vec()).map_err(|_| ())?;
-    i2pr_crypto::verify_signature(&signing_public_key, message, &signature_value).map_err(|_| ())
+    i2pr_crypto::verify_signature(&signing_public_key, region.as_bytes(), &signature_value)
+        .map(|_| crate::els2_transcript::Els2RecordSignatureProfile::Ed25519Transient)
+        .map_err(|_| ())
 }
 
 /// Configuration for an [`Els2Store`].

@@ -50,6 +50,7 @@ pub mod chacha;
 pub mod ecies;
 pub mod hkdf;
 pub mod red25519;
+pub mod red25519_deployed;
 
 pub use chacha::{
     CHACHA20_BLOCK_LENGTH, CHACHA20_KEY_LENGTH, CHACHA20_NONCE_LENGTH, ChachaError,
