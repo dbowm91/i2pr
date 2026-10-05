@@ -1,10 +1,15 @@
 # Plan 335 — Live Encrypted LeaseSet interoperability and Plan 326 successor reclosure
 
-Status: **registered-encrypted-ls2-external-reclosure-blocked-on-plan334**
+Status: **closed-blocked-live-lanes-unrunnable-references-lack-the-red25519-els2-domain**
 
 Classification: external interoperability + branch closure.
 
-Hard dependency: Plan 334 passed.
+Hard dependency: Plan 334 passed. **Satisfied.**
+
+Outcome: closed `blocked` on 2026-10-05. The Emissary black-box differential ran and passed byte-exact
+(90 rows). The Java I2P and i2pd lanes **cannot** be satisfied against the pinned references, which
+contain no Red25519/ELS2 implementation at all, so the overlapping feature set is empty. See
+[`plans/closure/i2pcontrol-proposal-170/335-status.md`](../closure/i2pcontrol-proposal-170/335-status.md).
 
 ## Objective
 

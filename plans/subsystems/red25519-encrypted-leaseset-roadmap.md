@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329, 330, 331, 332, 333, 334, 336, 337, and 338 passed. Plan 335 is ready and is the only remaining item on this line
+Status: Plans 329, 330, 331, 332, 333, 334, 336, 337, and 338 passed. Plan 335 closed `blocked`: the Emissary differential passed byte-exact, but Java I2P `93eef5d` and i2pd `2c69414` contain no Red25519/ELS2 implementation, so the live lanes have no overlapping feature set and **the branch is not marked complete**
 behind it.
 
 Parent roadmap:
@@ -51,7 +51,9 @@ Plan 329 must re-freeze all of these before implementation.
             -> 332 type-5 Encrypted LeaseSet2 foundation + lookup-secret/B33
                  -> 333 PSK and DH client authorization
                       -> 334 passed  canonical Proposal 170 encrypted-LeaseSet mode mapping
-                           -> 335 ready   live ELS2 interoperability + blocked-326 successor reclosure
+                           -> 335 blocked live ELS2 interoperability: Emissary
+                                differential passed byte-exact; Java I2P and
+                                i2pd implement none of the domain
 
 337 passed  one shared ServiceTunnelManager (corrective pass on Plan 289)
   -> 338 passed  one owner for the service identity store + transaction rollback
@@ -126,7 +128,7 @@ No custom field/bignum/curve formulas are permitted.
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
 | 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
 | 334 | passed | exact Proposal 170 mode/field mapping; control plane complete, a control-created tunnel is on the publication path, a type-5 record is filed at the record's own blinded storage key, and a control-created encrypted server exposes a resolving `.b32.i2p` **on the JSON-RPC wire**. Black-box evidence (JSON-RPC round trip, rejected edit, restart, refused modes) landed in `db63bc0`; reclosed 2026-10-05 |
-| 335 | ready | live interop and successor reclosure for blocked Plan 326. The only remaining item on this line; still carries the unexecuted Java I2P and i2pd lanes and the type-11 transcript divergence (ADR 0005) |
+| 335 | blocked | closed 2026-10-05. The Emissary black-box differential passed byte-exact (90 rows at `3c138a9`). The Java I2P and i2pd lanes are **not satisfiable against their pins** — `93eef5d` has no `I2P_Red25519H` and `2c69414` has no `red25519` in its source — so the overlapping feature set is empty and the branch is not marked complete. Support-floor consequences not applied; `advertised` stays false. Closure: `plans/closure/i2pcontrol-proposal-170/335-status.md` |
 | 337 | passed | corrective pass on Plan 289: the composition root now builds the one `ServiceTunnelManager` and injects the same `Arc` into the control state and the product, so a control-created tunnel is the same runtime and publishes through the existing sweep (ADR 0031, closure: `plans/closure/i2pcontrol-proposal-170/337-status.md`) |
 | 338 | passed | corrective pass on Plans 289 and 334, found while implementing 337, and it **corrects Plan 337's own diagnosis**: every server group is already persistent, so a control-created server always had a persisted identity record — the ELS2 loader read `for_service` while the runtime wrote `for_group`. `ServiceTunnelManager` is now the single owner of that resolution, and `rollback_state` reconciles the shared manager as well as the mirror, so a failed transaction leaves no ghost runtime. Closure: `plans/closure/i2pcontrol-proposal-170/338-status.md` |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |

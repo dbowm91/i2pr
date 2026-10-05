@@ -276,7 +276,10 @@ Current graph (`passed` / `ready` / `blocked`):
             -> 332 passed  type-5 ELS2 foundation
                  -> 333 passed  PSK/DH client auth
                       -> 334 passed  canonical Prop 170 mode mapping + control surface
-                           -> 335 ready  live ELS2 interoperability/reclosure
+                           -> 335 blocked  live ELS2 interoperability/reclosure
+                                (closed blocked: both named references
+                                 lack the Red25519/ELS2 domain entirely,
+                                 so there is no overlapping feature set)
 
 337 passed  control-owned service tunnels reach the product layer
   (corrective pass on Plan 289: two ServiceTunnelManager instances, the
@@ -297,7 +300,13 @@ posture and address to the *control-state* response, but the JSON-RPC adapter bu
 `info` object and dropped them — so a real client could never discover the address, and the
 whole mode mapping was unobservable outside the process. The wire step fixes that.
 
-**Plan 335 is the only remaining item on this line.** It is `ready`, not blocked.
+**Plan 335 closed `blocked` on 2026-10-05, and this line does not fully close.** The Emissary
+black-box differential — the one reference that implements the domain — passed byte-exact across 90
+rows. The two named live lanes cannot be satisfied against their pins: Java I2P `93eef5d` has no
+`I2P_Red25519H` and i2pd `2c69414` has no `red25519` anywhere in its source. Provisioning a Java
+router would not help, because there is no overlapping feature set to interoperate on. The
+encrypted-LeaseSet branch is implemented and internally qualified but unverifiable by either
+second-family implementation that exists today.
 
 Plan 337 was the real blocker behind Plan 334, and it was older and broader than the ELS2 work. A
 service tunnel created through TunnelManager was reconciled onto a `ServiceTunnelManager` built by
