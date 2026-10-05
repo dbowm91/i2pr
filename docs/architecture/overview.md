@@ -394,12 +394,16 @@ data plane (`I2cpMessageOutcome`, `PendingStatusTable`,
 ### 4.14 `i2pr-service-tunnels` — service-tunnel policy
 
 Runtime-neutral M10 policy only (no sockets; daemon owns
-listeners): typed kinds (`generic-client` / `generic-server` /
-`http-client` / `socks5-client` / `irc-client` / `irc-server`),
-destination references, static aliases, listener/target shapes,
-resource/deadline ceilings, validated sets, typed errors/events,
-access/auth surfaces, outbound-secret handling, plus the HTTP/1.1
-parser-rewrite-target-validator surface, RFC 1928 SOCKS5
+listeners): typed kinds (12 in total: `generic-client` /
+`generic-server` / `http-client` / `socks5-client` / `irc-client` /
+`irc-server` and their variants), destination references, static
+aliases, listener/target shapes, resource/deadline ceilings,
+validated sets, typed errors/events, access/auth surfaces,
+outbound-secret handling, the outproxy provider POLICY
+(`outproxy.rs`: `OutproxyEndpoint::parse` proves a target is an I2P
+destination, and the path may open exactly one kind of route — an I2P
+Streaming connection, never a direct clearnet socket), plus the
+HTTP/1.1 parser-rewrite-target-validator surface, RFC 1928 SOCKS5
 negotiation/request/reply surface, IRC/IRCv3
 line-parser/tag/classifier/filter surface, the IRC-server
 registration interceptor with authenticated peer-hash projection
@@ -462,7 +466,10 @@ liveness, NetDB-over-tunnels coordinator, destination coordinators,
 with central authenticated dispatcher (`router_i2np.rs`), M11 transit
 ownership/volume composition (`transit_owner.rs`,
 `transit_volume.rs`, `transit_compose.rs`), M12 floodfill
-(`floodfill.rs`), loopback SAM and I2CP listeners (`sam.rs`,
+(`floodfill.rs`), the outproxy route owner (`outproxy_route.rs` —
+the socket-owning half of the Plan 343 policy/route-owner pair,
+which lands with **no reachable request path**), loopback SAM and
+I2CP listeners (`sam.rs`,
 `i2cp.rs`) with supervised admission + per-connection ceilings, the
 I2PControl listener stack (`i2pcontrol.rs`,
 `i2pcontrol_tunnels.rs`, `i2pcontrol_inspection.rs`), address-book
@@ -514,7 +521,14 @@ Boundary checkers (invariants):
   transport contracts, Tokio/`std::net`/`std::fs` in wrong crates,
   or production deps on `i2pr-testkit`.
 - `check-service-tunnel-boundaries.sh` — M10 runtime-neutral
-  invariants (single pump, single manager entry point).
+  invariants (single pump, single manager entry point) plus **rules
+  9–11** (Plan 343): the outproxy policy and route-owner pair
+  (`i2pr-service-tunnels/src/outproxy.rs` +
+  `i2pr-daemon/src/outproxy_route.rs`) must both exist, neither may
+  name a clearnet socket/resolver/TLS client or load a plugin or
+  spawn a process, and **rule 10 is a positive control** requiring
+  `service_tunnels_http.rs` to still name a local `TcpStream`/
+  `TcpListener` so the guard cannot go vacuous.
 - `check-m11-transit-boundaries.sh`, `check-m12-floodfill-boundaries.sh`,
   `check-service-anonymity-boundaries.sh` — M11/M12/anonymity
   lane-specific invariants.
@@ -646,10 +660,10 @@ anonymity claim.
 | SAM 3.1 (M7 localhost) | Final localhost acceptance closed (Plan 151; self-composed product Plan 149; external-client core Plan 150 retained). | No router-to-router claim; loopback-only, disabled by default. |
 | SSU2 v2 (M8 direct interop) | Closed within bounded direct-IPv4 loopback scope vs exact-pinned i2pd, both directions + cached-token/malformed rows (Plan 161; lane isolation Plan 162). | No public advertisement; PQ-hybrid deferred (`ssu2_pq_v3_v4 = deferred-compatibility-watch`); SSU1 not implemented; IPv6 interop is infrastructure-limited debt. |
 | I2CP (M9 loopback) | Final acceptance closed, loopback-only (Plan 172; wire/data-plane Plan 170 retained; invalid-preamble hardening Plan 171). Independent Java/go clients proven on the loopback lane. | No remote-I2CP / public-network claim; no `HostLookup` resolution. |
-| Service tunnels (M10) | Local generic/HTTP/SOCKS5/IRC product + round-trip closed (Plans 174–180, 182); router-backed generic A/B (Plan 213) and product-only HTTP/IRC application closure (Plan 214/215, hosted double-pass) proven against exact-pinned i2pd. | No product blocker; Plan 204 convergence gate superseded by Plan 248. |
+| Service tunnels (M10) | Local generic/HTTP/SOCKS5/IRC product + round-trip closed (Plans 174–180, 182); router-backed generic A/B (Plan 213) and product-only HTTP/IRC application closure (Plan 214/215, hosted double-pass) proven against exact-pinned i2pd. | No product blocker; Plan 204 convergence gate superseded by Plan 248. Outproxy: Plan 343 landed the provider **policy and route owner** with `no reachable request path` — there is no working outproxy and no direct clearnet fallback; Plan 327 stays blocked. |
 | M11 transit tunnels | One-family experimental progression passed (Plan 268) on exact-head CI. | Public transit remains disabled, non-advertised, and unclaimed. |
 | M12 floodfill | Architecture, provenance, record validation/storage, bounded DatabaseStore/DatabaseLookup services, replication planning, versioned persistence, bounded maintenance, resource leases for the type 0/1/3/7 floor (Plans 270–276, 283). Encrypted LeaseSet2 type 5 is now REAL CODE, not a stub: Plan 330 passed an independent in-repo Red25519 implementation, Plan 331 passed qualification with a reference signature-transcript divergence recorded, and Plans 332/333 passed the ELS2 type-5 foundation plus PSK/DH client authorization. | No capability is advertised (`common.leaseset2-family` is `advertised = false`) and no live interoperability is claimed — ADR 0005 records that i2pd and Java I2P cannot verify the transcript. Daemon floodfill role lifecycle and qualification remain unimplemented. NOTE: `specs/support.toml` rows `m12_type11_red25519`, `m12_transit_tunnels`, and `m12_floodfill_status` still describe the Plan 280/281 stopped/deferred state and are superseded by the later closure records. |
-| Proposal 170 / I2PControl | Control plane + publication complete, black-box evidence landed (`ready-control-plane-and-publication-complete-black-box-evidence-landed`); canonical continuation 319–328, Red25519/ELS2 successor 329–335. Plan 322 closed the canonical RouterInfo source census to zero (`passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged`, via Plans 339/340); Plan 334 reclosed `passed-mode-mapping-and-control-surface-complete` on 2026-10-05 (Plans 337/338). | Plan 327 remains blocked (no routed outproxy provider or secret owner); Plans 325/326 are historical blocked records. No Encrypted LeaseSet2 capability is advertised, no capability advertisement, no live interoperability claim. NOTE: `plans/registry.md` still reports Plans 322 and 334 as blocked — the closure records are newer and win per the authority order. |
+| Proposal 170 / I2PControl | Control plane + publication complete, black-box evidence landed (`ready-control-plane-and-publication-complete-black-box-evidence-landed`); canonical continuation 319–328, Red25519/ELS2 successor 329–335. Plan 322 closed the canonical RouterInfo source census to zero (`passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged`, via Plans 339/340); Plan 334 reclosed `passed-mode-mapping-and-control-surface-complete` on 2026-10-05 (Plans 337/338). | Plan 327 remains blocked (no routed outproxy provider or secret owner); Plans 325/326 are historical blocked records. Plan 343 passed the outproxy provider policy and route owner but with `no reachable request path`, and Plan 341 landed the restart-safe outbound proxy secret owner. No Encrypted LeaseSet2 capability is advertised, no capability advertisement, no live interoperability claim. NOTE: `plans/registry.md` still reports Plans 322 and 334 as blocked — the closure records are newer and win per the authority order. |
 | Anonymity / implementation neutrality | Plans 307, 309, 311–312, 314–316, 318 passed; ADR 0026 / ADR 0030 define linkability domains and router unlinkability. | Plan 308 independently blocked; Plan 310 retained as blocked history; Plan 317 blocked. Does not gate M12/mainline. |
 | NTCP2 | Runtime-owned composition exists; development result `protocol-defect-localized` at `noise_authenticated`. Daemon NTCP2 disabled by guard. | No production activation; no interop claim. |
 | NetDB / tunnels over network | One-hop exploratory tunnels, NetDB lookup/publication, destination delivery proven vs i2pd on the M6 lane (Plans 184–192). | Full multi-hop as a production claim is not made here. |

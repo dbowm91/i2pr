@@ -119,7 +119,7 @@ The boundary contract is enforced by scripts under `scripts/`:
 | `check-ssu2-vectors.sh` | Drift in the SSU2 v2 fixture corpus |
 | `check-i2cp-vectors.sh` | Drift in the I2CP fixture corpus |
 | `check-i2cp-acceptance-evidence.sh` | Plan 170/172 I2CP evidence integrity (no synthetic `passed` rows) |
-| `check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants |
+| `check-service-tunnel-boundaries.sh` | Plan 180 M10 runtime-neutral invariants, plus rules 9–11: the outproxy policy/route-owner pair must exist, neither may name a clearnet socket/resolver/TLS client or load a plugin/spawn a process, and rule 10 is a positive control that keeps the guard from going vacuous |
 | `check-service-tunnel-acceptance-evidence.sh` | Plan 181/213/214/215 service-tunnel evidence integrity (no synthetic `passed` rows) |
 | `check-exploratory-tunnel-evidence.sh` | Plan 185 exploratory-tunnel evidence integrity |
 | `check-netdb-tunnel-evidence.sh` | Plan 186 NetDB-over-tunnel evidence integrity |

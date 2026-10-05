@@ -9,8 +9,8 @@
   errors/events — every byte of socket, task, timer, and listener ownership lives in
   `i2pr-daemon`.
 
-Crate size: 37 Rust files, 14,620 lines (14 declared modules + `lib.rs`).
-Test floor: 313 unit tests, all passing, all in-crate `#[cfg(test)]` modules.
+Crate size: 39 Rust files, 16,353 lines (15 declared modules + `lib.rs`).
+Test floor: 339 unit tests, all passing, all in-crate `#[cfg(test)]` modules.
 
 ## Purpose
 
@@ -32,6 +32,11 @@ This crate owns the *validated policy* half of every M10 service tunnel:
 - the Plan 292 listener proxy-credential verifiers, server inbound access policy, and
   pure idle-sweep decision;
 - the Plan 341 outbound-proxy-secret policy seam (trait + framing + fail-closed default);
+- the Plan 342/343 runtime-neutral **outproxy provider policy** — a closed dialect
+  vocabulary, I2P-destination-only outproxy endpoints, the operator-ordered list, the
+  opaque clearnet target grammar, the bounded retry/backoff policy, the credential
+  header builder, and the bounded HTTP `CONNECT` / SOCKS5 / SOCKS4a request and reply
+  codecs;
 - the Plan 180 runtime-neutral `DiffClass` generation diff;
 - typed errors and value-only typed events/snapshots.
 
@@ -62,25 +67,26 @@ Line counts are real `wc -l` output. Directory rows are the sum of their files.
 
 | Module | File | Lines | Responsibility | Key public types |
 | --- | --- | ---: | --- | --- |
-| `lib` | `src/lib.rs` | 122 | Crate root: module declarations, crate-level `#![forbid(unsafe_code)]`, the full `pub use` re-export surface, architecture pointer | (re-exports only) |
+| `lib` | `src/lib.rs` | 131 | Crate root: module declarations, crate-level `#![forbid(unsafe_code)]`, the full `pub use` re-export surface, architecture pointer | (re-exports only) |
 | `config` | `src/config.rs` | 2563 | Typed kinds (12), ids/groups, listener + target shapes, `DestinationPolicy`, resource/deadline ceilings, `TunnelShaping`, `IdlePolicy`, `HttpServerPolicy`, destination group specs, `ServiceTunnelSet::validate` | `ServiceTunnelKind`, `ServiceTunnelId`, `ServiceClientGroupId`, `DestinationPolicy`, `LocalListenerSpec`, `ServerTarget`, `ServiceResourceLimits`, `ServiceTimeouts`, `ServiceTunnelSpec`, `ServiceTunnelSet`, `TunnelShaping`, `IdlePolicy`, `HttpServerPolicy`, `DestinationGroupSpec`, `DestinationGroupId`, `DestinationGroupKey`, `ServiceKeyReference`, `DestinationCryptoPolicy`, `DestinationSigningPolicy`, `DestinationLeaseSetEncryptionPolicy`, `multihoming_start_index` |
 | `destination` | `src/destination.rs` | 464 | Structural Base32 / static-alias / configured-public-material reference policy and the bounded alias table; no DNS, filesystem, or network lookup, no clearnet fallback, IP literals rejected | `DestinationRef`, `StaticAliasTable`, `B32_SUFFIX`, `I2P_SUFFIX`, `B32_LABEL_LEN`, `MAX_STATIC_ALIAS_LEN`, `MAX_STATIC_ALIAS_LABEL_LEN`, `MAX_CONFIGURED_DESTINATION_LEN` |
 | `errors` | `src/errors.rs` | 104 | The single typed structural error enum for the whole crate; carries bounded/truncated values and machine-readable reasons only | `ServiceTunnelError` |
 | `events` | `src/events.rs` | 100 | Value-only lifecycle events and point-in-time accounting snapshots (no socket handles, no Tokio guards, no secrets) | `ServiceTunnelEvent`, `ServiceTunnelSnapshot` |
 | `generation` | `src/generation.rs` | 555 | Plan 180 runtime-neutral generation diff model driving the daemon-side transactional reconcile | `DiffClass`, `ServiceDiff`, `diff_sets`, `diff_spec`, `kind_string` |
 | `http` | `src/http/` | 3297 | Plan 176 HTTP/1.1 parser, header/limits config, request-target validator, hop-by-hop + privacy rewrite, bounded error responses, and the Plan 290/292 filtered-server + presentation policy (9 files: `mod`/`config`/`error`/`limits`/`parser`/`response`/`rewrite`/`server`/`target`) | `HttpLimits`, `HttpClientOptions`, `PrivacyPolicy`, `UserAgentPolicy`, `HttpRequestHead`, `RequestLine`, `HeaderEntry`, `HeaderName`, `RequestTarget`, `TargetKind`, `parse_request_head`, `parse_request_target`, `parse_authority_form`, `parse_origin_form`, `rewrite_headers`, `build_error_response`, `proxy_auth_required`, `HttpError`, `HttpErrorKind`, `ParseError`, `TargetParseError`, `HttpServerPolicy`, `HttpPostLimiter`, `HttpPostLimits`, `FilteredServerRequest`, `PresentationClass`, `classify_presentation`, `filter_server_request`, `filter_server_request_with_policy`, `filter_server_response` |
-| `socks5` | `src/socks5/` | 2300 | Plan 177 RFC 1928 no-auth greeting + CONNECT parser, strict `.i2p` target policy, deterministic bounded reply generator, plus the Plan 290 bounded SOCKS4a CONNECT parser (7 files: `mod`/`config`/`errors`/`limits`/`negotiation`/`reply`/`request`/`socks4a`) | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `GreetingOutcome`, `RequestParser`, `RequestOutcome`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_reply`, `build_reply_from_code`, `Socks4aRequestParser`, `Socks4aOutcome`, `build_socks4a_reply`, `SOCKS4A_REPLY_LEN`, `SOCKS4A_GRANTED`, `SOCKS4A_REJECTED` |
-| `irc` | `src/irc/` | 3680 | Plan 178 IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, client-to-network privacy filter, and the Plan 179 server registration interceptor + peer hostname projection (10 files: `mod`/`client_filter`/`config`/`errors`/`limits`/`line`/`policy`/`server`/`tags`) | `IrcLimits`, `IrcClientOptions`, `IrcServerOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `PrivacySubstitutions`, `IrcTag`, `TagsOutcome`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname`, `encode_b32_label`, `classify_core`, `classify_post_tag_core`, `is_allowed`, `is_command_allowed` |
+| `socks5` | `src/socks5/` | 2300 | Plan 177 RFC 1928 no-auth greeting + CONNECT parser, strict `.i2p` target policy, deterministic bounded reply generator, plus the Plan 290 bounded SOCKS4a CONNECT parser (8 files: `mod`/`config`/`errors`/`limits`/`negotiation`/`reply`/`request`/`socks4a`) | `Socks5Limits`, `Socks5ClientOptions`, `ConnectPortPolicy`, `GreetingParser`, `GreetingOutcome`, `RequestParser`, `RequestOutcome`, `ConnectDestination`, `Socks5Error`, `Socks5ErrorKind`, `Socks5ReplyCode`, `build_reply`, `build_reply_from_code`, `Socks4aRequestParser`, `Socks4aOutcome`, `build_socks4a_reply`, `SOCKS4A_REPLY_LEN`, `SOCKS4A_GRANTED`, `SOCKS4A_REJECTED` |
+| `irc` | `src/irc/` | 3680 | Plan 178 IRC/IRCv3 line parser, tag framing, command classifier + per-direction allowlist, client-to-network privacy filter, and the Plan 179 server registration interceptor + peer hostname projection (9 files: `mod`/`client_filter`/`config`/`errors`/`limits`/`line`/`policy`/`server`/`tags`) | `IrcLimits`, `IrcClientOptions`, `IrcServerOptions`, `ReasonRewritePolicy`, `IrcCommand`, `IrcCommandClass`, `LineDirection`, `ParsedLine`, `FilterOutcome`, `IrcDropReason`, `IrcLineParser`, `LineParserOutcome`, `PingRewriteState`, `PrivacySubstitutions`, `IrcTag`, `TagsOutcome`, `TagsParser`, `IrcError`, `IrcErrorKind`, `IrcServerRegistration`, `RegistrationOutcome`, `RegistrationRejection`, `RegistrationState`, `project_peer_hostname`, `encode_b32_label`, `classify_core`, `classify_post_tag_core`, `is_allowed`, `is_command_allowed` |
 | `access` | `src/access.rs` | 390 | Plan 292 server inbound peer allow/deny policy over canonical Base32 hashes, plus a bounded fixed-window authenticated connection-rate limiter | `ServerAccessPolicy`, `ServerConnectionRateLimits`, `ServerConnectionRateLimiter`, `MAX_ACCESS_LIST_ENTRIES`, `MAX_RATE_LIMIT_PEERS` |
 | `auth` | `src/auth.rs` | 298 | Plan 292 per-realm SHA-256 `username:realm:password` verifiers, constant-time verify, redacted `Debug`, HTTP Basic decode, SOCKS RFC 1929 realm binding | `ProxyCredentials`, `decode_basic_credentials`, `PROXY_AUTH_REALM_HTTP`, `PROXY_AUTH_REALM_CONNECT`, `PROXY_AUTH_REALM_SOCKS`, `PROXY_VERIFIER_MARKER`, `MAX_PROXY_USERNAME_LEN`, `MAX_PROXY_PASSWORD_LEN` |
 | `idle` | `src/idle.rs` | 172 | Plan 292 pure, timer-free, socket-free per-tunnel idle-sweep decision (exact-deadline fire, saturating arithmetic) | `IdleSweepAction`, `idle_decision` |
 | `streamr` | `src/streamr.rs` | 187 | Plan 291 runtime-neutral Streamr profile options (loopback UDP endpoints, I2P port, refresh/expiry/subscriber/payload policy with freeze-derived defaults) | `StreamrOptions`, `DEFAULT_SUBSCRIBE_INTERVAL_MS`, `DEFAULT_SUBSCRIPTION_EXPIRY_MS`, `DEFAULT_MAX_SUBSCRIBERS`, `DEFAULT_PAYLOAD_LIMIT_BYTES`, `MAX_PAYLOAD_LIMIT_BYTES`, `MAX_SUBSCRIBER_CEILING`, `DEFAULT_STREAMR_I2P_PORT` |
 | `outbound_secret` | `src/outbound_secret.rs` | 277 | Plan 341 runtime-neutral *policy* half of outbound proxy-secret ownership: the `OutboundSecretStore` capability, the sealed stored-form framing, and a fail-closed default. Holds no cryptography | `OutboundSecret`, `OutboundSecretStore`, `NoOutboundSecrets`, `validate_stored_form`, `OUTBOUND_SECRET_MARKER`, `MAX_OUTBOUND_SECRET_LEN`, `MAX_OUTBOUND_SECRET_STORED_LEN` |
+| `outproxy` | `src/outproxy.rs` | 1724 | Plan 342/343 runtime-neutral outproxy **provider policy**: the closed `OutproxyType` dialect vocabulary, `OutproxyEndpoint` (I2P-destination-only outproxy identity), the operator-ordered `OutproxyList`, the opaque-label `OutproxyTarget` clearnet grammar, the bounded `OutproxyPolicy` retry/backoff, the credential header builder, the typed route/failure/error surface, and the bounded HTTP `CONNECT` / SOCKS5 / SOCKS4a request and reply codecs. Policy only — no socket, no resolver, no plugin loader | `OutproxyType`, `OutproxyEndpoint`, `OutproxyList`, `OutproxyTarget`, `OutproxyPolicy`, `OutproxyRoute`, `OutproxyFailure`, `OutproxyConfig`, `OutproxyAuthHeader`, `OutproxyProvider`, `NoOutproxyProvider`, `OutproxyWireBuffer`, `OutproxyError`, `build_http_connect_request`, `parse_http_connect_response`, `build_socks5_connect_request`, `build_socks4a_connect_request`, `parse_socks5_method_reply`, `parse_socks5_connect_reply`, `parse_socks4a_connect_reply`, `MAX_OUTPROXY_LIST_ENTRIES`, `MAX_OUTPROXY_LIST_LEN`, `MAX_OUTPROXY_HOST_LEN`, `MAX_OUTPROXY_HOST_LABEL_LEN`, `MAX_OUTPROXY_ATTEMPTS`, `DEFAULT_OUTPROXY_ATTEMPTS`, `OUTPROXY_BACKOFF_BASE_STEP_MS`, `MAX_OUTPROXY_BACKOFF_MS`, `DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS`, `MAX_OUTPROXY_CONNECT_TIMEOUT_MS`, `MAX_OUTPROXY_AUTH_HEADER_LEN`, `MAX_OUTPROXY_USERNAME_LEN`, `MAX_OUTPROXY_HANDSHAKE_BYTES`, `MAX_OUTPROXY_REQUEST_LINE_LEN`, `MAX_OUTPROXY_RESPONSE_HEAD_LEN` |
 | `connect` | `src/connect.rs` | 111 | Plan 290 strict HTTP CONNECT-only client option surface (bounded allowed-port set, default 443). Parsing/validation live in `http`; the executor lives in the daemon | `ConnectClientOptions`, `CONNECT_OPTIONS_MAX_PORTS`, `CONNECT_DEFAULT_PORT` |
 
 ## Public surface
 
-The `pub use` re-exports from `src/lib.rs:65-122`, verbatim in shape:
+The `pub use` re-exports from `src/lib.rs:66-131`, verbatim in shape:
 
 ```text
 pub use access::{MAX_ACCESS_LIST_ENTRIES, MAX_RATE_LIMIT_PEERS, ServerAccessPolicy,
@@ -120,6 +126,14 @@ pub use irc::{IrcClientOptions, IrcCommand, IrcCommandClass, IrcDropReason, IrcE
   TagsOutcome, TagsParser, classify_core as classify_irc_core, classify_post_tag_core,
   encode_b32_label, is_allowed as is_irc_command_allowed,
   is_command_allowed as is_irc_command_allowed_alias, project_peer_hostname};
+pub use outproxy::{
+  DEFAULT_OUTPROXY_ATTEMPTS, DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS, MAX_OUTPROXY_ATTEMPTS,
+  MAX_OUTPROXY_AUTH_HEADER_LEN, MAX_OUTPROXY_BACKOFF_MS, MAX_OUTPROXY_CONNECT_TIMEOUT_MS,
+  MAX_OUTPROXY_HOST_LABEL_LEN, MAX_OUTPROXY_HOST_LEN, MAX_OUTPROXY_LIST_ENTRIES,
+  MAX_OUTPROXY_LIST_LEN, MAX_OUTPROXY_USERNAME_LEN, NoOutproxyProvider, OutproxyAuthHeader,
+  OutproxyConfig, OutproxyEndpoint, OutproxyError, OutproxyFailure, OutproxyList, OutproxyPolicy,
+  OutproxyProvider, OutproxyRoute, OutproxyTarget, OutproxyType,
+};
 pub use socks5::{ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser,
   RequestOutcome, RequestParser, SOCKS4A_GRANTED, SOCKS4A_REJECTED, SOCKS4A_REPLY_LEN,
   Socks4aOutcome, Socks4aRequestParser, Socks5ClientOptions, Socks5Error, Socks5ErrorKind,
@@ -137,7 +151,29 @@ pub use streamr::{DEFAULT_MAX_SUBSCRIBERS, DEFAULT_PAYLOAD_LIMIT_BYTES,
 `i2pr_service_tunnels::outbound_secret::{OutboundSecret, OutboundSecretStore, …}`. The
 private submodule constants (`OUTBOUND_SECRET_MARKER`, `MAX_OUTBOUND_SECRET_LEN`,
 `MAX_OUTBOUND_SECRET_STORED_LEN`) and the `validate_stored_form` framing validator are
-public within that module. This is the crate's only secret-bearing module.
+public within that module. It is the crate's only module whose *stored secret* type is
+un-re-exported; `outproxy` also carries secret bytes (see below) and is handled the
+opposite way.
+
+### `outproxy` is module-public *and* re-exported — but only partly
+
+`pub mod outproxy;` is declared at `src/lib.rs:62`, and unlike `outbound_secret` it
+**is** re-exported at the crate root: `src/lib.rs` carries a `pub use outproxy::{…}`
+block listing the 11 policy constants and the 12 policy types (`OutproxyType`,
+`OutproxyEndpoint`, `OutproxyList`, `OutproxyTarget`, `OutproxyPolicy`, `OutproxyRoute`,
+`OutproxyFailure`, `OutproxyConfig`, `OutproxyAuthHeader`, `OutproxyProvider`,
+`NoOutproxyProvider`, `OutproxyError`).
+
+The re-export is deliberately **partial**. The byte-level handshake surface stays
+module-path-only, reachable as
+`i2pr_service_tunnels::outproxy::{OutproxyWireBuffer, build_http_connect_request,
+parse_http_connect_response, build_socks5_connect_request, build_socks4a_connect_request,
+parse_socks5_method_reply, parse_socks5_connect_reply, parse_socks4a_connect_reply,
+OUTPROXY_BACKOFF_BASE_STEP_MS, MAX_OUTPROXY_HANDSHAKE_BYTES,
+MAX_OUTPROXY_REQUEST_LINE_LEN, MAX_OUTPROXY_RESPONSE_HEAD_LEN}` — the staging buffer,
+the three request builders, the four reply parsers, and the four wire-size/backoff
+constants they are bounded by. The split is: root-re-exported is the *policy* a caller
+decides with; module-path-only is the *wire codec* a daemon executor drives.
 
 ## Key contracts
 
@@ -243,6 +279,14 @@ Profile ceilings:
   hard payload limit 1_200; `DEFAULT_STREAMR_I2P_PORT` 0.
 - **Outbound secret** (`src/outbound_secret.rs`): `MAX_OUTBOUND_SECRET_LEN` 512;
   `MAX_OUTBOUND_SECRET_STORED_LEN` = `2 * (512 + 64) + 16` = 1_168.
+- **Outproxy** (`src/outproxy.rs`): list entries 8; list value 1_024 bytes; host 253;
+  host label 63; attempts ceiling 4 (default 2); backoff base step 250 ms, backoff
+  ceiling 5_000 ms; connect timeout default 30_000 ms, ceiling 120_000 ms; username 128;
+  `MAX_OUTPROXY_AUTH_HEADER_LEN` 1_024; `MAX_OUTPROXY_HANDSHAKE_BYTES` 8_192;
+  `MAX_OUTPROXY_REQUEST_LINE_LEN` 512; `MAX_OUTPROXY_RESPONSE_HEAD_LEN` 1_024. The
+  private `BASIC_PAIR_CAPACITY` = `MAX_OUTPROXY_USERNAME_LEN + 1 +
+  MAX_OUTBOUND_SECRET_LEN` = 641 is the compile-time size of the `username:password`
+  staging buffer.
 
 ### Validated sets and listener/target shapes
 
@@ -323,8 +367,9 @@ code opens, accepts, or holds a listener or connection.**
 
 ### `outbound_secret.rs` — secret-handling invariants (verified)
 
-`OutboundSecret` is the only type in the crate carrying outbound secret bytes. Verified
-against `src/outbound_secret.rs`:
+`OutboundSecret` is the only type in the crate carrying a **stored** outbound secret;
+`outproxy.rs` carries the *built* credential (`OutproxyAuthHeader`, handled below under
+the same standard). Verified against `src/outbound_secret.rs`:
 
 - **No `Debug`, no `Display`.** The struct declaration (`lines 64-67`) carries no
   `#[derive(...)]`; there is no `impl Debug` and no `impl Display` anywhere in the file.
@@ -355,6 +400,100 @@ The trait is the injection point: the daemon supplies the concrete router-bound
 implementation, exactly as it already injects `RouterDeliveryService`. This module holds
 no cryptography — it is only the policy half, which is why it can be runtime-neutral
 with no AEAD dependency.
+
+### `outproxy.rs` — outproxy provider policy and route owner (Plan 342/343)
+
+**The one invariant.** No direct clearnet capability exists anywhere in the design. The
+router never resolves a clearnet name, never opens a clearnet socket, and has no
+fallback branch. The outproxy path may open **exactly one kind of route**: an I2P
+Streaming connection to a destination `OutproxyEndpoint::parse` has already proved is an
+I2P destination. There is no code path to remove later because there is never a direct
+path. It is enforced at three independent layers (structural, behavioural, static) —
+see [Boundary enforcement](#boundary-enforcement) for rules 9–11.
+
+**`OutproxyEndpoint::parse` — the load-bearing check** (`src/outproxy.rs:183-214`). An
+entry is an I2P destination or an I2P name, or it is refused. In order it rejects:
+empty/blank input; anything longer than `MAX_CONFIGURED_DESTINATION_LEN`; any value
+containing `://` or `@`; **any value containing `:`** (a `host:port` entry is a
+clearnet-shaped authority and is refused before the reference parser can reinterpret it);
+anything not ending in `.i2p`; any `std::net::IpAddr` literal; and finally whatever
+`DestinationRef::parse` refuses. A bare hostname, a clearnet host, and an IP literal all
+land on `OutproxyError::NotAnI2pDestination`. `as_str()` uses `canonical_string`, never
+the bare Base32 label `DestinationRef::as_str` returns, because an endpoint must be
+identified by a routable spelling.
+
+**`OutproxyType` is a closed vocabulary, not a provider name.** `HttpConnect` /
+`Socks5` / `Socks4a`, 17 accepted spellings, and never treated as a command, path, or
+module to load — so no spelling reaches anything executable.
+
+**The outproxy target grammar is separate, not a relaxation.** `OutproxyTarget` is its
+own grammar and shares no parse result with `http::target::validate_host`, which
+correctly keeps refusing every non-`.i2p` host on the direct path. It accepts two
+disjoint forms, and `is_i2p()` reports which matched: an `.i2p` destination or static
+alias (**bypasses** the outproxy), or a bare clearnet DNS label (an **opaque label**
+handed upstream — i2pr holds no resolver and does no DNS, which makes "no DNS leak" a
+property of the type rather than a promise). The clearnet arm is narrower than a
+resolver accepts: IP literals are refused (letting a local client ask an outproxy to
+connect to an arbitrary internal address on *its* network is a port-scan primitive),
+bracketed authorities, a trailing root dot, empty/over-63-byte labels, labels starting or
+ending with `-`, non-DNS bytes, `user@host` userinfo, and mixed `.i2p`/clearnet
+spellings such as `example.i2p.com`.
+
+**The `.i2p` arm exists in the grammar on purpose.** If the grammar refused it, the
+bypass would be unreachable through this type, the decision would have to be duplicated
+in every caller's control flow, and "an `.i2p` request is never diverted off-network"
+would be a property of call sites rather than of the design. Accepting it makes
+`OutproxyConfig::route` the single place that refuses to select an outproxy for an
+in-network target.
+
+**Cross-field rules.** `OutproxyConfig::validate` requires a non-empty list, requires a
+username when `present_credential` is set, and requires `tunnelled` (`SSLProxies`) to be
+a *subset* of `list` — an outproxy outside the list would be one the failover policy
+never rotates into and never accounts for. `permits_tunnelled` is fail-closed: an empty
+`tunnelled` list means no outproxy was opted in, so the answer is `false`. `OutproxyList`
+preserves operator order, never deduplicates silently (a duplicate is
+`DuplicateEndpoint`, because two identical entries in a failover list means the operator
+expected two chances and would get one), and `select` **wraps** rather than running out.
+`OutproxyPolicy::new` clamps rather than rejects, so no operator input can produce an
+unbounded retry or socket wait, and `backoff_ms` is a saturating linear ramp (0 for the
+first attempt, then 250 ms per retry, clamped) — linear because the attempt count is
+already hard-capped, and saturating so `usize::MAX` yields the ceiling instead of
+wrapping.
+
+**Bounded codecs.** `build_http_connect_request` emits `CONNECT host:port HTTP/1.1` with
+a `Host` header and an optional `Proxy-Authorization`;
+`parse_http_connect_response` accepts **exactly** `HTTP/1.1` (RFC 9110 §9.3.6 — accepting
+the `HTTP/1.` prefix would let a 1.0 response pass as a tunnel grant), only a 2xx, and
+reports `407` as a distinct `CredentialRejected`. `build_socks5_connect_request` writes
+the no-auth greeting then a `CONNECT` with `ATYP = DOMAINNAME` (never a raw IP);
+`parse_socks5_connect_reply` requires the granted code. `build_socks4a_connect_request`
+is a single no-greeting message with the `0.0.0.x` marker. All four builders and the
+parser use the fixed-size `OutproxyWireBuffer`, so a push cannot fail on capacity for any
+accepted input.
+
+**Secret handling (verified against `src/outproxy.rs`).** `OutproxyAuthHeader` is the
+crate's second secret-bearing type, and it is held to the same `OutboundSecret` standard:
+no `Debug`, no `Display`, no `Clone` (the struct declaration at `lines 713-716` carries
+no derive and there is no manual impl anywhere in the file); a fixed-size
+`Zeroizing<[u8; MAX_OUTPROXY_AUTH_HEADER_LEN]>` stack buffer, so the crate still needs no
+`zeroize/alloc`; borrow-only access via `expose()`; and construction only from an
+`OutboundSecret`, so the plaintext password's lifetime is the `basic()` call. The
+`username:password` pair is staged in a separate compile-time-bounded `Zeroizing` buffer
+so no secret placement depends on input length. A username containing `:` (it would
+split the Basic pair ambiguously), whitespace, or a control byte (it could inject a
+header boundary) is refused at build time, not at a caller. `OutproxyConfig::username` is
+an identifier, not a credential: it is an ordinary bounded `String` with no `Display`, and
+no error in the module interpolates it. `OutproxyError` is 12 variants and **no variant
+carries the rejected operator value** — the reason `&'static str` is the whole contract,
+because the value is already in the failed request and would otherwise put unbounded wire
+input into an error that reaches logs and control replies. `From<OutproxyError> for
+ServiceTunnelError` maps `ExceedsCeiling` to `ExceedsCeiling` and everything else to
+`ContradictoryOptions` with the reason and an empty id.
+
+**Reachability, stated precisely.** The provider is **not reachable from any request
+path**. No Proposal 170 option sets an outproxy and no HTTP or SOCKS handler consults
+the provider, so this code is exercised only by its own tests. See
+[Status and plan authority](#status-and-plan-authority).
 
 ### `idle.rs` — pure idle-sweep decision
 
@@ -440,7 +579,10 @@ SOCKS5 profile is strictly narrower than Java I2P's broad SOCKS/outproxy profile
 that is a deliberate non-goal, not a gap. (The Plan 177 §11 list also named
 "SOCKS4/4a" as unsupported; Plan 290 later added the *bounded* SOCKS4a CONNECT parser
 above, so the current surface is narrower still: 4a domain-extension only, no SOCKS4
-IPv4, no auth method.)
+IPv4, no auth method.) This remains true after the outproxy work: the Plan 343 codecs
+that build a SOCKS5/SOCKS4a request *to an I2P-routed outproxy* are not wired into the
+`Socks5ClientOptions` request path, so the M10 SOCKS5 profile still has no clearnet
+outproxy egress.
 
 ### IRC line parser, IRCv3 tags, classification, and privacy filter
 
@@ -525,13 +667,26 @@ I2P's broad IRC/DCC/operator profile.
 
 None of these are silently bridged; each is a deliberate boundary:
 
-- no clearnet outproxy;
+- **No reachable clearnet outproxy, and no direct clearnet fallback — two separate
+  facts.** The Plan 342/343 outproxy *policy* and *route owner* now exist and are
+  enforced (see [`outproxy.rs`](#outproxyrs--outproxy-provider-policy-and-route-owner-plan-342343)):
+  outproxy endpoints are structurally I2P destinations, a clearnet target with no
+  provider is a typed refusal, and rules 9–11 statically forbid a direct-clearnet
+  capability in either outproxy file. But **no Proposal 170 option sets an outproxy and
+  no request path consults the provider**, so there is no reachable outproxy and no
+  egress — the code is reachable only from its own tests. The flat claim "no clearnet
+  outproxy" is therefore imprecise in one direction (the policy exists) and the claim
+  "outproxy supported" would be wrong in the other (nothing can reach it). Plan 327
+  remains blocked and Plan 342 remains registered;
 - no SOCKS UDP ASSOCIATE or BIND;
 - no SOCKS4 IPv4 relay, and no SOCKS *auth method* negotiation;
 - no transparent proxying (client listeners are loopback-only by construction);
 - no HTTP/2+ termination (HTTP/1.1 only);
 - no TLS interception;
 - no IRC DCC tunnelling or WEBIRC.
+
+`specs/support.toml` and every advertisement surface are untouched by the outproxy work:
+outproxy participation is not advertised and not claimed.
 
 ## Dependencies
 
@@ -540,12 +695,12 @@ From `crates/i2pr-service-tunnels/Cargo.toml` — production dependencies only, 
 
 | Dependency | Why |
 | --- | --- |
-| `base64ct` (workspace) | RFC 7617 Basic credential decode in `auth.rs` |
+| `base64ct` (workspace) | RFC 7617 Basic credential decode in `auth.rs`; Basic encoding of the outproxy `Proxy-Authorization` value in `outproxy.rs` |
 | `i2pr-proto` (path) | Bounded wire types shared with the rest of the workspace |
 | `sha2` (workspace) | SHA-256 credential verifiers (`auth.rs`) |
 | `subtle` (workspace) | Constant-time verifier comparison (`auth.rs`) |
 | `thiserror` (workspace) | `ServiceTunnelError` derive |
-| `zeroize` (workspace) | `Zeroizing` buffer in `outbound_secret.rs` |
+| `zeroize` (workspace) | `Zeroizing` buffers in `outbound_secret.rs` and `outproxy.rs` (`OutproxyAuthHeader`, `OutproxyWireBuffer`) |
 
 From `scripts/check-dependency-direction.sh`, the allowlist entry is
 `"i2pr-service-tunnels": {"i2pr-client", "i2pr-proto"}`. The checker only fails on
@@ -566,34 +721,34 @@ checker's `i2pr-daemon` allowlist) for the typed spec surface.
 
 ## Tests
 
-There is **no `crates/i2pr-service-tunnels/tests/` directory**. All 313 tests are
+There is **no `crates/i2pr-service-tunnels/tests/` directory**. All 339 tests are
 in-crate `#[cfg(test)]` modules, which is the honest coverage picture for a
 runtime-neutral crate: the daemon and runtime integration suites are what exercise the
 sockets, and they live elsewhere.
 
-Verified count: `cargo test -p i2pr-service-tunnels --all-targets` → **313 passed; 0
-failed; 0 ignored**.
+Verified count: `cargo test -p i2pr-service-tunnels --all-targets` → **339 passed; 0
+failed; 0 ignored**. (313 before `outproxy.rs`; Plan 343 records the same +26.)
 
 `#[cfg(test)]` module and test counts per file:
 
 | File | Tests | File | Tests |
 | --- | ---: | --- | ---: |
 | `config.rs` | 28 | `irc/policy.rs` | 22 |
-| `irc/server.rs` | 24 | `http/server.rs` | 20 |
-| `socks5/request.rs` | 20 | `generation.rs` | 18 |
-| `irc/client_filter.rs` | 17 | `http/target.rs` | 16 |
-| `http/parser.rs` | 16 | `irc/line.rs` | 15 |
-| `irc/tags.rs` | 11 | `http/rewrite.rs` | 10 |
-| `destination.rs` | 10 | `socks5/negotiation.rs` | 10 |
-| `socks5/socks4a.rs` | 13 | `access.rs` | 6 |
-| `http/config.rs` | 5 | `auth.rs` | 5 |
-| `irc/config.rs` | 5 | `irc/errors.rs` | 5 |
-| `http/response.rs` | 5 | `connect.rs` | 3 |
-| `socks5/reply.rs` | 3 | `streamr.rs` | 3 |
-| `outbound_secret.rs` | 4 | `socks5/config.rs` | 4 |
-| `idle.rs` | 7 | `events.rs` | 2 |
-| `http/limits.rs` | 2 | `socks5/errors.rs` | 2 |
-| `socks5/limits.rs` | 2 | | |
+| `outproxy.rs` | 26 | `irc/server.rs` | 24 |
+| `socks5/request.rs` | 20 | `http/server.rs` | 20 |
+| `generation.rs` | 18 | `irc/client_filter.rs` | 17 |
+| `http/target.rs` | 16 | `http/parser.rs` | 16 |
+| `irc/line.rs` | 15 | `irc/tags.rs` | 11 |
+| `http/rewrite.rs` | 10 | `destination.rs` | 10 |
+| `socks5/negotiation.rs` | 10 | `socks5/socks4a.rs` | 13 |
+| `access.rs` | 6 | `idle.rs` | 7 |
+| `auth.rs` | 5 | `irc/errors.rs` | 5 |
+| `irc/config.rs` | 5 | `http/response.rs` | 5 |
+| `http/config.rs` | 5 | `socks5/config.rs` | 4 |
+| `outbound_secret.rs` | 4 | `streamr.rs` | 3 |
+| `socks5/reply.rs` | 3 | `connect.rs` | 3 |
+| `socks5/limits.rs` | 2 | `socks5/errors.rs` | 2 |
+| `http/limits.rs` | 2 | `events.rs` | 2 |
 | No test module: `errors.rs`, `http/error.rs`, `http/mod.rs`, `irc/limits.rs`, `irc/mod.rs`, `lib.rs`, `socks5/mod.rs` | | | |
 
 ### Bounded negative paths
@@ -618,6 +773,15 @@ failed; 0 ignored**.
   ordering, activity suppression, and clock-jump saturation; outbound-secret bounding,
   NUL rejection, marker interchangeability refusal, oversize-frame rejection without
   decode work, and the fail-closed default store.
+- **Outproxy** (`outproxy.rs`, 26 rows): closed type vocabulary with `""`, `"none"`,
+  `"ssh"`, `"curl"`, `"/bin/sh"`, `"http://x"`, `"tor"` refused; clearnet / IP / `host:port`
+  / `user@` / `localhost` / blank outproxy entries refused; operator-order preservation,
+  wrapping rotation, duplicate and oversize list refusal; `.i2p` bypass verified at
+  attempt 0, 1, and 99; IP-literal, bracketed-IPv6, trailing-dot, empty-label,
+  leading/trailing-hyphen, non-DNS-byte, and mixed-suffix host refusal; policy clamping
+  of every operator input and saturating monotone backoff; the auth header built and
+  shown non-printable, and usernames that could split the Basic pair refused; a total
+  mapping from every `OutproxyError` variant to a typed reason.
 
 ## Boundary enforcement
 
@@ -628,9 +792,10 @@ Both scripts were run from the repository root. **Both passed.**
 | `bash scripts/check-service-tunnel-boundaries.sh` | `0` | `service-tunnel boundary checks passed` |
 | `bash scripts/check-runtime-boundaries.sh` | `0` | `runtime boundary checks passed` |
 
-### What `scripts/check-service-tunnel-boundaries.sh` enforces (Plan 180 §15)
+### What `scripts/check-service-tunnel-boundaries.sh` enforces (Plan 180 §15, extended by Plan 343)
 
-Eight invariants, in order:
+Eleven invariants, in order. Rules 1–8 are the original Plan 180 §15 set; rules 9–11
+were added by Plan 343.
 
 1. `crates/i2pr-service-tunnels/src` contains none of
    `tokio::|TcpListener|TcpStream|UdpSocket|UnixListener|UnixStream|tokio::net|tokio::spawn|tokio::time|tokio::sync`
@@ -648,6 +813,40 @@ Eight invariants, in order:
    in the five M10 daemon service-tunnel modules.
 8. **A single manager entry point**: `pub fn register_service_tunnel_manager` must appear
    exactly once across `crates/i2pr-daemon/src` — never one supervisor per spec.
+9. **One route kind, no direct-clearnet capability** (Plan 343). Both outproxy source
+   files must exist —
+   `crates/i2pr-service-tunnels/src/outproxy.rs` and
+   `crates/i2pr-daemon/src/outproxy_route.rs` — and *neither* may name
+   `TcpStream|TcpListener|UdpSocket|to_socket_addrs|lookup_host|\bTcpSocket\b|openssl|native_tls|reqwest|hyper`.
+   The invariant being enforced is that the outproxy path may open **exactly one kind
+   of route**: an I2P Streaming connection to a destination `OutproxyEndpoint::parse`
+   has already proved is an I2P destination, and never a direct clearnet socket. This
+   is the static half of the invariant; the behavioural half is the no-provider
+   fail-closed refusal in the wire lane.
+
+   Note what the pattern deliberately does **not** match: `std::net::IpAddr`. Parsing
+   an address is how the target grammar *refuses* IP literals, which is the opposite of
+   opening a socket, and the first draft of the rule matched `std::net::` and correctly
+   failed on the real source. Narrowing it was the right fix; a later reader must not
+   "helpfully" widen it back.
+10. **Positive control for rule 9 — the anti-vacuity mechanism.** The guard must be
+    able to fail. `crates/i2pr-daemon/src/service_tunnels_http.rs` legitimately names the
+    local `TcpStream` / `TcpListener` the client speaks to, so the same pattern run over
+    that file **must** match. If it ever stops matching, the script fails with
+    `rule 9 positive control no longer matches; the outproxy guard is vacuous`.
+
+    This is the pattern worth copying: a negative grep over a *subset* of the tree is
+    trivially satisfiable by deleting the file's contents, by renaming the capability,
+    or by narrowing the file list — and in every one of those cases the rule still
+    reports "passed". Asserting that the pattern matches somewhere it *should* match
+    converts a guard that proves nothing into a guard that fails loudly the moment it
+    stops testing anything. The daemon's other service-tunnel files legitimately name
+    `TcpStream`, which is exactly what makes that control file a valid witness.
+11. **No plugin loading, no command execution** (Plan 343). Neither outproxy file may
+    name `libloading|dlopen|Library::new|Command::new|std::process`.
+    `UseOutproxyPlugin` is a Proposal 170 wire boolean that selects the configured
+    provider path, never a module to load, so a dynamic-library or process-spawn
+    spelling would be a capability the guardrails do not allow.
 
 ### Manual verification (in addition to the scripts)
 
@@ -655,12 +854,13 @@ Confirmed absent from `crates/i2pr-service-tunnels/src`: `tokio` (0 matches),
 `std::fs` (0), `async fn` / `async move` / `async {` (0), `spawn` (0), and any of
 `TcpListener` / `TcpStream` / `UdpSocket` / `mpsc::` / `broadcast::` / `channel(` (0).
 
-`std::net` **does** appear, 11 times, but only as the value types
-`std::net::IpAddr` and `std::net::SocketAddr` in `config.rs`, `destination.rs`,
-`http/target.rs`, `socks5/request.rs`, and `streamr.rs` — used to *validate and reject*
+`std::net` **does** appear, 15 times, but only as the value type
+`std::net::IpAddr` / `SocketAddr` in `config.rs`, `destination.rs`, `http/target.rs`,
+`socks5/request.rs`, `streamr.rs`, and `outproxy.rs` — used to *validate and reject*
 non-loopback addresses and to *reject* IP literals as targets. No I/O type or operation
-appears. This is consistent with the boundary scripts, neither of which greps for
-`std::net` at all.
+appears. In `outproxy.rs` both occurrences are `host.parse::<std::net::IpAddr>()` in a
+rejection test, which is why boundary rule 9 excludes `IpAddr` from its pattern. This is
+consistent with the boundary scripts, none of which greps for `std::net` at all.
 
 **Grouped-`use` blind spot: not present in this crate.** A sibling agent reported that
 the runtime checker's literal `std::net` grep can miss an import hidden inside a grouped
@@ -684,9 +884,14 @@ the runtime checker's literal `std::net` grep can miss an import hidden inside a
    *policy*.
 5. `ServerTarget` distinguishes loopback TCP from a bounded Unix path, and a Unix target
    is an explicit `not-yet-supported` rather than a silently ignored field.
-6. `outbound_secret` is the only secret-bearing module, and it is deliberately
+6. `outbound_secret` owns the crate's *stored* secret and is deliberately
    *un-re-exported* at the crate root: no `Debug`, no `Display`, no `Clone`, a fixed-size
    `Zeroizing` stack buffer, and a fail-closed default store instead of a stub.
+   `outproxy` meets the same secret standard for the credential it *builds* — no
+   `Debug`, no `Display`, no `Clone`, fixed-size `Zeroizing` buffers, compile-time
+   capacity, and a `username` refused a `:` or control byte so it cannot alter the Basic
+   pair framing — but its policy types are re-exported, with only the wire codecs left
+   behind the module path.
 7. The inbound verifier and the outbound sealed form carry deliberately distinct markers
    (`$i2pr1$` vs `$i2pr1o$`) so one can never be replayed as the other.
 8. `idle_decision` is a pure function with no clock, so every deadline edge — including
@@ -697,6 +902,19 @@ the runtime checker's literal `std::net` grep can miss an import hidden inside a
 10. Parser, rewrite, and reply *grammars* are shared verbatim between the daemon executor
     and the runtime-neutral unit tests, so the executor owns sockets and Streaming lifetime
     but never re-implements a grammar.
+11. **The outproxy path can open exactly one kind of route.** An outproxy endpoint is
+    structurally an I2P destination, so the no-direct-clearnet property is a property of
+    the *type* rather than a rule callers must remember. `OutproxyFailure` has no `Other`
+    catch-all for the same reason: there is no variant a caller could read as "maybe try
+    a direct socket", because that is exactly the branch the design must not have. The
+    outproxy target grammar is a *separate* type from the HTTP target validator rather
+    than a flag on it, so admitting clearnet for the outproxy path cannot weaken the
+    direct path's `.i2p`-only rule.
+12. **Boundary rule 9 carries a positive control (rule 10).** A negative grep over a
+    subset of the tree is vacuously satisfiable, so the script asserts that the same
+    pattern still matches a file where it legitimately should. If the pattern stops
+    matching anywhere, the guard reports that it became vacuous instead of reporting
+    "passed" — the failure mode a plain absence-check cannot distinguish.
 
 ## Status and plan authority
 
@@ -735,6 +953,45 @@ authority remaining Plan 215, and the M6 Java second-family row (Plan 201 / Plan
 stays pending. This crate's local composition does not qualify external reachability or
 any anonymity property.
 
+### Proposal 170 outproxy status (separate from the M10 closure above)
+
+M10 is closed; the outproxy line is a **Proposal 170** line and is *not* part of it.
+The precise state, per closure records:
+
+| Plan | Scope | Status token |
+| --- | --- | --- |
+| 341 | Restart-safe outbound proxy secret owner | `passed-outbound-secret-owner-with-no-routing-and-no-outproxy-claim` |
+| 343 | I2P-routed outproxy provider policy + route owner | `passed-outproxy-provider-policy-and-route-owner-with-no-reachable-request-path` |
+| 327 | I2P-routed outproxy provider disposition | **still blocked** — `blocked-prop170-outproxy-provider-needs-routed-provider-and-secret-owner` |
+
+**What Plan 343's token means, read carefully.** The **policy** and the **route owner**
+landed — the runtime-neutral policy in this crate and the daemon's
+`outproxy_route.rs` — together with boundary rules 9–11. What did **not** land is a
+**reachable request path**: no Proposal 170 option sets an outproxy, and no HTTP or
+SOCKS handler consults the provider, so the code is exercised only by its own tests.
+This is provider infrastructure, not a capability claim. `specs/support.toml` and every
+advertisement surface are untouched, and outproxy participation is not advertised and
+not claimed. Plan 342 remains **registered** for the option surface, the request-path
+integration, and the loopback outproxy wire lane.
+
+**Plan 327 is still blocked, and its status token is deliberately unchanged.** It carries
+two dated 2026-10-05 corrections. The first removed one of its two blockers: Plan 341
+landed the durable outbound credential owner (a ChaCha20-Poly1305 sealed form under a key
+derived by HKDF from the router's own persisted signing seed — restart-safe, inert in a
+copied config file, never echoing plaintext), which is what `outbound_secret.rs` models.
+The second records that the provider now exists but is unreachable, so the original
+blocker is **not discharged** — only the description of the remaining work sharpened
+(the option surface + request-path integration + wire lane, i.e. Plan 342).
+
+**Registry lag, flagged.** `plans/registry.md:39` still reads "Plans 322/327 remain
+blocked" and "Plan 334 is blocked". The Plan 327 half is still true, but the Plan 322 and
+Plan 334 halves are **stale**: per the closure records, which win,
+`plans/closure/i2pcontrol-proposal-170/322-status.md` is
+`passed-canonical-routerinfo-sources-with-the-transit-participation-posture-unchanged`
+and `334-status.md` was reclosed 2026-10-05 as
+`passed-mode-mapping-and-control-surface-complete`. Read the closure records, not that
+registry row, for Proposal 170 state.
+
 ## Cross-references
 
 **ADRs**
@@ -755,7 +1012,19 @@ any anonymity property.
 - `plans/closure/service-tunnels/214-status.md`
 - `plans/closure/service-tunnels/215-status.md`
 - `plans/closure/mixed-router-interop/248-status.md` (Plan 248, supersedes Plan 204)
-- `plans/registry.md` (subsystem status and M10 sequence)
+- `plans/registry.md` (subsystem status and M10 sequence; its Proposal 170 row lags the
+  closure records — see [Status and plan authority](#status-and-plan-authority))
+
+**Proposal 170 / i2PControl closure records (the outproxy line)**
+
+- `plans/closure/i2pcontrol-proposal-170/341-status.md` — the restart-safe outbound
+  proxy secret owner that `src/outbound_secret.rs` models; closed with no routing and no
+  outproxy claim
+- `plans/closure/i2pcontrol-proposal-170/343-status.md` — the outproxy provider policy
+  and route owner; closed with **no reachable request path** (Plan 342 remains registered)
+- `plans/closure/i2pcontrol-proposal-170/327-status.md` — still **blocked**, with two
+  dated 2026-10-05 corrections (one blocker removed by Plan 341; the provider gap
+  remaining) and an unchanged status token
 
 **Specifications and reference notes**
 
@@ -763,6 +1032,10 @@ any anonymity property.
   Plan 177 §11 and Plan 178 §12 fail-closed non-support lists)
 - `specs/protocols/12-repliable-datagrams-streamr.md` (frozen Streamr behavior reference)
 - `specs/CONFORMANCE.md` (what counts as evidence)
+- `specs/references/proposal-170-outproxy-provider.md` — directly relevant: the frozen
+  normative record for the Plan 343 outproxy provider, including the three-layer
+  enforcement table (structural / behavioural / static) and its explicit §9 "what this
+  record does not claim"
 - `specs/references/proposal-170-outbound-secret-owner.md` — directly relevant: it defines
   the `$i2pr1$` / `$i2pr1o$` marker separation that `src/outbound_secret.rs` implements
 - `specs/references/proposal-170-transit-volume-and-share.md` — the same Proposal 170

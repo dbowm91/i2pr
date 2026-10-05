@@ -1,7 +1,7 @@
 # `i2pr-daemon` — Deep Dive
 
 **Crate:** `i2pr-daemon` — **Path:** `crates/i2pr-daemon` — **Binary:** `i2pr` (`src/main.rs`)
-**Size:** 50 `.rs` files, 76 293 lines of `src` (46 at the crate root + 4 under `src/sam/`).
+**Size:** 51 `.rs` files, 77 270 lines of `src` (47 at the crate root + 4 under `src/sam/`).
 **Lints:** workspace-inherited; the workspace denies `unsafe_code`, `clippy::dbg_macro`,
 `clippy::todo`, and `clippy::unimplemented`.
 
@@ -40,6 +40,10 @@ implementation.
   cancellation; channel and socket close are lifecycle events, never blind retries.
 - **The M10 service-tunnel manager** (`service_tunnels.rs`, 9 342 lines) and every per-profile
   executor.
+- **The outproxy route owner** (`outproxy_route.rs`, 976 lines) — the daemon half of Proposal
+  170's I2P-routed outproxy: it opens the Streaming route and recovers the credential, while the
+  policy stays in the runtime-neutral `i2pr-service-tunnels`. Reachable from tests only; no
+  request path consults it.
 - **M11 transit composition** (`transit_compose.rs`, `transit_owner.rs`, `transit_volume.rs`) —
   in the **disabled** posture only.
 - **M12 floodfill** (`floodfill.rs`) — controlled-activation/withdrawal composition only.
@@ -59,7 +63,9 @@ Protocol semantics live in the runtime-neutral crates and stay there:
 - No tunnel-build or tunnel-data-plane algorithms — `i2pr-tunnel`.
 - No RouterInfo/LeaseSet2 validation or store semantics — `i2pr-netdb` / `i2pr-netdb-persist`.
 - No SAM/I2CP/I2PControl wire state machines — `i2pr-api` / `i2pr-i2pcontrol`.
-- No HTTP/SOCKS5/IRC/Streamr/TLS parsing — `i2pr-service-tunnels`.
+- No HTTP/SOCKS5/IRC/Streamr/TLS parsing — `i2pr-service-tunnels`. That includes the whole
+  runtime-neutral outproxy **policy** (dialects, endpoint/target grammar, rotation, bounded
+  retry, codecs); the daemon contributes only the socket and credential halves.
 - No destination lifecycle or ECIES session logic — `i2pr-client`.
 - No SU3 framing — `i2pr-su3`.
 - No runtime/transport/runtime-neutral contracts — `i2pr-runtime`, `i2pr-transport`.
@@ -73,9 +79,9 @@ NTCP2 remains **DISABLED** in production: `default_ntcp2_enabled() == false`
 
 ## Module layout
 
-46 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
+47 files at the crate root plus the `sam/` subdirectory (4 files). Line counts are from
 `wc -l` on repo head. The tables below cover every `src/` file; the row count matches the
-filesystem (50 rows).
+filesystem (51 rows).
 
 ### CLI and configuration
 
@@ -84,7 +90,7 @@ filesystem (50 rows).
 | `src/main.rs` | 68 | Binary shell: `Cli::parse()`, dispatch through `execute()`, print results, map errors to stable exit codes via `i2pr_runtime::run_blocking` on the live `run` path | `main()`, `process_exit()`, `_command_name()` |
 | `src/cli.rs` | 69 | `clap` CLI vocabulary only — no logic | `Cli`, `Command`, `IdentityCommand`, `CheckConfigArgs`, `IdentityArgs`, `RunArgs` |
 | `src/config.rs` | 4 077 | Strict versioned TOML: 21 `Raw*` structs with `deny_unknown_fields`, semantic validation, normalization, `bind_socket()` / `loopback_test_profile()` helpers | `Config`, `RouterConfig`, `LoggingConfig`, `LimitsConfig`, `NetworkConfig`, `Ntcp2Config`, `TransportConfig`, `NetDbConfig`, `ReseedConfig`, `ReseedSourceConfig`, `NewsConfig`, `SamConfig`, `Ssu2Config`, `I2cpConfig`, `I2pControlConfig`, `I2pControlPassword`, `FloodfillConfig`, `ServiceTunnelsConfig`, `RouterProfile`, `LogFormat`, `ConfigError`, `CURRENT_SCHEMA_VERSION` |
-| `src/lib.rs` | 1 823 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
+| `src/lib.rs` | 1 824 | Crate root: module declarations, `pub use` re-exports, `execute()` dispatch, logging init, bootstrap, service-graph construction, `run_daemon()` | `CommandOutcome`, `IdentitySummary`, `execute()`, `initialize_logging()`, `bootstrap_daemon()`, `build_daemon_graph()`, `build_daemon_graph_with_inspection()`, `build_shared_service_manager()`, `run_daemon()` |
 | `src/error.rs` | 128 | Typed error hierarchy and the stable exit-code mapping | `ExitCode` (`#[repr(u8)]`), `DaemonError` |
 
 ### Identity and bootstrap
@@ -180,21 +186,22 @@ filesystem (50 rows).
 | `src/service_tunnels_socks_irc.rs` | 337 | Plan 290 SOCKS+IRC composer: shared version-peek negotiation, target selection, then the IRC filtered loop with no raw bypass | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
 | `src/service_tunnels_streamr.rs` | 739 | Plan 291 Streamr subscriber/publisher executors: loopback UDP media source/target sockets, bounded subscribe cadence with terminal unsubscribe, authenticated subscriber table with expiry sweep and raw fanout, producer-bound media forwarding; Plan 292 adds the subscriber sink redirect | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
 | `src/service_tunnels_tls.rs` | 428 | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
+| `src/outproxy_route.rs` | 976 | **Plan 343 daemon half of the I2P-routed outproxy provider** — the *route owner*. Everything decidable without a socket lives in the runtime-neutral `i2pr-service-tunnels::outproxy`; this module adds only the two things the composition root can do: the I/O half (open a Streaming route to the selected I2P outproxy destination and speak the outproxy-facing handshake with bounded retry, a separate handshake deadline, and a bounded read) and the credential half (recover the sealed password through Plan 341's `OutboundSecretStore` and build the header). **Not reachable from any request path** — see **Outproxy provider** under Key contracts | `RouterOutproxyProvider` (impls `OutproxyProvider`), `OutproxySession`, `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`, `open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` |
 
 ---
 
 ## Public surface
 
-### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–52`)
+### The actual `pub mod` / `mod` declarations (`src/lib.rs:9–53`)
 
-41 `pub mod` + 3 private modules + 4 `sam/` submodules:
+42 `pub mod` + 3 private modules + 4 `sam/` submodules:
 
 `pub mod` — `addressbook`, `bootstrap`, `cli`, `config`, `control_sources`,
 `destination_peers`, `destination_streaming`, `destination_tunnels`, `error`,
 `exploratory_build`, `floodfill`, `i2cp`, `i2pcontrol`, `i2pcontrol_inspection`,
 `i2pcontrol_tunnels`, `inbound_dispatch`, `netdb_seam`, `netdb_tunnels`,
-`outbound_lookup`, `outbound_secret`, `peer_test`, `router_i2np`, `sam`,
-`service_delivery`, `service_els2`, `service_generation`, `service_product`,
+`outbound_lookup`, `outbound_secret`, `outproxy_route`, `peer_test`, `router_i2np`,
+`sam`, `service_delivery`, `service_els2`, `service_generation`, `service_product`,
 `service_tunnels`, `service_tunnels_http`, `service_tunnels_http_bidir`,
 `service_tunnels_http_server`, `service_tunnels_irc_client`,
 `service_tunnels_irc_server`, `service_tunnels_socks5`, `service_tunnels_socks_irc`,
@@ -202,9 +209,9 @@ filesystem (50 rows).
 `transit_volume`, `tunnel_liveness`.
 
 Private — `mod addressbook_fetch`, `mod news`, `mod service_lifecycle`, `mod tests`
-(in-crate test module at `src/lib.rs:1611`).
+(in-crate test module at `src/lib.rs:1612`).
 
-### The actual `pub use` re-exports (`src/lib.rs:54–61`)
+### The actual `pub use` re-exports (`src/lib.rs:55–62`)
 
 ```rust
 pub use error::DaemonError;
@@ -257,6 +264,12 @@ pub use sam::{SamServiceError, SamServiceState, StreamingPools};
   `ServiceTunnelSnapshot`, `ServiceProduct`, `ServiceProductSpec`, `ServiceProductError`,
   `ServiceDestinationDelivery`, `RemoteDestinationBackend`, `RoutingDecision`,
   `ServiceEls2Material`, `ServiceGeneration`.
+- **Outproxy route owner** — `RouterOutproxyProvider`, `OutproxySession`,
+  `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`,
+  `async open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS`. These are reachable **only**
+  as `i2pr_daemon::outproxy_route::…`; none is re-exported at the crate root, and nothing in
+  `src/` calls `open_via_outproxy` (verified: the sole reference to the module outside itself
+  is the `pub mod` declaration at `src/lib.rs:31`).
 
 ---
 
@@ -628,14 +641,96 @@ service; `ServiceDestinationDelivery::new()` / `with_backend` / `has_backend` se
 `service_lifecycle.rs` is a **private** module holding only local Destination-group
 phase/timing policy — no secrets, no routing state.
 
+### Outproxy provider (Proposal 170) — policy and route owner landed, no reachable request path
+
+Read this before writing "outproxy supported" anywhere. **Both halves exist and are enforced;
+neither is reachable by a client.** Plan
+[`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) is
+`passed-outproxy-provider-policy-and-route-owner-with-no-reachable-request-path`: *"No option
+can set an outproxy yet, and no request path consults the provider. The code is reachable only
+from its own tests."* There is still **no direct clearnet fallback** and **no direct clearnet
+capability anywhere in the design**. So a flat "no clearnet outproxy" is now **imprecise** — the
+policy and the route owner are real, typed, and guarded — while "outproxy supported" would be
+**wrong**, because the route owner has no caller. Both facts are true; keep them together.
+
+**The seam, which is the whole architecture of this repository in miniature.** Everything
+decidable without a socket is runtime-neutral and lives in
+[`i2pr-service-tunnels/src/outproxy.rs`](../../crates/i2pr-service-tunnels/src/outproxy.rs)
+(1 724 lines): the closed `OutproxyType` dialect vocabulary, `OutproxyEndpoint`, `OutproxyList`,
+the separate `OutproxyTarget` grammar, `OutproxyPolicy`, `OutproxyConfig::route` /
+`route_attempt` / `permits_tunnelled`, the `OutproxyRoute` decision, the `OutproxyFailure`
+refusal vocabulary, the `OutproxyProvider` trait, `NoOutproxyProvider`, and the
+request/reply codecs. That crate opens no socket. The daemon's `outproxy_route.rs` is the
+**route owner**: it supplies only the two things the composition root alone can — the I/O half
+and the credential half — and it implements the runtime-neutral `OutproxyProvider` trait rather
+than redefining the policy. `RouterOutproxyProvider::new` calls `config.validate()?` and
+returns `Result<Self, OutproxyError>`, so an invalid configuration is refused at construction
+instead of at first use.
+
+**Single-route-kind invariant.** The only route this crate ever opens for an outproxy is an
+I2P Streaming connection to an I2P destination, and there is no branch that would open a
+clearnet socket after a failure. Three independent mechanisms enforce it:
+
+| Layer | Mechanism | Where |
+| --- | --- | --- |
+| Structural | `OutproxyEndpoint::parse` refuses any list entry that is not an I2P destination — a clearnet host, an IP literal, a `host:port` authority, a `user@host`, or a non-`.i2p` label is `NotAnI2pDestination` | `i2pr-service-tunnels/src/outproxy.rs:183` |
+| Behavioural | A clearnet target with no provider is a typed refusal; the `.i2p` bypass is re-evaluated **inside** `open_via_outproxy` per attempt rather than trusted from the caller, and an I2P target reaching the opener is refused as `NotPermitted` rather than quietly routed | `src/outproxy_route.rs:396–407` |
+| Static | Rules 9–11 of `scripts/check-service-tunnel-boundaries.sh` scan **both** outproxy files for socket, resolver, TLS-client, plugin, and process spellings, with a positive control | see Boundary checkers below |
+
+The honest test of this invariant is asserting the typed failure, not searching for a socket:
+`open_via_outproxy` has **no caller** in `src/`, and the only socket-shaped operation in the
+module is `bridge.streaming_mut().connect(…)` against the `DestinationRef` that
+`OutproxyEndpoint::parse` already validated. Bounded by construction: `OutproxyPolicy::attempts`
+(`MAX_OUTPROXY_ATTEMPTS = 4`, floor 1), `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` as a ceiling
+separate from the connect timeout (a Streaming connection can establish and then never answer —
+bounding only the connect would wait forever), `MAX_OUTPROXY_HANDSHAKE_BYTES = 8 * 1024` on the
+staging buffer so a hostile or broken outproxy cannot grow it without bound, and a 5 ms poll
+interval. Every close is a lifecycle event: `terminate` reads the port tuple from the live
+connection rather than assuming it, so a mismatch fails closed inside the streaming manager
+instead of closing the wrong stream.
+
+**Diagnostic preservation at exhaustion.** `open_via_outproxy` runs a bounded attempt loop and
+tracks the last attempt's reason in `last`. When the loop is spent it calls `note_exhausted`
+(`src/outproxy_route.rs:466`), which records **both** facts — the terminal reason of the last
+attempt *and* `attempts_exhausted` — instead of discarding the reason. This is the fix landed
+with Plan 343's record commit (`5d3088ba`): the code previously did `let _ = last`, so "the
+outproxy rejected the credential N times" was lost and the only surviving signal was
+`attempts_exhausted`. The row `an_exhausted_request_records_both_its_last_reason_and_the_exhaustion`
+asserts exactly that composition (`authentication_rejected == 1` **and** `attempts_exhausted == 1`),
+so a discarded failure reason — the one diagnosis an operator needs to tell a wrong password
+from a dead outproxy — cannot come back silently. `note_exhausted` is split out of the loop so
+the composition is testable without a live route.
+
+`OutproxyCounters` is counts-only and `Clone + Copy + Debug + Default`: no hostname, username,
+header, or error string reaches it, so it is safe to project verbatim into a status or
+`REPORT_STATUS` surface. `classify` is **total** over `OutproxyError` — every variant has an arm,
+so a new codec error cannot silently become "some other failure" and be reported as a dead
+outproxy. `AuthenticationRejected` and `TargetUnreachable` are the only retryable failures
+(`is_retryable`); a missing provider or a missing secret owner is a configuration fact, and
+retrying it would just be a loop.
+
+**Secret handling on this path (verified).** `RouterOutproxyProvider` holds the Plan 341 **sealed**
+stored form, never plaintext, and the plaintext's lifetime is the header construction inside
+`auth_header`. It fails closed at every step: no sealed form, an owner that cannot open, a form
+that does not authenticate, and a missing username each produce an error rather than an
+unauthenticated upstream request, and the underlying store error is deliberately dropped so no
+caller surfaces a value. Nothing in the module formats the username, the password, or the
+header, and **no error variant carries an operator value** — `OutproxyError::MalformedCredential`
+reasons are fixed strings. `build_attempt` refuses to attach an HTTP Basic credential to a SOCKS
+outproxy instead of silently dropping it, and `OutproxyTarget`'s clearnet arm is a narrower
+grammar than a resolver accepts (IP literals, a trailing root dot, empty labels, and
+`user@host` are all refused), so i2pr cannot be used as a port-scan primitive against an
+outproxy's network.
+
 ---
 
 ## Dependencies
 
 ### Production (`crates/i2pr-daemon/Cargo.toml`)
 
-**15 workspace path crates** (the full composition edge set, matching the allowlist in
-[`scripts/check-dependency-direction.sh:34`](../../scripts/check-dependency-direction.sh)):
+**37 production dependencies: 15 workspace path crates + 22 external.** The path crates are
+the full composition edge set, matching the allowlist in
+[`scripts/check-dependency-direction.sh:34`](../../scripts/check-dependency-direction.sh):
 
 `i2pr-addressbook`, `i2pr-api`, `i2pr-client`, `i2pr-core`, `i2pr-crypto`, `i2pr-i2pcontrol`,
 `i2pr-netdb`, `i2pr-netdb-persist`, `i2pr-proto`, `i2pr-runtime`, `i2pr-service-tunnels`,
@@ -665,6 +760,11 @@ isolation.
 - `zeroize` and `chacha20poly1305` are present specifically for the Plan 341
   `outbound_secret.rs` owner; `rustls`/`tokio-rustls`/`rcgen`/`webpki-roots`/
   `x509-parser`/`rustls-pki-types` serve I2PControl TLS and `service_tunnels_tls.rs`.
+- **Plan 343 added no dependency edge.** The outproxy route owner reaches the runtime-neutral
+  policy through the already-declared `i2pr-service-tunnels` and `i2pr-client` edges, and
+  `rand_core`/`OsRng` for the Streaming SYN. The outproxy path needs no new HTTP or SOCKS client
+  crate, which is the dependency-level statement of the no-direct-clearnet invariant: there is
+  no `reqwest`/`hyper` to reach for.
 
 ### Boundary checkers (run on repo head)
 
@@ -672,17 +772,49 @@ isolation.
 | --- | --- | --- |
 | `scripts/check-runtime-boundaries.sh` | **0** | `runtime boundary checks passed` |
 | `scripts/check-dependency-direction.sh` | **0** | `dependency direction: ok` |
-| `scripts/check-service-tunnel-boundaries.sh` | **0** | `service-tunnel boundary checks passed` |
+| `scripts/check-service-tunnel-boundaries.sh` | **0** | `service-tunnel boundary checks passed` (includes rules 9–11, below) |
 | `scripts/check-m11-transit-boundaries.sh` | **0** | `check-m11-transit-boundaries: passed` |
 | `scripts/check-m12-floodfill-boundaries.sh` | **1** | Plan 281 type-5 deferral grep now legitimately matches Plan 332/333/334 NetDB type-5 work. Not in `AGENTS.md` or `ci.yml`. See the note in **M12 floodfill** above. |
+
+### Rules 9–11: the outproxy static guard (Plan 343)
+
+`scripts/check-service-tunnel-boundaries.sh` treats the two outproxy files as a **pair**. This
+is the one place where a runtime-neutral crate and the socket-owning daemon are guarded by a
+single rule, which is what keeps the seam honest: the rule fails if *either* half grows a
+capability the design forbids.
+
+- **Both files must exist** — `crates/i2pr-service-tunnels/src/outproxy.rs` and
+  `crates/i2pr-daemon/src/outproxy_route.rs`. A missing file is exit 1, so the guard cannot be
+  satisfied by deleting the thing it guards.
+- **Neither may name a direct-clearnet capability**: the pattern is
+  `TcpStream|TcpListener|UdpSocket|to_socket_addrs|lookup_host|\bTcpSocket\b|openssl|native_tls|reqwest|hyper`
+  over both files. `std::net::IpAddr` is deliberately **not** matched — parsing an address is how
+  the target grammar *refuses* IP literals, the opposite of opening a socket. The first draft
+  matched `std::net::` and correctly failed on the real source; narrowing it was the fix, and
+  the distinction is recorded so a later reader does not "helpfully" widen it back.
+- **Anti-vacuity positive control (rule 10)** — the same `TcpStream|TcpListener` pattern is run
+  over `crates/i2pr-daemon/src/service_tunnels_http.rs`, which legitimately does name the local
+  TCP listener a client speaks to. If that ever stops matching, the script exits 1 with
+  *"rule 9 positive control no longer matches; the outproxy guard is vacuous"*. A negative grep
+  that can no longer fail is worse than no guard, because it reports safety it is not checking.
+- **Rule 11** — neither file may contain `libloading|dlopen|Library::new|Command::new|std::process`.
+  `UseOutproxyPlugin` is a Proposal 170 wire boolean that selects the configured provider path,
+  never a module to load, so a plugin or process capability in either half would be something the
+  guardrails do not allow.
+
+Plan 343 recorded a **vacuous inversion** in its own evidence harness: the first `Command::new`
+inversion targeted a function in the wrong file, the edit silently no-opped, and the checker
+correctly reported "passed". Had the edit been believed applied, the closure record would have
+claimed evidence for a guard that was never exercised. The lesson is the anti-vacuity mechanism
+above: **an inversion harness must verify its edit applied.**
 
 ---
 
 ## Tests
 
 **72 integration test files** in `crates/i2pr-daemon/tests/`, plus in-crate `#[cfg(test)]`
-modules (notably `src/lib.rs:1611`, `src/config.rs`, and the module-local test blocks in
-`outbound_secret.rs`, `transit_volume.rs`, and `service_els2.rs`).
+modules (notably `src/lib.rs:1612`, `src/config.rs`, and the module-local test blocks in
+`outbound_secret.rs`, `outproxy_route.rs`, `transit_volume.rs`, and `service_els2.rs`).
 
 ### Acceptance-suite inventory by area
 
@@ -726,11 +858,14 @@ macOS CI builds every test executable **once** and then runs each one with
 Environment-gated external lanes are `#[ignore]`-gated and require an explicit
 `--ignored --exact` run; a missing environment must **fail**, never silently pass.
 
-Focused suites run while refreshing this document (repo head `11842388`):
+Focused suites run while refreshing this document (repo head `5d3088ba`):
 
 | Command | Result |
 | --- | --- |
 | `cargo test --locked -p i2pr-daemon --test cli --test netdb_tunnel_unit -- --test-threads=1` | **ok** — `cli`: 7 passed, 0 failed; `netdb_tunnel_unit`: 22 passed, 0 failed |
+| `cargo test --locked -p i2pr-daemon --lib outproxy_route -- --test-threads=1` | **ok** — 12 passed, 0 failed, 538 filtered out. Includes `an_exhausted_request_records_both_its_last_reason_and_the_exhaustion` |
+| `cargo test --locked -p i2pr-daemon --test cli -- --test-threads=1` | **ok** — 7 passed, 0 failed |
+| `bash scripts/check-service-tunnel-boundaries.sh` | **ok** — exit **0**, `service-tunnel boundary checks passed` |
 
 The full 72-file daemon suite and the full workspace suite were deliberately **not** run
 during this documentation refresh.
@@ -787,6 +922,28 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
     `service_lifecycle` are private because none of their invariants are consumer contracts.
 13. **The live `run` path is async through the runtime owner.** `main()` hands `run_daemon`
     to `i2pr_runtime::run_blocking`; the binary has no `#[tokio::main]` of its own.
+14. **The outproxy is split at the socket line, and the split is the design.** The
+    runtime-neutral `i2pr-service-tunnels::outproxy` owns every decision; the daemon's
+    `outproxy_route.rs` implements its `OutproxyProvider` trait and supplies only the Streaming
+    connect and the credential. The daemon owns sockets, so the daemon owns the route — and
+    nothing else about the outproxy.
+15. **"No clearnet fallback" is structural, not procedural.** There is no fallback branch to
+    remove later because there is never a fallback, and no `OutproxyFailure` catch-all a caller
+    could read as "maybe try a direct socket". `OutproxyEndpoint::parse` makes every configured
+    endpoint an I2P destination, and the `.i2p` bypass is re-checked inside the route owner
+    rather than trusted from the caller.
+16. **A static guard must be able to fail.** Rule 9's positive control requires the same pattern
+    to keep matching `service_tunnels_http.rs`; if it stops matching, the checker fails rather
+    than reporting a vacuous pass. Plan 343 also recorded the inverse lesson — an inversion
+    harness that targets the wrong file no-ops and "passes" convincingly.
+17. **Diagnostics survive exhaustion.** `note_exhausted` records the last attempt's reason
+    *alongside* the exhaustion, so "rejected the credential N times" is available to an operator
+    instead of being collapsed into "exhausted". A discarded failure reason is the one fact
+    needed to separate a wrong password from a dead outproxy.
+18. **A guard closure is a closure.** `send_handshake`'s dispatch request is dropped
+    deliberately — the handshake cares only that the streaming manager accepted the bytes — and
+    `terminate` reads the port tuple from the live connection so a mismatch fails closed instead
+    of closing the wrong stream. Close is a lifecycle event, here as everywhere else.
 
 ---
 
@@ -856,9 +1013,29 @@ regressions (`daemon_graph_contains_no_ntcp2_transport_service`,
   [`184`](../../plans/implementation/mixed-router-interop/184-m6-authenticated-i2np-runtime-and-reference-preflight.md),
   [`193`](../../plans/implementation/mixed-router-interop/193-m6-i2pd-mixed-router-streaming-qualification.md),
   [`108`](../../plans/implementation/exploratory-tunnels/108-conformance-amendment.md).
-- **I2PControl / Proposal 170** — Plans 319–341. Closure:
-  `plans/closure/i2pcontrol-proposal-170/`. Most recent daemon commit: `11842388`
-  (Plan 341 restart-safe outbound proxy secret owner).
+- **I2PControl / Proposal 170** — Plans 319–343. Closure:
+  `plans/closure/i2pcontrol-proposal-170/`. Most recent daemon commits: `5d3088ba` (Plan 343
+  floor + the `note_exhausted` comment/code fix), `a752ecc0` / `4dc69d00` (daemon outproxy route
+  owner), `f9d404aa` (runtime-neutral outproxy policy), `11842388` (Plan 341 restart-safe
+  outbound proxy secret owner).
+  - [`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) —
+    `passed-outproxy-provider-policy-and-route-owner-with-no-reachable-request-path`.
+  - [`341`](../../plans/closure/i2pcontrol-proposal-170/341-status.md) —
+    `passed-outbound-secret-owner-with-no-routing-and-no-outproxy-claim`.
+  - [`327`](../../plans/closure/i2pcontrol-proposal-170/327-status.md) — **still blocked**:
+    `blocked-prop170-outproxy-provider-needs-routed-provider-and-secret-owner`. Its two dated
+    2026-10-05 corrections narrow the blocker list from two to one; Plan 341 removed the
+    secret-owner blocker, and the provider-gap blocker remains because the provider is not
+    reachable by a client. **The status token is deliberately unchanged.**
+  - Normative design record (frozen 2026-10-05):
+    [`specs/references/proposal-170-outproxy-provider.md`](../../specs/references/proposal-170-outproxy-provider.md)
+    — §1 states the one invariant, §2 records that **no pinned reference is authority** (i2pd has
+    no I2P-routed outproxy at all; its only outproxy options are a clearnet upstream defaulting
+    to `127.0.0.1:9050`), so the `OutproxyType` vocabulary and the `SSLProxies` subset rule are
+    i2pr's own design and are **not** presented as interoperability-derived.
+  - Plan 342 remains **registered** and open: the seven Proposal 170 option fields, the HTTP and
+    SOCKS request-path integration, and the loopback outproxy wire lane. That gap is why Plan 343
+    closed only half the line.
 - **NTCP2** — Plan 101 guard; the development interop lane is closed and normal-daemon NTCP2
   stays disabled.
 - **M6 Java** — Plan 236 is a bounded diagnostic blocked at
@@ -885,6 +1062,14 @@ this refresh:
   **reclosed** 2026-10-05 as `passed-mode-mapping-and-control-surface-complete` after Plans
   337/338. The registry's own tables (rows 107 and 118) are already updated — the
   narrative paragraph is the stale part.
+- `plans/registry.md:39` (the Proposal 170 / I2PControl row) reads "Plans 322/327 remain
+  blocked on router owners" and "Plan 334 is blocked with its control plane complete".
+  **Half of that is stale and half is not**, so do not treat the row as uniformly wrong:
+  322 and 334 are closed as above, but **327 genuinely is still blocked** with
+  `blocked-prop170-outproxy-provider-needs-routed-provider-and-secret-owner` — its status
+  token was deliberately left unchanged when its blocker list shrank from two to one. Plan
+  343 does not unblock it, because the route owner is not reachable by a request path. The
+  row also predates Plan 343 entirely, so it does not mention the provider that now exists.
 - `specs/support.toml`'s M12 row still reads "Plan 281 deferred EncryptedLeaseSet type 5" and
   describes the floor as type 0/1/3/7. That is superseded by Plans 330–334, which populated
   type 5 (`m11_transit_tunnels` row, `specs/support.toml:370`).
