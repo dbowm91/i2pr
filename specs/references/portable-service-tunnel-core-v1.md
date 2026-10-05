@@ -6,6 +6,8 @@ Status: Plan 349 architecture contract; supported Rust exports and package compa
 
 `i2pr-service-tunnels` owns transport-independent service-tunnel specifications, validation, destination/linkability policy, access and rate decisions, resource/idle policy, and bounded HTTP/SOCKS/IRC/CONNECT filtering. Native i2pr and external transports are adapters. This contract does not make the crate a router capability or product by itself.
 
+The Plan 351 external-consumer proof and downstream SAM adapter ownership contract are documented in `tests/portable-service-tunnel-consumer/` and `specs/references/portable-service-tunnel-sam-adapter-handoff.md`. The fixture pins the Plan 350 Git revision because package publication remains license-gated.
+
 The core may consume or produce bounded values and pure decisions. It does not own sockets, SAM or Streaming sessions, async runtimes, timers, DNS, filesystem or key persistence, process lifecycle, NetDB, tunnel pools, or router-global state. The adapter owns those resources, connection pumps, reconnect, monotonic clock source, admission/release, local listener/target descriptions, and transport-specific errors.
 
 ## Adapter inputs and outputs
