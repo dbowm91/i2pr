@@ -9,7 +9,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 pub const PROTOCOL_MAJOR: u8 = 1;
@@ -57,8 +57,39 @@ pub enum ContractError {
     RoleMismatch,
     #[error("invalid policy rule")]
     InvalidPolicy,
+    #[error("reserved capability cannot be granted")]
+    ReservedCapability,
+    #[error("response does not match an active request")]
+    UnmatchedRequest,
     #[error("secured sandbox attestation is incomplete")]
     IncompleteAttestation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct RequestId(u32);
+impl RequestId {
+    pub fn new(value: u32) -> Result<Self, ContractError> {
+        if value == 0 {
+            Err(ContractError::InvalidControl)
+        } else {
+            Ok(Self(value))
+        }
+    }
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+impl TryFrom<u32> for RequestId {
+    type Error = ContractError;
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<RequestId> for u32 {
+    fn from(value: RequestId) -> Self {
+        value.0
+    }
 }
 
 macro_rules! text_id {
@@ -240,8 +271,11 @@ impl GrantedCapability {
     pub fn from_administrator_policy(
         _administrator: &AdministratorPrincipal,
         capability: Capability,
-    ) -> Self {
-        Self { capability }
+    ) -> Result<Self, ContractError> {
+        if capability == Capability::BrokeredTcp {
+            return Err(ContractError::ReservedCapability);
+        }
+        Ok(Self { capability })
     }
     pub const fn capability(&self) -> Capability {
         self.capability
@@ -274,40 +308,53 @@ pub enum Role {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
-pub enum AppMessage {
+pub enum AppToHostMessage {
     #[serde(rename = "hello")]
     Hello {
+        request_id: RequestId,
         app_id: AppId,
         instance_id: AppInstanceId,
         protocol_major: u8,
         protocol_minor: u8,
     },
-    #[serde(rename = "capabilities")]
-    Capabilities { capabilities: Vec<Capability> },
     #[serde(rename = "open")]
     Open {
-        request_id: u32,
+        request_id: RequestId,
         stream_id: u32,
         service: AppService,
     },
-    #[serde(rename = "accept")]
-    Accept { request_id: u32, stream_id: u32 },
+    #[serde(rename = "permission_request")]
+    PermissionRequest {
+        request_id: RequestId,
+        capabilities: Vec<RequestedCapability>,
+    },
     #[serde(rename = "close")]
     Close { stream_id: u32 },
     #[serde(rename = "reset")]
     Reset { stream_id: u32, reason: String },
-    #[serde(rename = "permission_request")]
-    PermissionRequest {
-        request_id: u32,
-        capabilities: Vec<RequestedCapability>,
-    },
-    #[serde(rename = "permission_status")]
-    PermissionStatus {
-        request_id: u32,
-        status: PermissionStatus,
-    },
     #[serde(rename = "ui_message")]
     UiMessage { message_id: u32, payload: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum HostToAppMessage {
+    #[serde(rename = "reply")]
+    Reply {
+        request_id: RequestId,
+        outcome: AppRequestOutcome,
+    },
+    #[serde(rename = "permission_reply")]
+    PermissionReply {
+        request_id: RequestId,
+        status: PermissionStatus,
+    },
+    #[serde(rename = "stream_closed")]
+    StreamClosed { stream_id: u32 },
+    #[serde(rename = "stream_reset")]
+    StreamReset { stream_id: u32, reason: String },
+    #[serde(rename = "capabilities")]
+    Capabilities { capabilities: Vec<Capability> },
     #[serde(rename = "health")]
     Health {
         state: String,
@@ -316,50 +363,81 @@ pub enum AppMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "outcome",
+    content = "error",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum AppRequestOutcome {
+    Succeeded,
+    Failed(RequestError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestErrorCode {
+    UnsupportedOperation,
+    PermissionDenied,
+    InvalidRequest,
+    ResourceLimit,
+    Conflict,
+    NotFound,
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestError {
+    pub code: RequestErrorCode,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
-pub enum AdminMessage {
-    #[serde(rename = "admin_hello")]
-    Hello {
-        protocol_major: u8,
-        protocol_minor: u8,
+pub enum AdminToHostMessage {
+    #[serde(rename = "reserved_request")]
+    ReservedRequest {
+        request_id: RequestId,
+        operation: ReservedAdminOperation,
     },
-    #[serde(rename = "install_request")]
-    InstallRequest { app_id: AppId },
-    #[serde(rename = "update_request")]
-    UpdateRequest { app_id: AppId },
-    #[serde(rename = "uninstall_request")]
-    UninstallRequest { app_id: AppId },
-    #[serde(rename = "launch_request")]
-    LaunchRequest { app_id: AppId },
-    #[serde(rename = "stop_request")]
-    StopRequest { app_id: AppId },
-    #[serde(rename = "grant_request")]
-    GrantRequest {
-        app_id: AppId,
-        capabilities: Vec<Capability>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReservedAdminOperation {
+    Install,
+    Update,
+    Uninstall,
+    Launch,
+    Stop,
+    Grant,
+    Revoke,
+    NetworkPolicy,
+    LaunchProfile,
+    ResourcePolicy,
+    Inspect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum HostToAdminMessage {
+    #[serde(rename = "reply")]
+    Reply {
+        request_id: RequestId,
+        error: RequestError,
     },
-    #[serde(rename = "revoke_request")]
-    RevokeRequest {
-        app_id: AppId,
-        capabilities: Vec<Capability>,
-    },
-    #[serde(rename = "network_policy_request")]
-    NetworkPolicyRequest {
-        app_id: AppId,
-        rules: Vec<NetworkRule>,
-    },
-    #[serde(rename = "launch_profile_request")]
-    LaunchProfileRequest {
-        app_id: AppId,
-        profile: LaunchProfile,
-    },
-    #[serde(rename = "resource_policy_request")]
-    ResourcePolicyRequest {
-        app_id: AppId,
-        resources: Vec<ResourceRequest>,
-    },
-    #[serde(rename = "inspect_request")]
-    InspectRequest { app_id: AppId },
+}
+impl HostToAdminMessage {
+    pub fn unsupported_admin_operation(request_id: RequestId) -> Self {
+        Self::Reply {
+            request_id,
+            error: RequestError {
+                code: RequestErrorCode::UnsupportedOperation,
+                diagnostic: None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,7 +446,6 @@ pub enum AppService {
     Sam,
     I2cp,
     ControlScoped,
-    BrokeredTcp,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -420,23 +497,41 @@ impl Handshake {
             minor: bytes[5],
         })
     }
-    pub fn decode_app_message(&self, bytes: &[u8]) -> Result<AppMessage, ContractError> {
+    pub fn decode_app_to_host_message(
+        &self,
+        bytes: &[u8],
+    ) -> Result<AppToHostMessage, ContractError> {
         if self.role != Role::Application {
             return Err(ContractError::RoleMismatch);
         }
-        decode_control(bytes)
+        decode_app_to_host_control(bytes)
     }
-    pub fn decode_admin_message(&self, bytes: &[u8]) -> Result<AdminMessage, ContractError> {
+    pub fn decode_host_to_app_message(
+        &self,
+        bytes: &[u8],
+    ) -> Result<HostToAppMessage, ContractError> {
+        if self.role != Role::Application {
+            return Err(ContractError::RoleMismatch);
+        }
+        decode_host_to_app_control(bytes)
+    }
+    pub fn decode_admin_to_host_message(
+        &self,
+        bytes: &[u8],
+    ) -> Result<AdminToHostMessage, ContractError> {
         if self.role != Role::Administrator {
             return Err(ContractError::RoleMismatch);
         }
-        if bytes.len() > MAX_CONTROL_BYTES {
-            return Err(ContractError::LimitExceeded("control"));
+        decode_admin_to_host_control(bytes)
+    }
+    pub fn decode_host_to_admin_message(
+        &self,
+        bytes: &[u8],
+    ) -> Result<HostToAdminMessage, ContractError> {
+        if self.role != Role::Administrator {
+            return Err(ContractError::RoleMismatch);
         }
-        let message: AdminMessage =
-            serde_json::from_slice(bytes).map_err(|_| ContractError::InvalidControl)?;
-        validate_admin_message(&message)?;
-        Ok(message)
+        decode_host_to_admin_control(bytes)
     }
 }
 
@@ -525,79 +620,88 @@ impl Frame {
     }
 }
 
-pub fn encode_control(message: &AppMessage) -> Result<Vec<u8>, ContractError> {
-    validate_app_message(message)?;
+fn encode_directional_control<T: Serialize>(message: &T) -> Result<Vec<u8>, ContractError> {
     let bytes = serde_json::to_vec(message).map_err(|_| ContractError::InvalidControl)?;
     if bytes.len() > MAX_CONTROL_BYTES {
         return Err(ContractError::LimitExceeded("control"));
     }
     Ok(bytes)
 }
-pub fn encode_admin_control(message: &AdminMessage) -> Result<Vec<u8>, ContractError> {
-    validate_admin_message(message)?;
-    let bytes = serde_json::to_vec(message).map_err(|_| ContractError::InvalidControl)?;
+fn decode_directional_control<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ContractError> {
     if bytes.len() > MAX_CONTROL_BYTES {
         return Err(ContractError::LimitExceeded("control"));
     }
-    Ok(bytes)
+    serde_json::from_slice(bytes).map_err(|_| ContractError::InvalidControl)
 }
-pub fn decode_control(bytes: &[u8]) -> Result<AppMessage, ContractError> {
-    if bytes.len() > MAX_CONTROL_BYTES {
-        return Err(ContractError::LimitExceeded("control"));
-    }
-    let message: AppMessage =
-        serde_json::from_slice(bytes).map_err(|_| ContractError::InvalidControl)?;
-    validate_app_message(&message)?;
+pub fn encode_app_to_host_control(message: &AppToHostMessage) -> Result<Vec<u8>, ContractError> {
+    validate_app_to_host_message(message)?;
+    encode_directional_control(message)
+}
+pub fn decode_app_to_host_control(bytes: &[u8]) -> Result<AppToHostMessage, ContractError> {
+    let message = decode_directional_control(bytes)?;
+    validate_app_to_host_message(&message)?;
     Ok(message)
 }
-pub fn validate_app_message(message: &AppMessage) -> Result<(), ContractError> {
+pub fn encode_host_to_app_control(message: &HostToAppMessage) -> Result<Vec<u8>, ContractError> {
+    validate_host_to_app_message(message)?;
+    encode_directional_control(message)
+}
+pub fn decode_host_to_app_control(bytes: &[u8]) -> Result<HostToAppMessage, ContractError> {
+    let message = decode_directional_control(bytes)?;
+    validate_host_to_app_message(&message)?;
+    Ok(message)
+}
+pub fn encode_admin_to_host_control(
+    message: &AdminToHostMessage,
+) -> Result<Vec<u8>, ContractError> {
+    validate_admin_to_host_message(message)?;
+    encode_directional_control(message)
+}
+pub fn decode_admin_to_host_control(bytes: &[u8]) -> Result<AdminToHostMessage, ContractError> {
+    let message = decode_directional_control(bytes)?;
+    validate_admin_to_host_message(&message)?;
+    Ok(message)
+}
+pub fn encode_host_to_admin_control(
+    message: &HostToAdminMessage,
+) -> Result<Vec<u8>, ContractError> {
+    validate_host_to_admin_message(message)?;
+    encode_directional_control(message)
+}
+pub fn decode_host_to_admin_control(bytes: &[u8]) -> Result<HostToAdminMessage, ContractError> {
+    let message = decode_directional_control(bytes)?;
+    validate_host_to_admin_message(&message)?;
+    Ok(message)
+}
+pub fn validate_app_to_host_message(message: &AppToHostMessage) -> Result<(), ContractError> {
     match message {
-        AppMessage::Capabilities { capabilities } => validate_capabilities(capabilities),
-        AppMessage::PermissionRequest { capabilities, .. } => {
+        AppToHostMessage::Hello { protocol_major, .. } => {
+            if *protocol_major == PROTOCOL_MAJOR {
+                Ok(())
+            } else {
+                Err(ContractError::UnsupportedVersion)
+            }
+        }
+        AppToHostMessage::PermissionRequest { capabilities, .. } => {
             validate_requested_capabilities(capabilities)
         }
-        AppMessage::Hello { protocol_major, .. } if *protocol_major != PROTOCOL_MAJOR => {
-            Err(ContractError::UnsupportedVersion)
-        }
-        AppMessage::Open {
-            request_id,
-            stream_id,
-            ..
-        }
-        | AppMessage::Accept {
-            request_id,
-            stream_id,
-        } => {
-            if *request_id == 0 || *stream_id == 0 {
+        AppToHostMessage::Open { stream_id, .. } => {
+            if *stream_id == 0 {
                 return Err(ContractError::InvalidControl);
             }
             Ok(())
         }
-        AppMessage::Close { stream_id } | AppMessage::Reset { stream_id, .. } => {
+        AppToHostMessage::Close { stream_id } | AppToHostMessage::Reset { stream_id, .. } => {
             if *stream_id == 0 {
                 return Err(ContractError::InvalidControl);
             }
-            if let AppMessage::Reset { reason, .. } = message {
+            if let AppToHostMessage::Reset { reason, .. } = message {
                 bounded_string(reason, MAX_DIAGNOSTIC_BYTES)
             } else {
                 Ok(())
             }
         }
-        AppMessage::PermissionStatus { request_id, .. } => {
-            if *request_id == 0 {
-                Err(ContractError::InvalidControl)
-            } else {
-                Ok(())
-            }
-        }
-        AppMessage::Health { state, detail } => {
-            bounded_string(state, 64)?;
-            if let Some(v) = detail {
-                bounded_string(v, MAX_DIAGNOSTIC_BYTES)?;
-            }
-            Ok(())
-        }
-        AppMessage::UiMessage {
+        AppToHostMessage::UiMessage {
             message_id,
             payload,
         } => {
@@ -609,7 +713,66 @@ pub fn validate_app_message(message: &AppMessage) -> Result<(), ContractError> {
                 .map(|_| ())
                 .map_err(|_| ContractError::InvalidControl)
         }
-        _ => Ok(()),
+    }
+}
+
+pub fn validate_host_to_app_message(message: &HostToAppMessage) -> Result<(), ContractError> {
+    match message {
+        HostToAppMessage::Reply { outcome, .. } => validate_request_outcome(outcome),
+        HostToAppMessage::StreamClosed { stream_id } => {
+            if *stream_id == 0 {
+                Err(ContractError::InvalidControl)
+            } else {
+                Ok(())
+            }
+        }
+        HostToAppMessage::StreamReset { stream_id, reason } => {
+            if *stream_id == 0 {
+                return Err(ContractError::InvalidControl);
+            }
+            bounded_string(reason, MAX_DIAGNOSTIC_BYTES)
+        }
+        HostToAppMessage::Capabilities { capabilities } => {
+            validate_capabilities(capabilities)?;
+            if capabilities.contains(&Capability::BrokeredTcp) {
+                return Err(ContractError::ReservedCapability);
+            }
+            Ok(())
+        }
+        HostToAppMessage::Health { state, detail } => {
+            bounded_string(state, 64)?;
+            if let Some(v) = detail {
+                bounded_string(v, MAX_DIAGNOSTIC_BYTES)?;
+            }
+            Ok(())
+        }
+        HostToAppMessage::PermissionReply { .. } => Ok(()),
+    }
+}
+
+fn validate_request_error(error: &RequestError) -> Result<(), ContractError> {
+    if let Some(diagnostic) = &error.diagnostic {
+        bounded_string(diagnostic, MAX_DIAGNOSTIC_BYTES)?;
+    }
+    Ok(())
+}
+fn validate_request_outcome(outcome: &AppRequestOutcome) -> Result<(), ContractError> {
+    if let AppRequestOutcome::Failed(error) = outcome {
+        validate_request_error(error)?;
+    }
+    Ok(())
+}
+pub fn validate_admin_to_host_message(_message: &AdminToHostMessage) -> Result<(), ContractError> {
+    Ok(())
+}
+pub fn validate_host_to_admin_message(message: &HostToAdminMessage) -> Result<(), ContractError> {
+    match message {
+        HostToAdminMessage::Reply { error, .. } => {
+            if error.code != RequestErrorCode::UnsupportedOperation {
+                return Err(ContractError::InvalidControl);
+            }
+            validate_request_error(error)
+        }
     }
 }
 
@@ -644,45 +807,18 @@ impl SessionLimits {
         self.requests.insert(request_id);
         Ok(())
     }
-    pub fn finish_request(&mut self, request_id: u32) {
-        self.requests.remove(&request_id);
+    pub fn complete_request(&mut self, request_id: RequestId) -> Result<(), ContractError> {
+        if self.requests.remove(&request_id.get()) {
+            Ok(())
+        } else {
+            Err(ContractError::UnmatchedRequest)
+        }
     }
     pub fn stream_count(&self) -> usize {
         self.streams.len()
     }
     pub fn inflight_count(&self) -> usize {
         self.requests.len()
-    }
-}
-fn validate_admin_message(message: &AdminMessage) -> Result<(), ContractError> {
-    match message {
-        AdminMessage::Hello { protocol_major, .. } if *protocol_major != PROTOCOL_MAJOR => {
-            Err(ContractError::UnsupportedVersion)
-        }
-        AdminMessage::GrantRequest { capabilities, .. }
-        | AdminMessage::RevokeRequest { capabilities, .. } => validate_capabilities(capabilities),
-        AdminMessage::NetworkPolicyRequest { rules, .. } => {
-            if rules.len() > MAX_NETWORK_RULES {
-                return Err(ContractError::LimitExceeded("network rules"));
-            }
-            NetworkPolicy {
-                rules: rules.clone(),
-            }
-            .validate()
-        }
-        AdminMessage::ResourcePolicyRequest { resources, .. } => {
-            if resources.len() > 16 {
-                return Err(ContractError::LimitExceeded("resources"));
-            }
-            for resource in resources {
-                validate_identifier(&resource.name)?;
-                if resource.requested > MAX_RESOURCE_REQUEST {
-                    return Err(ContractError::LimitExceeded("resource request"));
-                }
-            }
-            Ok(())
-        }
-        _ => Ok(()),
     }
 }
 fn validate_capabilities(values: &[Capability]) -> Result<(), ContractError> {
@@ -932,11 +1068,16 @@ pub struct NetworkRule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AddressScope {
-    Public,
+    Global,
     Loopback,
     Private,
     LinkLocal,
     Multicast,
+    Broadcast,
+    Documentation,
+    Benchmark,
+    SpecialPurpose,
+    Reserved,
     Unspecified,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1010,20 +1151,8 @@ impl NetworkPolicy {
             return PolicyDecision::Deny;
         }
         let scope = address_scope(ip);
-        let matching = self
-            .rules
-            .iter()
-            .filter(|r| {
-                r.protocol == protocol
-                    && r.ports.contains(port)
-                    && match &r.destination {
-                        DestinationSelector::Ip(v) => *v == ip,
-                        DestinationSelector::Cidr(c) => c.contains(ip),
-                        _ => false,
-                    }
-            })
-            .collect::<Vec<_>>();
-        if scope != AddressScope::Public && !matching.iter().any(|r| r.action == RuleAction::Allow)
+        let matching = self.matching_ip_rules(protocol, ip, port);
+        if scope != AddressScope::Global && !matching.iter().any(|r| r.action == RuleAction::Allow)
         {
             return PolicyDecision::Deny;
         }
@@ -1039,10 +1168,43 @@ impl NetworkPolicy {
         if self.evaluate_hostname(protocol, hostname, port) == PolicyDecision::Deny {
             return PolicyDecision::Deny;
         }
-        if self.evaluate_requested_ip(protocol, ip, port) == PolicyDecision::Deny {
+        if self.validate().is_err()
+            || protocol != NetworkProtocol::Tcp
+            || port == 0
+            || !valid_hostname(hostname)
+        {
             return PolicyDecision::Deny;
         }
-        PolicyDecision::Allow
+        let matching = self.matching_ip_rules(protocol, ip, port);
+        if matching.iter().any(|rule| rule.action == RuleAction::Deny) {
+            return PolicyDecision::Deny;
+        }
+        if address_scope(ip) == AddressScope::Global
+            || matching.iter().any(|rule| rule.action == RuleAction::Allow)
+        {
+            PolicyDecision::Allow
+        } else {
+            PolicyDecision::Deny
+        }
+    }
+    fn matching_ip_rules(
+        &self,
+        protocol: NetworkProtocol,
+        ip: IpAddr,
+        port: u16,
+    ) -> Vec<&NetworkRule> {
+        self.rules
+            .iter()
+            .filter(|rule| {
+                rule.protocol == protocol
+                    && rule.ports.contains(port)
+                    && match &rule.destination {
+                        DestinationSelector::Ip(value) => *value == ip,
+                        DestinationSelector::Cidr(cidr) => cidr.contains(ip),
+                        DestinationSelector::Hostname(_) => false,
+                    }
+            })
+            .collect()
     }
     fn decide<'a>(&self, rules: impl Iterator<Item = &'a NetworkRule>) -> PolicyDecision {
         let mut allow = false;
@@ -1077,19 +1239,38 @@ fn valid_hostname(host: &str) -> bool {
 pub fn address_scope(ip: IpAddr) -> AddressScope {
     match ip {
         IpAddr::V4(v) => {
+            let octets = v.octets();
             if v.is_unspecified() {
                 AddressScope::Unspecified
             } else if v.is_loopback() {
                 AddressScope::Loopback
-            } else if v.is_multicast() || v == Ipv4Addr::BROADCAST {
+            } else if v == Ipv4Addr::BROADCAST {
+                AddressScope::Broadcast
+            } else if v.is_multicast() {
                 AddressScope::Multicast
             } else if v.is_link_local() {
                 AddressScope::LinkLocal
-            } else if v.is_private() || v.octets()[0] == 100 && (64..=127).contains(&v.octets()[1])
-            {
+            } else if v.is_private() || (octets[0] == 100 && (64..=127).contains(&octets[1])) {
                 AddressScope::Private
+            } else if ipv4_in_prefix(v, [192, 0, 2, 0], 24)
+                || ipv4_in_prefix(v, [198, 51, 100, 0], 24)
+                || ipv4_in_prefix(v, [203, 0, 113, 0], 24)
+            {
+                AddressScope::Documentation
+            } else if ipv4_in_prefix(v, [198, 18, 0, 0], 15) {
+                AddressScope::Benchmark
+            } else if octets[0] == 0
+                || ipv4_in_prefix(v, [192, 0, 0, 0], 24)
+                || ipv4_in_prefix(v, [192, 31, 196, 0], 24)
+                || ipv4_in_prefix(v, [192, 52, 193, 0], 24)
+                || ipv4_in_prefix(v, [192, 88, 99, 0], 24)
+                || ipv4_in_prefix(v, [192, 175, 48, 0], 24)
+            {
+                AddressScope::SpecialPurpose
+            } else if octets[0] >= 240 {
+                AddressScope::Reserved
             } else {
-                AddressScope::Public
+                AddressScope::Global
             }
         }
         IpAddr::V6(v) => {
@@ -1106,11 +1287,38 @@ pub fn address_scope(ip: IpAddr) -> AddressScope {
                 AddressScope::LinkLocal
             } else if (v.segments()[0] & 0xfe00) == 0xfc00 {
                 AddressScope::Private
+            } else if ipv6_in_prefix(v, [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0], 32)
+                || ipv6_in_prefix(v, [0x3fff, 0, 0, 0, 0, 0, 0, 0], 20)
+            {
+                AddressScope::Documentation
+            } else if ipv6_in_prefix(v, [0x2001, 0x0002, 0, 0, 0, 0, 0, 0], 48) {
+                AddressScope::Benchmark
+            } else if ipv6_in_prefix(v, [0x2001, 0, 0, 0, 0, 0, 0, 0], 23)
+                || ipv6_in_prefix(v, [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0], 96)
+                || ipv6_in_prefix(v, [0x0064, 0xff9b, 0x0001, 0, 0, 0, 0, 0], 48)
+                || ipv6_in_prefix(v, [0x0100, 0, 0, 0, 0, 0, 0, 0], 64)
+                || ipv6_in_prefix(v, [0x0100, 0, 0, 1, 0, 0, 0, 0], 64)
+                || ipv6_in_prefix(v, [0x2002, 0, 0, 0, 0, 0, 0, 0], 16)
+            {
+                AddressScope::SpecialPurpose
+            } else if v.segments()[0] & 0xe000 != 0x2000 {
+                AddressScope::Reserved
             } else {
-                AddressScope::Public
+                AddressScope::Global
             }
         }
     }
+}
+
+fn ipv4_in_prefix(address: Ipv4Addr, network: [u8; 4], prefix: u8) -> bool {
+    let address = u32::from(address);
+    let network = u32::from(Ipv4Addr::from(network));
+    (address ^ network) >> (32 - prefix) == 0
+}
+fn ipv6_in_prefix(address: std::net::Ipv6Addr, network: [u16; 8], prefix: u8) -> bool {
+    let address = u128::from(address);
+    let network = u128::from(std::net::Ipv6Addr::from(network));
+    (address ^ network) >> (128 - prefix) == 0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1286,11 +1494,26 @@ mod tests {
     #[test]
     fn role_and_capability_separation_is_fail_closed() {
         assert!(
-            decode_control(br#"{"type":"grant_request","app_id":"a","capabilities":[]}"#).is_err()
+            decode_app_to_host_control(
+                br#"{"type":"grant_request","app_id":"a","capabilities":[]}"#
+            )
+            .is_err()
         );
         assert!(
-            decode_control(
+            decode_app_to_host_control(
                 br#"{"type":"permission_request","request_id":1,"capabilities":["sam"],"extra":1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            decode_app_to_host_control(
+                br#"{"type":"open","request_id":0,"stream_id":1,"service":"sam"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            decode_app_to_host_control(
+                br#"{"type":"open","request_id":1,"stream_id":1,"service":"brokered_tcp"}"#
             )
             .is_err()
         );
@@ -1300,19 +1523,240 @@ mod tests {
             minor: 0,
         };
         assert_eq!(
-            app.decode_admin_message(
-                br#"{"type":"admin_hello","protocol_major":1,"protocol_minor":0}"#
+            app.decode_admin_to_host_message(
+                br#"{"type":"reserved_request","request_id":1,"operation":"inspect"}"#
             ),
             Err(ContractError::RoleMismatch)
         );
+        assert!(
+            app.decode_host_to_app_message(br#"{"type":"health","state":"ready"}"#)
+                .is_ok()
+        );
+        assert!(
+            app.decode_app_to_host_message(br#"{"type":"health","state":"ready"}"#)
+                .is_err()
+        );
+        assert_eq!(
+            app.decode_admin_to_host_message(
+                br#"{"type":"reserved_request","request_id":1,"operation":"inspect"}"#
+            ),
+            Err(ContractError::RoleMismatch)
+        );
+        assert_eq!(
+            app.decode_host_to_admin_message(
+                br#"{"type":"reply","request_id":1,"error":{"code":"unsupported_operation","diagnostic":null}}"#
+            ),
+            Err(ContractError::RoleMismatch)
+        );
+
+        let admin_handshake = Handshake {
+            role: Role::Administrator,
+            major: 1,
+            minor: 0,
+        };
+        assert!(
+            admin_handshake
+                .decode_admin_to_host_message(
+                    br#"{"type":"reserved_request","request_id":1,"operation":"grant"}"#
+                )
+                .is_ok()
+        );
+        assert!(
+            admin_handshake
+                .decode_admin_to_host_message(
+                    br#"{"type":"grant_request","app_id":"a","capabilities":["sam"]}"#
+                )
+                .is_err()
+        );
+        assert_eq!(
+            admin_handshake.decode_app_to_host_message(
+                br#"{"type":"permission_request","request_id":1,"capabilities":["sam"]}"#
+            ),
+            Err(ContractError::RoleMismatch)
+        );
+        assert_eq!(
+            admin_handshake.decode_host_to_app_message(br#"{"type":"health","state":"ready"}"#),
+            Err(ContractError::RoleMismatch)
+        );
+        assert!(admin_handshake
+            .decode_host_to_admin_message(
+                br#"{"type":"reply","request_id":1,"error":{"code":"unsupported_operation","diagnostic":null}}"#
+            )
+            .is_ok());
+        assert!(
+            admin_handshake
+                .decode_host_to_admin_message(br#"{"type":"health","state":"ready"}"#)
+                .is_err()
+        );
+
         let administrator = AdministratorPrincipal::from_authenticated_session(1).unwrap();
-        let grant = GrantedCapability::from_administrator_policy(&administrator, Capability::Sam);
+        let grant =
+            GrantedCapability::from_administrator_policy(&administrator, Capability::Sam).unwrap();
         assert_eq!(
             EffectiveCapabilities::from_grants(&[grant])
                 .unwrap()
                 .as_slice(),
             &[Capability::Sam]
         );
+        assert_eq!(
+            GrantedCapability::from_administrator_policy(&administrator, Capability::BrokeredTcp),
+            Err(ContractError::ReservedCapability)
+        );
+        assert_eq!(
+            encode_host_to_app_control(&HostToAppMessage::Capabilities {
+                capabilities: vec![Capability::BrokeredTcp],
+            }),
+            Err(ContractError::ReservedCapability)
+        );
+    }
+
+    #[test]
+    fn directional_replies_are_correlated_typed_and_bounded() {
+        let id = RequestId::new(17).unwrap();
+        let hello = AppToHostMessage::Hello {
+            request_id: id,
+            app_id: AppId::parse("sample-app").unwrap(),
+            instance_id: AppInstanceId::new(7).unwrap(),
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
+        };
+        assert!(encode_app_to_host_control(&hello).is_ok());
+        let bad_version = AppToHostMessage::Hello {
+            request_id: id,
+            app_id: AppId::parse("sample-app").unwrap(),
+            instance_id: AppInstanceId::new(7).unwrap(),
+            protocol_major: PROTOCOL_MAJOR + 1,
+            protocol_minor: PROTOCOL_MINOR,
+        };
+        assert_eq!(
+            encode_app_to_host_control(&bad_version),
+            Err(ContractError::UnsupportedVersion)
+        );
+        let success = HostToAppMessage::Reply {
+            request_id: id,
+            outcome: AppRequestOutcome::Succeeded,
+        };
+        let wire = encode_host_to_app_control(&success).unwrap();
+        assert_eq!(
+            wire,
+            br#"{"type":"reply","request_id":17,"outcome":{"outcome":"succeeded"}}"#
+        );
+        assert_eq!(decode_host_to_app_control(&wire).unwrap(), success);
+
+        let failure = HostToAppMessage::Reply {
+            request_id: id,
+            outcome: AppRequestOutcome::Failed(RequestError {
+                code: RequestErrorCode::PermissionDenied,
+                diagnostic: Some("denied".into()),
+            }),
+        };
+        let wire = encode_host_to_app_control(&failure).unwrap();
+        assert_eq!(decode_host_to_app_control(&wire).unwrap(), failure);
+        let too_long = HostToAppMessage::Reply {
+            request_id: id,
+            outcome: AppRequestOutcome::Failed(RequestError {
+                code: RequestErrorCode::Internal,
+                diagnostic: Some("x".repeat(MAX_DIAGNOSTIC_BYTES + 1)),
+            }),
+        };
+        assert_eq!(
+            encode_host_to_app_control(&too_long),
+            Err(ContractError::LimitExceeded("string"))
+        );
+        let max_text = HostToAdminMessage::Reply {
+            request_id: id,
+            error: RequestError {
+                code: RequestErrorCode::UnsupportedOperation,
+                diagnostic: Some("x".repeat(MAX_DIAGNOSTIC_BYTES)),
+            },
+        };
+        assert!(encode_host_to_admin_control(&max_text).is_ok());
+        assert!(
+            decode_host_to_app_control(
+                br#"{"type":"reply","request_id":17,"outcome":{"outcome":"succeeded"},"extra":1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            decode_host_to_app_control(
+                br#"{"type":"reply","request_id":17,"outcome":{"outcome":"succeeded"},"request_id":18}"#
+            )
+            .is_err()
+        );
+        assert!(
+            decode_host_to_app_control(br#"{"type":"health","state":"ready","request_id":17}"#)
+                .is_err()
+        );
+        assert!(
+            decode_host_to_app_control(
+                br#"{"type":"reply","request_id":0,"outcome":{"outcome":"succeeded"}}"#
+            )
+            .is_err()
+        );
+        assert!(decode_host_to_app_control(
+            br#"{"type":"reply","request_id":17,"outcome":{"outcome":"failed","error":{"code":"future_code","diagnostic":null}}}"#
+        )
+        .is_err());
+        assert!(
+            encode_host_to_app_control(&HostToAppMessage::StreamClosed { stream_id: 1 }).is_ok()
+        );
+        assert!(
+            encode_host_to_app_control(&HostToAppMessage::StreamReset {
+                stream_id: 1,
+                reason: "closed by host".into(),
+            })
+            .is_ok()
+        );
+
+        let reserved = AdminToHostMessage::ReservedRequest {
+            request_id: id,
+            operation: ReservedAdminOperation::NetworkPolicy,
+        };
+        assert!(encode_admin_to_host_control(&reserved).is_ok());
+        assert!(
+            decode_admin_to_host_control(br#"{"type":"install_request","app_id":"sample-app"}"#)
+                .is_err()
+        );
+        assert!(decode_host_to_admin_control(
+            br#"{"type":"reply","request_id":17,"error":{"code":"internal","diagnostic":null}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn every_control_decoder_accepts_only_its_direction() {
+        let id = RequestId::new(1).unwrap();
+        let app = encode_app_to_host_control(&AppToHostMessage::Close { stream_id: 1 }).unwrap();
+        let host_app = encode_host_to_app_control(&HostToAppMessage::Health {
+            state: "ready".into(),
+            detail: None,
+        })
+        .unwrap();
+        let admin = encode_admin_to_host_control(&AdminToHostMessage::ReservedRequest {
+            request_id: id,
+            operation: ReservedAdminOperation::Inspect,
+        })
+        .unwrap();
+        let host_admin =
+            encode_host_to_admin_control(&HostToAdminMessage::unsupported_admin_operation(id))
+                .unwrap();
+
+        assert!(decode_app_to_host_control(&app).is_ok());
+        assert!(decode_app_to_host_control(&host_app).is_err());
+        assert!(decode_app_to_host_control(&admin).is_err());
+        assert!(decode_app_to_host_control(&host_admin).is_err());
+        assert!(decode_host_to_app_control(&app).is_err());
+        assert!(decode_host_to_app_control(&host_app).is_ok());
+        assert!(decode_host_to_app_control(&admin).is_err());
+        assert!(decode_host_to_app_control(&host_admin).is_err());
+        assert!(decode_admin_to_host_control(&app).is_err());
+        assert!(decode_admin_to_host_control(&host_app).is_err());
+        assert!(decode_admin_to_host_control(&admin).is_ok());
+        assert!(decode_admin_to_host_control(&host_admin).is_err());
+        assert!(decode_host_to_admin_control(&app).is_err());
+        assert!(decode_host_to_admin_control(&host_app).is_err());
+        assert!(decode_host_to_admin_control(&admin).is_err());
+        assert!(decode_host_to_admin_control(&host_admin).is_ok());
     }
 
     #[test]
@@ -1364,13 +1808,16 @@ mod tests {
 
     #[test]
     fn control_golden_unknown_duplicate_and_max_plus_one() {
-        let msg = AppMessage::Close { stream_id: 3 };
-        let wire = encode_control(&msg).unwrap();
+        let msg = AppToHostMessage::Close { stream_id: 3 };
+        let wire = encode_app_to_host_control(&msg).unwrap();
         assert_eq!(wire, br#"{"type":"close","stream_id":3}"#);
-        assert_eq!(decode_control(&wire).unwrap(), msg);
-        assert!(decode_control(br#"{"type":"close","stream_id":3,"x":1}"#).is_err());
-        assert!(decode_control(br#"{"type":"close","stream_id":3,"stream_id":4}"#).is_err());
-        assert!(decode_control(&vec![b' '; MAX_CONTROL_BYTES + 1]).is_err());
+        assert_eq!(decode_app_to_host_control(&wire).unwrap(), msg);
+        assert!(decode_app_to_host_control(br#"{"type":"close","stream_id":3,"x":1}"#).is_err());
+        assert!(
+            decode_app_to_host_control(br#"{"type":"close","stream_id":3,"stream_id":4}"#).is_err()
+        );
+        assert!(decode_app_to_host_control(&vec![b' '; MAX_CONTROL_BYTES + 1]).is_err());
+        assert!(decode_host_to_app_control(&wire).is_err());
     }
 
     #[test]
@@ -1398,7 +1845,11 @@ mod tests {
             session.register_request(1),
             Err(ContractError::InvalidControl)
         );
-        session.finish_request(1);
+        assert_eq!(session.complete_request(RequestId::new(1).unwrap()), Ok(()));
+        assert_eq!(
+            session.complete_request(RequestId::new(1).unwrap()),
+            Err(ContractError::UnmatchedRequest)
+        );
         session
             .register_request(MAX_INFLIGHT_REQUESTS as u32 + 1)
             .unwrap();
@@ -1429,8 +1880,47 @@ mod tests {
             address_scope(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))),
             AddressScope::Private
         );
-        let public = "8.8.8.8".parse().unwrap();
+        let global = "8.8.8.8".parse().unwrap();
         let allow = NetworkPolicy {
+            rules: vec![NetworkRule {
+                protocol: NetworkProtocol::Tcp,
+                destination: DestinationSelector::Hostname("allowed.example".into()),
+                ports: PortSelector::Single(443),
+                action: RuleAction::Allow,
+            }],
+        };
+        assert_eq!(
+            allow.evaluate_resolved_address(NetworkProtocol::Tcp, "allowed.example", global, 443),
+            PolicyDecision::Allow
+        );
+        for raw in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "169.254.1.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "192.0.0.9",
+            "224.0.0.1",
+            "0.0.0.0",
+            "240.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "2001:db8::1",
+            "2001:2::1",
+            "3fff::1",
+            "ff02::1",
+            "::",
+        ] {
+            let ip: IpAddr = raw.parse().unwrap();
+            assert_eq!(
+                allow.evaluate_resolved_address(NetworkProtocol::Tcp, "allowed.example", ip, 443,),
+                PolicyDecision::Deny,
+                "{raw} must not pass hostname-only authorization"
+            );
+        }
+
+        let explicit_non_global = NetworkPolicy {
             rules: vec![
                 NetworkRule {
                     protocol: NetworkProtocol::Tcp,
@@ -1441,7 +1931,7 @@ mod tests {
                 NetworkRule {
                     protocol: NetworkProtocol::Tcp,
                     destination: DestinationSelector::Cidr(IpCidr {
-                        network: "8.8.8.0".parse().unwrap(),
+                        network: "192.0.2.0".parse().unwrap(),
                         prefix: 24,
                     }),
                     ports: PortSelector::Single(443),
@@ -1450,14 +1940,39 @@ mod tests {
             ],
         };
         assert_eq!(
-            allow.evaluate_resolved_address(NetworkProtocol::Tcp, "allowed.example", public, 443),
+            explicit_non_global.evaluate_resolved_address(
+                NetworkProtocol::Tcp,
+                "allowed.example",
+                "192.0.2.1".parse().unwrap(),
+                443,
+            ),
             PolicyDecision::Allow
         );
         assert_eq!(
-            allow.evaluate_resolved_address(
+            explicit_non_global.evaluate_requested_ip(
+                NetworkProtocol::Tcp,
+                "192.0.3.1".parse().unwrap(),
+                443,
+            ),
+            PolicyDecision::Deny
+        );
+        let explicit_non_global_deny = NetworkPolicy {
+            rules: [
+                explicit_non_global.rules.clone(),
+                vec![NetworkRule {
+                    protocol: NetworkProtocol::Tcp,
+                    destination: DestinationSelector::Ip("192.0.2.1".parse().unwrap()),
+                    ports: PortSelector::Single(443),
+                    action: RuleAction::Deny,
+                }],
+            ]
+            .concat(),
+        };
+        assert_eq!(
+            explicit_non_global_deny.evaluate_resolved_address(
                 NetworkProtocol::Tcp,
                 "allowed.example",
-                "127.0.0.1".parse().unwrap(),
+                "192.0.2.1".parse().unwrap(),
                 443
             ),
             PolicyDecision::Deny
@@ -1485,30 +2000,32 @@ mod tests {
             rules: vec![
                 NetworkRule {
                     protocol: NetworkProtocol::Tcp,
-                    destination: DestinationSelector::Cidr(IpCidr {
-                        network: "8.8.8.0".parse().unwrap(),
-                        prefix: 24,
-                    }),
+                    destination: DestinationSelector::Hostname("allowed.example".into()),
                     ports: PortSelector::Single(443),
                     action: RuleAction::Allow,
                 },
                 NetworkRule {
                     protocol: NetworkProtocol::Tcp,
-                    destination: DestinationSelector::Ip(public),
+                    destination: DestinationSelector::Ip(global),
                     ports: PortSelector::Single(443),
                     action: RuleAction::Deny,
                 },
             ],
         };
         assert_eq!(
-            deny_override.evaluate_requested_ip(NetworkProtocol::Tcp, public, 443),
+            deny_override.evaluate_resolved_address(
+                NetworkProtocol::Tcp,
+                "allowed.example",
+                global,
+                443,
+            ),
             PolicyDecision::Deny
         );
         let too_many_rules = NetworkPolicy {
             rules: vec![
                 NetworkRule {
                     protocol: NetworkProtocol::Tcp,
-                    destination: DestinationSelector::Ip(public),
+                    destination: DestinationSelector::Ip(global),
                     ports: PortSelector::Single(443),
                     action: RuleAction::Allow,
                 };
@@ -1523,7 +2040,7 @@ mod tests {
             NetworkPolicy {
                 rules: vec![NetworkRule {
                     protocol: NetworkProtocol::Udp,
-                    destination: DestinationSelector::Ip(public),
+                    destination: DestinationSelector::Ip(global),
                     ports: PortSelector::Single(443),
                     action: RuleAction::Allow
                 }]
@@ -1531,6 +2048,197 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn address_classification_covers_frozen_special_purpose_boundaries() {
+        let cases = [
+            ("0.0.0.0", AddressScope::Unspecified),
+            ("0.255.255.255", AddressScope::SpecialPurpose),
+            ("1.0.0.0", AddressScope::Global),
+            ("9.255.255.255", AddressScope::Global),
+            ("10.0.0.0", AddressScope::Private),
+            ("10.255.255.255", AddressScope::Private),
+            ("11.0.0.0", AddressScope::Global),
+            ("100.63.255.255", AddressScope::Global),
+            ("100.64.0.0", AddressScope::Private),
+            ("100.127.255.255", AddressScope::Private),
+            ("100.128.0.0", AddressScope::Global),
+            ("127.0.0.0", AddressScope::Loopback),
+            ("127.255.255.255", AddressScope::Loopback),
+            ("128.0.0.0", AddressScope::Global),
+            ("169.253.255.255", AddressScope::Global),
+            ("169.254.0.0", AddressScope::LinkLocal),
+            ("169.254.255.255", AddressScope::LinkLocal),
+            ("169.255.0.0", AddressScope::Global),
+            ("172.15.255.255", AddressScope::Global),
+            ("172.16.0.0", AddressScope::Private),
+            ("172.31.255.255", AddressScope::Private),
+            ("172.32.0.0", AddressScope::Global),
+            ("191.255.255.255", AddressScope::Global),
+            ("192.0.0.0", AddressScope::SpecialPurpose),
+            ("192.0.0.255", AddressScope::SpecialPurpose),
+            ("192.0.1.0", AddressScope::Global),
+            ("192.0.1.255", AddressScope::Global),
+            ("192.0.2.0", AddressScope::Documentation),
+            ("192.0.2.255", AddressScope::Documentation),
+            ("192.0.3.0", AddressScope::Global),
+            ("192.31.195.255", AddressScope::Global),
+            ("192.31.196.0", AddressScope::SpecialPurpose),
+            ("192.31.196.255", AddressScope::SpecialPurpose),
+            ("192.31.197.0", AddressScope::Global),
+            ("192.52.192.255", AddressScope::Global),
+            ("192.52.193.0", AddressScope::SpecialPurpose),
+            ("192.52.193.255", AddressScope::SpecialPurpose),
+            ("192.52.194.0", AddressScope::Global),
+            ("192.88.98.255", AddressScope::Global),
+            ("192.88.99.0", AddressScope::SpecialPurpose),
+            ("192.88.99.255", AddressScope::SpecialPurpose),
+            ("192.88.100.0", AddressScope::Global),
+            ("192.168.0.0", AddressScope::Private),
+            ("192.168.255.255", AddressScope::Private),
+            ("192.175.48.0", AddressScope::SpecialPurpose),
+            ("192.175.48.255", AddressScope::SpecialPurpose),
+            ("192.175.49.0", AddressScope::Global),
+            ("198.17.255.255", AddressScope::Global),
+            ("198.18.0.0", AddressScope::Benchmark),
+            ("198.19.255.255", AddressScope::Benchmark),
+            ("198.20.0.0", AddressScope::Global),
+            ("198.51.99.255", AddressScope::Global),
+            ("198.51.100.0", AddressScope::Documentation),
+            ("198.51.100.255", AddressScope::Documentation),
+            ("198.51.101.0", AddressScope::Global),
+            ("203.0.112.255", AddressScope::Global),
+            ("203.0.113.0", AddressScope::Documentation),
+            ("203.0.113.255", AddressScope::Documentation),
+            ("203.0.114.0", AddressScope::Global),
+            ("224.0.0.0", AddressScope::Multicast),
+            ("239.255.255.255", AddressScope::Multicast),
+            ("240.0.0.0", AddressScope::Reserved),
+            ("255.255.255.255", AddressScope::Broadcast),
+            ("::", AddressScope::Unspecified),
+            ("::1", AddressScope::Loopback),
+            ("::ffff:10.0.0.1", AddressScope::Private),
+            ("::ffff:8.8.8.8", AddressScope::Global),
+            ("64:ff9b::", AddressScope::SpecialPurpose),
+            ("64:ff9b::ffff:ffff", AddressScope::SpecialPurpose),
+            ("64:ff9b:1::", AddressScope::SpecialPurpose),
+            (
+                "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::SpecialPurpose,
+            ),
+            ("100::", AddressScope::SpecialPurpose),
+            ("100::ffff:ffff:ffff:ffff", AddressScope::SpecialPurpose),
+            ("100:0:0:1::", AddressScope::SpecialPurpose),
+            (
+                "100:0:0:1:ffff:ffff:ffff:ffff",
+                AddressScope::SpecialPurpose,
+            ),
+            ("2001::", AddressScope::SpecialPurpose),
+            ("2001:1::", AddressScope::SpecialPurpose),
+            ("2001:2::", AddressScope::Benchmark),
+            ("2001:2:0:ffff:ffff:ffff:ffff:ffff", AddressScope::Benchmark),
+            (
+                "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::SpecialPurpose,
+            ),
+            ("2001:200::", AddressScope::Global),
+            ("2001:db8::", AddressScope::Documentation),
+            (
+                "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Documentation,
+            ),
+            ("2001:db9::", AddressScope::Global),
+            ("2002::", AddressScope::SpecialPurpose),
+            (
+                "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::SpecialPurpose,
+            ),
+            (
+                "3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Global,
+            ),
+            ("3fff::", AddressScope::Documentation),
+            (
+                "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Documentation,
+            ),
+            ("4000::", AddressScope::Reserved),
+            ("5f00::", AddressScope::Reserved),
+            (
+                "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Reserved,
+            ),
+            ("fc00::", AddressScope::Private),
+            (
+                "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Private,
+            ),
+            ("fe80::", AddressScope::LinkLocal),
+            (
+                "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::LinkLocal,
+            ),
+            ("ff00::", AddressScope::Multicast),
+            (
+                "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                AddressScope::Multicast,
+            ),
+            ("2000::", AddressScope::Global),
+            ("2003::", AddressScope::Global),
+        ];
+        for (raw, expected) in cases {
+            let ip = raw.parse().unwrap();
+            assert_eq!(address_scope(ip), expected, "classification of {raw}");
+        }
+        assert_eq!(
+            address_scope("3fff:1000::".parse().unwrap()),
+            AddressScope::Global
+        );
+        assert_eq!(
+            address_scope("3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap()),
+            AddressScope::Global
+        );
+    }
+
+    #[test]
+    fn hostname_allow_only_passes_classified_global_addresses() {
+        let policy = NetworkPolicy {
+            rules: vec![NetworkRule {
+                protocol: NetworkProtocol::Tcp,
+                destination: DestinationSelector::Hostname("allowed.example".into()),
+                ports: PortSelector::Single(443),
+                action: RuleAction::Allow,
+            }],
+        };
+        let mut seed = 0x349u64;
+        for _ in 0..10_000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let v4 = IpAddr::V4(Ipv4Addr::from((seed >> 32) as u32));
+            let expected = if address_scope(v4) == AddressScope::Global {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny
+            };
+            assert_eq!(
+                policy.evaluate_resolved_address(NetworkProtocol::Tcp, "allowed.example", v4, 443,),
+                expected,
+                "hostname-only IPv4 decision for {v4}"
+            );
+            let v6 = IpAddr::V6(std::net::Ipv6Addr::from(
+                u128::from(seed).wrapping_mul(seed as u128 + 1),
+            ));
+            let expected = if address_scope(v6) == AddressScope::Global {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Deny
+            };
+            assert_eq!(
+                policy.evaluate_resolved_address(NetworkProtocol::Tcp, "allowed.example", v6, 443,),
+                expected,
+                "hostname-only IPv6 decision for {v6}"
+            );
+        }
     }
 
     #[test]
@@ -1579,7 +2287,10 @@ mod tests {
                 seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 input.push((seed >> 32) as u8);
             }
-            let _ = decode_control(&input);
+            let _ = decode_app_to_host_control(&input);
+            let _ = decode_host_to_app_control(&input);
+            let _ = decode_admin_to_host_control(&input);
+            let _ = decode_host_to_admin_control(&input);
             let _ = Manifest::decode(&input);
         }
         let max = Frame {

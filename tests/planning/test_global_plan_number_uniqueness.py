@@ -62,12 +62,23 @@ class GlobalPlanNumberUniquenessTests(unittest.TestCase):
         self.assertIn(misplaced, result.stderr)
 
     def test_exact_historical_collisions_are_allowed(self) -> None:
+        self.add("implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md")
+        self.add("implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md")
         self.add("implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md")
         self.add("implementation/anonymity/296-service-boundary-implementation-neutrality-and-leak-regression.md")
         self.add("implementation/i2pcontrol-proposal-170/297-local-tls-identity-for-use-ssl.md")
         self.add("implementation/anonymity/297-http-anonymity-profile-convergence-and-differential-qualification.md")
         result = self.run_checker()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unrecorded_plan_349_owner_fails(self) -> None:
+        self.add("implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md")
+        self.add("implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md")
+        extra = "implementation/example/349-extra-owner.md"
+        self.add(extra)
+        result = self.run_checker()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(extra, result.stderr)
 
     def test_fifth_historical_number_owner_fails(self) -> None:
         self.add("implementation/i2pcontrol-proposal-170/296-tunnel-pool-shaping-and-bundling-residuals.md")

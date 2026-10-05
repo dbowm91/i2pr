@@ -1,8 +1,7 @@
 #![no_main]
 
 use i2pr_app_proto::{
-    AppId, AppInstanceId, Frame, Handshake, Manifest, Role, MAX_CONTROL_BYTES,
-    MAX_MANIFEST_BYTES,
+    AppId, AppInstanceId, Frame, Handshake, Manifest, Role, MAX_CONTROL_BYTES, MAX_MANIFEST_BYTES,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -15,13 +14,15 @@ fuzz_target!(|input: &[u8]| {
             major: 1,
             minor: 0,
         };
-        let _ = app.decode_app_message(input);
+        let _ = app.decode_app_to_host_message(input);
+        let _ = app.decode_host_to_app_message(input);
         let admin = Handshake {
             role: Role::Administrator,
             major: 1,
             minor: 0,
         };
-        let _ = admin.decode_admin_message(input);
+        let _ = admin.decode_admin_to_host_message(input);
+        let _ = admin.decode_host_to_admin_message(input);
     }
     if input.len() <= MAX_MANIFEST_BYTES {
         let _ = Manifest::decode(input);
