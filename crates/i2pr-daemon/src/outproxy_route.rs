@@ -403,6 +403,15 @@ pub async fn open_via_outproxy(
                 // error, and it is refused rather than quietly routed.
                 return Err(OutproxyFailure::NotPermitted);
             }
+            // Plan 342: the selector now says "no" instead of claiming a
+            // direct route. Carrying the failure through means the client is
+            // told *why* it cannot connect rather than a generic attempt
+            // failure, and it makes the no-direct-clearnet guarantee a
+            // property of the match rather than of one arm's behaviour.
+            OutproxyRoute::Refused(failure) => {
+                note(counters, |c| c.note(failure));
+                return Err(failure);
+            }
             OutproxyRoute::ViaOutproxy { endpoint, kind, .. } => (endpoint, kind),
         };
         if tunnelled && !config.permits_tunnelled(&endpoint) {

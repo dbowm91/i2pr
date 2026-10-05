@@ -68,6 +68,7 @@ use i2pr_i2pcontrol::proposal_leaseset_mode::{LeaseSetClientAuthScheme, LeaseSet
 use i2pr_i2pcontrol::tunnel::validate_tunnel_name;
 use i2pr_i2pcontrol::tunnel_matrix::{CellDisposition, disposition_for};
 use i2pr_i2pcontrol::{MAX_OPTION_VALUE_LEN, TunnelAction, TunnelManagerRequest, TunnelType};
+use i2pr_service_tunnels::outbound_secret::OutboundSecretStore;
 use i2pr_service_tunnels::{
     DEFAULT_IDLE_TIMEOUT_MS, DestinationGroupId, DestinationPolicy, DestinationRef,
     IdleSweepAction, LocalListenerSpec, MAX_EFFECTIVE_DIRECTION_TUNNELS, MAX_IDLE_TIMEOUT_MS,
@@ -2946,6 +2947,19 @@ pub struct TunnelControlState {
     /// The one M10 manager (Plan 337: shared with the product layer, not
     /// control-only).
     manager: Arc<ServiceTunnelManager>,
+    /// Plan 342: the outbound-credential owner, shared with the runtime.
+    ///
+    /// Held as the runtime-neutral `Arc<dyn OutboundSecretStore>` trait, not
+    /// the concrete router-bound type, so this layer can seal and open
+    /// without holding key material itself. The composition root derives it
+    /// once from the router's persisted signing seed through a
+    /// closure-based accessor and hands the same `Arc` to both this state
+    /// and each tunnel runtime — one owner, two consumers, no second key.
+    ///
+    /// `NoOutboundSecrets` is the fail-closed default: a control plane
+    /// without an installed owner refuses every credential rather than
+    /// silently degrading to an unauthenticated request.
+    outbound_secrets: Arc<dyn OutboundSecretStore>,
     /// Serializes all mutations (same-name and cross-name).
     op_lock: tokio::sync::Mutex<()>,
     /// Current durable intent mirror (rebuilt from the store at startup).
@@ -3018,11 +3032,13 @@ impl TunnelControlState {
         store: ControlStore,
         startup: ServiceTunnelSet,
         manager: Arc<ServiceTunnelManager>,
+        outbound_secrets: Arc<dyn OutboundSecretStore>,
     ) -> Self {
         Self {
             store,
             startup,
             manager,
+            outbound_secrets: outbound_secrets.clone(),
             op_lock: tokio::sync::Mutex::new(()),
             definitions: Mutex::new(BTreeMap::new()),
             running: Mutex::new(BTreeSet::new()),
@@ -3047,13 +3063,23 @@ impl TunnelControlState {
     pub fn for_config(
         config: &crate::config::Config,
         manager: Arc<ServiceTunnelManager>,
+        outbound_secrets: Arc<dyn OutboundSecretStore>,
     ) -> Result<Self, ControlError> {
         let store = ControlStore::open(&config.router.data_dir).map_err(ControlError::Store)?;
         Ok(Self::new(
             store,
             config.service_tunnels.tunnels.clone(),
             manager,
+            outbound_secrets,
         ))
+    }
+
+    /// The installed outbound-credential owner (Plan 342).
+    ///
+    /// Public because the runtime that actually opens a credential needs the
+    /// same `Arc`; it is the owner, not a capability any caller may invent.
+    pub fn outbound_secrets(&self) -> Arc<dyn OutboundSecretStore> {
+        self.outbound_secrets.clone()
     }
 
     /// Current published store generation (`0` when nothing published).
@@ -4613,7 +4639,12 @@ mod tests {
 
     fn test_control(data_dir: &Path) -> TunnelControlState {
         let store = ControlStore::open(data_dir).expect("store opens");
-        TunnelControlState::new(store, ServiceTunnelSet::new(), test_manager(data_dir))
+        TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            test_manager(data_dir),
+            test_outbound_secrets(),
+        )
     }
 
     /// Plan 337: exactly **one** manager owns every service runtime.
@@ -4630,7 +4661,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
         assert!(
             Arc::ptr_eq(&control.manager, &shared),
             "the control state must hold the composition root's manager instance"
@@ -4676,7 +4712,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
 
         block_on(control.create(&create_request(
             "encsrv",
@@ -4725,7 +4766,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
 
         let mut options = server_options("127.0.0.1:8080");
         options.insert("encrypt_lease_set".to_owned(), "blinded".to_owned());
@@ -4782,7 +4828,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
 
         let client_key = "ab".repeat(32);
         let mut options = server_options("127.0.0.1:8080");
@@ -4843,7 +4894,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
 
         // A sibling that must survive the rollback.
         block_on(control.create(&create_request(
@@ -4947,7 +5003,12 @@ mod tests {
         let directory = TempDir::new().expect("temp dir");
         let shared = test_manager(directory.path());
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, ServiceTunnelSet::new(), Arc::clone(&shared));
+        let control = TunnelControlState::new(
+            store,
+            ServiceTunnelSet::new(),
+            Arc::clone(&shared),
+            test_outbound_secrets(),
+        );
 
         // A per-user-key mode with no client authorizations at all.
         let mut options = server_options("127.0.0.1:8080");
@@ -5009,7 +5070,8 @@ mod tests {
             assert_eq!(runtimes.len(), 1, "one startup-owned runtime");
         });
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, startup, Arc::clone(&shared));
+        let control =
+            TunnelControlState::new(store, startup, Arc::clone(&shared), test_outbound_secrets());
         let generation_before = shared.committed_generation_id();
 
         block_on(control.create(&create_request(
@@ -5084,6 +5146,16 @@ mod tests {
             new_name: None,
             options: BTreeMap::new(),
         }
+    }
+
+    /// Plan 342: the fail-closed outbound-credential owner.
+    ///
+    /// Tests that do not exercise a credential get `NoOutboundSecrets`, which
+    /// is the honest value: no identity was loaded, so no store exists. A test
+    /// that *does* exercise a credential installs a real router-bound store,
+    /// so an inert-acceptance bug cannot hide behind this helper.
+    fn test_outbound_secrets() -> Arc<dyn OutboundSecretStore> {
+        Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
     }
 
     fn client_options(destination: &str, port: u16) -> BTreeMap<String, String> {
@@ -7579,7 +7651,12 @@ mod tests {
             ],
         };
         let store = ControlStore::open(directory.path()).expect("store opens");
-        let control = TunnelControlState::new(store, startup, test_manager(directory.path()));
+        let control = TunnelControlState::new(
+            store,
+            startup,
+            test_manager(directory.path()),
+            test_outbound_secrets(),
+        );
         for (name, port) in [("zeta", ports[0]), ("alpha", ports[1])] {
             block_on(control.create(&create_request(
                 name,
@@ -7681,7 +7758,12 @@ mod tests {
             .expect("startup spec"),
         );
         let store = ControlStore::open(directory.path()).expect("open");
-        let control = TunnelControlState::new(store, startup, test_manager(directory.path()));
+        let control = TunnelControlState::new(
+            store,
+            startup,
+            test_manager(directory.path()),
+            test_outbound_secrets(),
+        );
         let destination = format!("{}.b32.i2p", "a".repeat(52));
         // Control name collides with a startup-owned name.
         let error = block_on(control.create(&create_request(
@@ -7856,6 +7938,7 @@ mod tests {
             store,
             ServiceTunnelSet::new(),
             test_manager(directory.path()),
+            test_outbound_secrets(),
         );
         let destination = format!("{}.b32.i2p", "a".repeat(52));
         let error = block_on(control.create(&create_request(
@@ -7988,7 +8071,12 @@ mod tests {
             .expect("startup spec"),
         );
         let store = ControlStore::open(directory.path()).expect("open");
-        let control = TunnelControlState::new(store, startup, test_manager(directory.path()));
+        let control = TunnelControlState::new(
+            store,
+            startup,
+            test_manager(directory.path()),
+            test_outbound_secrets(),
+        );
         let destination = format!("{}.b32.i2p", "a".repeat(52));
         block_on(control.create(&create_request(
             "alpha",

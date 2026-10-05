@@ -36,6 +36,7 @@
 
 #![forbid(unsafe_code)]
 
+use i2pr_crypto::RouterIdentityBundle;
 use i2pr_crypto::{OsRng, Zeroizing, hkdf_sha256_extract_and_expand};
 use i2pr_service_tunnels::errors::ServiceTunnelError;
 use i2pr_service_tunnels::outbound_secret::{
@@ -119,6 +120,18 @@ impl RouterBoundOutboundSecrets {
         Ok(Self {
             key: OutboundSecretKey::from_router_signing_seed(seed)?,
         })
+    }
+
+    /// Builds the store from a loaded router identity (Plan 342).
+    ///
+    /// Takes the bundle rather than a seed so the seed cannot be obtained by
+    /// accident from this call site: the only way in is
+    /// [`RouterIdentityBundle::with_signing_seed`], a closure, so the seed
+    /// exists for exactly one expression and is never named in a wider scope.
+    /// A caller wanting a `&[u8; 32]` would have to re-add a getter to
+    /// `i2pr-crypto`, which is a visible change rather than a private one.
+    pub fn from_router_identity(bundle: &RouterIdentityBundle) -> Result<Self, ServiceTunnelError> {
+        bundle.with_signing_seed(Self::from_router_signing_seed)
     }
 }
 
@@ -299,6 +312,56 @@ mod tests {
         assert!(!stored.contains("s3cret"));
         let opened = store.open(&stored).expect("opened");
         assert_eq!(opened.expose_str().expect("utf8"), "s3cret!");
+    }
+
+    /// Plan 342: the bundle-derived store must be the **same** store the
+    /// seed-derived one is, or a credential sealed by one path and opened by
+    /// the other would fail closed for a reason that looks like tampering.
+    ///
+    /// This is the row that makes "derive once at the composition root" a
+    /// checkable property rather than a comment.
+    #[test]
+    fn the_bundle_derived_store_matches_the_seed_derived_one() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x77);
+        let bundle = RouterIdentityBundle::generate(&mut rng).expect("bundle");
+        let from_bundle =
+            RouterBoundOutboundSecrets::from_router_identity(&bundle).expect("from bundle");
+        // Reached through the closure, exactly as the composition root does.
+        let expected = bundle
+            .with_signing_seed(RouterBoundOutboundSecrets::from_router_signing_seed)
+            .expect("from seed");
+
+        let plaintext = OutboundSecret::new("same-credential").expect("secret");
+        let sealed_by_bundle = seal_with(&from_bundle, "same-credential", 9);
+        let mut rng = ChaCha8Rng::seed_from_u64(9);
+        let sealed_by_seed = seal_with_rng(&expected.key, &plaintext, &mut rng).expect("sealed");
+
+        assert_eq!(
+            sealed_by_bundle, sealed_by_seed,
+            "the same seed must produce the same stored form, so both paths interoperate"
+        );
+        // And the cross direction: what the seed path opens, the bundle path opens.
+        assert_eq!(
+            from_bundle
+                .open(&sealed_by_seed)
+                .expect("bundle opens seed-sealed")
+                .expose_str()
+                .expect("utf8"),
+            "same-credential"
+        );
+    }
+
+    /// Two different routers must not open each other's stored forms. This is
+    /// what makes the store router-bound rather than merely keyed.
+    #[test]
+    fn a_different_router_cannot_open_the_stored_form() {
+        let mine = store(0x21);
+        let theirs = store(0x22);
+        let stored = seal_with(&mine, "s3cret!", 3);
+        assert!(
+            theirs.open(&stored).is_err(),
+            "a stored form must not be openable by another router's key"
+        );
     }
 
     #[test]

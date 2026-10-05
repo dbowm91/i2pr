@@ -130,7 +130,16 @@ impl OutboundSecret {
 /// layer holding key material. Every method is total and fallible: there is no
 /// "best effort" path, because a partially recovered credential would be sent
 /// to an upstream outproxy.
-pub trait OutboundSecretStore {
+///
+/// `Send + Sync` is a requirement of the design, not a convenience (Plan
+/// 342). One store is shared as an `Arc` between the control plane, which
+/// seals a credential into a generation file, and the tunnel runtime, which
+/// opens it while building a header — and the runtime's work happens inside a
+/// spawned task. A store that could not cross that boundary would have to be
+/// re-derived per task, which is precisely the "second key" Plan 342 rules out.
+/// Every method takes `&self` and an implementation needs no interior
+/// mutability, so the bound costs nothing to honour.
+pub trait OutboundSecretStore: Send + Sync {
     /// Seals `secret` into a stored form for a generation file.
     fn seal(&self, secret: &OutboundSecret) -> Result<String, ServiceTunnelError>;
 

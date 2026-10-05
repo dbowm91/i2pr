@@ -22,6 +22,14 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+
+/// Plan 342: the fail-closed outbound-credential owner for a row that does not
+/// exercise a credential. No identity is loaded, so no store exists.
+fn plan342_test_outbound_secrets()
+-> Arc<dyn i2pr_service_tunnels::outbound_secret::OutboundSecretStore> {
+    Arc::new(i2pr_service_tunnels::outbound_secret::NoOutboundSecrets)
+}
+
 use std::time::Duration;
 
 use i2pr_daemon::config::Config;
@@ -510,8 +518,12 @@ async fn differential_corpus_against_production_composition() {
         .expect("shared manager builds")
         .expect("control implies a shared manager");
     let control = Arc::new(
-        i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(&config, manager)
-            .expect("control builds for config"),
+        i2pr_daemon::i2pcontrol_tunnels::TunnelControlState::for_config(
+            &config,
+            manager,
+            plan342_test_outbound_secrets(),
+        )
+        .expect("control builds for config"),
     );
     let addressbook = Arc::new(i2pr_daemon::addressbook::AddressBookManager::activate(
         config.addressbook.clone(),
