@@ -1,0 +1,10 @@
+[package]
+name = "portable-service-tunnel-consumer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+i2pr-service-tunnels = { git = "https://github.com/dbowm91/i2pr", rev = "fa0824970b67b5ee90d5907765c408ccd0a19941", package = "i2pr-service-tunnels" }

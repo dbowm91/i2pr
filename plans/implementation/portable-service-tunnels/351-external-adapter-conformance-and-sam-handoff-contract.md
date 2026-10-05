@@ -1,6 +1,6 @@
 # Plan 351 — external adapter conformance and SAM handoff contract
 
-Status: **ready-portable-service-tunnel-external-adapter-conformance**.
+Status: **passed-portable-service-tunnel-external-adapter-conformance-and-sam-handoff**.
 
 Classification: **infrastructure**. This plan proves that the stabilized service-tunnel core can be consumed outside the i2pr workspace and freezes a downstream transport-adapter handoff, using a future clean-room SAM client/tunnel manager as the motivating consumer without implementing SAM in i2pr.
 

@@ -69,6 +69,9 @@ jobs:
         run: bash scripts/check-service-tunnel-boundaries.sh
       - name: Check portable service-tunnel API snapshot
         run: python3 scripts/check-portable-service-tunnel-api.py
+      - name: Check portable service-tunnel external consumer
+        if: runner.os == 'Linux'
+        run: bash scripts/check-portable-service-tunnel-consumer.sh
       - name: Check global plan-number ownership
         run: python3 scripts/check-global-plan-number-uniqueness.py
       - name: Test planning checkers
