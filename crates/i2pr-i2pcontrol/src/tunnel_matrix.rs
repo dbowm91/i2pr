@@ -249,20 +249,26 @@ const fn cell_disposition(option_index: usize, type_index: usize) -> CellDisposi
             limitation: "dynamic destination SigType has no key-generation owner (Ed25519-only)",
         },
         // 41 encrypt_lease_set / 42 leaseset_password / 44 leaseset_client_auth:
-        // Plan 334 supersedes the Plan 293 determination. The Proposal 170
-        // LeaseSet block now resolves onto the real ELS2 owners frozen by
-        // Plans 332/333: the mode selects the record shape, the lookup secret
-        // is the single ELS2 lookup secret, and the client list is the
-        // authorization block. All three are validated as one block before
-        // any mutation and are never echoed.
+        // Plan 334 supersedes the Plan 293 determination. All three now have a
+        // real consuming owner — the control surface resolves the block,
+        // validates it, persists it, and re-exposes a redacted projection —
+        // and the ELS2 publication owner in `i2pr-daemon::service_els2` builds
+        // a real type-5 record from the service's own identity.
+        //
+        // The remaining seam is named rather than hidden: the service LS2
+        // publication sweep still publishes the ordinary LeaseSet2, so a
+        // configured mode does not yet change what a running service
+        // publishes. `plans/closure/i2pcontrol-proposal-170/334-status.md`
+        // carries that as the plan's open item, and the owner strings below
+        // point at the control owner that genuinely exists today.
         41 => CellDisposition::Apply {
-            owner: "EncryptLeaseSet mode into the Plan 332/333 ELS2 publication owner",
+            owner: "TunnelControlState::lease_set_security and the ELS2 record builder in i2pr-daemon::service_els2",
         },
         42 => CellDisposition::Apply {
-            owner: "OptionalLookup into the ELS2 lookup-secret owner (BlindingIdentity)",
+            owner: "ELS2 lookup-secret owner: the BlindingIdentity daily key derivation in i2pr-daemon::service_els2",
         },
         44 => CellDisposition::Apply {
-            owner: "LeaseSetClientAuths into Els2AuthorizationServerConfig (PSK or DH)",
+            owner: "Els2AuthorizationServerConfig PSK or DH authorization block, built in i2pr-daemon::service_els2",
         },
         // 43 leaseset_blinding_secret: Plan 334 retires this i2pr-invented
         // duplicate. The ELS2 specification defines exactly one lookup secret

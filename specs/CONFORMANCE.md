@@ -335,6 +335,68 @@ status is:
 
 Authority: Plan 333 (`plans/closure/i2pcontrol-proposal-170/333-status.md`).
 
+### Proposal 170 LeaseSet mode mapping status (Plan 334)
+
+Plan 334 gives Proposal 170's LeaseSet block a real control-plane surface. Its status is:
+
+- **The normative reading is frozen, and the finding is negative.** Proposal 170 revision
+  2026-05-20 lists the ten `EncryptLeaseSet` strings plus `OptionalLookup` and
+  `LeaseSetClientAuths` and **defines nothing about them**: no per-mode property table, no wire
+  types beyond the option block, no schemas, and no precedence rule between the three parameters.
+  The reading i2pr implements — which of the referenced ELS2 specifications owns each parameter,
+  the address flags each mode implies, and the two argued dispositions — is frozen in
+  `specs/references/proposal-170-encryptleaseset-mode-mapping.md`. The source is pinned by
+  bytes, not by URL: SHA-256 `f13ae00b886c5e72131bc5d5b138a371148d1faa6899a119a1dacb65a555e7dc`
+  over 19,010 bytes, in `docs/provenance/proposal-170-manifest.md`.
+- **All ten values resolve; nine are applied and one is refused.** `encrypted (aes)` is
+  *recognized* and then refused by name, with the deprecation cited, so an operator learns they
+  supplied a valid Proposal value that i2pr deliberately does not implement rather than being
+  told they made a spelling mistake.
+- **The ten values reduce to eight protocol behaviors.** `encrypted (psk)` and `encrypted with
+  per-user key (psk)` are one behavior under two spellings, because the I2P specifications define
+  one pre-shared-key scheme; the per-user distinction is the number of block entries, not the
+  string. Which spelling arrived is recorded and reported, not hidden.
+- **Mode names are identifiers.** No case folding, trimming, or fuzzy matching: `Disable`,
+  `encrypted(psk)`, and `encrypted  (psk)` are all unknown values.
+- **No silent no-ops and no silent downgrades.** A secret supplied to a mode that does not consume
+  it is an error. A secret a mode requires and did not get is an error, and so is one that is
+  present but empty, because an empty value would otherwise publish a service that is less
+  protected than the operator asked for.
+- **The block is validated as a unit, before any mutation, and re-validated on load.** A merged
+  `create`+stored-`edit` candidate and a reloaded stored definition obey the same law as a fresh
+  request. A generation written under an older rule fails the load closed instead of starting a
+  service in a posture the operator never asked for.
+- **No secret reaches any response.** `get` and `rawConfig` report whether each secret is
+  configured, the lookup secret's length, and the client count, never a byte. The `EncryptLeaseSet`
+  mode itself is public and reads back verbatim.
+- **The two i2pr-inventory secret spellings are reconciled to the two Proposal fields.**
+  `OptionalLookup` is the single ELS2 lookup secret. `leaseset_blinding_secret` is **refused as a
+  duplicate**: the ELS2 specification defines exactly one lookup secret and Proposal 170 spells it
+  once, so a second i2pr slot would let an operator believe two secrets are in effect when only one
+  can be. This retires an i2pr-invented name rather than aliasing it.
+- **`encrypt_lease_set` changes from Boolean to String.** Plan 293 carried the inventory type as
+  divergence item 1; Proposal 170's value is an enumeration string, so the inventory type was
+  wrong and is corrected.
+- **A real type-5 record is built from the service's own identity, with no new stored secret.**
+  The blinding identity is the Red25519 conversion of the service's existing Ed25519 signing seed,
+  which is what the published address must name for a client to verify the inner LeaseSet2. Six
+  rows assert a real type-5 `DatabaseStore` at the day's blinded storage key, carrying the day's
+  blinded public key, a non-zero outer salt, and a non-empty outer ciphertext.
+- **The runtime publication effect is NOT yet claimed.** The service LS2 publication sweep still
+  publishes the ordinary LeaseSet2, so a configured mode does not yet change what a running service
+  publishes, and the `.b32.i2p` address is not yet exposed through the control surface. This is the
+  plan's open item, carried in the closure record and reflected in the `support.toml` surface
+  status. Matrix cells name the owner that exists today, not a publication driver that does not.
+- **The client-count ceiling is 24 on this control surface, and that is not a protocol limit.** The
+  ELS2 authorization block format permits 65,535 entries and the protocol owner accepts 255; the
+  narrower number here is a consequence of carrying the list through one durable option value
+  bounded by `MAX_OPTION_VALUE_LEN`, and a test asserts the worst case fits.
+- **At-rest protection for the lookup secret and the client list is not claimed.** Both live in the
+  durable control definition. That is the same posture as the existing per-service Ed25519 seed
+  files: at-rest encryption remains `i2pr-storage`'s responsibility.
+
+Authority: Plan 334 (`plans/closure/i2pcontrol-proposal-170/334-status.md`).
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

@@ -1,6 +1,6 @@
 # Red25519 / Encrypted LeaseSet2 Clean-Room Continuation
 
-Status: Plans 329, 330, 331, 332, 333, and 336 passed. Plan 334 is ready; Plan 335 remains blocked
+Status: Plans 329, 330, 331, 332, 333, and 336 passed. Plan 334 is blocked (control plane complete, runtime publication unwired); Plan 335 remains blocked
 behind it.
 
 Parent roadmap:
@@ -122,8 +122,8 @@ No custom field/bignum/curve formulas are permitted.
 | 331 | passed | independent vectors + Java/i2pd + post-freeze Emissary differential (closure: `plans/closure/i2pcontrol-proposal-170/331-status.md`) |
 | 332 | passed | type-5 ELS2 foundation: first-class DatabaseStore type 5, no-auth layer crypto, daily blinding, lookup secret, B33, NetDB store/serve, client publish/resolve (closure: `plans/closure/i2pcontrol-proposal-170/332-status.md`) |
 | 333 | passed | PSK and DH/X25519 client authorization: both derivations, the bounded authorization block, constant-time recovery, and the four-role secret owner; byte-identical to Emissary in both directions after the `f525578` freeze (closure: `plans/closure/i2pcontrol-proposal-170/333-status.md`) |
-| 334 | ready | exact Proposal 170 mode/field mapping |
-| 335 | blocked on 334 | live interop and successor reclosure for blocked Plan 326 |
+| 334 | blocked | exact Proposal 170 mode/field mapping; control plane complete, runtime publication seam unwired |
+| 335 | blocked on 334 (itself blocked) | live interop and successor reclosure for blocked Plan 326 |
 | 336 | passed | Red25519 transcript conformance decision (spec-first) + deferred Java/i2pd-live lanes (closure: `plans/closure/i2pcontrol-proposal-170/336-closure.md`) |
 
 ## 7. Completion boundary

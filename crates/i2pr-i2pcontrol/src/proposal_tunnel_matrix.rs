@@ -154,9 +154,12 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         "EncType" => Some("typed Standard LeaseSet2 X25519 policy (EncType 4)"),
         // Plan 334 supersedes the Plan 326 deep prerequisite for the whole
         // Proposal 170 LeaseSet block. Each of the three fields now names a
-        // real owner frozen by Plans 332/333; the mapping between them and the
-        // nine applied modes is frozen in
-        // `specs/references/proposal-170-encryptleaseset-mode-mapping.md`.
+        // real owner: the control surface resolves and validates the block and
+        // the ELS2 record builder produces a real type-5 record. The remaining
+        // seam — the service LS2 publication sweep still publishing the
+        // ordinary record — is carried as the plan's open item in
+        // `plans/closure/i2pcontrol-proposal-170/334-status.md` rather than
+        // being rounded up to a deep prerequisite again.
         //
         // Only the three Proposal spellings appear here. `LeaseSetPassword`
         // and `LeaseSetBlindingSecret` are i2pr-inventory names with no
@@ -164,7 +167,7 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         "EncryptLeaseSet" => {
             return if applies(LEASESET_SERVERS) {
                 Apply {
-                    owner: "Proposal 170 mode mapping into the Plan 332/333 ELS2 publication owner",
+                    owner: "TunnelControlState LeaseSet security resolution and the ELS2 record builder in i2pr-daemon::service_els2",
                 }
             } else {
                 NotApplicable {
@@ -175,7 +178,7 @@ fn disposition(field: &str, tunnel_type: &str) -> ProposalTunnelCellDisposition 
         "OptionalLookup" => {
             return if applies(LEASESET_SERVERS) {
                 Apply {
-                    owner: "ELS2 lookup-secret owner (BlindingIdentity daily key derivation)",
+                    owner: "ELS2 lookup-secret owner: the BlindingIdentity daily key derivation in i2pr-daemon::service_els2",
                 }
             } else {
                 NotApplicable {

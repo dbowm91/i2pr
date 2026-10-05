@@ -234,7 +234,7 @@ Current continuation graph:
 
     322 + 326 + 327 -> 328 live external full-conformance gate
 
-Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed packaged Rust provider matched I2P Red25519. Plans 321, 323, and 324 passed; Plans 322, 326, and 327 closed blocked on their recorded missing owners/dependencies; Plan 328 closed blocked because its required plans could not pass. Plans 329–335 now supersede only the forward Red25519/Encrypted-LeaseSet architecture: Plan 329 established a clean-room/spec-first path over maintained curve primitives, Java/i2pd readable references, and Emissary black-box-only differential, and Plans 330–333 have since passed, leaving Plan 334 ready and Plan 335 blocked behind it. The unqualified full Proposal 170 claim is still not made.
+Plans 321, 323, and 325 were independently eligible after Plan 320. Plan 325's provider survey closed blocked: no reviewed packaged Rust provider matched I2P Red25519. Plans 321, 323, and 324 passed; Plans 322, 326, and 327 closed blocked on their recorded missing owners/dependencies; Plan 328 closed blocked because its required plans could not pass. Plans 329–335 now supersede only the forward Red25519/Encrypted-LeaseSet architecture: Plan 329 established a clean-room/spec-first path over maintained curve primitives, Java/i2pd readable references, and Emissary black-box-only differential, and Plans 330–333 have since passed. Plan 334 is blocked with its control plane complete but its runtime publication seam unwired, and Plan 335 is blocked behind it. The unqualified full Proposal 170 claim is still not made.
 
 | Plan | State | Classification | Handoff | Closure |
 |---|---|---|---|---|
@@ -275,7 +275,8 @@ Current graph (`passed` / `ready` / `blocked`):
        -> 331 passed  independent qualification
             -> 332 passed  type-5 ELS2 foundation
                  -> 333 passed  PSK/DH client auth
-                      -> 334 ready   Proposal 170 mode mapping
+                      -> 334 blocked (control plane complete,
+                                       runtime publication unwired)
                            -> 335 blocked on 334  live ELS2 interoperability/reclosure
 ```
 

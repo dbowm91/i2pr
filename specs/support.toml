@@ -634,15 +634,39 @@ protocol = "common-structures"
 structure = "leaseset2-encryptedleaseset-metaleaseset"
 scope = "required-later"
 status = "experimental"
-notes = "Plans 119 and 272 provide strict validated server-storage representations for classic LeaseSet (type 1), ordinary online-signed Standard LeaseSet2 (type 3), and MetaLeaseSet (type 7), including the supported offline Ed25519 delegation subset. Type 5 EncryptedLeaseSet remains Deferred pending a vetted Red25519 provider (Plan 281). Blinded-on-publication and unsupported/PQ key variants are rejected or undisclosable. No floodfill serving is claimed."
+notes = "Plans 119 and 272 provide strict validated server-storage representations for classic LeaseSet (type 1), ordinary online-signed Standard LeaseSet2 (type 3), and MetaLeaseSet (type 7), including the supported offline Ed25519 delegation subset. Plan 281 deferred type 5 EncryptedLeaseSet for want of a vetted Red25519 provider; Plan 330 closed that gap with i2pr's own independent Red25519 implementation and Plan 331 qualified it, so Plan 332 now implements type 5 (ChaCha20, counter-1, b33, type-5 framing, daily blinding lifecycle, lookup secret, NetDB store and serve, client publish and resolve) and Plan 333 adds PSK and DH client authorization. The type-5 transcript is i2pr-only: per ADR 0005 and Plan 336, i2pd and Java I2P cannot verify it today, so no interoperability is claimed. Blinded-on-publication and unsupported/PQ key variants are rejected or undisclosable. No floodfill serving is claimed."
 evidence = [
     "crates/i2pr-proto/src/common/lease2.rs",
     "crates/i2pr-proto/src/i2np/netdb.rs",
     "crates/i2pr-proto/src/i2np/message.rs",
     "crates/i2pr-netdb/src/lease_set2.rs",
+    "crates/i2pr-netdb/src/els2.rs",
+    "crates/i2pr-netdb/src/els2_auth.rs",
+    "crates/i2pr-client/src/encrypted_leaseset.rs",
     "crates/i2pr-netdb/src/lookup_id.rs",
     "plans/implementation/destination-streaming/119-m6-leaseset2-protocol-foundation.md",
     "plans/closure/destination-streaming/119-status.md",
+    "plans/closure/i2pcontrol-proposal-170/332-status.md",
+    "plans/closure/i2pcontrol-proposal-170/333-status.md",
+]
+advertised = false
+
+[[surface]]
+id = "control.i2pcontrol-leaseset-modes"
+protocol = "i2pcontrol"
+structure = "proposal170-leaseset-mode-mapping"
+scope = "required-now"
+status = "in-progress-control-plane-complete-runtime-publication-open"
+notes = "Plan 334 resolves Proposal 170's ten EncryptLeaseSet values onto eight protocol behaviors and binds OptionalLookup and LeaseSetClientAuths to them. 'encrypted (aes)' is recognized and refused by name as deprecated. Modes are identifiers and are never case-folded, trimmed, or fuzzy-matched. A supplied-but-unused secret is an error, never a no-op, and a required secret that is absent or empty is an error, so no mode silently downgrades. The whole block is validated once as a unit before any mutation, and re-validated on store load so a generation written under an older rule fails closed. get and rawConfig report whether each secret is configured, the lookup secret's length, and the client count, never a byte. i2pr-daemon::service_els2 builds a real type-5 record at the day's blinded storage key from the service's own Ed25519 seed. The open item is named rather than claimed: the service LS2 publication sweep still publishes the ordinary LeaseSet2, so a configured mode does not yet change what a running service publishes, and the .b32.i2p address is not yet exposed through the control surface. The two i2pr-inventory LeaseSet secret spellings are reconciled to the two Proposal fields: OptionalLookup is the single ELS2 lookup secret, and leaseset_blinding_secret is refused as a duplicate because the ELS2 specification defines exactly one. The client-count ceiling is 24 on this control surface, a consequence of the durable single-value encoding and not a protocol limit; the protocol owner accepts 255 and the ELS2 block format permits 65535."
+evidence = [
+    "specs/references/proposal-170-encryptleaseset-mode-mapping.md",
+    "docs/provenance/proposal-170-manifest.md",
+    "crates/i2pr-i2pcontrol/src/proposal_leaseset_mode.rs",
+    "crates/i2pr-i2pcontrol/src/tunnel_matrix.rs",
+    "crates/i2pr-i2pcontrol/src/proposal_tunnel_matrix.rs",
+    "crates/i2pr-daemon/src/service_els2.rs",
+    "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs",
+    "plans/closure/i2pcontrol-proposal-170/334-status.md",
 ]
 advertised = false
 
