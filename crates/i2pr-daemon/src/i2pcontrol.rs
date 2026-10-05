@@ -1270,6 +1270,34 @@ impl I2pControlServiceState {
                     }
                 }
             }
+            if matches!(
+                field.key,
+                "i2p.router.net.status.v6"
+                    | "i2p.router.net.error"
+                    | "i2p.router.net.error.v6"
+                    | "i2p.router.net.testing"
+                    | "i2p.router.net.testing.v6"
+            ) {
+                match crate::i2pcontrol_inspection::proposal_network_condition_value(
+                    field.key,
+                    &self.inspection,
+                ) {
+                    Ok(value) => {
+                        result.insert(field.key.to_owned(), value);
+                        continue;
+                    }
+                    Err(gap) => {
+                        return (
+                            error_envelope(
+                                id,
+                                JsonRpcErrorCode::InternalError.code(),
+                                &gap.message(),
+                            ),
+                            Duration::ZERO,
+                        );
+                    }
+                }
+            }
             if field.key == "i2p.router.net.tunnels.tbmqueue" {
                 match crate::i2pcontrol_inspection::proposal_tbm_queue_depth(&self.inspection) {
                     Ok(value) => {

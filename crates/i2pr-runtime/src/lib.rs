@@ -98,10 +98,10 @@ pub use ssu2_runtime::{
     SSU2_SEND_QUEUE_BYTES, SSU2_SEND_QUEUE_MESSAGES, SSU2_TOKEN_CACHE_PEERS,
     SSU2_TOKEN_CACHE_PER_PEER, SSU2_TOKEN_REQUEST_SOURCES, SSU2_TOKEN_REQUESTS_PER_SECOND,
     Ssu2BindError, Ssu2DialOutcome, Ssu2DialTarget, Ssu2DialTargetError, Ssu2EstablishedLink,
-    Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2LimitKind, Ssu2LinkHandle, Ssu2PublicationMaterial,
-    Ssu2PublicationUnavailable, Ssu2RuntimeConfig, Ssu2RuntimeConfigError, Ssu2RuntimeDeadlines,
-    Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome, Ssu2ServiceHandle, Ssu2Snapshot,
-    Ssu2SocketConfig, Ssu2TestFaults,
+    Ssu2IdentityMaterial, Ssu2InboundI2np, Ssu2LimitKind, Ssu2LinkHandle, Ssu2NetworkCondition,
+    Ssu2PublicationMaterial, Ssu2PublicationUnavailable, Ssu2RuntimeConfig, Ssu2RuntimeConfigError,
+    Ssu2RuntimeDeadlines, Ssu2RuntimeLimits, Ssu2RuntimeService, Ssu2SendOutcome,
+    Ssu2ServiceHandle, Ssu2Snapshot, Ssu2SocketConfig, Ssu2TestFaults,
 };
 // Plan 184 daemon-owned SSU2 re-exports: the daemon composes the
 // controlled SSU2 identity/address surface through the runtime so it

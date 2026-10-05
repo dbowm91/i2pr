@@ -78,10 +78,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use i2pr_crypto::X25519PrivateKey;
 use i2pr_proto::{Date, Hash, Mapping, RouterAddress, RouterInfo, SigningPublicKey};
 use i2pr_transport::{
-    CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage, LinkCandidate, LinkId,
-    PeerId, PeerTestOutcomeKind, PendingHandshake, ReachabilitySignal, ReachabilityState,
-    ReachabilityTracker, ResourceClass, TerminationCategory, TransportKind, TransportLimits,
-    TransportManager,
+    AddressFamily, CandidateDecision, DeliveryRequest, Direction, EncodedI2npMessage,
+    FamilyNetworkCondition, LinkCandidate, LinkId, PeerId, PeerTestOutcomeKind, PendingHandshake,
+    ReachabilitySignal, ReachabilityState, ReachabilityTracker, ResourceClass, TerminationCategory,
+    TransportKind, TransportLimits, TransportManager, effective_reachability,
 };
 use i2pr_transport_ssu2::{
     AddressBlock, AuthenticatedSsu2Session, ClockSkewPolicy, ConfirmedParams, DeadlineKind,
@@ -1059,6 +1059,12 @@ impl fmt::Debug for Shared {
 struct ServiceSockets {
     v4: Option<SocketAddr>,
     v6: Option<SocketAddr>,
+    /// Whether `start` was *asked* to bind this family, independent of
+    /// whether the bind succeeded. Plan 339 needs the configured-vs-bound
+    /// distinction so a family that was never requested is not reported as a
+    /// fault, while a family that was requested and never bound is.
+    requested_v4: bool,
+    requested_v6: bool,
 }
 
 #[derive(Default)]
@@ -1168,6 +1174,31 @@ pub struct Ssu2SocketConfig {
     pub ipv4: Option<SocketAddr>,
     /// IPv6 bind literal, or `None` to leave IPv6 disabled.
     pub ipv6: Option<SocketAddr>,
+}
+
+/// Privacy-safe per-family network condition for the Plan 339 Proposal 170
+/// selectors.
+///
+/// Carries no address, port, endpoint, key, peer identity, or payload — only
+/// booleans and a reachability enum per family, so it is safe to project onto
+/// the authenticated control surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Ssu2NetworkCondition {
+    /// IPv4 condition.
+    pub v4: FamilyNetworkCondition,
+    /// IPv6 condition.
+    pub v6: FamilyNetworkCondition,
+}
+
+impl Ssu2NetworkCondition {
+    /// Returns the condition for one family.
+    pub const fn family(&self, family: AddressFamily) -> FamilyNetworkCondition {
+        match family {
+            AddressFamily::Ipv4 => self.v4,
+            AddressFamily::Ipv6 => self.v6,
+            AddressFamily::Unknown => FamilyNetworkCondition::inert(),
+        }
+    }
 }
 
 /// A started SSU2 service: bound socket addresses plus the bounded
@@ -1460,6 +1491,12 @@ impl Ssu2RuntimeService {
         if sockets.ipv4.is_none() && sockets.ipv6.is_none() {
             return Err(Ssu2BindError::NoSocket);
         }
+        // Record the requested families before binding, so a partial or failed
+        // bind still reports which families the composition asked for.
+        if let Ok(mut guard) = self.shared.sockets.lock() {
+            guard.requested_v4 = sockets.ipv4.is_some();
+            guard.requested_v6 = sockets.ipv6.is_some();
+        }
         let mut bound_v4 = None;
         let mut bound_v6 = None;
         if let Some(addr) = sockets.ipv4 {
@@ -1566,6 +1603,48 @@ impl Ssu2RuntimeService {
         if let Ok(mut state) = self.shared.state.lock() {
             state.token_store.rotate();
         }
+    }
+
+    /// Returns the privacy-safe per-family network condition used by the
+    /// Plan 339 Proposal 170 `net.status.v6` / `net.error` / `net.testing`
+    /// selectors.
+    ///
+    /// Each family's effective reachability is taken from this service's own
+    /// reachability tracker and is honoured only when the qualified snapshot
+    /// belongs to that family and has not expired, so an IPv4-qualified router
+    /// never reports an IPv6 claim. `None` means the state could not be read:
+    /// a poisoned lock degrades to the caller's gap path and never to a
+    /// fabricated condition.
+    pub fn network_condition(&self) -> Option<Ssu2NetworkCondition> {
+        let now = self.service_now();
+        let (requested_v4, requested_v6, bound_v4, bound_v6) = {
+            let sockets = self.shared.sockets.lock().ok()?;
+            (
+                sockets.requested_v4,
+                sockets.requested_v6,
+                sockets.v4.is_some(),
+                sockets.v6.is_some(),
+            )
+        };
+        let snapshot = {
+            let mut state = self.shared.state.lock().ok()?;
+            // Same expiry maintenance the publication path performs, so the
+            // reported condition cannot outlive its evidence.
+            state.reachability.poll_expiry(now);
+            state.reachability.snapshot(now)
+        };
+        Some(Ssu2NetworkCondition {
+            v4: FamilyNetworkCondition {
+                configured: requested_v4,
+                bound: bound_v4,
+                reachability: effective_reachability(Some(&snapshot), AddressFamily::Ipv4, now),
+            },
+            v6: FamilyNetworkCondition {
+                configured: requested_v6,
+                bound: bound_v6,
+                reachability: effective_reachability(Some(&snapshot), AddressFamily::Ipv6, now),
+            },
+        })
     }
 
     /// Returns privacy-safe aggregate counters plus table gauges.
@@ -7053,5 +7132,104 @@ mod tests {
         shutdown_path_fixture(a).await;
         shutdown_path_fixture(b).await;
         shutdown_path_fixture(c).await;
+    }
+    /// Plan 339: the accessor reports the honest baseline for a router that
+    /// has bound IPv4 and made no reachability observation at all, and never
+    /// leaks the IPv4 family's state onto IPv6.
+    #[tokio::test]
+    async fn network_condition_reports_configured_and_bound_per_family() {
+        let keys = make_path_keys();
+        let service = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("valid runtime");
+        let token = CancellationToken::new();
+        let scope = ChildScope::for_test(&token, ChildFailurePolicy::FailParent);
+        let handle = service
+            .start(
+                &scope,
+                Ssu2SocketConfig {
+                    ipv4: Some("127.0.0.1:0".parse().expect("loopback")),
+                    ipv6: None,
+                },
+            )
+            .await
+            .expect("bind");
+        let condition = service.network_condition().expect("state is readable");
+
+        assert!(condition.v4.configured, "IPv4 was requested");
+        assert!(condition.v4.bound, "IPv4 is bound");
+        assert_eq!(
+            condition.v4.reachability,
+            ReachabilityState::Unknown,
+            "no observation means no claim"
+        );
+
+        assert!(
+            !condition.v6.configured && !condition.v6.bound,
+            "IPv6 was never requested, so it is not a fault"
+        );
+        assert_eq!(condition.v6.reachability, ReachabilityState::Unknown);
+
+        assert_eq!(
+            i2pr_transport::network_status_code(&condition.v4),
+            i2pr_transport::NetworkStatusCode::Unknown,
+            "an unobserved family must not become OK"
+        );
+        assert_eq!(
+            i2pr_transport::network_error_code(&condition.v4, true),
+            i2pr_transport::NetworkErrorCode::None,
+            "a running family is not offline"
+        );
+        assert_eq!(
+            i2pr_transport::network_error_code(&condition.v6, true),
+            i2pr_transport::NetworkErrorCode::None,
+            "a never-configured family is not offline"
+        );
+        assert_eq!(i2pr_transport::network_testing_flag(&condition.v4), 0);
+        assert_eq!(i2pr_transport::network_testing_flag(&condition.v6), 0);
+
+        assert_eq!(condition.family(AddressFamily::Ipv4), condition.v4);
+        assert_eq!(condition.family(AddressFamily::Ipv6), condition.v6);
+        assert_eq!(
+            condition.family(AddressFamily::Unknown),
+            FamilyNetworkCondition::inert(),
+            "an unclassified family yields the inert condition"
+        );
+
+        drop(handle);
+        service.shutdown();
+        let report = scope.shutdown().await;
+        assert!(report.joined() >= 1, "loop task joined");
+    }
+
+    /// Plan 339: an unstarted service reports neither family as configured,
+    /// so a composition that never bound a socket cannot claim a status.
+    #[test]
+    fn network_condition_on_an_unstarted_service_makes_no_claim() {
+        let keys = make_path_keys();
+        let service = Ssu2RuntimeService::new(
+            Ssu2RuntimeConfig::default(),
+            Ssu2IdentityMaterial {
+                router_hash: keys.hash,
+                static_secret_bytes: keys.static_bytes,
+                intro_key: keys.intro,
+                router_info: keys.router_info.clone(),
+            },
+        )
+        .expect("valid unbound runtime");
+        let condition = service.network_condition().expect("state readable");
+        assert_eq!(condition.v4, FamilyNetworkCondition::inert());
+        assert_eq!(condition.v6, FamilyNetworkCondition::inert());
+        assert_eq!(
+            i2pr_transport::network_status_code(&condition.v4),
+            i2pr_transport::NetworkStatusCode::Unknown
+        );
     }
 }

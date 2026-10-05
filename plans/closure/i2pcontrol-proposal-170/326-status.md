@@ -22,3 +22,27 @@ Findings by severity: critical 0; high 0; medium 0; low 0. No encrypted LeaseSet
 ## Roadmap disposition
 
 Plan 326 is closed as blocked solely on Plan 325. Plans 323 and 324 no longer gate it. Reopen after a separately reviewed I2P-compatible Red25519 provider passes vectors, malformed-input, and secret-handling qualification. Plan 328 remains blocked on 322, 326, and 327.
+
+## Correction, 2026-10-05 (dated; the original text above is preserved)
+
+The disposition above is **stale in its named dependency**, though the status token
+is not changed here.
+
+Plan 325's provider survey was superseded by the clean-room path: Plan 329
+froze the provenance and normative boundary, Plan 330 landed the independent
+Red25519 implementation, Plan 332 landed the type-5 ELS2 foundation with daily
+blinding, lookup secret, B33, opaque NetDB store/serve and client
+publish/resolve, and Plan 333 landed PSK and DH client authorization. So
+requirement 4's stated cause — "the cryptographic prerequisite is unsatisfied" —
+is no longer accurate as written: the cryptographic work exists, and it exists
+because the forward architecture this record was blocked on was deliberately
+replaced.
+
+What remains genuinely open is narrower and is **not** closed by this correction:
+Plan 325's *provider* question, the "all ten encryption modes" breadth in
+requirement 4 against what 332/333 actually cover, and the control-plane
+publication evidence. Re-audit Plan 326 against Plans 330/332/333 rather than
+reopening it on Plan 325. Plan 335's measured type-11 transcript incompatibility
+is a separate defect on the interoperability axis and is not a Plan 326
+dependency.
+

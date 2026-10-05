@@ -430,6 +430,40 @@ Authority: Plan 334 (`plans/closure/i2pcontrol-proposal-170/334-status.md`), wit
 (`337-status.md`, ADR 0031) and Plan 338 (`338-status.md`) for the publication path and transaction
 correctness underneath it.
 
+### Per-family network condition codes (Plan 339)
+
+Proposal 170's five per-family selectors (`i2p.router.net.status.v6`,
+`.error`, `.error.v6`, `.testing`, `.testing.v6`) are each marked *"(adopted
+from i2pd)"*, so the integer vocabulary is i2pd's and is pinned at i2pd
+`2c69414` `RouterContext.h:44-72` — `RouterStatus` 0-5, `RouterError` 0-5, and a
+0/1 testing flag — rather than chosen by i2pr. Plan 339 implements both
+enumerations with bounded decode (an out-of-range value is an error, never
+clamped) and derives every value from state i2pr already maintains.
+
+What is claimed, and what is not:
+
+- **The honest baseline is `status=2 (Unknown)`, `error=0 (None)`, `testing=0`.**
+  That is a router which has bound IPv4, has never run a peer test, and therefore
+  makes no status claim while correctly reporting that it is not testing. A
+  fabricated `OK` or a fabricated in-flight test is a fail-closed gap, not a value.
+- **A qualified snapshot is evidence about exactly one address family.** An
+  IPv4-qualified router reports `Unknown` for the IPv6 rows; a stale or expired
+  snapshot supports no claim at all, matching the publication path.
+- **Only codes with a real detector are emitted.** `NoDescriptors` (5) follows an
+  *attested* empty NetDB and `Offline` (2) follows a family that was configured
+  but never bound. `ClockSkew` (1), `SymmetricNAT` (3), and `FullConeNAT` (4) are
+  **never emitted** — i2pr owns no clock-skew or NAT-type detector — and
+  `Proxy` (3), `Mesh` (4), and `Stan` (5) are never emitted because i2pr has no
+  such posture. Their presence in the enumeration is wire completeness, not a
+  capability claim.
+- **An unattested NetDB is a gap, not `NoDescriptors`.** "No descriptors" is a
+  claim about the NetDB, and an absent observation is not evidence of an empty
+  one. Gating is per key: the two `error` rows fail closed without an attested
+  NetDB while `status.v6` and `testing.v6` still answer.
+- **The three transit selectors are still gaps** and are not covered here. See
+  `specs/references/proposal-170-network-status-error-testing.md` for the
+  normative vocabulary and emission policy.
+
 ## Interoperability matrix
 
 Each milestone should maintain an executable or machine-readable matrix similar to:

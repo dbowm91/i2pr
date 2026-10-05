@@ -514,15 +514,13 @@ async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire(
     )
     .await;
     let token = authenticate(address).await;
+    // Plan 322 Group A only: the three transit selectors remain gaps.
+    // Group B moved to Plan 339 and is covered by
+    // `proposal_per_family_network_condition_over_wire`.
     let gaps = [
         "i2p.router.net.total.transit.bytes",
         "i2p.router.net.bw.transit.15s",
         "i2p.router.net.tunnels.shareratio",
-        "i2p.router.net.status.v6",
-        "i2p.router.net.error",
-        "i2p.router.net.error.v6",
-        "i2p.router.net.testing",
-        "i2p.router.net.testing.v6",
     ];
     for (id, key) in gaps.into_iter().enumerate() {
         let (_, response) = post_json(
@@ -547,6 +545,288 @@ async fn proposal_unavailable_sources_fail_closed_with_field_and_plan_over_wire(
         assert!(message.contains(key), "field named in {message}");
         assert!(
             message.contains("Plan 322"),
+            "owner plan named in {message}"
+        );
+    }
+}
+
+/// The five canonical selectors Plan 170 adopts from i2pd.
+const PER_FAMILY_KEYS: [&str; 5] = [
+    "i2p.router.net.status.v6",
+    "i2p.router.net.error",
+    "i2p.router.net.error.v6",
+    "i2p.router.net.testing",
+    "i2p.router.net.testing.v6",
+];
+
+/// A bounded runtime SSU2 service that has registered with the inspection
+/// plane but has never bound a socket, so both families are inert and no
+/// reachability claim exists.
+fn unregistered_family_ssu2_service() -> i2pr_runtime::Ssu2RuntimeService {
+    let bundle = i2pr_crypto::RouterIdentityBundle::generate(&mut i2pr_crypto::OsRng)
+        .expect("controlled identity bundle");
+    let identity =
+        i2pr_daemon::router_i2np::generate_controlled_identity(&bundle, "127.0.0.1", 44_001)
+            .expect("controlled identity");
+    i2pr_runtime::Ssu2RuntimeService::new(i2pr_runtime::Ssu2RuntimeConfig::default(), identity)
+        .expect("valid runtime service")
+}
+
+/// Inspection handles with the per-family transport owner published, and the
+/// NetDB attested either populated or empty.
+fn per_family_handles(known_peers: Option<Vec<String>>) -> Arc<InspectionHandles> {
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    inspection.publish_ssu2(unregistered_family_ssu2_service());
+    if let Some(known) = known_peers {
+        inspection
+            .publish_netdb(
+                known,
+                Vec::new(),
+                i2pr_daemon::i2pcontrol_inspection::FloodfillMode::Disabled,
+            )
+            .expect("bounded NetDB snapshot publishes");
+    }
+    inspection
+}
+
+/// Plan 339: with a registered transport owner and an attested populated
+/// NetDB, all five selectors return exact i2pd-enumeration integers. The
+/// baseline is the honest one — no status claim, no error, and not testing —
+/// because this router has never observed reachability.
+#[tokio::test]
+async fn proposal_per_family_network_condition_over_wire() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, per_family_handles(Some(vec!["known-a".to_owned()])))
+            .await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.status.v6": null,
+                "i2p.router.net.error": null,
+                "i2p.router.net.error.v6": null,
+                "i2p.router.net.testing": null,
+                "i2p.router.net.testing.v6": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    let result = &response["result"];
+    assert_eq!(
+        result["i2p.router.net.status.v6"],
+        serde_json::json!(2),
+        "Unknown"
+    );
+    assert_eq!(result["i2p.router.net.error"], serde_json::json!(0), "None");
+    assert_eq!(
+        result["i2p.router.net.error.v6"],
+        serde_json::json!(0),
+        "None"
+    );
+    assert_eq!(result["i2p.router.net.testing"], serde_json::json!(0));
+    assert_eq!(result["i2p.router.net.testing.v6"], serde_json::json!(0));
+
+    // Every emitted value must sit inside the adopted i2pd enumeration.
+    for key in PER_FAMILY_KEYS {
+        let value = result[key]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{key} is not an integer"));
+        assert!(
+            (0..=5).contains(&value),
+            "{key} = {value} is outside the adopted enumeration"
+        );
+    }
+}
+
+/// Plan 339: an *attested* empty NetDB is `NoDescriptors` (5) on both family
+/// selectors, while a populated one is `None` (0). The error rows therefore
+/// read a real owner rather than a constant.
+#[tokio::test]
+async fn proposal_per_family_error_tracks_the_attested_netdb() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, per_family_handles(Some(Vec::new()))).await;
+    let token = authenticate(address).await;
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.error": null,
+                "i2p.router.net.error.v6": null,
+            },
+            "id": 2,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response["result"]["i2p.router.net.error"],
+        serde_json::json!(5)
+    );
+    assert_eq!(
+        response["result"]["i2p.router.net.error.v6"],
+        serde_json::json!(5)
+    );
+}
+
+/// Plan 339: gating is per key. With no attested NetDB the two error rows
+/// fail the request closed and name Plan 339, because "no descriptors" is a
+/// claim about the NetDB — while `status.v6` and `testing.v6`, which do not
+/// depend on it, still answer.
+#[tokio::test]
+async fn proposal_per_family_error_fails_closed_without_an_attested_netdb() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, per_family_handles(None)).await;
+    let token = authenticate(address).await;
+    for (id, key) in ["i2p.router.net.error", "i2p.router.net.error.v6"]
+        .into_iter()
+        .enumerate()
+    {
+        let (_, response) = post_json(
+            address,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "RouterInfo",
+                "params": {"Token": token, key: null},
+                "id": id,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!(-32_603),
+            "{key}"
+        );
+        assert!(
+            response.get("result").is_none(),
+            "no partial result for {key}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains(key), "field named in {message}");
+        assert!(
+            message.contains("Plan 339"),
+            "owner plan named in {message}"
+        );
+    }
+    // The rows that do not depend on the NetDB still answer.
+    let (_, response) = post_json(
+        address,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "RouterInfo",
+            "params": {
+                "Token": token,
+                "i2p.router.net.status.v6": null,
+                "i2p.router.net.testing": null,
+                "i2p.router.net.testing.v6": null,
+            },
+            "id": 9,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        response["result"]["i2p.router.net.status.v6"],
+        serde_json::json!(2)
+    );
+    assert_eq!(
+        response["result"]["i2p.router.net.testing"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        response["result"]["i2p.router.net.testing.v6"],
+        serde_json::json!(0)
+    );
+}
+
+/// Plan 339: with no transport owner registered at all, all five rows fail
+/// closed and name Plan 339. The previous fail-closed behavior is preserved,
+/// not weakened by the new owner.
+#[tokio::test]
+async fn proposal_per_family_condition_fails_closed_without_a_transport_owner() {
+    let config = Config::parse(&config_text(TEST_PASSWORD))
+        .expect("config parses")
+        .i2pcontrol;
+    let inspection = Arc::new(InspectionHandles::new(
+        2,
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        ServiceEndpoint {
+            enabled: false,
+            bind: None,
+        },
+        Vec::new(),
+    ));
+    inspection
+        .publish_netdb(
+            vec!["known-a".to_owned()],
+            Vec::new(),
+            i2pr_daemon::i2pcontrol_inspection::FloodfillMode::Disabled,
+        )
+        .expect("bounded NetDB snapshot publishes");
+    let (_state, address, _scope, _parent) =
+        start_service_with_inspection(config, inspection).await;
+    let token = authenticate(address).await;
+    for (id, key) in PER_FAMILY_KEYS.into_iter().enumerate() {
+        let (_, response) = post_json(
+            address,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "RouterInfo",
+                "params": {"Token": token, key: null},
+                "id": id,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!(-32_603),
+            "{key}"
+        );
+        assert!(
+            response.get("result").is_none(),
+            "no partial result for {key}"
+        );
+        let message = response["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(message.contains(key), "field named in {message}");
+        assert!(
+            message.contains("Plan 339"),
             "owner plan named in {message}"
         );
     }

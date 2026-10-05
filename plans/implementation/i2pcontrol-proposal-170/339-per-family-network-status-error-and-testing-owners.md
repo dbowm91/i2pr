@@ -1,6 +1,6 @@
 # Plan 339 — Per-family network status, error, and testing owners
 
-Status: **registered-per-family-network-condition-owners**
+Status: **passed-per-family-network-condition-owners-with-pinned-i2pd-enumeration**
 
 Classification: capability + source-ownership completion (reopen of Plan 322, Group B).
 
@@ -213,3 +213,34 @@ Plan 327's `clearnet target with provider succeeds` evidence row will use a
 **self-composed in-tree loopback outproxy fixture**, labelled loopback evidence
 and not interoperability. Decided 2026-10-05 so it is not re-litigated when
 Plan 327 is reopened; Plan 327 itself is untouched by this plan.
+
+## Current implementation progress
+
+- `i2pr_transport::network_status` carries both adopted enumerations
+  (`NetworkStatusCode` 0-5, `NetworkErrorCode` 0-5) with bounded `as_i64` and
+  `try_from_i64`, plus `FamilyNetworkCondition` and the three pure derivations
+  and `effective_reachability`. 13 unit rows cover the enumeration round trip,
+  out-of-range rejection, the full `ReachabilityState x family x freshness`
+  table, and the never-derived codes. Runtime-neutral, no I/O.
+- `Ssu2RuntimeService::network_condition` returns a bounded, privacy-safe
+  per-family condition from the service's own reachability tracker and its
+  configured-versus-bound socket state. `ServiceSockets` now records the
+  *requested* families separately from the *achieved* bound addresses, which is
+  what makes "never configured is not a fault" expressible while "configured but
+  never bound" is. A poisoned lock returns `None`, never a fabricated condition.
+- `proposal_network_condition_value` composes that condition with the attested
+  NetDB peer snapshot and is routed from the canonical RouterInfo dispatch.
+  Gating is per key: the two `error` rows need an attested NetDB, the status and
+  testing rows do not.
+- The three source-matrix row groups are now published-gated with the Plan 339
+  owner and their own evidence id; the gap census drops from 8 to the 3 transit
+  selectors, and the source-matrix contract test asserts that split.
+- Normative record:
+  [`specs/references/proposal-170-network-status-error-testing.md`](../../../specs/references/proposal-170-network-status-error-testing.md).
+- Teeth verified: inverting the status mapping (fabricating `OK`) and removing the
+  family match (leaking one family's state onto the other) failed 4 of 13
+  transport rows, both runtime rows, and 2 of the 4 wire rows. Source restored
+  with an empty diff.
+- No new dependency, no capability or advertisement change, no transit
+  participation, no new unbounded structure.
+

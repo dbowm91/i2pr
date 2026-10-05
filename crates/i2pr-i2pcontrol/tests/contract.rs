@@ -929,20 +929,28 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
     ] {
         let row = gap_owner(key);
         assert_ne!(row.owner, "Plan 322 source not implemented", "{key}");
-        assert!(matches!(
-            row.availability,
-            SourceAvailability::Unavailable {
-                owner_plan: "322",
-                ..
-            }
-        ));
+        assert!(
+            matches!(
+                row.availability,
+                SourceAvailability::PublishedGated {
+                    owner_plan: "339",
+                    ..
+                }
+            ),
+            "{key} must name the Plan 339 per-family owner, not stay a gap"
+        );
+        assert_eq!(
+            row.evidence_test,
+            Some("proposal_per_family_network_condition_over_wire"),
+            "{key} must carry its own source evidence"
+        );
     }
     assert_eq!(
         rows.iter()
             .filter(|row| matches!(row.availability, SourceAvailability::Unavailable { .. }))
             .count(),
-        8,
-        "unimplemented canonical fields remain explicit gaps"
+        3,
+        "only the three transit selectors remain explicit gaps"
     );
     let remaining_gaps: Vec<_> = rows
         .iter()
@@ -955,12 +963,8 @@ fn plan322_source_matrix_covers_all_canonical_additions_and_marks_gaps() {
             "i2p.router.net.total.transit.bytes",
             "i2p.router.net.bw.transit.15s",
             "i2p.router.net.tunnels.shareratio",
-            "i2p.router.net.status.v6",
-            "i2p.router.net.error",
-            "i2p.router.net.error.v6",
-            "i2p.router.net.testing",
-            "i2p.router.net.testing.v6",
-        ]
+        ],
+        "Plan 322 Group A stays blocked: transit participation is a posture change, not a snapshot"
     );
 }
 

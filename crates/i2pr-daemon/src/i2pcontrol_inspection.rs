@@ -33,6 +33,7 @@ use i2pr_i2pcontrol::{
     RouterInfoSelector, SourceAvailability, service_row, source_row,
 };
 use i2pr_runtime::Ssu2RuntimeService;
+use i2pr_transport::{network_error_code, network_status_code, network_testing_flag};
 
 use crate::control_sources::{ControlMetrics, LogRing};
 use crate::i2cp::I2cpServiceState;
@@ -813,6 +814,47 @@ pub(crate) fn proposal_addressbook_value(
         });
     }
     Ok(value)
+}
+
+/// Reads the Plan 339 per-family network condition for the five canonical
+/// selectors Proposal 170 adopts from i2pd
+/// (`i2p.router.net.status.v6`, `.error`, `.error.v6`, `.testing`,
+/// `.testing.v6`).
+///
+/// The owner is the SSU2 runtime's own bounded per-family condition plus the
+/// attested NetDB peer snapshot; nothing here is inferred from the requested
+/// selector or from a request-time router scan. Unavailable means exactly
+/// that: an unregistered transport service, unreadable state, or an unattested
+/// NetDB all fail closed rather than reporting a code the router cannot
+/// substantiate.
+pub(crate) fn proposal_network_condition_value(
+    key: &'static str,
+    handles: &InspectionHandles,
+) -> Result<serde_json::Value, InspectionGap> {
+    let gap = || InspectionGap {
+        key,
+        owner_plan: "339",
+        owner: "per-family transport network condition",
+    };
+    let Some(condition) = ssu2_service(handles).and_then(|service| service.network_condition())
+    else {
+        return Err(gap());
+    };
+    let error_code = |family_condition: &i2pr_transport::FamilyNetworkCondition| {
+        // An *attested* empty peer set is `NoDescriptors`; an unattested one
+        // is a gap, because "no descriptors" is a claim about the NetDB.
+        let known = handles.snapshots().netdb_known?;
+        Some(network_error_code(family_condition, !known.is_empty()).as_i64())
+    };
+    let value = match key {
+        "i2p.router.net.status.v6" => network_status_code(&condition.v6).as_i64(),
+        "i2p.router.net.error" => error_code(&condition.v4).ok_or_else(gap)?,
+        "i2p.router.net.error.v6" => error_code(&condition.v6).ok_or_else(gap)?,
+        "i2p.router.net.testing" => network_testing_flag(&condition.v4),
+        "i2p.router.net.testing.v6" => network_testing_flag(&condition.v6),
+        _ => return Err(gap()),
+    };
+    Ok(serde_json::Value::from(value))
 }
 
 /// Reads canonical cumulative SSU2 byte counters through the metrics

@@ -293,7 +293,7 @@ Current graph (`passed` / `ready` / `blocked`):
        (corrective pass on Plans 289 and 334, found while implementing 337;
         also corrects 337's own gap-1 diagnosis)
 
-339 active   per-family network status/error/testing owners
+339 passed   per-family network status/error/testing owners
   (reopens Plan 322 for FIVE selectors only:
    i2p.router.net.status.v6 / .error / .error.v6 / .testing / .testing.v6.
    The Proposal marks all five "(adopted from i2pd)", so the
@@ -333,6 +333,16 @@ which i2pr emits each code are recorded as an explicit conservative policy.
 i2pr owns no detector for ClockSkew, SymmetricNAT, FullConeNAT, Proxy, Mesh, or
 Stan, so it never emits those codes; the honest ordinary-production baseline is
 `status=2, error=0, testing=0` — no claim made, and no test running.
+
+**Plan 339 closed `passed` on 2026-10-05**, taking Group B. The five selectors
+now have real bounded owners across three layers, gating is per key (the two
+`error` rows need an attested NetDB; `status.v6` and `testing.v6` do not), and
+teeth were verified by inverting the status mapping and removing the family
+match: 4 of 13 transport rows, both runtime rows, and 2 of the 4 wire rows
+failed, and the source was restored with an empty diff. Normative vocabulary and
+emission policy live in
+[`specs/references/proposal-170-network-status-error-testing.md`](../../specs/references/proposal-170-network-status-error-testing.md).
+Group A is the remaining Plan 322 work.
 
 **Plan 334 reclosed `passed` on 2026-10-05.** Its own black-box, rollback, and restart
 evidence landed in `db63bc0`, and writing it found one more real gap: Plan 337 had added the

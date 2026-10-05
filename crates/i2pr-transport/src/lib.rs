@@ -17,6 +17,7 @@ mod delivery;
 mod identity;
 mod lifecycle;
 mod manager;
+mod network_status;
 mod payload;
 mod reachability;
 mod resource;
@@ -35,6 +36,10 @@ pub use manager::{
     DuplicateLinkPolicy, DuplicateResolution, LinkCandidate, LinkDeliveryCapability,
     PendingHandshake, ReachabilityRecordOutcome, RegistrationError, RegistrationOutcome,
     RegistrationRejection, TransportManager,
+};
+pub use network_status::{
+    FamilyNetworkCondition, NetworkErrorCode, NetworkStatusCode, effective_reachability,
+    network_error_code, network_status_code, network_testing_flag,
 };
 pub use payload::{EncodedI2npMessage, PayloadError};
 pub use reachability::{
