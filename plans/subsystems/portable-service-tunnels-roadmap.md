@@ -1,6 +1,6 @@
 # Portable Service-Tunnel Core Roadmap
 
-Status: active — Plans 349–350 passed; Plan 351 is ready. Plan 350's public package publication remains blocked pending license selection. This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
+Status: complete — Plans 349–351 passed. Plan 350's public package publication remains blocked pending license selection. This parallel portability/reuse work line does not reopen M10 product closure and does not implement a SAM client, SAM daemon, Python binding, C ABI, tunnel WebUI, or application sidecar in i2pr.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -109,7 +109,7 @@ Destination-group semantics are part of the portable contract. A downstream adap
             -> future separate SAM repository (unregistered here)
 ```
 
-Plan 349 passed and froze the ownership contract. Plan 350 is ready; Plan 351 remains blocked until package/API stabilization closes.
+Plans 349–351 passed. The public core boundary is frozen, the package/API is Git-consumable, and Plan 351 records the downstream adapter contract. Package publication remains license-gated.
 
 ## 7. Milestones
 
@@ -117,7 +117,7 @@ Plan 349 passed and froze the ownership contract. Plan 350 is ready; Plan 351 re
 |---|---|---|---|---|---|
 | 349 | closed | `passed-portable-service-tunnel-boundary-and-ownership-contract` | invariant + infrastructure | `plans/implementation/portable-service-tunnels/349-portable-service-tunnel-boundary-and-ownership-contract.md` | `plans/closure/portable-service-tunnels/349-status.md` |
 | 350 | closed | `passed-portable-service-tunnel-package-api-stabilization-publication-blocked-by-license-selection` | infrastructure + polish | `plans/implementation/portable-service-tunnels/350-service-tunnel-package-api-and-dependency-stabilization.md` | `plans/closure/portable-service-tunnels/350-status.md` |
-| 351 | ready | `registered-portable-service-tunnel-external-adapter-conformance` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | future `plans/closure/portable-service-tunnels/351-status.md` |
+| 351 | closed | `passed-portable-service-tunnel-external-adapter-conformance-and-sam-handoff` | infrastructure | `plans/implementation/portable-service-tunnels/351-external-adapter-conformance-and-sam-handoff-contract.md` | `plans/closure/portable-service-tunnels/351-status.md` |
 
 ## 8. Cross-cutting requirements
 
@@ -175,6 +175,6 @@ Plan 349 passed. ADR 0032 and the portable-core reference freeze the ownership/p
 
 Plan 350 passed its package/API stabilization. The package remains unpublished with `publish = false` until the owner selects a license.
 
-Plan 351 is ready. It proves the public boundary from a true external-consumer fixture and produces the clean downstream handoff for a future independent SAM library/tunnel-manager repository.
+Plan 351 passed. `bash scripts/check-portable-service-tunnel-consumer.sh` proves the public boundary from a true external-consumer fixture, and the downstream SAM handoff assigns identity, filtering, lifecycle, and wire/runtime ownership to a future independent repository.
 
 No SAM implementation or new user-visible tunnel product is authorized by these registrations.
