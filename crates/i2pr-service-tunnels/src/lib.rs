@@ -1,49 +1,20 @@
-//! Plan 174 Milestone 10 service-tunnel foundation.
+//! Runtime-neutral I2P service-tunnel policy and bounded protocol filters.
 //!
-//! Runtime-neutral service-tunnel configuration model, destination
-//! reference policy, typed errors, typed events/snapshots, plus
-//! the Plan 176 runtime-neutral HTTP/1.1 parser, hop-by-hop +
-//! privacy rewrite, request-target validation, and bounded error
-//! response generation, plus the Plan 177 runtime-neutral SOCKS5
-//! no-authentication negotiation, CONNECT request parser, and
-//! bounded reply generator for the M10 `socks5-client` profile,
-//! plus the Plan 178 runtime-neutral IRC line parser, IRCv3
-//! message-tag framing, command classification + per-direction
-//! allowlist, and client-to-network privacy filter (USER/PING/
-//! QUIT/PART rewrites + CTCP/DCC policy) for the M10 `irc-client`
-//! profile, plus the Plan 179 runtime-neutral IRC server
-//! registration interceptor and authenticated peer Destination
-//! hostname projection for the M10 `irc-server` profile.
+//! The crate owns validated service specifications, explicit Destination and
+//! linkability-group policy, access/rate/resource decisions, and reusable HTTP,
+//! SOCKS, IRC, and CONNECT parsing and filtering. Native i2pr and independently
+//! implemented transports consume the same policy surface.
 //!
-//! This crate owns no sockets, no Tokio tasks, no timers, no
-//! filesystem access, no transport internals, no NetDB mutation, and
-//! no Garlic/I2NP construction. The daemon remains the sole M10
-//! socket/task/composition owner; this crate only validates
-//! configuration and policy structurally.
+//! Transport adapters own sockets, async runtimes, clocks, DNS, persistence,
+//! connections, and lifecycle. Peer-dependent policy requires the adapter to supply
+//! identity authenticated by its I2P transport; display names and local socket
+//! addresses are not substitutes. This crate contains no SAM protocol/session
+//! implementation and is not a standalone tunnel product.
 //!
-//! ```text
-//! i2pr-client (destination/Streaming-facing types, future)
-//!     ^
-//!     |
-//! i2pr-service-tunnels (policy/protocol only)
-//!     ^
-//!     |
-//! i2pr-daemon (only socket/task/composition owner)
-//! ```
-//!
-//! Plan 174/175 enabled `generic-client` / `generic-server`. Plan
-//! 176 adds the runtime-neutral HTTP module for `http-client`. Plan
-//! 177 adds the runtime-neutral SOCKS5 module for `socks5-client`
-//! (plus Plan 290 bounded SOCKS4a CONNECT parity for the pinned
-//! historical SOCKS 4/4a/5 profile). Plan 178 adds the
-//! runtime-neutral IRC client module for `irc-client`. Plan 179
-//! adds the runtime-neutral IRC server registration interceptor for
-//! `irc-server`. Plan 290 adds the strict CONNECT-only client
-//! profile (`connect-client`), the SOCKS+IRC composition
-//! (`socks-irc`), the filtered HTTP server (`http-server`), and
-//! the deprecated bidirectional HTTP server (`http-bidir-server`)
-//! over the same shared primitives. No listener starts in
-//! this crate and no Tokio primitive exists here.
+//! The ownership contract is defined by ADR 0032 and
+//! `specs/references/portable-service-tunnel-core-v1.md` in the i2pr repository.
+//! The public API is frozen for the repository's `0.1.x` development line by Plan 350;
+//! source-breaking changes require explicit review and migration.
 
 #![forbid(unsafe_code)]
 

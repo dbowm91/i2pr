@@ -50,7 +50,7 @@ The `lib.rs` root currently has wildcard-public modules and re-exports config, p
 
 ## Dependency and enforcement baseline
 
-The crate's production dependencies at Plan 349 are `base64ct`, `i2pr-proto`, `sha2`, `subtle`, `thiserror`, and `zeroize`. Plan 350 owns source/tree proof and removal of any dead dependency. The boundary checker rejects daemon/runtime/transport/tunnel/testkit dependencies, Tokio, socket/listener types, process/filesystem/DNS ownership, and Garlic/I2NP construction. Its negative checks have positive controls.
+At Plan 349 the crate's production dependencies were `base64ct`, `i2pr-proto`, `sha2`, `subtle`, `thiserror`, and `zeroize`. Plan 350's full source/tree audit found no `i2pr_proto` reference outside the manifest and this module's stale architecture comment, removed the unused path dependency, and left the external production dependencies `base64ct`, `sha2`, `subtle`, `thiserror`, and `zeroize`. The crate now has no direct i2pr workspace dependency. The boundary checker rejects direct workspace dependencies, Tokio, socket/listener types, process/filesystem/DNS ownership, and Garlic/I2NP construction. Its negative checks have positive controls.
 
 ## Security and compatibility invariants
 

@@ -64,6 +64,11 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       - name: Check dependency direction
         run: bash scripts/check-dependency-direction.sh
+      - name: Check service-tunnel ownership boundary
+        if: runner.os == 'Linux'
+        run: bash scripts/check-service-tunnel-boundaries.sh
+      - name: Check portable service-tunnel API snapshot
+        run: python3 scripts/check-portable-service-tunnel-api.py
       - name: Check global plan-number ownership
         run: python3 scripts/check-global-plan-number-uniqueness.py
       - name: Test planning checkers

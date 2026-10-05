@@ -702,25 +702,19 @@ From `crates/i2pr-service-tunnels/Cargo.toml` — production dependencies only, 
 | Dependency | Why |
 | --- | --- |
 | `base64ct` (workspace) | RFC 7617 Basic credential decode in `auth.rs`; Basic encoding of the outproxy `Proxy-Authorization` value in `outproxy.rs` |
-| `i2pr-proto` (path) | Bounded wire types shared with the rest of the workspace |
 | `sha2` (workspace) | SHA-256 credential verifiers (`auth.rs`) |
 | `subtle` (workspace) | Constant-time verifier comparison (`auth.rs`) |
 | `thiserror` (workspace) | `ServiceTunnelError` derive |
 | `zeroize` (workspace) | `Zeroizing` buffers in `outbound_secret.rs` and `outproxy.rs` (`OutproxyAuthHeader`, `OutproxyWireBuffer`) |
 
-From `scripts/check-dependency-direction.sh`, the allowlist entry is
-`"i2pr-service-tunnels": {"i2pr-client", "i2pr-proto"}`. The checker only fails on
-`direct - allowed` (forbidden edges), so an allowed-but-unused edge is not a violation.
-**Precise statement: the allowlist permits `i2pr-client`, but this crate's manifest does
-not depend on it.** Of the two allowed workspace edges, only `i2pr-proto` is actually
-used. `src/outbound_secret.rs:14-16` states the reason directly: the crate is permitted
-only `i2pr-client` and `i2pr-proto` internally, so it cannot depend on an AEAD — which
-is precisely why that module is the policy half of outbound-secret ownership and holds no
-cryptography.
+The full source search found no `i2pr_proto` use in production or test code. Plan 350
+removed the unused path dependency, leaving no internal crate dependency. The dependency
+direction allowlist retains only the optional `i2pr-client` edge for future destination
+and Streaming reuse; the service-tunnel boundary checker rejects any `i2pr-*` manifest
+dependency other than that edge.
 
-`scripts/check-service-tunnel-boundaries.sh` additionally greps `Cargo.toml` for
-`i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit` and rejects any match.
-None is present.
+`scripts/check-service-tunnel-boundaries.sh` rejects any direct `i2pr-*` dependency
+in this manifest; none is present.
 
 Reverse direction: `i2pr-daemon` depends on `i2pr-service-tunnels` (line 45 of the
 checker's `i2pr-daemon` allowlist) for the typed spec surface.
@@ -1010,6 +1004,7 @@ registry row, for Proposal 170 state.
 - [0028 — i2pcontrol / Proposal 170 control plane](../adr/0028-i2pcontrol-proposal-170-control-plane.md)
 - [0030 — Destination linkability domains / service lifecycle](../adr/0030-destination-linkability-domains-service-lifecycle-and-i2pd-streaming.md)
 - [0031 — One shared service tunnel manager](../adr/0031-one-shared-service-tunnel-manager.md)
+- [0032 — Portable service-tunnel policy core and adapters](../adr/0032-portable-service-tunnel-policy-core-and-adapters.md)
 
 **Plans and closure records**
 
@@ -1053,7 +1048,7 @@ registry row, for Proposal 170 state.
   owner, plus the five `service_tunnels_*` executors
 - [i2pr-client.md](i2pr-client.md) — destination lifecycle, ECIES session/routing,
   Streaming; the allowlisted-but-unused edge for this crate
-- [i2pr-proto.md](i2pr-proto.md) — the one workspace crate this manifest actually depends on
+- [i2pr-proto.md](i2pr-proto.md) — bounded wire codecs; no dependency from this crate
 - [i2pr-addressbook.md](i2pr-addressbook.md) — canonical destination naming, the other
   half of the naming boundary
 - [i2pr-storage.md](i2pr-storage.md) — the versioned, atomic, secret-safe persistent

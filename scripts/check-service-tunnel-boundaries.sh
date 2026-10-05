@@ -30,19 +30,30 @@ if grep -En 'i2pr-transport|i2pr-tunnel|i2pr-runtime|i2pr-daemon|i2pr-testkit' \
   exit 1
 fi
 
-# Plan 349: the portable policy core must not acquire ownership of router
-# state, persistence, or runtime facilities. Keep i2pr-proto separately
-# reviewable: Plan 350 removes it only after proving it is unused.
-portable_dependency_pattern='i2pr-(daemon|runtime|netdb(-persist)?|transport(-ntcp2|-ssu2)?|tunnel|testkit)'
+# Plans 349–350: the portable policy core must not acquire ownership of router
+# state, persistence, or runtime facilities. Plan 350's source/tree audit found
+# no production use of i2pr-proto, so it is no longer a package dependency.
+portable_dependency_pattern='i2pr-(daemon|runtime|netdb(-persist)?|transport(-ntcp2|-ssu2)?|tunnel|testkit|proto)'
 if grep -En "$portable_dependency_pattern" "$root/crates/i2pr-service-tunnels/Cargo.toml" >/dev/null; then
   echo "portable service-tunnel core must not depend on router/runtime/NetDB/transport/tunnel crates" >&2
+  exit 1
+fi
+
+# With Plan 350's dead path edge removed, the package must not regress to any
+# direct production dependency on another i2pr crate. Dependency keys begin
+# at the start of a TOML line; the package's own `name` is not matched.
+if grep -En '^[[:space:]]*i2pr-[a-z0-9-]+[[:space:]]*=' \
+  "$root/crates/i2pr-service-tunnels/Cargo.toml" >/dev/null; then
+  echo "portable service-tunnel package must remain independent of workspace crates" >&2
   exit 1
 fi
 
 # A negative boundary rule needs a positive control. Confirm the same
 # expression catches representative forbidden manifest entries.
 if ! printf '%s\n' 'i2pr-daemon' | grep -En "$portable_dependency_pattern" >/dev/null || \
-   ! printf '%s\n' 'i2pr-netdb-persist' | grep -En "$portable_dependency_pattern" >/dev/null; then
+   ! printf '%s\n' 'i2pr-netdb-persist' | grep -En "$portable_dependency_pattern" >/dev/null || \
+   ! printf '%s\n' 'i2pr-proto' | grep -En "$portable_dependency_pattern" >/dev/null || \
+   ! printf '%s\n' 'i2pr-proto = { path = "../i2pr-proto" }' | grep -En '^[[:space:]]*i2pr-[a-z0-9-]+[[:space:]]*=' >/dev/null; then
   echo "Plan 349 dependency guard positive control failed" >&2
   exit 1
 fi

@@ -11,8 +11,8 @@
 //! partially built.
 //!
 //! This module is the policy half of the answer and holds no cryptography:
-//! `i2pr-service-tunnels` is permitted only `i2pr-client` and `i2pr-proto`
-//! internally, so it cannot depend on an AEAD. It defines the
+//! `i2pr-service-tunnels` does not own storage or depend on router-internal
+//! crates. It defines the
 //! [`OutboundSecretStore`] trait, the stored-form framing that a generation
 //! file carries, and a fail-closed default. The daemon supplies the concrete
 //! router-bound implementation, exactly as it already injects
