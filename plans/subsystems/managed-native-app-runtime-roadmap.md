@@ -1,6 +1,6 @@
 # Managed Native Application Runtime Roadmap
 
-Status: active — Plan 345 closed the initial contract foundation; post-closure review found four pre-runtime v1 defects and Plan 349 is registered as the corrective authority. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
+Status: active — Plan 345 closed the initial contract foundation; post-closure review found four pre-runtime v1 defects and Plan 349 is active as the corrective authority. This workstream is parallel to router protocol milestones and Proposal 170. It does not gate M12, anonymity, transport, or current router interoperability work.
 
 Long-term references:
 - `GUARDRAILS.md`
@@ -132,7 +132,7 @@ The scoped Proposal 170 adapter remains separately blocked on canonical Proposal
 | Plan | State | i2pr token | Classification | Implementation | Closure |
 |---|---|---|---|---|---|
 | 345 | closed | `passed-managed-native-app-runtime-contract-foundation` | invariant + infrastructure | `plans/implementation/managed-native-app-runtime/345-native-app-runtime-foundation-and-capability-contract.md` | `plans/closure/managed-native-app-runtime/345-status.md` |
-| 349 | ready | `registered-managed-app-v1-contract-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md` | future `plans/closure/managed-native-app-runtime/349-status.md` |
+| 349 | active | `registered-managed-app-v1-contract-corrective` | corrective invariant + infrastructure | `plans/implementation/managed-native-app-runtime/349-managed-app-v1-direction-broker-network-policy-corrective.md` | future `plans/closure/managed-native-app-runtime/349-status.md` |
 
 Future milestone classes remain unnumbered until bounded implementation plans are written. The router-side app principal gateway and package/lifecycle manager with AppManager API are blocked on Plan 349's corrected contract. Later classes remain sequenced behind those owners:
 - router-side app principal gateway and SAM/I2CP/Proposal-170 adapters;
@@ -211,6 +211,6 @@ This completion boundary is independent of whether any mail/IRC/torrent applicat
 
 Plan 345 remains closed as `passed-managed-native-app-runtime-contract-foundation`: ADR 0032 and the initial v1 contract landed with `i2pr-app-proto`, identity/capability separation, framing/control vocabulary, manifest/UI descriptors, pure network policy, resource limits, sandbox-attestation vocabulary, fuzzing, and static boundary enforcement. It does not launch processes or establish sandbox/network containment.
 
-Post-closure review found four pre-runtime API defects that do not invalidate Plan 345's executed infrastructure evidence but do prevent downstream stability: hostname rules require redundant public-IP grants, special-purpose address classification is incomplete, message direction/reply correlation is underspecified, and `brokered_tcp` is openable without a connect protocol. Plan 349 is ready and is the sole corrective authority. The SAM/I2CP gateway and package/lifecycle + AppManager branches are now blocked on Plan 349; Proposal 170 integration also remains gated on canonical Proposal 170 completion.
+Post-closure review found four pre-runtime API defects that do not invalidate Plan 345's executed infrastructure evidence but do prevent downstream stability: hostname rules require redundant public-IP grants, special-purpose address classification is incomplete, message direction/reply correlation is underspecified, and `brokered_tcp` is openable without a connect protocol. Plan 349 is active and is the sole corrective authority. The SAM/I2CP gateway and package/lifecycle + AppManager branches remain blocked on Plan 349; Proposal 170 integration also remains gated on canonical Proposal 170 completion.
 
 No downstream app implementation should begin against private router internals or the uncorrected Plan-345 v1 surface.
