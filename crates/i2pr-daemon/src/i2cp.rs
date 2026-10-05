@@ -2543,6 +2543,16 @@ fn message_label(message_type: i2pr_api::i2cp::MessageType) -> &'static str {
     }
 }
 
+// `I2cpAction` is referenced through downstream follow-on work; mark it
+// as used so unused-import warnings stay silent.
+#[allow(dead_code)]
+fn _i2cp_action_marker(_x: I2cpAction) {}
+
+// `Disconnect` is referenced through the public API surface; mark it
+// as used so unused-import warnings stay silent.
+#[allow(dead_code)]
+fn _disconnect_marker(_x: Disconnect) {}
+
 #[cfg(test)]
 mod private_connection_tests {
     use super::*;
@@ -2607,13 +2617,3 @@ mod private_connection_tests {
         );
     }
 }
-
-// `I2cpAction` is referenced through downstream follow-on work; mark it
-// as used so unused-import warnings stay silent.
-#[allow(dead_code)]
-fn _i2cp_action_marker(_x: I2cpAction) {}
-
-// `Disconnect` is referenced through the public API surface; mark it
-// as used so unused-import warnings stay silent.
-#[allow(dead_code)]
-fn _disconnect_marker(_x: Disconnect) {}
