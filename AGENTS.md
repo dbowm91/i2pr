@@ -81,6 +81,7 @@ bash scripts/check-i2pcontrol-acceptance-evidence.sh
 bash scripts/check-els2-type11-transcript-boundary.sh
 bash scripts/check-encrypted-service-consumer-caller.sh
 bash scripts/check-outproxy-request-path.sh
+bash scripts/check-outproxy-wire-lane-evidence.sh
 bash scripts/check-config-secret-hygiene.sh
 bash scripts/check-floodfill-type5-serve.sh
 bash scripts/check-service-tunnel-acceptance-evidence.sh

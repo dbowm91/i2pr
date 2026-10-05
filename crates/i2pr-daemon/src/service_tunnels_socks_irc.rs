@@ -76,7 +76,15 @@ pub async fn run_socks_irc_connection(
     let limits = Socks5Limits::defaults();
     let mut stream = stream;
     let negotiation =
-        match negotiate_socks_destination(&mut stream, limits, socks_options.proxy_auth.as_ref())
+        // Plan 342: `socks-irc` is refused the seven-field outproxy block by
+        // `kind_accepts_outproxy_block`, so its parser stays `.i2p`-only. The
+        // explicit argument records that as a decision rather than an omission.
+        match negotiate_socks_destination(
+            &mut stream,
+            limits,
+            socks_options.proxy_auth.as_ref(),
+            i2pr_service_tunnels::target_policy::TargetPolicy::I2pOnly,
+        )
             .await
         {
             Ok(value) => value,

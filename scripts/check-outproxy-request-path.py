@@ -7,9 +7,17 @@ resolve a *named function body* by brace matching; grepping a whole file
 cannot tell a live call from a mention, and a guard that cannot distinguish
 those is not a boundary check.
 
-Run ``--mutation-table`` to reproduce the negative test: it applies fourteen
-deliberate mutations to the sources and asserts that this guard rejects each
-one. A guard that has never been shown to fail is a comment.
+It also pins the request-target *policy*, which is what makes a clearnet
+authority reachable by the classifier at all. Sections 8 and 9 exist because
+building the wire lane found that every request-target grammar in the tree
+refused a clearnet authority before the classifier was reached -- so the
+step-3 integration was structurally correct and completely unreachable. The
+rows there check the strict wrappers stayed strict *and* that all three request
+paths ask the manager for their policy.
+
+Run ``--mutation-table`` to reproduce the negative test: it applies the
+deliberate mutations in ``MUTATIONS`` to the sources and asserts that this guard
+rejects each one. A guard that has never been shown to fail is a comment.
 """
 
 from __future__ import annotations
@@ -28,6 +36,10 @@ CONTROL = "crates/i2pr-daemon/src/i2pcontrol_tunnels.rs"
 PUMP = "crates/i2pr-daemon/src/service_tunnels.rs"
 OPTIONS = "crates/i2pr-daemon/src/outproxy_options.rs"
 SERVICE_OUTPROXY = "crates/i2pr-service-tunnels/src/outproxy.rs"
+SERVICE_POLICY = "crates/i2pr-service-tunnels/src/target_policy.rs"
+SERVICE_HTTP_TARGET = "crates/i2pr-service-tunnels/src/http/target.rs"
+SERVICE_SOCKS_REQUEST = "crates/i2pr-service-tunnels/src/socks5/request.rs"
+SERVICE_SOCKS4A = "crates/i2pr-service-tunnels/src/socks5/socks4a.rs"
 
 
 class Report:
@@ -105,6 +117,35 @@ def fn_body(source: str, name: str) -> str:
     raise LookupError(f"{name}: unbalanced braces")
 
 
+def strip_comments(source: str) -> str:
+    """Return `source` with `//` and `/* */` comments blanked out.
+
+    Needed by the rows that assert an identifier is *absent* from a function
+    body. Those functions carry prose that names the identifier they are
+    forbidden from calling -- explaining why a tempting substitution is wrong
+    is most of the value of the comment -- so a raw substring check over the
+    body would fail on its own documentation.
+    """
+    out: list[str] = []
+    index = 0
+    length = len(source)
+    while index < length:
+        char = source[index]
+        nxt = source[index + 1] if index + 1 < length else ""
+        if char == "/" and nxt == "/":
+            while index < length and source[index] != "\n":
+                index += 1
+        elif char == "/" and nxt == "*":
+            index += 2
+            while index < length and not (source[index] == "*" and source[index + 1] == "/"):
+                index += 1
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
 def braced_span(source: str, brace: int) -> str:
     """Return `source[brace..]` through the matching closing brace."""
     depth = 0
@@ -127,6 +168,10 @@ def check(report: Report) -> None:
     pump = read(PUMP)
     options = read(OPTIONS)
     service = read(SERVICE_OUTPROXY)
+    policy_mod = read(SERVICE_POLICY)
+    http_target = read(SERVICE_HTTP_TARGET)
+    socks_request = read(SERVICE_SOCKS_REQUEST)
+    socks4a = read(SERVICE_SOCKS4A)
 
     # ------------------------------------------------------------------
     # 1. Each request path classifies, inside the function that requests.
@@ -370,6 +415,201 @@ def check(report: Report) -> None:
             "reach it"
         )
 
+    # ------------------------------------------------------------------
+    # 8. The HTTP forward path is a third request path, and it carries
+    #    outproxy requests rather than refusing them.
+    #
+    #    Settled scope question. Plan 342's step 3 says "the HTTP and CONNECT
+    #    client paths". `handle_proxy_request` is the other half of the HTTP
+    #    client path: `run_http_connection` dispatches CONNECT and everything
+    #    else to it. The seven-field block is admitted on `httpclient`, so a
+    #    forward path that ignored it would be inert acceptance at sub-path
+    #    granularity -- accepted on the kind, honoured on only one of its two
+    #    request forms.
+    # ------------------------------------------------------------------
+    forward = fn_body(http, "handle_proxy_request")
+    report.require(
+        "forward classification", forward, "classify_client_target(", "handle_proxy_request"
+    )
+    report.require(
+        "forward binding",
+        forward,
+        "let class = match classify_client_target(",
+        "handle_proxy_request",
+    )
+    report.require("forward binding", forward, "match class {", "handle_proxy_request")
+    for variant in ("Direct", "ViaOutproxy", "Refused"):
+        report.require(
+            "forward classification",
+            forward,
+            f"ClientTargetClass::{variant}",
+            "handle_proxy_request",
+        )
+    forward_classified = forward.index("classify_client_target(")
+    forward_opened = forward.index("open_streaming(")
+    if forward_classified > forward_opened:
+        report.failures.append(
+            "forward order: handle_proxy_request opens Streaming before classifying the target"
+        )
+
+    # The forwarded request must carry the *clearnet* authority in `Host:`.
+    # After `build_attempt` the session is a byte pipe to the origin server, so
+    # the request is origin-form. Substituting the tunnel's own b32 destination
+    # -- which is exactly right on the direct path -- would send every forwarded
+    # request to the outproxy's default vhost.
+    forward_arm = fn_body(http, "forward_via_outproxy")
+    # Absence checks read the comment-stripped body; presence checks do not, so
+    # a row that requires an identifier still matches it in either position.
+    forward_arm_code = strip_comments(forward_arm)
+    report.require(
+        "forward pump", forward_arm, "new_client_with_prefix(", "forward_via_outproxy"
+    )
+    report.require(
+        "forward pump", forward_arm, "session.tunnel_prefix", "forward_via_outproxy"
+    )
+    report.require(
+        "forward origin-form",
+        forward_arm_code,
+        "origin_form(clearnet_target)",
+        "forward_via_outproxy",
+    )
+    report.require(
+        "forward authority",
+        forward_arm_code,
+        "rewrite_headers(&head.headers, clearnet_target",
+        "forward_via_outproxy",
+    )
+    report.forbid(
+        "forward authority",
+        forward_arm_code,
+        "target_for_remote_destination",
+        "forward_via_outproxy",
+    )
+    report.require(
+        "forward arm wiring",
+        forward,
+        "forward_via_outproxy(",
+        "handle_proxy_request",
+    )
+
+    # ------------------------------------------------------------------
+    # 9. The clearnet target can reach the classifier at all.
+    #
+    #    This is the row for the defect found while building the wire lane.
+    #    Every request-target grammar in the tree (Plan 176 HTTP absolute and
+    #    authority form, Plan 290 SOCKS5 and SOCKS4a) hard-required a `.i2p`
+    #    suffix, so each of them refused a clearnet authority *before* the
+    #    classifier was reached. Step 3's integration was structurally correct
+    #    and completely unreachable, while its unit rows -- which call the
+    #    classifier directly -- passed.
+    #
+    #    The fix is a policy parameter whose strict value is the default, so
+    #    these rows check both halves: the strict wrappers must stay strict, and
+    #    every request path must ask the manager for its policy.
+    # ------------------------------------------------------------------
+    policy_body = fn_body(policy_mod, "default")
+    report.require(
+        "target policy default",
+        policy_body,
+        "Self::I2pOnly",
+        "TargetPolicy::default",
+    )
+    report.forbid(
+        "target policy default",
+        policy_body,
+        "AllowsClearnet",
+        "TargetPolicy::default",
+    )
+    # Every pre-Plan-342 entry point stays a strict wrapper.
+    for label, source, fn_name in (
+        ("http absolute", http_target, "parse_absolute_form"),
+        ("http authority", http_target, "parse_authority_form"),
+        ("http request target", http_target, "parse_request_target"),
+    ):
+        wrapper = fn_body(http_target, fn_name)
+        report.require(
+            label,
+            wrapper,
+            "TargetPolicy::I2pOnly",
+            f"{fn_name} (strict wrapper)",
+        )
+    for label, source, struct_name in (
+        ("socks5", socks_request, "RequestParser"),
+        ("socks4a", socks4a, "Socks4aRequestParser"),
+    ):
+        ctor = fn_body(source, "new")
+        report.require(
+            label,
+            ctor,
+            "TargetPolicy::I2pOnly",
+            f"{struct_name}::new (strict default)",
+        )
+
+    # The manager owns the one decision, and it is derived from the registry
+    # that actually holds the route -- not from the spec's options value.
+    manager_body = fn_body(pump, "target_policy")
+    report.require(
+        "target policy source",
+        manager_body,
+        "self.outproxy_provider(spec_id).is_some()",
+        "ServiceTunnelManager::target_policy",
+    )
+    report.require(
+        "target policy source",
+        manager_body,
+        "TargetPolicy::AllowsClearnet",
+        "ServiceTunnelManager::target_policy",
+    )
+    report.require(
+        "target policy source",
+        manager_body,
+        "TargetPolicy::I2pOnly",
+        "ServiceTunnelManager::target_policy",
+    )
+
+    # And all three request paths parse under it.
+    report.require(
+        "CONNECT parser policy",
+        connect,
+        "manager.target_policy(&runtime.spec_id)",
+        "handle_connect",
+    )
+    report.require(
+        "forward parser policy",
+        forward,
+        "manager.target_policy(&runtime.spec_id)",
+        "handle_proxy_request",
+    )
+    report.require(
+        "SOCKS5 parser policy",
+        socks_conn,
+        "manager.target_policy(&runtime.spec_id)",
+        "run_socks5_connection",
+    )
+    # The strict parsers must not be the ones a request path calls.
+    report.forbid(
+        "CONNECT parser policy",
+        connect,
+        "parse_authority_form(&head.line.target",
+        "handle_connect",
+    )
+    report.forbid(
+        "forward parser policy",
+        forward,
+        "parse_request_target(&head.line.target)",
+        "handle_proxy_request",
+    )
+
+    # `socks-irc` stays strict: the block is refused on that kind, so a relaxed
+    # parser there would admit clearnet targets nothing could route.
+    irc = read("crates/i2pr-daemon/src/service_tunnels_socks_irc.rs")
+    report.require(
+        "socks-irc parser policy",
+        irc,
+        "TargetPolicy::I2pOnly",
+        "service_tunnels_socks_irc.rs",
+    )
+
 
 # ---------------------------------------------------------------------------
 # Negative test.
@@ -407,6 +647,23 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (SERVICE_OUTPROXY, "    if target.is_i2p() {\n        return Ok(ClientTargetClass::Direct(target));\n    }", "    if true {\n        return Ok(ClientTargetClass::Direct(target));\n    }", "the classifier sends every target direct"),
     # -- 7. the strict-CONNECT path loses the policy --
     (HTTP, "        outproxy: options.outproxy.clone(),", "        outproxy: None,", "the strict-CONNECT adapter drops the route policy"),
+    # -- 8. the HTTP forward path stops carrying outproxy requests --
+    (HTTP, "    let class = match classify_client_target(", "    let _forward_swallowed = match classify_client_target(", "forward classifies and throws the result away"),
+    (HTTP, "            return forward_via_outproxy(\n", "            return { let _unreachable = forward_via_outproxy(", "the forward path never reaches its outproxy arm"),
+    (HTTP, "rewrite_headers(&head.headers, clearnet_target,", "rewrite_headers(&head.headers, &target_for_remote_destination(clearnet_target, &session.remote),", "the forward path rewrites Host to the tunnel's own destination"),
+    (HTTP, "ServicePumpEndpoint::new_client_with_prefix(", "ServicePumpEndpoint::new_client(", "the forward path drops the handshake prefix"),
+    # -- 9. the clearnet target can no longer reach the classifier --
+    (HTTP, "manager.target_policy(&runtime.spec_id),", "TargetPolicy::I2pOnly,", "the CONNECT path parses strictly"),
+    (HTTP, "        manager.target_policy(&runtime.spec_id),\n    ) {", "        TargetPolicy::I2pOnly,\n    ) {", "the forward path parses strictly"),
+    (SOCKS, "        manager.target_policy(&runtime.spec_id),", "        i2pr_service_tunnels::target_policy::TargetPolicy::I2pOnly,", "the SOCKS5 path parses strictly"),
+    (PUMP, "if self.outproxy_provider(spec_id).is_some() {", "if true {", "the policy admits clearnet with no provider installed"),
+    (PUMP, "target_policy::TargetPolicy::I2pOnly", "target_policy::TargetPolicy::AllowsClearnet", "the manager's policy is fail-open when no provider is installed"),
+    (SERVICE_POLICY, "        Self::I2pOnly\n    }\n}", "        Self::AllowsClearnet\n    }\n}", "TargetPolicy::default becomes the relaxed policy"),
+    (SERVICE_HTTP_TARGET, "    parse_absolute_form_with_policy(input, TargetPolicy::I2pOnly)", "    parse_absolute_form_with_policy(input, TargetPolicy::AllowsClearnet)", "the absolute-form wrapper stops being strict"),
+    (SERVICE_HTTP_TARGET, "    parse_authority_form_with_policy(input, limits_connect_authority, TargetPolicy::I2pOnly)", "    parse_authority_form_with_policy(input, limits_connect_authority, TargetPolicy::AllowsClearnet)", "the authority-form wrapper stops being strict"),
+    (SERVICE_HTTP_TARGET, "    parse_request_target_with_policy(input, TargetPolicy::I2pOnly)", "    parse_request_target_with_policy(input, TargetPolicy::AllowsClearnet)", "the request-target wrapper stops being strict"),
+    (SERVICE_SOCKS_REQUEST, "        Self::with_policy(TargetPolicy::I2pOnly)", "        Self::with_policy(TargetPolicy::AllowsClearnet)", "RequestParser::new stops being strict"),
+    (SERVICE_SOCKS4A, "        Self::with_policy(TargetPolicy::I2pOnly)", "        Self::with_policy(TargetPolicy::AllowsClearnet)", "Socks4aRequestParser::new stops being strict"),
 ]
 
 

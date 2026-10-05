@@ -1,6 +1,67 @@
 # Plan 342 — I2P-routed outproxy provider and canonical proxy field completion
 
-Status: **in-progress-option-surface-and-request-paths-landed-awaits-self-composed-wire-lane**
+Status: **passed-loopback-wire-lane-landed-live-failover-rotation-unproven**
+
+Closure record: [`342-status.md`](../../closure/i2pcontrol-proposal-170/342-status.md).
+
+**Superseded token, retained:** `in-progress-option-surface-and-request-paths-landed-awaits-self-composed-wire-lane`
+(commit `5c3263b`, 2026-10-05). It is kept here rather than deleted because it
+described the request-path integration as *landed* when it was in fact
+unreachable, and the repo rule is that a predecessor's record is superseded and
+never rewritten. The `5c3263b` commit remains in history for the same reason.
+
+Progress (2026-10-05). Recorded in the order the work happened, including that
+token turning out to describe something broken.
+
+1. **Steps 1-3, landed as `e9ffe40` and `cf13e1b`.** Step 1 closed the two
+   structural gaps this plan named: `RouterIdentityBundle` gained a
+   closure-based signing-seed accessor, and the outbound secret store is derived
+   once at the composition root and threaded as a single `Arc`. `OutproxyRoute`
+   gained `Refused(OutproxyFailure)`, because the enum previously had no way to
+   say "no" and an empty proxy list made it claim `DirectI2p` for a clearnet
+   target. Steps 2 and 3 landed **together**, deliberately: the plan's own
+   sequencing rule -- *"nothing in the option surface is accepted until the
+   route behind it exists"* -- means splitting them would have put an
+   egress-looking surface on a tree that could not carry a request. All seven
+   canonical fields were admitted as one all-or-none block with
+   `OutproxyPassword` sealed at normalize time; one `classify_client_target`
+   made the Direct / ViaOutproxy / Refused decision; the handshake prefix was
+   carried into the pump's **inbound** direction.
+2. **That token was wrong, and writing the wire lane is what proved it.** Every
+   request-target grammar in the tree hard-required a `.i2p` suffix and refused
+   a clearnet authority **before** `classify_client_target` was reached:
+   `CONNECT example.com:443` was answered 403 by the parser, and a SOCKS5
+   clearnet target was answered `HostUnreachable` from inside the negotiator.
+   So `ClientTargetClass::ViaOutproxy` was dead in production while its unit
+   rows -- which call the classifier directly -- passed. This plan's own
+   inert-acceptance failure, one level deeper than it anticipated: not an option
+   surface with no route behind it, but a route with no reachable input. Fixed
+   by `TargetPolicy`, whose default is the strict value and whose relaxed value
+   a caller must name, plus `ServiceTunnelManager::target_policy` reading the
+   provider registry so the parser and the classifier cannot disagree.
+3. **Step 4 landed, and it settled the open scoping question.** `handle_proxy_request`
+   **is** in step 3's scope: the block is admitted on `httpclient`, so a forward
+   path that ignored it would be inert acceptance at sub-path granularity. After
+   `build_attempt` a session is a byte pipe to the origin, not a forward proxy,
+   so it carries the clearnet authority in `Host:` and never the `b32.i2p`
+   substitution. Running the lane also found two further production defects: the
+   outproxy opener never kicked the delivery driver, so every route would have
+   failed with `TargetUnreachable`; and a control commit drops manager-only
+   specs, so an outproxy endpoint must be startup-owned.
+
+   **Evidence:** `crates/i2pr-daemon/tests/outproxy_loopback_wire.rs`, 8/8 rows.
+   The outproxy is reached through Streaming exactly as production reaches one,
+   and the fixture never resolves a name, so the test process holds no clearnet
+   capability. Guards: `check-outproxy-request-path.sh` extended 24 -> 39/39
+   mutations; new `check-outproxy-wire-lane-evidence.sh` 7/7 with 2/2 controls.
+
+   **Plan 327 stays blocked.** The live failover rotation between two configured
+   outproxies, and a live restart carrying a request, are unproven. Two rows were
+   written for them and removed rather than left ungreen, with their names
+   machine-checked in `DOCUMENTED_ABSENCES`. No interoperability evidence; the
+   Java 2.13.0 and i2pd 2.61.0 pins are untouched.
+
+Full routine floor 39/39 PASS and 4190 workspace tests green, all local.
 
 Progress (2026-10-05, commit `cf13e1b`): the ordered work below is recorded in
 reverse order because steps 2 and 3 landed together, deliberately. The plan's

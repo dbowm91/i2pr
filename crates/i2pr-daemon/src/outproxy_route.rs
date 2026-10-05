@@ -797,6 +797,16 @@ async fn open_outproxy_streaming(
     };
     // `with_destination_bridge` is the optional half (no such destination)
     // and `connect` is the fallible half; both refuse the route.
+    // Plan 182: kick the delivery driver so the queued SYN is routed
+    // immediately instead of waiting for the fallback tick.
+    //
+    // This was missing and the wire lane found it: without the kick the SYN
+    // stayed queued on the client destination's Streaming table, so
+    // `wait_for_established` below timed out and every route failed with
+    // `TargetUnreachable` while the counters looked like a network problem.
+    // The direct path (`service_tunnels_http::open_streaming`) has had this
+    // since Plan 182; the outproxy opener was written later and did not.
+    manager.notify_outbound_signal(destination_id);
     match outcome.ok_or(())?.map_err(|_| ())? {
         ConnectOutcome::SynSent { connection_id, .. } => Ok(connection_id),
         ConnectOutcome::ConnectionTableFull

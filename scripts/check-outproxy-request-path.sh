@@ -8,7 +8,8 @@
 # self-composed loopback lane, which is not in the tree yet. Until it is, this
 # guard pins the part that *is* structural rather than behavioural:
 #
-#   1. all three client request paths classify their target through the one
+#   1. all four client request paths (HTTP forward, HTTP CONNECT, the
+#      strict-CONNECT adapter, SOCKS5) classify their target through the one
 #      `classify_client_target`, and all three outcomes are handled in the
 #      function that classifies — not merely mentioned somewhere in the file;
 #   2. a refusal produces a client-visible error and a non-success outcome,
@@ -19,7 +20,14 @@
 #   4. no request path contains a name-resolution or direct-connect
 #      primitive, so a clearnet socket is not expressible in one;
 #   5. `outproxy_password` is sealed before a definition is built, is never
-#      echoed, and is opened in exactly one place.
+#      echoed, and is opened in exactly one place;
+#   6. a clearnet authority can reach the classifier at all: every
+#      request-target grammar parses under the tunnel's `TargetPolicy`, every
+#      pre-Plan-342 entry point is still a strict `.i2p`-only wrapper, and the
+#      policy comes from the provider registry rather than the options value;
+#   7. the forward path forwards the *clearnet* authority in `Host:` rather
+#      than the tunnel's own b32 destination, because after the handshake the
+#      session is a byte pipe to the origin, not a forward proxy.
 #
 # ## Why the checks are function-scoped
 #
@@ -32,8 +40,9 @@
 # function body by brace matching and asserts inside it.
 #
 # A guard that cannot fail is a comment. The rows here were checked against
-# fourteen deliberate mutations of the sources; all fourteen are detected.
-# Re-run `python3 scripts/check-outproxy-request-path.py --mutation-table` to
+# thirty-nine deliberate mutations of the sources; all thirty-nine are
+# detected. Re-run
+# `python3 scripts/check-outproxy-request-path.py --mutation-table` to
 # reproduce that.
 set -euo pipefail
 

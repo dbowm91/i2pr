@@ -186,7 +186,7 @@ filesystem (51 rows).
 | `src/service_tunnels_socks_irc.rs` | 337 | Plan 290 SOCKS+IRC composer: shared version-peek negotiation, target selection, then the IRC filtered loop with no raw bypass | `SocksIrcConnectionOutcome`, `run_socks_irc_loop` |
 | `src/service_tunnels_streamr.rs` | 739 | Plan 291 Streamr subscriber/publisher executors: loopback UDP media source/target sockets, bounded subscribe cadence with terminal unsubscribe, authenticated subscriber table with expiry sweep and raw fanout, producer-bound media forwarding; Plan 292 adds the subscriber sink redirect | `StreamrLoopOutcome`, `run_streamr_client_loop`, `run_streamr_server_loop` |
 | `src/service_tunnels_tls.rs` | 428 | Plan 297 explicit local TLS identity/trust policy: provisioned PEM identity (X.509 expiry surfaced), SPKI pins and/or explicit trust roots (never ambient roots), explicit loopback opt-in, verifies-nothing rejected at load, custom pin-or-roots verifier with signature-scheme delegation, per-dial client configs, redacted secret handling | `ServiceTlsPolicy`, `TlsPolicyHandle`, `LoadedIdentity`, `PinOrRootsVerifier`, `ServiceTlsError`, `tls_connect` |
-| `src/outproxy_route.rs` | 976 | **Plan 343 daemon half of the I2P-routed outproxy provider** — the *route owner*. Everything decidable without a socket lives in the runtime-neutral `i2pr-service-tunnels::outproxy`; this module adds only the two things the composition root can do: the I/O half (open a Streaming route to the selected I2P outproxy destination and speak the outproxy-facing handshake with bounded retry, a separate handshake deadline, and a bounded read) and the credential half (recover the sealed password through Plan 341's `OutboundSecretStore` and build the header). **Not reachable from any request path** — see **Outproxy provider** under Key contracts | `RouterOutproxyProvider` (impls `OutproxyProvider`), `OutproxySession`, `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`, `open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` |
+| `src/outproxy_route.rs` | 976 | **Plan 343 daemon half of the I2P-routed outproxy provider** — the *route owner*. Everything decidable without a socket lives in the runtime-neutral `i2pr-service-tunnels::outproxy`; this module adds only the two things the composition root can do: the I/O half (open a Streaming route to the selected I2P outproxy destination and speak the outproxy-facing handshake with bounded retry, a separate handshake deadline, and a bounded read) and the credential half (recover the sealed password through Plan 341's `OutboundSecretStore` and build the header). **Reachable from all four client request paths as of Plan 342** via the shared opener `open_client_route` — see **Outproxy provider** under Key contracts | `RouterOutproxyProvider` (impls `OutproxyProvider`), `OutproxySession`, `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`, `open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS = 15_000` |
 
 ---
 
@@ -266,10 +266,14 @@ pub use sam::{SamServiceError, SamServiceState, StreamingPools};
   `ServiceEls2Material`, `ServiceGeneration`.
 - **Outproxy route owner** — `RouterOutproxyProvider`, `OutproxySession`,
   `OutproxyCounters`, `classify`, `build_attempt`, `interpret_reply`, `is_complete`,
-  `async open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS`. These are reachable **only**
-  as `i2pr_daemon::outproxy_route::…`; none is re-exported at the crate root, and nothing in
-  `src/` calls `open_via_outproxy` (verified: the sole reference to the module outside itself
-  is the `pub mod` declaration at `src/lib.rs:31`).
+  `async open_via_outproxy`, `OUTPROXY_HANDSHAKE_DEADLINE_MS`. None is re-exported at the crate
+  root. **Plan 342 changed the reachability**: `open_via_outproxy` is now reached from all four
+  client request paths through the single shared opener `open_client_route`, which is itself
+  reached from `connect_via_outproxy` (`service_tunnels_http.rs`),
+  `forward_via_outproxy` (`service_tunnels_http.rs`), and `run_socks5_connection`
+  (`service_tunnels_socks5.rs`). The Plan 343 statement that "nothing in `src/` calls
+  `open_via_outproxy`" was true when written and is **false now**; it is retained in the Plan 343
+  closure record, not here.
 
 ---
 
@@ -641,17 +645,40 @@ service; `ServiceDestinationDelivery::new()` / `with_backend` / `has_backend` se
 `service_lifecycle.rs` is a **private** module holding only local Destination-group
 phase/timing policy — no secrets, no routing state.
 
-### Outproxy provider (Proposal 170) — policy and route owner landed, no reachable request path
+### Outproxy provider (Proposal 170) — reachable from all four request paths, loopback-evidenced only
 
-Read this before writing "outproxy supported" anywhere. **Both halves exist and are enforced;
-neither is reachable by a client.** Plan
-[`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) is
+Read this before writing "outproxy supported" anywhere.
+
+**Superseded as of Plan 342.** Plan
+[`343`](../../plans/closure/i2pcontrol-proposal-170/343-status.md) recorded
 `passed-outproxy-provider-policy-and-route-owner-with-no-reachable-request-path`: *"No option
-can set an outproxy yet, and no request path consults the provider. The code is reachable only
-from its own tests."* There is still **no direct clearnet fallback** and **no direct clearnet
-capability anywhere in the design**. So a flat "no clearnet outproxy" is now **imprecise** — the
-policy and the route owner are real, typed, and guarded — while "outproxy supported" would be
-**wrong**, because the route owner has no caller. Both facts are true; keep them together.
+can set an outproxy yet, and no request path consults the provider."* That was accurate for
+Plan 343 and is retained in its own record; it is no longer accurate for this tree.
+
+What Plan [`342`](../../plans/closure/i2pcontrol-proposal-170/342-status.md)
+(`passed-loopback-wire-lane-landed-live-failover-rotation-unproven`) changed:
+
+- all seven canonical option fields are admitted as one **all-or-none** block on the four proxy
+  client kinds, with `OutproxyPassword` sealed into Plan 341's stored form;
+- the provider is installed by the real control-plane reconciliation into the manager's registry
+  and reached from **all four** client request paths — HTTP forward, HTTP `CONNECT`, the strict
+  `CONNECT` adapter, and SOCKS5 — through the single classifier `classify_client_target`;
+- there is still **no direct clearnet fallback** and **no direct clearnet capability anywhere in
+  the design**, and there is still **no direct-clearnet arm to remove later, because there is
+  never a fallback**.
+
+So "outproxy supported" is still **wrong** — but for a different reason than it was in Plan 343.
+It is wrong because the only evidence is the self-composed **loopback** lane
+(`crates/i2pr-daemon/tests/outproxy_loopback_wire.rs`, 8/8 rows), the live failover rotation and
+a live restart are **unproven**, and **no Java I2P or i2pd outproxy has ever been exercised**.
+Plan 327 remains `blocked` and **no outproxy capability is claimed**.
+
+One caveat that is specific to this tree and easy to get wrong: the request-target grammars
+only admit a clearnet authority when the tunnel has a provider installed. `TargetPolicy` (in
+`i2pr-service-tunnels`) is the policy value, and `ServiceTunnelManager::target_policy` derives it
+from the **provider registry** so the parser and the classifier cannot disagree. A reader who
+changes the parser without changing that derivation will silently make every clearnet request
+fail at the *parser* instead of at the route, with no compiler signal.
 
 **The seam, which is the whole architecture of this repository in miniature.** Everything
 decidable without a socket is runtime-neutral and lives in

@@ -2970,6 +2970,53 @@ impl ServiceTunnelManager {
             .clear();
     }
 
+    /// Plan 342 — the request-target policy one spec's request paths parse
+    /// under.
+    ///
+    /// # This is the single decision point, and it is the manager's
+    ///
+    /// The HTTP forward path, the HTTP `CONNECT` path, and the SOCKS path all
+    /// call this rather than deriving a policy themselves. That is not tidiness
+    /// — it is the fix for a defect found while building Plan 342's wire lane:
+    ///
+    /// > The three request-target grammars (Plan 176 HTTP, Plan 290 SOCKS5/4a)
+    /// > each hard-required a `.i2p` suffix, and rejected a clearnet authority
+    /// > *before* `classify_client_target` was reached. `CONNECT example.com:443`
+    /// > was answered `403` by the parser; a SOCKS5 `CONNECT example.com:80` was
+    /// > answered `HostUnreachable` from inside the negotiator. The step-3
+    /// > request-path integration was therefore structurally correct and
+    /// > completely unreachable, while its unit rows — which call the
+    /// > classifier directly — passed.
+    ///
+    /// So "does this tunnel carry outproxy requests" has to be answered once,
+    /// from the provider registry that actually holds the route, and every
+    /// parser has to be told.
+    ///
+    /// # Why registry presence and not `options.outproxy`
+    ///
+    /// The registry is what `classify_client_target` is ultimately handed, and
+    /// `outproxy_provider` is what `open_client_route` opens. If the policy came
+    /// from the spec's options value instead, a provider removed between
+    /// reconciliation and a request would leave a parser admitting clearnet
+    /// targets while the classifier refused them — safe, but a 502 for something
+    /// that should have been a parse-time 403, and a second place the two
+    /// decisions could disagree. Deriving both from the registry makes the
+    /// divergence unreachable rather than merely unlikely.
+    ///
+    /// No provider means [`TargetPolicy::I2pOnly`], which is the refusal
+    /// direction: the parser refuses the clearnet target before any routing
+    /// decision is made.
+    pub fn target_policy(
+        &self,
+        spec_id: &str,
+    ) -> i2pr_service_tunnels::target_policy::TargetPolicy {
+        if self.outproxy_provider(spec_id).is_some() {
+            i2pr_service_tunnels::target_policy::TargetPolicy::AllowsClearnet
+        } else {
+            i2pr_service_tunnels::target_policy::TargetPolicy::I2pOnly
+        }
+    }
+
     /// Plan 212 §10 — returns the live service runtime for one
     /// spec id, if the manager currently owns it.
     pub fn service_runtime_for_spec(&self, spec_id: &str) -> Option<Arc<ServiceRuntime>> {

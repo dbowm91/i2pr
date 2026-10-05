@@ -41,8 +41,8 @@ use i2pr_runtime::CancellationToken;
 use i2pr_service_tunnels::{
     ConnectClientOptions, DestinationRef, HttpClientOptions, HttpError, HttpErrorKind, HttpLimits,
     HttpRequestHead, ProxyCredentials, RequestTarget, TargetKind, build_error_response,
-    decode_basic_credentials, parse_authority_form, parse_request_head, parse_request_target,
-    proxy_auth_required, rewrite_headers,
+    decode_basic_credentials, parse_authority_form_with_policy, parse_request_head,
+    parse_request_target_with_policy, proxy_auth_required, rewrite_headers,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -595,20 +595,23 @@ async fn handle_connect(
     if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
         return HttpConnectionOutcome::Unauthorized;
     }
-    let authority =
-        match parse_authority_form(&head.line.target, limits.connect_authority_max_bytes) {
-            Ok(value) => value,
-            Err(error) => {
-                let kind = if matches!(error.kind, HttpErrorKind::UnsupportedConnectPort) {
-                    HttpErrorKind::UnsupportedConnectPort
-                } else {
-                    HttpErrorKind::MalformedTarget
-                };
-                let _ = write_error_response(&mut stream, build_error_response(kind, error.reason))
-                    .await;
-                return HttpConnectionOutcome::Forbidden;
-            }
-        };
+    let authority = match parse_authority_form_with_policy(
+        &head.line.target,
+        limits.connect_authority_max_bytes,
+        manager.target_policy(&runtime.spec_id),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let kind = if matches!(error.kind, HttpErrorKind::UnsupportedConnectPort) {
+                HttpErrorKind::UnsupportedConnectPort
+            } else {
+                HttpErrorKind::MalformedTarget
+            };
+            let _ =
+                write_error_response(&mut stream, build_error_response(kind, error.reason)).await;
+            return HttpConnectionOutcome::Forbidden;
+        }
+    };
     if let Some(port) = authority.port
         && !options.privacy.allows_connect_port(port)
     {
@@ -804,7 +807,10 @@ async fn handle_proxy_request(
     if !enforce_proxy_auth(&mut stream, &head, options.proxy_auth.as_ref()).await {
         return HttpConnectionOutcome::Unauthorized;
     }
-    let target = match parse_request_target(&head.line.target) {
+    let target = match parse_request_target_with_policy(
+        &head.line.target,
+        manager.target_policy(&runtime.spec_id),
+    ) {
         Ok(value) => value,
         Err(error) => {
             let _ =
@@ -824,10 +830,73 @@ async fn handle_proxy_request(
         .await;
         return HttpConnectionOutcome::BadRequest;
     }
-    if let Err(error) = i2pr_service_tunnels::http::target::validate_host(&target.host) {
+    if let Err(error) = i2pr_service_tunnels::http::target::validate_host_with_policy(
+        &target.host,
+        manager.target_policy(&runtime.spec_id),
+    ) {
         let _ =
             write_error_response(&mut stream, build_error_response(error.kind, error.reason)).await;
         return HttpConnectionOutcome::Forbidden;
+    }
+    // Plan 342: the forward path classifies exactly as the CONNECT path does,
+    // from the same function, so the guarantee cannot hold on one and not the
+    // other.
+    let outproxy_provider = manager.outproxy_provider(&runtime.spec_id);
+    let class = match classify_client_target(
+        outproxy_provider
+            .as_deref()
+            .map(i2pr_service_tunnels::OutproxyProvider::config),
+        &target.host,
+        target.port.unwrap_or(80),
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(HttpErrorKind::MalformedTarget, "target is not usable"),
+            )
+            .await;
+            return HttpConnectionOutcome::Forbidden;
+        }
+    };
+    // Exhaustive `match`, for the reason documented in `handle_connect`: with
+    // `if let`, a fourth `ClientTargetClass` outcome added later would fall
+    // through to the direct path silently. `scripts/check-outproxy-request-path.sh`
+    // asserts this shape in all three request paths.
+    match class {
+        ClientTargetClass::ViaOutproxy(outproxy_target) => {
+            return forward_via_outproxy(
+                stream,
+                Arc::clone(&manager),
+                &runtime,
+                &cancellation,
+                outproxy_provider
+                    .as_deref()
+                    .expect("a ViaOutproxy classification implies a provider"),
+                &outproxy_target,
+                &options,
+                &head,
+                initial_body,
+                &target,
+            )
+            .await;
+        }
+        ClientTargetClass::Refused(failure) => {
+            debug!(
+                failure = failure.as_str(),
+                "forward target refused before any route"
+            );
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(
+                    HttpErrorKind::Other,
+                    "no I2P-routed outproxy is configured for this tunnel",
+                ),
+            )
+            .await;
+            return HttpConnectionOutcome::BadGateway;
+        }
+        ClientTargetClass::Direct(_) => {}
     }
     let client = match resolve_target_for_service(&manager, runtime.destination_id, &target) {
         Ok(value) => value,
@@ -899,6 +968,133 @@ async fn handle_proxy_request(
         runtime.destination_id,
         connection_id,
         &client.remote,
+        false,
+    );
+    HttpConnectionOutcome::RequestClosed
+}
+
+/// Plan 342 — forwards one ordinary proxy request through an outproxy.
+///
+/// # Why this arm exists at all, and why it is not a copy of `handle_proxy_request`
+///
+/// `handle_proxy_request` is the path the plan's `httpclient` kind advertises,
+/// and accepting the seven-field outproxy block on that kind while only
+/// honouring it for `CONNECT` would be the inert-acceptance trap the plan
+/// exists to prevent — at sub-path granularity. A control client that set
+/// `ProxyList`, got an accepted response, and then issued `GET
+/// http://example.com/` would be told `403` by the parser and reasonably
+/// conclude the tunnel has no egress, or worse, conclude the proxy is broken.
+/// So the forward path carries outproxy requests too.
+///
+/// The one thing that is genuinely different, and the reason this is not a
+/// three-line call into the direct path:
+///
+/// > After `build_attempt`, [`OutproxySession`] is a **byte pipe to
+/// > `example.com:80`**, not a conversation with a forward proxy. So the
+/// > request written onto it must be **origin-form** with the real name in
+/// > `Host:` — not the absolute-form the local client sent, and above all not
+/// > the `b32.i2p` substitution the direct path makes. Rewriting `Host` to the
+/// > tunnel's own destination would send every forwarded request to the
+/// > outproxy's *default* vhost.
+///
+/// `initial_body` is prepended to the pump's outbound direction exactly as in
+/// the direct path, and the handshake prefix seeds the **inbound** direction.
+#[allow(clippy::too_many_arguments)]
+async fn forward_via_outproxy(
+    mut stream: TcpStream,
+    manager: Arc<ServiceTunnelManager>,
+    runtime: &Arc<ServiceRuntime>,
+    cancellation: &CancellationToken,
+    provider: &RouterOutproxyProvider,
+    target: &OutproxyTarget,
+    options: &HttpClientOptions,
+    head: &HttpRequestHead,
+    initial_body: Vec<u8>,
+    clearnet_target: &RequestTarget,
+) -> HttpConnectionOutcome {
+    let route = match open_client_route(
+        &manager,
+        &runtime.spec_id,
+        runtime.destination_id,
+        Some(provider),
+        target.host(),
+        target.port(),
+        true,
+        cancellation,
+        manager.outproxy_counters(),
+    )
+    .await
+    {
+        Ok(route) => route,
+        Err(failure) => {
+            debug!(
+                failure = failure.as_str(),
+                "forward outproxy route open failed"
+            );
+            crate::outproxy_route::ClientRoute::Refused(failure)
+        }
+    };
+    let session = match route {
+        crate::outproxy_route::ClientRoute::ViaOutproxy(session) => session,
+        other => {
+            debug!(outcome = ?other, "forward outproxy route was not open");
+            let _ = write_error_response(
+                &mut stream,
+                build_error_response(
+                    HttpErrorKind::Other,
+                    "no I2P-routed outproxy is configured for this tunnel",
+                ),
+            )
+            .await;
+            return HttpConnectionOutcome::BadGateway;
+        }
+    };
+    // Origin-form over a byte pipe, with the *clearnet* authority in `Host:`.
+    //
+    // `clearnet_target` is the target exactly as the client wrote it — no
+    // `target_for_remote_destination` substitution. That substitution is
+    // correct for the direct path and wrong here.
+    let mut forwarded = Vec::with_capacity(head.line.target.len() + 256);
+    forwarded.extend_from_slice(head.line.method.as_bytes());
+    forwarded.push(b' ');
+    forwarded.extend_from_slice(
+        i2pr_service_tunnels::http::target::origin_form(clearnet_target).as_bytes(),
+    );
+    forwarded.extend_from_slice(b" HTTP/1.1\r\n");
+    for header in rewrite_headers(&head.headers, clearnet_target, &options.privacy) {
+        forwarded.extend_from_slice(header.name_str().as_bytes());
+        forwarded.extend_from_slice(b": ");
+        forwarded.extend_from_slice(header.value.as_bytes());
+        forwarded.extend_from_slice(b"\r\n");
+    }
+    forwarded.extend_from_slice(b"\r\n");
+    forwarded.extend_from_slice(&initial_body);
+    let endpoint: Arc<dyn StreamPumpEndpoint> =
+        Arc::new(ServicePumpEndpoint::new_client_with_prefix(
+            Arc::clone(&manager),
+            runtime.destination_id,
+            session.connection_id,
+            session.remote.clone(),
+            session.tunnel_prefix,
+        ));
+    let config = PumpConfig::defaults(BODY_CHUNK_BYTES);
+    let result = run_stream_pump(stream, forwarded, endpoint, config, cancellation.clone()).await;
+    if let Err(error) = result {
+        debug!(error = %error, "forward outproxy pump failed");
+        terminate_streaming(
+            &manager,
+            runtime.destination_id,
+            session.connection_id,
+            &session.remote,
+            true,
+        );
+        return HttpConnectionOutcome::BadGateway;
+    }
+    terminate_streaming(
+        &manager,
+        runtime.destination_id,
+        session.connection_id,
+        &session.remote,
         false,
     );
     HttpConnectionOutcome::RequestClosed

@@ -8803,4 +8803,70 @@ mod tests {
                 .is_some()
         );
     }
+
+    /// Plan 342 — the whole chain that makes a clearnet request reachable, in
+    /// one row: definition → reconciliation → provider registry → the tunnel's
+    /// request-target policy.
+    ///
+    /// The row exists because the pieces were individually present and the
+    /// chain was not. `sync_outproxy_providers` installed the provider, the
+    /// request paths classified their target, and the unit rows for both
+    /// passed -- and a clearnet authority could still never arrive at the
+    /// classifier, because every request-target grammar in the tree required a
+    /// `.i2p` suffix and refused before it. `ServiceTunnelManager::target_policy`
+    /// is the link, and this row is what holds it in place.
+    ///
+    /// The removal half matters as much as the install half: a provider dropped
+    /// from the registry must take the policy back to strict, so the *next*
+    /// request is refused at the parser instead of being parsed and then
+    /// refused at the classifier.
+    #[test]
+    fn plan342_provider_registry_drives_the_request_target_policy() {
+        let directory = TempDir::new().expect("temp dir");
+        let control = test_control(directory.path());
+        let manager = Arc::clone(&control.manager);
+
+        // Nothing configured yet: strict, so a clearnet authority is refused
+        // by the parser.
+        assert_eq!(
+            manager.target_policy("tunnel-a"),
+            i2pr_service_tunnels::target_policy::TargetPolicy::I2pOnly,
+            "a tunnel with no outproxy provider must parse strictly"
+        );
+
+        // A complete block, published the way TunnelManager would.
+        let definition = normalize_definition_with_filter_root(
+            "tunnel-a",
+            TunnelType::ConnectClient,
+            &plan342_http_options(None),
+            false,
+            None,
+            plan342_store().as_ref(),
+        )
+        .expect("the complete block normalizes");
+        lock(&control.definitions).insert("tunnel-a".to_owned(), definition);
+        control.sync_outproxy_providers().expect("providers sync");
+
+        assert!(
+            manager.outproxy_provider("tunnel-a").is_some(),
+            "the block must install a provider"
+        );
+        assert_eq!(
+            manager.target_policy("tunnel-a"),
+            i2pr_service_tunnels::target_policy::TargetPolicy::AllowsClearnet,
+            "an installed provider is what lets a clearnet authority reach the classifier"
+        );
+
+        // Removing the definition drops the provider and the policy together.
+        lock(&control.definitions).remove("tunnel-a");
+        control
+            .sync_outproxy_providers()
+            .expect("providers sync again");
+        assert!(manager.outproxy_provider("tunnel-a").is_none());
+        assert_eq!(
+            manager.target_policy("tunnel-a"),
+            i2pr_service_tunnels::target_policy::TargetPolicy::I2pOnly,
+            "removing the provider must return the parser to strict, not leave a relaxed one"
+        );
+    }
 }

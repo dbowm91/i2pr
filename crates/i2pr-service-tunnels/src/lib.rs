@@ -62,6 +62,7 @@ pub mod outbound_secret;
 pub mod outproxy;
 pub mod socks5;
 pub mod streamr;
+pub mod target_policy;
 
 pub use access::{
     MAX_ACCESS_LIST_ENTRIES, MAX_RATE_LIMIT_PEERS, ServerAccessPolicy, ServerConnectionRateLimiter,
@@ -96,8 +97,8 @@ pub use http::{
     MAX_POST_LIMIT_PEERS, ParseError, PresentationClass, PrivacyPolicy, RequestLine, RequestTarget,
     TargetKind, TargetParseError, UserAgentPolicy, build_error_response, classify_presentation,
     filter_server_request, filter_server_request_with_policy, filter_server_response,
-    parse_authority_form, parse_origin_form, parse_request_head, parse_request_target,
-    proxy_auth_required, rewrite_headers,
+    parse_authority_form, parse_authority_form_with_policy, parse_origin_form, parse_request_head,
+    parse_request_target, parse_request_target_with_policy, proxy_auth_required, rewrite_headers,
 };
 pub use idle::{IdleSweepAction, idle_decision};
 pub use irc::{
