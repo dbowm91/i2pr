@@ -59,6 +59,7 @@ pub mod http;
 pub mod idle;
 pub mod irc;
 pub mod outbound_secret;
+pub mod outproxy;
 pub mod socks5;
 pub mod streamr;
 
@@ -107,6 +108,14 @@ pub use irc::{
     classify_core as classify_irc_core, classify_post_tag_core, encode_b32_label,
     is_allowed as is_irc_command_allowed, is_command_allowed as is_irc_command_allowed_alias,
     project_peer_hostname,
+};
+pub use outproxy::{
+    DEFAULT_OUTPROXY_ATTEMPTS, DEFAULT_OUTPROXY_CONNECT_TIMEOUT_MS, MAX_OUTPROXY_ATTEMPTS,
+    MAX_OUTPROXY_AUTH_HEADER_LEN, MAX_OUTPROXY_BACKOFF_MS, MAX_OUTPROXY_CONNECT_TIMEOUT_MS,
+    MAX_OUTPROXY_HOST_LABEL_LEN, MAX_OUTPROXY_HOST_LEN, MAX_OUTPROXY_LIST_ENTRIES,
+    MAX_OUTPROXY_LIST_LEN, MAX_OUTPROXY_USERNAME_LEN, NoOutproxyProvider, OutproxyAuthHeader,
+    OutproxyConfig, OutproxyEndpoint, OutproxyError, OutproxyFailure, OutproxyList, OutproxyPolicy,
+    OutproxyProvider, OutproxyRoute, OutproxyTarget, OutproxyType,
 };
 pub use socks5::{
     ConnectDestination, ConnectPortPolicy, GreetingOutcome, GreetingParser, RequestOutcome,
